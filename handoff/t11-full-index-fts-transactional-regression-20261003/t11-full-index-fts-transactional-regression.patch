@@ -1,0 +1,43 @@
+diff --git a/tests/test_t11_rag_ingestion_contract.py b/tests/test_t11_rag_ingestion_contract.py
+--- a/tests/test_t11_rag_ingestion_contract.py
++++ b/tests/test_t11_rag_ingestion_contract.py
+@@ -329,6 +329,39 @@
+ 
+     assert result["success"] is False
+     assert result["retryable"] is False
++    assert injected["attempts"] == 1
++    assert _rag_snapshot(store, "tenant", workspace) == previous
++
++
++@pytest.mark.parametrize("failed_statement", ["INSERT INTO chunk_fts", "DELETE FROM chunk_fts"])
++def test_full_index_fts_write_failure_keeps_previous_snapshot(
++    tmp_path, monkeypatch, failed_statement
++):
++    store = _store(tmp_path)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("before = 'old snapshot'\n", encoding="utf-8")
++
++    class _VectorServices:
++        def embed(self, texts, _tenant, **_kwargs):
++            return {
++                "success": True,
++                "embedding_space_id": "atomic-full-index-test-space",
++                "embeddings": [[0.25, 0.75] for _ in texts],
++            }
++
++    store.services = _VectorServices()
++    workspace = "atomic-full-index-workspace"
++    assert store.index(str(root), "tenant", workspace)["success"] is True
++    previous = _rag_snapshot(store, "tenant", workspace)
++
++    path.write_text("after = 'new snapshot'\n", encoding="utf-8")
++    injected = _inject_sqlite_write_failure(store, monkeypatch, failed_statement)
++    result = store.index(str(root), "tenant", workspace)
++
++    assert result["success"] is False
++    assert result["retryable"] is False
+     assert injected["attempts"] == 1
+     assert _rag_snapshot(store, "tenant", workspace) == previous
+ 

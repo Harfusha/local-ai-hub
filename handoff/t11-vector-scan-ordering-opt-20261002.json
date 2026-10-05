@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "status": "CANDIDATE PATCH / REVIEW — NOT BENCHMARKED",
+  "patch": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-vector-scan-ordering-opt-20261002.patch",
+  "patch_sha256": "b120123e8962a45e7cbf4ffcf2dd7caf3e0da782cdcb3f9fa1c2662f5dcf3e24",
+  "base_candidate": {
+    "src/local_ai_hub/rag.py": "5116f5d6d99f652ac82a01d3fe3d0a7630ac02c58faab32118b679c48a15d9a8",
+    "tests/test_rag_quality_contract.py": "086401796b4c19812784186decf1d5d5a39455635325791c0866e7b9a09f986d"
+  },
+  "candidate_postimages": {
+    "src/local_ai_hub/rag.py": "1ab43ee2324eb0cd87d462d2929a5b5c227b6806629a8e71e3a34d4fd4e29d63",
+    "tests/test_rag_quality_contract.py": "c4b959186200668eff461b5067ebc11ebef1597460b3b87361aae679502419a2"
+  },
+  "implementation": "Remove redundant per-batch local lexsort and path/chunk/hash array construction before heap offers. Heap uses total deterministic order; exact cutoff ties retain explicit path/chunk/hash selection.",
+  "regression_test": "tests/test_rag_quality_contract.py::test_vector_search_skips_redundant_local_sort_for_unique_scores",
+  "red": "Before source edit, test failed because unique-score batch still invoked np.lexsort for local candidate ordering.",
+  "green_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py::test_vector_search_skips_redundant_local_sort_for_unique_scores tests/test_rag_quality_contract.py::test_vector_search_keeps_deterministic_ties_at_candidate_cutoff tests/test_rag_quality_contract.py::test_equal_scores_use_semantic_path_order_not_row_order tests/test_rag_quality_contract.py::test_vector_cursor_closes_before_scoring_and_after_search",
+  "green_result": "4 passed in 0.63s",
+  "contract_suite_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py tests/test_rag_hybrid.py",
+  "contract_suite_result": "35 passed, 1 skipped in 4.60s; skipped 100k benchmark gated by RAG_BENCHMARK=1",
+  "diagnosis": "Search exhaustively scans compatible vectors and scores each row. It reissues a keyset SELECT per batch. A one-cursor experiment was rejected: it violated test_vector_cursor_closes_before_scoring_and_after_search by leaving the SQLite statement VM active during dot scoring. Reverted.",
+  "performance": "No profile or benchmark run: T02 owns exclusive CPU benchmark slot. Existing p95 REDs remain 972.658 ms at batch 4096 and 1698.727 ms at batch 512 against 750 ms. No gain claimed.",
+  "scope": "Candidate f678 only. Do not modify root or T21 project_config. Review patch against current owner preimage before integration."
+}

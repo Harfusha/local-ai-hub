@@ -1,0 +1,63 @@
+{
+  "schema": "t11-root-current-followup-v1",
+  "date": "2026-10-05",
+  "root": {
+    "path": "C:\\Users\\Adam\\.local-ai-hub",
+    "head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+    "writes_by_this_task": 0,
+    "tests_run_after_patch": false
+  },
+  "candidate": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476"
+  },
+  "patch": {
+    "path": "handoff/t11-root-current-rag-hardening-20261003/t11-root-current-followup-20261005.patch",
+    "sha256": "FF3F5B62BC16CE721503F0905743DED3574233AD0741981BDE955C0B5546530C",
+    "bytes": 11265,
+    "paths": [
+      "src/local_ai_hub/rag.py",
+      "tests/test_rag_hybrid.py",
+      "tests/test_rag_fragment_cache.py",
+      "tests/test_t11_rag_ingestion_contract.py"
+    ],
+    "apply_check": "PASS: git apply --check --recount --whitespace=error; not applied",
+    "synthetic_postimages_compile": true
+  },
+  "hashes": {
+    "src/local_ai_hub/rag.py": {
+      "pre": "B162AC451953E0FCB3A9549EFA2A66CD500A8EEB0892FB931194E5EF5B269CC6",
+      "post": "D7235A0FE32CD9549E1581C7530836F78392BC7331AE74F3592C37BFC9355342"
+    },
+    "tests/test_rag_hybrid.py": {
+      "pre": "1FD09F7AB94C1945984B96891803B49239B28E83B9BF700181C685C935ADE8DD",
+      "post": "833B366DE3C1141B69C946D365933CB86BCAC9A05D83C9F4FCEFD621460E7CA8"
+    },
+    "tests/test_rag_fragment_cache.py": {
+      "pre": "F5641D678EDAD903E64BA13E2E360E04C297F2BB23FFEF987152498C9024EADF",
+      "post": "71706EABACABD2AA9B8FE20DAA173069E63837E942DFFC6B055F0C85254B2590"
+    },
+    "tests/test_t11_rag_ingestion_contract.py": {
+      "pre": "9710F1846DE6D35CF9D8045EC8D7DF3663488FC94C479AE41BAF1A20DF614294",
+      "post": "1B6230D2AB67EF44776FB0F2330107FBB944F33869BBF685469DFDDCBF216321"
+    }
+  },
+  "diagnostic_receipts": [
+    {"scope": "root fragment-cache pre-patch", "result": "6 failed, 22 passed / 23.78s"},
+    {"scope": "root vector-buffer and batch pre-patch", "result": "3 failed, 1 passed / 2.67s"},
+    {"scope": "root hybrid-policy pre-patch", "result": "3 failed / 1.21s"},
+    {"scope": "root explicit-ingest and FTS pre-patch", "result": "4 failed / 6.50s"},
+    {"scope": "candidate follow-up selectors", "result": "36 passed / 12.36s"},
+    {"scope": "candidate broader RAG/embedding suite", "result": "185 passed, 1 skipped, 2 deselected / 56.22s"},
+    {"scope": "stable root embedding-cache rerun after concurrent embeddings.py update", "result": "17 passed / 0.24s"},
+    {"scope": "root broad diagnostic while embeddings.py changed concurrently", "result": "17 failed, 147 passed, 1 skipped, 2 deselected / 66.20s; diagnostic only, not a single-preimage receipt"}
+  ],
+  "audited_unpatched": {
+    "src/local_ai_hub/embeddings.py": "Current root hash B80C15DEBB62724BB20113E86324B8268C685A1076D5508A22BBF4246FEA07E0; changed concurrently; stable embedding-cache module passes.",
+    "src/local_ai_hub/reranker.py": "Root/candidate hash identical EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562.",
+    "src/local_ai_hub/mcp_server.py": "Excluded; root telemetry accounting adds a separate telemetry request.",
+    "src/local_ai_hub/services.py": "Excluded; no T11-owned source hunk identified.",
+    "project_config.py": "Excluded; T21 ownership.",
+    "T14_paths": "None included or edited."
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "status": "T11 CANDIDATE / TESTED / NOT BENCHMARKED",
+  "patch": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-score-buffer-opt-20261002.patch",
+  "patch_sha256": "f3b19d57e49a557e60e50a55ba6b2fb6838bd19ed495db41cf3353b09365a9d6",
+  "base_candidate_preimage_sha256": {
+    "src/local_ai_hub/rag.py": "1ab43ee2324eb0cd87d462d2929a5b5c227b6806629a8e71e3a34d4fd4e29d63",
+    "tests/test_rag_quality_contract.py": "be64f046abc866016950e1337f8a7f7f6da6f5fb2e60bb8374e80db0c8dd9df4"
+  },
+  "candidate_postimage_sha256": {
+    "src/local_ai_hub/rag.py": "f47259dafc72c6a584f53d84e51fac270ce0969e48ec3cdb58c1cceb6f554992",
+    "tests/test_rag_quality_contract.py": "0a82654d5bba505f69437037e8f906defaf5f983aca0305445e11f0854bbd9c5"
+  },
+  "scratch_apply_check": "PASS",
+  "scratch_normalized_postimage_match": {
+    "src/local_ai_hub/rag.py": true,
+    "tests/test_rag_quality_contract.py": true
+  },
+  "implementation": "Use dot result as score output, divide in-place, zero invalid rows in-place, sanitize non-finite scores in-place. Avoid separate zero score vector and boolean-index dot/division temporaries.",
+  "regression_test": "tests/test_rag_quality_contract.py::test_vector_search_reuses_norm_buffer_for_scores",
+  "red": "Before source edit, regression failed because scoring allocated np.zeros(len(batch)).",
+  "validation_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py tests/test_rag_hybrid.py",
+  "validation_result": "36 passed, 1 skipped in 4.25s; skipped test is gated 100k benchmark.",
+  "performance": "No benchmark/profile run. Prior p95 REDs remain 972.658 ms and 1698.727 ms against 750 ms; no speedup claim.",
+  "scope": "Candidate f678 only. Root and T21 project_config unchanged. Review and paired measure only with T20 slot.",
+  "acceptance_status": "REVIEW / OPEN — candidate tests passed; benchmark unmeasured",
+  "slot_status": "T02 exclusive slot 04 active; do not run more tests/benchmark until explicit T20 assignment.",
+  "performance_gate_status": "RED / OPEN; prior p95 measurements unchanged; no speedup claim.",
+  "independent_static_review": {
+    "source_sha256": "f47259dafc72c6a584f53d84e51fac270ce0969e48ec3cdb58c1cceb6f554992",
+    "test_sha256": "0a82654d5bba505f69437037e8f906defaf5f983aca0305445e11f0854bbd9c5",
+    "result": "NO SEMANTIC DIFFERENCE FOUND BY STATIC ANALYSIS; PERFORMANCE EFFECT STILL UNMEASURED",
+    "equivalence": [
+      "Both paths compute float32 dot(matrix,q)/norms for rows with finite norm > 1e-9.",
+      "Invalid rows become 0: old zero-initialized score vector; new path explicitly zeroes scores[~valid].",
+      "Zero/subthreshold query or all-invalid batch becomes all-zero scores; new path reuses norms then fills it with zero.",
+      "Both paths convert NaN and +/-Inf scores to 0 before candidate selection."
+    ],
+    "allocation_effect": [
+      "Removes per-batch zero score vector when valid rows exist.",
+      "Reuses np.dot output as divide output; avoids boolean-index copies of dot/norms and division result.",
+      "Uses in-place np.nan_to_num; preserves finite values."
+    ],
+    "review_limits": [
+      "Static reasoning only; numerical parity and allocation changes have targeted contract tests, but no property/fuzz test was added.",
+      "No benchmark/profile; do not claim lower p95 or memory until paired slot measurement."
+    ],
+    "root_or_owner_files_touched": false
+  },
+  "pending_privacy_selector": {
+    "selector": "tests/test_telemetry_contract.py::test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields",
+    "reason": "New privacy acceptance selector not present in either recorded T11 suite.",
+    "state": "Await explicit serial T20 slot after T02; no test run."
+  }
+}

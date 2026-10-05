@@ -1,0 +1,95 @@
+{
+  "schema": "t11-current-acceptance-receipt-v2",
+  "date": "2026-10-03",
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "candidate_inputs_sha256": {
+    "src/local_ai_hub/embeddings.py": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170",
+    "src/local_ai_hub/rag.py": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+    "src/local_ai_hub/reranker.py": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562",
+    "tests/test_rag_read_bounds.py": "AE19C08BC2AA9CA45D0B7F26DCFF23DD8ABDB3A1D843F54A7830045A8A568AA2",
+    "tests/test_rag_fragment_cache.py": "A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002",
+    "tests/test_rag_hybrid.py": "8396D5A114D14BAEBFEAF9022E6C569D3B475DEA8D9075794195DB13DFFDC75E",
+    "tests/test_rag_quality_contract.py": "0A82654D5BBA505F69437037E8F906DEFAF5F983ACA0305445E11F0854BBD9C5",
+    "tests/test_rag_dedup.py": "2E8A76309C2024071DC6BD0362921C100EF9013E588BED8425C992DE9104C6D6",
+    "tests/test_t11_project_policy_consumers.py": "E4EA70D1036A5109B80E390B255F4106664E0238AB7067E59322760997D0C4F5",
+    "tests/test_t11_rag_ingestion_contract.py": "C4E9A80373A3964E1EF9CB7B1F07114D5DD09BF7A68BDD308D167613DBCB8EE1",
+    "tests/test_t11_rag_seed_integrity.py": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02",
+    "tests/test_reranker_cache_identity.py": "32160E2B0F963DDDF6FBC3A15838E1532EF696424AB011581C4BF3AEEAD27C0B",
+    "tests/test_embedding_cache.py": "3BADFED3EA66802AF00522CFCDC979BFC2BA6A27DFAA08C241AB0440AD1887AE",
+    "tests/test_embedding_batch_deduplication.py": "C96FE56FB6A6B6C7AED973AF2EE1FFF116EF2029AAEB0EC307C50F9AF0BA2196",
+    "tests/test_model_release_lifecycle.py": "50C061DBC8D2BFA37337FDD77F796DCB328F786F407E1AD389200991E2EE5C50"
+  },
+  "historical_offline_run": {
+    "ran": true,
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+    "exit_code": 0,
+    "summary": "183 passed, 3 skipped in 42.04s",
+    "source_receipt_sha256": "83E99ACD054D521B4AEE68C18D630762E2B0BEB138C8BCDA4C402705D4EB9FCF",
+    "new_regressions": [
+      "test_index_embeds_changed_chunks_without_undefined_text_list",
+      "test_index_paths_step_sets_embedding_space_before_nonempty_records"
+    ],
+    "skips": [
+      "100k retrieval benchmark: RAG_BENCHMARK=1 required",
+      "live Ollama: T11_REAL_OLLAMA=1 required",
+      "synthetic ingestion/seed benchmark: T11_RAG_BENCHMARK=1 required"
+    ]
+  },
+  "tests_run_this_turn": false,
+  "bounded_hot_path_measurement": "not run; validation slot currently assigned to active T01",
+  "live_gpu_or_model_benchmark": false,
+  "previous_patch": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-p1-runtime-fix-20261003\\t11-root-current-safe-excluding-rag.patch",
+  "previous_patch_sha256": "ECB3FB752A3ADE63D7F77B6166DA9189350CAAC3BC2240C21BFF694EBD856955",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "current_root_hashes": {
+    "src/local_ai_hub/embeddings.py": "A3E04B9D1623979AECEB95643F74A7405E2C3739ECA82EB815E0299CB6F57E16",
+    "src/local_ai_hub/reranker.py": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562",
+    "tests/test_rag_fragment_cache.py": "4C08E7EDD5845F2907DDD3D1F12D30D6A22EC5E8D887327CDCB734579223D9B6",
+    "tests/test_rag_hybrid.py": "3A6C0BF3A388DBE0C472ED056E1820BB4452E1B1139BC9E9C3D75AE05CB06D38",
+    "tests/test_rag_quality_contract.py": "9B8D07437E99C6DCA71A5F2ED6CC8C2771810253B671FCDED3D4EB113E63B91F"
+  },
+  "previous_patch_preimage_drift": [
+    {
+      "path": "src/local_ai_hub/embeddings.py",
+      "receipt_preimage": "21A6282871005D1045B2E76A2CC65599DEEDB877477E007C1AA8FB31BFACCD08",
+      "current_root_sha256": "A3E04B9D1623979AECEB95643F74A7405E2C3739ECA82EB815E0299CB6F57E16"
+    },
+    {
+      "path": "src/local_ai_hub/reranker.py",
+      "receipt_preimage": "12773E04A90DB8F8A367E618D725A3EA995FAF4B624244907B8A13F30CED2EC7",
+      "current_root_sha256": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562"
+    },
+    {
+      "path": "tests/test_rag_fragment_cache.py",
+      "receipt_preimage": "50BE2A48A96A7EDF403BC09A9EEF9032C315B1B068CE6015F032636B28D46293",
+      "current_root_sha256": "4C08E7EDD5845F2907DDD3D1F12D30D6A22EC5E8D887327CDCB734579223D9B6"
+    },
+    {
+      "path": "tests/test_rag_hybrid.py",
+      "receipt_preimage": "5E8508F96B808A7369FA9E97617BE359F7F23EA7A6213364EEC71B99F5149160",
+      "current_root_sha256": "3A6C0BF3A388DBE0C472ED056E1820BB4452E1B1139BC9E9C3D75AE05CB06D38"
+    },
+    {
+      "path": "tests/test_rag_quality_contract.py",
+      "receipt_preimage": "273C1EEA3645F78596009340096D2C381FD8749FE71CE8F2ECB7A8AECE723572",
+      "current_root_sha256": "9B8D07437E99C6DCA71A5F2ED6CC8C2771810253B671FCDED3D4EB113E63B91F"
+    }
+  ],
+  "previous_patch_check": "FAIL; stale against current root",
+  "previous_patch_check_exit": 1,
+  "previous_patch_check_stderr": "error: patch failed: src/local_ai_hub/embeddings.py:63\nerror: src/local_ai_hub/embeddings.py: patch does not apply\nerror: patch failed: src/local_ai_hub/reranker.py:64\nerror: src/local_ai_hub/reranker.py: patch does not apply\nerror: patch failed: tests/test_rag_fragment_cache.py:12\nerror: tests/test_rag_fragment_cache.py: patch does not apply\nerror: patch failed: tests/test_rag_hybrid.py:5\nerror: tests/test_rag_hybrid.py: patch does not apply\nerror: patch failed: tests/test_rag_quality_contract.py:1\nerror: tests/test_rag_quality_contract.py: patch does not apply\n",
+  "patch_apply_performed": false,
+  "regenerated_root_patch": "not created; T01 owns active validation slot and root hunks changed after prior receipt",
+  "rag_py_excluded": true,
+  "db_boundary_static_review": {
+    "RAG_index_database": "<server.state_dir>/rag.sqlite3",
+    "RAG_search_cache": "<server.state_dir>/cache.sqlite3",
+    "Agent_OS_database": "<server.state_dir>/agent_state.sqlite3",
+    "durable_Agent_OS_database_opened_or_modified_by_this_review": false,
+    "RAG_search_code": "opens agent_state.sqlite3 and issues SELECT against agent_entity_relations for graph enrichment; inspected source only",
+    "finding": "index/cache databases separate from durable Agent OS database; search may read durable database, so full retrieval path is not cache-only"
+  },
+  "test_slot": "T04 released it to T01; T01 thread remains in progress"
+}

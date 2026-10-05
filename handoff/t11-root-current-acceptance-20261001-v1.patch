@@ -1,0 +1,48 @@
+diff --git a/tests/test_t11_project_policy_consumers.py b/tests/test_t11_project_policy_consumers.py
+--- a/tests/test_t11_project_policy_consumers.py
++++ b/tests/test_t11_project_policy_consumers.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import fnmatch
++from contextlib import closing
+ import sys
+ import types
+ from pathlib import Path
+@@ -115,3 +116,36 @@
+     store = RAGStore(config)
+ 
+     assert list(store._iter_files(root, store.project_context(root))) == []
++
++
++def test_explicit_rag_ingestion_normalizes_windows_path_before_policy_and_storage(
++    tmp_path: Path, monkeypatch
++):
++    _install_policy(monkeypatch)
++    root = tmp_path / "project"
++    (root / "private").mkdir(parents=True)
++    (root / "private" / "keep.py").write_text("keep\n", encoding="utf-8")
++    services = SimpleNamespace(
++        embed=lambda texts, _tenant, **_kwargs: {
++            "success": True,
++            "embedding_space_id": "test-space",
++            "embeddings": [[1.0, 0.0] for _ in texts],
++        }
++    )
++    store = RAGStore(_config(tmp_path), services=services)
++    workspace = store.workspace_id(str(root.resolve()))
++
++    result = store.index_paths_step(
++        str(root), "tenant", workspace, [r"private\keep.py"]
++    )
++
++    assert result["success"] is True
++    assert result["processed_paths"] == ["private/keep.py"]
++    with closing(store._connect()) as con:
++        row = con.execute(
++            "SELECT path,text FROM chunks WHERE tenant=? AND workspace=?",
++            (store._scope_key("tenant"), workspace),
++        ).fetchone()
++    assert row is not None
++    assert row[0] == "private/keep.py"
++    assert row[1].replace("\r\n", "\n") == "keep\n"

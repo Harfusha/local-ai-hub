@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "recorded_utc": "2026-10-02 11:39:00 UTC",
+  "status": "UNKNOWN; SLOT G HELD; PROCESS STOP NOT CONFIRMED",
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "head_before_dispatch": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "input_pins": {
+    "handoff/t11-performance-acceptance-record-20261002.md": "A1F12B7916F6DA946AC263C2695AB6D04607765E73390A836CCB1B5F52D1B07D",
+    "tests/test_project_config.py": "0196D8FA417DD2B56BFC0D143217D25E2986E1B1B1DF6CEFFADD3C0EEB9FBCEA",
+    "handoff/t11-acceptance-gap-update-20261002.json": "781BF52B4A7F798D2E54795EF600BC6E184EC2E93B3B8D3FE8BF85176CB86950",
+    "src/local_ai_hub/project_config.py": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+    "handoff/t11-project-config-integration-20261002.json": "F0E2C5722980B2735647D1FF606FC900717222C5DE187EBB8304D025905B9E1D"
+  },
+  "slot": {
+    "release_required": true,
+    "id": "T20-SERIAL-20261002-G",
+    "owner": "T11",
+    "assigned_by": "T20"
+  },
+  "invocation": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_project_config.py",
+    "outer_exec_cell": "44",
+    "reuse_key": "t11-slot-g-project-config-20261002",
+    "action": "run",
+    "tool": "mcp__local_ai__local_ai_command",
+    "response_profile": "compact",
+    "timeout_seconds": 120,
+    "cwd": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub"
+  },
+  "result": {
+    "retryable": null,
+    "log_path": null,
+    "summary": null,
+    "outcome": "UNKNOWN",
+    "exit_code": null,
+    "terminal": false,
+    "request_id": null,
+    "state": "The tool invocation remained in progress for more than four minutes and returned no result; the outer wait was terminated. The underlying pytest process may have run and is not confirmed stopped."
+  },
+  "actions": {
+    "slot_released": false,
+    "T20_notified": true,
+    "retry": false,
+    "native_fallback": false,
+    "reason": "Preserve serial exclusivity while underlying process status is unknown."
+  }
+}

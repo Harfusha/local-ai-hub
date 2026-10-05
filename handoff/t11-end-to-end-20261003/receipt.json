@@ -1,0 +1,104 @@
+{
+  "schema": "t11-end-to-end-validation-plan-v1",
+  "date": "2026-10-03",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "candidate_input_manifest_sha256": "5B14407F786DAA90CCDC85DD52DF97EE7373DBF0C0C8FEEABAD9939A925135A6",
+  "candidate_input_sha256": {
+    "src/local_ai_hub/embeddings.py": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170",
+    "src/local_ai_hub/rag.py": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+    "src/local_ai_hub/reranker.py": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562",
+    "tests/test_rag_read_bounds.py": "AE19C08BC2AA9CA45D0B7F26DCFF23DD8ABDB3A1D843F54A7830045A8A568AA2",
+    "tests/test_rag_fragment_cache.py": "A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002",
+    "tests/test_rag_hybrid.py": "8396D5A114D14BAEBFEAF9022E6C569D3B475DEA8D9075794195DB13DFFDC75E",
+    "tests/test_rag_quality_contract.py": "0A82654D5BBA505F69437037E8F906DEFAF5F983ACA0305445E11F0854BBD9C5",
+    "tests/test_rag_dedup.py": "2E8A76309C2024071DC6BD0362921C100EF9013E588BED8425C992DE9104C6D6",
+    "tests/test_t11_project_policy_consumers.py": "E4EA70D1036A5109B80E390B255F4106664E0238AB7067E59322760997D0C4F5",
+    "tests/test_t11_rag_ingestion_contract.py": "C4E9A80373A3964E1EF9CB7B1F07114D5DD09BF7A68BDD308D167613DBCB8EE1",
+    "tests/test_t11_rag_seed_integrity.py": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02",
+    "tests/test_reranker_cache_identity.py": "32160E2B0F963DDDF6FBC3A15838E1532EF696424AB011581C4BF3AEEAD27C0B",
+    "tests/test_embedding_cache.py": "3BADFED3EA66802AF00522CFCDC979BFC2BA6A27DFAA08C241AB0440AD1887AE",
+    "tests/test_embedding_batch_deduplication.py": "C96FE56FB6A6B6C7AED973AF2EE1FFF116EF2029AAEB0EC307C50F9AF0BA2196",
+    "tests/test_model_release_lifecycle.py": "50C061DBC8D2BFA37337FDD77F796DCB328F786F407E1AD389200991E2EE5C50"
+  },
+  "root_input_manifest_sha256": "C96AF962546176AF0AA5491F6305A5257EC184D32247B96425C0812F2144BAC2",
+  "root_input_sha256": {
+    "src/local_ai_hub/embeddings.py": "A3E04B9D1623979AECEB95643F74A7405E2C3739ECA82EB815E0299CB6F57E16",
+    "src/local_ai_hub/rag.py": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27",
+    "src/local_ai_hub/reranker.py": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562",
+    "tests/test_rag_read_bounds.py": "9D9F3EE9DAAD5306570D9A7C2674DA1A4CF3342541A1A2B43ABB1F798EC0D002",
+    "tests/test_rag_fragment_cache.py": "4C08E7EDD5845F2907DDD3D1F12D30D6A22EC5E8D887327CDCB734579223D9B6",
+    "tests/test_rag_hybrid.py": "3A6C0BF3A388DBE0C472ED056E1820BB4452E1B1139BC9E9C3D75AE05CB06D38",
+    "tests/test_rag_quality_contract.py": "9B8D07437E99C6DCA71A5F2ED6CC8C2771810253B671FCDED3D4EB113E63B91F",
+    "tests/test_rag_dedup.py": "F450C05A0DB810481B45499CEC5B0A080F2FA92A490F8F98BEA4DCA5589C2B66",
+    "tests/test_t11_project_policy_consumers.py": "D79C4748E277B5EAE20BE56921765709A7180EB54CD7874041A483B16D3FF6A4",
+    "tests/test_t11_rag_ingestion_contract.py": "4876D98A26B9EB26701A841799BA088F3DAC3021B842A2B55945F53641306914",
+    "tests/test_t11_rag_seed_integrity.py": "1EAEBD71367CB99BCA2B1263EEF195EF892CDA3A215A743E7CE64C02843FDD30",
+    "tests/test_reranker_cache_identity.py": "46230856B87B38D580E2A66DD184DDC34C0B418AE55BC7FB67C0A93076B1DFB7",
+    "tests/test_embedding_cache.py": "3670DC935458D8A513EDBDD760B18900EEACB27D6292278C38E6D695E847B736",
+    "tests/test_embedding_batch_deduplication.py": "47ADFE7BFBAAEAF01A9FB5329DF7D9910D582531E3E539EF80644EA298AF7960",
+    "tests/test_model_release_lifecycle.py": "50C061DBC8D2BFA37337FDD77F796DCB328F786F407E1AD389200991E2EE5C50"
+  },
+  "safe_integrated_patch_sha256": "ECB3FB752A3ADE63D7F77B6166DA9189350CAAC3BC2240C21BFF694EBD856955",
+  "safe_integrated_patch_paths": [
+    "src/local_ai_hub/embeddings.py",
+    "src/local_ai_hub/reranker.py",
+    "tests/test_rag_fragment_cache.py",
+    "tests/test_rag_hybrid.py",
+    "tests/test_rag_quality_contract.py"
+  ],
+  "rag_index_guard_patch": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-rag-index-merge-guard-20261003-v3\\t11-index-guard-root-current.patch",
+    "sha256": "FD69872676AC0929EBE573597374357BAA078B2B6FDB251F8338A6BFDB331E67",
+    "preimage_sha256": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27",
+    "simulated_postimage_sha256": "6BEB439ED677230D508BAE126EF142572C8497C47E233597319A5F36D4A3CD43",
+    "apply_check": "PASS",
+    "applied": false,
+    "scope": "_index_locked only; no path-step or broad rag.py rewrite"
+  },
+  "root_static_findings": {
+    "current_root_changed_texts_lifecycle": "initialized and assigned on all changed-index/dedup paths; currently no NameError",
+    "candidate_uses_changed_indices": "yes; removes dangling changed_texts lifecycle risk",
+    "index_paths_step": "embedding_space initialized before records.append; no UnboundLocalError found"
+  },
+  "historical_candidate_suite": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+    "exit_code": 0,
+    "result": "183 passed, 3 skipped",
+    "elapsed": "42.04s",
+    "post_root_integration": false,
+    "receipt_sha256": "83E99ACD054D521B4AEE68C18D630762E2B0BEB138C8BCDA4C402705D4EB9FCF"
+  },
+  "root_test_selectors_prepared_not_run": {
+    "focused_regressions": [
+      "tests/test_rag_hybrid.py::test_index_embeds_changed_chunks_without_undefined_text_list",
+      "tests/test_rag_hybrid.py::test_index_paths_step_sets_embedding_space_before_nonempty_records"
+    ],
+    "root_presence": {
+      "test_index_paths_step_sets_embedding_space_before_nonempty_records": true,
+      "test_index_embeds_changed_chunks_without_undefined_text_list": true
+    },
+    "offline_suite_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py"
+  },
+  "bounded_performance_selectors_prepared_not_run": [
+    {
+      "selector": "tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline",
+      "env": "RAG_BENCHMARK=1",
+      "kind": "synthetic CPU retrieval; 1k/16k/100k vector rows; bounded batch-size matrix"
+    },
+    {
+      "selector": "tests/test_t11_rag_seed_integrity.py::test_t11_ingestion_batch_benchmark",
+      "env": "T11_RAG_BENCHMARK=1",
+      "kind": "synthetic ingestion/seed CPU benchmark; fake embedder"
+    }
+  ],
+  "live_model_or_gpu_benchmark": {
+    "run": false,
+    "included_in_plan": false
+  },
+  "test_slot": "T01 active; no T11 slot assignment observed",
+  "tests_run_this_update": false,
+  "benchmarks_run_this_update": false,
+  "durable_agent_os_db_touched": false
+}

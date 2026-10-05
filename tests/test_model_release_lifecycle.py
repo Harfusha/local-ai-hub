@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import gc
 import sys
 import threading
 import types
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -250,6 +252,32 @@ def test_release_timeout_preserves_models_until_inference_can_finish(
     assert embedding.release()
     assert torch.empty_cache_calls == 0
     assert reranker.release()
+    assert torch.empty_cache_calls == 1
+
+
+def test_release_drops_last_strong_model_references(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    torch = _install_fake_backends(monkeypatch)
+    embedding, reranker = _load_cuda_models(_config(tmp_path / "state"))
+    embedding_model = weakref.ref(embedding._model)
+    reranker_model = weakref.ref(reranker._model)
+
+    assert embedding.release() is True
+    assert embedding._model is None
+    assert embedding.active_backend is None
+    assert embedding.active_device is None
+    gc.collect()
+    assert embedding_model() is None
+    assert torch.empty_cache_calls == 0
+
+    assert reranker.release() is True
+    assert reranker._model is None
+    assert reranker.active_backend is None
+    assert reranker.active_device is None
+    gc.collect()
+    assert reranker_model() is None
+    assert torch.synchronize_calls == 1
     assert torch.empty_cache_calls == 1
 
 

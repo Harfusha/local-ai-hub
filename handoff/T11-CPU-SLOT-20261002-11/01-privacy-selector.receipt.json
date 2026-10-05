@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-11",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_telemetry_contract.py::test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields",
+  "execution": "native exec_command; Local AI Hub omitted per user instruction",
+  "exit_code": 0,
+  "result": "1 passed in 0.22s",
+  "input_inventory_sha256": "dca36e199ed44f367a9cecc0ba81d3a33ef409c8ce31685101c65d184d52d116",
+  "test_sha256": "6138ebed767982a57fc279fe96576cc646df12f2b87e5c0c171bd8fa571029db",
+  "log_path": "handoff\\T11-CPU-SLOT-20261002-11\\01-privacy-selector.log",
+  "log_sha256": "04b5920db66f102066227aaf163735208769e10c8ff47d8d6e76b73a85efc3cb"
+}

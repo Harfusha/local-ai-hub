@@ -1,0 +1,53 @@
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -2426,21 +2426,9 @@
+                         candidate_indices = np.concatenate((above, tied))
+                     else:
+                         candidate_indices = np.arange(len(batch), dtype=np.intp)
+-                    path_keys = np.asarray(
+-                        [str(batch[int(index)][0]) for index in candidate_indices], dtype=np.str_
+-                    )
+-                    chunk_keys = np.fromiter(
+-                        (int(batch[int(index)][1]) for index in candidate_indices),
+-                        dtype=np.int64,
+-                        count=len(candidate_indices),
+-                    )
+-                    hash_keys = np.asarray(
+-                        [str(batch[int(index)][3] or "") for index in candidate_indices], dtype=np.str_
+-                    )
+-                    local_order = candidate_indices[
+-                        np.lexsort((hash_keys, chunk_keys, path_keys, -scores[candidate_indices]))
+-                    ]
+-                    for index in local_order:
++                    # offer() applies a total deterministic heap order, so only
++                    # cutoff ties need path/chunk/hash sorting above.
++                    for index in candidate_indices:
+                         offer(batch[index], float(scores[index]))
+                 else:
+                     import struct
+--- a/tests/test_rag_quality_contract.py
++++ b/tests/test_rag_quality_contract.py
+@@ -108,6 +108,23 @@
+ 
+     assert result["success"] is True
+     assert [row["chunk_no"] for row in result["results"][:3]] == [2, 3, 1]
++
++
++def test_vector_search_skips_redundant_local_sort_for_unique_scores(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.config["rag"]["search_batch_size"] = 32
++    tenant, workspace = "tenant", "unique-score-workspace"
++    vectors = np.asarray([[1.0, float(i + 1)] for i in range(96)], dtype=np.float32)
++    _insert_vectors(store, tenant, workspace, vectors)
++
++    def unexpected_lexsort(*_args, **_kwargs):
++        raise AssertionError("unique-score batch should not need local candidate ordering")
++
++    monkeypatch.setattr(np, "lexsort", unexpected_lexsort)
++    result = store._search_uncached("unique score query", tenant, workspace, top_k=4, use_reranker=False)
++
++    assert result["success"] is True
++    assert [row["chunk_no"] for row in result["results"]] == [0, 1, 2, 3]
+ 
+ 
+ def test_vector_search_keeps_deterministic_ties_at_candidate_cutoff(tmp_path):

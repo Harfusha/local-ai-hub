@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "created_utc": "2026-10-02T11:14:29.5885350Z",
+  "status": "T11_ACCEPTANCE_OPEN; PROJECT_CONFIG, CURRENT_HASH PERFORMANCE AND LIVE RERANKER REMAIN UNVERIFIED",
+  "current_pins": {
+    "handoff/t11-performance-acceptance-record-20261002.md": "A1F12B7916F6DA946AC263C2695AB6D04607765E73390A836CCB1B5F52D1B07D",
+    "handoff/T11-CPU-SLOT-20261002-11/01-privacy-selector.receipt.json": "FDBE7D119612BF4658120DEDE2F2AE2CCA2C851155BFBEA9E272E641647FC110",
+    "tests/test_project_config.py": "0196D8FA417DD2B56BFC0D143217D25E2986E1B1B1DF6CEFFADD3C0EEB9FBCEA",
+    "tests/test_rag_quality_contract.py": "0A82654D5BBA505F69437037E8F906DEFAF5F983ACA0305445E11F0854BBD9C5",
+    "src/local_ai_hub/rag.py": "F47259DAFC72C6A584F53D84E51FAC270CE0969E48EC3CDB58C1CCEB6F554992",
+    "src/local_ai_hub/project_config.py": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+    "handoff/t11-project-config-integration-20261002.json": "F0E2C5722980B2735647D1FF606FC900717222C5DE187EBB8304D025905B9E1D",
+    "handoff/t11-post-release-performance-deferral-20261002.json": "0D00021C4730DC6787BF7C3544299EDB23B982533C11442A0689E04260C801DC",
+    "handoff/T11-CPU-SLOT-20261002-11/02-offline-suite.receipt.json": "33134D8B2CFCA594C703FBA46AAC32470CFB93E24A7534B8D9B47335DFCF41D8",
+    "handoff/T11-CPU-SLOT-20261002-11/03-slot-closeout.receipt.json": "9DA5806FA7763D8788FE06BC5E4A1AA20E55D59ED7C35D8D9E1572BE6609E1AB"
+  },
+  "t21_checkout": {
+    "test_sha256": "0196D8FA417DD2B56BFC0D143217D25E2986E1B1B1DF6CEFFADD3C0EEB9FBCEA",
+    "working_tree_status": "both owner files modified in T21 checkout; hashes match f678; no T21 edit performed",
+    "source_sha256": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\t21-project-config\\.local-ai-hub"
+  },
+  "acceptance": {
+    "project_config": "66 cases; not run in f678; post-release slot required",
+    "privacy": "1 passed in 0.22s",
+    "offline": "179 passed, 3 skipped in 48.76s; exact slot11 command/log are hash-bound in referenced receipt",
+    "live_reranker": "not run; deferred post-release",
+    "performance": "100k current-hash matrix not run; deferred post-release"
+  },
+  "coordination": {
+    "T02": {
+      "cursor": "86aa87a4-4e8c-4151-881e-6982b24a0c47:2",
+      "status": "idle",
+      "thread_id": "01a0d30b-ffee-7fa2-bc6e-f503a4bc18b7",
+      "latest": "T02 could not verify dirty baseline in its requested 4b5d path (not a Git repo); no tests or benchmark; no T11 slot grant."
+    },
+    "T20": {
+      "cursor": "710b3a03-ce83-463a-a884-0879cc0f88b9:1",
+      "status": "idle",
+      "thread_id": "01a0d322-b3bd-7930-b552-14e9b7020fec",
+      "latest": "10 focused tests pass; direct MemoryStore.find selector fails; broader test_agent_context.py has 2 setup errors and 1 failure; T06 patch/receipt pending; release acceptance incomplete."
+    }
+  },
+  "required_commands": {
+    "project_config": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_project_config.py",
+    "performance": "Run only after T02/T20 explicit slot release and functional release."
+  },
+  "action": "Corrected acceptance ledger to include the unrun transferred T21 contract suite. No T11 tests, benchmarks or source edits.",
+  "previous_receipt": "handoff/t11-post-release-performance-deferral-20261002.json",
+  "previous_receipt_sha256": "0D00021C4730DC6787BF7C3544299EDB23B982533C11442A0689E04260C801DC"
+}

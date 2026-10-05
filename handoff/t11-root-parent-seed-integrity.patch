@@ -1,0 +1,147 @@
+diff --git a/src/local_ai_hub/preprocess.py b/src/local_ai_hub/preprocess.py
+--- a/src/local_ai_hub/preprocess.py
++++ b/src/local_ai_hub/preprocess.py
+@@ -843,40 +843,116 @@
+ 
+         # 1. Seed file_refs & source_index from preprocess.sqlite3
+         try:
+-            with self._db_lock, closing(self._connect()) as con:
++            with closing(self._connect()) as con:
+                 p_rows = con.execute(
+-                    "SELECT path, size, mtime_ns, content_hash, card_key, rag_hash FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>''",
++                    "SELECT path, size, content_hash FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>''",
+                     (parent_resolved,),
+                 ).fetchall()
+-                candidates_to_insert = []
+-                for r in p_rows:
+-                    rel = str(r["path"])
+-                    p_file = (base / rel).resolve(strict=False)
+-                    if p_file.is_file():
++            try:
++                clean_git_hashes = self.repo_tools.git_blob_map(resolved)
++            except Exception:
++                clean_git_hashes = {}
++
++            candidates: list[tuple[str, str, int, int, tuple[int, ...]]] = []
++            stale_candidates: list[tuple[str, str]] = []
++            for row in p_rows:
++                rel = str(row["path"]).replace("\\", "/")
++                parent_hash = str(row["content_hash"] or "")
++                child_file = (base / rel).resolve(strict=False)
++                if not child_file.is_file():
++                    continue
++                try:
++                    before = child_file.stat()
++                    child_size = int(before.st_size)
++                    if child_size != int(row["size"]):
++                        stale_candidates.append((rel, parent_hash))
++                        continue
++                    if parent_hash.startswith("git:"):
++                        child_hash = str(clean_git_hashes.get(rel) or "")
++                    else:
++                        child_hash = str(self.repo_tools._hash_file_only(child_file) or "")
++                    after = child_file.stat()
++                    identity_before = (
++                        int(before.st_size), int(before.st_mtime_ns),
++                        int(getattr(before, "st_ctime_ns", 0)), int(getattr(before, "st_ino", 0)),
++                        int(getattr(before, "st_dev", 0)),
++                    )
++                    identity_after = (
++                        int(after.st_size), int(after.st_mtime_ns),
++                        int(getattr(after, "st_ctime_ns", 0)), int(getattr(after, "st_ino", 0)),
++                        int(getattr(after, "st_dev", 0)),
++                    )
++                    if not child_hash or child_hash != parent_hash or identity_before != identity_after:
++                        stale_candidates.append((rel, parent_hash))
++                        continue
++                    candidates.append((rel, parent_hash, child_size, int(after.st_mtime_ns), identity_after))
++                except OSError:
++                    stale_candidates.append((rel, parent_hash))
++
++            if candidates or stale_candidates:
++                with self._db_lock, closing(self._connect()) as con:
++                    con.execute("BEGIN IMMEDIATE")
++                    for rel, parent_hash in stale_candidates:
++                        con.execute(
++                            """UPDATE file_refs
++                               SET content_hash='',needs_hash=1,rag_hash=NULL,card_key=NULL,updated_at=?
++                               WHERE root=? AND path=? AND content_hash=? AND needs_hash=0
++                                 AND EXISTS (
++                                     SELECT 1 FROM file_refs p
++                                     WHERE p.root=? AND p.path=? AND p.content_hash=? AND p.needs_hash=0
++                                 )""",
++                            (now, resolved, rel, parent_hash, parent_resolved, rel, parent_hash),
++                        )
++                        con.execute(
++                            """DELETE FROM source_index
++                               WHERE root=? AND path=? AND content_hash=?
++                                 AND EXISTS (
++                                     SELECT 1 FROM file_refs p
++                                     WHERE p.root=? AND p.path=? AND p.content_hash=? AND p.needs_hash=0
++                                 )""",
++                            (resolved, rel, parent_hash, parent_resolved, rel, parent_hash),
++                        )
++                    for rel, parent_hash, size, mtime_ns, identity in candidates:
++                        child_file = (base / rel).resolve(strict=False)
+                         try:
+-                            st = p_file.stat()
+-                            if int(st.st_size) == int(r["size"]):
+-                                candidates_to_insert.append((
+-                                    resolved, rel, str(r["content_hash"]), int(st.st_size), int(st.st_mtime_ns),
+-                                    0, str(r["rag_hash"] or ""), now, 1, str(r["card_key"] or ""), now,
+-                                ))
++                            st = child_file.stat()
+                         except OSError:
+                             continue
+-                if candidates_to_insert:
+-                    con.executemany(
+-                        """INSERT OR REPLACE INTO file_refs(
+-                            root, path, content_hash, size, mtime_ns, needs_hash,
+-                            rag_hash, last_accessed_at, generation, card_key, updated_at
+-                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+-                        candidates_to_insert,
+-                    )
+-                    con.execute(
+-                        """INSERT OR IGNORE INTO source_index(root, path, content_hash, text, updated_at)
+-                           SELECT ?, path, content_hash, text, ? FROM source_index WHERE root=?""",
+-                        (resolved, now, parent_resolved),
+-                    )
++                        current_identity = (
++                            int(st.st_size), int(st.st_mtime_ns),
++                            int(getattr(st, "st_ctime_ns", 0)), int(getattr(st, "st_ino", 0)),
++                            int(getattr(st, "st_dev", 0)),
++                        )
++                        if current_identity != identity:
++                            continue
++                        parent = con.execute(
++                            """SELECT card_key FROM file_refs
++                               WHERE root=? AND path=? AND content_hash=? AND size=? AND needs_hash=0""",
++                            (parent_resolved, rel, parent_hash, size),
++                        ).fetchone()
++                        if parent is None:
++                            continue
++                        inserted = con.execute(
++                            """INSERT OR IGNORE INTO file_refs(
++                                root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,
++                                last_accessed_at,generation,card_key,updated_at
++                            ) VALUES(?,?,?,?,?,0,NULL,?,1,?,?)""",
++                            (resolved, rel, parent_hash, size, mtime_ns, now, parent["card_key"], now),
++                        )
++                        if inserted.rowcount > 0:
++                            stats["file_refs"] += 1
++                        child = con.execute(
++                            "SELECT content_hash,needs_hash FROM file_refs WHERE root=? AND path=?",
++                            (resolved, rel),
++                        ).fetchone()
++                        if child is not None and str(child["content_hash"] or "") == parent_hash and int(child["needs_hash"] or 0) == 0:
++                            con.execute(
++                                """INSERT OR IGNORE INTO source_index(root,path,content_hash,text,updated_at)
++                                   SELECT ?,path,content_hash,text,? FROM source_index
++                                   WHERE root=? AND path=? AND content_hash=?""",
++                                (resolved, now, parent_resolved, rel, parent_hash),
++                            )
+                     con.commit()
+-                    stats["file_refs"] = len(candidates_to_insert)
+         except Exception:
+             pass
+ 

@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-02",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "reported_failure": {
+    "request_id": "req_37b89f459e7a",
+    "operation": "single Local AI Hub preprocess request",
+    "http_status": 500,
+    "error": "database is locked",
+    "retryable": true,
+    "terminal": false,
+    "reported_progress": "root Vector RAG preprocessing, 405/702 files"
+  },
+  "bounded_health": {
+    "action": "local_ai_status(action=health)",
+    "result": "success=true; version=4.0.0; queued=0; inflight=0",
+    "limitation": "Health snapshot does not identify the SQLite connection or prove the failing transaction."
+  },
+  "context_attempt": {
+    "action": "local_ai_repo(action=context, mode=adaptive)",
+    "result": "HTTP 400; terminal=true; retryable=false; invalid phase value",
+    "handling": "No retry. One bounded native source fallback followed."
+  },
+  "coordination_memory_search": {
+    "action": "local_ai_coord(action=memory_find)",
+    "result": "Transport closed",
+    "handling": "No retry. Continued with source evidence already gathered."
+  },
+  "cause_evidence": {
+    "file": "src/local_ai_hub/rag.py",
+    "unprotected_transaction": "_sync_workspace_project_policy_identity starts BEGIN IMMEDIATE, deletes rejected indexed rows, updates rag_meta/generation and commits without retry_busy.",
+    "call_path": "RAG index, index_paths_step, and index_step call this identity sync before indexing work; preprocessing invokes the RAG path incrementally.",
+    "existing_pattern": "The same module already wraps other idempotent SQLite write transactions in sqlite_support.retry_busy with fresh connections and bounded retries.",
+    "causal_limit": "No server stack trace was supplied, so the exact request-to-function attribution remains unconfirmed. This is the unprotected writer boundary matching the reported RAG preprocessing lock failure."
+  },
+  "change": {
+    "source": "src/local_ai_hub/rag.py",
+    "sha256": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+    "test": "tests/test_rag_hybrid.py",
+    "test_sha256": "DEC8B30CE2A5DE797B2B552E1F6B00A62A99B7FFADEE89DFCE6314322EF90314",
+    "behavior": "Retry the entire idempotent identity write transaction up to five times on SQLite busy/locked errors. Each attempt opens a fresh connection; all deletes, uncertainty cleanup, digest update and generation bump stay in one transaction.",
+    "regression_selector": "tests/test_rag_hybrid.py::test_project_policy_identity_retries_transient_publish_lock",
+    "test_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_hybrid.py::test_project_policy_identity_retries_transient_publish_lock",
+    "test_status": "Historical pass at source SHA 8BF2567DAF4F3D71DF9B4B135A82E54D78CA203CC25A9E069304D314B49959C8 and test SHA 90AD659493B0A98F07AB1311EC52A44F01C2FD2A2B0104E1A0CFB521D0ACA0CF; not current-source proof after the follow-up lock hardening"
+  },
+  "uncertain_only_publish_lock_hardening": {
+    "source": "src/local_ai_hub/rag.py",
+    "source_sha256": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+    "test": "tests/test_rag_hybrid.py",
+    "test_sha256": "DEC8B30CE2A5DE797B2B552E1F6B00A62A99B7FFADEE89DFCE6314322EF90314",
+    "issue": "index_paths_step uncertain-only branch repeated a read-uncertainty publish using a direct BEGIN IMMEDIATE after the existing retry-wrapped publish",
+    "change": "Reuse _publish_workspace_read_uncertainty for the follow-up write, preserving cross-process reassertion while using bounded busy retry",
+    "selector": "tests/test_rag_hybrid.py::test_index_paths_step_retries_uncertain_only_publish_lock",
+    "test_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_hybrid.py::test_index_paths_step_retries_uncertain_only_publish_lock",
+    "test_status": "NOT RUN; included in requested 12-file offline refresh; awaiting explicit T20 serial GO",
+    "tests_run_for_this_change": false
+  },
+  "T20_GO_preflight": {
+    "GO": "Received for one selector only",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "source_sha256_matches_pin": true,
+    "test_sha256_matches_pin": true,
+    "matching_runner_count": 0,
+    "diff_check_command": "git diff --check -- src/local_ai_hub/rag.py tests/test_rag_hybrid.py",
+    "diff_check_result": "Transport closed; no structured receipt",
+    "test_command_sent": false,
+    "post_failure_matching_runner_count": 0,
+    "handling": "No retry, native fallback, or test after Transport closed. Await T20 ledger decision."
+  },
+  "T20_coordination": {
+    "thread_id": "01a0d322-b3bd-7930-b552-14e9b7020fec",
+    "request_status": "Exact selector and file pins sent; second GO received; test broker call returned Transport closed; slot release requested as UNKNOWN",
+    "last_observed_queue": "I=T07; J=T05; K=T14"
+  },
+  "latest_T20_GO_attempt": {
+    "reuse_key": "t11-rag-identity-lock-test-go2-20261002",
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_hybrid.py::test_project_policy_identity_retries_transient_publish_lock",
+    "broker_result": "Transport closed; no request ID, exit code, test log, terminal, or retryable field",
+    "outcome": "UNKNOWN",
+    "retry_or_native_fallback": false,
+    "post_attempt_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "post_attempt_source_sha256": "8BF2567DAF4F3D71DF9B4B135A82E54D78CA203CC25A9E069304D314B49959C8",
+    "post_attempt_test_sha256": "E5E9FA85A6E5DA5365FB8E91B86E0478BD54827FE225000578CD2B6CDB49CFCF",
+    "post_attempt_matching_runner_count": 0,
+    "T20_release_requested": true
+  },
+  "native_bounded_test": {
+    "authorization": "Parent explicitly approved a native bounded offline test and instructed not to use Local AI Hub",
+    "selector": "tests/test_rag_hybrid.py::test_project_policy_identity_retries_transient_publish_lock",
+    "first_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_hybrid.py::test_project_policy_identity_retries_transient_publish_lock",
+    "first_result": "FAIL; 1 failed in 0.46s; regression assertion indexed tuple row by string; source implementation not implicated",
+    "repair": "Changed assertion from row['value'] to row[0] for sqlite3 default tuple row factory",
+    "second_preflight": {
+      "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+      "source_sha256": "8BF2567DAF4F3D71DF9B4B135A82E54D78CA203CC25A9E069304D314B49959C8",
+      "test_sha256": "90AD659493B0A98F07AB1311EC52A44F01C2FD2A2B0104E1A0CFB521D0ACA0CF",
+      "matching_runner_count": 0
+    },
+    "second_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_hybrid.py::test_project_policy_identity_retries_transient_publish_lock",
+    "second_result": "PASS; 1 passed in 0.62s; exit 0",
+    "post_run": {
+      "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+      "source_sha256": "8BF2567DAF4F3D71DF9B4B135A82E54D78CA203CC25A9E069304D314B49959C8",
+      "test_sha256": "90AD659493B0A98F07AB1311EC52A44F01C2FD2A2B0104E1A0CFB521D0ACA0CF",
+      "matching_runner_count": 0
+    }
+  },
+  "scope": {
+    "changed_paths": [
+      "src/local_ai_hub/rag.py",
+      "tests/test_rag_hybrid.py",
+      "handoff/t11-rag-sqlite-lock-fix-20261002.json"
+    ],
+    "not_touched": [
+      "root checkout",
+      "service startup",
+      "MCP output schema",
+      "/api/context/pack",
+      "state database contents"
+    ],
+    "database_access_or_reset": false,
+    "tests_run": false
+  }
+}

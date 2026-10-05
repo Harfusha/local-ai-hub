@@ -1,0 +1,96 @@
+{
+  "date": "2026-10-01",
+  "task": "T11 offline root-current relevance, quality, ingestion acceptance",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "candidate": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "overlay": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t11-root-current-offline-acceptance-6176a4fd1b254fa2b7be7bb0a47d12af",
+  "root_preimages": {
+    "src/local_ai_hub/rag.py": "4c0ed5c52ec4cd9d82b41f0d6d2188812d607d1ce58c4ffea956d045fbb9048a",
+    "src/local_ai_hub/embeddings.py": "21a6282871005d1045b2e76a2cc65599deedb877477e007c1aa8fb31bfaccd08",
+    "src/local_ai_hub/reranker.py": "12773e04a90db8f8a367e618d725a3ea995faf4b624244907b8a13f30ced2ec7",
+    "src/local_ai_hub/project_config.py": "4238b6a6de1de00f55f4679ce0df7d431522ec1bafabfa272258c1662f13f713",
+    "tests/test_t11_rag_ingestion_contract.py": "4876d98a26b9eb26701a841799ba088f3dac3021b842a2b55945f53641306914",
+    "tests/test_rag_quality_contract.py": "4ba233cb1e69c8c42a782021f4d545a6cd1fd4c748104439fa479b473a10c51f",
+    "tests/test_rag_hybrid.py": "5e8508f96b808a7369fa9e97617be359f7f23ea7a6213364eec71b99f5149160",
+    "tests/test_rag_read_bounds.py": "9d9f3ee9daad5306570d9a7c2674da1a4cf3342541a1a2b43abb1f798ec0d002",
+    "tests/test_t11_project_policy_consumers.py": "d79c4748e277b5eae20be56921765709a7180eb54cd7874041a483b16d3ff6a4"
+  },
+  "candidate_pins": {
+    "src/local_ai_hub/rag.py": "db181093f53f0d6666a890413bfea5f52359890ce8236def0160df744cf0c6ff",
+    "src/local_ai_hub/embeddings.py": "2360fb9e4e9dda72dc633a5e4f33ecbab2ec3e8a26dc728f61114acc2496d170",
+    "src/local_ai_hub/reranker.py": "ee8b660c9fa261ea34fb63587f8eaaf6119b83b544a4053d22669ef8d9c5c562",
+    "src/local_ai_hub/project_config.py": "f51cd2bd05ac993139c388ca553ff816c4b39d572182afd433e3fa7430a766d5",
+    "tests/test_t11_rag_ingestion_contract.py": "4876d98a26b9eb26701a841799ba088f3dac3021b842a2b55945f53641306914",
+    "tests/test_rag_quality_contract.py": "81c17571143a4256cf9d9a9017137b82cfd564cd4f45b21e48e5f3fbecba7a3c",
+    "tests/test_rag_hybrid.py": "4d150a95022f5c80571e3c98782c084ebf76d068aa2dea98c7021d6fa13ce5a2",
+    "tests/test_rag_read_bounds.py": "ae19c08bc2aa9ca45d0b7f26dcff23dd8abdb3a1d843f54a7830045a8a568aa2",
+    "tests/test_t11_project_policy_consumers.py": "e4ea70d1036a5109b80e390b255f4106664e0238ab7067e59322760997d0c4f5"
+  },
+  "root_source_overlay": {
+    "source": "current root src/local_ai_hub package and current root project_config",
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py tests/test_rag_quality_contract.py tests/test_rag_hybrid.py tests/test_rag_read_bounds.py tests/test_t11_project_policy_consumers.py",
+    "result": "69 passed, 4 failed, 2 skipped in 36.00s",
+    "exit_code": 1,
+    "failures": [
+      "test_vector_search_streams_rows_and_keeps_golden_relevance: expected chunk_no [2,3,1], got []",
+      "test_numpy_vector_parse_skips_integer_overflow: results empty",
+      "test_equal_scores_use_semantic_path_order_not_row_order: results empty",
+      "test_vector_cursor_closes_before_scoring_batch: closed_before_dot false"
+    ],
+    "skips": [
+      "live Ollama/reranker",
+      "bounded retrieval benchmark opt-in"
+    ]
+  },
+  "candidate_source_overlay_root_tests": {
+    "source": "candidate rag.py + embeddings.py + project_policy_adapter.py; tests and project_config copied from current root; no /api/context/pack",
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py tests/test_rag_quality_contract.py tests/test_rag_hybrid.py tests/test_rag_read_bounds.py tests/test_t11_project_policy_consumers.py",
+    "result": "66 passed, 7 failed, 2 skipped in 30.49s",
+    "exit_code": 1,
+    "failures": [
+      "test_vector_search_streams_rows_and_keeps_golden_relevance: AttributeError test connection lacks commit",
+      "test_fallback_embedding_reports_identity_of_backend_that_produced_vectors: EmbeddingModel test fixture lacks _execution_local",
+      "test_numpy_vector_parse_skips_integer_overflow: results empty",
+      "test_equal_scores_use_semantic_path_order_not_row_order: results empty",
+      "test_vector_cursor_closes_before_scoring_batch: wrapper lacks commit",
+      "test_rag_index_retries_transient_publish_lock: operation success false",
+      "test_incremental_preemption_publishes_uncertainty_from_prior_read: unreadable path remains visible"
+    ]
+  },
+  "candidate_offline_receipt": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py tests/test_rag_quality_contract.py tests/test_rag_hybrid.py",
+    "result": "71 passed, 2 skipped in 24.36s",
+    "exit_code": 0,
+    "skips": [
+      "live Ollama/reranker",
+      "100k benchmark"
+    ]
+  },
+  "patch_preimage_checks": {
+    "t11-root-current-bounded-ingestion-production.patch": {
+      "sha256": "19688b4dcadbdd9919489d2997dee84405a98a6a895773da6e05ade0b89d4f26",
+      "root_apply_check": "failed; no hunk applied"
+    },
+    "t11-root-current-embedding-space-v1-production.patch": {
+      "sha256": "5631cc11281f207eb70b244aef7468ef5867257fe8736e0f1c9fe9623c41b636",
+      "root_apply_check": "failed; no hunk applied"
+    },
+    "t11-root-current-rag-isolation-v3-production.patch": {
+      "sha256": "afac10c2903ff46613bdcd9e7cc6fb831315e4fa145aa48b7356cf226e2eaa42",
+      "root_apply_check": "failed; no hunk applied"
+    },
+    "t11-root-current-read-uncertainty-v1-production.patch": {
+      "sha256": "c5f02d68e371c38b853ddc1a4f329e82edf916ed6e3ba916b6ff68f193615b0f",
+      "root_apply_check": "failed; no hunk applied"
+    }
+  },
+  "disposition": {
+    "live_reported_rerank_failure": "not run and remains unreproduced offline",
+    "root_written": false,
+    "api_context_pack_touched": false,
+    "new_source_patch_created": false,
+    "reason": "Current root and candidate source/test preimages diverge. Candidate source over root tests remains red; existing pinned root patches fail strict apply-check. No safe current-root patch satisfies the acceptance evidence."
+  }
+}

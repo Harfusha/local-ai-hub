@@ -1,0 +1,76 @@
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -1031,7 +1031,10 @@
+             with self._get_workspace_lock(resolved_workspace):
+                 result = self._index_locked(resolved_root, tenant, resolved_workspace)
+         except Exception as exc:
+-            result = {"success": False, "error": str(exc), "retryable": True}
++            result = {
++                "success": False, "error": str(exc),
++                "retryable": bool(getattr(exc, "retryable", is_busy_error(exc))),
++            }
+         finally:
+             flight["result"] = result
+             flight["event"].set()
+@@ -1915,6 +1918,7 @@
+                     except Exception:
+                         norm_dirty.add(str(dp).replace("\\", "/"))
+                 changed_all = sorted(set(changed_all) | (norm_dirty & set(current_meta)))
++                changed_all.sort(key=lambda rel: (rel not in norm_dirty, rel))
+             else:
+                 changed_all.sort()
+ 
+diff --git a/tests/test_t11_rag_ingestion_contract.py b/tests/test_t11_rag_ingestion_contract.py
+--- a/tests/test_t11_rag_ingestion_contract.py
++++ b/tests/test_t11_rag_ingestion_contract.py
+@@ -812,18 +812,24 @@
+         metadata={"owner": "team"},
+     )
+ 
+-    assert requests[0][1] == {
+-        "workspace": "specs",
+-        "content": "Explicit content",
+-        "title": "Explicit title",
+-        "metadata": {"owner": "team"},
+-    }
+-    assert requests[1][1] == {
+-        "workspace": "diagrams",
+-        "image_path": str(tmp_path / "diagram.png"),
+-        "caption": "Explicit caption",
+-        "metadata": {"owner": "team"},
+-    }
++    rag_requests = [
++        payload for path, payload in requests
++        if path in {"/api/rag/ingest_document", "/api/rag/ingest_diagram"}
++    ]
++    assert rag_requests == [
++        {
++            "workspace": "specs",
++            "content": "Explicit content",
++            "title": "Explicit title",
++            "metadata": {"owner": "team"},
++        },
++        {
++            "workspace": "diagrams",
++            "image_path": str(tmp_path / "diagram.png"),
++            "caption": "Explicit caption",
++            "metadata": {"owner": "team"},
++        },
++    ]
+ 
+ 
+ @pytest.mark.skipif(os.environ.get("T11_REAL_OLLAMA") != "1", reason="set T11_REAL_OLLAMA=1 for isolated live Ollama verification")
+@@ -1196,7 +1202,11 @@
+         query="unrelated path",
+     )
+ 
+-    assert calls == [
++    rag_calls = [
++        (path, payload) for path, payload in calls
++        if path in {"/api/rag/ingest_document", "/api/rag/ingest_diagram"}
++    ]
++    assert rag_calls == [
+         (
+             "/api/rag/ingest_document",
+             {

@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "status": "READ-ONLY REVIEW / REVIEW OPEN",
+  "date": "2026-10-02",
+  "workspace": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "review_scope": [
+    "RAG ingestion",
+    "privacy/telemetry boundary",
+    "embedding-space filtering",
+    "T21 project_config consumer"
+  ],
+  "reviewed_file_sha256": {
+    "src/local_ai_hub/rag.py": "f47259dafc72c6a584f53d84e51fac270ce0969e48ec3cdb58c1cceb6f554992",
+    "src/local_ai_hub/project_config.py": "f51cd2bd05ac993139c388ca553ff816c4b39d572182afd433e3fa7430a766d5",
+    "src/local_ai_hub/project_policy_adapter.py": "11d4a5c6519989f6f65632edc880c521c407ddbc335c181480116c6827afb98a",
+    "tests/test_t11_project_policy_consumers.py": "e4ea70d1036a5109b80e390b255f4106664e0238ab7067e59322760997d0c4f5",
+    "tests/test_t11_rag_ingestion_contract.py": "4876d98a26b9eb26701a841799ba088f3dac3021b842a2b55945f53641306914",
+    "tests/test_t11_rag_seed_integrity.py": "943aed3fc4cc11fcec48a99500d1967e869b0276f6af600736254ca375ab0e02",
+    "tests/test_telemetry_contract.py": "6138ebed767982a57fc279fe96576cc646df12f2b87e5c0c171bd8fa571029db",
+    "tests/test_rag_quality_contract.py": "0a82654d5bba505f69437037e8f906defaf5f983aca0305445e11f0854bbd9c5",
+    "tests/test_rag_hybrid.py": "03d527fc1a5d15913a03555c245ae4a20196675d5c4c3eacfc774bf88c4a23e1"
+  },
+  "findings": [
+    {
+      "id": "T21_PROJECT_CONFIG_CONSUMER",
+      "status": "ALIGNED BY STATIC CONTRACT REVIEW",
+      "evidence": [
+        "project_policy_adapter.py:9-33 lazy-imports local_ai_hub.project_config and delegates resolve_project_context/phase_is_allowed",
+        "project_policy_adapter.py:36-93 delegates extension/path/may-descend policy",
+        "project_config.py:865+ exports matching resolver; phase_is_allowed at 1011; path_is_allowed at 1024",
+        "test_t11_project_policy_consumers.py covers policy path/type/size, hard-deny over force-include, RAG skip/prune, committed worktree config, same-HEAD local config reindex and cached-search invalidation"
+      ],
+      "ownership": "project_config.py is inherited/T21-owned in f678; untouched in this review"
+    },
+    {
+      "id": "INGESTION_AND_FILTERING",
+      "status": "STATIC CONTRACTS PRESENT; LATEST RELEVANT RECEIPTS ARE PRIOR RUNS",
+      "evidence": [
+        "rag.py checks raw and metadata-expanded UTF-8 byte limits before chunking",
+        "rag.py embeds bounded batches and publishes document replacement in one BEGIN IMMEDIATE transaction",
+        "SVG reads are bounded to max_file_bytes+1; raster diagrams are metadata-only without OCR/vision",
+        "embedding search filters exact tenant/workspace/embedding_space and marks stale spaces for rebuild",
+        "tests/test_t11_rag_ingestion_contract.py covers atomic replacement, disk-full/FTS failure, batches, embedding provenance, SVG limits and path identity",
+        "tests/test_t11_project_policy_consumers.py covers hard-denied paths and T21 config consumer behavior"
+      ]
+    },
+    {
+      "id": "PRIVACY_BOUNDARY",
+      "status": "TELEMETRY SOURCE PATHS REDACTED; EXPLICIT DIAGRAM PATH RETENTION",
+      "evidence": [
+        "ProjectConfig PathHintUsage.telemetry_metadata returns booleans/null only (project_config.py:286-292)",
+        "tests/test_telemetry_contract.py::test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields exists; no receipt for this selector in recorded T11 suites",
+        "ingest_diagram includes image_path in explicit metadata-only content/metadata and returns image_path (rag.py:2923-2935); this is RAG document payload/response, not observability telemetry"
+      ],
+      "boundary": "If privacy acceptance forbids absolute paths in stored RAG documents as well as telemetry, that acceptance remains open; current observed rule only names telemetry."
+    }
+  ],
+  "receipts": {
+    "latest_candidate": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py tests/test_rag_hybrid.py",
+    "latest_candidate_result": "36 passed, 1 skipped in 4.25s; skipped 100k retrieval benchmark",
+    "latest_candidate_scope": "after score-buffer optimization; does not include project policy, ingestion, seed-integrity, or telemetry contract files",
+    "prior_offline_suite": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+    "prior_offline_result": "177 passed, 3 skipped in 52.47s; before latest score-buffer delta; skips were 100k benchmark, live Ollama, ingestion benchmark",
+    "this_review": "No tests or benchmarks run; source/test review only"
+  },
+  "new_targeted_test_request": {
+    "selector": "tests/test_telemetry_contract.py::test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields",
+    "reason": "Not included in either recorded T11 candidate suite; one focused privacy contract selector only",
+    "status": "QUEUED NEXT after T02 releases; before T15. Wait for explicit slot release."
+  },
+  "benchmark": {
+    "status": "NOT RUN",
+    "blocker": "No T20/T02 exclusive slot release observed; previous p95 REDs 972.658 ms and 1698.727 ms vs 750 ms",
+    "speedup_claim": false
+  },
+  "mutation_scope": {
+    "source_edits": false,
+    "tests_run": false,
+    "root_modified": false,
+    "project_config_modified": false
+  },
+  "score_buffer_review": {
+    "manifest": "handoff/t11-score-buffer-opt-20261002.json",
+    "result": "Static element-wise equivalence reviewed; no performance claim or new validation run."
+  },
+  "validation_queue": {
+    "exclusive_slot_holder": "T02 after T03 releases",
+    "order_after_T02_release": [
+      "T11 telemetry privacy selector",
+      "T15",
+      "remaining T04/T12 focused root checks"
+    ],
+    "T11_selector": "tests/test_telemetry_contract.py::test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields",
+    "run_condition": "Do not start until explicit T02 release/T20 slot assignment; no benchmark requested."
+  }
+}

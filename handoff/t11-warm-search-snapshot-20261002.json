@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "status": "CANDIDATE PATCH / REVIEW",
+  "patch": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-warm-search-snapshot-20261002.patch",
+  "patch_sha256": "bfaaf0a9b66d7b3e6c742a049e19553583a2cfc6dd43a6d6a7dcc9f817b5af11",
+  "files": [
+    {
+      "path": "src/local_ai_hub/rag.py",
+      "owner": "T11",
+      "pre_sha256": "231ca7c6ba2af653eae20af1bc64bea949a028abbcee68cbff32838a42608c19",
+      "post_sha256": "5116f5d6d99f652ac82a01d3fe3d0a7630ac02c58faab32118b679c48a15d9a8"
+    },
+    {
+      "path": "tests/test_rag_hybrid.py",
+      "owner": "T11",
+      "pre_sha256": "939a60a6f58929b811192e2b4d8807bdc8bbce14e30b2a3fb9228ae19cd53cce",
+      "post_sha256": "03d527fc1a5d15913a03555c245ae4a20196675d5c4c3eacfc774bf88c4a23e1"
+    }
+  ],
+  "candidate_preimage_apply_check": "PASS",
+  "implementation": "Read workspace embedding-space metadata on the existing vector scan snapshot. Take BEGIN IMMEDIATE only on mismatch or failed read, then recheck under lock before writing. Exact embedding_space filters unchanged.",
+  "candidate_test_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_hybrid.py::test_warm_search_reads_embedding_space_from_vector_snapshot tests/test_rag_hybrid.py::test_warm_search_skips_embedding_space_write_lock tests/test_rag_hybrid.py::test_search_reports_pending_rebuild_for_partial_embedding_space tests/test_rag_hybrid.py::test_search_cache_key_tracks_runtime_embedding_space",
+  "test_result": "4 passed in 0.79s",
+  "red": "Before source change, the new snapshot contract observed in_transaction=False and failed expected [True].",
+  "benchmark": "NOT RUN for this delta. Existing 100k failures: 972.658 ms at batch 4096 and 1698.727 ms at batch 512 vs 750 ms. Do not claim performance improvement; next paired benchmark needs T20 slot.",
+  "root_note": "Candidate-only patch for review. Current T20 root search already omits the metadata write/read path, so do not blindly apply this source hunk to root. No root files modified.",
+  "postimage_lf_normalized_match_candidate": {
+    "src/local_ai_hub/rag.py": true,
+    "tests/test_rag_hybrid.py": true
+  },
+  "line_endings_note": "Raw byte hashes differ after git apply because CRLF/LF line endings normalize differently; LF-normalized applied patch matches candidate postimages exactly.",
+  "offline_acceptance_suite": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+    "result": "177 passed, 3 skipped in 52.47s",
+    "skips": [
+      "100k retrieval benchmark (RAG_BENCHMARK=1)",
+      "live Ollama verification (T11_REAL_OLLAMA=1)",
+      "ingestion benchmark (T11_RAG_BENCHMARK=1)"
+    ]
+  }
+}

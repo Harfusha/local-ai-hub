@@ -1,0 +1,61 @@
+{
+  "schema": "t11-paired-rag-benchmark-plan-v1",
+  "date": "2026-10-04",
+  "execution_status": "PENDING_EXPLICIT_T20_CPU_SLOT_GO",
+  "baseline": {
+    "root": "C:\\Users\\Adam\\.local-ai-hub",
+    "head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+    "rag_sha256": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27",
+    "embeddings_sha256": "A3E04B9D1623979AECEB95643F74A7405E2C3739ECA82EB815E0299CB6F57E16"
+  },
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "rag_sha256": "6DF666C2DC877D69FF8DF8F6A089C15533247FF95BA896F644720F0FA3AA85D5",
+    "embeddings_sha256": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170"
+  },
+  "harness": {
+    "source": "tests/test_rag_quality_contract.py",
+    "sha256": "EF90FC86269D89FFDB6E5CC508BF54917D4A6ED2243447E85DE372B94D5CF3E9",
+    "selector": "test_retrieval_latency_and_peak_memory_baseline",
+    "dataset": "seed=41; dimension=384; float32; corpus_counts=1024,16384,100000; search_batch_sizes=512,2048,4096,8192",
+    "protocol": "2 warmups per corpus/batch; 5 timed samples at 1024 and 16384; 20 timed samples at 100000; tracemalloc measured in separate search; same test copy, fixture and serial host run for both revisions"
+  },
+  "capture_only": "Baseline exceeds the official 750ms p95 gate and aborts before writing its structured receipt. For paired metric capture only, prepare one temporary identical harness copy for both source roots with only p95, peak-memory and peak-scaling assertions relaxed. Do not use relaxed copy as acceptance; official candidate strict acceptance remains the gate.",
+  "official_acceptance": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider -k 'not retrieval_latency_and_peak_memory_baseline and not t11_ingestion_batch_benchmark' tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py",
+    "result": "161 passed, 1 skipped, 2 deselected in 49.75s",
+    "receipt": "acceptance-receipt-20261004.json",
+    "receipt_sha256": "BCB16C13260CBB9784E8035564440964BBBB6AC60EC8B1D7D21A9DEC5794090F"
+  },
+  "open_selectors_covered": [
+    "tests/test_rag_hybrid.py::test_rag_index_paths_step_retries_publish_lock_without_reembedding",
+    "tests/test_rag_fragment_cache.py::test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces",
+    "tests/test_t11_rag_ingestion_contract.py::test_full_index_fts_write_failure_keeps_previous_snapshot",
+    "tests/test_t11_rag_seed_integrity.py::test_parent_seed_uses_actual_same_head_worktree_blobs_and_rejects_dirty_child",
+    "tests/test_rag_quality_contract.py::test_public_search_does_not_cache_empty_lexical_fallback"
+  ],
+  "prior_unpaired_probe": {
+    "command": "$env:RAG_BENCHMARK=1; python -B -m pytest -q --tb=short -p no:cacheprovider -s tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline",
+    "result": "baseline root failed official p95 gate: 4601.242ms at 100k/batch4096; exit 1 in 68.33s; assertion aborted before receipt write",
+    "status": "UNPAIRED_PROBE_ONLY"
+  },
+  "interrupted_capture": {
+    "runner_sha256": "5C14936C48499E122C70AFD08DCD45550A389A0974A4302B7186E482DEEA2444",
+    "status": "STOPPED_ON_T20_SLOT_INSTRUCTION",
+    "receipts_written": false,
+    "runner_removed": true,
+    "matching_python_process": "none"
+  },
+  "required_outputs": [
+    "paired median_ms, p95_ms and peak_traced_mib for each corpus/batch row",
+    "baseline-vs-candidate signed deltas using same seed and harness",
+    "source/test SHA-256, harness SHA-256, exact command, T20 slot ID and one-time GO"
+  ],
+  "safety": {
+    "root_patches_applied": false,
+    "root_patch_apply_checks": "PASS for each owner-only patch",
+    "no_further_benchmark_or_heavy_test_without_t20_go": true,
+    "root_inherited_dirty_files_modified": false
+  }
+}

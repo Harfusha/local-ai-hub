@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "recorded_utc": "2026-10-02 11:49:17 UTC",
+  "status": "SOURCE_ONLY_REVIEW; NO DEFECT OBSERVED IN REVIEWED SPANS; ACCEPTANCE STILL OPEN",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "head_before_review": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "current_hashes": {
+    "src/local_ai_hub/project_config.py": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+    "tests/test_project_config.py": "0196D8FA417DD2B56BFC0D143217D25E2986E1B1B1DF6CEFFADD3C0EEB9FBCEA"
+  },
+  "reviewed": [
+    {
+      "lines": "295-375",
+      "focus": "bounded common-dir/worktree discovery",
+      "path": "src/local_ai_hub/project_config.py"
+    },
+    {
+      "lines": "395-448",
+      "focus": "recursive merge and canonical relative path overrides",
+      "path": "src/local_ai_hub/project_config.py"
+    },
+    {
+      "lines": "737-782",
+      "focus": "descriptor identity, file type and size guarded TOML read",
+      "path": "src/local_ai_hub/project_config.py"
+    },
+    {
+      "lines": "783-880",
+      "focus": "strict containment, overlay order, atomic fallback and context initialization",
+      "path": "src/local_ai_hub/project_config.py"
+    }
+  ],
+  "observations": [
+    "Git subprocesses use fixed argument arrays, captured streams and configured timeout.",
+    "Layer loading rechecks opened device/inode and regular-file mode; parser input is size bounded.",
+    "Overlay resolution resets to safe defaults on invalid layer/config errors.",
+    "No release-blocking T11 defect observed in reviewed spans; review is bounded/static, not exhaustive."
+  ],
+  "acceptance_limits": {
+    "tests_run_by_review": false,
+    "performance_benchmark": "post-release; not run",
+    "slot_id": "T20-SERIAL-20261002-G",
+    "live_reranker": "post-release; not run",
+    "transferred_project_config_suite": "66 cases; slot G command outcome UNKNOWN; no pass/fail claim",
+    "slot_state": "exclusively held; underlying broker process stop not confirmed"
+  },
+  "hub_context": {
+    "brief_status": "success=true; version=4.0.0; ollama_online=true; queued=0; inflight=0",
+    "adaptive_context": "single scoped request remained running; no duplicate issued; outer cell stopped"
+  },
+  "action": "Read-only source review. No source edits, test run, broker retry, native fallback, or slot release."
+}

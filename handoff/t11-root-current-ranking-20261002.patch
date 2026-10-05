@@ -1,0 +1,75 @@
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -2203,12 +2203,29 @@
+                         dot_scores = np.dot(matrix, q)
+                         scores[valid] = dot_scores[valid] / norms[valid]
+                     scores = np.where(np.isfinite(scores), scores, 0.0)
+-                    path_keys = np.asarray([str(row[0]) for row in batch], dtype=np.str_)
+-                    chunk_keys = np.fromiter((int(row[1]) for row in batch), dtype=np.int64, count=len(batch))
+-                    hash_keys = np.asarray([str(row[3] or "") for row in batch], dtype=np.str_)
+-                    local_order = np.lexsort((hash_keys, chunk_keys, path_keys, -scores))[:candidate_limit]
+-                    for index in local_order:
+-                        offer(batch[index], float(scores[index]))
++                    local_count = min(candidate_limit, len(batch))
++                    if local_count < len(batch):
++                        kth = len(batch) - local_count
++                        partition = np.argpartition(scores, kth)
++                        cutoff = scores[partition[kth]]
++                        above = np.flatnonzero(scores > cutoff)
++                        tied = np.flatnonzero(scores == cutoff)
++                        remaining = local_count - len(above)
++                        if tied.size > remaining:
++                            tie_paths = np.asarray([str(batch[int(index)][0]) for index in tied], dtype=np.str_)
++                            tie_chunks = np.fromiter(
++                                (int(batch[int(index)][1]) for index in tied), dtype=np.int64, count=len(tied)
++                            )
++                            tie_hashes = np.asarray(
++                                [str(batch[int(index)][3] or "") for index in tied], dtype=np.str_
++                            )
++                            tie_order = np.lexsort((tie_hashes, tie_chunks, tie_paths))
++                            tied = tied[tie_order[:remaining]]
++                        candidate_indices = np.concatenate((above, tied))
++                    else:
++                        candidate_indices = np.arange(len(batch), dtype=np.intp)
++                    for index in candidate_indices:
++                        offer(batch[int(index)], float(scores[int(index)]))
+                 else:
+                     import struct
+ 
+--- a/tests/test_rag_quality_contract.py
++++ b/tests/test_rag_quality_contract.py
+@@ -250,6 +250,34 @@
+     assert [row["path"] for row in result["results"]] == ["a-first.py", "m-middle.py", "z-last.py"]
+ 
+ 
++
++def test_vector_search_skips_redundant_local_sort_for_unique_scores(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    tenant, workspace = "tenant", "unique-score-workspace"
++    vectors = np.asarray([[1.0, float(i + 1)] for i in range(96)], dtype=np.float32)
++    _insert_vectors(store, tenant, workspace, vectors)
++
++    def unexpected_lexsort(*_args, **_kwargs):
++        raise AssertionError("unique-score batch should not need local candidate ordering")
++
++    monkeypatch.setattr(np, "lexsort", unexpected_lexsort)
++    result = store._search_uncached("unique score query", tenant, workspace, top_k=4, use_reranker=False)
++
++    assert result["success"] is True
++    assert [row["chunk_no"] for row in result["results"]] == [0, 1, 2, 3]
++
++
++def test_vector_search_keeps_deterministic_ties_at_candidate_cutoff(tmp_path):
++    store = _store(tmp_path)
++    tenant, workspace = "tenant", "tie-cutoff-workspace"
++    _insert_vectors(store, tenant, workspace, np.asarray([[1.0, 0.0]] * 32, dtype=np.float32))
++
++    result = store._search_uncached("tie query", tenant, workspace, top_k=16, use_reranker=False)
++
++    assert result["success"] is True
++    assert [row["chunk_no"] for row in result["results"]] == list(range(16))
++
++
+ def test_configured_candidate_count_has_hard_upper_bound(tmp_path):
+     store = _store(tmp_path)
+     store.config["rag"]["rerank_candidates"] = 100_000

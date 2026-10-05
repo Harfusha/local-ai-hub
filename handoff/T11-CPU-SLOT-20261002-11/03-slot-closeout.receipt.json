@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-02",
+  "task": "T11 CPU slot 11 serial acceptance closeout",
+  "slot_id": "T20-CPU-SLOT-20261002-11",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "input_inventory_path": "handoff/t11-prevalidation-inventory-20261002.json",
+  "input_inventory_sha256": "dca36e199ed44f367a9cecc0ba81d3a33ef409c8ce31685101c65d184d52d116",
+  "pre_run_receipt_path": "handoff/T11-CPU-SLOT-20261002-11/00-prerun-inventory.json",
+  "pre_run_receipt_sha256": "6bc8cff78c61e298c131a6aca0cb5c2bf0b13448c79050fd3a37b71262be7aa9",
+  "pre_run_input_count": 18,
+  "pre_run_mismatches": [],
+  "post_run_input_match_count": 18,
+  "post_run_input_mismatch_count": 0,
+  "execution_route": "Native pytest per direct user instruction to ignore broken Local AI Hub; no command broker used.",
+  "privacy_selector": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_telemetry_contract.py::test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields",
+    "result": "1 passed in 0.22s",
+    "exit_code": 0,
+    "test_sha256": "6138ebed767982a57fc279fe96576cc646df12f2b87e5c0c171bd8fa571029db",
+    "log_sha256": "04b5920db66f102066227aaf163735208769e10c8ff47d8d6e76b73a85efc3cb",
+    "receipt_sha256": "fdbe7d119612bf4658120dede2f2ae2cca2c851155bfbea9e272e641647fc110"
+  },
+  "offline_suite": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+    "summary": "179 passed, 3 skipped in 48.76s",
+    "exit_code": 0,
+    "log_sha256": "5d2b7436279a5589967f2b6baec5689e55e4708462ae920291a89017c642493a",
+    "receipt_sha256": "33134d8b2cfca594c703fba46aac32470cfb93e24a7534b8d9b47335dfcf41d8"
+  },
+  "benchmark_run": false,
+  "skipped_by_design": [
+    "100k retrieval latency/peak-memory benchmark requires a separate explicit slot",
+    "live reranker latency probe requires a separate explicit slot"
+  ],
+  "slot_release": {
+    "released_to": "T20",
+    "release_message_sent": true,
+    "acknowledgement_pending": false,
+    "coordinator_acknowledged": true
+  },
+  "acceptance_status": "Privacy selector and offline RAG suite passed in native execution under direct user authorization; T20 confirmed slot11 release; separate 100k and live reranker benchmark slots remain outstanding."
+}

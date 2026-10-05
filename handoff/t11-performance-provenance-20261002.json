@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-02",
+  "task": "T11 performance evidence provenance",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "status": "STATIC PROVENANCE RECORDED; CURRENT PERFORMANCE GATE OPEN",
+  "current_candidate": {
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "rag_sha256": "f47259dafc72c6a584f53d84e51fac270ce0969e48ec3cdb58c1cceb6f554992",
+    "test_sha256": "0a82654d5bba505f69437037e8f906defaf5f983aca0305445e11f0854bbd9c5",
+    "basis": "Current hashes match the tested score-buffer candidate postimages. Candidate suite was 36 passed, 1 skipped; skipped selector was the gated 100k benchmark."
+  },
+  "historical_red": {
+    "receipt": "handoff/t11-rag-100k-red-20261001.json",
+    "receipt_sha256": "b068fab8fe1b5e29f874d5b7b0930cba3659e08e2ec0a4febf2c2f91cb160d0d",
+    "rag_sha256": "cb4362e19e316b22c020a7af3706e55df278be95c508750ebbb9469c5c97ffa9",
+    "test_sha256": "b7dc4fc939e63152c7904b10dcda666fc5916e5fc6de3707fee718d4e18b6825",
+    "corpus_chunks": 100000,
+    "search_batch_size": 512,
+    "samples": 20,
+    "p95_ms": 1698.727,
+    "limit_ms": 750.0,
+    "binding": "Does not bind to current candidate hashes."
+  },
+  "historical_unbound_receipt": {
+    "receipt": "handoff/t11-rag-benchmark-receipt.json",
+    "receipt_sha256": "899deca90b32bf3cb5f190ab517b422bd0f5d7335a6e732354a2ec4ffd3705d4",
+    "corpus_chunks": 100000,
+    "search_batch_size": 512,
+    "samples": 20,
+    "p95_ms": 353.797,
+    "source_and_test_hashes": "absent",
+    "binding": "Historical result cannot prove current candidate performance."
+  },
+  "optimization_chain": {
+    "vector_scan_ordering_patch_sha256": "b120123e8962a45e7cbf4ffcf2dd7caf3e0da782cdcb3f9fa1c2662f5dcf3e24",
+    "vector_scan_ordering_rag_postimage_sha256": "1ab43ee2324eb0cd87d462d2929a5b5c227b6806629a8e71e3a34d4fd4e29d63",
+    "score_buffer_patch_sha256": "f3b19d57e49a557e60e50a55ba6b2fb6838bd19ed495db41cf3353b09365a9d6",
+    "score_buffer_rag_postimage_sha256": "f47259dafc72c6a584f53d84e51fac270ce0969e48ec3cdb58c1cceb6f554992",
+    "score_buffer_test_postimage_sha256": "0a82654d5bba505f69437037e8f906defaf5f983aca0305445e11f0854bbd9c5",
+    "performance_claim": false
+  },
+  "gate": {
+    "acceptance": "OPEN",
+    "next_required_evidence": "Fresh benchmark receipt bound to current source/test hashes, run only after explicit T02/T20 CPU slot release.",
+    "queue": "T20 reports validation queue on hold after outcome_unknown and Hub health failure; no T11 slot assigned.",
+    "tests_or_benchmarks_run_this_receipt": false
+  }
+}

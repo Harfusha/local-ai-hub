@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-02",
+  "task": "T11 privacy boundary scope review",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "status": "STATIC SCOPE RESOLVED; TELEMETRY SELECTOR PENDING",
+  "policy_evidence": {
+    "adoption_design": {
+      "path": "docs/superpowers/specs/2026-09-17-local-ai-hub-adoption-design.md",
+      "line": 66,
+      "sha256": "6201972d4abd7a713ce8dbd66b734b4a4dec869b51ce24f61004c987b651cf28",
+      "scope": "Prohibits storing prompts, source content, secrets, and full project paths in telemetry."
+    },
+    "t11_master_plan": {
+      "path": "docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md",
+      "lines": "252-263",
+      "sha256": "c9bd0321715d245ba0f8399086c9d7b4394acd4ebba8cd8bcddc55d74e94352d",
+      "scope": "T11 requires explicit image/caption ingestion and metadata-only raster or provenance-backed vision/OCR; it adds no ban on image paths in RAG payload/API responses."
+    }
+  },
+  "current_code_evidence": {
+    "telemetry_sha256": "b05ed170c3056a0a9c35dad13b3918e27af4b103f00d79fe80813b875e97945a",
+    "telemetry_test_sha256": "6138ebed767982a57fc279fe96576cc646df12f2b87e5c0c171bd8fa571029db",
+    "project_config_sha256": "ffd425b1260b285f25b1d121a7c6bcd585c618b5c7e26415e2ad0a7014196b0b",
+    "rag_sha256": "f47259dafc72c6a584f53d84e51fac270ce0969e48ec3cdb58c1cceb6f554992",
+    "findings": [
+      "Telemetry metadata sanitizer redacts Windows paths, POSIX paths except /api/ routes, bearer/API credentials, and long tokens.",
+      "PathHintUsage telemetry metadata emits booleans/null only.",
+      "Diagram image_path is persisted in RAG metadata and returned by ingest_diagram; this is functional RAG data, outside the documented telemetry prohibition."
+    ]
+  },
+  "decision": {
+    "telemetry_privacy_criterion": "Keep required selector test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields; no result claimed until it runs.",
+    "rag_payload_api_path": "Not a failure under current written privacy scope; no source change justified by current policy.",
+    "scope_change": "If product owner intends a broader no-absolute-path rule for persisted RAG data or API responses, record that as a separate requirement before changing ingestion behavior."
+  },
+  "validation": {
+    "tests_run": false,
+    "source_mutations": false,
+    "slot": "T11 privacy/offline slot remains unassigned/on hold by T20."
+  }
+}

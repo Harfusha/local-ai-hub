@@ -1,0 +1,74 @@
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -2296,6 +2296,9 @@
+         best: list[tuple[float, tuple[int, ...], int, tuple[int, ...], dict[str, Any]]] = []
+         rows_seen = 0
+         has_stale_embedding_rows = False
++        embedding_space_resolved = self._embedding_space_is_resolved(query_result)
++        stored_embedding_space: str | None = None
++        stored_embedding_space_read = False
+         try:
+             import numpy as np
+         except Exception:
+@@ -2460,12 +2463,16 @@
+                 "SELECT 1 FROM chunks WHERE tenant=? AND workspace=? AND embedding_space<>? LIMIT 1",
+                 (scope_key, workspace, embedding_space),
+             ).fetchone() is not None
+-
+-        if self._embedding_space_is_resolved(query_result):
++            if embedding_space_resolved:
++                try:
++                    stored_embedding_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
++                    stored_embedding_space_read = True
++                except sqlite3.Error:
++                    pass
++
++        if embedding_space_resolved:
+             try:
+-                with closing(self._connect()) as con:
+-                    stored_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
+-                if stored_space != embedding_space:
++                if not stored_embedding_space_read or stored_embedding_space != embedding_space:
+                     with closing(self._connect()) as con:
+                         con.execute("BEGIN IMMEDIATE")
+                         if self._stored_workspace_embedding_space(con, scope_key, workspace) != embedding_space:
+diff --git a/tests/test_rag_hybrid.py b/tests/test_rag_hybrid.py
+--- a/tests/test_rag_hybrid.py
++++ b/tests/test_rag_hybrid.py
+@@ -253,6 +253,35 @@
+ 
+     with closing(store._connect()) as con:
+         assert store._stored_workspace_embedding_space(con, store._scope_key(tenant), workspace) == "space-a"
++
++
++def test_warm_search_reads_embedding_space_from_vector_snapshot(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.services.space_id = "space-a"
++    tenant, workspace = "tenant", "snapshot-space-metadata"
++    scope_key = store._scope_key(tenant)
++    with closing(store._connect()) as con:
++        store._store_workspace_embedding_space(con, scope_key, workspace, "space-a")
++        con.execute(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            (scope_key, workspace, "known.py", 0, "known", "known result", "[1.0, 0.0]", "space-a"),
++        )
++        con.commit()
++
++    transaction_states = []
++    read_metadata = store._stored_workspace_embedding_space
++
++    def observe_snapshot(connection, observed_scope, observed_workspace):
++        transaction_states.append(connection.in_transaction)
++        return read_metadata(connection, observed_scope, observed_workspace)
++
++    monkeypatch.setattr(store, "_stored_workspace_embedding_space", observe_snapshot)
++    result = store._search_uncached("query", tenant, workspace, use_reranker=False)
++
++    assert result["success"] is True
++    assert [row["path"] for row in result["results"]] == ["known.py"]
++    assert transaction_states == [True]
+ 
+ 
+ def test_public_search_cache_isolated_by_tenant(tmp_path):

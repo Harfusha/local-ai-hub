@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "task": "T11 bounded RAG retrieval latency and peak-memory acceptance",
+  "date": "2026-10-05",
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "command": "RAG_BENCHMARK=1 python -m pytest -s -q --tb=short tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline",
+  "result": "1 passed in 39.76s",
+  "exit_code": 0,
+  "corpus_sizes": [1024, 16384, 100000],
+  "search_batch_sizes": [512, 2048, 4096, 8192],
+  "complexity_probes": 12,
+  "complexity": "Each probe scored all N rows once; maximum dot-product batch did not exceed configured size.",
+  "100k_metrics": [
+    {"batch_size": 512, "p95_ms": 335.424, "peak_traced_mib": 2.455},
+    {"batch_size": 2048, "p95_ms": 414.484, "peak_traced_mib": 9.869},
+    {"batch_size": 4096, "p95_ms": 355.302, "peak_traced_mib": 13.213},
+    {"batch_size": 8192, "p95_ms": 365.542, "peak_traced_mib": 13.21}
+  ],
+  "acceptance": {"max_100k_p95_ms": 750, "max_traced_mib": 16},
+  "receipt_note": "Metrics are the visible test-generated output summary; the pytest temporary full JSON was removed at test cleanup."
+}

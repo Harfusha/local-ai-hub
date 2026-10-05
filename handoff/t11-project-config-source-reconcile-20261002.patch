@@ -1,0 +1,34 @@
+--- src/local_ai_hub/project_config.py (T11 preimage)
++++ src/local_ai_hub/project_config.py (T21 source)
+@@ -895,15 +895,10 @@
+ ) -> Path | None:
+     """Return contained, existing path only when hint scope and freshness match."""
+     try:
+-        if (
+-            not isinstance(hint.path, str)
+-            or not hint.path.strip()
+-            or len(hint.path) > _MAX_RELATIVE_PATH
+-            or any(not character.isprintable() for character in hint.path)
+-        ):
+-            return None
+-        normalized_path = hint.path.strip().replace("\\", "/")
+-        if any(char in normalized_path for char in "*?[]"):
++        if not isinstance(hint, PathHint):
++            return None
++        relative = _relative_pattern(hint.path)
++        if any(char in relative for char in "*?[]"):
+             return None
+         if hint.purpose != purpose or hint.scope != scope:
+             return None
+@@ -942,10 +937,7 @@
+             if current >= expires:
+                 return None
+         project_root = Path(root).resolve(strict=True)
+-        hint_path = Path(normalized_path)
+-        if re.match(r"^[A-Za-z]:", normalized_path) and not hint_path.is_absolute():
+-            return None
+-        candidate = (project_root / hint_path).resolve(strict=True)
++        candidate = (project_root / Path(relative)).resolve(strict=True)
+         if not candidate.is_relative_to(project_root) or not candidate.exists():
+             return None
+         return candidate

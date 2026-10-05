@@ -1,0 +1,5064 @@
+{
+  "schema_version": 1,
+  "purpose": "Read-only per-hunk T11 root overlap handoff",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "276ecabdec84e5a76dfb155090c5f0641fa8a9f2",
+  "common_base": "a7b0868ac964fd14e160001024e6e0ecaaf4e9db",
+  "patch": {
+    "path": "handoff\\t11-candidate-delta-20261002.patch",
+    "sha256": "be6cd039e6c1311bcd8aab08237069cacdc6200845a7236252bda27019c83ce0"
+  },
+  "root_apply_check": "FAIL; candidate delta does not apply to root dirty state; no apply performed",
+  "classification": {
+    "T11_owned_paths": [
+      "src/local_ai_hub/embeddings.py",
+      "src/local_ai_hub/rag.py",
+      "src/local_ai_hub/reranker.py",
+      "tests/test_model_release_lifecycle.py",
+      "tests/test_rag_fragment_cache.py",
+      "tests/test_rag_hybrid.py",
+      "tests/test_rag_quality_contract.py",
+      "tests/test_t11_project_policy_consumers.py",
+      "tests/test_t11_rag_ingestion_contract.py",
+      "tests/test_t11_rag_seed_integrity.py",
+      "tests/test_rag_read_bounds.py"
+    ],
+    "other_task_owned_paths": [
+      "src/local_ai_hub/project_config.py",
+      "tests/test_project_config.py"
+    ],
+    "other_task_current_sha256": {
+      "src/local_ai_hub/project_config.py": "4238b6a6de1de00f55f4679ce0df7d431522ec1bafabfa272258c1662f13f713",
+      "tests/test_project_config.py": "90a66b610b84faddf178147321362db91139ffce0fdc680e01aad9fbd1866270"
+    },
+    "ownership_limit": "Root dirty hunks inside T11-owned paths cannot be attributed to a task from path alone. Exact identical file content is marked; other overlapping hunks remain owner-unknown pending T20/T21 reconciliation.",
+    "T21_worktree": {
+      "root": "C:\\Users\\Adam\\.codex\\worktrees\\t21-project-config\\.local-ai-hub",
+      "head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+      "owned_paths": {
+        "src/local_ai_hub/project_config.py": {
+          "T21": {
+            "sha256": "ffd425b1260b285f25b1d121a7c6bcd585c618b5c7e26415e2ad0a7014196b0b",
+            "status": "M src/local_ai_hub/project_config.py"
+          },
+          "root": {
+            "sha256": "4238b6a6de1de00f55f4679ce0df7d431522ec1bafabfa272258c1662f13f713",
+            "status": "M src/local_ai_hub/project_config.py"
+          },
+          "T11_candidate": {
+            "sha256": "ffd425b1260b285f25b1d121a7c6bcd585c618b5c7e26415e2ad0a7014196b0b",
+            "status": "?? src/local_ai_hub/project_config.py"
+          },
+          "root_matches_T21": false
+        },
+        "tests/test_project_config.py": {
+          "T21": {
+            "sha256": "0196d8fa417dd2b56bfc0d143217d25e2986e1b1b1df6ceffadd3c0eeb9fbcea",
+            "status": "M tests/test_project_config.py"
+          },
+          "root": {
+            "sha256": "90a66b610b84faddf178147321362db91139ffce0fdc680e01aad9fbd1866270",
+            "status": "M tests/test_project_config.py"
+          },
+          "T11_candidate": {
+            "sha256": "0196d8fa417dd2b56bfc0d143217d25e2986e1b1b1df6ceffadd3c0eeb9fbcea",
+            "status": "?? tests/test_project_config.py"
+          },
+          "root_matches_T21": false
+        }
+      },
+      "ownership": "T21 owns project_config.py and test_project_config.py. Root versions are dirty and do not match current T21 bytes; candidate bytes match T21 for both paths. These files remain excluded from the T11 patch."
+    }
+  },
+  "files": [
+    {
+      "path": "src/local_ai_hub/embeddings.py",
+      "candidate_sha256": "2360fb9e4e9dda72dc633a5e4f33ecbab2ec3e8a26dc728f61114acc2496d170",
+      "root_sha256": "21a6282871005d1045b2e76a2cc65599deedb877477e007c1aa8fb31bfaccd08",
+      "root_status": "M src/local_ai_hub/embeddings.py",
+      "candidate_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            17,
+            16
+          ],
+          "side_lines": [
+            17,
+            17
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            64,
+            63
+          ],
+          "side_lines": [
+            65,
+            72
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            85,
+            84
+          ],
+          "side_lines": [
+            94,
+            153
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            92,
+            91
+          ],
+          "side_lines": [
+            161,
+            233
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            103,
+            117
+          ],
+          "side_lines": [
+            245,
+            255
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            123,
+            125
+          ],
+          "side_lines": [
+            261,
+            263
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            132,
+            132
+          ],
+          "side_lines": [
+            270,
+            270
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            134,
+            134
+          ],
+          "side_lines": [
+            272,
+            272
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            183,
+            182
+          ],
+          "side_lines": [
+            321,
+            324
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            201,
+            211
+          ],
+          "side_lines": [
+            343,
+            344
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            213,
+            213
+          ],
+          "side_lines": [
+            346,
+            346
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            215,
+            222
+          ],
+          "side_lines": [
+            348,
+            374
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            227,
+            226
+          ],
+          "side_lines": [
+            379,
+            380
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            251,
+            250
+          ],
+          "side_lines": [
+            405,
+            425
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            267,
+            266
+          ],
+          "side_lines": [
+            442,
+            448
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            273,
+            272
+          ],
+          "side_lines": [
+            455,
+            467
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            282,
+            282
+          ],
+          "side_lines": [
+            477,
+            477
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            288,
+            294
+          ],
+          "side_lines": [
+            483,
+            491
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            312,
+            312
+          ],
+          "side_lines": [
+            509,
+            510
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            387,
+            386
+          ],
+          "side_lines": [
+            585,
+            585
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            411,
+            417
+          ],
+          "side_lines": [
+            610,
+            620
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            419,
+            419
+          ],
+          "side_lines": [
+            622,
+            622
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            421,
+            420
+          ],
+          "side_lines": [
+            624,
+            624
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            423,
+            427
+          ],
+          "side_lines": [
+            627,
+            628
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            429,
+            431
+          ],
+          "side_lines": [
+            630,
+            632
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            456,
+            455
+          ],
+          "side_lines": [
+            657,
+            657
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            488,
+            488
+          ],
+          "side_lines": [
+            690,
+            690
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            497,
+            497
+          ],
+          "side_lines": [
+            699,
+            713
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            504,
+            504
+          ],
+          "side_lines": [
+            720,
+            720
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            516,
+            515
+          ],
+          "side_lines": [
+            732,
+            732
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            519,
+            518
+          ],
+          "side_lines": [
+            736,
+            736
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            520,
+            521
+          ],
+          "side_lines": [
+            738,
+            753
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            544,
+            543
+          ],
+          "side_lines": [
+            776,
+            776
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            555,
+            555
+          ],
+          "side_lines": [
+            788,
+            793
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            574,
+            575
+          ],
+          "side_lines": [
+            812,
+            813
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            585,
+            585
+          ],
+          "side_lines": [
+            823,
+            823
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            587,
+            587
+          ],
+          "side_lines": [
+            825,
+            825
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            593,
+            592
+          ],
+          "side_lines": [
+            831,
+            875
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            597,
+            598
+          ],
+          "side_lines": [
+            880,
+            885
+          ]
+        }
+      ],
+      "root_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            17,
+            16
+          ],
+          "side_lines": [
+            17,
+            17
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            40,
+            39
+          ],
+          "side_lines": [
+            41,
+            41
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            201,
+            211
+          ],
+          "side_lines": [
+            203,
+            204
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            213,
+            213
+          ],
+          "side_lines": [
+            206,
+            206
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            215,
+            222
+          ],
+          "side_lines": [
+            208,
+            233
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            251,
+            250
+          ],
+          "side_lines": [
+            262,
+            282
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            267,
+            266
+          ],
+          "side_lines": [
+            299,
+            302
+          ]
+        }
+      ],
+      "candidate_root_identical": false,
+      "merge_blocker": "dirty root hunks; hunk-level owner not provable from path/status alone"
+    },
+    {
+      "path": "src/local_ai_hub/rag.py",
+      "candidate_sha256": "c70c385ce679d9b4a84037bbcd6c352598fe265f95617311228d75096eecea8a",
+      "root_sha256": "88836fe1782a3d01ed3606bc8dd2fccc40168ac4411c7cfb73b67da802933c27",
+      "root_status": "M src/local_ai_hub/rag.py",
+      "candidate_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            24,
+            23
+          ],
+          "side_lines": [
+            24,
+            30
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            31,
+            30
+          ],
+          "side_lines": [
+            38,
+            40
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            98,
+            97
+          ],
+          "side_lines": [
+            108,
+            108
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            110,
+            109
+          ],
+          "side_lines": [
+            121,
+            128
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            150,
+            149
+          ],
+          "side_lines": [
+            169,
+            173
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            208,
+            207
+          ],
+          "side_lines": [
+            232,
+            247
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            250,
+            249
+          ],
+          "side_lines": [
+            290,
+            292
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            252,
+            251
+          ],
+          "side_lines": [
+            295,
+            295
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            254,
+            254
+          ],
+          "side_lines": [
+            298,
+            298
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            258,
+            257
+          ],
+          "side_lines": [
+            302,
+            303
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            262,
+            261
+          ],
+          "side_lines": [
+            308,
+            311
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            264,
+            263
+          ],
+          "side_lines": [
+            314,
+            314
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            275,
+            275
+          ],
+          "side_lines": [
+            326,
+            332
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            280,
+            279
+          ],
+          "side_lines": [
+            337,
+            339
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            283,
+            282
+          ],
+          "side_lines": [
+            343,
+            347
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            300,
+            299
+          ],
+          "side_lines": [
+            365,
+            369
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            301,
+            301
+          ],
+          "side_lines": [
+            371,
+            374
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            511,
+            510
+          ],
+          "side_lines": [
+            584,
+            837
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            515,
+            515
+          ],
+          "side_lines": [
+            842,
+            842
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            517,
+            516
+          ],
+          "side_lines": [
+            844,
+            869
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            524,
+            524
+          ],
+          "side_lines": [
+            877,
+            885
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            532,
+            534
+          ],
+          "side_lines": [
+            893,
+            896
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            536,
+            536
+          ],
+          "side_lines": [
+            898,
+            897
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            590,
+            590
+          ],
+          "side_lines": [
+            951,
+            959
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            595,
+            594
+          ],
+          "side_lines": [
+            964,
+            967
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            596,
+            596
+          ],
+          "side_lines": [
+            969,
+            973
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            599,
+            598
+          ],
+          "side_lines": [
+            976,
+            977
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            607,
+            606
+          ],
+          "side_lines": [
+            986,
+            991
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            610,
+            610
+          ],
+          "side_lines": [
+            995,
+            996
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            612,
+            611
+          ],
+          "side_lines": [
+            998,
+            1001
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            615,
+            615
+          ],
+          "side_lines": [
+            1005,
+            1005
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            631,
+            631
+          ],
+          "side_lines": [
+            1021,
+            1024
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            638,
+            637
+          ],
+          "side_lines": [
+            1031,
+            1031
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            642,
+            642
+          ],
+          "side_lines": [
+            1036,
+            1035
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            647,
+            646
+          ],
+          "side_lines": [
+            1040,
+            1043
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            651,
+            651
+          ],
+          "side_lines": [
+            1048,
+            1052
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            653,
+            653
+          ],
+          "side_lines": [
+            1054,
+            1054
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            657,
+            656
+          ],
+          "side_lines": [
+            1058,
+            1058
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            685,
+            685
+          ],
+          "side_lines": [
+            1087,
+            1086
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            689,
+            689
+          ],
+          "side_lines": [
+            1090,
+            1092
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            701,
+            701
+          ],
+          "side_lines": [
+            1104,
+            1104
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            710,
+            710
+          ],
+          "side_lines": [
+            1113,
+            1112
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            720,
+            720
+          ],
+          "side_lines": [
+            1122,
+            1121
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            722,
+            722
+          ],
+          "side_lines": [
+            1123,
+            1122
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            725,
+            725
+          ],
+          "side_lines": [
+            1125,
+            1124
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            727,
+            727
+          ],
+          "side_lines": [
+            1126,
+            1129
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            729,
+            729
+          ],
+          "side_lines": [
+            1131,
+            1131
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            737,
+            740
+          ],
+          "side_lines": [
+            1139,
+            1154
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            746,
+            746
+          ],
+          "side_lines": [
+            1160,
+            1160
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            754,
+            754
+          ],
+          "side_lines": [
+            1168,
+            1173
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            758,
+            758
+          ],
+          "side_lines": [
+            1177,
+            1177
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            760,
+            761
+          ],
+          "side_lines": [
+            1179,
+            1178
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            769,
+            768
+          ],
+          "side_lines": [
+            1186,
+            1193
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            773,
+            772
+          ],
+          "side_lines": [
+            1198,
+            1208
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            793,
+            792
+          ],
+          "side_lines": [
+            1229,
+            1230
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            804,
+            803
+          ],
+          "side_lines": [
+            1242,
+            1242
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            813,
+            812
+          ],
+          "side_lines": [
+            1252,
+            1257
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            824,
+            823
+          ],
+          "side_lines": [
+            1269,
+            1270
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            825,
+            825
+          ],
+          "side_lines": [
+            1272,
+            1272
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            851,
+            850
+          ],
+          "side_lines": [
+            1298,
+            1298
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            863,
+            862
+          ],
+          "side_lines": [
+            1311,
+            1313
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            871,
+            870
+          ],
+          "side_lines": [
+            1322,
+            1328
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            872,
+            872
+          ],
+          "side_lines": [
+            1330,
+            1331
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            876,
+            875
+          ],
+          "side_lines": [
+            1335,
+            1335
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            877,
+            876
+          ],
+          "side_lines": [
+            1337,
+            1408
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            879,
+            878
+          ],
+          "side_lines": [
+            1411,
+            1415
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            889,
+            889
+          ],
+          "side_lines": [
+            1426,
+            1426
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            891,
+            890
+          ],
+          "side_lines": [
+            1428,
+            1434
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            896,
+            895
+          ],
+          "side_lines": [
+            1440,
+            1459
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            898,
+            899
+          ],
+          "side_lines": [
+            1462,
+            1466
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            902,
+            902
+          ],
+          "side_lines": [
+            1469,
+            1473
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            907,
+            906
+          ],
+          "side_lines": [
+            1478,
+            1478
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            909,
+            909
+          ],
+          "side_lines": [
+            1481,
+            1486
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            911,
+            910
+          ],
+          "side_lines": [
+            1488,
+            1491
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            914,
+            913
+          ],
+          "side_lines": [
+            1495,
+            1497
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            929,
+            929
+          ],
+          "side_lines": [
+            1513,
+            1513
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            933,
+            933
+          ],
+          "side_lines": [
+            1517,
+            1516
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            947,
+            947
+          ],
+          "side_lines": [
+            1530,
+            1529
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            954,
+            954
+          ],
+          "side_lines": [
+            1536,
+            1536
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            962,
+            962
+          ],
+          "side_lines": [
+            1544,
+            1544
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            970,
+            970
+          ],
+          "side_lines": [
+            1552,
+            1551
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            972,
+            972
+          ],
+          "side_lines": [
+            1553,
+            1553
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            979,
+            979
+          ],
+          "side_lines": [
+            1560,
+            1559
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            981,
+            981
+          ],
+          "side_lines": [
+            1561,
+            1560
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            984,
+            985
+          ],
+          "side_lines": [
+            1563,
+            1564
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            992,
+            1012
+          ],
+          "side_lines": [
+            1571,
+            1614
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1021,
+            1021
+          ],
+          "side_lines": [
+            1623,
+            1624
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1032,
+            1045
+          ],
+          "side_lines": [
+            1635,
+            1683
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1047,
+            1058
+          ],
+          "side_lines": [
+            1685,
+            1691
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1062,
+            1061
+          ],
+          "side_lines": [
+            1695,
+            1696
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1063,
+            1063
+          ],
+          "side_lines": [
+            1698,
+            1699
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1073,
+            1072
+          ],
+          "side_lines": [
+            1709,
+            1709
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1083,
+            1082
+          ],
+          "side_lines": [
+            1720,
+            1727
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1084,
+            1085
+          ],
+          "side_lines": [
+            1729,
+            1733
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1090,
+            1089
+          ],
+          "side_lines": [
+            1738,
+            1738
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1098,
+            1097
+          ],
+          "side_lines": [
+            1747,
+            1755
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1103,
+            1102
+          ],
+          "side_lines": [
+            1761,
+            1764
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1105,
+            1105
+          ],
+          "side_lines": [
+            1767,
+            1767
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1113,
+            1112
+          ],
+          "side_lines": [
+            1775,
+            1779
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1115,
+            1115
+          ],
+          "side_lines": [
+            1782,
+            1789
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1117,
+            1117
+          ],
+          "side_lines": [
+            1791,
+            1791
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1120,
+            1120
+          ],
+          "side_lines": [
+            1794,
+            1794
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1127,
+            1126
+          ],
+          "side_lines": [
+            1801,
+            1801
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1130,
+            1130
+          ],
+          "side_lines": [
+            1805,
+            1819
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1133,
+            1132
+          ],
+          "side_lines": [
+            1822,
+            1823
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1134,
+            1137
+          ],
+          "side_lines": [
+            1825,
+            1828
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1156,
+            1156
+          ],
+          "side_lines": [
+            1847,
+            1847
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1185,
+            1185
+          ],
+          "side_lines": [
+            1876,
+            1876
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1365,
+            1368
+          ],
+          "side_lines": [
+            2056,
+            2114
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1373,
+            1373
+          ],
+          "side_lines": [
+            2119,
+            2140
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1381,
+            1380
+          ],
+          "side_lines": [
+            2148,
+            2149
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1382,
+            1381
+          ],
+          "side_lines": [
+            2151,
+            2151
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1385,
+            1385
+          ],
+          "side_lines": [
+            2155,
+            2155
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1388,
+            1388
+          ],
+          "side_lines": [
+            2158,
+            2158
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1390,
+            1390
+          ],
+          "side_lines": [
+            2160,
+            2160
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1394,
+            1394
+          ],
+          "side_lines": [
+            2164,
+            2164
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1397,
+            1397
+          ],
+          "side_lines": [
+            2167,
+            2167
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1399,
+            1399
+          ],
+          "side_lines": [
+            2169,
+            2169
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1411,
+            1411
+          ],
+          "side_lines": [
+            2181,
+            2185
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1416,
+            1415
+          ],
+          "side_lines": [
+            2190,
+            2191
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1417,
+            1416
+          ],
+          "side_lines": [
+            2193,
+            2193
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1420,
+            1421
+          ],
+          "side_lines": [
+            2197,
+            2198
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1425,
+            1426
+          ],
+          "side_lines": [
+            2202,
+            2203
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1443,
+            1442
+          ],
+          "side_lines": [
+            2220,
+            2228
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1465,
+            1465
+          ],
+          "side_lines": [
+            2251,
+            2257
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1467,
+            1467
+          ],
+          "side_lines": [
+            2259,
+            2265
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1483,
+            1483
+          ],
+          "side_lines": [
+            2281,
+            2283
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1487,
+            1486
+          ],
+          "side_lines": [
+            2287,
+            2287
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1488,
+            1487
+          ],
+          "side_lines": [
+            2289,
+            2290
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1493,
+            1493
+          ],
+          "side_lines": [
+            2296,
+            2296
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1496,
+            1495
+          ],
+          "side_lines": [
+            2299,
+            2302
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1504,
+            1503
+          ],
+          "side_lines": [
+            2311,
+            2313
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1509,
+            1508
+          ],
+          "side_lines": [
+            2319,
+            2320
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1511,
+            1510
+          ],
+          "side_lines": [
+            2323,
+            2324
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1533,
+            1532
+          ],
+          "side_lines": [
+            2347,
+            2347
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1538,
+            1539
+          ],
+          "side_lines": [
+            2353,
+            2356
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1544,
+            1545
+          ],
+          "side_lines": [
+            2361,
+            2362
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            1581,
+            1581
+          ],
+          "side_lines": [
+            2398,
+            2397
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1584,
+            1591
+          ],
+          "side_lines": [
+            2400,
+            2435
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1610,
+            1609
+          ],
+          "side_lines": [
+            2454,
+            2478
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1611,
+            1610
+          ],
+          "side_lines": [
+            2480,
+            2550
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1624,
+            1624
+          ],
+          "side_lines": [
+            2564,
+            2568
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1707,
+            1707
+          ],
+          "side_lines": [
+            2651,
+            2651
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1754,
+            1753
+          ],
+          "side_lines": [
+            2698,
+            2698
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1770,
+            1770
+          ],
+          "side_lines": [
+            2715,
+            2717
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1775,
+            1775
+          ],
+          "side_lines": [
+            2722,
+            2724
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1787,
+            1787
+          ],
+          "side_lines": [
+            2736,
+            2747
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1792,
+            1792
+          ],
+          "side_lines": [
+            2752,
+            2753
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1796,
+            1796
+          ],
+          "side_lines": [
+            2757,
+            2771
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1798,
+            1798
+          ],
+          "side_lines": [
+            2773,
+            2773
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1811,
+            1817
+          ],
+          "side_lines": [
+            2786,
+            2802
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1819,
+            1822
+          ],
+          "side_lines": [
+            2804,
+            2809
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1828,
+            1835
+          ],
+          "side_lines": [
+            2815,
+            2824
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1837,
+            1840
+          ],
+          "side_lines": [
+            2826,
+            2847
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1842,
+            1853
+          ],
+          "side_lines": [
+            2849,
+            2857
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1855,
+            1854
+          ],
+          "side_lines": [
+            2859,
+            2860
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1860,
+            1860
+          ],
+          "side_lines": [
+            2866,
+            2869
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1881,
+            1881
+          ],
+          "side_lines": [
+            2890,
+            2890
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1884,
+            1883
+          ],
+          "side_lines": [
+            2893,
+            2893
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1886,
+            1886
+          ],
+          "side_lines": [
+            2896,
+            2912
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1888,
+            1888
+          ],
+          "side_lines": [
+            2914,
+            2915
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1890,
+            1890
+          ],
+          "side_lines": [
+            2917,
+            2921
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            1894,
+            1895
+          ],
+          "side_lines": [
+            2925,
+            2924
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1905,
+            1905
+          ],
+          "side_lines": [
+            2934,
+            2934
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1907,
+            1906
+          ],
+          "side_lines": [
+            2936,
+            2937
+          ]
+        }
+      ],
+      "root_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            6,
+            5
+          ],
+          "side_lines": [
+            6,
+            6
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            31,
+            30
+          ],
+          "side_lines": [
+            32,
+            32
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            110,
+            109
+          ],
+          "side_lines": [
+            112,
+            119
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            208,
+            207
+          ],
+          "side_lines": [
+            218,
+            231
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            254,
+            254
+          ],
+          "side_lines": [
+            278,
+            278
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            264,
+            263
+          ],
+          "side_lines": [
+            288,
+            288
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            275,
+            275
+          ],
+          "side_lines": [
+            300,
+            353
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            280,
+            279
+          ],
+          "side_lines": [
+            358,
+            361
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            283,
+            282
+          ],
+          "side_lines": [
+            365,
+            369
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            286,
+            285
+          ],
+          "side_lines": [
+            373,
+            375
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            292,
+            292
+          ],
+          "side_lines": [
+            382,
+            386
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            300,
+            299
+          ],
+          "side_lines": [
+            394,
+            399
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            301,
+            302
+          ],
+          "side_lines": [
+            401,
+            407
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            304,
+            303
+          ],
+          "side_lines": [
+            409,
+            411
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            511,
+            510
+          ],
+          "side_lines": [
+            619,
+            762
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            591,
+            593
+          ],
+          "side_lines": [
+            843,
+            863
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            599,
+            598
+          ],
+          "side_lines": [
+            869,
+            869
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            610,
+            610
+          ],
+          "side_lines": [
+            881,
+            882
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            612,
+            611
+          ],
+          "side_lines": [
+            884,
+            886
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            615,
+            615
+          ],
+          "side_lines": [
+            890,
+            894
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            622,
+            621
+          ],
+          "side_lines": [
+            901,
+            903
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            626,
+            625
+          ],
+          "side_lines": [
+            908,
+            921
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            631,
+            631
+          ],
+          "side_lines": [
+            927,
+            930
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            635,
+            634
+          ],
+          "side_lines": [
+            934,
+            936
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            638,
+            637
+          ],
+          "side_lines": [
+            940,
+            940
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            647,
+            646
+          ],
+          "side_lines": [
+            950,
+            953
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            651,
+            651
+          ],
+          "side_lines": [
+            958,
+            962
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            657,
+            656
+          ],
+          "side_lines": [
+            968,
+            968
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            689,
+            688
+          ],
+          "side_lines": [
+            1001,
+            1002
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            701,
+            701
+          ],
+          "side_lines": [
+            1015,
+            1015
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            728,
+            746
+          ],
+          "side_lines": [
+            1042,
+            1068
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            754,
+            754
+          ],
+          "side_lines": [
+            1076,
+            1078
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            773,
+            772
+          ],
+          "side_lines": [
+            1097,
+            1104
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            804,
+            803
+          ],
+          "side_lines": [
+            1136,
+            1136
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            871,
+            870
+          ],
+          "side_lines": [
+            1204,
+            1210
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            877,
+            876
+          ],
+          "side_lines": [
+            1217,
+            1281
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            879,
+            878
+          ],
+          "side_lines": [
+            1284,
+            1288
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            881,
+            880
+          ],
+          "side_lines": [
+            1291,
+            1291
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            889,
+            889
+          ],
+          "side_lines": [
+            1300,
+            1300
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            891,
+            890
+          ],
+          "side_lines": [
+            1302,
+            1308
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            896,
+            895
+          ],
+          "side_lines": [
+            1314,
+            1332
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            898,
+            898
+          ],
+          "side_lines": [
+            1335,
+            1338
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            903,
+            902
+          ],
+          "side_lines": [
+            1343,
+            1345
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            907,
+            906
+          ],
+          "side_lines": [
+            1350,
+            1350
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            909,
+            909
+          ],
+          "side_lines": [
+            1353,
+            1358
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            911,
+            910
+          ],
+          "side_lines": [
+            1360,
+            1366
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            913,
+            912
+          ],
+          "side_lines": [
+            1369,
+            1370
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            914,
+            913
+          ],
+          "side_lines": [
+            1372,
+            1372
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            929,
+            929
+          ],
+          "side_lines": [
+            1388,
+            1388
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            962,
+            962
+          ],
+          "side_lines": [
+            1421,
+            1421
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            984,
+            984
+          ],
+          "side_lines": [
+            1443,
+            1443
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            992,
+            1012
+          ],
+          "side_lines": [
+            1451,
+            1487
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1032,
+            1045
+          ],
+          "side_lines": [
+            1507,
+            1549
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1047,
+            1058
+          ],
+          "side_lines": [
+            1551,
+            1555
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1062,
+            1061
+          ],
+          "side_lines": [
+            1559,
+            1560
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1064,
+            1063
+          ],
+          "side_lines": [
+            1563,
+            1563
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1082,
+            1081
+          ],
+          "side_lines": [
+            1582,
+            1588
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1098,
+            1097
+          ],
+          "side_lines": [
+            1605,
+            1610
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1105,
+            1105
+          ],
+          "side_lines": [
+            1618,
+            1618
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1116,
+            1115
+          ],
+          "side_lines": [
+            1629,
+            1630
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1185,
+            1185
+          ],
+          "side_lines": [
+            1700,
+            1700
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1365,
+            1368
+          ],
+          "side_lines": [
+            1880,
+            1932
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1373,
+            1373
+          ],
+          "side_lines": [
+            1937,
+            1958
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1381,
+            1380
+          ],
+          "side_lines": [
+            1966,
+            1967
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1382,
+            1381
+          ],
+          "side_lines": [
+            1969,
+            1969
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1385,
+            1385
+          ],
+          "side_lines": [
+            1973,
+            1973
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1388,
+            1388
+          ],
+          "side_lines": [
+            1976,
+            1976
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1390,
+            1390
+          ],
+          "side_lines": [
+            1978,
+            1978
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1394,
+            1394
+          ],
+          "side_lines": [
+            1982,
+            1982
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1397,
+            1397
+          ],
+          "side_lines": [
+            1985,
+            1985
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1399,
+            1399
+          ],
+          "side_lines": [
+            1987,
+            1987
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1411,
+            1411
+          ],
+          "side_lines": [
+            1999,
+            2003
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1416,
+            1415
+          ],
+          "side_lines": [
+            2008,
+            2009
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1417,
+            1416
+          ],
+          "side_lines": [
+            2011,
+            2011
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1420,
+            1421
+          ],
+          "side_lines": [
+            2015,
+            2016
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1425,
+            1426
+          ],
+          "side_lines": [
+            2020,
+            2021
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1443,
+            1442
+          ],
+          "side_lines": [
+            2038,
+            2043
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1465,
+            1465
+          ],
+          "side_lines": [
+            2066,
+            2070
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1467,
+            1467
+          ],
+          "side_lines": [
+            2072,
+            2076
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1483,
+            1483
+          ],
+          "side_lines": [
+            2092,
+            2094
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1487,
+            1486
+          ],
+          "side_lines": [
+            2098,
+            2098
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1488,
+            1487
+          ],
+          "side_lines": [
+            2100,
+            2101
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1511,
+            1510
+          ],
+          "side_lines": [
+            2125,
+            2126
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1533,
+            1532
+          ],
+          "side_lines": [
+            2149,
+            2149
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1538,
+            1539
+          ],
+          "side_lines": [
+            2155,
+            2158
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1587,
+            1592
+          ],
+          "side_lines": [
+            2206,
+            2228
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1609,
+            1608
+          ],
+          "side_lines": [
+            2245,
+            2251
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1611,
+            1610
+          ],
+          "side_lines": [
+            2254,
+            2266
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1624,
+            1624
+          ],
+          "side_lines": [
+            2280,
+            2282
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1707,
+            1707
+          ],
+          "side_lines": [
+            2365,
+            2365
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1754,
+            1753
+          ],
+          "side_lines": [
+            2412,
+            2412
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1770,
+            1770
+          ],
+          "side_lines": [
+            2429,
+            2431
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1775,
+            1775
+          ],
+          "side_lines": [
+            2436,
+            2438
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1787,
+            1787
+          ],
+          "side_lines": [
+            2450,
+            2461
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1792,
+            1792
+          ],
+          "side_lines": [
+            2466,
+            2467
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1796,
+            1796
+          ],
+          "side_lines": [
+            2471,
+            2485
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1798,
+            1798
+          ],
+          "side_lines": [
+            2487,
+            2487
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1811,
+            1817
+          ],
+          "side_lines": [
+            2500,
+            2516
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1819,
+            1822
+          ],
+          "side_lines": [
+            2518,
+            2523
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1828,
+            1835
+          ],
+          "side_lines": [
+            2529,
+            2538
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1837,
+            1840
+          ],
+          "side_lines": [
+            2540,
+            2560
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1842,
+            1853
+          ],
+          "side_lines": [
+            2562,
+            2570
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1855,
+            1854
+          ],
+          "side_lines": [
+            2572,
+            2573
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1860,
+            1860
+          ],
+          "side_lines": [
+            2579,
+            2582
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1881,
+            1881
+          ],
+          "side_lines": [
+            2603,
+            2603
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1884,
+            1883
+          ],
+          "side_lines": [
+            2606,
+            2606
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1886,
+            1886
+          ],
+          "side_lines": [
+            2609,
+            2625
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1888,
+            1888
+          ],
+          "side_lines": [
+            2627,
+            2628
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1890,
+            1890
+          ],
+          "side_lines": [
+            2630,
+            2634
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            1894,
+            1895
+          ],
+          "side_lines": [
+            2638,
+            2637
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            1905,
+            1905
+          ],
+          "side_lines": [
+            2647,
+            2647
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            1907,
+            1906
+          ],
+          "side_lines": [
+            2649,
+            2650
+          ]
+        }
+      ],
+      "candidate_root_identical": false,
+      "merge_blocker": "dirty root hunks; hunk-level owner not provable from path/status alone"
+    },
+    {
+      "path": "src/local_ai_hub/reranker.py",
+      "candidate_sha256": "ee8b660c9fa261ea34fb63587f8eaaf6119b83b544a4053d22669ef8d9c5c562",
+      "root_sha256": "12773e04a90db8f8a367e618d725a3ea995faf4b624244907b8a13f30ced2ec7",
+      "root_status": "M src/local_ai_hub/reranker.py",
+      "candidate_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            3,
+            2
+          ],
+          "side_lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            12,
+            11
+          ],
+          "side_lines": [
+            13,
+            13
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            65,
+            65
+          ],
+          "side_lines": [
+            67,
+            73
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            119,
+            119
+          ],
+          "side_lines": [
+            127,
+            131
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            149,
+            148
+          ],
+          "side_lines": [
+            161,
+            178
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            151,
+            151
+          ],
+          "side_lines": [
+            181,
+            181
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            153,
+            152
+          ],
+          "side_lines": [
+            183,
+            184
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            156,
+            156
+          ],
+          "side_lines": [
+            188,
+            191
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            174,
+            173
+          ],
+          "side_lines": [
+            209,
+            227
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            194,
+            195
+          ],
+          "side_lines": [
+            248,
+            253
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            210,
+            209
+          ],
+          "side_lines": [
+            268,
+            273
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            214,
+            214
+          ],
+          "side_lines": [
+            278,
+            285
+          ]
+        }
+      ],
+      "root_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            3,
+            2
+          ],
+          "side_lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            12,
+            11
+          ],
+          "side_lines": [
+            13,
+            13
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            119,
+            119
+          ],
+          "side_lines": [
+            121,
+            125
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            149,
+            148
+          ],
+          "side_lines": [
+            155,
+            172
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            151,
+            151
+          ],
+          "side_lines": [
+            175,
+            175
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            153,
+            152
+          ],
+          "side_lines": [
+            177,
+            178
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            156,
+            156
+          ],
+          "side_lines": [
+            182,
+            185
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            174,
+            173
+          ],
+          "side_lines": [
+            203,
+            221
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            194,
+            195
+          ],
+          "side_lines": [
+            242,
+            247
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            210,
+            209
+          ],
+          "side_lines": [
+            262,
+            267
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            214,
+            214
+          ],
+          "side_lines": [
+            272,
+            279
+          ]
+        }
+      ],
+      "candidate_root_identical": false,
+      "merge_blocker": "dirty root hunks; hunk-level owner not provable from path/status alone"
+    },
+    {
+      "path": "tests/test_model_release_lifecycle.py",
+      "candidate_sha256": "50c061dbc8d2bfa37337fdd77f796dcb328f786f407e1ad389200991e2ee5c50",
+      "root_sha256": "50c061dbc8d2bfa37337fdd77f796dcb328f786f407e1ad389200991e2ee5c50",
+      "root_status": "?? tests/test_model_release_lifecycle.py",
+      "candidate_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            1,
+            0
+          ],
+          "side_lines": [
+            1,
+            321
+          ]
+        }
+      ],
+      "root_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            1,
+            0
+          ],
+          "side_lines": [
+            1,
+            321
+          ]
+        }
+      ],
+      "candidate_root_identical": true,
+      "merge_blocker": "identical candidate content"
+    },
+    {
+      "path": "tests/test_rag_fragment_cache.py",
+      "candidate_sha256": "a7bd3335691aa7c291d4f42a600a2c7d790475f5770d534d9033ff6620a22002",
+      "root_sha256": "50be2a48a96a7edf403bc09a9eef9032c315b1b068ce6015f032636b28d46293",
+      "root_status": "M tests/test_rag_fragment_cache.py",
+      "candidate_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            3,
+            2
+          ],
+          "side_lines": [
+            3,
+            7
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            4,
+            4
+          ],
+          "side_lines": [
+            9,
+            8
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            6,
+            5
+          ],
+          "side_lines": [
+            10,
+            10
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            11,
+            11
+          ],
+          "side_lines": [
+            16,
+            16
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            16,
+            15
+          ],
+          "side_lines": [
+            21,
+            21
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            23,
+            23
+          ],
+          "side_lines": [
+            29,
+            32
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            203,
+            204
+          ],
+          "side_lines": [
+            212,
+            213
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            212,
+            211
+          ],
+          "side_lines": [
+            221,
+            224
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            215,
+            215
+          ],
+          "side_lines": [
+            228,
+            228
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            222,
+            221
+          ],
+          "side_lines": [
+            235,
+            239
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            223,
+            223
+          ],
+          "side_lines": [
+            241,
+            241
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            232,
+            232
+          ],
+          "side_lines": [
+            250,
+            250
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            236,
+            235
+          ],
+          "side_lines": [
+            254,
+            257
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            238,
+            239
+          ],
+          "side_lines": [
+            260,
+            263
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            241,
+            243
+          ],
+          "side_lines": [
+            265,
+            692
+          ]
+        }
+      ],
+      "root_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            3,
+            2
+          ],
+          "side_lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            5,
+            4
+          ],
+          "side_lines": [
+            6,
+            7
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            6,
+            5
+          ],
+          "side_lines": [
+            9,
+            9
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            203,
+            202
+          ],
+          "side_lines": [
+            207,
+            248
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            330,
+            329
+          ],
+          "side_lines": [
+            376,
+            499
+          ]
+        }
+      ],
+      "candidate_root_identical": false,
+      "merge_blocker": "dirty root hunks; hunk-level owner not provable from path/status alone"
+    },
+    {
+      "path": "tests/test_rag_hybrid.py",
+      "candidate_sha256": "dec8b30ce2a5de797b2b552e1f6b00a62a99b7ffadee89dfce6314322ef90314",
+      "root_sha256": "5e8508f96b808a7369fa9e97617be359f7f23ea7a6213364eec71b99f5149160",
+      "root_status": "M tests/test_rag_hybrid.py",
+      "candidate_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            4,
+            3
+          ],
+          "side_lines": [
+            4,
+            4
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            5,
+            4
+          ],
+          "side_lines": [
+            6,
+            7
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            100,
+            99
+          ],
+          "side_lines": [
+            103,
+            574
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            105,
+            104
+          ],
+          "side_lines": [
+            580,
+            583
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            129,
+            129
+          ],
+          "side_lines": [
+            608,
+            608
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            134,
+            133
+          ],
+          "side_lines": [
+            613,
+            725
+          ]
+        }
+      ],
+      "root_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            4,
+            3
+          ],
+          "side_lines": [
+            4,
+            6
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            134,
+            133
+          ],
+          "side_lines": [
+            137,
+            358
+          ]
+        }
+      ],
+      "candidate_root_identical": false,
+      "merge_blocker": "dirty root hunks; hunk-level owner not provable from path/status alone"
+    },
+    {
+      "path": "tests/test_rag_quality_contract.py",
+      "candidate_sha256": "0a82654d5bba505f69437037e8f906defaf5f983aca0305445e11f0854bbd9c5",
+      "root_sha256": "273c1eea3645f78596009340096d2c381fd8749fe71ce8f2ecb7a8aece723572",
+      "root_status": "M tests/test_rag_quality_contract.py",
+      "candidate_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            3,
+            2
+          ],
+          "side_lines": [
+            3,
+            3
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            4,
+            3
+          ],
+          "side_lines": [
+            5,
+            5
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            6,
+            5
+          ],
+          "side_lines": [
+            8,
+            8
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            9,
+            8
+          ],
+          "side_lines": [
+            12,
+            12
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            11,
+            10
+          ],
+          "side_lines": [
+            15,
+            15
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            23,
+            23
+          ],
+          "side_lines": [
+            28,
+            32
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            48,
+            49
+          ],
+          "side_lines": [
+            57,
+            58
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            53,
+            53
+          ],
+          "side_lines": [
+            62,
+            62
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            93,
+            92
+          ],
+          "side_lines": [
+            102,
+            104
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            99,
+            98
+          ],
+          "side_lines": [
+            111,
+            269
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            153,
+            153
+          ],
+          "side_lines": [
+            324,
+            328
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            165,
+            164
+          ],
+          "side_lines": [
+            340,
+            345
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            172,
+            171
+          ],
+          "side_lines": [
+            353,
+            353
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            184,
+            184
+          ],
+          "side_lines": [
+            366,
+            372
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            219,
+            220
+          ],
+          "side_lines": [
+            407,
+            408
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            236,
+            236
+          ],
+          "side_lines": [
+            424,
+            424
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            238,
+            238
+          ],
+          "side_lines": [
+            426,
+            426
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            260,
+            260
+          ],
+          "side_lines": [
+            448,
+            503
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            265,
+            265
+          ],
+          "side_lines": [
+            508,
+            508
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            275,
+            274
+          ],
+          "side_lines": [
+            518,
+            518
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            297,
+            296
+          ],
+          "side_lines": [
+            541,
+            543
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            301,
+            301
+          ],
+          "side_lines": [
+            548,
+            548
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            307,
+            307
+          ],
+          "side_lines": [
+            554,
+            556
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            310,
+            310
+          ],
+          "side_lines": [
+            559,
+            559
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            313,
+            313
+          ],
+          "side_lines": [
+            562,
+            562
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            318,
+            319
+          ],
+          "side_lines": [
+            567,
+            570
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            324,
+            323
+          ],
+          "side_lines": [
+            575,
+            575
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            326,
+            328
+          ],
+          "side_lines": [
+            578,
+            592
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            330,
+            333
+          ],
+          "side_lines": [
+            594,
+            595
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            335,
+            342
+          ],
+          "side_lines": [
+            597,
+            598
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            344,
+            345
+          ],
+          "side_lines": [
+            600,
+            704
+          ]
+        }
+      ],
+      "root_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            4,
+            3
+          ],
+          "side_lines": [
+            4,
+            4
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            9,
+            8
+          ],
+          "side_lines": [
+            10,
+            10
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            23,
+            23
+          ],
+          "side_lines": [
+            25,
+            25
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            48,
+            49
+          ],
+          "side_lines": [
+            50,
+            51
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            53,
+            53
+          ],
+          "side_lines": [
+            55,
+            55
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            92,
+            91
+          ],
+          "side_lines": [
+            94,
+            96
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            219,
+            220
+          ],
+          "side_lines": [
+            224,
+            225
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            236,
+            236
+          ],
+          "side_lines": [
+            241,
+            241
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            238,
+            238
+          ],
+          "side_lines": [
+            243,
+            243
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            246,
+            245
+          ],
+          "side_lines": [
+            251,
+            278
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            297,
+            296
+          ],
+          "side_lines": [
+            330,
+            332
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            310,
+            310
+          ],
+          "side_lines": [
+            346,
+            346
+          ]
+        },
+        {
+          "op": "replace",
+          "base_lines": [
+            318,
+            318
+          ],
+          "side_lines": [
+            354,
+            355
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            338,
+            337
+          ],
+          "side_lines": [
+            375,
+            396
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            340,
+            339
+          ],
+          "side_lines": [
+            399,
+            399
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            342,
+            341
+          ],
+          "side_lines": [
+            402,
+            406
+          ]
+        },
+        {
+          "op": "insert",
+          "base_lines": [
+            344,
+            343
+          ],
+          "side_lines": [
+            409,
+            436
+          ]
+        },
+        {
+          "op": "delete",
+          "base_lines": [
+            345,
+            345
+          ],
+          "side_lines": [
+            438,
+            437
+          ]
+        }
+      ],
+      "candidate_root_identical": false,
+      "merge_blocker": "dirty root hunks; hunk-level owner not provable from path/status alone"
+    },
+    {
+      "path": "tests/test_t11_project_policy_consumers.py",
+      "candidate_sha256": "e4ea70d1036a5109b80e390b255f4106664e0238ab7067e59322760997d0c4f5",
+      "root_sha256": "d79c4748e277b5eae20be56921765709a7180eb54cd7874041a483b16d3ff6a4",
+      "root_status": "?? tests/test_t11_project_policy_consumers.py",
+      "candidate_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            1,
+            0
+          ],
+          "side_lines": [
+            1,
+            726
+          ]
+        }
+      ],
+      "root_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            1,
+            0
+          ],
+          "side_lines": [
+            1,
+            151
+          ]
+        }
+      ],
+      "candidate_root_identical": false,
+      "merge_blocker": "untracked root file differs"
+    },
+    {
+      "path": "tests/test_t11_rag_ingestion_contract.py",
+      "candidate_sha256": "c4e9a80373a3964e1ef9cb7b1f07114d5dd09bf7a68bdd308d167613dbcb8ee1",
+      "root_sha256": "4876d98a26b9eb26701a841799ba088f3dac3021b842a2b55945f53641306914",
+      "root_status": "?? tests/test_t11_rag_ingestion_contract.py",
+      "candidate_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            1,
+            0
+          ],
+          "side_lines": [
+            1,
+            1299
+          ]
+        }
+      ],
+      "root_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            1,
+            0
+          ],
+          "side_lines": [
+            1,
+            1258
+          ]
+        }
+      ],
+      "candidate_root_identical": false,
+      "merge_blocker": "untracked root file differs"
+    },
+    {
+      "path": "tests/test_t11_rag_seed_integrity.py",
+      "candidate_sha256": "943aed3fc4cc11fcec48a99500d1967e869b0276f6af600736254ca375ab0e02",
+      "root_sha256": "1eaebd71367cb99bca2b1263eef195ef892cda3a215a743e7ce64c02843fdd30",
+      "root_status": "?? tests/test_t11_rag_seed_integrity.py",
+      "candidate_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            1,
+            0
+          ],
+          "side_lines": [
+            1,
+            593
+          ]
+        }
+      ],
+      "root_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            1,
+            0
+          ],
+          "side_lines": [
+            1,
+            515
+          ]
+        }
+      ],
+      "candidate_root_identical": false,
+      "merge_blocker": "untracked root file differs"
+    },
+    {
+      "path": "tests/test_rag_read_bounds.py",
+      "candidate_sha256": "ae19c08bc2aa9ca45d0b7f26dcff23dd8abdb3a1d843f54a7830045a8a568aa2",
+      "root_sha256": "9d9f3ee9daad5306570d9a7c2674da1a4cf3342541a1a2b43abb1f798ec0d002",
+      "root_status": "?? tests/test_rag_read_bounds.py",
+      "candidate_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            1,
+            0
+          ],
+          "side_lines": [
+            1,
+            275
+          ]
+        }
+      ],
+      "root_delta_vs_common_base": [
+        {
+          "op": "insert",
+          "base_lines": [
+            1,
+            0
+          ],
+          "side_lines": [
+            1,
+            305
+          ]
+        }
+      ],
+      "candidate_root_identical": false,
+      "merge_blocker": "untracked root file differs"
+    }
+  ],
+  "constraints": "No root writes, patch apply, or tests. T21-owned project_config files excluded from candidate patch.",
+  "root_head_at_initial_hunk_review": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "latest_read_only_recheck": {
+    "date": "2026-10-03",
+    "root_head": "276ecabdec84e5a76dfb155090c5f0641fa8a9f2",
+    "t11_path_hashes_unchanged": true,
+    "paths": [
+      {
+        "path": "src/local_ai_hub/embeddings.py",
+        "sha256": "21a6282871005d1045b2e76a2cc65599deedb877477e007c1aa8fb31bfaccd08",
+        "status": "M src/local_ai_hub/embeddings.py",
+        "matches_prior_report": true
+      },
+      {
+        "path": "src/local_ai_hub/rag.py",
+        "sha256": "88836fe1782a3d01ed3606bc8dd2fccc40168ac4411c7cfb73b67da802933c27",
+        "status": "M src/local_ai_hub/rag.py",
+        "matches_prior_report": true
+      },
+      {
+        "path": "src/local_ai_hub/reranker.py",
+        "sha256": "12773e04a90db8f8a367e618d725a3ea995faf4b624244907b8a13f30ced2ec7",
+        "status": "M src/local_ai_hub/reranker.py",
+        "matches_prior_report": true
+      },
+      {
+        "path": "tests/test_model_release_lifecycle.py",
+        "sha256": "50c061dbc8d2bfa37337fdd77f796dcb328f786f407e1ad389200991e2ee5c50",
+        "status": "?? tests/test_model_release_lifecycle.py",
+        "matches_prior_report": true
+      },
+      {
+        "path": "tests/test_rag_fragment_cache.py",
+        "sha256": "50be2a48a96a7edf403bc09a9eef9032c315b1b068ce6015f032636b28d46293",
+        "status": "M tests/test_rag_fragment_cache.py",
+        "matches_prior_report": true
+      },
+      {
+        "path": "tests/test_rag_hybrid.py",
+        "sha256": "5e8508f96b808a7369fa9e97617be359f7f23ea7a6213364eec71b99f5149160",
+        "status": "M tests/test_rag_hybrid.py",
+        "matches_prior_report": true
+      },
+      {
+        "path": "tests/test_rag_quality_contract.py",
+        "sha256": "273c1eea3645f78596009340096d2c381fd8749fe71ce8f2ecb7a8aece723572",
+        "status": "M tests/test_rag_quality_contract.py",
+        "matches_prior_report": true
+      },
+      {
+        "path": "tests/test_t11_project_policy_consumers.py",
+        "sha256": "d79c4748e277b5eae20be56921765709a7180eb54cd7874041a483b16d3ff6a4",
+        "status": "?? tests/test_t11_project_policy_consumers.py",
+        "matches_prior_report": true
+      },
+      {
+        "path": "tests/test_t11_rag_ingestion_contract.py",
+        "sha256": "4876d98a26b9eb26701a841799ba088f3dac3021b842a2b55945f53641306914",
+        "status": "?? tests/test_t11_rag_ingestion_contract.py",
+        "matches_prior_report": true
+      },
+      {
+        "path": "tests/test_t11_rag_seed_integrity.py",
+        "sha256": "1eaebd71367cb99bca2b1263eef195ef892cda3a215a743e7ce64c02843fdd30",
+        "status": "?? tests/test_t11_rag_seed_integrity.py",
+        "matches_prior_report": true
+      },
+      {
+        "path": "tests/test_rag_read_bounds.py",
+        "sha256": "9d9f3ee9daad5306570d9a7c2674da1a4cf3342541a1a2b43abb1f798ec0d002",
+        "status": "?? tests/test_rag_read_bounds.py",
+        "matches_prior_report": true
+      }
+    ],
+    "candidate_apply_check": {
+      "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-candidate-delta-20261002.patch",
+      "exit_code": 1,
+      "applied": false,
+      "stderr": [
+        "patch failed: src/local_ai_hub/embeddings.py:403",
+        "patch failed: src/local_ai_hub/rag.py:119",
+        "patch failed: src/local_ai_hub/reranker.py:159",
+        "patch failed: tests/test_model_release_lifecycle.py:1",
+        "patch failed: tests/test_rag_fragment_cache.py:1",
+        "patch failed: tests/test_rag_hybrid.py:4",
+        "patch failed: tests/test_rag_quality_contract.py:8",
+        "patch failed: tests/test_t11_project_policy_consumers.py:436",
+        "patch failed: tests/test_t11_rag_ingestion_contract.py:101",
+        "patch failed: tests/test_rag_read_bounds.py: already exists in working directory"
+      ]
+    }
+  }
+}

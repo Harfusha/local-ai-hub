@@ -1,0 +1,45 @@
+diff --git a/tests/test_rag_hybrid.py b/tests/test_rag_hybrid.py
+--- a/tests/test_rag_hybrid.py
++++ b/tests/test_rag_hybrid.py
+@@ -1,6 +1,8 @@
+ from __future__ import annotations
+ 
+ import sqlite3
++import json
++import struct
+ from contextlib import closing
+ 
+ from local_ai_hub.rag import RAGStore, _fragment_hash
+@@ -324,6 +326,7 @@
+         root = tmp_path / f"target-{mode}"
+         root.mkdir()
+         (root / "shared.py").write_text(text, encoding="utf-8")
++        calls_before = len(services.calls)
+         if mode == "index":
+             result = store.index(str(root), tenant, workspace="target-workspace")
+             workspace = "target-workspace"
+@@ -334,10 +337,22 @@
+             workspace = "target-workspace"
+             result = store.index_paths_step(str(root), tenant, workspace, ["shared.py"])
+         assert result["success"] is True, result
+-        assert any(text in item.replace("\r\n", "\n") for batch in services.calls for item in batch), (mode, result, services.calls)
++        embedded_texts = [
++            item
++            for batch in services.calls[calls_before:]
++            for item in batch
++            if text in item.replace("\r\n", "\n")
++        ]
++        assert embedded_texts, (mode, result, services.calls[calls_before:])
+         with closing(store._connect()) as con:
+             row = con.execute(
+                 "SELECT embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=? AND path='shared.py'",
+                 (store._scope_key(tenant), workspace),
+             ).fetchone()
+-        assert row is not None and row[0] != "[99.0,99.0]" and row[1]
++        assert row is not None and row[1] == f"space-{mode}"
++        vector = (
++            struct.unpack(f"{len(row[0]) // 4}f", row[0])
++            if isinstance(row[0], bytes)
++            else json.loads(row[0])
++        )
++        assert tuple(vector) == (float(len(embedded_texts[0])), 1.0)

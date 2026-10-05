@@ -1,0 +1,201 @@
+{
+  "schema": "t11-root-current-rag-hardening-v1",
+  "date": "2026-10-04",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "candidate_worktree": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "ownership_and_coordination": {
+    "assigned_worktree": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "candidate_dirty_baseline_receipt": "handoff/t11-root-current-rag-hardening-20261003/dirty-baseline-20261004.json",
+    "candidate_dirty_baseline_sha256": "09F5F22D182C953D0903539BCE773D08493FFE9A94BA0B14AC4E776DD63A3C43",
+    "candidate_dirty_paths_at_capture": 158,
+    "candidate_porcelain_sha256": "83458749C26F1335BA689C00E1610FF6FAAE58AA48766EE4F03E4A0E5877B4DD",
+    "root_dirty_paths_at_capture": 437,
+    "root_porcelain_sha256": "10FA8EAC90346028D7E45A69FA668B50E160D88B12FFE97F2A6B1DAE518A4EAA",
+    "root_head_at_capture": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+    "root_concurrent_status_drift": "dirty paths 434 to 437; same root HEAD; seven T11 overlap file hashes unchanged; no root write by this task",
+    "coordination_lease": "NOT VERIFIED: Local AI Hub ignored at user direction; no overlapping integration performed",
+    "root_writes_by_this_task": false,
+    "candidate_integration": "orchestrator-owned after preimage and lease review"
+  },
+  "patches": {
+    "source": {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-rag-hardening-20261003\\t11-root-current-source.patch",
+      "sha256": "6BA6596E1A7321D0B80F5D0C9D582ABC522913DC59BB4A2341996E6352558231",
+      "scope": [
+        "embeddings.py current-root delta",
+        "RAGStore._index_locked only: changed_indices, atomic FTS, workspace embedding-space metadata"
+      ],
+      "preimages": {
+        "src/local_ai_hub/embeddings.py": "A3E04B9D1623979AECEB95643F74A7405E2C3739ECA82EB815E0299CB6F57E16",
+        "src/local_ai_hub/rag.py": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27"
+      }
+    },
+    "tests": {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-rag-hardening-20261003\\t11-root-current-owned-tests.patch",
+      "sha256": "EF731CCC636E92418DB227E32444E23E22E635F5018623CF790BFFCF65B167AD",
+      "preimages": {
+        "tests/test_rag_hybrid.py": "3A6C0BF3A388DBE0C472ED056E1820BB4452E1B1139BC9E9C3D75AE05CB06D38",
+        "tests/test_rag_fragment_cache.py": "4C08E7EDD5845F2907DDD3D1F12D30D6A22EC5E8D887327CDCB734579223D9B6",
+        "tests/test_t11_rag_ingestion_contract.py": "4876D98A26B9EB26701A841799BA088F3DAC3021B842A2B55945F53641306914",
+        "tests/test_t11_rag_seed_integrity.py": "1EAEBD71367CB99BCA2B1263EEF195EF892CDA3A215A743E7CE64C02843FDD30",
+        "tests/test_rag_quality_contract.py": "9B8D07437E99C6DCA71A5F2ED6CC8C2771810253B671FCDED3D4EB113E63B91F"
+      },
+      "added_only": {
+        "tests/test_rag_hybrid.py": [
+          "test_rag_index_paths_step_retries_publish_lock_without_reembedding"
+        ],
+        "tests/test_rag_fragment_cache.py": [
+          "test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces"
+        ],
+        "tests/test_t11_rag_ingestion_contract.py": [
+          "test_full_index_fts_write_failure_keeps_previous_snapshot"
+        ],
+        "tests/test_t11_rag_seed_integrity.py": [
+          "test_parent_seed_uses_actual_same_head_worktree_blobs_and_rejects_dirty_child"
+        ],
+        "tests/test_rag_quality_contract.py": [
+          "test_public_search_does_not_cache_empty_lexical_fallback"
+        ]
+      },
+      "replaced_or_removed_tests": []
+    }
+  },
+  "excluded": {
+    "src/local_ai_hub/project_config.py": "T21 ownership",
+    "tests/test_project_config.py": "T21 ownership",
+    "tests/test_t11_project_policy_consumers.py": "overlapping T21 project-config/policy consumer tests; excluded wholesale",
+    "full rag.py merge": "excluded; root/candidate divergence contains shared policy hunks; only reviewed _index_locked patch included",
+    "reranker.py": "root and T11 candidate bytes identical"
+  },
+  "validation": {
+    "tests": "NOT RUN; waiting T20 GO",
+    "benchmarks": "NOT RUN; waiting T20 GO",
+    "root_write": false,
+    "root_preimage_apply_checks": {
+      "source_patch": "PASS",
+      "owned_test_hunks": "PASS: git apply --check --recount against current root preimages; not applied",
+      "patches_applied": false,
+      "tests_run": false,
+      "benchmarks_run": false,
+      "reason": "T20 GO not granted"
+    },
+    "current_recheck_date": "2026-10-04",
+    "current_root_apply_checks": {
+      "source_patch": "PASS",
+      "owned_test_hunks": "PASS: git apply --check --recount against current root preimages; not applied",
+      "candidate_diff_check": "PASS",
+      "patches_applied": false,
+      "root_writes": false
+    },
+    "test_gate": "T20 active; explicit GO closed; tests and benchmarks not run",
+    "root_preimages_reconfirmed": {
+      "src/local_ai_hub/rag.py": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27",
+      "src/local_ai_hub/embeddings.py": "A3E04B9D1623979AECEB95643F74A7405E2C3739ECA82EB815E0299CB6F57E16",
+      "tests/test_t11_rag_ingestion_contract.py": "4876D98A26B9EB26701A841799BA088F3DAC3021B842A2B55945F53641306914",
+      "tests/test_rag_hybrid.py": "3A6C0BF3A388DBE0C472ED056E1820BB4452E1B1139BC9E9C3D75AE05CB06D38",
+      "tests/test_rag_fragment_cache.py": "4C08E7EDD5845F2907DDD3D1F12D30D6A22EC5E8D887327CDCB734579223D9B6",
+      "tests/test_t11_rag_seed_integrity.py": "1EAEBD71367CB99BCA2B1263EEF195EF892CDA3A215A743E7CE64C02843FDD30",
+      "tests/test_rag_quality_contract.py": "9B8D07437E99C6DCA71A5F2ED6CC8C2771810253B671FCDED3D4EB113E63B91F"
+    },
+    "candidate_owned_test_postimage": {
+      "path": "tests/test_t11_rag_ingestion_contract.py",
+      "sha256": "5379581182535E3A2696FF2E437BC11ABB8A31F17049A828AFDE93455660EC1F",
+      "new_selector": "test_full_index_fts_write_failure_keeps_previous_snapshot"
+    },
+    "planned_focused_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_hybrid.py::test_rag_index_paths_step_retries_publish_lock_without_reembedding tests/test_rag_fragment_cache.py::test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces tests/test_t11_rag_ingestion_contract.py::test_full_index_fts_write_failure_keeps_previous_snapshot tests/test_t11_rag_seed_integrity.py::test_parent_seed_uses_actual_same_head_worktree_blobs_and_rejects_dirty_child tests/test_rag_quality_contract.py::test_public_search_does_not_cache_empty_lexical_fallback",
+    "planned_full_offline_command": "python -B -m pytest -q --tb=short -p no:cacheprovider -k 'not retrieval_latency_and_peak_memory_baseline and not t11_ingestion_batch_benchmark' tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py",
+    "planned_benchmark_command": "python -B -m pytest -q --tb=short -p no:cacheprovider -s tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline tests/test_t11_rag_seed_integrity.py::test_t11_ingestion_batch_benchmark",
+    "owner_overlap_excluded": {
+      "tests/test_t11_project_policy_consumers.py": "T21 project-config/policy ownership; defer until explicit handoff",
+      "tests/test_model_release_lifecycle.py": "T12 model lifecycle ownership; not required by T11 master-plan file list"
+    }
+  },
+  "candidate_hashes": {
+    "src/local_ai_hub/rag.py": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+    "src/local_ai_hub/embeddings.py": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170",
+    "src/local_ai_hub/reranker.py": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562"
+  },
+    "candidate_test_hunk_source_sha256": {
+    "tests/test_rag_hybrid.py": "8396D5A114D14BAEBFEAF9022E6C569D3B475DEA8D9075794195DB13DFFDC75E",
+    "tests/test_rag_fragment_cache.py": "A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002",
+    "tests/test_t11_rag_ingestion_contract.py": "5379581182535E3A2696FF2E437BC11ABB8A31F17049A828AFDE93455660EC1F",
+    "tests/test_t11_rag_seed_integrity.py": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02",
+    "tests/test_rag_quality_contract.py": "EF90FC86269D89FFDB6E5CC508BF54917D4A6ED2243447E85DE372B94D5CF3E9"
+  },
+  "current_preflight_2026_10_04": {
+    "source_apply_check": {
+      "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check --recount C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-rag-hardening-20261003\\t11-root-current-source.patch",
+      "exit_code": 0
+    },
+    "owned_test_apply_check": {
+      "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check --recount C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-rag-hardening-20261003\\t11-root-current-owned-tests.patch",
+      "exit_code": 0
+    },
+    "candidate_source_reverse_check": {
+      "command": "git apply --reverse --check --recount handoff/t11-root-current-rag-hardening-20261003/t11-root-current-source.patch",
+      "exit_code": 1,
+      "error": "src/local_ai_hub/rag.py:1028 patch does not apply in candidate context"
+    },
+    "candidate_test_reverse_check": {
+      "command": "git apply --reverse --check --recount handoff/t11-root-current-rag-hardening-20261003/t11-root-current-owned-tests.patch",
+      "exit_code": 1,
+      "errors": [
+        "tests/test_rag_quality_contract.py:394 patch does not apply in candidate context",
+        "tests/test_rag_fragment_cache.py:941 patch does not apply in candidate context",
+        "tests/test_rag_hybrid.py:873 patch does not apply in candidate context"
+      ]
+    },
+    "root_apply_preflights": {
+      "source_patch_exit_code": 0,
+      "owned_test_patch_exit_code": 0,
+      "patches_applied": false
+    },
+    "candidate_diff_check": {
+      "command": "git diff --check -- handoff/t11-root-current-rag-hardening-20261003 tests/test_rag_quality_contract.py tests/test_t11_rag_ingestion_contract.py tests/test_rag_hybrid.py tests/test_rag_fragment_cache.py tests/test_t11_rag_seed_integrity.py",
+      "exit_code": 0,
+      "warning": "Git notes autocrlf will convert LF to CRLF on later touch for test_rag_hybrid.py and test_t11_rag_ingestion_contract.py"
+    },
+    "json_parse": "PASS, exit 0",
+    "tests": "NOT RUN, T20 explicit GO required",
+    "benchmarks": "NOT RUN, T20 explicit GO required",
+    "root_patch_application": false,
+    "candidate_patch_application": false
+  },
+  "file_hash_pairs": {
+    "src/local_ai_hub/embeddings.py": {"root_current_preimage_sha256": "A3E04B9D1623979AECEB95643F74A7405E2C3739ECA82EB815E0299CB6F57E16", "candidate_working_sha256": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170"},
+    "src/local_ai_hub/rag.py": {"root_current_preimage_sha256": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27", "candidate_working_sha256": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A"},
+    "tests/test_rag_hybrid.py": {"root_current_preimage_sha256": "3A6C0BF3A388DBE0C472ED056E1820BB4452E1B1139BC9E9C3D75AE05CB06D38", "candidate_working_sha256": "8396D5A114D14BAEBFEAF9022E6C569D3B475DEA8D9075794195DB13DFFDC75E"},
+    "tests/test_rag_fragment_cache.py": {"root_current_preimage_sha256": "4C08E7EDD5845F2907DDD3D1F12D30D6A22EC5E8D887327CDCB734579223D9B6", "candidate_working_sha256": "A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002"},
+    "tests/test_t11_rag_ingestion_contract.py": {"root_current_preimage_sha256": "4876D98A26B9EB26701A841799BA088F3DAC3021B842A2B55945F53641306914", "candidate_working_sha256": "5379581182535E3A2696FF2E437BC11ABB8A31F17049A828AFDE93455660EC1F"},
+    "tests/test_t11_rag_seed_integrity.py": {"root_current_preimage_sha256": "1EAEBD71367CB99BCA2B1263EEF195EF892CDA3A215A743E7CE64C02843FDD30", "candidate_working_sha256": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02"},
+    "tests/test_rag_quality_contract.py": {"root_current_preimage_sha256": "9B8D07437E99C6DCA71A5F2ED6CC8C2771810253B671FCDED3D4EB113E63B91F", "candidate_working_sha256": "EF90FC86269D89FFDB6E5CC508BF54917D4A6ED2243447E85DE372B94D5CF3E9"}
+  },
+  "historical_candidate_test_receipt": {
+    "path": "handoff/t11-p1-runtime-fix-20261003/offline-suite-receipt.json",
+    "receipt_file_sha256": "83E99ACD054D521B4AEE68C18D630762E2B0BEB138C8BCDA4C402705D4EB9FCF",
+    "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+    "result": "183 passed, 3 skipped in 42.04s; exit 0",
+    "input_hashes_current": "13/15 match; tests/test_rag_quality_contract.py and tests/test_t11_rag_ingestion_contract.py changed since receipt",
+    "classification": "historical only; does not verify current candidate postimages"
+  },
+  "historical_privacy_selector_receipt": {
+    "path": "handoff/T11-CPU-SLOT-20261002-11/03-slot-closeout.receipt.json",
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_telemetry_contract.py::test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields",
+    "result": "1 passed in 0.22s; exit 0",
+    "test_file_sha256_current_match": "6138EBED767982A57FC279FE96576CC646DF12F2B87E5C0C171BD8FA571029DB",
+    "classification": "historical selector pass; current implementation acceptance not claimed"
+  },
+  "unverified_acceptance": [
+    "Current five-selector focused suite has not run; T20 GO absent.",
+    "Current offline T11 suite has not run after the two test-file changes.",
+    "100k retrieval/peak-memory and ingestion-batch benchmarks remain unrun for current candidate hashes.",
+    "Live reranker/GPU quality remains unverified.",
+    "Privacy selector has historical pass, but current implementation-level privacy acceptance is not claimed.",
+    "T21 project_config/policy consumer integration remains excluded pending owner handoff and lease review.",
+    "Root-current patches are preflighted only; no root or candidate patch application occurred."
+  ],
+  "test_hunk_policy": "append only candidate-only T11 functions; preserve all root-only tests; exclude T21 project_config and project-policy consumers"
+}

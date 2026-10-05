@@ -1,0 +1,32 @@
+diff --git a/src/local_ai_hub/preprocess.py b/src/local_ai_hub/preprocess.py
+--- a/src/local_ai_hub/preprocess.py
++++ b/src/local_ai_hub/preprocess.py
+@@ -1910,6 +1910,12 @@
+                     con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
+                 except sqlite3.OperationalError:
+                     pass
++            for rel in content_changed.difference(deleted):
++                con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
++                try:
++                    con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
++                except sqlite3.OperationalError:
++                    pass
+             for rel, (size, mtime_ns) in present.items():
+                 existing = old.get(rel)
+                 old_hash = str(existing["content_hash"] or "") if existing else ""
+@@ -1920,13 +1926,14 @@
+                 stored_hash = digest or old_hash
+                 needs_hash = int(not digest)
+                 stored_card = old_card if content_same else None
++                stored_rag_hash = old_rag_hash if content_same else None
+                 con.execute(
+                     """INSERT INTO file_refs(root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,generation,card_key,updated_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(root,path) DO UPDATE SET
+                        content_hash=excluded.content_hash,size=excluded.size,mtime_ns=excluded.mtime_ns,
+                        needs_hash=excluded.needs_hash,rag_hash=excluded.rag_hash,generation=excluded.generation,
+                        card_key=excluded.card_key,updated_at=excluded.updated_at""",
+-                    (root, rel, stored_hash, size, mtime_ns, needs_hash, old_rag_hash, generation, stored_card, now),
++                    (root, rel, stored_hash, size, mtime_ns, needs_hash, stored_rag_hash, generation, stored_card, now),
+                 )
+             if major:
+                 con.execute("DELETE FROM module_cards WHERE root=?", (root,))

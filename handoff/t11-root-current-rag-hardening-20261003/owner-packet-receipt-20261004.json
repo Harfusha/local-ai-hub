@@ -1,0 +1,59 @@
+{
+  "task": "T11 RAG hardening handoff",
+  "captured_at": "2026-10-04",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "changed_paths": {
+      "src/local_ai_hub/rag.py": {
+        "pre_sha256": "6DF666C2DC877D69FF8DF8F6A089C15533247FF95BA896F644720F0FA3AA85D5",
+        "post_sha256": "C0D562897DA5B080157538A9BFAC9683906EB12D19ABF6963DB9BD2B0D886BA9"
+      },
+      "tests/test_t11_rag_ingestion_contract.py": {
+        "pre_sha256": "5379581182535E3A2696FF2E437BC11ABB8A31F17049A828AFDE93455660EC1F",
+        "post_sha256": "A5C2C6B7BD5C6E1C7383DEAFDB6070FCC212DF335DEFDA9C21ED3B9398CAC7B8"
+      }
+    }
+  },
+  "root_owner_checkout": {
+    "root": "C:\\Users\\Adam\\.local-ai-hub",
+    "head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+    "written": false,
+    "preimages_sha256": {
+      "src/local_ai_hub/rag.py": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27",
+      "src/local_ai_hub/embeddings.py": "A3E04B9D1623979AECEB95643F74A7405E2C3739ECA82EB815E0299CB6F57E16",
+      "tests/test_t11_rag_ingestion_contract.py": "4876D98A26B9EB26701A841799BA088F3DAC3021B842A2B55945F53641306914"
+    }
+  },
+  "change": "Reject document ingestion if embedding_space_id changes between batches, before publishing any partial document snapshot.",
+  "validation": {
+    "new_selector": {
+      "name": "tests/test_t11_rag_ingestion_contract.py::test_document_ingest_rejects_embedding_space_change_between_batches_and_preserves_snapshot",
+      "red": "1 failed before guard; reproduced incorrect successful publication",
+      "green": "1 passed in 2.54s"
+    },
+    "existing_selector": {
+      "name": "tests/test_t11_rag_ingestion_contract.py::test_full_index_fts_write_failure_keeps_previous_snapshot",
+      "status": "PASS; included in targeted command reporting 6 passed in 14.25s"
+    },
+    "offline_candidate_suite": "161 passed, 1 skipped (live Ollama), 2 deselected in 49.75s",
+    "paired_benchmark": "PENDING_EXPLICIT_T20_CPU_SLOT_GO; no paired benchmark run or result"
+  },
+  "owner_patches": [
+    {
+      "path": "t11-root-document-space-consistency-production-20261004.patch",
+      "sha256": "AFF638181BDAF38B410BE6E843D015B7A149304B122A65DB00D9277307A1B5FF",
+      "root_apply_check": "PASS; git apply --check --recount; patch not applied"
+    },
+    {
+      "path": "t11-root-document-space-consistency-test-20261004.patch",
+      "sha256": "9127B24FF55B7FB703D72A31F728972D065286BBD83C66FFF6A9041D6642FA84",
+      "root_apply_check": "PASS; git apply --check --recount; patch not applied"
+    }
+  ],
+  "cpu_slot": {
+    "t20_explicit_go_found": false,
+    "paired_benchmark_plan": "paired-benchmark-plan-20261004.json",
+    "plan_sha256": "9E501B130E0DF658163948DFE8A1FF48942CBCEB66551A4DFC9817757A3FDA04"
+  }
+}

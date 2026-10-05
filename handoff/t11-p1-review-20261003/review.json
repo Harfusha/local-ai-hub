@@ -1,0 +1,52 @@
+{
+  "schema": "t11-independent-read-only-review-v1",
+  "date": "2026-10-03",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "t11_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "patch_sha256": "ECB3FB752A3ADE63D7F77B6166DA9189350CAAC3BC2240C21BFF694EBD856955",
+  "patch_paths": [
+    "src/local_ai_hub/embeddings.py",
+    "src/local_ai_hub/reranker.py",
+    "tests/test_rag_fragment_cache.py",
+    "tests/test_rag_hybrid.py",
+    "tests/test_rag_quality_contract.py"
+  ],
+  "patch_excludes_rag_py": true,
+  "receipt_sha256": "8C6EF884ED0B51F4A009BB5FF909B7B6E2DFD918DB131CC37B4B995AD6DDDE99",
+  "offline_suite_receipt_sha256": "83E99ACD054D521B4AEE68C18D630762E2B0BEB138C8BCDA4C402705D4EB9FCF",
+  "t11_rag_sha256": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+  "root_rag_sha256": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27",
+  "candidate_method_lines": {
+    "index": {
+      "start": 901,
+      "end": 949
+    },
+    "index_paths_step": {
+      "start": 1302,
+      "end": 1700
+    }
+  },
+  "root_method_lines": {
+    "index": {
+      "start": 792,
+      "end": 840
+    },
+    "index_paths_step": {
+      "start": 1187,
+      "end": 1564
+    }
+  },
+  "static_checks": {
+    "candidate_index_uses_changed_indices": false,
+    "candidate_path_step_has_space_before_record": true,
+    "root_index_changed_texts_lifecycle_complete": false,
+    "root_path_step_space_initialized_before_record": true
+  },
+  "included_root_preimages_match_receipt": true,
+  "read_only_git_apply_check": "pass",
+  "read_only_git_apply_error": null,
+  "root_modified_by_this_review": false,
+  "test_or_benchmark_run": false,
+  "t04_thread": "01a0d30b-ffee-7fa2-bc6e-f4ec9af0a95b",
+  "t04_status_at_review": "active; test gate remains closed"
+}

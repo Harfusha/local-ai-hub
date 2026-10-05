@@ -1,0 +1,125 @@
+diff --git a/src/local_ai_hub/embeddings.py b/src/local_ai_hub/embeddings.py
+--- a/src/local_ai_hub/embeddings.py
++++ b/src/local_ai_hub/embeddings.py
+@@ -38,7 +38,6 @@
+         self.batch_size = max(1, int(cpu_cfg.get("embedding_batch_size", 32)))
+         self._model = None
+         self._load_lock = threading.Lock()
+-        self._encoder_lock = threading.RLock()
+         self._cpu_gate = CooperativePriorityGate(int(cpu_cfg.get("foreground_priority", 3)))
+         self._load_error: str | None = None
+         self._load_error_time: float = 0.0
+@@ -350,6 +349,7 @@
+                         raise
+                     fallback_kwargs = dict(kwargs)
+                     fallback_kwargs["trust_remote_code"] = False
++                    fallback_kwargs.pop("revision", None)
+                     loaded_model_name = "BAAI/bge-small-en-v1.5"
+                     model = SentenceTransformer(loaded_model_name, **fallback_kwargs)
+                 if hasattr(model, "max_seq_length"):
+@@ -440,9 +440,12 @@
+ 
+     def _encode_st_batch(self, batch_texts: list[str], *, query: bool, priority: int) -> tuple[list[list[float]] | None, str]:
+         with self._encoder_lock:
++            self._execution_local.snapshot = None
+             return self._encode_st_batch_locked(batch_texts, query=query, priority=priority)
+ 
+-    def _encode_st_batch_locked(self, batch_texts: list[str], *, query: bool, priority: int) -> tuple[list[list[float]] | None, str]:
++    def _encode_st_batch_locked(
++        self, batch_texts: list[str], *, query: bool, priority: int
++    ) -> tuple[list[list[float]] | None, str]:
+         while True:
+             if self._model is None and not self._ensure_st_model(ollama_fallback=self.backend == "ollama"):
+                 return None, self.active_backend or "sentence-transformers"
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -942,7 +942,6 @@
+         read_files = 0
+         reused_chunks = 0
+         changed_indices: list[int] = []
+-        changed_texts: list[str] = []
+         rag_cfg = self.config.get("rag", {})
+         dedup_near_duplicates = bool(rag_cfg.get("dedup_near_duplicates", True))
+         max_hamming = int(rag_cfg.get("near_duplicate_max_hamming", 4))
+@@ -994,13 +993,12 @@
+                 changed_records.append(record)
+                 if record["embedding"] is None:
+                     changed_indices.append(idx)
+-                    changed_texts.append(chunk)
+                 else:
+                     reused_chunks += 1
+ 
+         self._publish_workspace_read_uncertainty(scope_key, workspace, read_uncertain_paths)
+ 
+-        if changed_texts:
++        if changed_indices:
+             # Cross-workspace chunk reuse check
+             pending_by_hash: dict[str, list[int]] = {}
+             for idx in changed_indices:
+@@ -1021,7 +1019,6 @@
+ 
+             if global_chunks:
+                 still_indices: list[int] = []
+-                still_texts: list[str] = []
+                 for chash, indices in pending_by_hash.items():
+                     if chash in global_chunks:
+                         for idx in indices:
+@@ -1031,14 +1028,11 @@
+                     else:
+                         first_idx = indices[0]
+                         still_indices.append(first_idx)
+-                        still_texts.append(str(changed_records[first_idx]["text"]))
+                 changed_indices = still_indices
+-                changed_texts = still_texts
+             else:
+                 changed_indices = [indices[0] for indices in pending_by_hash.values()]
+-                changed_texts = [str(changed_records[idx]["text"]) for idx in changed_indices]
+-
+-        if changed_texts:
++
++        if changed_indices:
+             observed_embedding_space: str | None = None
+             for offset in range(0, len(changed_indices), _INDEX_EMBED_BATCH_SIZE):
+                 batch_indices = changed_indices[offset:offset + _INDEX_EMBED_BATCH_SIZE]
+@@ -1073,16 +1067,17 @@
+         def publish() -> None:
+             with self._get_workspace_lock(workspace), closing(self._connect()) as con:
+                 con.execute("BEGIN IMMEDIATE")
++                fts_exists = con.execute(
++                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
++                ).fetchone()
+                 successfully_read_paths = {str(row[0]) for row in file_rows}
+                 publish_paths = deleted_paths + [rel for rel in changed_paths if rel in successfully_read_paths]
+                 del_paths = [(scope_key, workspace, rel) for rel in publish_paths]
+                 if del_paths:
+                     con.executemany("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                     con.executemany("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", del_paths)
+-                    try:
++                    if fts_exists:
+                         con.executemany("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", del_paths)
+-                    except Exception:
+-                        pass
+                 con.executemany(
+                     "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+                     [
+@@ -1090,10 +1085,19 @@
+                         for r in changed_records
+                     ],
+                 )
++                if fts_exists:
++                    con.executemany(
++                        "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++                        [
++                            (scope_key, workspace, record["path"], record["chunk_no"], record["text"])
++                            for record in changed_records
++                        ],
++                    )
+                 con.executemany(
+                     "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+                     [(scope_key, workspace, rel, mtime_ns, size, file_hash) for rel, mtime_ns, size, file_hash in file_rows],
+                 )
++                self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
+                 uncertainty_changed = self._update_workspace_read_uncertainty(
+                     con, scope_key, workspace,
+                     uncertain_paths=read_uncertain_paths,

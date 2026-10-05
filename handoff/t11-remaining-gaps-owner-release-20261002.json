@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-02",
+  "task": "T11 criteria reconciliation and T21 owner release request",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "status": "OFFLINE CRITERIA RECEIPTED; PERFORMANCE GATES AND T21 OWNER SCOPE OPEN",
+  "acceptance_source": {
+    "path": "docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md",
+    "t11_lines": "252-263",
+    "sha256": "c9bd0321715d245ba0f8399086c9d7b4394acd4ebba8cd8bcddc55d74e94352d"
+  },
+  "evidence": {
+    "slot05_project_config_consumers": {
+      "path": "handoff/T11-CPU-SLOT-20261002-05/01-project-config-consumers.receipt.json",
+      "sha256": "46d53337f90d48193495f8d260cef1b3b2992ba692c1ce122098c363f7107138",
+      "result": "93 passed in 6.63s",
+      "project_config_sha256": "ffd425b1260b285f25b1d121a7c6bcd585c618b5c7e26415e2ad0a7014196b0b",
+      "test_project_config_sha256": "0196d8fa417dd2b56bfc0d143217d25e2986e1b1b1df6ceffadd3c0eeb9fbcea"
+    },
+    "slot11_privacy": {
+      "receipt": "handoff/T11-CPU-SLOT-20261002-11/01-privacy-selector.receipt.json",
+      "receipt_sha256": "fdbe7d119612bf4658120dede2f2ae2cca2c851155bfbea9e272e641647fc110",
+      "result": "1 passed in 0.22s",
+      "test_sha256": "6138ebed767982a57fc279fe96576cc646df12f2b87e5c0c171bd8fa571029db",
+      "route": "Native pytest under direct user authorization to ignore broken Local AI Hub."
+    },
+    "slot11_offline": {
+      "receipt": "handoff/T11-CPU-SLOT-20261002-11/02-offline-suite.receipt.json",
+      "receipt_sha256": "33134d8b2cfca594c703fba46aac32470cfb93e24a7534b8d9b47335dfcf41d8",
+      "log": "handoff/T11-CPU-SLOT-20261002-11/02-offline-suite.log",
+      "log_sha256": "5d2b7436279a5589967f2b6baec5689e55e4708462ae920291a89017c642493a",
+      "result": "179 passed, 3 skipped in 48.76s",
+      "input_pins": "18 pre-run matches; post-run recheck reported 18 matches and 0 mismatches.",
+      "skips": [
+        "100k RAG retrieval benchmark gated by RAG_BENCHMARK=1",
+        "live Ollama reranker verification gated by T11_REAL_OLLAMA=1",
+        "synthetic RAG seed benchmark gated by T11_RAG_BENCHMARK=1"
+      ],
+      "route": "Native pytest under direct user authorization; no benchmark run."
+    },
+    "slot11_closeout": {
+      "path": "handoff/T11-CPU-SLOT-20261002-11/03-slot-closeout.receipt.json",
+      "sha256": "9da5806fa7763d8788fe06bc5e4a1aa20e55d59ed7c35d8d9e1572be6609e1ab",
+      "t20_release_acknowledged": true
+    },
+    "performance_provenance": {
+      "path": "handoff/t11-performance-provenance-20261002.json",
+      "sha256": "a64a611751856096cd8049acdcad7e464ab2e227da80beb509eb6e6c13550137",
+      "current_rag_sha256": "f47259dafc72c6a584f53d84e51fac270ce0969e48ec3cdb58c1cceb6f554992",
+      "current_quality_test_sha256": "0a82654d5bba505f69437037e8f906defaf5f983aca0305445e11f0854bbd9c5",
+      "result": "Current candidate lacks a fresh 100k benchmark receipt; historical RED/green results do not bind current hashes."
+    }
+  },
+  "criterion_status": [
+    {
+      "id": "T11-1-vector-scan-memory-performance",
+      "state": "OPEN",
+      "gap": "Fresh 100k latency/peak-memory matrix needed for current hashes; historical RED was 1698.727ms and older unbound green was 353.797ms against 750ms limit."
+    },
+    {
+      "id": "T11-2-atomic-index-publish",
+      "state": "OFFLINE CONTRACTS PASS; LIVE/PERFORMANCE GATES OPEN",
+      "gap": "Current offline ingestion/read-bound/cancellation/publish tests passed; benchmark-only seed measurement skipped."
+    },
+    {
+      "id": "T11-3-embedding-identity-isolation",
+      "state": "OFFLINE CONTRACTS PASS",
+      "gap": "No specific offline failure; final acceptance remains contingent on broader T11 completion and current benchmark gates."
+    },
+    {
+      "id": "T11-4-truthful-backend-and-zero-vectors",
+      "state": "OFFLINE CONTRACTS PASS; LIVE RERANKER PROBE OPEN",
+      "gap": "Current offline contract tests passed; current-hash live reranker timing/truthfulness probe still needs its own explicit slot."
+    },
+    {
+      "id": "T11-5-explicit-ingestion-contracts",
+      "state": "OFFLINE CONTRACTS PASS",
+      "gap": "Raster metadata-only and SVG bounded extraction contracts covered; live OCR/vision intentionally absent."
+    },
+    {
+      "id": "T11-6-relevance-retry-and-publish-edge-cases",
+      "state": "OFFLINE CONTRACTS PASS",
+      "gap": "Golden relevance, dedup, retry and disk/publish failure selectors were in the passing offline suite; measured retrieval parameters remain open."
+    },
+    {
+      "id": "T11-completion-performance",
+      "state": "OPEN",
+      "gap": "Fresh 100k benchmark and separate live reranker probe pending; T07 replay-safety broker selectors remain UNKNOWN."
+    },
+    {
+      "id": "privacy-telemetry",
+      "state": "SELECTOR PASS; POLICY SCOPE RESOLVED",
+      "gap": "No remaining telemetry failure evidenced; RAG image_path is outside current written telemetry-only path prohibition."
+    },
+    {
+      "id": "T21-project-config",
+      "state": "CURRENT TRANSFER AND TESTS PASS; POSSIBLE EXTRA OWNER TESTS UNRESOLVED",
+      "gap": "f678 source/test still match approved T21 checkout and project-config plus consumers passed. Read-only comparison against primary root found 3 test names only in root and 4 only in f678; root source differs from the approved T21 checkout. T21 owner thread is idle and says it has no direct approval for root tests. No patch was released to f678."
+    }
+  ],
+  "t21_test_delta": {
+    "approved_t21_checkout": {
+      "root": "C:\\Users\\Adam\\.codex\\worktrees\\t21-project-config\\.local-ai-hub",
+      "project_config_sha256": "ffd425b1260b285f25b1d121a7c6bcd585c618b5c7e26415e2ad0a7014196b0b",
+      "test_project_config_sha256": "0196d8fa417dd2b56bfc0d143217d25e2986e1b1b1df6ceffadd3c0eeb9fbcea"
+    },
+    "f678_current": {
+      "project_config_sha256": "ffd425b1260b285f25b1d121a7c6bcd585c618b5c7e26415e2ad0a7014196b0b",
+      "test_project_config_sha256": "0196d8fa417dd2b56bfc0d143217d25e2986e1b1b1df6ceffadd3c0eeb9fbcea",
+      "test_count": 67
+    },
+    "primary_root_comparison": {
+      "root": "C:\\Users\\Adam\\.local-ai-hub",
+      "project_config_sha256": "4238b6a6de1de00f55f4679ce0df7d431522ec1bafabfa272258c1662f13f713",
+      "test_project_config_sha256": "90a66b610b84faddf178147321362db91139ffce0fdc680e01aad9fbd1866270",
+      "test_count": 66,
+      "root_only_test_names": [
+        "test_verification_rules_reject_undefined_command_aliases",
+        "test_language_override_rejects_unknown_nested_keys",
+        "test_most_specific_path_override_wins_across_symlink_alias_and_target"
+      ],
+      "f678_only_test_names": [
+        "test_config_overlay_accepts_256_kib_and_rejects_one_byte_more",
+        "test_verification_rule_rejects_unknown_command_alias",
+        "test_path_override_specificity_is_shared_across_symlink_alias_and_target",
+        "test_project_config_precedence_covers_primary_linked_common_and_worktree_layers"
+      ],
+      "path_test_note": "Root-only path test uses src/main.py plus vendor/main.py alias; f678 test uses generated/src/module plus alias/module. Similar topic, different fixture contract; owner must say replace or keep both."
+    }
+  },
+  "minimal_owner_release_request": "T21 owner: confirm whether the three primary-root-only tests belong in T11 f678: test_verification_rules_reject_undefined_command_aliases, test_language_override_rejects_unknown_nested_keys, test_most_specific_path_override_wins_across_symlink_alias_and_target. For the path test, state whether it replaces or complements f678's test_path_override_specificity_is_shared_across_symlink_alias_and_target. If approved, provide exact test-only patch SHA, current f678 base SHA, postimage SHA, and apply-check evidence. Primary-root project_config.py SHA 4238b6... differs from approved T21/f678 SHA ffd425...; identify any required source hunk separately and request approval for that scope. No T21/root files may be copied or edited before explicit owner release and T20 slot assignment.",
+  "next_required_slots": [
+    "T11 exclusive 100k no-reranker retrieval/peak-memory benchmark slot",
+    "Separate T11 live reranker latency slot",
+    "T20/T02 release slot for any owner-released additional T21 regression tests"
+  ],
+  "latest_coordinator_observation": {
+    "observed": "2026-10-02",
+    "t21_slot14": "Released by T20 after 5 passed, 69 deselected; receipt SHA reported as 69D46E50B5B86DC4F241A00FF034387518B387FA61E051F64FC02FCBB29872FC.",
+    "t02_manifest": "T02-CPU-20261002-05 is review-only; T15 harness/test pins are stale versus T02 worktree, current runnable pins and benchmark slot absent. Preserve partial T02 -04; do not reuse either output for T11.",
+    "t11_queue": "T20 requested T11 100k matrix after critical slots 15-18; no T11 benchmark assignment observed. Live reranker remains a separate later slot.",
+    "t11_current_benchmark_inputs": {
+      "rag_sha256": "f47259dafc72c6a584f53d84e51fac270ce0969e48ec3cdb58c1cceb6f554992",
+      "quality_test_sha256": "0a82654d5bba505f69437037e8f906defaf5f983aca0305445e11f0854bbd9c5"
+    }
+  },
+  "side_effects": "Receipt only; no source changes, tests, or benchmarks in this reconciliation."
+}

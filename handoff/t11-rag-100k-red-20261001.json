@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "benchmark": "rag_retrieval_latency_and_peak_memory",
+  "status": "FAIL",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "rag_sha256": "CB4362E19E316B22C020A7AF3706E55DF278BE95C508750EBBB9469C5C97FFA9",
+    "test_sha256": "B7DC4FC939E63152C7904B10DCDA666FC5916E5FC6DE3707FEE718D4E18B6825"
+  },
+  "command": "python -B -m pytest -q -s --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline",
+  "environment": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "RAG_BENCHMARK": "1",
+    "RAG_BENCHMARK_RECEIPT": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-rag-100k-green-20261001.json"
+  },
+  "elapsed_seconds": 57.47,
+  "corpus_chunks": 100000,
+  "dimension": 384,
+  "configured_batch_size": 512,
+  "measured_samples": 20,
+  "observed_p95_ms": 1698.727,
+  "acceptance_limit_ms": 750.0,
+  "failure": "100k retrieval p95 exceeded 750 ms for batch 512",
+  "receipt_note": "The benchmark raised at the first failing 100k assertion before its normal JSON receipt write. This evidence receipt records the exact failure shown by pytest; remaining metric rows were not persisted. No retry was run."
+}

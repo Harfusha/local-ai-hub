@@ -1,0 +1,13 @@
+diff --git a/tests/test_rag_hybrid.py b/tests/test_rag_hybrid.py
+--- a/tests/test_rag_hybrid.py
++++ b/tests/test_rag_hybrid.py
+@@ -102,6 +102,9 @@
+     root = tmp_path / "project"
+     root.mkdir()
+     (root / "locked.py").write_text("def locked():\n    return 1\n", encoding="utf-8")
++    store._sync_workspace_project_policy_identity(
++        root, store._scope_key("test_tenant"), "locked-workspace", store.project_context(root)
++    )
+ 
+     state = {"failures": 1, "begins": 0}
+ 

@@ -1,0 +1,48 @@
+diff --git a/tests/test_t11_rag_ingestion_contract.py b/tests/test_t11_rag_ingestion_contract.py
+index 9a8c073..328f43d 100644
+--- a/tests/test_t11_rag_ingestion_contract.py
++++ b/tests/test_t11_rag_ingestion_contract.py
+@@ -220,6 +220,44 @@ def test_document_ingest_replay_replaces_one_stable_document_snapshot(tmp_path):
+     assert chunks == second["chunks_ingested"]
+ 
+ 
++def test_document_ingest_rejects_embedding_space_change_between_batches_and_preserves_snapshot(
++    tmp_path, monkeypatch
++):
++    monkeypatch.setattr("local_ai_hub.rag._INDEX_EMBED_BATCH_SIZE", 1)
++    store = _store(tmp_path)
++
++    class _SwitchingServices:
++        def __init__(self):
++            self.mode = "stable"
++            self.transition_calls = 0
++
++        def embed(self, texts, _tenant, **_kwargs):
++            if self.mode == "stable":
++                space = "document-stable-space"
++            else:
++                self.transition_calls += 1
++                space = "document-space-a" if self.transition_calls == 1 else "document-space-b"
++            return {
++                "success": True,
++                "embedding_space_id": space,
++                "embeddings": [[0.25, 0.75] for _ in texts],
++            }
++
++    services = _SwitchingServices()
++    store.services = services
++    title = "Embedding Space Change"
++    previous = store.ingest_document("specs", "old section " * 400, title=title)
++    assert previous["success"] is True
++    before = _rag_snapshot(store, "default", "specs")
++
++    services.mode = "change"
++    result = store.ingest_document("specs", "new section " * 400, title=title)
++
++    assert result["success"] is False
++    assert result["error"] == "embedding_space_changed_during_document_ingest"
++    assert result["retryable"] is False
++    assert services.transition_calls == 2
++    assert _rag_snapshot(store, "default", "specs") == before
+ def test_document_ingest_retries_publish_busy_without_reembedding(tmp_path, monkeypatch):
+     store = _store(tmp_path)

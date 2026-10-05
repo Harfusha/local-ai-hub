@@ -1,0 +1,55 @@
+{
+  "manifest": "t11-rag-isolation-v3",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "owner": "T11"
+  },
+  "integration_boundary": {
+    "root_checkout": "C:\\Users\\Adam\\.local-ai-hub",
+    "owner": "T20",
+    "root_edited_or_tested": false,
+    "local_ai_hub_used": false
+  },
+  "pins": [
+    {
+      "path": "handoff/t11-root-current-rag-isolation-v3-production.patch",
+      "sha256": "afac10c2903ff46613bdcd9e7cc6fb831315e4fa145aa48b7356cf226e2eaa42"
+    },
+    {
+      "path": "handoff/t11-root-current-rag-isolation-v3-tests.patch",
+      "sha256": "cd2922e6c746eb08d21a99bc96f8cd7e17d044c0951928ce7118f405a025b224"
+    },
+    {
+      "path": "handoff/t11-root-current-rag-isolation-v3-validation.md",
+      "sha256": "14395240e6e8666c7dabc54e7e20afd1685463336135bdddfacf261af0af7d43"
+    }
+  ],
+  "source_preimage_sha256": {
+    "src/local_ai_hub/rag.py": "23bee629da1b9f4ba555fe64d031701553118f4cc3b55d8421fdc8d3885626de",
+    "tests/test_rag_hybrid.py": "fe3d476c2ead5e0c9e5155eb6bedc758e7489b60bbbacbedbe807b87b1a66e1f",
+    "tests/test_rag_fragment_cache.py": "a20136ff7eb60f7b85e15f0ca3c5afdb50fe6e042d1f0bdea16500d23e5c1623",
+    "tests/test_rag_read_bounds.py": "6e6ce0f1e93114579f6e2ba16aa3231d806f69506cb4be5e368622b0e6a57e7c"
+  },
+  "receipts": [
+    {
+      "scope": "candidate targeted regressions",
+      "result": "21 passed in 6.70s",
+      "status": "historical receipt"
+    },
+    {
+      "scope": "fresh root-copy overlay of v3 production and tests",
+      "result": "31 passed in 7.15s",
+      "status": "historical receipt; root checkout was not edited or tested"
+    }
+  ],
+  "acceptance": {
+    "status": "partial",
+    "remaining": [
+      "T20 integration of pinned v3 patches",
+      "remaining bounded T11 RAG failure and embedding-space acceptance",
+      "end-to-end acceptance and valid completion receipts"
+    ],
+    "gpu_or_100k_benchmark": "out of scope"
+  }
+}

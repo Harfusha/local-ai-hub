@@ -1,0 +1,245 @@
+{
+  "benchmark": "rag_retrieval_latency_and_peak_memory",
+  "complexity_guard": "each search scored every corpus row with dot-product batches bounded by search_batch_size",
+  "complexity_probes": [
+    {
+      "chunks": 1024,
+      "max_scoring_batch_rows": 512,
+      "scored_chunks": 1024,
+      "scoring_batches": 2,
+      "search_batch_size": 512
+    },
+    {
+      "chunks": 1024,
+      "max_scoring_batch_rows": 1024,
+      "scored_chunks": 1024,
+      "scoring_batches": 1,
+      "search_batch_size": 2048
+    },
+    {
+      "chunks": 1024,
+      "max_scoring_batch_rows": 1024,
+      "scored_chunks": 1024,
+      "scoring_batches": 1,
+      "search_batch_size": 4096
+    },
+    {
+      "chunks": 1024,
+      "max_scoring_batch_rows": 1024,
+      "scored_chunks": 1024,
+      "scoring_batches": 1,
+      "search_batch_size": 8192
+    },
+    {
+      "chunks": 16384,
+      "max_scoring_batch_rows": 512,
+      "scored_chunks": 16384,
+      "scoring_batches": 32,
+      "search_batch_size": 512
+    },
+    {
+      "chunks": 16384,
+      "max_scoring_batch_rows": 2048,
+      "scored_chunks": 16384,
+      "scoring_batches": 8,
+      "search_batch_size": 2048
+    },
+    {
+      "chunks": 16384,
+      "max_scoring_batch_rows": 2730,
+      "scored_chunks": 16384,
+      "scoring_batches": 7,
+      "search_batch_size": 4096
+    },
+    {
+      "chunks": 16384,
+      "max_scoring_batch_rows": 2730,
+      "scored_chunks": 16384,
+      "scoring_batches": 7,
+      "search_batch_size": 8192
+    },
+    {
+      "chunks": 100000,
+      "max_scoring_batch_rows": 512,
+      "scored_chunks": 100000,
+      "scoring_batches": 196,
+      "search_batch_size": 512
+    },
+    {
+      "chunks": 100000,
+      "max_scoring_batch_rows": 2048,
+      "scored_chunks": 100000,
+      "scoring_batches": 49,
+      "search_batch_size": 2048
+    },
+    {
+      "chunks": 100000,
+      "max_scoring_batch_rows": 2730,
+      "scored_chunks": 100000,
+      "scoring_batches": 37,
+      "search_batch_size": 4096
+    },
+    {
+      "chunks": 100000,
+      "max_scoring_batch_rows": 2730,
+      "scored_chunks": 100000,
+      "scoring_batches": 37,
+      "search_batch_size": 8192
+    }
+  ],
+  "corpus_counts": [
+    1024,
+    16384,
+    100000
+  ],
+  "dimension": 384,
+  "dtype": "float32",
+  "measured_samples": {
+    "100000": 20,
+    "1024": 5,
+    "16384": 5
+  },
+  "metrics": [
+    {
+      "chunks": 1024,
+      "chunks_per_second": 153892.39,
+      "measured_samples": 5,
+      "median_ms": 6.654,
+      "p95_ms": 6.764,
+      "peak_traced_mib": 2.435,
+      "search_batch_size": 512,
+      "vector_batch_buffer_mib": 0.75,
+      "warmup_samples": 2
+    },
+    {
+      "chunks": 1024,
+      "chunks_per_second": 157735.02,
+      "measured_samples": 5,
+      "median_ms": 6.492,
+      "p95_ms": 6.624,
+      "peak_traced_mib": 4.694,
+      "search_batch_size": 2048,
+      "vector_batch_buffer_mib": 3.0,
+      "warmup_samples": 2
+    },
+    {
+      "chunks": 1024,
+      "chunks_per_second": 153760.68,
+      "measured_samples": 5,
+      "median_ms": 6.66,
+      "p95_ms": 9.478,
+      "peak_traced_mib": 4.694,
+      "search_batch_size": 4096,
+      "vector_batch_buffer_mib": 6.0,
+      "warmup_samples": 2
+    },
+    {
+      "chunks": 1024,
+      "chunks_per_second": 155339.81,
+      "measured_samples": 5,
+      "median_ms": 6.592,
+      "p95_ms": 6.614,
+      "peak_traced_mib": 4.694,
+      "search_batch_size": 8192,
+      "vector_batch_buffer_mib": 12.0,
+      "warmup_samples": 2
+    },
+    {
+      "chunks": 16384,
+      "chunks_per_second": 499376.69,
+      "measured_samples": 5,
+      "median_ms": 32.809,
+      "p95_ms": 33.157,
+      "peak_traced_mib": 2.444,
+      "search_batch_size": 512,
+      "vector_batch_buffer_mib": 0.75,
+      "warmup_samples": 2
+    },
+    {
+      "chunks": 16384,
+      "chunks_per_second": 362888.13,
+      "measured_samples": 5,
+      "median_ms": 45.149,
+      "p95_ms": 46.118,
+      "peak_traced_mib": 9.798,
+      "search_batch_size": 2048,
+      "vector_batch_buffer_mib": 3.0,
+      "warmup_samples": 2
+    },
+    {
+      "chunks": 16384,
+      "chunks_per_second": 361841.45,
+      "measured_samples": 5,
+      "median_ms": 45.28,
+      "p95_ms": 47.735,
+      "peak_traced_mib": 13.179,
+      "search_batch_size": 4096,
+      "vector_batch_buffer_mib": 6.0,
+      "warmup_samples": 2
+    },
+    {
+      "chunks": 16384,
+      "chunks_per_second": 308498.2,
+      "measured_samples": 5,
+      "median_ms": 53.109,
+      "p95_ms": 63.985,
+      "peak_traced_mib": 13.179,
+      "search_batch_size": 8192,
+      "vector_batch_buffer_mib": 12.0,
+      "warmup_samples": 2
+    },
+    {
+      "chunks": 100000,
+      "chunks_per_second": 356632.81,
+      "measured_samples": 20,
+      "median_ms": 280.4,
+      "p95_ms": 353.797,
+      "peak_traced_mib": 2.459,
+      "search_batch_size": 512,
+      "vector_batch_buffer_mib": 0.75,
+      "warmup_samples": 2
+    },
+    {
+      "chunks": 100000,
+      "chunks_per_second": 360181.57,
+      "measured_samples": 20,
+      "median_ms": 277.638,
+      "p95_ms": 318.885,
+      "peak_traced_mib": 9.879,
+      "search_batch_size": 2048,
+      "vector_batch_buffer_mib": 3.0,
+      "warmup_samples": 2
+    },
+    {
+      "chunks": 100000,
+      "chunks_per_second": 355867.77,
+      "measured_samples": 20,
+      "median_ms": 281.003,
+      "p95_ms": 302.532,
+      "peak_traced_mib": 13.222,
+      "search_batch_size": 4096,
+      "vector_batch_buffer_mib": 6.0,
+      "warmup_samples": 2
+    },
+    {
+      "chunks": 100000,
+      "chunks_per_second": 313314.52,
+      "measured_samples": 20,
+      "median_ms": 319.168,
+      "p95_ms": 349.721,
+      "peak_traced_mib": 13.222,
+      "search_batch_size": 8192,
+      "vector_batch_buffer_mib": 12.0,
+      "warmup_samples": 2
+    }
+  ],
+  "peak_memory_samples": 1,
+  "schema_version": 1,
+  "search_batch_sizes": [
+    512,
+    2048,
+    4096,
+    8192
+  ],
+  "warmup_samples": 2
+}

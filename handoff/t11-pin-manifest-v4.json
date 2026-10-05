@@ -1,0 +1,49 @@
+{
+  "manifest": "t11-rag-isolation-v4-delta",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "owner": "T11"
+  },
+  "integration": {
+    "root_checkout": "C:\\Users\\Adam\\.local-ai-hub",
+    "owner": "T20",
+    "root_touched": false
+  },
+  "pins": [
+    {
+      "path": "handoff/t11-pin-manifest-v3.json",
+      "sha256": "8a75decba5eea8840a829ff943601d9c1d276c8062ab2e3c33bee79ac60990e2"
+    },
+    {
+      "path": "handoff/t11-root-current-rag-isolation-v3-production.patch",
+      "sha256": "afac10c2903ff46613bdcd9e7cc6fb831315e4fa145aa48b7356cf226e2eaa42"
+    },
+    {
+      "path": "handoff/t11-root-current-rag-isolation-v3-tests.patch",
+      "sha256": "cd2922e6c746eb08d21a99bc96f8cd7e17d044c0951928ce7118f405a025b224"
+    },
+    {
+      "path": "handoff/t11-root-current-rag-midread-preemption-v1-delta.patch",
+      "sha256": "9442d24111600f8219716aa2a9f13ee1b4a96aacf02c78bc79eeba5fb11cb4b2"
+    },
+    {
+      "path": "src/local_ai_hub/project_config.py",
+      "source": "C:\\Users\\Adam\\.codex\\worktrees\\t21-project-config\\.local-ai-hub\\src\\local_ai_hub\\project_config.py",
+      "sha256": "f51cd2bd05ac993139c388ca553ff816c4b39d572182afd433e3fa7430a766d5"
+    },
+    {
+      "path": "handoff/t11-root-current-rag-v4-delta-validation.md",
+      "sha256": "bf3df05706e99095bd59a3df64e98cddda7f6cc878347e0183ec52db417d7187"
+    }
+  ],
+  "validation": {
+    "candidate_tests": "168 passed, 3 skipped across three bounded commands",
+    "v4_fail_first": "2 production regressions reproduced; corrected embedding-space contract passed",
+    "v4_green": "3 focused regressions passed",
+    "snapshot_apply_check": "passed",
+    "full_end_to_end": "not complete; T20 integration and integration receipts pending",
+    "gpu_or_100k": "not run"
+  },
+  "status": "partial"
+}

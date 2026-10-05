@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-11",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "date": "2026-10-02",
+  "inventory_path": "handoff/t11-prevalidation-inventory-20261002.json",
+  "inventory_sha256": "dca36e199ed44f367a9cecc0ba81d3a33ef409c8ce31685101c65d184d52d116",
+  "checked_count": 18,
+  "inputs": [
+    {
+      "path": "src/local_ai_hub/rag.py",
+      "sha256": "f47259dafc72c6a584f53d84e51fac270ce0969e48ec3cdb58c1cceb6f554992",
+      "expected_sha256": "f47259dafc72c6a584f53d84e51fac270ce0969e48ec3cdb58c1cceb6f554992",
+      "match": true
+    },
+    {
+      "path": "src/local_ai_hub/project_config.py",
+      "sha256": "ffd425b1260b285f25b1d121a7c6bcd585c618b5c7e26415e2ad0a7014196b0b",
+      "expected_sha256": "ffd425b1260b285f25b1d121a7c6bcd585c618b5c7e26415e2ad0a7014196b0b",
+      "match": true
+    },
+    {
+      "path": "src/local_ai_hub/project_policy_adapter.py",
+      "sha256": "11d4a5c6519989f6f65632edc880c521c407ddbc335c181480116c6827afb98a",
+      "expected_sha256": "11d4a5c6519989f6f65632edc880c521c407ddbc335c181480116c6827afb98a",
+      "match": true
+    },
+    {
+      "path": "src/local_ai_hub/embeddings.py",
+      "sha256": "2360fb9e4e9dda72dc633a5e4f33ecbab2ec3e8a26dc728f61114acc2496d170",
+      "expected_sha256": "2360fb9e4e9dda72dc633a5e4f33ecbab2ec3e8a26dc728f61114acc2496d170",
+      "match": true
+    },
+    {
+      "path": "src/local_ai_hub/reranker.py",
+      "sha256": "ee8b660c9fa261ea34fb63587f8eaaf6119b83b544a4053d22669ef8d9c5c562",
+      "expected_sha256": "ee8b660c9fa261ea34fb63587f8eaaf6119b83b544a4053d22669ef8d9c5c562",
+      "match": true
+    },
+    {
+      "path": "tests/test_rag_quality_contract.py",
+      "sha256": "0a82654d5bba505f69437037e8f906defaf5f983aca0305445e11f0854bbd9c5",
+      "expected_sha256": "0a82654d5bba505f69437037e8f906defaf5f983aca0305445e11f0854bbd9c5",
+      "match": true
+    },
+    {
+      "path": "tests/test_rag_hybrid.py",
+      "sha256": "03d527fc1a5d15913a03555c245ae4a20196675d5c4c3eacfc774bf88c4a23e1",
+      "expected_sha256": "03d527fc1a5d15913a03555c245ae4a20196675d5c4c3eacfc774bf88c4a23e1",
+      "match": true
+    },
+    {
+      "path": "tests/test_rag_read_bounds.py",
+      "sha256": "ae19c08bc2aa9ca45d0b7f26dcff23dd8abdb3a1d843f54a7830045a8a568aa2",
+      "expected_sha256": "ae19c08bc2aa9ca45d0b7f26dcff23dd8abdb3a1d843f54a7830045a8a568aa2",
+      "match": true
+    },
+    {
+      "path": "tests/test_rag_fragment_cache.py",
+      "sha256": "a7bd3335691aa7c291d4f42a600a2c7d790475f5770d534d9033ff6620a22002",
+      "expected_sha256": "a7bd3335691aa7c291d4f42a600a2c7d790475f5770d534d9033ff6620a22002",
+      "match": true
+    },
+    {
+      "path": "tests/test_rag_dedup.py",
+      "sha256": "2e8a76309c2024071dc6bd0362921c100ef9013e588bed8425c992de9104c6d6",
+      "expected_sha256": "2e8a76309c2024071dc6bd0362921c100ef9013e588bed8425c992de9104c6d6",
+      "match": true
+    },
+    {
+      "path": "tests/test_t11_project_policy_consumers.py",
+      "sha256": "e4ea70d1036a5109b80e390b255f4106664e0238ab7067e59322760997d0c4f5",
+      "expected_sha256": "e4ea70d1036a5109b80e390b255f4106664e0238ab7067e59322760997d0c4f5",
+      "match": true
+    },
+    {
+      "path": "tests/test_t11_rag_ingestion_contract.py",
+      "sha256": "c4e9a80373a3964e1ef9cb7b1f07114d5dd09bf7a68bdd308d167613dbcb8ee1",
+      "expected_sha256": "c4e9a80373a3964e1ef9cb7b1f07114d5dd09bf7a68bdd308d167613dbcb8ee1",
+      "match": true
+    },
+    {
+      "path": "tests/test_t11_rag_seed_integrity.py",
+      "sha256": "943aed3fc4cc11fcec48a99500d1967e869b0276f6af600736254ca375ab0e02",
+      "expected_sha256": "943aed3fc4cc11fcec48a99500d1967e869b0276f6af600736254ca375ab0e02",
+      "match": true
+    },
+    {
+      "path": "tests/test_reranker_cache_identity.py",
+      "sha256": "32160e2b0f963dddf6fbc3a15838e1532ef696424ab011581c4bf3aeead27c0b",
+      "expected_sha256": "32160e2b0f963dddf6fbc3a15838e1532ef696424ab011581c4bf3aeead27c0b",
+      "match": true
+    },
+    {
+      "path": "tests/test_embedding_cache.py",
+      "sha256": "3badfed3ea66802af00522cfcdc979bfc2ba6a27dfaa08c241ab0440ad1887ae",
+      "expected_sha256": "3badfed3ea66802af00522cfcdc979bfc2ba6a27dfaa08c241ab0440ad1887ae",
+      "match": true
+    },
+    {
+      "path": "tests/test_embedding_batch_deduplication.py",
+      "sha256": "c96fe56fb6a6b6c7aed973af2ee1fff116ef2029aaeb0ec307c50f9af0ba2196",
+      "expected_sha256": "c96fe56fb6a6b6c7aed973af2ee1fff116ef2029aaeb0ec307c50f9af0ba2196",
+      "match": true
+    },
+    {
+      "path": "tests/test_model_release_lifecycle.py",
+      "sha256": "50c061dbc8d2bfa37337fdd77f796dcb328f786f407e1ad389200991e2ee5c50",
+      "expected_sha256": "50c061dbc8d2bfa37337fdd77f796dcb328f786f407e1ad389200991e2ee5c50",
+      "match": true
+    },
+    {
+      "path": "tests/test_telemetry_contract.py",
+      "sha256": "6138ebed767982a57fc279fe96576cc646df12f2b87e5c0c171bd8fa571029db",
+      "expected_sha256": "6138ebed767982a57fc279fe96576cc646df12f2b87e5c0c171bd8fa571029db",
+      "match": true
+    }
+  ],
+  "mismatches": [],
+  "next_commands": [
+    "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_telemetry_contract.py::test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields",
+    "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "manifest": "t11-post-t20-integration-20261001",
+  "root": {
+    "path": "C:\\Users\\Adam\\.local-ai-hub",
+    "owner": "T20",
+    "t11_modified": false,
+    "production_source_sha256": "4c0ed5c52ec4cd9d82b41f0d6d2188812d607d1ce58c4ffea956d045fbb9048a",
+    "hybrid_test_sha256": "5e8508f96b808a7369fa9e97617be359f7f23ea7a6213364eec71b99f5149160",
+    "read_bounds_test_sha256": "9d9f3ee9daad5306570d9a7c2674da1a4cf3342541a1a2b43abb1f798ec0d002"
+  },
+  "equivalence": {
+    "root_hybrid_test_equals_tested_fresh_copy": true,
+    "tested_fresh_copy": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t11-v5-root-current-20261001",
+    "focused_root_copy_receipt": "35 passed in 8.61s",
+    "v5_test_delta_already_present_in_root": true
+  },
+  "root_receipts_reported_by_t20": {
+    "t11_rag_modules": "35/35 passed",
+    "four_root_modules": "66 passed, 1 skipped in 23.22s"
+  },
+  "candidate_receipts": {
+    "focused_offline": "168 passed, 3 skipped across 11 files",
+    "paired_golden": "1 passed; Recall@10=1.0; nDCG@10=1.0",
+    "live_reranker": "1 passed in 23.47s; candidate only",
+    "historical_100k": "candidate p95 302.532 ms; peak traced memory 13.222 MiB; not rerun"
+  },
+  "limitations": {
+    "root_edits_by_t11": false,
+    "full_product_release": "separate T20 gates remain",
+    "new_gpu_100k_or_live_model_runs": false
+  }
+}

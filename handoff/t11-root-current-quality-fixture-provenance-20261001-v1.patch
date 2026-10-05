@@ -1,0 +1,71 @@
+diff --git a/tests/test_rag_quality_contract.py b/tests/test_rag_quality_contract.py
+--- a/tests/test_rag_quality_contract.py
++++ b/tests/test_rag_quality_contract.py
+@@ -22,7 +22,7 @@
+     def embed(self, texts, _tenant, *, query=False, **_kwargs):
+         vector = np.zeros(self.dimension, dtype=np.float32)
+         vector[0] = 1.0
+-        return {"success": True, "embeddings": [vector.tolist() for _ in texts]}
++        return {"success": True, "embedding_space_id": "quality-space", "embeddings": [vector.tolist() for _ in texts]}
+ 
+ 
+ def _store(tmp_path, dimension: int = 2) -> RAGStore:
+@@ -47,12 +47,12 @@
+     scope_key = store._scope_key(tenant)
+     with closing(store._connect()) as con:
+         con.executemany(
+-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) "
+-            "VALUES(?,?,?,?,?,?,?)",
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
+             [
+                 (
+                     scope_key, workspace, f"src/{i // 32:04d}.py", i % 32,
+-                    f"hash-{i}", f"fixture row {i}", sqlite3.Binary(vector.tobytes()),
++                    f"hash-{i}", f"fixture row {i}", sqlite3.Binary(vector.tobytes()), "quality-space",
+                 )
+                 for i, vector in enumerate(vectors)
+             ],
+@@ -91,6 +91,9 @@
+ 
+         def close(self):
+             self._connection.close()
++
++        def commit(self):
++            self._connection.commit()
+ 
+     connect = store._connect
+     monkeypatch.setattr(store, "_connect", lambda: _Connection(connect()))
+@@ -218,8 +221,8 @@
+     scope_key = store._scope_key(tenant)
+     with closing(store._connect()) as con:
+         con.execute(
+-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
+-            (scope_key, workspace, "src/overflow.py", 0, "overflow", "oversized vector", json.dumps([10 ** 1000, 0])),
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
++            (scope_key, workspace, "src/overflow.py", 0, "overflow", "oversized vector", json.dumps([10 ** 1000, 0]), "quality-space"),
+         )
+         con.commit()
+ 
+@@ -235,9 +238,9 @@
+     scope_key = store._scope_key(tenant)
+     with closing(store._connect()) as con:
+         con.executemany(
+-            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+             [
+-                (scope_key, workspace, path, 0, f"hash-{path}", "same content", sqlite3.Binary(np.asarray([1.0, 0.0], dtype=np.float32).tobytes()))
++                (scope_key, workspace, path, 0, f"hash-{path}", "same content", sqlite3.Binary(np.asarray([1.0, 0.0], dtype=np.float32).tobytes()), "quality-space")
+                 for path in ("z-last.py", "m-middle.py", "a-first.py")
+             ],
+         )
+@@ -295,6 +298,9 @@
+ 
+         def close(self):
+             self._connection.close()
++
++        def commit(self):
++            self._connection.commit()
+ 
+     connect = store._connect
+     monkeypatch.setattr(store, "_connect", lambda: _Connection(connect()))

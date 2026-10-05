@@ -4,6 +4,7 @@ import sqlite3
 import time
 import json
 import os
+import subprocess
 import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -151,6 +152,83 @@ def test_parent_seed_reuses_only_matching_file_cache_and_never_rag_hash(tmp_path
     assert source is not None
     assert source["content_hash"] == digest
     assert source["text"] == content
+
+
+def test_parent_seed_uses_actual_same_head_worktree_blobs_and_rejects_dirty_child(
+    tmp_path: Path, preprocessor_factory
+) -> None:
+    pre, repo_tools = preprocessor_factory(tmp_path / "state")
+    parent = tmp_path / "parent"
+    child = tmp_path / "worktrees" / "feature"
+    parent.mkdir()
+    child.parent.mkdir()
+
+    def git(root: Path, *args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result.stdout.strip()
+
+    git(parent, "init", "--quiet")
+    git(parent, "config", "user.email", "test@example.invalid")
+    git(parent, "config", "user.name", "Test")
+    parent_file = parent / "module.py"
+    parent_file.write_text("value = 1\n", encoding="utf-8")
+    git(parent, "add", "module.py")
+    git(parent, "commit", "--quiet", "-m", "seed baseline")
+    git(parent, "worktree", "add", "--quiet", "--detach", str(child), "HEAD")
+
+    parent_head = git(parent, "rev-parse", "HEAD")
+    assert git(child, "rev-parse", "HEAD") == parent_head
+    parent_root = pre._root(str(parent))
+    child_root = pre._root(str(child))
+    parent_hash = repo_tools.git_blob_map(parent_root)["module.py"]
+    assert parent_hash.startswith("git:")
+    _insert_parent_ref(pre, parent_root, parent_file, parent_hash)
+
+    seeded = pre._seed_from_parent(child_root, parent_root)
+
+    with closing(pre._connect()) as con:
+        row = con.execute(
+            "SELECT content_hash,needs_hash,rag_hash,card_key FROM file_refs WHERE root=? AND path=?",
+            (child_root, "module.py"),
+        ).fetchone()
+        source = con.execute(
+            "SELECT content_hash,text FROM source_index WHERE root=? AND path=?",
+            (child_root, "module.py"),
+        ).fetchone()
+    assert seeded["file_refs"] == 1
+    assert row["content_hash"] == parent_hash
+    assert row["needs_hash"] == 0
+    assert row["rag_hash"] in (None, "")
+    assert row["card_key"] == "parent-card"
+    assert source["text"] == parent_file.read_text(encoding="utf-8")
+
+    child_file = child / "module.py"
+    child_file.write_text("value = 2\n", encoding="utf-8")
+    assert child_file.stat().st_size == parent_file.stat().st_size
+    rejected = pre._seed_from_parent(child_root, parent_root)
+
+    with closing(pre._connect()) as con:
+        row = con.execute(
+            "SELECT content_hash,needs_hash,rag_hash,card_key FROM file_refs WHERE root=? AND path=?",
+            (child_root, "module.py"),
+        ).fetchone()
+        source = con.execute(
+            "SELECT content_hash,text FROM source_index WHERE root=? AND path=?",
+            (child_root, "module.py"),
+        ).fetchone()
+    assert rejected["file_refs"] == 0
+    assert git(child, "rev-parse", "HEAD") == parent_head
+    assert row["content_hash"] == ""
+    assert row["needs_hash"] == 1
+    assert row["rag_hash"] in (None, "")
+    assert row["card_key"] is None
+    assert source is None
 
 
 def test_parent_seed_rejects_same_size_dirty_child_and_stale_source_text(tmp_path: Path, preprocessor_factory) -> None:

@@ -1,0 +1,305 @@
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -593,6 +593,60 @@
+     def _scope_key(self, tenant: str) -> str:
+         return tenant if self.scope == "tenant" else "*"
+ 
++    @staticmethod
++    def _workspace_embedding_space_key(scope_key: str, workspace: str) -> str:
++        return "workspace_embedding_space:" + stable_hash({"tenant": scope_key, "workspace": workspace})
++
++    @staticmethod
++    def _workspace_index_generation_key(scope_key: str, workspace: str) -> str:
++        return "workspace_index_generation:" + stable_hash({"tenant": scope_key, "workspace": workspace})
++
++    def _workspace_index_generation(self, con: sqlite3.Connection, scope_key: str, workspace: str) -> int:
++        key = self._workspace_index_generation_key(scope_key, workspace)
++        row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
++        try:
++            return max(0, int(row[0])) if row and row[0] is not None else 0
++        except (TypeError, ValueError):
++            return 0
++
++    def _bump_workspace_index_generation(self, con: sqlite3.Connection, scope_key: str, workspace: str) -> int:
++        key = self._workspace_index_generation_key(scope_key, workspace)
++        generation = self._workspace_index_generation(con, scope_key, workspace) + 1
++        con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (key, str(generation)))
++        return generation
++
++    def _stored_workspace_embedding_space(
++        self, con: sqlite3.Connection, scope_key: str, workspace: str
++    ) -> str | None:
++        key = self._workspace_embedding_space_key(scope_key, workspace)
++        row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
++        return str(row[0]) if row and row[0] else None
++
++    def _store_workspace_embedding_space(
++        self, con: sqlite3.Connection, scope_key: str, workspace: str, embedding_space: str
++    ) -> None:
++        key = self._workspace_embedding_space_key(scope_key, workspace)
++        con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (key, embedding_space))
++
++    def _embedding_space_is_resolved(self, result: dict[str, Any] | None = None) -> bool:
++        if isinstance(result, dict) and result.get("embedding_space_id"):
++            return True
++        service_space = getattr(self.services, "space_id", None)
++        if service_space and not callable(service_space):
++            return True
++        if isinstance(result, dict) and result.get("success"):
++            embeddings = result.get("embeddings")
++            if isinstance(embeddings, (list, tuple)) and embeddings:
++                return True
++        embedder = getattr(self.services, "embeddings", None)
++        if getattr(embedder, "_active_cache_identity", None):
++            return True
++        models = self.config.get("models", {})
++        return bool(
++            models.get("embedding_digest") or models.get("model_digest")
++            or models.get("embedding_revision") or models.get("model_revision")
++        )
++
+     def _embedding_space_id(self, result: dict[str, Any] | None = None) -> str:
+         if isinstance(result, dict) and result.get("embedding_space_id"):
+             return str(result["embedding_space_id"])
+@@ -864,25 +918,33 @@
+                 changed_texts = [str(changed_records[idx]["text"]) for idx in changed_indices]
+ 
+         if changed_texts:
+-            try:
+-                vectors_result = self.services.embed(changed_texts, tenant, priority=2, query=False)
+-            except (TimeoutError, QueueFullError) as exc:
+-                return {"success": False, "retryable": True, "error": f"embedder busy or timed out: {exc}"}
+-            except Exception as exc:
+-                return {"success": False, "retryable": False, "error": f"embedder failed: {exc}"}
+-            if not isinstance(vectors_result, dict) or not vectors_result.get("success"):
+-                return vectors_result if isinstance(vectors_result, dict) else {"success": False, "error": "embed failed"}
+-            vectors = vectors_result.get("embeddings", [])
+-            if len(vectors) != len(changed_indices):
+-                return {"success": False, "error": f"embedding count mismatch: {len(vectors)} != {len(changed_indices)}"}
+-            embedding_space = self._embedding_space_id(vectors_result)
+-            for idx, vector in zip(changed_indices, vectors):
+-                embedding = _serialize_embedding(vector)
+-                if embedding is None:
+-                    return {"success": False, "error": "embedding backend returned an invalid vector"}
+-                for duplicate_idx in pending_by_hash[str(changed_records[idx]["hash"])]:
+-                    changed_records[duplicate_idx]["embedding"] = embedding
+-                    changed_records[duplicate_idx]["embedding_space"] = embedding_space
++            observed_embedding_space: str | None = None
++            for offset in range(0, len(changed_indices), _INDEX_EMBED_BATCH_SIZE):
++                batch_indices = changed_indices[offset:offset + _INDEX_EMBED_BATCH_SIZE]
++                batch_texts = [str(changed_records[idx]["text"]) for idx in batch_indices]
++                try:
++                    vectors_result = self.services.embed(batch_texts, tenant, priority=2, query=False)
++                except (TimeoutError, QueueFullError) as exc:
++                    return {"success": False, "retryable": True, "error": f"embedder busy or timed out: {exc}"}
++                except Exception as exc:
++                    return {"success": False, "retryable": False, "error": f"embedder failed: {exc}"}
++                if not isinstance(vectors_result, dict) or not vectors_result.get("success"):
++                    return vectors_result if isinstance(vectors_result, dict) else {"success": False, "error": "embed failed"}
++                vectors = vectors_result.get("embeddings", [])
++                if len(vectors) != len(batch_indices):
++                    return {"success": False, "error": f"embedding count mismatch: {len(vectors)} != {len(batch_indices)}"}
++                batch_space = self._embedding_space_id(vectors_result)
++                if observed_embedding_space is not None and observed_embedding_space != batch_space:
++                    return {"success": False, "error": "embedding identity changed during atomic index build", "retryable": True}
++                observed_embedding_space = batch_space
++                embedding_space = batch_space
++                for idx, vector in zip(batch_indices, vectors):
++                    embedding = _serialize_embedding(vector)
++                    if embedding is None:
++                        return {"success": False, "error": "embedding backend returned an invalid vector"}
++                    for duplicate_idx in pending_by_hash[str(changed_records[idx]["hash"])]:
++                        changed_records[duplicate_idx]["embedding"] = embedding
++                        changed_records[duplicate_idx]["embedding_space"] = batch_space
+ 
+         # One transaction publishes all changed/deleted file state atomically.
+         # The embed phase is intentionally outside this retry: a transient writer
+@@ -1020,6 +1082,71 @@
+         embedded_chunks = 0
+         reused_chunks = 0
+         with self._get_workspace_lock(workspace):
++            with closing(self._connect()) as con:
++                stored_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
++                legacy_rows = (
++                    con.execute(
++                        "SELECT embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
++                        (scope_key, workspace),
++                    ).fetchall()
++                    if stored_space is None else []
++                )
++            inferred_spaces: set[str] = set()
++            unresolved_legacy_vectors = False
++            for row in legacy_rows:
++                if not row[0]:
++                    continue
++                row_space = str(row[1] or "").strip()
++                if not row_space:
++                    unresolved_legacy_vectors = True
++                else:
++                    inferred_spaces.add(row_space)
++            if stored_space is None and (unresolved_legacy_vectors or len(inferred_spaces) > 1):
++                return {
++                    "success": False, "workspace": workspace,
++                    "error": "embedding_space_rebuild_required",
++                    "rebuild_required": True, "retryable": False,
++                }
++            if stored_space is None and inferred_spaces:
++                inferred_space = next(iter(inferred_spaces))
++                recovery_conflict = {"value": False}
++
++                def persist_recovered_space() -> None:
++                    with closing(self._connect()) as con:
++                        con.execute("BEGIN IMMEDIATE")
++                        current_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
++                        if current_space is not None and current_space != inferred_space:
++                            con.rollback()
++                            recovery_conflict["value"] = True
++                            return
++                        if current_space is None:
++                            self._store_workspace_embedding_space(con, scope_key, workspace, inferred_space)
++                            self._bump_workspace_index_generation(con, scope_key, workspace)
++                        con.commit()
++
++                try:
++                    retry_busy(
++                        persist_recovered_space,
++                        retries=self._sqlite_write_retries,
++                        base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
++                    )
++                except Exception as exc:
++                    return {
++                        "success": False, "workspace": workspace,
++                        "error": "embedding_space_recovery_failed",
++                        "retryable": is_busy_error(exc),
++                    }
++                if recovery_conflict["value"]:
++                    return {
++                        "success": False, "workspace": workspace,
++                        "error": "embedding_space_rebuild_required",
++                        "rebuild_required": True, "retryable": False,
++                    }
++                stored_space = inferred_space
++                embedding_space = inferred_space
++            elif stored_space is not None and not self._embedding_space_is_resolved():
++                embedding_space = stored_space
++            embedding_space_resolved = bool(stored_space or self._embedding_space_is_resolved())
+             # 1. Read files and chunk
+             file_data: list[dict[str, Any]] = []
+             for rel in paths:
+@@ -1072,6 +1199,8 @@
+             if not file_data and not deleted_unique:
+                 return {
+                     "success": True, "workspace": workspace, "preempted": False,
++                    "embedding_space_id": stored_space or embedding_space,
++                    "embedding_space_resolved": embedding_space_resolved,
+                     "processed_paths": [], "embedded_chunks": 0, "reused_chunks": 0,
+                 }
+ 
+@@ -1182,6 +1311,7 @@
+                         if batch_embedding_space != embedding_space and reused_chunks:
+                             return {"success": False, "error": "embedding identity changed during RAG path step", "retryable": True}
+                         embedding_space = batch_embedding_space
++                        embedding_space_resolved = True
+                     for (f_idx, rec_idx), vector in zip(batch_pointers, vectors):
+                         embedding = _serialize_embedding(vector)
+                         if embedding is None:
+@@ -1208,36 +1338,54 @@
+                 files_to_insert.append((scope_key, workspace, rel, int(stat.st_mtime_ns), int(stat.st_size), item["file_hash"]))
+                 processed_paths.append(rel)
+ 
+-            with closing(self._connect()) as con:
+-                con.execute("BEGIN IMMEDIATE")
+-                for i in range(0, len(all_rels), 500):
+-                    batch_rels = all_rels[i:i+500]
+-                    placeholders = ",".join("?" for _ in batch_rels)
+-                    con.execute(f"DELETE FROM chunks WHERE tenant=? AND workspace=? AND path IN ({placeholders})", (scope_key, workspace, *batch_rels))
+-                    con.execute(f"DELETE FROM files WHERE tenant=? AND workspace=? AND path IN ({placeholders})", (scope_key, workspace, *batch_rels))
+-                    try:
+-                        con.execute(f"DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path IN ({placeholders})", (scope_key, workspace, *batch_rels))
+-                    except Exception:
+-                        pass
+-                con.executemany(
+-                    "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+-                    chunks_to_insert,
++            def publish() -> None:
++                with closing(self._connect()) as con:
++                    con.execute("BEGIN IMMEDIATE")
++                    fts_exists = con.execute(
++                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
++                    ).fetchone()
++                    for i in range(0, len(all_rels), 500):
++                        batch_rels = all_rels[i:i+500]
++                        placeholders = ",".join("?" for _ in batch_rels)
++                        con.execute(f"DELETE FROM chunks WHERE tenant=? AND workspace=? AND path IN ({placeholders})", (scope_key, workspace, *batch_rels))
++                        con.execute(f"DELETE FROM files WHERE tenant=? AND workspace=? AND path IN ({placeholders})", (scope_key, workspace, *batch_rels))
++                        if fts_exists:
++                            con.execute(f"DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path IN ({placeholders})", (scope_key, workspace, *batch_rels))
++                    con.executemany(
++                        "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
++                        chunks_to_insert,
++                    )
++                    if fts_exists:
++                        con.executemany(
++                            "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++                            [(c[0], c[1], c[2], c[3], c[5]) for c in chunks_to_insert],
++                        )
++                    con.executemany(
++                        "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
++                        files_to_insert,
++                    )
++                    if embedding_space:
++                        self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
++                    if all_rels:
++                        self._bump_workspace_index_generation(con, scope_key, workspace)
++                    con.commit()
++
++            try:
++                retry_busy(
++                    publish,
++                    retries=self._sqlite_write_retries,
++                    base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
+                 )
+-                try:
+-                    con.executemany(
+-                        "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
+-                        [(c[0], c[1], c[2], c[3], c[5]) for c in chunks_to_insert],
+-                    )
+-                except Exception:
+-                    pass
+-                con.executemany(
+-                    "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+-                    files_to_insert,
+-                )
+-                con.commit()
++            except Exception as exc:
++                return {
++                    "success": False, "workspace": workspace,
++                    "error": "publish_failed", "retryable": is_busy_error(exc),
++                }
+ 
+         return {
+             "success": True, "workspace": workspace, "preempted": False,
++            "embedding_space_id": embedding_space,
++            "embedding_space_resolved": embedding_space_resolved,
+             "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+             "reused_chunks": reused_chunks,
+         }
+@@ -1953,12 +2101,16 @@
+ 
+     def docset_index(self, name: str, root: str, tenant: str = "docset") -> dict[str, Any]:
+         """Index an offline library or API documentation directory under a named docset workspace."""
+-        clean_name = str(name).strip().lower().replace(" ", "_")
++        clean_name = str(name or "").strip().lower().replace(" ", "_")
++        if not clean_name:
++            return {"success": False, "error": "docset name is required"}
+         return self.index(root, tenant, workspace=f"docset:{clean_name}")
+ 
+     def docset_search(self, name: str, query: str, tenant: str = "docset", top_k: int = 8, use_reranker: bool = True) -> dict[str, Any]:
+         """Search an indexed offline library or API docset."""
+-        clean_name = str(name).strip().lower().replace(" ", "_")
++        clean_name = str(name or "").strip().lower().replace(" ", "_")
++        if not clean_name:
++            return {"success": False, "error": "docset name is required"}
+         return self.search(query, tenant, f"docset:{clean_name}", top_k=top_k, use_reranker=use_reranker)
+ 
+     def ingest_document(

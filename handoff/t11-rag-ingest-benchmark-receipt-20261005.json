@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "task": "T11 bounded ingest and seed benchmark",
+  "date": "2026-10-05",
+  "command": "T11_RAG_BENCHMARK=1 python -m pytest -s -q --tb=short tests/test_t11_rag_seed_integrity.py::test_t11_ingestion_batch_benchmark",
+  "result": "1 passed in 12.71s",
+  "exit_code": 0,
+  "seed": {
+    "files": 128,
+    "inserted": 128,
+    "elapsed_ms": 207.714,
+    "files_per_second": 616.23,
+    "peak_traced_mib": 1.156
+  },
+  "rag_batches": [
+    {
+      "label": "explicit-128",
+      "files": 128,
+      "steps": 1,
+      "elapsed_ms": 620.203,
+      "files_per_second": 206.38,
+      "peak_traced_mib": 5.47,
+      "embed_calls": 2,
+      "embedded_items": 128,
+      "max_embed_batch": 64,
+      "backend": "synthetic deterministic embedder; not model throughput"
+    },
+    {
+      "label": "integrated-profile",
+      "files": 128,
+      "steps": 22,
+      "elapsed_ms": 11058.005,
+      "files_per_second": 11.58,
+      "peak_traced_mib": 0.063,
+      "embed_calls": 22,
+      "embedded_items": 128,
+      "max_embed_batch": 6,
+      "backend": "synthetic deterministic embedder; not model throughput"
+    }
+  ]
+}

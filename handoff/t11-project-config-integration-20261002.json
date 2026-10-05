@@ -1,0 +1,673 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-02",
+  "status": "T21 SOURCE/TEST HASHES MATCH; PRIVACY/OFFLINE PASS; PROJECT_CONFIG SLOT G RELEASED AS UNKNOWN; PERFORMANCE POST-RELEASE",
+  "t11_root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "t21_existing_checkout": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\t21-project-config\\.local-ai-hub",
+    "head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "source_sha256": "ffd425b1260b285f25b1d121a7c6bcd585c618b5c7e26415e2ad0a7014196b0b",
+    "test_sha256": "0196d8fa417dd2b56bfc0d143217d25e2986e1b1b1df6ceffadd3c0eeb9fbcea",
+    "owner": "T21",
+    "working_tree_source_and_test_modified": true
+  },
+  "t11_candidate": {
+    "source_sha256": "f51cd2bd05ac993139c388ca553ff816c4b39d572182afd433e3fa7430a766d5",
+    "source_is_untracked": true,
+    "test_project_config_present": false,
+    "adapter_sha256": "11d4a5c6519989f6f65632edc880c521c407ddbc335c181480116c6827afb98a",
+    "consumer_test_sha256": "e4ea70d1036a5109b80e390b255f4106664e0238ab7067e59322760997d0c4f5"
+  },
+  "comparison": {
+    "same_source_hash": false,
+    "diff_numstat_t11_to_t21": {
+      "insertions": 4,
+      "deletions": 12
+    },
+    "exported_api_names_present_in_both": [
+      "resolve_project_context",
+      "phase_is_allowed",
+      "path_is_allowed",
+      "may_descend"
+    ],
+    "adapter_contract": "T11 project_policy_adapter delegates project-context, phase, extension/path and descent checks to project_config APIs"
+  },
+  "validation_gate": {
+    "test_benchmark_slot": "Requested from T20 after GO #14; no 100k or live-reranker slot granted as of 2026-10-03. T20 latest says release remains NO-GO; performance acceptance checks remain unrun.",
+    "tests_run_this_handoff": true,
+    "benchmarks_run_this_handoff": false,
+    "acceptance": "OPEN: GO #14 offline suite passed 181/3 skipped. Project-config slot G remains HELD/UNKNOWN with no release confirmation; current process snapshot is zero but cannot resolve historical outcome. T20 is systemError/no active turn. 100k and live reranker have no GO. Root hunk integration remains blocked."
+  },
+  "next_action": "Do not retry G or claim project_config test result. Require T20 to reconcile/release G before any project_config selector, and issue distinct serial GO for 100k benchmark and live reranker. Preserve candidate patch and root dirty work.",
+  "side_effects": "Only this T11 handoff manifest and acceptance checkpoint record are written; no T21 checkout files changed.",
+  "transfer": {
+    "from_checkout": "C:\\Users\\Adam\\.codex\\worktrees\\t21-project-config\\.local-ai-hub",
+    "to_checkout": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "source_path": "src/local_ai_hub/project_config.py",
+    "source_preimage_sha256": "f51cd2bd05ac993139c388ca553ff816c4b39d572182afd433e3fa7430a766d5",
+    "source_postimage_sha256": "ffd425b1260b285f25b1d121a7c6bcd585c618b5c7e26415e2ad0a7014196b0b",
+    "test_path": "tests/test_project_config.py",
+    "test_preimage": "absent",
+    "test_postimage_sha256": "0196d8fa417dd2b56bfc0d143217d25e2986e1b1b1df6ceffadd3c0eeb9fbcea",
+    "reversible_source_diff": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-project-config-source-reconcile-20261002.patch",
+    "reversible_source_diff_sha256": "715be0f9390d2d1d81ee8342911f8d445ae778ef3dd25e2bc3755fc4174bee59",
+    "diff_lines": 34,
+    "T21_checkout_modified": false,
+    "tests_run": false,
+    "benchmarks_run": false,
+    "reversible_test_diff": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-project-config-test-reconcile-20261002.patch",
+    "reversible_test_diff_sha256": "25f60f400917db1151b74e1df3a237e6d31a949332ca416915b0a5b0094a9a8f",
+    "test_diff_lines": 3131
+  },
+  "verification": {
+    "static_syntax": "AST parse passed for project_config.py, project_policy_adapter.py, test_project_config.py, test_t11_project_policy_consumers.py, test_rag_quality_contract.py, test_rag_hybrid.py",
+    "test_import_surface": "9 explicit project_config imports found in transferred test; all 9 names resolve to top-level definitions",
+    "transferred_project_config_test_cases": 66,
+    "tests_run": false,
+    "benchmarks_run": false,
+    "git_diff_check": "passed for tracked RAG source/tests and acceptance record; transferred files independently hash-matched to T21",
+    "transferred_project_config_test_ast": "passed; 67 test selectors",
+    "latest_T21_test_selector_added": "test_project_config_precedence_covers_primary_linked_common_and_worktree_layers"
+  },
+  "master_plan_acceptance": {
+    "source": "docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md:252-263",
+    "criteria": [
+      {
+        "id": "T11-1-vector-scan-memory-performance",
+        "requirement": "Measure O(N) vector scoring and peak memory; bounded batch/candidates; ANN only if evidence requires it and recall holds.",
+        "state": "OPEN: CURRENT-HASH 100K BENCHMARK UNVERIFIED",
+        "evidence": "GO #14 offline suite passed; 100k benchmark skipped."
+      },
+      {
+        "id": "T11-2-atomic-index-publish",
+        "requirement": "Bounded embedding phase, atomic publication, cancellation cannot expose partial index.",
+        "state": "CURRENT-HASH OFFLINE SUITE PASS; OPT-IN PERFORMANCE OPEN",
+        "evidence": "GO #14 ran 181 passed/3 skipped on current pins."
+      },
+      {
+        "id": "T11-3-embedding-identity-isolation",
+        "requirement": "Cache identity includes model digest, backend, dimension, normalization, revision; fallback spaces isolated.",
+        "state": "CURRENT-HASH OFFLINE SUITE PASS",
+        "evidence": "GO #14 ran 181 passed/3 skipped on current pins."
+      },
+      {
+        "id": "T11-4-truthful-backend-and-zero-vectors",
+        "requirement": "embedded/reranked/degraded match actual backend; zero vector is not successful embedding.",
+        "state": "CURRENT-HASH OFFLINE SUITE PASS; LIVE RERANKER OPEN",
+        "evidence": "GO #14 offline contracts passed; live selector skipped."
+      },
+      {
+        "id": "T11-5-explicit-ingestion-contracts",
+        "requirement": "Explicit content/title/metadata/image/caption ingestion; named docsets; raster diagram metadata-only or explicit vision/OCR provenance.",
+        "state": "CURRENT-HASH OFFLINE SUITE PASS; LIVE OLLAMA OPEN",
+        "evidence": "GO #14 offline ingestion contracts passed; live selector skipped."
+      },
+      {
+        "id": "T11-6-relevance-retry-and-publish-edge-cases",
+        "requirement": "Golden-corpus relevance, near duplicates, busy retry without duplicate embedding, disk-full and concurrent publish.",
+        "state": "CURRENT-HASH OFFLINE SUITE PASS; FULL EDGE MATRIX OPEN",
+        "evidence": "GO #14 passed current-hash offline suite including uncertainty-only lock retry."
+      },
+      {
+        "id": "T11-completion-performance",
+        "requirement": "Bounded memory, correct degradation, T07 replay safety, improved measured retrieval parameters.",
+        "state": "OPEN: PERFORMANCE, LIVE RERANKER, ROOT INTEGRATION",
+        "evidence": "100k, live reranker, root integration, and T07 replay remain open."
+      }
+    ],
+    "slot_observation": "T20 confirmed slot11 release after privacy selector 1 passed and offline suite 179 passed/3 skipped. T20 queue remains on critical root gates; no separate T11 benchmark slot assigned.",
+    "test_plan_after_release": [
+      "Fresh 100k no-reranker retrieval/peak-memory matrix bound to current rag.py and quality-test hashes; require explicit T02/T20 slot.",
+      "Separate live reranker latency probe; require separate explicit T20 slot.",
+      "Resolve T07 replay-safety UNKNOWN outside T11 suite."
+    ],
+    "completion_rule": "All criteria need fresh passing receipts; 100k warm no-reranker p95 <=750 ms; memory bound and recall preserved; no benchmark or test before explicit slot assignment."
+  },
+  "reranker_budget_acceptance": {
+    "state": "MEASUREMENT HARNESS PREPARED; NO METRICS RECEIPT",
+    "receipt_path": "handoff/t11-transformer-reranker-live-receipt.json",
+    "receipt_sha256": "c052f732251d1306af142cd7c9bc6734cb78ce8961cd3cc7c5a0da01a8f21ea8",
+    "behavioral_assertions": [
+      "embedded=true",
+      "reranked=true",
+      "degraded=false",
+      "fallback=null",
+      "top_path=doc:Credential Rotation Plan"
+    ],
+    "backend": "sentence_transformers.CrossEncoder",
+    "model": "BAAI/bge-reranker-base",
+    "receipt_result": "1 passed in 23.47s on 2026-10-01",
+    "limitation": "Receipt proves live backend truthfulness, not p50/p95 latency or resource budget.",
+    "next_measurement": "Under T02/T20-assigned slot, measure warm reranker-only candidate batches separately from 100k no-reranker scan; record candidate count, model/backend, warmup/sample counts, p50/p95 and peak memory. Do not invent pass threshold; report measured budget for T20 acceptance.",
+    "test_path": "tests/test_t11_rag_ingestion_contract.py",
+    "test_sha256": "c4e9a80373a3964e1ef9cb7b1f07114d5dd09bf7a68bdd308d167613dbcb8ee1",
+    "selector": "test_t11_live_ollama_rag_ingest_and_reranker_truthfulness",
+    "command": "$env:T11_REAL_OLLAMA='1'; $env:T11_REAL_RERANKER='1'; python -B -m pytest -q -s --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py::test_t11_live_ollama_rag_ingest_and_reranker_truthfulness",
+    "measurement": "2 warmups + 20 measured calls, 16 unique candidate documents per call, unique query each call, require computed=16 to exclude pair-cache hits, emit p50/p95/min/max and backend/device identity",
+    "memory": "not measured",
+    "pass_threshold": "none specified by plan; report measured budget without inventing a threshold",
+    "tests_run": false,
+    "benchmarks_run": false,
+    "identity_sort": "backend/device pairs serialize deterministically even if a fallback response contains null identity fields",
+    "static_check": {
+      "ast_parse": "passed after final benchmark-probe edit",
+      "git_diff_check": "passed for tests/test_t11_rag_ingestion_contract.py and acceptance record",
+      "test_run": false
+    }
+  },
+  "slot_observation": "T20 GO #14 authorized one T11 12-file offline batch; it completed 181 passed/3 skipped, then slot released. A separate 100k slot was requested and not granted. Live reranker remains a separate future slot. Project-config GO G stays UNKNOWN; no retry.",
+  "prevalidation_inventory": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-prevalidation-inventory-20261002.json",
+    "sha256": "dca36e199ed44f367a9cecc0ba81d3a33ef409c8ce31685101c65d184d52d116",
+    "source_files": 5,
+    "test_files": 14,
+    "test_selectors": 238,
+    "status": "STATIC INVENTORY ONLY; TESTS/BENCHMARKS NOT RUN; WAITING T02/T20 SLOT"
+  },
+  "validation_receipts": [
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\T11-CPU-SLOT-20261002-05\\01-project-config-consumers.receipt.json",
+      "sha256": "46d53337f90d48193495f8d260cef1b3b2992ba692c1ce122098c363f7107138",
+      "result": "93 passed in 6.63s",
+      "slot_id": "T20-CPU-SLOT-20261002-05"
+    },
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\T11-CPU-SLOT-20261002-11\\01-privacy-selector.receipt.json",
+      "sha256": "FDBE7D119612BF4658120DEDE2F2AE2CCA2C851155BFBEA9E272E641647FC110",
+      "result": "1 passed in 0.22s; native pytest per direct user instruction",
+      "slot_id": "T20-CPU-SLOT-20261002-11"
+    },
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\T11-CPU-SLOT-20261002-11\\02-offline-suite.receipt.json",
+      "sha256": "33134D8B2CFCA594C703FBA46AAC32470CFB93E24A7534B8D9B47335DFCF41D8",
+      "result": "179 passed, 3 skipped in 48.76s; native pytest per direct user instruction",
+      "slot_id": "T20-CPU-SLOT-20261002-11"
+    }
+  ],
+  "static_review_receipts": [
+    {
+      "path": "handoff\\t11-static-review-receipt-20261002.json",
+      "sha256": "80b4f0fdcec336ad44f623377d6415f709330d6e45a35c29fe6878ce45e054c8",
+      "status": "READ-ONLY REVIEW COMPLETE; ACCEPTANCE OPEN"
+    },
+    {
+      "path": "handoff\\t11-path-policy-static-review-20261002.json",
+      "sha256": "e635765cf8920c5c9093651faa3c264c52f9e8651913146786b2f0fde7df8494",
+      "status": "P2 CANDIDATE; WINDOWS RUNTIME UNVERIFIED; T21 OWNER REVIEW NEEDED"
+    },
+    {
+      "path": "handoff\\t11-benchmark-harness-static-review-20261002.json",
+      "sha256": "045519dbab52e8ba2fb8bfcb217bc76540af6a0149e46c67de4976f0869156cc",
+      "status": "READ-ONLY HARNESS REVIEW COMPLETE; NO TESTS RUN"
+    }
+  ],
+  "privacy_boundary_open": {
+    "telemetry": "PathHintUsage.telemetry_metadata emits only booleans/null",
+    "diagram": "ingest_diagram stores absolute image_path in RAG metadata/content and returns image_path; outside telemetry",
+    "decision": "Scope resolved by handoff/t11-privacy-scope-resolution-20261002.json (SHA 9B3C2EA2FE49584D6AED0C3237FB50F85D5E31B55543229A9430A7D9B6BD7D9A): written prohibition covers telemetry; RAG image_path payload/API is outside documented rule. Privacy selector passed 1 test in slot11."
+  },
+  "smallest_next_serial_commands": [
+    {
+      "purpose": "100k retrieval latency and peak-memory acceptance",
+      "expected_scope": "12 corpus/batch pairs; separate explicit slot",
+      "command": "$env:RAG_BENCHMARK='1'; $env:RAG_BENCHMARK_RECEIPT='handoff/t11-rag-benchmark-receipt-20261002.json'; python -B -m pytest -q -s --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline"
+    },
+    {
+      "purpose": "live reranker latency acceptance",
+      "expected_scope": "2 warmups + 20 measurements; separate explicit slot",
+      "command": "$env:T11_REAL_OLLAMA='1'; $env:T11_REAL_RERANKER='1'; python -B -m pytest -q -s --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py::test_t11_live_ollama_rag_ingest_and_reranker_truthfulness"
+    }
+  ],
+  "queue_update": {
+    "coordinator": "T20",
+    "sequence": [
+      "T07 slot06",
+      "T04 slot07",
+      "T15 correctness slot08",
+      "T19 release hygiene slot09",
+      "T13 operational-mode selector slot10",
+      "T11 privacy/offline slot11",
+      "T05 tenant selectors slot12"
+    ],
+    "explicit_assignment_for_T11_received": true,
+    "run_gate": "Slot11 completed and released; benchmarks require separate explicit T02/T20 assignment.",
+    "preserve": "T02-CPU-20261002-04 partial baseline; no candidate receipt; do not reuse output number",
+    "planned_input_pins": {
+      "tests/test_telemetry_contract.py": {
+        "sha256": "6138ebed767982a57fc279fe96576cc646df12f2b87e5c0c171bd8fa571029db",
+        "matches_prevalidation_inventory": true
+      },
+      "tests/test_rag_read_bounds.py": {
+        "sha256": "ae19c08bc2aa9ca45d0b7f26dcff23dd8abdb3a1d843f54a7830045a8a568aa2",
+        "matches_prevalidation_inventory": true
+      },
+      "tests/test_rag_fragment_cache.py": {
+        "sha256": "a7bd3335691aa7c291d4f42a600a2c7d790475f5770d534d9033ff6620a22002",
+        "matches_prevalidation_inventory": true
+      },
+      "tests/test_rag_hybrid.py": {
+        "sha256": "03d527fc1a5d15913a03555c245ae4a20196675d5c4c3eacfc774bf88c4a23e1",
+        "matches_prevalidation_inventory": true
+      },
+      "tests/test_rag_quality_contract.py": {
+        "sha256": "0a82654d5bba505f69437037e8f906defaf5f983aca0305445e11f0854bbd9c5",
+        "matches_prevalidation_inventory": true
+      },
+      "tests/test_rag_dedup.py": {
+        "sha256": "2e8a76309c2024071dc6bd0362921c100ef9013e588bed8425c992de9104c6d6",
+        "matches_prevalidation_inventory": true
+      },
+      "tests/test_t11_project_policy_consumers.py": {
+        "sha256": "e4ea70d1036a5109b80e390b255f4106664e0238ab7067e59322760997d0c4f5",
+        "matches_prevalidation_inventory": true
+      },
+      "tests/test_t11_rag_ingestion_contract.py": {
+        "sha256": "c4e9a80373a3964e1ef9cb7b1f07114d5dd09bf7a68bdd308d167613dbcb8ee1",
+        "matches_prevalidation_inventory": true
+      },
+      "tests/test_t11_rag_seed_integrity.py": {
+        "sha256": "943aed3fc4cc11fcec48a99500d1967e869b0276f6af600736254ca375ab0e02",
+        "matches_prevalidation_inventory": true
+      },
+      "tests/test_reranker_cache_identity.py": {
+        "sha256": "32160e2b0f963dddf6fbc3a15838e1532ef696424ab011581c4bf3aeead27c0b",
+        "matches_prevalidation_inventory": true
+      },
+      "tests/test_embedding_cache.py": {
+        "sha256": "3badfed3ea66802af00522cfcdc979bfc2ba6a27dfaa08c241ab0440ad1887ae",
+        "matches_prevalidation_inventory": true
+      },
+      "tests/test_embedding_batch_deduplication.py": {
+        "sha256": "c96fe56fb6a6b6c7aed973af2ee1fff116ef2029aaeb0ec307c50f9af0ba2196",
+        "matches_prevalidation_inventory": true
+      },
+      "tests/test_model_release_lifecycle.py": {
+        "sha256": "50c061dbc8d2bfa37337fdd77f796dcb328f786f407e1ad389200991e2ee5c50",
+        "matches_prevalidation_inventory": true
+      }
+    },
+    "commands": [
+      {
+        "purpose": "privacy telemetry contract",
+        "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_telemetry_contract.py::test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields",
+        "expected_scope": "1 selector"
+      },
+      {
+        "purpose": "RAG ingestion, identity, retrieval, publish and quality acceptance",
+        "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+        "expected_scope": "T11 offline suite; run serially after privacy selector"
+      },
+      {
+        "purpose": "100k no-reranker retrieval latency and peak memory matrix",
+        "command": "$env:RAG_BENCHMARK='1'; $env:RAG_BENCHMARK_RECEIPT='handoff/t11-rag-benchmark-receipt-20261002.json'; python -B -m pytest -q -s --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline",
+        "expected_scope": "12 corpus/batch pairs; do not overlap with tests"
+      },
+      {
+        "purpose": "live reranker-only latency",
+        "command": "$env:T11_REAL_OLLAMA='1'; $env:T11_REAL_RERANKER='1'; python -B -m pytest -q -s --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py::test_t11_live_ollama_rag_ingest_and_reranker_truthfulness",
+        "expected_scope": "2 warmups + 20 measurements, 16 candidates; separate from 100k scan"
+      }
+    ],
+    "current_state": "Slot11 completed in f678 under user-authorized native route: privacy 1 passed; offline suite 179 passed/3 skipped; T20 acknowledged release. No benchmark run.",
+    "T11_slot_id": "T20-CPU-SLOT-20261002-11 completed/released",
+    "latest_T07": "terminal; slot06 released. Two broker selectors outcome_unknown for req_c2d855eb1d6f; no retry and no pass claim.",
+    "current_gate": "T20 critical root queue continues; T11 100k and live reranker benchmark slots not assigned.",
+    "input_pin_recheck": "18 pre-run hashes matched; post-run recheck 18 match / 0 mismatch; receipts in handoff/T11-CPU-SLOT-20261002-11/",
+    "latest_T04": "active; static root inventory complete; requested exclusive slot07 for exact import assertion + tests/test_inprocess_transport.py + tests/test_client_transport.py; no run before explicit allocation.",
+    "slot_07": "requested by T04, not yet confirmed released/allocated in latest snapshot",
+    "latest_T11_slot11_receipt": "handoff/T11-CPU-SLOT-20261002-11/03-slot-closeout.receipt.json SHA256 9DA5806FA7763D8788FE06BC5E4A1AA20E55D59ED7C35D8D9E1572BE6609E1AB"
+  },
+  "release_priority_update": {
+    "date": "2026-10-02",
+    "priority": "Functional release first; defer T11 performance benchmarks until post-release.",
+    "current_hash_evidence": "Privacy selector passed; offline suite 179 passed/3 skipped. Current-hash 100k and live reranker were skipped.",
+    "confirmed_T11_release_blocker": "No confirmed defect from existing receipts. Bounded static review found an unverified P2 candidate: case-sensitive exclusion of local config basenames on Windows; T21 owner review and a serial regression selector are needed. Historical 100k REDs remain tied to older source/test hashes.",
+    "pending": "100k retrieval latency/memory matrix and separate live reranker acceptance remain OPEN, POST_RELEASE.",
+    "slot": "No T11 slot requested now; previous T11 slot request withdrawn."
+  },
+  "post_release_acceptance_commands": {
+    "project_config": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_project_config.py",
+    "current_hash_100k": "$env:RAG_BENCHMARK=1; $env:RAG_BENCHMARK_RECEIPT='handoff/t11-rag-benchmark-receipt-20261002.json'; python -B -m pytest -q -s --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline",
+    "live_reranker": "$env:T11_REAL_OLLAMA=1; $env:T11_REAL_RERANKER=1; python -B -m pytest -q -s --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py::test_t11_live_ollama_rag_ingest_and_reranker_truthfulness"
+  },
+  "latest_acceptance_audit": {
+    "date": "2026-10-03",
+    "transferred_project_config_cases": 66,
+    "offline_suite": "181 passed, 3 skipped, 0 failed in 48.8884s under T20 GO #14; current pins matched",
+    "privacy_selector": "1 passed in 0.22s",
+    "current_hash_performance": "not run; requested, no T20 slot granted",
+    "live_reranker": "not run; separate GO required",
+    "scheduling": "post-release; require explicit T02/T20 slot release before acceptance commands",
+    "T20": "release acceptance not complete; MemoryStore.find selector fails and broader test_agent_context has 2 setup errors and 1 failure",
+    "T02": "no T11 slot assigned; T02 task cannot verify its own original checkout baseline",
+    "project_config_slot": "T20-SERIAL-20261002-G; released by T20 as UNKNOWN, never PASS; no retry permitted",
+    "project_config_test_run_in_f678": "UNKNOWN from T20 G; no retry, not PASS",
+    "project_config_unknown_receipt": "handoff/t11-slot-g-project-config-unknown-20261002.json",
+    "project_config_unknown_receipt_sha256": "0863B224674469780E77FB1F07CB663E62598CC09DF80CF4F781E16E19F085FB",
+    "slot_release_evidence": {
+      "source_thread_id": "01a0d322-b3bd-7930-b552-14e9b7020fec",
+      "T20_state": "G released as UNKNOWN, never PASS",
+      "current_queue": "I=T07; J=T05; K=T14",
+      "project_config_retest": "No slot assigned; await explicit T20 GO; do not retry G"
+    },
+    "root_integration": "blocked; candidate patch apply-check failed against dirty root overlaps; no root writes",
+    "T20_coordination": "Latest update attempt failed because T20 thread had no active turn id. No retry; GO14 only T11 suite remains."
+  },
+  "user_authorization": {
+    "action": "Use existing T21 checkout t21-project-config to transfer project_config into T11 f678 checkout",
+    "granted": true,
+    "source_checkout": "C:\\Users\\Adam\\.codex\\worktrees\\t21-project-config\\.local-ai-hub",
+    "destination_checkout": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "verified_source_sha256": {
+      "src/local_ai_hub/project_config.py": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+      "tests/test_project_config.py": "0196D8FA417DD2B56BFC0D143217D25E2986E1B1B1DF6CEFFADD3C0EEB9FBCEA"
+    },
+    "verified_destination_matches_source": true,
+    "source_checkout_owned_files_modified": false,
+    "tests_run": false,
+    "verified_at": "2026-10-02"
+  },
+  "proposed_T21_owner_patch": {
+    "path": "handoff/t11-t21-casefold-proposed.patch",
+    "sha256": "C39142863C86CFB39CB641F3D33E101E9D706E10BCFA005DFBEED3A6A9FAA6EE",
+    "purpose": "Normalize local-config basename exclusion and add a parametrized path-policy regression proposal",
+    "target_selector_after_owner_acceptance": "tests/test_project_config.py::test_shared_path_policy_excludes_case_variant_local_config_names",
+    "status": "PROPOSED ONLY; T21 SOURCE/TEST UNCHANGED; NOT APPLIED OR APPLY-CHECKED; NO TEST SLOT"
+  },
+  "t11_sqlite_lock_fix": {
+    "receipt": "handoff/t11-rag-sqlite-lock-fix-20261002.json",
+    "receipt_sha256": "FA03785E50C3E253AF8F0E69DFE59ECA3862F919F1F6ACC8248485172F4506C9",
+    "reported_request_id": "req_37b89f459e7a",
+    "source_path": "src/local_ai_hub/rag.py",
+    "source_sha256": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+    "test_path": "tests/test_rag_hybrid.py",
+    "test_sha256": "DEC8B30CE2A5DE797B2B552E1F6B00A62A99B7FFADEE89DFCE6314322EF90314",
+    "selector": "tests/test_rag_hybrid.py::test_project_policy_identity_retries_transient_publish_lock",
+    "test_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_hybrid.py::test_project_policy_identity_retries_transient_publish_lock",
+    "test_status": "Identity-lock selector passed 1 test in 0.62s at prior pins only; these hashes now include follow-up uncertain-only retry hardening, which awaits the current-hash broad suite",
+    "scope": "T11 RAG only; no root/service/MCP schema/context-pack or state DB access/reset"
+  },
+  "t11_uncertain_only_lock_fix": {
+    "receipt": "handoff/t11-rag-sqlite-lock-fix-20261002.json",
+    "source_sha256": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+    "test_sha256": "DEC8B30CE2A5DE797B2B552E1F6B00A62A99B7FFADEE89DFCE6314322EF90314",
+    "selector": "tests/test_rag_hybrid.py::test_index_paths_step_retries_uncertain_only_publish_lock",
+    "test_status": "NOT RUN; waiting for explicit T20 serial GO for offline refresh",
+    "tests_run": false
+  },
+  "current_hash_master_plan_update": {
+    "plan": "docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md",
+    "t11_section": "252-263",
+    "previous_offline_receipt": "handoff/T11-CPU-SLOT-20261002-11/02-offline-suite.receipt.json",
+    "previous_offline_result": "179 passed, 3 skipped in 48.76s",
+    "current_hash_mismatches_since_that_receipt": {
+      "src/local_ai_hub/rag.py": {
+        "old": "f47259DAFC72C6A584F53D84E51FAC270CE0969E48EC3CDB58C1CCEB6F554992",
+        "current": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A"
+      },
+      "tests/test_rag_hybrid.py": {
+        "old": "03D527FC1A5D15913A03555C245AE4A20196675D5C4C3EACFC774BF88C4A23E1",
+        "current": "DEC8B30CE2A5DE797B2B552E1F6B00A62A99B7FFADEE89DFCE6314322EF90314"
+      }
+    },
+    "prior_hash_test_evidence": {
+      "selector": "tests/test_rag_hybrid.py::test_project_policy_identity_retries_transient_publish_lock",
+      "result": "1 passed in 0.62s; exit 0",
+      "source_sha256": "8BF2567DAF4F3D71DF9B4B135A82E54D78CA203CC25A9E069304D314B49959C8",
+      "test_sha256": "90AD659493B0A98F07AB1311EC52A44F01C2FD2A2B0104E1A0CFB521D0ACA0CF",
+      "superseded_receipt_sha256": "97FB6A2856AD8BAA2C4DA3ECE0306D71DDAA1A4BED96C6EC55CE6D473F611C5F",
+      "receipt_note": "That receipt version was superseded by the follow-up uncertain-only lock fix; the recorded test pass remains historical at the source/test pins above."
+    },
+    "acceptance_status": "The identity-lock regression passed at its then-current hashes; current uncertain-only retry regression and broad suite await T20 GO. T11-1 benchmark, live reranker budget, and T07 replay evidence remain open.",
+    "tests_run_during_this_crosswalk_update": false
+  },
+  "current_hash_offline_refresh_request": {
+    "coordinator_thread_id": "01a0d322-b3bd-7930-b552-14e9b7020fec",
+    "status": "COMPLETED UNDER T20 GO #14: 181 passed, 3 skipped, exit 0. Skipped benchmark/live checks are unverified.",
+    "queue_snapshot": "T20 latest reports release NO-GO; no T11 benchmark/live-reranker slot granted. T18 considered as candidate for earlier queue slot; no T11 GO received.",
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+    "changed_pins": {
+      "src/local_ai_hub/rag.py": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+      "tests/test_rag_hybrid.py": "DEC8B30CE2A5DE797B2B552E1F6B00A62A99B7FFADEE89DFCE6314322EF90314"
+    },
+    "additional_targeted_selector": "tests/test_rag_hybrid.py::test_index_paths_step_retries_uncertain_only_publish_lock",
+    "tests_run": true
+  },
+  "current_hash_go14_receipt": {
+    "authorization": "T20 serial GO #14",
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+    "runner": "local_ai_command",
+    "request_id": "req_bb59b6696466",
+    "execution_id": "75ce538a3a584f4fa00efe17066b712d",
+    "repository_revision": "0f49a2e6238e30f1f2ea755e2ab278c7e74cbabce5281530daff30eed35b4495",
+    "exit_code": 0,
+    "duration_seconds": 48.8884,
+    "passed": 181,
+    "skipped": 3,
+    "failed": 0,
+    "skips": [
+      "100k RAG benchmark needs RAG_BENCHMARK=1",
+      "live Ollama needs T11_REAL_OLLAMA=1",
+      "synthetic seed benchmark needs T11_RAG_BENCHMARK=1"
+    ],
+    "skipped_checks": "UNVERIFIED",
+    "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "post_run_head_unchanged": true,
+    "post_run_pytest_process_count": 0,
+    "post_run_t11_runner_count": 0,
+    "root_integration": "NOT APPLIED; apply-check fails on dirty root overlap",
+    "patch_sha256": "be6cd039e6c1311bcd8aab08237069cacdc6200845a7236252bda27019c83ce0",
+    "hunk_report_sha256": "722f843df922105fa549844d833e8b5bb39ca2c07275d0b8c48cf69722b54636",
+    "input_pins_preflight": [
+      {
+        "path": "src/local_ai_hub/rag.py",
+        "sha256": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A"
+      },
+      {
+        "path": "src/local_ai_hub/embeddings.py",
+        "sha256": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170"
+      },
+      {
+        "path": "src/local_ai_hub/reranker.py",
+        "sha256": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562"
+      },
+      {
+        "path": "src/local_ai_hub/project_config.py",
+        "sha256": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B"
+      },
+      {
+        "path": "tests/test_rag_read_bounds.py",
+        "sha256": "AE19C08BC2AA9CA45D0B7F26DCFF23DD8ABDB3A1D843F54A7830045A8A568AA2"
+      },
+      {
+        "path": "tests/test_rag_fragment_cache.py",
+        "sha256": "A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002"
+      },
+      {
+        "path": "tests/test_rag_hybrid.py",
+        "sha256": "DEC8B30CE2A5DE797B2B552E1F6B00A62A99B7FFADEE89DFCE6314322EF90314"
+      },
+      {
+        "path": "tests/test_rag_quality_contract.py",
+        "sha256": "0A82654D5BBA505F69437037E8F906DEFAF5F983ACA0305445E11F0854BBD9C5"
+      },
+      {
+        "path": "tests/test_rag_dedup.py",
+        "sha256": "2E8A76309C2024071DC6BD0362921C100EF9013E588BED8425C992DE9104C6D6"
+      },
+      {
+        "path": "tests/test_t11_project_policy_consumers.py",
+        "sha256": "E4EA70D1036A5109B80E390B255F4106664E0238AB7067E59322760997D0C4F5"
+      },
+      {
+        "path": "tests/test_t11_rag_ingestion_contract.py",
+        "sha256": "C4E9A80373A3964E1EF9CB7B1F07114D5DD09BF7A68BDD308D167613DBCB8EE1"
+      },
+      {
+        "path": "tests/test_t11_rag_seed_integrity.py",
+        "sha256": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02"
+      },
+      {
+        "path": "tests/test_reranker_cache_identity.py",
+        "sha256": "32160E2B0F963DDDF6FBC3A15838E1532EF696424AB011581C4BF3AEEAD27C0B"
+      },
+      {
+        "path": "tests/test_embedding_cache.py",
+        "sha256": "3BADFED3EA66802AF00522CFCDC979BFC2BA6A27DFAA08C241AB0440AD1887AE"
+      },
+      {
+        "path": "tests/test_embedding_batch_deduplication.py",
+        "sha256": "C96FE56FB6A6B6C7AED973AF2EE1FFF116EF2029AAEB0EC307C50F9AF0BA2196"
+      },
+      {
+        "path": "tests/test_model_release_lifecycle.py",
+        "sha256": "50C061DBC8D2BFA37337FDD77F796DCB328F786F407E1AD389200991E2EE5C50"
+      },
+      {
+        "path": "handoff/t11-rag-sqlite-lock-fix-20261002.json",
+        "sha256": "FA03785E50C3E253AF8F0E69DFE59ECA3862F919F1F6ACC8248485172F4506C9"
+      },
+      {
+        "path": "handoff/t11-project-config-integration-20261002.json",
+        "sha256": "F4682E54A92091FE2DE0D9C2AC97E7EB55A18370A3BB06438FB970CB332AAF9F"
+      },
+      {
+        "path": "handoff/t11-performance-acceptance-record-20261002.md",
+        "sha256": "98F9B1DBCB7345955B7EA62CA64621B0C0FEC33EA2AADFAC2F76F6A5C77D26CF"
+      }
+    ],
+    "input_pins_match_pre_and_post": true
+  },
+  "latest_root_recheck_20261003": {
+    "root_head": "276ecabdec84e5a76dfb155090c5f0641fa8a9f2",
+    "all_11_t11_path_hashes_unchanged": true,
+    "candidate_apply_check_exit_code": 1,
+    "candidate_apply_check_applied": false,
+    "per_hunk_report_sha256": "722f843df922105fa549844d833e8b5bb39ca2c07275d0b8c48cf69722b54636"
+  },
+  "latest_t21_owner_check_20261003": {
+    "thread_id": "01a0d7b9-04b9-7da1-906e-393693d07f65",
+    "thread_title": "Local AI Hub T21 \u2014 project/worktree\u2026",
+    "thread_metadata_cwd": "C:\\Users\\Adam\\.codex\\worktrees\\4294\\.local-ai-hub",
+    "thread_metadata_cwd_has_git_or_files": false,
+    "actual_recent_command_cwd": "C:\\Users\\Adam\\.codex\\worktrees\\t21-project-config\\.local-ai-hub",
+    "actual_checkout_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "project_config_source_sha256": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+    "project_config_test_sha256": "0196D8FA417DD2B56BFC0D143217D25E2986E1B1B1DF6CEFFADD3C0EEB9FBCEA",
+    "T11_candidate_source_and_test_match_T21": true,
+    "T21_dirty_owned_paths": [
+      "src/local_ai_hub/project_config.py",
+      "tests/test_project_config.py"
+    ],
+    "T21_static_check": "T21 scoped git diff --check exited 0; no test run",
+    "T21_current_test_authorization": "T20 verdict NO-GO; do not run test_project_config.py; previous slot G remains UNKNOWN and is not retried",
+    "ownership": "T21 owns project_config.py and test_project_config.py; source/test pins match T11 copied candidate. T21 adapter consumers remain other-task owned."
+  },
+  "latest_t20_coordination_20261003": {
+    "thread_id": "01a0d322-b3bd-7930-b552-14e9b7020fec",
+    "observed_status": "systemError / idle; no active turn",
+    "send_message_attempt": "rejected: Cannot steer conversation without an active turn id",
+    "retry": "not attempted",
+    "latest_known_verdict": "release NO-GO; no T11 performance/live/project_config GO"
+  },
+  "current_source_test_pin_recheck_20261003": {
+    "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "pin_count": 16,
+    "all_match_GO14": true,
+    "pins": [
+      {
+        "path": "src/local_ai_hub/rag.py",
+        "sha256": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "src/local_ai_hub/embeddings.py",
+        "sha256": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "src/local_ai_hub/reranker.py",
+        "sha256": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "src/local_ai_hub/project_config.py",
+        "sha256": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "tests/test_rag_read_bounds.py",
+        "sha256": "AE19C08BC2AA9CA45D0B7F26DCFF23DD8ABDB3A1D843F54A7830045A8A568AA2",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "tests/test_rag_fragment_cache.py",
+        "sha256": "A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "tests/test_rag_hybrid.py",
+        "sha256": "DEC8B30CE2A5DE797B2B552E1F6B00A62A99B7FFADEE89DFCE6314322EF90314",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "tests/test_rag_quality_contract.py",
+        "sha256": "0A82654D5BBA505F69437037E8F906DEFAF5F983ACA0305445E11F0854BBD9C5",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "tests/test_rag_dedup.py",
+        "sha256": "2E8A76309C2024071DC6BD0362921C100EF9013E588BED8425C992DE9104C6D6",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "tests/test_t11_project_policy_consumers.py",
+        "sha256": "E4EA70D1036A5109B80E390B255F4106664E0238AB7067E59322760997D0C4F5",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "tests/test_t11_rag_ingestion_contract.py",
+        "sha256": "C4E9A80373A3964E1EF9CB7B1F07114D5DD09BF7A68BDD308D167613DBCB8EE1",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "tests/test_t11_rag_seed_integrity.py",
+        "sha256": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "tests/test_reranker_cache_identity.py",
+        "sha256": "32160E2B0F963DDDF6FBC3A15838E1532EF696424AB011581C4BF3AEEAD27C0B",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "tests/test_embedding_cache.py",
+        "sha256": "3BADFED3EA66802AF00522CFCDC979BFC2BA6A27DFAA08C241AB0440AD1887AE",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "tests/test_embedding_batch_deduplication.py",
+        "sha256": "C96FE56FB6A6B6C7AED973AF2EE1FFF116EF2029AAEB0EC307C50F9AF0BA2196",
+        "matches_GO14_source_test_pin": true
+      },
+      {
+        "path": "tests/test_model_release_lifecycle.py",
+        "sha256": "50C061DBC8D2BFA37337FDD77F796DCB328F786F407E1AD389200991E2EE5C50",
+        "matches_GO14_source_test_pin": true
+      }
+    ],
+    "scoped_git_diff_check": "exit 0; no whitespace errors; Git emitted only LF-to-CRLF warnings",
+    "test_or_benchmark_run": false
+  },
+  "latest_project_config_G_check_20261003": {
+    "receipt": "handoff/t11-slot-g-project-config-unknown-20261002.json",
+    "receipt_sha256": "0863b224674469780e77fb1f07cb663e62598cc09df80cf4f781e16e19f085fb",
+    "receipt_status": "UNKNOWN; SLOT G HELD; PROCESS STOP NOT CONFIRMED",
+    "slot_id": "T20-SERIAL-20261002-G",
+    "slot_released": false,
+    "dispatch_process_stop_confirmed": false,
+    "current_matching_process_count": 0,
+    "current_process_snapshot": "No python/pythonw process command line matched test_project_config.py or t11-slot-g-project-config on 2026-10-03. This does not prove historical dispatch completed or release G.",
+    "retry_or_native_fallback": "not performed; forbidden while outcome/slot release remains unknown"
+  }
+}

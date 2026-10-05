@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-02",
+  "task": "T11 static RAG policy/cache/ingestion review and receipt audit",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "status": "READ-ONLY REVIEW COMPLETE; ACCEPTANCE OPEN",
+  "prevalidation_inventory_sha256": "dca36e199ed44f367a9cecc0ba81d3a33ef409c8ce31685101c65d184d52d116",
+  "inventory_drift": [],
+  "reviewed": {
+    "src/local_ai_hub/rag.py": {
+      "sha256": "f47259dafc72c6a584f53d84e51fac270ce0969e48ec3cdb58c1cceb6f554992",
+      "findings": [
+        "search cache key includes tenant, effective scope, workspace, query, top_k, reranker flag, scope_path, runtime embedding space/dimension when known, and index generation",
+        "vector SQL uses tenant/workspace/exact embedding_space predicates; bounded keyset batches and candidate heap",
+        "ingest_document checks raw and expanded UTF-8 byte limits, embeds bounded batches, uses BEGIN IMMEDIATE to replace chunks/files/FTS atomically, retries busy publish, reports partial embedding degraded",
+        "SVG diagram reads max_file_bytes+1; raster diagram is metadata-only"
+      ]
+    },
+    "src/local_ai_hub/project_config.py": {
+      "sha256": "ffd425b1260b285f25b1d121a7c6bcd585c618b5c7e26415e2ad0a7014196b0b",
+      "findings": [
+        "PathHintUsage.telemetry_metadata emits booleans/null only",
+        "T21 source hash matches existing T21 checkout in earlier current-state audit"
+      ]
+    },
+    "src/local_ai_hub/project_policy_adapter.py": {
+      "sha256": "11d4a5c6519989f6f65632edc880c521c407ddbc335c181480116c6827afb98a",
+      "findings": [
+        "adapter delegates project context, phase, extension/path and descent policy to project_config; consumers enforce hard deny and prune stale vectors"
+      ]
+    },
+    "tests/test_t11_project_policy_consumers.py": {
+      "sha256": "e4ea70d1036a5109b80e390b255f4106664e0238ab7067e59322760997d0c4f5",
+      "note": "hash differs from initial inventory; record current value and do not overwrite; slot-05 receipt predates no edits to inputs listed in its receipt"
+    },
+    "tests/test_t11_rag_ingestion_contract.py": {
+      "sha256": "c4e9a80373a3964e1ef9cb7b1f07114d5dd09bf7a68bdd308d167613dbcb8ee1",
+      "findings": [
+        "has live reranker-only latency probe prepared; not executed"
+      ]
+    },
+    "tests/test_telemetry_contract.py": {
+      "sha256": "6138ebed767982a57fc279fe96576cc646df12f2b87e5c0c171bd8fa571029db",
+      "pending_selector": "test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields"
+    }
+  },
+  "receipt_audit": {
+    "slot05_receipt": "handoff/T11-CPU-SLOT-20261002-05/01-project-config-consumers.receipt.json",
+    "slot05_sha256": "46d53337f90d48193495f8d260cef1b3b2992ba692c1ce122098c363f7107138",
+    "result": "93 passed in 6.63s",
+    "inputs_match_inventory": true,
+    "T02_partial": "T02-CPU-20261002-04 remains partial baseline only; candidate not run; do not reuse output number",
+    "100k_performance": "historical p95 REDs 972.658ms / 1698.727ms vs 750ms; no current receipt",
+    "reranker_live": "truthfulness receipt proves real backend but no latency budget; separate probe prepared, not run"
+  },
+  "privacy_boundary": {
+    "telemetry": "PathHintUsage.telemetry_metadata emits only booleans/null",
+    "diagram": "ingest_diagram stores absolute image_path in RAG metadata/content and returns image_path; outside telemetry",
+    "decision": "If no-absolute-path rule covers persisted RAG payloads/API response, criterion remains open and needs owner decision; do not call telemetry selector sufficient for this broader boundary"
+  },
+  "smallest_next_serial_commands": [
+    {
+      "purpose": "privacy telemetry contract",
+      "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_telemetry_contract.py::test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields",
+      "expected_scope": "1 selector"
+    },
+    {
+      "purpose": "RAG ingestion, identity, retrieval, publish and quality acceptance",
+      "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+      "expected_scope": "T11 offline suite; run serially after privacy selector"
+    },
+    {
+      "purpose": "100k no-reranker retrieval latency and peak memory matrix",
+      "command": "$env:RAG_BENCHMARK='1'; python -B -m pytest -q -s --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline",
+      "expected_scope": "12 corpus/batch pairs; do not overlap with tests"
+    },
+    {
+      "purpose": "live reranker-only latency",
+      "command": "$env:T11_REAL_OLLAMA='1'; $env:T11_REAL_RERANKER='1'; python -B -m pytest -q -s --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py::test_t11_live_ollama_rag_ingest_and_reranker_truthfulness",
+      "expected_scope": "2 warmups + 20 measurements, 16 candidates; separate from 100k scan"
+    }
+  ],
+  "tests_run_during_this_review": false,
+  "benchmarks_run_during_this_review": false,
+  "slot": "slot 05 used for project_config + consumer checks only; released. Require fresh explicit T20 slot for remaining commands."
+}

@@ -1,0 +1,8 @@
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -830,7 +830,7 @@
+         except Exception as exc:
+-            result = {"success": False, "error": str(exc), "retryable": True}
++            result = {"success": False, "error": str(exc), "retryable": is_busy_error(exc)}
+         finally:

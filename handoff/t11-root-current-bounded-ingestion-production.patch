@@ -1,0 +1,110 @@
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -109,6 +109,14 @@
+         return json_dumps(values, separators=(",", ":"))
+     except (TypeError, ValueError, OverflowError):
+         return None
++
++
++def _read_bounded_file(path: Path, max_bytes: int) -> bytes | None:
++    """Read at most max_bytes plus one byte to detect growth after stat."""
++    limit = max(0, int(max_bytes))
++    with path.open("rb") as source:
++        raw = source.read(limit + 1)
++    return raw if len(raw) <= limit else None
+ 
+ 
+ class RAGStore:
+@@ -843,11 +851,18 @@
+         dedup_near_duplicates = bool(rag_cfg.get("dedup_near_duplicates", True))
+         max_hamming = int(rag_cfg.get("near_duplicate_max_hamming", 4))
+         near_duplicates_skipped = 0
++        max_file_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
++        settings = project_context.settings if project_context is not None else None
++        if settings is not None and settings.max_file_size_bytes is not None:
++            max_file_bytes = min(max_file_bytes, int(settings.max_file_size_bytes))
+ 
+         for rel in changed_paths:
+             path, mtime_ns, size = current_meta[rel]
+             try:
+-                raw = path.read_bytes()
++                raw = _read_bounded_file(path, max_file_bytes)
++                if raw is None:
++                    skipped += 1
++                    continue
+                 read_files += 1
+                 text = raw.decode("utf-8", errors="replace")
+                 file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+@@ -1164,6 +1180,10 @@
+             embedding_space_resolved = bool(stored_space or self._embedding_space_is_resolved())
+             # 1. Read files and chunk
+             file_data: list[dict[str, Any]] = []
++            policy_deleted: set[str] = set()
++            ignored_dirs = {
++                str(name).lower() for name in self.config.get("rag", {}).get("ignore_dirs", [])
++            }
+             for rel in paths:
+                 if callable(should_yield) and should_yield():
+                     return {
+@@ -1175,7 +1195,14 @@
+                 path = (root_path / rel).resolve(strict=False)
+                 try:
+-                    path.relative_to(root_path)
++                    relative_path = path.relative_to(root_path)
+                 except ValueError:
+                     continue
++                ignored_parts = relative_path.parts[:-1]
++                requested_path = Path(os.path.normpath(rel))
++                if not requested_path.is_absolute():
++                    ignored_parts = (*ignored_parts, *requested_path.parts[:-1])
++                if any(part.lower() in ignored_dirs for part in ignored_parts):
++                    policy_deleted.add(rel)
++                    continue
+                 if not path.is_file():
+                     continue
+@@ -1187,10 +1214,12 @@
+                         api = self.project_config_api() if project_context is not None else None
+                         if api is None or api.custom_extension_kind(path.name, project_context.settings) != "text":
++                            policy_deleted.add(rel)
+                             continue
+-                    max_bytes = int(cfg.get("max_file_bytes", 2_000_000))
++                    max_bytes = max(0, int(cfg.get("max_file_bytes", 2_000_000)))
+                     if project_context is not None and project_context.settings.max_file_size_bytes is not None:
+                         max_bytes = min(max_bytes, int(project_context.settings.max_file_size_bytes))
+                     if int(stat.st_size) > max_bytes:
++                        policy_deleted.add(rel)
+                         continue
+                     allowed, kind = self._project_path_decision(
+                         root_path, path, project_context, phase="rag", size_bytes=int(stat.st_size),
+@@ -1198,19 +1227,28 @@
+                     if not allowed or kind == "binary":
++                        policy_deleted.add(rel)
+                         continue
+                     override = (content_overrides or {}).get(rel)
+                     if override is None:
+-                        raw = path.read_bytes()
++                        raw = _read_bounded_file(path, max_bytes)
++                        if raw is None:
++                            continue
+                         text = raw.decode("utf-8", errors="replace")
+                         file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+                     else:
+                         text = str(override)
++                        if len(text.encode("utf-8")) > max_bytes:
++                            policy_deleted.add(rel)
++                            continue
+                         file_hash = hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+                     chunks = list(self._chunks(text, path=rel))
+                     file_data.append({"rel": rel, "stat": stat, "file_hash": file_hash, "chunks": chunks})
+                 except Exception:
+                     continue
+ 
+-            deleted_unique = sorted({str(p).replace("\\", "/") for p in (deleted_paths or []) if str(p).strip()})
++            deleted_unique = sorted(
++                {str(p).replace("\\", "/") for p in (deleted_paths or []) if str(p).strip()}
++                | policy_deleted
++            )
+             if not file_data and not deleted_unique:
+                 return {
+                     "success": True, "workspace": workspace, "preempted": False,

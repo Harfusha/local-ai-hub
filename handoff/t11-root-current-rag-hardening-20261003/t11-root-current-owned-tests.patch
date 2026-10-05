@@ -1,0 +1,368 @@
+diff --git a/tests/test_rag_hybrid.py b/tests/test_rag_hybrid.py
+--- a/tests/test_rag_hybrid.py
++++ b/tests/test_rag_hybrid.py
+@@ -873,3 +873,45 @@
+             else json.loads(row[0])
+         )
+         assert tuple(vector) == (float(len(embedded_texts[0])), 1.0)
++
++
++def test_rag_index_paths_step_retries_publish_lock_without_reembedding(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    root = tmp_path / "project-step"
++    root.mkdir()
++    (root / "locked.py").write_text("def locked_step():\n    return 1\n", encoding="utf-8")
++    workspace = "step-workspace"
++    store._sync_workspace_project_policy_identity(
++        root, store._scope_key("test_tenant"), workspace, store.project_context(root)
++    )
++    state = {"failures": 1, "begins": 0}
++
++    class _FlakyConnection:
++        def __init__(self, connection):
++            self._connection = connection
++
++        def execute(self, sql, *args):
++            if sql == "BEGIN IMMEDIATE":
++                state["begins"] += 1
++                if state["failures"]:
++                    state["failures"] -= 1
++                    raise sqlite3.OperationalError("database is locked")
++            return self._connection.execute(sql, *args)
++
++        def close(self):
++            self._connection.close()
++
++        def __getattr__(self, name):
++            return getattr(self._connection, name)
++
++    original_connect = store._connect
++    monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
++
++    result = store.index_paths_step(
++        str(root), "test_tenant", workspace, ["locked.py"]
++    )
++
++    assert result["success"] is True
++    assert state["begins"] == 2
++    assert len(store.services.calls) == 1
++
+diff --git a/tests/test_rag_fragment_cache.py b/tests/test_rag_fragment_cache.py
+--- a/tests/test_rag_fragment_cache.py
++++ b/tests/test_rag_fragment_cache.py
+@@ -941,3 +941,71 @@
+     vector = struct.unpack(f"{len(row[1]) // 4}f", row[1]) if isinstance(row[1], bytes) else json.loads(row[1])
+     assert row[2] == "space-current"
+     assert tuple(vector) == (float(len(row[0])), 1.0)
++
++
++def test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces(tmp_path):
++    class _ChangingSpaceServices(_Services):
++        def __init__(self):
++            super().__init__()
++            self.space_id = "model-a@revision-1"
++            self.output_space = self.space_id
++
++        def embed(self, texts, tenant, **kwargs):
++            result = super().embed(texts, tenant, **kwargs)
++            result["embeddings"] = [
++                [float(len(text)), float(ord(self.output_space[6]))]
++                for text in texts
++            ]
++            result["embedding_space_id"] = self.output_space
++            return result
++
++    services = _ChangingSpaceServices()
++    store = _store(tmp_path, services)
++    source_root = tmp_path / "source"
++    source_root.mkdir()
++    shared_text = "def shared_value():\n    return 1\n"
++    (source_root / "shared.py").write_text(shared_text, encoding="utf-8")
++    assert store.index(str(source_root), "tenant", workspace="source")["success"] is True
++    with closing(store._connect()) as con:
++        source_embedding = con.execute(
++            "SELECT embedding FROM chunks WHERE tenant=? AND workspace=? AND path=?",
++            (store._scope_key("tenant"), "source", "shared.py"),
++        ).fetchone()[0]
++
++    for mode in ("index", "index_paths_step", "index_step"):
++        target_root = tmp_path / mode
++        target_root.mkdir()
++        (target_root / "shared.py").write_text(shared_text, encoding="utf-8")
++        (target_root / "new.py").write_text("def new_value():\n    return 2\n", encoding="utf-8")
++        services.output_space = "model-b@revision-2"
++        workspace = f"target:{mode}"
++        if mode == "index":
++            result = store.index(str(target_root), "tenant", workspace=workspace)
++        elif mode == "index_paths_step":
++            result = store.index_paths_step(
++                str(target_root), "tenant", workspace, ["shared.py", "new.py"]
++            )
++        else:
++            result = store.index_step(
++                str(target_root), "tenant", workspace=workspace, max_files=2
++            )
++        assert result["success"] is True
++        with closing(store._connect()) as con:
++            rows = {
++                row[0]: (row[1], row[2])
++                for row in con.execute(
++                "SELECT path,embedding_space,embedding FROM chunks WHERE tenant=? AND workspace=?",
++                (store._scope_key("tenant"), workspace),
++                ).fetchall()
++            }
++        assert rows["shared.py"][0] == "model-b@revision-2"
++        assert rows["new.py"][0] == "model-b@revision-2"
++        value = rows["shared.py"][1]
++        embedding = (
++            struct.unpack(f"{len(value) // 4}f", value)
++            if isinstance(value, bytes)
++            else json.loads(value)
++        )
++        assert tuple(embedding) == (float(len(shared_text)), float(ord("b")))
++        assert rows["shared.py"][1] != source_embedding
++
+diff --git a/tests/test_t11_rag_ingestion_contract.py b/tests/test_t11_rag_ingestion_contract.py
+--- a/tests/test_t11_rag_ingestion_contract.py
++++ b/tests/test_t11_rag_ingestion_contract.py
+@@ -1,11 +1,14 @@
+ from __future__ import annotations
+ 
+ import inspect
++import math
+ import json
+ import os
++import statistics
+ import sqlite3
+ import struct
+ import sys
++import time
+ from contextlib import closing
+ from types import ModuleType, SimpleNamespace
+ 
+@@ -323,6 +326,39 @@
+     path.write_text("after = 'new snapshot'\n", encoding="utf-8")
+     injected = _inject_sqlite_write_failure(store, monkeypatch, failed_statement)
+     result = store.index_paths_step(str(root), "tenant", workspace, ["module.py"])
++
++    assert result["success"] is False
++    assert result["retryable"] is False
++    assert injected["attempts"] == 1
++    assert _rag_snapshot(store, "tenant", workspace) == previous
++
++
++@pytest.mark.parametrize("failed_statement", ["INSERT INTO chunk_fts", "DELETE FROM chunk_fts"])
++def test_full_index_fts_write_failure_keeps_previous_snapshot(
++    tmp_path, monkeypatch, failed_statement
++):
++    store = _store(tmp_path)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("before = 'old snapshot'\n", encoding="utf-8")
++
++    class _VectorServices:
++        def embed(self, texts, _tenant, **_kwargs):
++            return {
++                "success": True,
++                "embedding_space_id": "atomic-full-index-test-space",
++                "embeddings": [[0.25, 0.75] for _ in texts],
++            }
++
++    store.services = _VectorServices()
++    workspace = "atomic-full-index-workspace"
++    assert store.index(str(root), "tenant", workspace)["success"] is True
++    previous = _rag_snapshot(store, "tenant", workspace)
++
++    path.write_text("after = 'new snapshot'\n", encoding="utf-8")
++    injected = _inject_sqlite_write_failure(store, monkeypatch, failed_statement)
++    result = store.index(str(root), "tenant", workspace)
+ 
+     assert result["success"] is False
+     assert result["retryable"] is False
+@@ -875,6 +911,44 @@
+             assert result["reranked"] is True
+             assert result["degraded"] is False
+             assert result["fallback"] is None
++
++            # Measure warm transformer-only latency separately from the 100k
++            # vector scan. Unique query strings bypass pair-cache reuse.
++            benchmark_documents = [
++                f"Candidate {index}: " + ("credential rotation and access review. " * 24)
++                for index in range(16)
++            ]
++            reranker = app.rag.reranker
++            for index in range(2):
++                warm = reranker.rerank(
++                    f"T11 reranker warmup {index}", benchmark_documents, top_k=8
++                )
++                assert warm.get("success") is True, warm.get("error")
++            samples_ms = []
++            identities = set()
++            for index in range(20):
++                started = time.perf_counter()
++                measured = reranker.rerank(
++                    f"T11 reranker sample {index}", benchmark_documents, top_k=8
++                )
++                samples_ms.append((time.perf_counter() - started) * 1000.0)
++                assert measured.get("success") is True, measured.get("error")
++                assert measured.get("computed") == len(benchmark_documents)
++                identities.add((measured.get("backend"), measured.get("device")))
++            ordered_ms = sorted(samples_ms)
++            p95_index = min(len(ordered_ms) - 1, math.ceil(0.95 * len(ordered_ms)) - 1)
++            print("T11_RERANKER_BUDGET=" + json.dumps({
++                "model": reranker.model_name,
++                "backend_devices": sorted([list(item) for item in identities], key=lambda item: (str(item[0]), str(item[1]))),
++                "candidate_count": len(benchmark_documents),
++                "warmup_samples": 2,
++                "measured_samples": len(samples_ms),
++                "p50_ms": round(float(statistics.median(samples_ms)), 3),
++                "p95_ms": round(float(ordered_ms[p95_index]), 3),
++                "min_ms": round(float(ordered_ms[0]), 3),
++                "max_ms": round(float(ordered_ms[-1]), 3),
++                "peak_memory": "not measured",
++            }, sort_keys=True))
+         else:
+             assert result["reranked"] is False
+             assert result["degraded"] is True
+diff --git a/tests/test_t11_rag_seed_integrity.py b/tests/test_t11_rag_seed_integrity.py
+--- a/tests/test_t11_rag_seed_integrity.py
++++ b/tests/test_t11_rag_seed_integrity.py
+@@ -4,6 +4,7 @@
+ import time
+ import json
+ import os
++import subprocess
+ import tracemalloc
+ from concurrent.futures import ThreadPoolExecutor
+ from contextlib import closing
+@@ -151,6 +152,83 @@
+     assert source is not None
+     assert source["content_hash"] == digest
+     assert source["text"] == content
++
++
++def test_parent_seed_uses_actual_same_head_worktree_blobs_and_rejects_dirty_child(
++    tmp_path: Path, preprocessor_factory
++) -> None:
++    pre, repo_tools = preprocessor_factory(tmp_path / "state")
++    parent = tmp_path / "parent"
++    child = tmp_path / "worktrees" / "feature"
++    parent.mkdir()
++    child.parent.mkdir()
++
++    def git(root: Path, *args: str) -> str:
++        result = subprocess.run(
++            ["git", "-C", str(root), *args],
++            check=True,
++            capture_output=True,
++            text=True,
++            timeout=30,
++        )
++        return result.stdout.strip()
++
++    git(parent, "init", "--quiet")
++    git(parent, "config", "user.email", "test@example.invalid")
++    git(parent, "config", "user.name", "Test")
++    parent_file = parent / "module.py"
++    parent_file.write_text("value = 1\n", encoding="utf-8")
++    git(parent, "add", "module.py")
++    git(parent, "commit", "--quiet", "-m", "seed baseline")
++    git(parent, "worktree", "add", "--quiet", "--detach", str(child), "HEAD")
++
++    parent_head = git(parent, "rev-parse", "HEAD")
++    assert git(child, "rev-parse", "HEAD") == parent_head
++    parent_root = pre._root(str(parent))
++    child_root = pre._root(str(child))
++    parent_hash = repo_tools.git_blob_map(parent_root)["module.py"]
++    assert parent_hash.startswith("git:")
++    _insert_parent_ref(pre, parent_root, parent_file, parent_hash)
++
++    seeded = pre._seed_from_parent(child_root, parent_root)
++
++    with closing(pre._connect()) as con:
++        row = con.execute(
++            "SELECT content_hash,needs_hash,rag_hash,card_key FROM file_refs WHERE root=? AND path=?",
++            (child_root, "module.py"),
++        ).fetchone()
++        source = con.execute(
++            "SELECT content_hash,text FROM source_index WHERE root=? AND path=?",
++            (child_root, "module.py"),
++        ).fetchone()
++    assert seeded["file_refs"] == 1
++    assert row["content_hash"] == parent_hash
++    assert row["needs_hash"] == 0
++    assert row["rag_hash"] in (None, "")
++    assert row["card_key"] == "parent-card"
++    assert source["text"] == parent_file.read_text(encoding="utf-8")
++
++    child_file = child / "module.py"
++    child_file.write_text("value = 2\n", encoding="utf-8")
++    assert child_file.stat().st_size == parent_file.stat().st_size
++    rejected = pre._seed_from_parent(child_root, parent_root)
++
++    with closing(pre._connect()) as con:
++        row = con.execute(
++            "SELECT content_hash,needs_hash,rag_hash,card_key FROM file_refs WHERE root=? AND path=?",
++            (child_root, "module.py"),
++        ).fetchone()
++        source = con.execute(
++            "SELECT content_hash,text FROM source_index WHERE root=? AND path=?",
++            (child_root, "module.py"),
++        ).fetchone()
++    assert rejected["file_refs"] == 0
++    assert git(child, "rev-parse", "HEAD") == parent_head
++    assert row["content_hash"] == ""
++    assert row["needs_hash"] == 1
++    assert row["rag_hash"] in (None, "")
++    assert row["card_key"] is None
++    assert source is None
+ 
+ 
+ def test_parent_seed_rejects_same_size_dirty_child_and_stale_source_text(tmp_path: Path, preprocessor_factory) -> None:
+diff --git a/tests/test_rag_quality_contract.py b/tests/test_rag_quality_contract.py
+--- a/tests/test_rag_quality_contract.py
++++ b/tests/test_rag_quality_contract.py
+@@ -394,6 +394,42 @@
+     assert result["reason"] == "invalid_query_embedding"
+ 
+ 
++def test_public_search_does_not_cache_empty_lexical_fallback(tmp_path):
++    store = _store(tmp_path)
++
++    class _ZeroQueryServices(_QueryServices):
++        space_id = "quality-space"
++
++        def __init__(self, dimension: int):
++            super().__init__(dimension)
++            self.query_calls = 0
++
++        def embed(self, texts, _tenant, *, query=False, **kwargs):
++            if query:
++                self.query_calls += 1
++                return {
++                    "success": True,
++                    "embedding_space_id": self.space_id,
++                    "embeddings": [[1e-10, 0.0] for _ in texts],
++                }
++            return super().embed(texts, _tenant, query=query, **kwargs)
++
++    services = _ZeroQueryServices(2)
++    store.services = services
++
++    first = store.search("zero query", "tenant", "zero-query-cache", use_reranker=False)
++    second = store.search("zero query", "tenant", "zero-query-cache", use_reranker=False)
++
++    assert first["success"] is True
++    assert first["results"] == second["results"] == []
++    assert first["degraded"] is second["degraded"] is True
++    assert first["reason"] == second["reason"] == "invalid_query_embedding"
++    assert first["search_cache"]["hit"] is False
++    assert second["search_cache"]["hit"] is False
++    assert services.query_calls == 2
++
++
++
+ def test_numpy_vector_parse_skips_integer_overflow(tmp_path):
+     store = _store(tmp_path)
+     tenant, workspace = "tenant", "overflow-workspace"

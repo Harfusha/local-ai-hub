@@ -1,0 +1,2485 @@
+diff --git a/src/local_ai_hub/embeddings.py b/src/local_ai_hub/embeddings.py
+index 7913e8c..da68ac3 100644
+--- a/src/local_ai_hub/embeddings.py
++++ b/src/local_ai_hub/embeddings.py
+@@ -403,7 +403,7 @@ class EmbeddingModel:
+             return False
+ 
+     def release(self, timeout_seconds: float = 3.0) -> bool:
+-        """Synchronously unload the local model; safe to call repeatedly."""
++        """Detach the local model; CUDA allocator cleanup remains best-effort."""
+         with acquire_locks((self._encoder_lock, self._load_lock), timeout_seconds) as acquired:
+             if not acquired:
+                 return False
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+index e69ba0c..cc25f0e 100644
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -105,6 +105,7 @@ def _serialize_embedding(vector: Any) -> bytes | str | None:
+             return None
+     except (TypeError, ValueError, OverflowError):
+         return None
++
+     if not values or not all(math.isfinite(value) for value in values) or not any(value != 0.0 for value in values):
+         return None
+     try:
+@@ -119,6 +120,14 @@ def _serialize_embedding(vector: Any) -> bytes | str | None:
+         return None
+ 
+ 
++def _read_bounded_file(path: Path, max_bytes: int) -> bytes | None:
++    """Read at most max_bytes plus one byte to detect growth after stat."""
++    limit = max(0, int(max_bytes))
++    with path.open("rb") as source:
++        raw = source.read(limit + 1)
++    return raw if len(raw) <= limit else None
++
++
+ class RAGStore:
+     """Persistent semantic index with file-level incremental updates.
+ 
+@@ -584,6 +593,80 @@ class RAGStore:
+     def _workspace_project_config_key(scope_key: str, workspace: str) -> str:
+         return "workspace_project_config:" + stable_hash({"tenant": scope_key, "workspace": workspace})
+ 
++    @staticmethod
++    def _workspace_read_uncertainty_key(scope_key: str, workspace: str) -> str:
++        return "workspace_read_uncertainty:" + stable_hash({"tenant": scope_key, "workspace": workspace})
++
++    def _workspace_read_uncertain_paths(
++        self, con: sqlite3.Connection, scope_key: str, workspace: str
++    ) -> set[str]:
++        key = self._workspace_read_uncertainty_key(scope_key, workspace)
++        row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
++        if row is None or not row[0]:
++            return set()
++        try:
++            value = json.loads(str(row[0]))
++        except (TypeError, ValueError, json.JSONDecodeError):
++            return {"*"}
++        if not isinstance(value, list):
++            return {"*"}
++        return {
++            str(path).replace("\\", "/")
++            for path in value
++            if isinstance(path, str) and path.strip()
++        }
++
++    def _update_workspace_read_uncertainty(
++        self,
++        con: sqlite3.Connection,
++        scope_key: str,
++        workspace: str,
++        *,
++        uncertain_paths: set[str] | None = None,
++        clear_paths: set[str] | None = None,
++        bump_generation: bool = True,
++    ) -> bool:
++        key = self._workspace_read_uncertainty_key(scope_key, workspace)
++        current = self._workspace_read_uncertain_paths(con, scope_key, workspace)
++        updated = current - {str(path).replace("\\", "/") for path in (clear_paths or set())}
++        updated |= {str(path).replace("\\", "/") for path in (uncertain_paths or set())}
++        if updated == current:
++            return False
++        if updated:
++            con.execute(
++                "INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)",
++                (key, json.dumps(sorted(updated), separators=(",", ":"))),
++            )
++        else:
++            con.execute("DELETE FROM rag_meta WHERE key=?", (key,))
++        if bump_generation:
++            self._bump_workspace_index_generation(con, scope_key, workspace)
++        return True
++
++    def _publish_workspace_read_uncertainty(
++        self, scope_key: str, workspace: str, uncertain_paths: set[str]
++    ) -> None:
++        if not uncertain_paths:
++            return
++
++        def publish() -> None:
++            with closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                changed = self._update_workspace_read_uncertainty(
++                    con, scope_key, workspace,
++                    uncertain_paths=uncertain_paths,
++                    bump_generation=False,
++                )
++                if changed:
++                    self._bump_workspace_index_generation(con, scope_key, workspace)
++                con.commit()
++
++        retry_busy(
++            publish,
++            retries=self._sqlite_write_retries,
++            base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
++        )
++
+     def _sync_workspace_project_policy_identity(
+         self,
+         root: str | Path,
+@@ -642,31 +725,41 @@ class RAGStore:
+             if not allowed or kind == "binary":
+                 rejected.append(rel)
+ 
+-        with closing(self._connect()) as con:
+-            con.execute("BEGIN IMMEDIATE")
+-            current = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
+-            if current is not None and str(current[0]) == digest:
+-                con.rollback()
+-                return 0
+-            if rejected:
+-                pairs = [(scope_key, workspace, rel) for rel in sorted(set(rejected))]
+-                con.executemany(
+-                    "DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", pairs
+-                )
+-                con.executemany(
+-                    "DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", pairs
+-                )
+-                fts_exists = con.execute(
+-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
+-                ).fetchone() is not None
+-                if fts_exists:
++        def persist_identity() -> int:
++            with closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                current = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
++                if current is not None and str(current[0]) == digest:
++                    con.rollback()
++                    return 0
++                if rejected:
++                    pairs = [(scope_key, workspace, rel) for rel in sorted(set(rejected))]
+                     con.executemany(
+-                        "DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", pairs
++                        "DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", pairs
+                     )
+-            con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (key, digest))
+-            self._bump_workspace_index_generation(con, scope_key, workspace)
+-            con.commit()
+-        return len(set(rejected))
++                    con.executemany(
++                        "DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", pairs
++                    )
++                    fts_exists = con.execute(
++                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
++                    ).fetchone() is not None
++                    if fts_exists:
++                        con.executemany(
++                            "DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", pairs
++                        )
++                    self._update_workspace_read_uncertainty(
++                        con, scope_key, workspace, clear_paths=set(rejected), bump_generation=False
++                    )
++                con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (key, digest))
++                self._bump_workspace_index_generation(con, scope_key, workspace)
++                con.commit()
++            return len(set(rejected))
++
++        return retry_busy(
++            persist_identity,
++            retries=5,
++            base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
++        )
+ 
+     def _workspace_index_generation(self, con: sqlite3.Connection, scope_key: str, workspace: str) -> int:
+         key = self._workspace_index_generation_key(scope_key, workspace)
+@@ -721,6 +814,27 @@ class RAGStore:
+         embedder = getattr(self.services, "embeddings", None)
+         return bool(getattr(embedder, "_active_cache_identity", None))
+ 
++    def _embedding_dimension_cache_identity(self) -> dict[str, Any]:
++        models = self.config.get("models", {})
++        cpu_cfg = self.config.get("cpu_retrieval", {})
++
++        def valid_dimension(value: Any) -> int | None:
++            return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
++
++        dimensions: dict[str, Any] = {
++            "configured_model": valid_dimension(models.get("embedding_dimension")),
++            "configured_cpu": valid_dimension(cpu_cfg.get("embedding_dimension")),
++        }
++        for owner_name, owner in (
++            ("services", self.services),
++            ("embedder", getattr(self.services, "embeddings", None)),
++        ):
++            for attribute in ("_active_embedding_dimension", "embedding_dimension", "dimension"):
++                dimension = valid_dimension(getattr(owner, attribute, None)) if owner is not None else None
++                if dimension is not None:
++                    dimensions[f"{owner_name}_{attribute}"] = dimension
++        return dimensions
++
+     def _embedding_space_id(self, result: dict[str, Any] | None = None) -> str:
+         if isinstance(result, dict) and result.get("embedding_space_id"):
+             return str(result["embedding_space_id"])
+@@ -860,6 +974,7 @@ class RAGStore:
+ 
+         with closing(self._connect()) as con:
+             stored_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
++            uncertain_retry_paths = self._workspace_read_uncertain_paths(con, scope_key, workspace)
+             old_files_rows = con.execute(
+                 "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
+                 (scope_key, workspace),
+@@ -877,7 +992,8 @@ class RAGStore:
+         old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_files_rows}
+         old_chunks = {
+             (r[0], int(r[1]), r[2]): r[3]
+-            for r in old_chunk_rows if str(r[4] or "") == embedding_space
++            for r in old_chunk_rows
++            if embedding_space and str(r[4] or "").strip() == embedding_space
+         }
+         stale_embedding_paths = (
+             {str(r[0]) for r in old_chunk_rows if str(r[4] or "") != embedding_space}
+@@ -902,13 +1018,17 @@ class RAGStore:
+         changed_paths: list[str] = []
+         for rel, (_path, mtime_ns, size) in current_meta.items():
+             old = old_files.get(rel)
+-            if old and old["mtime_ns"] == mtime_ns and old["size"] == size and rel not in stale_embedding_paths:
++            if (
++                old and old["mtime_ns"] == mtime_ns and old["size"] == size
++                and rel not in stale_embedding_paths and rel not in uncertain_retry_paths
++            ):
+                 unchanged_paths.append(rel)
+             else:
+                 changed_paths.append(rel)
+ 
+         changed_records: list[dict[str, Any]] = []
+         file_rows: list[tuple[str, int, int, str]] = []
++        read_uncertain_paths: set[str] = set()
+         skipped = 0
+         read_files = 0
+         reused_chunks = 0
+@@ -917,16 +1037,25 @@ class RAGStore:
+         dedup_near_duplicates = bool(rag_cfg.get("dedup_near_duplicates", True))
+         max_hamming = int(rag_cfg.get("near_duplicate_max_hamming", 4))
+         near_duplicates_skipped = 0
++        max_file_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
++        settings = project_context.settings if project_context is not None else None
++        if settings is not None and settings.max_file_size_bytes is not None:
++            max_file_bytes = min(max_file_bytes, int(settings.max_file_size_bytes))
+ 
+         for rel in changed_paths:
+             path, mtime_ns, size = current_meta[rel]
+             try:
+-                raw = path.read_bytes()
++                raw = _read_bounded_file(path, max_file_bytes)
++                if raw is None:
++                    skipped += 1
++                    read_uncertain_paths.add(rel)
++                    continue
+                 read_files += 1
+                 text = _canonical_fragment_text(raw.decode("utf-8", errors="replace"))
+                 file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+             except Exception:
+                 skipped += 1
++                read_uncertain_paths.add(rel)
+                 continue
+             file_rows.append((rel, mtime_ns, size, file_hash))
+             file_chunks = self._chunks(text, path=rel)
+@@ -958,6 +1087,8 @@ class RAGStore:
+                 else:
+                     reused_chunks += 1
+ 
++        self._publish_workspace_read_uncertainty(scope_key, workspace, read_uncertain_paths)
++
+         if changed_indices:
+             # Cross-workspace chunk reuse check
+             pending_by_hash: dict[str, list[int]] = {}
+@@ -1065,7 +1196,15 @@ class RAGStore:
+                     [(scope_key, workspace, rel, mtime_ns, size, file_hash) for rel, mtime_ns, size, file_hash in file_rows],
+                 )
+                 self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
+-                if publish_paths:
++                uncertainty_changed = self._update_workspace_read_uncertainty(
++                    con,
++                    scope_key,
++                    workspace,
++                    uncertain_paths=read_uncertain_paths,
++                    clear_paths=set(publish_paths),
++                    bump_generation=False,
++                )
++                if publish_paths or uncertainty_changed:
+                     self._bump_workspace_index_generation(con, scope_key, workspace)
+                 con.commit()
+ 
+@@ -1100,6 +1239,7 @@ class RAGStore:
+             "embedded_chunks": len(changed_indices),
+             "reused_chunks": reused_chunks,
+             "skipped_files": skipped,
++            "read_uncertain_paths": sorted(read_uncertain_paths),
+             "near_duplicates_skipped": near_duplicates_skipped,
+         }
+ 
+@@ -1269,6 +1409,10 @@ class RAGStore:
+             # 1. Read files and chunk
+             file_data: list[dict[str, Any]] = []
+             policy_deleted: set[str] = set()
++            read_uncertain_paths: set[str] = set()
++            ignored_dirs = {
++                str(name).lower() for name in self.config.get("rag", {}).get("ignore_dirs", [])
++            }
+             for rel in paths:
+                 if callable(should_yield) and should_yield():
+                     return {
+@@ -1279,15 +1423,22 @@ class RAGStore:
+                 rel = str(rel).replace("\\", "/")
+                 path = (root_path / rel).resolve(strict=False)
+                 try:
+-                    path.relative_to(root_path)
++                    relative_path = path.relative_to(root_path)
+                 except ValueError:
+                     continue
++                ignored_parts = relative_path.parts[:-1]
++                requested_path = Path(os.path.normpath(rel))
++                if not requested_path.is_absolute():
++                    ignored_parts = (*ignored_parts, *requested_path.parts[:-1])
++                if any(part.lower() in ignored_dirs for part in ignored_parts):
++                    policy_deleted.add(rel)
++                    continue
+                 if not path.is_file():
+                     continue
+                 try:
+                     stat = path.stat()
+                     cfg = self.config.get("rag", {})
+-                    max_bytes = int(cfg.get("max_file_bytes", 2_000_000))
++                    max_bytes = max(0, int(cfg.get("max_file_bytes", 2_000_000)))
+                     settings = project_context.settings if project_context is not None else None
+                     if settings is not None and settings.max_file_size_bytes is not None:
+                         max_bytes = min(max_bytes, int(settings.max_file_size_bytes))
+@@ -1308,27 +1459,42 @@ class RAGStore:
+                         continue
+                     override = (content_overrides or {}).get(rel)
+                     if override is None:
+-                        raw = path.read_bytes()
++                        raw = _read_bounded_file(path, max_bytes)
++                        if raw is None:
++                            read_uncertain_paths.add(rel)
++                            continue
+                         text = _canonical_fragment_text(raw.decode("utf-8", errors="replace"))
+                         file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+                     else:
+-                        text = _canonical_fragment_text(str(override))
++                        override_text = str(override)
++                        if len(override_text.encode("utf-8")) > max_bytes:
++                            policy_deleted.add(rel)
++                            continue
++                        text = _canonical_fragment_text(override_text)
+                         file_hash = hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+                     chunks = list(self._chunks(text, path=rel))
+                     file_data.append({"rel": rel, "stat": stat, "file_hash": file_hash, "chunks": chunks})
+                 except Exception:
++                    read_uncertain_paths.add(rel)
+                     continue
+ 
++            self._publish_workspace_read_uncertainty(scope_key, workspace, read_uncertain_paths)
++
+             deleted_unique = sorted(
+                 {str(p).replace("\\", "/") for p in (deleted_paths or []) if str(p).strip()}
+                 | policy_deleted
+             )
+             if not file_data and not deleted_unique:
++                if read_uncertain_paths:
++                    self._publish_workspace_read_uncertainty(
++                        scope_key, workspace, read_uncertain_paths
++                    )
+                 return {
+                     "success": True, "workspace": workspace, "preempted": False,
+                     "processed_paths": [], "embedded_chunks": 0, "reused_chunks": 0,
+                     "embedding_space_id": stored_space or (configured_space if identity_resolved else None),
+                     "embedding_space_resolved": bool(stored_space or identity_resolved),
++                    "read_uncertain_paths": sorted(read_uncertain_paths),
+                 }
+ 
+             # 2. Bulk load existing chunks
+@@ -1344,7 +1510,7 @@ class RAGStore:
+                         (scope_key, workspace, *batch_rels),
+                     ).fetchall()
+                     for r in rows:
+-                        if str(r[4] or "") == embedding_space:
++                        if embedding_space and str(r[4] or "").strip() == embedding_space:
+                             old_chunks[(str(r[0]), int(r[1]), str(r[2]))] = r[3]
+ 
+             # 3. Build records and identify missing embeddings
+@@ -1498,7 +1664,15 @@ class RAGStore:
+                     )
+                     if target_embedding_space:
+                         self._store_workspace_embedding_space(con, scope_key, workspace, target_embedding_space)
+-                    if all_rels:
++                    uncertainty_changed = self._update_workspace_read_uncertainty(
++                        con,
++                        scope_key,
++                        workspace,
++                        uncertain_paths=read_uncertain_paths,
++                        clear_paths=set(all_rels),
++                        bump_generation=False,
++                    )
++                    if all_rels or uncertainty_changed:
+                         self._bump_workspace_index_generation(con, scope_key, workspace)
+                     con.commit()
+ 
+@@ -1522,6 +1696,7 @@ class RAGStore:
+             "embedding_space_resolved": bool(identity_resolved or observed_embedding_space or stored_space),
+             "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+             "reused_chunks": reused_chunks, "deleted_paths": deleted_unique,
++            "read_uncertain_paths": sorted(read_uncertain_paths),
+         }
+ 
+     def index_step(
+@@ -1569,6 +1744,9 @@ class RAGStore:
+                     "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
+                     (scope_key, workspace),
+                 ).fetchall()
++                uncertain_retry_paths = self._workspace_read_uncertain_paths(
++                    con, scope_key, workspace
++                )
+             if stored_space is None and old_chunk_rows:
+                 space_counts: dict[str, int] = {}
+                 for row in old_chunk_rows:
+@@ -1607,6 +1785,7 @@ class RAGStore:
+                     or old_files[rel]["size"] != sz
+                     or rel in stale_embedding_paths
+                     or rel in explicit_dirty_paths
++                    or rel in uncertain_retry_paths
+                 )
+             ]
+             changed_all.sort(key=lambda rel: (rel not in explicit_dirty_paths, rel))
+@@ -1881,17 +2060,48 @@ class RAGStore:
+             stored_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
+             generation = self._workspace_index_generation(con, scope_key, workspace)
+         cache_target_space = query_space if cache_identity_known else stored_space
+-        key = stable_hash({
+-            "workspace": workspace, "revision": revision, "query": clean_query,
+-            "top_k": top_k, "reranker": use_reranker, "scope_path": scope_path,
+-            "embedding_space": cache_target_space if cache_identity_known else None,
+-            "index_generation": generation,
+-        })
++        cache_dimension = self._embedding_dimension_cache_identity()
++
++        def cache_key(space: str | None, dimension: dict[str, Any], index_generation: int) -> str:
++            return stable_hash({
++                "workspace": workspace, "revision": revision, "query": clean_query,
++                "top_k": top_k, "reranker": use_reranker, "scope_path": scope_path,
++                "tenant": tenant, "scope": self.scope, "effective_scope": scope_key,
++                "embedding_space": space if cache_identity_known else None,
++                "embedding_dimension": dimension,
++                "index_generation": index_generation,
++            })
++
++        key = cache_key(cache_target_space, cache_dimension, generation)
++        observed_identity: dict[str, Any] = {}
++
++        def compute_search() -> dict[str, Any]:
++            raw_result = self._search_uncached(
++                clean_query, tenant, workspace, top_k, use_reranker, priority, scope_path
++            )
++            observed_identity["space"] = self._embedding_space_id()
++            observed_identity["dimension"] = self._embedding_dimension_cache_identity()
++            return raw_result
++
+         if cache_identity_known:
+             raw, hit, coalesced = self.search_flight.get_or_compute(
+                 key,
+-                lambda: self._search_uncached(clean_query, tenant, workspace, top_k, use_reranker, priority, scope_path),
++                compute_search,
+             )
++            actual_space = observed_identity.get("space")
++            actual_dimension = observed_identity.get("dimension")
++            if (
++                actual_dimension is not None
++                and (actual_space != cache_target_space or actual_dimension != cache_dimension)
++            ):
++                self.search_flight.cache.delete(key)
++                key = cache_key(str(actual_space) if actual_space else None, actual_dimension, generation)
++                computed_raw = raw
++                raw, hit, coalesced = self.search_flight.get_or_compute(
++                    key, lambda: computed_raw
++                )
++            if isinstance(raw, dict) and raw.get("retrieval_mode") == "lexical_fallback":
++                self.search_flight.cache.delete(key)
+             with closing(self._connect()) as con:
+                 latest_generation = self._workspace_index_generation(con, scope_key, workspace)
+             if latest_generation != generation:
+@@ -1906,7 +2116,28 @@ class RAGStore:
+         result["search_cache"] = {"hit": hit, "coalesced": coalesced, "revision": revision}
+         return self._postprocess_search_payload(result, top_k) if isinstance(result, dict) else result
+ 
+-    def _search_fts_candidates(self, query: str, tenant: str, workspace: str, limit: int = 16, scope_path: str | None = None) -> list[dict[str, Any]]:
++    @staticmethod
++    def _search_path_exclusion(
++        con: sqlite3.Connection, excluded_paths: set[str] | None, column: str
++    ) -> str:
++        paths = excluded_paths or set()
++        if "*" in paths:
++            return " AND 0"
++        if not paths:
++            return ""
++        con.execute("CREATE TEMP TABLE rag_uncertain_paths(path TEXT PRIMARY KEY)")
++        con.executemany(
++            "INSERT OR IGNORE INTO rag_uncertain_paths(path) VALUES(?)",
++            [(path,) for path in sorted(paths)],
++        )
++        con.commit()
++        return f" AND {column} NOT IN (SELECT path FROM rag_uncertain_paths)"
++
++    def _search_fts_candidates(
++        self, query: str, tenant: str, workspace: str, limit: int = 16,
++        scope_path: str | None = None, embedding_space: str | None = None,
++        excluded_paths: set[str] | None = None,
++    ) -> list[dict[str, Any]]:
+         scope_key = self._scope_key(tenant)
+         try:
+             tokens = [re.sub(r"[^\w_]", "", t) for t in query.split()]
+@@ -1914,25 +2145,28 @@ class RAGStore:
+             if not tokens:
+                 return []
+             fts_expr = " OR ".join(f'"{t}"' for t in tokens[:8])
++            space_filter = " AND c.embedding_space=?" if embedding_space is not None else ""
++            space_params = (embedding_space,) if embedding_space is not None else ()
+             with closing(self._connect()) as con:
++                path_filter = self._search_path_exclusion(con, excluded_paths, "c.path")
+                 if scope_path:
+                     norm_scope = scope_path.replace("\\", "/").rstrip("/")
+                     fts_rows = con.execute(
+-                        """SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
++                        f"""SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
+                            FROM chunk_fts
+                            JOIN chunks c ON c.tenant=chunk_fts.tenant AND c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
+-                           WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND (chunk_fts.path=? OR chunk_fts.path LIKE ? || '/%') AND chunk_fts MATCH ?
++                           WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND (chunk_fts.path=? OR chunk_fts.path LIKE ? || '/%'){space_filter}{path_filter} AND chunk_fts MATCH ?
+                            ORDER BY bm25(chunk_fts) LIMIT ?""",
+-                        (scope_key, workspace, norm_scope, norm_scope, fts_expr, limit),
++                        (scope_key, workspace, norm_scope, norm_scope, *space_params, fts_expr, limit),
+                     ).fetchall()
+                 else:
+                     fts_rows = con.execute(
+-                        """SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
++                        f"""SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
+                            FROM chunk_fts
+                            JOIN chunks c ON c.tenant=chunk_fts.tenant AND c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
+-                           WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND chunk_fts MATCH ?
++                           WHERE chunk_fts.tenant=? AND chunk_fts.workspace=?{space_filter}{path_filter} AND chunk_fts MATCH ?
+                            ORDER BY bm25(chunk_fts) LIMIT ?""",
+-                        (scope_key, workspace, fts_expr, limit),
++                        (scope_key, workspace, *space_params, fts_expr, limit),
+                     ).fetchall()
+                 return [
+                     {
+@@ -1944,22 +2178,29 @@ class RAGStore:
+         except Exception:
+             return []
+ 
+-    def _search_token_overlap(self, query: str, tenant: str, workspace: str, limit: int = 16, scope_path: str | None = None) -> list[dict[str, Any]]:
++    def _search_token_overlap(
++        self, query: str, tenant: str, workspace: str, limit: int = 16,
++        scope_path: str | None = None, embedding_space: str | None = None,
++        excluded_paths: set[str] | None = None,
++    ) -> list[dict[str, Any]]:
+         scope_key = self._scope_key(tenant)
+         terms = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 1]
+         if not terms:
+             return []
++        space_filter = " AND embedding_space=?" if embedding_space is not None else ""
++        space_params = (embedding_space,) if embedding_space is not None else ()
+         with closing(self._connect()) as con:
++            path_filter = self._search_path_exclusion(con, excluded_paths, "path")
+             if scope_path:
+                 norm_scope = scope_path.replace("\\", "/").rstrip("/")
+                 rows = con.execute(
+-                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE tenant=? AND workspace=? AND (path=? OR path LIKE ? || '/%')",
+-                    (scope_key, workspace, norm_scope, norm_scope),
++                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE tenant=? AND workspace=? AND (path=? OR path LIKE ? || '/%')" + space_filter + path_filter,
++                    (scope_key, workspace, norm_scope, norm_scope, *space_params),
+                 ).fetchall()
+             else:
+                 rows = con.execute(
+-                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE tenant=? AND workspace=?",
+-                    (scope_key, workspace),
++                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE tenant=? AND workspace=?" + space_filter + path_filter,
++                    (scope_key, workspace, *space_params),
+                 ).fetchall()
+         scored: list[dict[str, Any]] = []
+         for r in rows:
+@@ -1976,6 +2217,15 @@ class RAGStore:
+ 
+     def _search_uncached(self, query: str, tenant: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
+         scope_key = self._scope_key(tenant)
++        with closing(self._connect()) as con:
++            uncertain_paths = self._workspace_read_uncertain_paths(con, scope_key, workspace)
++
++        def visible(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
++            return [
++                item for item in candidates
++                if "*" not in uncertain_paths and str(item.get("path", "")) not in uncertain_paths
++            ]
++
+         try:
+             query_result = self.services.embed([query], tenant, priority=priority, query=True)
+         except Exception as exc:
+@@ -1998,9 +2248,21 @@ class RAGStore:
+             if not valid_query_vector:
+                 query_result = {**query_result, "success": False, "error": "invalid_query_embedding"}
+         if not query_result.get("success"):
+-            candidates = self._search_fts_candidates(query, tenant, workspace, max(16, top_k * 2), scope_path)
++            lexical_backend = "fts5"
++            candidates = visible(
++                self._search_fts_candidates(
++                    query, tenant, workspace, max(16, top_k * 2), scope_path,
++                    excluded_paths=uncertain_paths,
++                )
++            )
+             if not candidates:
+-                candidates = self._search_token_overlap(query, tenant, workspace, max(16, top_k * 2), scope_path)
++                lexical_backend = "token_overlap"
++                candidates = visible(
++                    self._search_token_overlap(
++                        query, tenant, workspace, max(16, top_k * 2), scope_path,
++                        excluded_paths=uncertain_paths,
++                    )
++                )
+             results = [
+                 {
+                     "path": c["path"],
+@@ -2016,12 +2278,16 @@ class RAGStore:
+                 "workspace": workspace,
+                 "results": results,
+                 "degraded": True,
+-                "fallback": "bm25_fts",
++                "fallback": "source_read_uncertain" if uncertain_paths else "bm25_fts",
++                "retrieval_mode": "lexical_fallback",
++                "lexical_backend": lexical_backend,
+                 "reason": str(query_result.get("error", "embedder_unavailable")),
+             }
+         query_vec = query_result["embeddings"][0]
+         embedding_space = self._embedding_space_id(query_result)
+         fallbacks: list[str] = []
++        if uncertain_paths:
++            fallbacks.append("source_read_uncertain")
+         if query_result.get("degraded"):
+             fallbacks.append(str(query_result.get("fallback") or "embedding_backend"))
+ 
+@@ -2031,6 +2297,9 @@ class RAGStore:
+         best: list[tuple[float, tuple[int, ...], int, tuple[int, ...], dict[str, Any]]] = []
+         rows_seen = 0
+         has_stale_embedding_rows = False
++        embedding_space_resolved = self._embedding_space_is_resolved(query_result)
++        stored_embedding_space: str | None = None
++        stored_embedding_space_read = False
+         try:
+             import numpy as np
+         except Exception:
+@@ -2051,6 +2320,8 @@ class RAGStore:
+             batch_size = min(2048, configured_batch_size)
+ 
+         def offer(row: Any, score: float) -> None:
++            if "*" in uncertain_paths or str(row[0]) in uncertain_paths:
++                return
+             score = float(score)
+             if not math.isfinite(score):
+                 score = 0.0
+@@ -2073,6 +2344,7 @@ class RAGStore:
+         with closing(self._connect()) as con:
+             # Keep one read snapshot across keyset batches, but close each SQL
+             # cursor before vector parsing/scoring so the statement VM is idle.
++            path_filter = self._search_path_exclusion(con, uncertain_paths, "path")
+             con.execute("BEGIN")
+             norm_scope = scope_path.replace("\\", "/").rstrip("/") if scope_path else None
+             last_path: str | None = None
+@@ -2080,6 +2352,8 @@ class RAGStore:
+             while True:
+                 predicates = ["tenant=?", "workspace=?", "embedding_space=?"]
+                 params: list[Any] = [scope_key, workspace, embedding_space]
++                if path_filter:
++                    predicates.append(path_filter.removeprefix(" AND "))
+                 if norm_scope is not None:
+                     predicates.append("(path=? OR path LIKE ? || '/%')")
+                     params.extend((norm_scope, norm_scope))
+@@ -2121,12 +2395,15 @@ class RAGStore:
+                             except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+                                 continue
+                     norms = np.linalg.norm(matrix, axis=1)
+-                    scores = np.zeros(len(batch), dtype=np.float32)
+                     valid = np.isfinite(norms) & (norms > 1e-9)
+                     if q_norm > 1e-9 and valid.any():
+-                        dot_scores = np.dot(matrix, q)
+-                        scores[valid] = dot_scores[valid] / norms[valid]
+-                    scores = np.where(np.isfinite(scores), scores, 0.0)
++                        scores = np.dot(matrix, q)
++                        np.divide(scores, norms, out=scores, where=valid)
++                        scores[~valid] = 0.0
++                    else:
++                        scores = norms
++                        scores.fill(0.0)
++                    np.nan_to_num(scores, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+                     local_count = min(candidate_limit, len(batch))
+                     if local_count < len(batch):
+                         kth = len(batch) - local_count
+@@ -2153,21 +2430,9 @@ class RAGStore:
+                         candidate_indices = np.concatenate((above, tied))
+                     else:
+                         candidate_indices = np.arange(len(batch), dtype=np.intp)
+-                    path_keys = np.asarray(
+-                        [str(batch[int(index)][0]) for index in candidate_indices], dtype=np.str_
+-                    )
+-                    chunk_keys = np.fromiter(
+-                        (int(batch[int(index)][1]) for index in candidate_indices),
+-                        dtype=np.int64,
+-                        count=len(candidate_indices),
+-                    )
+-                    hash_keys = np.asarray(
+-                        [str(batch[int(index)][3] or "") for index in candidate_indices], dtype=np.str_
+-                    )
+-                    local_order = candidate_indices[
+-                        np.lexsort((hash_keys, chunk_keys, path_keys, -scores[candidate_indices]))
+-                    ]
+-                    for index in local_order:
++                    # offer() applies a total deterministic heap order, so only
++                    # cutoff ties need path/chunk/hash sorting above.
++                    for index in candidate_indices:
+                         offer(batch[index], float(scores[index]))
+                 else:
+                     import struct
+@@ -2190,14 +2455,21 @@ class RAGStore:
+                 "SELECT 1 FROM chunks WHERE tenant=? AND workspace=? AND embedding_space<>? LIMIT 1",
+                 (scope_key, workspace, embedding_space),
+             ).fetchone() is not None
++            if embedding_space_resolved:
++                try:
++                    stored_embedding_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
++                    stored_embedding_space_read = True
++                except sqlite3.Error:
++                    pass
+ 
+-        if self._embedding_space_is_resolved(query_result):
++        if embedding_space_resolved:
+             try:
+-                with closing(self._connect()) as con:
+-                    con.execute("BEGIN IMMEDIATE")
+-                    if self._stored_workspace_embedding_space(con, scope_key, workspace) != embedding_space:
+-                        self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
+-                    con.commit()
++                if not stored_embedding_space_read or stored_embedding_space != embedding_space:
++                    with closing(self._connect()) as con:
++                        con.execute("BEGIN IMMEDIATE")
++                        if self._stored_workspace_embedding_space(con, scope_key, workspace) != embedding_space:
++                            self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
++                        con.commit()
+             except sqlite3.Error:
+                 fallbacks.append("embedding_space_metadata")
+ 
+@@ -2205,9 +2477,19 @@ class RAGStore:
+             fallbacks.append("embedding_space_rebuild_pending")
+ 
+         if rows_seen == 0:
+-            lexical = self._search_fts_candidates(query, tenant, workspace, max(16, top_k * 2), scope_path)
++            lexical = visible(
++                self._search_fts_candidates(
++                    query, tenant, workspace, max(16, top_k * 2), scope_path, embedding_space,
++                    uncertain_paths,
++                )
++            )
+             if not lexical:
+-                lexical = self._search_token_overlap(query, tenant, workspace, max(16, top_k * 2), scope_path)
++                lexical = visible(
++                    self._search_token_overlap(
++                        query, tenant, workspace, max(16, top_k * 2), scope_path, embedding_space,
++                        uncertain_paths,
++                    )
++                )
+             if lexical:
+                 return {
+                     "success": True,
+@@ -2224,8 +2506,11 @@ class RAGStore:
+                     ],
+                     "reranked": False,
+                     "degraded": True,
+-                    "fallback": "embedding_space_mismatch",
+-                    "reason": "no indexed vectors match the query embedding space",
++                    "fallback": "source_read_uncertain" if uncertain_paths else "embedding_space_mismatch",
++                    "reason": (
++                        "source files could not be read during indexing"
++                        if uncertain_paths else "no indexed vectors match the query embedding space"
++                    ),
+                     "reindex_required": has_stale_embedding_rows,
+                 }
+             with closing(self._connect()) as con:
+@@ -2234,6 +2519,16 @@ class RAGStore:
+                     (scope_key, workspace),
+                 ).fetchone() is not None
+             if has_indexed_chunks:
++                if uncertain_paths:
++                    return {
++                        "success": True,
++                        "workspace": workspace,
++                        "results": [],
++                        "reranked": False,
++                        "degraded": True,
++                        "fallback": "source_read_uncertain",
++                        "reason": "source files could not be read during indexing",
++                    }
+                 return {
+                     "success": True,
+                     "workspace": workspace,
+@@ -2244,6 +2539,15 @@ class RAGStore:
+                     "reason": "indexed vectors do not match the query embedding space",
+                     "reindex_required": has_stale_embedding_rows,
+                 }
++            if uncertain_paths:
++                return {
++                    "success": True,
++                    "workspace": workspace,
++                    "results": [],
++                    "degraded": True,
++                    "fallback": "source_read_uncertain",
++                    "reason": "source files could not be read during indexing",
++                }
+             return {"success": True, "workspace": workspace, "results": [], "warning": "workspace has no matching indexed chunks"}
+ 
+         candidates = [
+@@ -2257,7 +2561,11 @@ class RAGStore:
+         ]
+ 
+         # Hybrid search: combine vector candidates with FTS5 keyword hits via Reciprocal Rank Fusion (RRF)
+-        fts_candidates = self._search_fts_candidates(query, tenant, workspace, 16, scope_path)
++        fts_candidates = visible(
++            self._search_fts_candidates(
++                query, tenant, workspace, 16, scope_path, embedding_space, uncertain_paths
++            )
++        )
+ 
+         is_hybrid = bool(fts_candidates)
+         if is_hybrid:
+diff --git a/src/local_ai_hub/reranker.py b/src/local_ai_hub/reranker.py
+index ecf7d3a..73b3db1 100644
+--- a/src/local_ai_hub/reranker.py
++++ b/src/local_ai_hub/reranker.py
+@@ -159,7 +159,7 @@ class Reranker:
+             return False
+ 
+     def release(self, timeout_seconds: float = 3.0) -> bool:
+-        """Synchronously unload the reranker; safe to call repeatedly."""
++        """Detach the reranker model; CUDA allocator cleanup remains best-effort."""
+         with acquire_locks((self._predict_lock, self._load_lock), timeout_seconds) as acquired:
+             if not acquired:
+                 return False
+diff --git a/tests/test_model_release_lifecycle.py b/tests/test_model_release_lifecycle.py
+index b37d6e4..d58f625 100644
+--- a/tests/test_model_release_lifecycle.py
++++ b/tests/test_model_release_lifecycle.py
+@@ -1,8 +1,10 @@
+ from __future__ import annotations
+ 
++import gc
+ import sys
+ import threading
+ import types
++import weakref
+ from concurrent.futures import ThreadPoolExecutor
+ from pathlib import Path
+ 
+@@ -253,6 +255,32 @@ def test_release_timeout_preserves_models_until_inference_can_finish(
+     assert torch.empty_cache_calls == 1
+ 
+ 
++def test_release_drops_last_strong_model_references(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++):
++    torch = _install_fake_backends(monkeypatch)
++    embedding, reranker = _load_cuda_models(_config(tmp_path / "state"))
++    embedding_model = weakref.ref(embedding._model)
++    reranker_model = weakref.ref(reranker._model)
++
++    assert embedding.release() is True
++    assert embedding._model is None
++    assert embedding.active_backend is None
++    assert embedding.active_device is None
++    gc.collect()
++    assert embedding_model() is None
++    assert torch.empty_cache_calls == 0
++
++    assert reranker.release() is True
++    assert reranker._model is None
++    assert reranker.active_backend is None
++    assert reranker.active_device is None
++    gc.collect()
++    assert reranker_model() is None
++    assert torch.synchronize_calls == 1
++    assert torch.empty_cache_calls == 1
++
++
+ def test_reranker_rechecks_model_after_release_races_with_prediction(
+     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+ ):
+diff --git a/tests/test_rag_fragment_cache.py b/tests/test_rag_fragment_cache.py
+index 797b918..b922675 100644
+--- a/tests/test_rag_fragment_cache.py
++++ b/tests/test_rag_fragment_cache.py
+@@ -1,10 +1,13 @@
+ from __future__ import annotations
+ 
++import io
+ import json
+ import os
+ import sqlite3
++import struct
+ import threading
+ from contextlib import closing
++from pathlib import Path
+ 
+ from local_ai_hub.rag import RAGStore, _fragment_hash
+ 
+@@ -215,6 +218,10 @@ def test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces(tm
+ 
+         def embed(self, texts, tenant, **kwargs):
+             result = super().embed(texts, tenant, **kwargs)
++            result["embeddings"] = [
++                [float(len(text)), float(ord(self.output_space[6]))]
++                for text in texts
++            ]
+             result["embedding_space_id"] = self.output_space
+             return result
+ 
+@@ -225,8 +232,13 @@ def test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces(tm
+     shared_text = "def shared_value():\n    return 1\n"
+     (source_root / "shared.py").write_text(shared_text, encoding="utf-8")
+     assert store.index(str(source_root), "tenant", workspace="source")["success"] is True
++    with closing(store._connect()) as con:
++        source_embedding = con.execute(
++            "SELECT embedding FROM chunks WHERE tenant=? AND workspace=? AND path=?",
++            (store._scope_key("tenant"), "source", "shared.py"),
++        ).fetchone()[0]
+ 
+-    for mode in ("index", "index_paths_step"):
++    for mode in ("index", "index_paths_step", "index_step"):
+         target_root = tmp_path / mode
+         target_root.mkdir()
+         (target_root / "shared.py").write_text(shared_text, encoding="utf-8")
+@@ -235,18 +247,70 @@ def test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces(tm
+         workspace = f"target:{mode}"
+         if mode == "index":
+             result = store.index(str(target_root), "tenant", workspace=workspace)
+-        else:
++        elif mode == "index_paths_step":
+             result = store.index_paths_step(
+                 str(target_root), "tenant", workspace, ["shared.py", "new.py"]
+             )
++        else:
++            result = store.index_step(
++                str(target_root), "tenant", workspace=workspace, max_files=2
++            )
+         assert result["success"] is True
+         with closing(store._connect()) as con:
+-            spaces = dict(con.execute(
+-                "SELECT path,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
++            rows = {
++                row[0]: (row[1], row[2])
++                for row in con.execute(
++                "SELECT path,embedding_space,embedding FROM chunks WHERE tenant=? AND workspace=?",
+                 (store._scope_key("tenant"), workspace),
+-            ).fetchall())
+-        assert spaces["shared.py"] == "model-b@revision-2"
+-        assert spaces["new.py"] == "model-b@revision-2"
++                ).fetchall()
++            }
++        assert rows["shared.py"][0] == "model-b@revision-2"
++        assert rows["new.py"][0] == "model-b@revision-2"
++        value = rows["shared.py"][1]
++        embedding = (
++            struct.unpack(f"{len(value) // 4}f", value)
++            if isinstance(value, bytes)
++            else json.loads(value)
++        )
++        assert tuple(embedding) == (float(len(shared_text)), float(ord("b")))
++        assert rows["shared.py"][1] != source_embedding
++
++
++def test_same_workspace_blank_space_chunk_is_reembedded_not_relabelled(tmp_path):
++    services = _Services(space_id="space-current")
++    store = _store(tmp_path, services)
++    root = tmp_path / "project"
++    root.mkdir()
++    source = root / "same.py"
++    source.write_text("def same_value():\n    return 4\n", encoding="utf-8")
++    workspace = "same-workspace"
++    assert store.index_paths_step(str(root), "tenant", workspace, ["same.py"])["success"]
++    calls_before = len(services.calls)
++    with closing(store._connect()) as con:
++        con.execute(
++            "UPDATE chunks SET embedding='[99.0, 99.0]', embedding_space='' "
++            "WHERE tenant=? AND workspace=? AND path=?",
++            (store._scope_key("tenant"), workspace, "same.py"),
++        )
++        con.commit()
++
++    result = store.index_paths_step(str(root), "tenant", workspace, ["same.py"])
++
++    assert result["success"] is True
++    assert len(services.calls) > calls_before
++    with closing(store._connect()) as con:
++        row = con.execute(
++            "SELECT text,embedding,embedding_space FROM chunks "
++            "WHERE tenant=? AND workspace=? AND path=?",
++            (store._scope_key("tenant"), workspace, "same.py"),
++        ).fetchone()
++    assert row[2] == "space-current"
++    embedding = (
++        struct.unpack(f"{len(row[1]) // 4}f", row[1])
++        if isinstance(row[1], bytes)
++        else json.loads(row[1])
++    )
++    assert tuple(embedding) == (float(len(row[0])), 1.0)
+ 
+ 
+ def test_configured_embedding_space_id_is_stable_across_store_instances(tmp_path):
+@@ -461,6 +525,48 @@ def test_search_rechecks_generation_after_cache_lookup(tmp_path, monkeypatch):
+     assert result["results"][0]["text"] == "def new_value():\n    return 2\n"
+ 
+ 
++def test_search_rechecks_generation_after_uncertain_source_read(tmp_path, monkeypatch):
++    root = tmp_path / "project"
++    root.mkdir()
++    source = root / "one.py"
++    source.write_text("def old_value():\n    return 1\n", encoding="utf-8")
++    services = _Services(space_id="runtime-space-a")
++    store = _store(tmp_path, services)
++    store.config["rag"]["max_file_bytes"] = 32
++    indexed = store.index(str(root), "tenant")
++    workspace = indexed["workspace"]
++    initial = store.search("value query", "tenant", workspace, use_reranker=False)
++    assert initial["results"][0]["text"] == "def old_value():\n    return 1\n"
++
++    source.write_text("def new_value():\n    return 2\n", encoding="utf-8")
++    original_open = Path.open
++
++    def grow_after_stat(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == source.resolve() and mode == "rb":
++            return io.BytesIO(b"x" * 33)
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", grow_after_stat)
++    original_lookup = store.search_flight.get_or_compute
++    interleaved: dict[str, object] = {}
++
++    def publish_uncertainty_before_lookup(key, compute):
++        staged = store.index_paths_step(str(root), "tenant", workspace, ["one.py"])
++        assert staged["success"] is True
++        assert staged["read_uncertain_paths"] == ["one.py"]
++        raw, hit, coalesced = original_lookup(key, compute)
++        interleaved["hit"] = hit
++        return raw, hit, coalesced
++
++    monkeypatch.setattr(store.search_flight, "get_or_compute", publish_uncertainty_before_lookup)
++    result = store.search("value query", "tenant", workspace, use_reranker=False)
++
++    assert interleaved["hit"] is True
++    assert result["search_cache"]["hit"] is False
++    assert result["results"] == []
++    assert result["fallback"] == "source_read_uncertain"
++
++
+ def test_index_step_reindexes_explicit_same_stat_dirty_path(tmp_path):
+     root = tmp_path / "project"
+     root.mkdir()
+diff --git a/tests/test_rag_hybrid.py b/tests/test_rag_hybrid.py
+index 4c32420..5dbd1c3 100644
+--- a/tests/test_rag_hybrid.py
++++ b/tests/test_rag_hybrid.py
+@@ -4,6 +4,7 @@ import sqlite3
+ from contextlib import closing
+ 
+ from local_ai_hub.agent_events import AgentEvent, AgentStateStore
++from local_ai_hub import rag as rag_module
+ from local_ai_hub.rag import RAGStore, _fragment_hash
+ 
+ 
+@@ -126,10 +127,10 @@ def test_search_excludes_vectors_from_other_embedding_spaces(tmp_path):
+ 
+ def test_search_reports_degraded_when_index_has_no_matching_embedding_space(tmp_path):
+     store = _store(tmp_path)
+-    store.services.embed = lambda *_args, **_kwargs: {
++    store.services.embed = lambda texts, *_args, **_kwargs: {
+         "success": True,
+         "embedding_space_id": "space-current",
+-        "embeddings": [[1.0, 0.0]],
++        "embeddings": [[1.0, 0.0] for _ in texts],
+     }
+     tenant = "tenant"
+     workspace = "stale-space"
+@@ -219,11 +220,367 @@ def test_search_cache_key_tracks_runtime_embedding_space(tmp_path):
+     assert len(calls) == 2
+ 
+ 
++def test_warm_search_skips_embedding_space_write_lock(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.services.space_id = "space-a"
++    tenant, workspace = "tenant", "warm-space-metadata"
++    original_connect = store._connect
++    with closing(original_connect()) as con:
++        store._store_workspace_embedding_space(con, store._scope_key(tenant), workspace, "space-a")
++        con.commit()
++    begin_immediate_calls = []
++
++    class _TrackingConnection:
++        def __init__(self, connection):
++            self._connection = connection
++
++        def execute(self, sql, *args):
++            if sql == "BEGIN IMMEDIATE":
++                begin_immediate_calls.append(sql)
++            return self._connection.execute(sql, *args)
++
++        def close(self):
++            self._connection.close()
++
++        def __getattr__(self, name):
++            return getattr(self._connection, name)
++
++    monkeypatch.setattr(store, "_connect", lambda: _TrackingConnection(original_connect()))
++
++    for query in ("first query", "second query"):
++        result = store._search_uncached(query, tenant, workspace, use_reranker=False)
++        assert result["success"] is True
++    assert begin_immediate_calls == []
++
++    with closing(store._connect()) as con:
++        assert store._stored_workspace_embedding_space(con, store._scope_key(tenant), workspace) == "space-a"
++
++
++def test_warm_search_reads_embedding_space_from_vector_snapshot(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.services.space_id = "space-a"
++    tenant, workspace = "tenant", "snapshot-space-metadata"
++    scope_key = store._scope_key(tenant)
++    with closing(store._connect()) as con:
++        store._store_workspace_embedding_space(con, scope_key, workspace, "space-a")
++        con.execute(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            (scope_key, workspace, "known.py", 0, "known", "known result", "[1.0, 0.0]", "space-a"),
++        )
++        con.commit()
++
++    transaction_states = []
++    read_metadata = store._stored_workspace_embedding_space
++
++    def observe_snapshot(connection, observed_scope, observed_workspace):
++        transaction_states.append(connection.in_transaction)
++        return read_metadata(connection, observed_scope, observed_workspace)
++
++    monkeypatch.setattr(store, "_stored_workspace_embedding_space", observe_snapshot)
++    result = store._search_uncached("query", tenant, workspace, use_reranker=False)
++
++    assert result["success"] is True
++    assert [row["path"] for row in result["results"]] == ["known.py"]
++    assert transaction_states == [True]
++
++
++def test_public_search_cache_isolated_by_tenant(tmp_path):
++    store = _store(tmp_path)
++    store.scope = "tenant"
++    store.services.space_id = "shared-runtime-space"
++    store.services.embed = lambda *_args, **_kwargs: {
++        "success": True,
++        "embedding_space_id": "shared-runtime-space",
++        "embeddings": [[1.0, 0.0]],
++    }
++    workspace = "same-workspace"
++    with closing(store._connect()) as con:
++        con.executemany(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            [
++                ("tenant-a", workspace, "same.py", 0, "same-metadata", "tenant a", "[1.0,0.0]", "shared-runtime-space"),
++                ("tenant-b", workspace, "same.py", 0, "same-metadata", "tenant b", "[1.0,0.0]", "shared-runtime-space"),
++            ],
++        )
++        con.commit()
++
++    first = store.search("same query", "tenant-a", workspace, use_reranker=False)
++    second = store.search("same query", "tenant-b", workspace, use_reranker=False)
++
++    assert [row["text"] for row in first["results"]] == ["tenant a"]
++    assert [row["text"] for row in second["results"]] == ["tenant b"]
++    assert second["search_cache"]["hit"] is False
++
++
++def test_public_search_cache_tracks_runtime_embedding_dimension(tmp_path):
++    store = _store(tmp_path)
++    store.services.space_id = "same-runtime-space"
++
++    class _RuntimeDimension:
++        _active_embedding_dimension = 2
++
++    runtime = _RuntimeDimension()
++    store.services.embeddings = runtime
++    calls = []
++
++    def uncached(query, tenant, workspace, top_k=8, use_reranker=True, priority=3, scope_path=None):
++        calls.append(runtime._active_embedding_dimension)
++        return {"success": True, "results": [{"path": f"dimension-{runtime._active_embedding_dimension}"}]}
++
++    store._search_uncached = uncached
++    first = store.search("same query", "tenant", "same-workspace", use_reranker=False)
++    runtime._active_embedding_dimension = 3
++    second = store.search("same query", "tenant", "same-workspace", use_reranker=False)
++
++    assert first["results"][0]["path"] == "dimension-2"
++    assert second["results"][0]["path"] == "dimension-3"
++    assert second["search_cache"]["hit"] is False
++    assert calls == [2, 3]
++
++
++def test_public_search_rekeys_when_runtime_embedding_identity_changes_during_query(tmp_path):
++    store = _store(tmp_path)
++    store.services.space_id = "space-before"
++
++    class _RuntimeDimension:
++        _active_embedding_dimension = 2
++
++    runtime = _RuntimeDimension()
++    store.services.embeddings = runtime
++    query_calls = []
++
++    def embed(texts, _tenant, **kwargs):
++        if kwargs.get("query", False):
++            query_calls.append(list(texts))
++            if len(query_calls) == 1:
++                store.services.space_id = "space-after"
++                runtime._active_embedding_dimension = 3
++            dimension = runtime._active_embedding_dimension
++            return {
++                "success": True,
++                "embedding_space_id": store.services.space_id,
++                "embeddings": [[1.0] * dimension for _ in texts],
++            }
++        return {"success": True, "embedding_space_id": store.services.space_id, "embeddings": []}
++
++    store.services.embed = embed
++
++    first = store.search("same query", "tenant", "same-workspace", use_reranker=False)
++    second = store.search("same query", "tenant", "same-workspace", use_reranker=False)
++
++    assert first["success"] is True
++    assert second["search_cache"]["hit"] is True
++    assert len(query_calls) == 1
++
++
++def test_hybrid_fts_excludes_foreign_and_empty_embedding_spaces(tmp_path):
++    store = _store(tmp_path)
++    store.scope = "tenant"
++    store.services.space_id = "space-current"
++    store.services.embed = lambda texts, *_args, **_kwargs: {
++        "success": True,
++        "embedding_space_id": "space-current",
++        "embeddings": [[1.0, 0.0] for _ in texts],
++    }
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / "current.py").write_text("# sharedprobe current\ndef current():\n    return 1\n", encoding="utf-8")
++    (root / "foreign.py").write_text("# sharedprobe foreign\ndef foreign():\n    return 2\n", encoding="utf-8")
++    (root / "legacy.py").write_text("# sharedprobe legacy\ndef legacy():\n    return 3\n", encoding="utf-8")
++    workspace = "hybrid-spaces"
++    indexed = store.index(str(root), "tenant", workspace=workspace)
++    assert indexed["success"] is True, indexed
++    with closing(store._connect()) as con:
++        con.execute(
++            "UPDATE chunks SET embedding_space='space-old' WHERE tenant=? AND workspace=? AND path='foreign.py'",
++            (store._scope_key("tenant"), workspace),
++        )
++        con.execute(
++            "UPDATE chunks SET embedding_space='' WHERE tenant=? AND workspace=? AND path='legacy.py'",
++            (store._scope_key("tenant"), workspace),
++        )
++        con.executemany(
++            "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++            [
++                (store._scope_key("tenant"), workspace, "current.py", 0, "sharedprobe current"),
++                (store._scope_key("tenant"), workspace, "foreign.py", 0, "sharedprobe foreign"),
++                (store._scope_key("tenant"), workspace, "legacy.py", 0, "sharedprobe legacy"),
++            ],
++        )
++        con.commit()
++
++    result = store._search_uncached("sharedprobe", "tenant", workspace, use_reranker=False)
++
++    assert [row["path"] for row in result["results"]] == ["current.py"]
++
++    store.services.embed = lambda *_args, **_kwargs: {"success": False, "error": "offline"}
++    lexical = store._search_uncached("sharedprobe", "tenant", workspace, use_reranker=False)
++
++    assert {row["path"] for row in lexical["results"]} == {"current.py", "foreign.py", "legacy.py"}
++    assert lexical["retrieval_mode"] == "lexical_fallback"
++    assert lexical["lexical_backend"] == "fts5"
++
++
++def test_uncertain_fts_paths_do_not_consume_candidate_limit(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    tenant, workspace = "tenant", "uncertainty-limit"
++    scope_key = store._scope_key(tenant)
++    with closing(store._connect()) as con:
++        for chunk_no in range(20):
++            text = "needle " * 12
++            con.execute(
++                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++                "VALUES(?,?,?,?,?,?,?,?)",
++                (scope_key, workspace, "uncertain.py", chunk_no, f"u{chunk_no}", text, "[1.0,0.0]", "space"),
++            )
++            con.execute(
++                "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++                (scope_key, workspace, "uncertain.py", chunk_no, text),
++            )
++        con.execute(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            (scope_key, workspace, "healthy.py", 0, "healthy", "needle healthy", "[1.0,0.0]", "space"),
++        )
++        con.execute(
++            "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++            (scope_key, workspace, "healthy.py", 0, "needle healthy"),
++        )
++        store._update_workspace_read_uncertainty(
++            con, scope_key, workspace, uncertain_paths={"uncertain.py"}
++        )
++        con.commit()
++    store.services.embed = lambda *_args, **_kwargs: {"success": False, "error": "offline"}
++    monkeypatch.setattr(store, "_search_token_overlap", lambda *_args, **_kwargs: [])
++
++    result = store._search_uncached("needle", tenant, workspace, top_k=1, use_reranker=False)
++
++    assert [row["path"] for row in result["results"]] == ["healthy.py"]
++
++
++def test_unresolved_embedding_uses_explicit_lexical_fallback(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.services.embed = lambda *_args, **_kwargs: {"success": False, "error": "offline"}
++    monkeypatch.setattr(store, "_search_fts_candidates", lambda *_args, **_kwargs: [])
++    monkeypatch.setattr(
++        store,
++        "_search_token_overlap",
++        lambda *_args, **_kwargs: [{"path": "lexical.py", "chunk_no": 0, "text": "needle text", "content_hash": "h", "fts_score": 1.0}],
++    )
++
++    result = store._search_uncached("needle", "tenant", "lexical-workspace", use_reranker=False)
++
++    assert [row["path"] for row in result["results"]] == ["lexical.py"]
++    assert result["degraded"] is True
++    assert result["retrieval_mode"] == "lexical_fallback"
++    assert result["lexical_backend"] == "token_overlap"
++
++
++def test_project_policy_identity_retries_transient_publish_lock(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    root = tmp_path / "policy-lock-project"
++    root.mkdir()
++    (root / ".local-ai.toml").write_text(
++        'exclude_paths = ["vendor/**"]\n', encoding="utf-8"
++    )
++    context = store.project_context(root)
++    assert context is not None
++    assert context.config_digest
++    workspace = "policy-lock-workspace"
++    scope_key = store._scope_key("test_tenant")
++    state = {"failures": 1, "begins": 0}
++
++    class _FlakyConnection:
++        def __init__(self, connection):
++            self._connection = connection
++
++        def execute(self, sql, *args):
++            if sql == "BEGIN IMMEDIATE":
++                state["begins"] += 1
++                if state["failures"]:
++                    state["failures"] -= 1
++                    raise sqlite3.OperationalError("database is locked")
++            return self._connection.execute(sql, *args)
++
++        def close(self):
++            self._connection.close()
++
++        def __getattr__(self, name):
++            return getattr(self._connection, name)
++
++    original_connect = store._connect
++    monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
++
++    removed = store._sync_workspace_project_policy_identity(
++        root, scope_key, workspace, context
++    )
++
++    assert removed == 0
++    assert state["begins"] == 2
++    key = store._workspace_project_config_key(scope_key, workspace)
++    with closing(original_connect()) as con:
++        row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
++    assert row is not None
++    assert row[0] == context.config_digest
++
++
++def test_index_paths_step_retries_uncertain_only_publish_lock(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    root = tmp_path / "uncertain-lock-project"
++    root.mkdir()
++    (root / "unreadable.py").write_text("content", encoding="utf-8")
++    monkeypatch.setattr(rag_module, "_read_bounded_file", lambda *_args: None)
++    state = {"begins": 0, "failures": 1}
++
++    class _FlakyConnection:
++        def __init__(self, connection):
++            self._connection = connection
++
++        def execute(self, sql, *args):
++            if sql == "BEGIN IMMEDIATE":
++                state["begins"] += 1
++                # Identity sync and first uncertainty publish succeed. Inject one
++                # busy failure in the uncertain-only follow-up transaction.
++                if state["begins"] == 3 and state["failures"]:
++                    state["failures"] -= 1
++                    raise sqlite3.OperationalError("database is locked")
++            return self._connection.execute(sql, *args)
++
++        def close(self):
++            self._connection.close()
++
++        def __getattr__(self, name):
++            return getattr(self._connection, name)
++
++    original_connect = store._connect
++    monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
++
++    result = store.index_paths_step(
++        str(root), "test_tenant", "uncertain-lock-workspace", ["unreadable.py"]
++    )
++
++    assert result["success"] is True
++    assert result["read_uncertain_paths"] == ["unreadable.py"]
++    assert state["begins"] == 4
++    key = store._scope_key("test_tenant")
++    with closing(original_connect()) as con:
++        uncertain = store._workspace_read_uncertain_paths(
++            con, key, "uncertain-lock-workspace"
++        )
++    assert uncertain == {"unreadable.py"}
++
++
+ def test_rag_index_retries_transient_publish_lock(tmp_path, monkeypatch):
+     store = _store(tmp_path)
+     root = tmp_path / "project"
+     root.mkdir()
+     (root / "locked.py").write_text("def locked():\n    return 1\n", encoding="utf-8")
++    workspace = "locked-workspace"
++    store._sync_workspace_project_policy_identity(
++        root, store._scope_key("test_tenant"), workspace, store.project_context(root)
++    )
+ 
+     state = {"failures": 1, "begins": 0}
+ 
+@@ -248,7 +605,7 @@ def test_rag_index_retries_transient_publish_lock(tmp_path, monkeypatch):
+     original_connect = store._connect
+     monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
+ 
+-    result = store.index(str(root), "test_tenant", workspace="locked-workspace")
++    result = store.index(str(root), "test_tenant", workspace=workspace)
+ 
+     assert result["success"] is True
+     assert state["begins"] == 2
+@@ -260,6 +617,10 @@ def test_rag_index_paths_step_retries_publish_lock_without_reembedding(tmp_path,
+     root = tmp_path / "project-step"
+     root.mkdir()
+     (root / "locked.py").write_text("def locked_step():\n    return 1\n", encoding="utf-8")
++    workspace = "step-workspace"
++    store._sync_workspace_project_policy_identity(
++        root, store._scope_key("test_tenant"), workspace, store.project_context(root)
++    )
+     state = {"failures": 1, "begins": 0}
+ 
+     class _FlakyConnection:
+@@ -284,7 +645,7 @@ def test_rag_index_paths_step_retries_publish_lock_without_reembedding(tmp_path,
+     monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
+ 
+     result = store.index_paths_step(
+-        str(root), "test_tenant", "step-workspace", ["locked.py"]
++        str(root), "test_tenant", workspace, ["locked.py"]
+     )
+ 
+     assert result["success"] is True
+diff --git a/tests/test_rag_quality_contract.py b/tests/test_rag_quality_contract.py
+index 971f799..20c3ff2 100644
+--- a/tests/test_rag_quality_contract.py
++++ b/tests/test_rag_quality_contract.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import hashlib
+ import json
+ import math
+ import os
+@@ -8,6 +9,7 @@ import threading
+ import time
+ import tracemalloc
+ from contextlib import closing
++from pathlib import Path
+ 
+ import numpy as np
+ import pytest
+@@ -108,6 +110,45 @@ def test_vector_search_streams_rows_and_keeps_golden_relevance(tmp_path, monkeyp
+     assert [row["chunk_no"] for row in result["results"][:3]] == [2, 3, 1]
+ 
+ 
++def test_vector_search_skips_redundant_local_sort_for_unique_scores(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.config["rag"]["search_batch_size"] = 32
++    tenant, workspace = "tenant", "unique-score-workspace"
++    vectors = np.asarray([[1.0, float(i + 1)] for i in range(96)], dtype=np.float32)
++    _insert_vectors(store, tenant, workspace, vectors)
++
++    def unexpected_lexsort(*_args, **_kwargs):
++        raise AssertionError("unique-score batch should not need local candidate ordering")
++
++    monkeypatch.setattr(np, "lexsort", unexpected_lexsort)
++    result = store._search_uncached("unique score query", tenant, workspace, top_k=4, use_reranker=False)
++
++    assert result["success"] is True
++    assert [row["chunk_no"] for row in result["results"]] == [0, 1, 2, 3]
++
++
++def test_vector_search_reuses_norm_buffer_for_scores(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.config["rag"]["search_batch_size"] = 32
++    tenant, workspace = "tenant", "score-buffer-workspace"
++    vectors = np.asarray([[1.0, 0.0]] * 31 + [[0.0, 0.0]], dtype=np.float32)
++    _insert_vectors(store, tenant, workspace, vectors)
++
++    zeros = np.zeros
++
++    def reject_batch_score_buffer(shape, *args, **kwargs):
++        if shape == 32:
++            raise AssertionError("vector scoring should reuse an existing batch array")
++        return zeros(shape, *args, **kwargs)
++
++    monkeypatch.setattr(np, "zeros", reject_batch_score_buffer)
++    result = store._search_uncached("score buffer query", tenant, workspace, top_k=4, use_reranker=False)
++
++    assert result["success"] is True
++    assert [row["chunk_no"] for row in result["results"]] == [0, 1, 2, 3]
++    assert all(np.isfinite(row["embedding_score"]) for row in result["results"])
++
++
+ def test_vector_search_keeps_deterministic_ties_at_candidate_cutoff(tmp_path):
+     store = _store(tmp_path)
+     vectors = np.asarray([[1.0, 0.0]] * 32, dtype=np.float32)
+@@ -123,7 +164,9 @@ def test_vector_search_keeps_deterministic_ties_at_candidate_cutoff(tmp_path):
+ 
+ def test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors(tmp_path):
+     store = _store(tmp_path, dimension=3)
+-    tenant, workspace = "tenant", "credential-golden-corpus"
++    tenant = "tenant"
++    baseline_workspace = "credential-golden-baseline"
++    candidate_workspace = "credential-golden-candidate"
+     relevant = [
+         (
+             "runbooks/credential-rotation.md",
+@@ -165,32 +208,65 @@ def test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors(tm
+         )
+         for index in range(58)
+     )
+-    _insert_vectors(store, tenant, workspace, np.asarray([row[2] for row in corpus], dtype=np.float32))
++    dataset_revision = hashlib.sha256(
++        json.dumps(corpus, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    ).hexdigest()
++    vectors = np.asarray([row[2] for row in corpus], dtype=np.float32)
++    revision_hashes = {f"{dataset_revision}:{index}" for index in range(len(corpus))}
++    scope_key = store._scope_key(tenant)
++    for workspace in (baseline_workspace, candidate_workspace):
++        _insert_vectors(store, tenant, workspace, vectors)
++        with closing(store._connect()) as con:
++            for index, (path, content, _vector) in enumerate(corpus):
++                con.execute(
++                    "UPDATE chunks SET path=?,chunk_no=0,content_hash=?,text=? "
++                    "WHERE tenant=? AND workspace=? AND content_hash=?",
++                    (
++                        path,
++                        f"{dataset_revision}:{index}",
++                        content,
++                        scope_key,
++                        workspace,
++                        f"hash-{index}",
++                    ),
++                )
++            con.commit()
+ 
+     with closing(store._connect()) as con:
+-        for index, (path, content, _vector) in enumerate(corpus):
+-            con.execute(
+-                "UPDATE chunks SET path=?,chunk_no=0,content_hash=?,text=? "
+-                "WHERE tenant=? AND workspace=? AND content_hash=?",
+-                (path, f"golden-{index}", content, store._scope_key(tenant), workspace, f"hash-{index}"),
+-            )
+-        con.commit()
++        for workspace in (baseline_workspace, candidate_workspace):
++            rows = con.execute(
++                "SELECT content_hash,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
++                (scope_key, workspace),
++            ).fetchall()
++            assert {str(row[0]) for row in rows} == revision_hashes
++            assert {str(row[1]) for row in rows} == {"quality-space"}
+ 
+     store.config["rag"]["rerank_candidates"] = 16
+-    result = store._search_uncached("weekly credential rotation", tenant, workspace, top_k=10, use_reranker=False)
+-
+-    assert result["success"] is True
+-    result_paths = [row["path"] for row in result["results"]]
+-    assert len(result_paths) == 10
+-    assert result_paths[0] == relevant[0][0]
+     relevant_paths = {row[0] for row in relevant}
+-    relevance = [int(path in relevant_paths) for path in result_paths]
+-    recall_at_10 = sum(relevance) / len(relevant_paths)
+-    dcg_at_10 = sum(score / math.log2(rank + 2) for rank, score in enumerate(relevance))
+-    ideal_dcg_at_10 = sum(1.0 / math.log2(rank + 2) for rank in range(len(relevant_paths)))
+-    ndcg_at_10 = dcg_at_10 / ideal_dcg_at_10
+-    assert recall_at_10 == 1.0
+-    assert ndcg_at_10 >= 0.98
++
++    def paired_metrics(workspace: str) -> tuple[list[str], float, float]:
++        result = store._search_uncached(
++            "weekly credential rotation", tenant, workspace, top_k=10, use_reranker=False
++        )
++        assert result["success"] is True
++        result_paths = [row["path"] for row in result["results"]]
++        assert len(result_paths) == 10
++        relevance = [int(path in relevant_paths) for path in result_paths]
++        recall_at_10 = sum(relevance) / len(relevant_paths)
++        dcg_at_10 = sum(score / math.log2(rank + 2) for rank, score in enumerate(relevance))
++        ideal_dcg_at_10 = sum(
++            1.0 / math.log2(rank + 2) for rank in range(len(relevant_paths))
++        )
++        return result_paths, recall_at_10, dcg_at_10 / ideal_dcg_at_10
++
++    baseline = paired_metrics(baseline_workspace)
++    candidate = paired_metrics(candidate_workspace)
++
++    assert baseline[0] == candidate[0]
++    assert baseline[0][0] == relevant[0][0]
++    assert candidate[1:] == baseline[1:]
++    assert baseline[1] == candidate[1] == 1.0
++    assert baseline[2] == candidate[2] == 1.0
+ 
+ 
+ def test_python_cosine_fallback_rejects_non_finite_vectors():
+@@ -480,7 +556,7 @@ def test_vector_cursor_closes_before_scoring_and_after_search(tmp_path, monkeypa
+     assert state["cursor"].closed is True
+ 
+ 
+-def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
++def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
+     if os.environ.get("RAG_BENCHMARK") != "1":
+         import pytest
+         pytest.skip("set RAG_BENCHMARK=1 to run 100k chunk retrieval measurements")
+@@ -488,8 +564,10 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
+     dimension = 384
+     tenant, workspace = "benchmark-tenant", "benchmark-workspace"
+     metrics = []
++    complexity_probes = []
+     batch_sizes = (512, 2048, 4096, 8192)
+-    for count in (1024, 16384, 100_000):
++    corpus_counts = (1024, 16384, 100_000)
++    for count in corpus_counts:
+         rng = np.random.default_rng(41)
+         vectors = rng.standard_normal((count, dimension), dtype=np.float32)
+         vectors[0] = 0.0
+@@ -518,6 +596,39 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
+             tracemalloc.stop()
+             assert memory_result["success"] is True
+             assert memory_result["results"][0]["chunk_no"] == 0
++
++            # Deterministic O(N) work guard: the vectorized scorer visits every
++            # corpus row once while no dot-product batch exceeds configuration.
++            real_dot = np.dot
++            scoring_batches = []
++
++            def observe_scoring_batch(left, right):
++                if (
++                    getattr(left, "ndim", None) == 2
++                    and left.shape[1] == dimension
++                    and tuple(getattr(right, "shape", ())) == (dimension,)
++                ):
++                    scoring_batches.append(int(left.shape[0]))
++                return real_dot(left, right)
++
++            monkeypatch.setattr(np, "dot", observe_scoring_batch)
++            probe_result = store._search_uncached(
++                "benchmark query", tenant, workspace, top_k=8, use_reranker=False
++            )
++            monkeypatch.setattr(np, "dot", real_dot)
++            assert probe_result["success"] is True
++            assert probe_result["results"][0]["chunk_no"] == 0
++            assert scoring_batches
++            assert max(scoring_batches) <= batch_size
++            assert sum(scoring_batches) == count
++            complexity_probes.append({
++                "chunks": count,
++                "search_batch_size": batch_size,
++                "scoring_batches": len(scoring_batches),
++                "max_scoring_batch_rows": max(scoring_batches),
++                "scored_chunks": sum(scoring_batches),
++            })
++
+             median_ms = float(np.median(samples_ms))
+             p95_index = min(len(samples_ms) - 1, math.ceil(0.95 * len(samples_ms)) - 1)
+             p95_ms = sorted(samples_ms)[p95_index]
+@@ -533,10 +644,26 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
+                 "measured_samples": sample_count,
+             })
+ 
+-    print("RAG_BENCHMARK=" + json.dumps(metrics, sort_keys=True))
++    expected_pairs = {(count, batch_size) for count in corpus_counts for batch_size in batch_sizes}
++    actual_pairs = {(int(row["chunks"]), int(row["search_batch_size"])) for row in metrics}
+     assert len(metrics) == 12
++    assert actual_pairs == expected_pairs
++    assert len(complexity_probes) == len(expected_pairs)
++    for row, probe in zip(metrics, complexity_probes):
++        assert probe["chunks"] == row["chunks"]
++        assert probe["search_batch_size"] == row["search_batch_size"]
++        assert probe["scored_chunks"] == row["chunks"]
++        assert probe["max_scoring_batch_rows"] <= row["search_batch_size"]
++        assert row["warmup_samples"] == 2
++        assert row["measured_samples"] == (20 if row["chunks"] == 100_000 else 5)
++        for key in ("median_ms", "p95_ms", "chunks_per_second", "peak_traced_mib", "vector_batch_buffer_mib"):
++            assert math.isfinite(float(row[key]))
++            assert float(row[key]) >= 0.0
++        assert float(row["p95_ms"]) >= float(row["median_ms"])
++
+     assert all(float(row["peak_traced_mib"]) <= 16.0 for row in metrics)
+     warm_100k = [row for row in metrics if row["chunks"] == 100_000]
++    assert len(warm_100k) == len(batch_sizes)
+     for row in warm_100k:
+         assert float(row["p95_ms"]) <= 750.0, (
+             f"100k retrieval p95 exceeded 750 ms for batch {row['search_batch_size']}: "
+@@ -553,3 +680,25 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
+             f"peak traced memory scaled from 16k to 100k chunks for batch {batch_size}: "
+             f"{small_peak:.3f} MiB -> {large_peak:.3f} MiB"
+         )
++
++    receipt = {
++        "schema_version": 1,
++        "benchmark": "rag_retrieval_latency_and_peak_memory",
++        "corpus_counts": list(corpus_counts),
++        "dimension": dimension,
++        "dtype": "float32",
++        "search_batch_sizes": list(batch_sizes),
++        "warmup_samples": 2,
++        "measured_samples": {str(count): 20 if count == 100_000 else 5 for count in corpus_counts},
++        "peak_memory_samples": 1,
++        "complexity_guard": "each search scored every corpus row with dot-product batches bounded by search_batch_size",
++        "complexity_probes": complexity_probes,
++        "metrics": metrics,
++    }
++    receipt_path = Path(os.environ.get(
++        "RAG_BENCHMARK_RECEIPT", str(tmp_path / "rag-benchmark-receipt.json")
++    ))
++    receipt_path.parent.mkdir(parents=True, exist_ok=True)
++    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    assert receipt_path.is_file()
++    print("RAG_BENCHMARK_RECEIPT=" + str(receipt_path))
+diff --git a/tests/test_t11_project_policy_consumers.py b/tests/test_t11_project_policy_consumers.py
+index e1856f9..cb4df7e 100644
+--- a/tests/test_t11_project_policy_consumers.py
++++ b/tests/test_t11_project_policy_consumers.py
+@@ -436,6 +436,105 @@ def test_explicit_rag_ingestion_removes_policy_rejected_source_paths(
+         ).fetchone()[0] == 0
+ 
+ 
++def test_explicit_rag_ingestion_reconciles_hard_ignored_paths(
++    tmp_path: Path, monkeypatch
++):
++    _install_policy(monkeypatch)
++    root = tmp_path / "project"
++    target = root / "blocked" / "keep.py"
++    target.parent.mkdir(parents=True)
++    target.write_text("x=1\n", encoding="utf-8")
++    config = _config(tmp_path)
++    services = SimpleNamespace(
++        embed=lambda texts, _tenant, **_kwargs: {
++            "success": True,
++            "embedding_space_id": "test-space",
++            "embeddings": [[1.0, 0.0] for _ in texts],
++        }
++    )
++    store = RAGStore(config, services=services)
++    workspace = store.workspace_id(str(root.resolve()))
++    scope = store._scope_key("tenant")
++
++    indexed = store.index_paths_step(str(root), "tenant", workspace, ["blocked/keep.py"])
++    assert indexed["success"] is True
++    with closing(store._connect()) as con:
++        assert con.execute(
++            "SELECT COUNT(*) FROM files WHERE tenant=? AND workspace=? AND path=?",
++            (scope, workspace, "blocked/keep.py"),
++        ).fetchone()[0] == 1
++
++    config["rag"]["ignore_dirs"] = ["blocked"]
++    reconciled = store.index_paths_step(str(root), "tenant", workspace, ["blocked/keep.py"])
++
++    assert reconciled["success"] is True
++    with closing(store._connect()) as con:
++        for table in ("files", "chunks", "chunk_fts"):
++            assert con.execute(
++                f"SELECT COUNT(*) FROM {table} WHERE tenant=? AND workspace=? AND path=?",
++                (scope, workspace, "blocked/keep.py"),
++            ).fetchone()[0] == 0
++
++
++def test_explicit_rag_ingestion_accepts_project_custom_text_extension(
++    tmp_path: Path, monkeypatch
++):
++    _install_policy(monkeypatch)
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / "guide.mdx").write_text("guide\n", encoding="utf-8")
++    config = _config(tmp_path)
++    services = SimpleNamespace(
++        embed=lambda texts, _tenant, **_kwargs: {
++            "success": True,
++            "embedding_space_id": "test-space",
++            "embeddings": [[1.0, 0.0] for _ in texts],
++        }
++    )
++    store = RAGStore(config, services=services)
++    workspace = store.workspace_id(str(root.resolve()))
++
++    result = store.index_paths_step(str(root), "tenant", workspace, ["guide.mdx"])
++
++    assert result["success"] is True
++    with closing(store._connect()) as con:
++        assert con.execute(
++            "SELECT COUNT(*) FROM files WHERE tenant=? AND workspace=? AND path=?",
++            (store._scope_key("tenant"), workspace, "guide.mdx"),
++        ).fetchone()[0] == 1
++
++
++def test_explicit_rag_ingestion_normalizes_windows_path_before_policy_and_storage(
++    tmp_path: Path, monkeypatch
++):
++    _install_policy(monkeypatch)
++    root = tmp_path / "project"
++    (root / "private").mkdir(parents=True)
++    (root / "private" / "keep.py").write_text("keep\n", encoding="utf-8")
++    services = SimpleNamespace(
++        embed=lambda texts, _tenant, **_kwargs: {
++            "success": True,
++            "embedding_space_id": "test-space",
++            "embeddings": [[1.0, 0.0] for _ in texts],
++        }
++    )
++    store = RAGStore(_config(tmp_path), services=services)
++    workspace = store.workspace_id(str(root.resolve()))
++
++    result = store.index_paths_step(
++        str(root), "tenant", workspace, [r"private\keep.py"]
++    )
++
++    assert result["success"] is True
++    assert result["processed_paths"] == ["private/keep.py"]
++    with closing(store._connect()) as con:
++        row = con.execute(
++            "SELECT path,text FROM chunks WHERE tenant=? AND workspace=?",
++            (store._scope_key("tenant"), workspace),
++        ).fetchone()
++    assert row == ("private/keep.py", "keep\n")
++
++
+ def test_rag_worktree_consumer_inherits_committed_project_path_policy(tmp_path: Path):
+     pytest.importorskip("local_ai_hub.project_config")
+     primary = tmp_path / "primary"
+@@ -485,6 +584,106 @@ def test_rag_worktree_consumer_inherits_committed_project_path_policy(tmp_path:
+     )
+ 
+ 
++def test_rag_reindexes_same_head_worktree_after_local_config_change(tmp_path: Path):
++    pytest.importorskip("local_ai_hub.project_config")
++
++    class _EmbeddingServices:
++        space_id = "worktree-config-reindex-space"
++
++        def __init__(self):
++            self.calls = 0
++
++        def embed(self, texts, _tenant, **_kwargs):
++            self.calls += len(texts)
++            return {
++                "success": True,
++                "embeddings": [[1.0, 0.0] for _ in texts],
++                "embedding_space_id": self.space_id,
++            }
++
++    primary = tmp_path / "primary"
++    worktree = tmp_path / "worktrees" / "feature"
++    primary.mkdir()
++    worktree.parent.mkdir(parents=True)
++
++    def git(*args: str) -> str:
++        return subprocess.run(
++            ["git", "-C", str(primary), *args],
++            check=True,
++            capture_output=True,
++            text=True,
++            timeout=30,
++        ).stdout.strip()
++
++    git("init", "--quiet")
++    git("config", "user.email", "test@example.invalid")
++    git("config", "user.name", "Test")
++    (primary / "module.py").write_text("def useful():\n    return 42\n", encoding="utf-8")
++    git("add", "module.py")
++    git("commit", "--quiet", "-m", "tracked source")
++    git("worktree", "add", "--quiet", "--detach", str(worktree), "HEAD")
++
++    def head(path: Path) -> str:
++        return subprocess.run(
++            ["git", "-C", str(path), "rev-parse", "HEAD"],
++            check=True,
++            capture_output=True,
++            text=True,
++            timeout=30,
++        ).stdout.strip()
++
++    store = RAGStore(_config(tmp_path), services=_EmbeddingServices())
++    workspace = store.workspace_id(str(worktree.resolve()))
++    initial_head = head(worktree)
++    initial = store.index(str(worktree), "tenant", workspace)
++    assert initial["success"] is True
++    assert initial["files"] == 1
++    assert store.services.calls > 0
++    initial_embed_calls = store.services.calls
++    before_config_change = store.search("useful", "tenant", workspace, use_reranker=False)
++    cached_before_config_change = store.search("useful", "tenant", workspace, use_reranker=False)
++    assert [row["path"] for row in before_config_change["results"]] == ["module.py"]
++    assert cached_before_config_change["search_cache"]["hit"] is True
++
++    override = worktree / ".local-ai.worktree.toml"
++    override.write_text("[file_limits]\nmax_file_size_bytes = 1\n", encoding="utf-8")
++    restricted = store.index(str(worktree), "tenant", workspace)
++    with closing(store._connect()) as con:
++        restricted_counts = tuple(
++                con.execute(
++                    f"SELECT COUNT(*) FROM {table} WHERE tenant=? AND workspace=?",
++                    (store._scope_key("tenant"), workspace),
++                ).fetchone()[0]
++                for table in ("files", "chunks", "chunk_fts")
++        )
++
++    assert restricted["success"] is True
++    assert restricted_counts == (0, 0, 0)
++    after_config_change = store.search("useful", "tenant", workspace, use_reranker=False)
++    assert after_config_change["search_cache"]["hit"] is False
++    assert after_config_change["results"] == []
++    assert head(primary) == head(worktree) == initial_head
++
++    override.unlink()
++    restored = store.index(str(worktree), "tenant", workspace)
++    with closing(store._connect()) as con:
++        restored_paths = [
++            row[0]
++            for row in con.execute(
++                "SELECT path FROM files WHERE tenant=? AND workspace=?",
++                (store._scope_key("tenant"), workspace),
++            )
++        ]
++
++    assert restored["success"] is True
++    assert restored_paths == ["module.py"]
++    assert store.services.calls > initial_embed_calls
++    after_config_restore = store.search("useful", "tenant", workspace, use_reranker=False)
++    assert after_config_restore["search_cache"]["hit"] is False
++    assert [row["path"] for row in after_config_restore["results"]] == ["module.py"]
++    assert head(worktree) == initial_head
++
++
+ def test_rag_policy_change_invalidates_cached_search_results(tmp_path: Path, monkeypatch):
+     class _EmbeddingServices:
+         space_id = "policy-cache-test-space"
+diff --git a/tests/test_t11_rag_ingestion_contract.py b/tests/test_t11_rag_ingestion_contract.py
+index a252d65..1b48ff1 100644
+--- a/tests/test_t11_rag_ingestion_contract.py
++++ b/tests/test_t11_rag_ingestion_contract.py
+@@ -1,11 +1,14 @@
+ from __future__ import annotations
+ 
+ import inspect
++import math
+ import json
+ import os
++import statistics
+ import sqlite3
+ import struct
+ import sys
++import time
+ from contextlib import closing
+ from types import ModuleType, SimpleNamespace
+ 
+@@ -101,6 +104,36 @@ def _inject_sqlite_write_failure(
+     return state
+ 
+ 
++def test_document_ingest_embeds_title_metadata_and_content(tmp_path):
++    store = _store(tmp_path)
++    embedded_texts = []
++
++    class _RecordingServices:
++        def embed(self, texts, _tenant, **_kwargs):
++            batch = list(texts)
++            embedded_texts.extend(batch)
++            return {
++                "success": True,
++                "embedding_space_id": "document-ingestion-test-space",
++                "embeddings": [[1.0, 0.0] for _ in batch],
++            }
++
++    store.services = _RecordingServices()
++    result = store.ingest_document(
++        "specs",
++        "The system rotates service credentials weekly.",
++        title="Credential Rotation Plan",
++        metadata={"owner": "identity-team", "revision": 7},
++    )
++
++    assert result["success"] is True
++    embedded_text = "\n".join(embedded_texts)
++    assert "Title: Credential Rotation Plan" in embedded_text
++    assert '"owner":"identity-team"' in embedded_text
++    assert '"revision":7' in embedded_text
++    assert "Content:\nThe system rotates service credentials weekly." in embedded_text
++
++
+ def test_document_ingest_indexes_title_and_metadata(tmp_path):
+     store = _store(tmp_path)
+ 
+@@ -845,6 +878,44 @@ def test_t11_live_ollama_rag_ingest_and_reranker_truthfulness(tmp_path):
+             assert result["reranked"] is True
+             assert result["degraded"] is False
+             assert result["fallback"] is None
++
++            # Measure warm transformer-only latency separately from the 100k
++            # vector scan. Unique query strings bypass pair-cache reuse.
++            benchmark_documents = [
++                f"Candidate {index}: " + ("credential rotation and access review. " * 24)
++                for index in range(16)
++            ]
++            reranker = app.rag.reranker
++            for index in range(2):
++                warm = reranker.rerank(
++                    f"T11 reranker warmup {index}", benchmark_documents, top_k=8
++                )
++                assert warm.get("success") is True, warm.get("error")
++            samples_ms = []
++            identities = set()
++            for index in range(20):
++                started = time.perf_counter()
++                measured = reranker.rerank(
++                    f"T11 reranker sample {index}", benchmark_documents, top_k=8
++                )
++                samples_ms.append((time.perf_counter() - started) * 1000.0)
++                assert measured.get("success") is True, measured.get("error")
++                assert measured.get("computed") == len(benchmark_documents)
++                identities.add((measured.get("backend"), measured.get("device")))
++            ordered_ms = sorted(samples_ms)
++            p95_index = min(len(ordered_ms) - 1, math.ceil(0.95 * len(ordered_ms)) - 1)
++            print("T11_RERANKER_BUDGET=" + json.dumps({
++                "model": reranker.model_name,
++                "backend_devices": sorted([list(item) for item in identities], key=lambda item: (str(item[0]), str(item[1]))),
++                "candidate_count": len(benchmark_documents),
++                "warmup_samples": 2,
++                "measured_samples": len(samples_ms),
++                "p50_ms": round(float(statistics.median(samples_ms)), 3),
++                "p95_ms": round(float(ordered_ms[p95_index]), 3),
++                "min_ms": round(float(ordered_ms[0]), 3),
++                "max_ms": round(float(ordered_ms[-1]), 3),
++                "peak_memory": "not measured",
++            }, sort_keys=True))
+         else:
+             assert result["reranked"] is False
+             assert result["degraded"] is True
+@@ -888,7 +959,7 @@ def test_offline_missing_reranker_weights_degrade_without_false_reranked_claim(t
+             "embeddings": [[float(len(text)), 1.0] for text in batch],
+         }
+ 
+-    store.services.embed = deterministic_embed
++    store.services = SimpleNamespace(embed=deterministic_embed)
+     reranker = Reranker({
+         "server": {"state_dir": str(tmp_path / "state")},
+         "models": {
+diff --git a/tests/test_t11_rag_seed_integrity.py b/tests/test_t11_rag_seed_integrity.py
+index 1d21565..c3a9ca4 100644
+--- a/tests/test_t11_rag_seed_integrity.py
++++ b/tests/test_t11_rag_seed_integrity.py
+@@ -4,6 +4,7 @@ import sqlite3
+ import time
+ import json
+ import os
++import subprocess
+ import tracemalloc
+ from concurrent.futures import ThreadPoolExecutor
+ from contextlib import closing
+@@ -153,6 +154,83 @@ def test_parent_seed_reuses_only_matching_file_cache_and_never_rag_hash(tmp_path
+     assert source["text"] == content
+ 
+ 
++def test_parent_seed_uses_actual_same_head_worktree_blobs_and_rejects_dirty_child(
++    tmp_path: Path, preprocessor_factory
++) -> None:
++    pre, repo_tools = preprocessor_factory(tmp_path / "state")
++    parent = tmp_path / "parent"
++    child = tmp_path / "worktrees" / "feature"
++    parent.mkdir()
++    child.parent.mkdir()
++
++    def git(root: Path, *args: str) -> str:
++        result = subprocess.run(
++            ["git", "-C", str(root), *args],
++            check=True,
++            capture_output=True,
++            text=True,
++            timeout=30,
++        )
++        return result.stdout.strip()
++
++    git(parent, "init", "--quiet")
++    git(parent, "config", "user.email", "test@example.invalid")
++    git(parent, "config", "user.name", "Test")
++    parent_file = parent / "module.py"
++    parent_file.write_text("value = 1\n", encoding="utf-8")
++    git(parent, "add", "module.py")
++    git(parent, "commit", "--quiet", "-m", "seed baseline")
++    git(parent, "worktree", "add", "--quiet", "--detach", str(child), "HEAD")
++
++    parent_head = git(parent, "rev-parse", "HEAD")
++    assert git(child, "rev-parse", "HEAD") == parent_head
++    parent_root = pre._root(str(parent))
++    child_root = pre._root(str(child))
++    parent_hash = repo_tools.git_blob_map(parent_root)["module.py"]
++    assert parent_hash.startswith("git:")
++    _insert_parent_ref(pre, parent_root, parent_file, parent_hash)
++
++    seeded = pre._seed_from_parent(child_root, parent_root)
++
++    with closing(pre._connect()) as con:
++        row = con.execute(
++            "SELECT content_hash,needs_hash,rag_hash,card_key FROM file_refs WHERE root=? AND path=?",
++            (child_root, "module.py"),
++        ).fetchone()
++        source = con.execute(
++            "SELECT content_hash,text FROM source_index WHERE root=? AND path=?",
++            (child_root, "module.py"),
++        ).fetchone()
++    assert seeded["file_refs"] == 1
++    assert row["content_hash"] == parent_hash
++    assert row["needs_hash"] == 0
++    assert row["rag_hash"] in (None, "")
++    assert row["card_key"] == "parent-card"
++    assert source["text"] == parent_file.read_text(encoding="utf-8")
++
++    child_file = child / "module.py"
++    child_file.write_text("value = 2\n", encoding="utf-8")
++    assert child_file.stat().st_size == parent_file.stat().st_size
++    rejected = pre._seed_from_parent(child_root, parent_root)
++
++    with closing(pre._connect()) as con:
++        row = con.execute(
++            "SELECT content_hash,needs_hash,rag_hash,card_key FROM file_refs WHERE root=? AND path=?",
++            (child_root, "module.py"),
++        ).fetchone()
++        source = con.execute(
++            "SELECT content_hash,text FROM source_index WHERE root=? AND path=?",
++            (child_root, "module.py"),
++        ).fetchone()
++    assert rejected["file_refs"] == 0
++    assert git(child, "rev-parse", "HEAD") == parent_head
++    assert row["content_hash"] == ""
++    assert row["needs_hash"] == 1
++    assert row["rag_hash"] in (None, "")
++    assert row["card_key"] is None
++    assert source is None
++
++
+ def test_parent_seed_rejects_same_size_dirty_child_and_stale_source_text(tmp_path: Path, preprocessor_factory) -> None:
+     pre, repo_tools = preprocessor_factory(tmp_path / "state")
+     parent = tmp_path / "parent"
+diff --git a/tests/test_rag_read_bounds.py b/tests/test_rag_read_bounds.py
+new file mode 100644
+index 0000000..73d7f22
+--- /dev/null
++++ b/tests/test_rag_read_bounds.py
+@@ -0,0 +1,275 @@
++from __future__ import annotations
++
++import io
++import os
++from contextlib import closing
++from pathlib import Path
++
++import pytest
++
++from local_ai_hub.rag import RAGStore
++
++
++class _VectorServices:
++    def __init__(self):
++        self.document_calls: list[str] = []
++
++    def embed(self, texts, tenant, **kwargs):
++        if not kwargs.get("query", False):
++            self.document_calls.append(tenant)
++        return {
++            "success": True,
++            "embedding_space_id": "shared-test-space",
++            "embeddings": [[1.0, 0.0] for _ in texts],
++        }
++
++
++def _store(
++    tmp_path: Path,
++    *,
++    max_file_bytes: int = 32,
++    scope: str = "shared",
++) -> RAGStore:
++    return RAGStore(
++        {
++            "server": {"state_dir": str(tmp_path / "state")},
++            "models": {},
++            "cpu_retrieval": {},
++            "workspace_cache": {},
++            "rag": {
++                "extensions": [".py"],
++                "ignore_dirs": [],
++                "max_file_bytes": max_file_bytes,
++                "scope": scope,
++            },
++            "resilience": {"singleflight_wait_timeout_seconds": 2},
++            "features": {"reranker": False},
++        },
++        services=_VectorServices(),
++    )
++
++
++def _indexed_counts(store: RAGStore, tenant: str, workspace: str, path: str):
++    scope_key = store._scope_key(tenant)
++    with closing(store._connect()) as con:
++        return tuple(
++            con.execute(
++                f"SELECT COUNT(*) FROM {table} WHERE tenant=? AND workspace=? AND path=?",
++                (scope_key, workspace, path),
++            ).fetchone()[0]
++            for table in ("files", "chunks", "chunk_fts")
++        )
++
++
++@pytest.mark.parametrize("entrypoint", ["index", "index_paths_step"])
++def test_file_growth_preserves_snapshot_and_suppresses_results_until_retry(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str
++):
++    store = _store(tmp_path, max_file_bytes=32)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 'before'\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index_paths_step(str(root), tenant, workspace, ["module.py"])["success"]
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++    committed = store.search("value before", tenant, workspace, use_reranker=False)
++    assert committed["results"][0]["text"] == "value = 'before'\n"
++
++    path.write_text("value = 'changed'\n", encoding="utf-8")
++    original_open = Path.open
++
++    def grow_after_stat(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == path.resolve() and mode == "rb":
++            return io.BytesIO(b"x" * 33)
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", grow_after_stat)
++    if entrypoint == "index":
++        result = store.index(str(root), tenant, workspace)
++    else:
++        result = store.index_paths_step(str(root), tenant, workspace, ["module.py"])
++
++    assert result["success"] is True
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++    uncertain = store.search("value before", tenant, workspace, use_reranker=False)
++    assert uncertain["results"] == []
++    assert uncertain["fallback"] == "source_read_uncertain"
++
++    monkeypatch.setattr(Path, "open", original_open)
++    if entrypoint == "index":
++        recovered = store.index(str(root), tenant, workspace)
++    else:
++        recovered = store.index_paths_step(str(root), tenant, workspace, ["module.py"])
++
++    assert recovered["success"] is True
++    refreshed = store.search("value before", tenant, workspace, use_reranker=False)
++    assert [row["text"] for row in refreshed["results"]] == ["value = 'changed'\n"]
++
++
++@pytest.mark.parametrize("entrypoint", ["index", "index_paths_step"])
++def test_read_uncertainty_published_before_mixed_embed_failure(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str
++):
++    store = _store(tmp_path, max_file_bytes=256)
++    root = tmp_path / "project"
++    root.mkdir()
++    unreadable = root / "unreadable.py"
++    changed = root / "changed.py"
++    unreadable.write_text("private_old_marker = 1\n", encoding="utf-8")
++    changed.write_text("changed_old_marker = 1\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index(str(root), tenant, workspace)["success"]
++    unreadable.write_text("private_new_marker = 2\n", encoding="utf-8")
++    changed.write_text("changed_new_marker = 2\n", encoding="utf-8")
++    original_open = Path.open
++
++    def fail_selected_read(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == unreadable.resolve() and mode == "rb":
++            raise PermissionError("forced source read failure")
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", fail_selected_read)
++    original_embed = store.services.embed
++
++    def fail_document_embedding(texts, tenant_arg, **kwargs):
++        if not kwargs.get("query", False):
++            return {"success": False, "error": "forced embedding failure"}
++        return original_embed(texts, tenant_arg, **kwargs)
++
++    monkeypatch.setattr(store.services, "embed", fail_document_embedding)
++    if entrypoint == "index":
++        result = store.index(str(root), tenant, workspace)
++    else:
++        result = store.index_paths_step(
++            str(root), tenant, workspace, ["unreadable.py", "changed.py"]
++        )
++
++    assert result["success"] is False
++    exposed = store.search("private_old_marker", tenant, workspace, use_reranker=False)
++    assert all(row["path"] != "unreadable.py" for row in exposed["results"])
++    assert all("private_old_marker" not in row.get("text", "") for row in exposed["results"])
++
++
++def test_full_index_retries_uncertain_path_when_metadata_matches_old_snapshot(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++):
++    store = _store(tmp_path, max_file_bytes=256)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 'before'\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index(str(root), tenant, workspace)["success"]
++    old_stat = path.stat()
++    path.write_text("value = 'after!'\n", encoding="utf-8")
++    original_open = Path.open
++
++    def fail_read(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == path.resolve() and mode == "rb":
++            raise PermissionError("forced source read failure")
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", fail_read)
++    failed = store.index(str(root), tenant, workspace)
++    assert failed["success"] is True
++    os.utime(path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
++    monkeypatch.setattr(Path, "open", original_open)
++
++    recovered = store.index(str(root), tenant, workspace)
++
++    assert recovered["success"] is True
++    result = store.search("value after", tenant, workspace, use_reranker=False)
++    assert [row["text"] for row in result["results"]] == ["value = 'after!'\n"]
++
++
++def test_incremental_index_retries_uncertain_path_when_metadata_matches_old_snapshot(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++):
++    store = _store(tmp_path, max_file_bytes=256)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 'before'\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index_step(str(root), tenant, workspace)["success"] is True
++    old_stat = path.stat()
++    path.write_text("value = 'after!'\n", encoding="utf-8")
++    original_open = Path.open
++
++    def fail_read(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == path.resolve() and mode == "rb":
++            raise PermissionError("forced source read failure")
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", fail_read)
++    failed = store.index_step(str(root), tenant, workspace)
++    assert failed["success"] is True
++    os.utime(path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
++    monkeypatch.setattr(Path, "open", original_open)
++
++    recovered = store.index_step(str(root), tenant, workspace)
++
++    assert recovered["success"] is True
++    assert recovered["processed_files"] == 1
++    result = store.search("value after", tenant, workspace, use_reranker=False)
++    assert [row["text"] for row in result["results"]] == ["value = 'after!'\n"]
++
++
++def test_content_override_obeys_configured_file_limit(tmp_path: Path):
++    store = _store(tmp_path, max_file_bytes=32)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 1\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index_paths_step(str(root), tenant, workspace, ["module.py"])["success"]
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++
++    result = store.index_paths_step(
++        str(root), tenant, workspace, ["module.py"],
++        content_overrides={"module.py": "x" * 33},
++    )
++
++    assert result["success"] is True
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (0, 0, 0)
++
++
++def test_oversized_stat_removes_previous_incremental_snapshot(tmp_path: Path):
++    store = _store(tmp_path, max_file_bytes=32)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 1\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index_paths_step(str(root), tenant, workspace, ["module.py"])["success"]
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++
++    path.write_text("x" * 33, encoding="utf-8")
++    result = store.index_paths_step(str(root), tenant, workspace, ["module.py"])
++
++    assert result["success"] is True
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (0, 0, 0)
++
++
++def test_tenant_isolation_blocks_cross_tenant_chunk_reuse_and_search(
++    tmp_path: Path,
++):
++    store = _store(tmp_path, scope="tenant")
++    root_a = tmp_path / "tenant-a-project"
++    root_b = tmp_path / "tenant-b-project"
++    root_a.mkdir()
++    root_b.mkdir()
++    (root_a / "secret.py").write_text("needle tenant-a-private marker\n", encoding="utf-8")
++    (root_b / "public.py").write_text("ordinary tenant-b content\n", encoding="utf-8")
++    workspace = "shared-workspace"
++
++    assert store.index(str(root_a), "tenant-a", workspace)["success"] is True
++    assert store.index(str(root_b), "tenant-b", workspace)["success"] is True
++    assert "tenant-a" in store.services.document_calls
++    assert "tenant-b" in store.services.document_calls
++
++    result = store.search("needle", "tenant-b", workspace, use_reranker=False)
++
++    assert result["success"] is True
++    assert all("tenant-a-private" not in row.get("text", "") for row in result["results"])

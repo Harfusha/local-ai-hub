@@ -1,0 +1,265 @@
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -624,6 +624,44 @@
+     def _workspace_index_generation_key(scope_key: str, workspace: str) -> str:
+         return "workspace_index_generation:" + stable_hash({"tenant": scope_key, "workspace": workspace})
+ 
++    @staticmethod
++    def _workspace_read_uncertainty_key(scope_key: str, workspace: str) -> str:
++        return "workspace_read_uncertainty:" + stable_hash({"tenant": scope_key, "workspace": workspace})
++
++    def _workspace_read_uncertain_paths(self, con: sqlite3.Connection, scope_key: str, workspace: str) -> set[str]:
++        key = self._workspace_read_uncertainty_key(scope_key, workspace)
++        row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
++        if row is None or not row[0]:
++            return set()
++        try:
++            value = json.loads(str(row[0]))
++        except (TypeError, ValueError):
++            return {"*"}
++        if not isinstance(value, list):
++            return {"*"}
++        return {str(path).replace("\\", "/") for path in value if isinstance(path, str) and path.strip()}
++
++    def _update_workspace_read_uncertainty(
++        self, con: sqlite3.Connection, scope_key: str, workspace: str,
++        *, uncertain_paths: set[str] | None = None, clear_paths: set[str] | None = None,
++        bump_generation: bool = True,
++    ) -> bool:
++        key = self._workspace_read_uncertainty_key(scope_key, workspace)
++        current = self._workspace_read_uncertain_paths(con, scope_key, workspace)
++        updated = current - {str(path).replace("\\", "/") for path in (clear_paths or set())}
++        updated |= {str(path).replace("\\", "/") for path in (uncertain_paths or set())}
++        if updated == current:
++            return False
++        if updated:
++            con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (
++                key, json.dumps(sorted(updated), separators=(",", ":")),
++            ))
++        else:
++            con.execute("DELETE FROM rag_meta WHERE key=?", (key,))
++        if bump_generation:
++            self._bump_workspace_index_generation(con, scope_key, workspace)
++        return True
++
+     def _workspace_index_generation(self, con: sqlite3.Connection, scope_key: str, workspace: str) -> int:
+         key = self._workspace_index_generation_key(scope_key, workspace)
+         row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
+@@ -842,6 +880,7 @@
+ 
+         changed_records: list[dict[str, Any]] = []
+         file_rows: list[tuple[str, int, int, str]] = []
++        read_uncertain_paths: set[str] = set()
+         skipped = 0
+         read_files = 0
+         reused_chunks = 0
+@@ -862,13 +901,14 @@
+                 raw = _read_bounded_file(path, max_file_bytes)
+                 if raw is None:
+                     skipped += 1
+-                    deleted_paths = sorted(set(deleted_paths) | {rel})
++                    read_uncertain_paths.add(rel)
+                     continue
+                 read_files += 1
+                 text = raw.decode("utf-8", errors="replace")
+                 file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+             except Exception:
+                 skipped += 1
++                read_uncertain_paths.add(rel)
+                 continue
+             file_rows.append((rel, mtime_ns, size, file_hash))
+             file_chunks = self._chunks(text, path=rel)
+@@ -983,7 +1023,9 @@
+         def publish() -> None:
+             with self._get_workspace_lock(workspace), closing(self._connect()) as con:
+                 con.execute("BEGIN IMMEDIATE")
+-                del_paths = [(scope_key, workspace, rel) for rel in (deleted_paths + changed_paths)]
++                successfully_read_paths = {str(row[0]) for row in file_rows}
++                publish_paths = deleted_paths + [rel for rel in changed_paths if rel in successfully_read_paths]
++                del_paths = [(scope_key, workspace, rel) for rel in publish_paths]
+                 if del_paths:
+                     con.executemany("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                     con.executemany("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", del_paths)
+@@ -1002,6 +1044,14 @@
+                     "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+                     [(scope_key, workspace, rel, mtime_ns, size, file_hash) for rel, mtime_ns, size, file_hash in file_rows],
+                 )
++                uncertainty_changed = self._update_workspace_read_uncertainty(
++                    con, scope_key, workspace,
++                    uncertain_paths=read_uncertain_paths,
++                    clear_paths=set(publish_paths),
++                    bump_generation=False,
++                )
++                if publish_paths or uncertainty_changed:
++                    self._bump_workspace_index_generation(con, scope_key, workspace)
+                 con.commit()
+ 
+         retry_busy(
+@@ -1033,6 +1083,7 @@
+             "embedded_chunks": len(changed_indices),
+             "reused_chunks": reused_chunks,
+             "skipped_files": skipped,
++            "read_uncertain_paths": sorted(read_uncertain_paths),
+             "near_duplicates_skipped": near_duplicates_skipped,
+         }
+ 
+@@ -1181,6 +1232,7 @@
+             # 1. Read files and chunk
+             file_data: list[dict[str, Any]] = []
+             policy_deleted: set[str] = set()
++            read_uncertain_paths: set[str] = set()
+             ignored_dirs = {
+                 str(name).lower() for name in self.config.get("rag", {}).get("ignore_dirs", [])
+             }
+@@ -1231,7 +1283,7 @@
+                     if override is None:
+                         raw = _read_bounded_file(path, max_bytes)
+                         if raw is None:
+-                            policy_deleted.add(rel)
++                            read_uncertain_paths.add(rel)
+                             continue
+                         text = raw.decode("utf-8", errors="replace")
+                         file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+@@ -1244,6 +1296,7 @@
+                     chunks = list(self._chunks(text, path=rel))
+                     file_data.append({"rel": rel, "stat": stat, "file_hash": file_hash, "chunks": chunks})
+                 except Exception:
++                    read_uncertain_paths.add(rel)
+                     continue
+ 
+             deleted_unique = sorted(
+@@ -1251,11 +1304,19 @@
+                 | policy_deleted
+             )
+             if not file_data and not deleted_unique:
++                if read_uncertain_paths:
++                    with closing(self._connect()) as con:
++                        con.execute("BEGIN IMMEDIATE")
++                        self._update_workspace_read_uncertainty(
++                            con, scope_key, workspace, uncertain_paths=read_uncertain_paths,
++                        )
++                        con.commit()
+                 return {
+                     "success": True, "workspace": workspace, "preempted": False,
+                     "embedding_space_id": stored_space or embedding_space,
+                     "embedding_space_resolved": embedding_space_resolved,
+                     "processed_paths": [], "embedded_chunks": 0, "reused_chunks": 0,
++                    "read_uncertain_paths": sorted(read_uncertain_paths),
+                 }
+ 
+             # 2. Bulk load existing chunks
+@@ -1418,7 +1479,13 @@
+                     )
+                     if embedding_space:
+                         self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
+-                    if all_rels:
++                    uncertainty_changed = self._update_workspace_read_uncertainty(
++                        con, scope_key, workspace,
++                        uncertain_paths=read_uncertain_paths,
++                        clear_paths=set(all_rels),
++                        bump_generation=False,
++                    )
++                    if all_rels or uncertainty_changed:
+                         self._bump_workspace_index_generation(con, scope_key, workspace)
+                     con.commit()
+ 
+@@ -1440,6 +1507,7 @@
+             "embedding_space_resolved": embedding_space_resolved,
+             "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+             "reused_chunks": reused_chunks,
++            "read_uncertain_paths": sorted(read_uncertain_paths),
+         }
+ 
+     def index_step(
+@@ -1748,10 +1816,18 @@
+     def search(self, query: str, tenant: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
+         clean_query = normalize_query(query)
+         revision = self.revision(tenant, workspace)
+-        key = stable_hash({"workspace": workspace, "revision": revision, "query": clean_query, "top_k": top_k, "reranker": use_reranker, "scope_path": scope_path})
++        scope_key = self._scope_key(tenant)
++        with closing(self._connect()) as con:
++            generation = self._workspace_index_generation(con, scope_key, workspace)
++        key = stable_hash({"workspace": workspace, "revision": revision, "generation": generation, "query": clean_query, "top_k": top_k, "reranker": use_reranker, "scope_path": scope_path})
+         raw, hit, coalesced = self.search_flight.get_or_compute(
+             key, lambda: self._search_uncached(clean_query, tenant, workspace, top_k, use_reranker, priority, scope_path)
+         )
++        with closing(self._connect()) as con:
++            latest_generation = self._workspace_index_generation(con, scope_key, workspace)
++        if latest_generation != generation:
++            raw = self._search_uncached(clean_query, tenant, workspace, top_k, use_reranker, priority, scope_path)
++            hit, coalesced = False, False
+         result = dict(raw) if isinstance(raw, dict) else {"success": False, "error": "search failed"}
+         result["search_cache"] = {"hit": hit, "coalesced": coalesced, "revision": revision}
+         return self._postprocess_search_payload(result, top_k) if isinstance(result, dict) else result
+@@ -1826,6 +1902,12 @@
+ 
+     def _search_uncached(self, query: str, tenant: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
+         scope_key = self._scope_key(tenant)
++        with closing(self._connect()) as con:
++            uncertain_paths = self._workspace_read_uncertain_paths(con, scope_key, workspace)
++
++        def visible(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
++            return [item for item in candidates if "*" not in uncertain_paths and str(item.get("path", "")) not in uncertain_paths]
++
+         try:
+             query_result = self.services.embed([query], tenant, priority=priority, query=True)
+         except Exception as exc:
+@@ -1848,9 +1930,9 @@
+             if not valid_query_vector:
+                 query_result = {**query_result, "success": False, "error": "invalid_query_embedding"}
+         if not query_result.get("success"):
+-            candidates = self._search_fts_candidates(query, tenant, workspace, max(16, top_k * 2), scope_path)
++            candidates = visible(self._search_fts_candidates(query, tenant, workspace, max(16, top_k * 2), scope_path))
+             if not candidates:
+-                candidates = self._search_token_overlap(query, tenant, workspace, max(16, top_k * 2), scope_path)
++                candidates = visible(self._search_token_overlap(query, tenant, workspace, max(16, top_k * 2), scope_path))
+             results = [
+                 {
+                     "path": c["path"],
+@@ -1866,11 +1948,13 @@
+                 "workspace": workspace,
+                 "results": results,
+                 "degraded": True,
+-                "fallback": "bm25_fts",
++                "fallback": "source_read_uncertain" if uncertain_paths else "bm25_fts",
+                 "reason": str(query_result.get("error", "embedder_unavailable")),
+             }
+         query_vec = query_result["embeddings"][0]
+         fallbacks: list[str] = []
++        if uncertain_paths:
++            fallbacks.append("source_read_uncertain")
+         if query_result.get("degraded"):
+             fallbacks.append(str(query_result.get("fallback") or "embedding_backend"))
+ 
+@@ -1894,6 +1978,8 @@
+                 q = np.zeros(dimension, dtype=np.float32)
+ 
+         def offer(row: Any, score: float) -> None:
++            if "*" in uncertain_paths or str(row[0]) in uncertain_paths:
++                return
+             score = float(score)
+             if not math.isfinite(score):
+                 score = 0.0
+@@ -1994,6 +2080,12 @@
+                         offer(row, score)
+ 
+         if rows_seen == 0:
++            if uncertain_paths:
++                return {
++                    "success": True, "workspace": workspace, "results": [],
++                    "degraded": True, "fallback": "source_read_uncertain",
++                    "reason": "source files could not be read during indexing",
++                }
+             return {"success": True, "workspace": workspace, "results": [], "warning": "workspace has no matching indexed chunks"}
+ 
+         candidates = [
+@@ -2007,7 +2099,7 @@
+         ]
+ 
+         # Hybrid search: combine vector candidates with FTS5 keyword hits via Reciprocal Rank Fusion (RRF)
+-        fts_candidates = self._search_fts_candidates(query, tenant, workspace, 16, scope_path)
++        fts_candidates = visible(self._search_fts_candidates(query, tenant, workspace, 16, scope_path))
+ 
+         is_hybrid = bool(fts_candidates)
+         if is_hybrid:

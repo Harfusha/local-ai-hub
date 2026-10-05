@@ -403,7 +403,7 @@ class EmbeddingModel:
             return False
 
     def release(self, timeout_seconds: float = 3.0) -> bool:
-        """Synchronously unload the local model; safe to call repeatedly."""
+        """Detach the local model; CUDA allocator cleanup remains best-effort."""
         with acquire_locks((self._encoder_lock, self._load_lock), timeout_seconds) as acquired:
             if not acquired:
                 return False

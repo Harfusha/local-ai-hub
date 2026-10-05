@@ -1,0 +1,605 @@
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -624,6 +624,68 @@
+     def _workspace_index_generation_key(scope_key: str, workspace: str) -> str:
+         return "workspace_index_generation:" + stable_hash({"tenant": scope_key, "workspace": workspace})
+ 
++    @staticmethod
++    def _workspace_read_uncertainty_key(scope_key: str, workspace: str) -> str:
++        return "workspace_read_uncertainty:" + stable_hash({"tenant": scope_key, "workspace": workspace})
++
++    def _workspace_read_uncertain_paths(self, con: sqlite3.Connection, scope_key: str, workspace: str) -> set[str]:
++        key = self._workspace_read_uncertainty_key(scope_key, workspace)
++        row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
++        if row is None or not row[0]:
++            return set()
++        try:
++            value = json.loads(str(row[0]))
++        except (TypeError, ValueError):
++            return {"*"}
++        if not isinstance(value, list):
++            return {"*"}
++        return {str(path).replace("\\", "/") for path in value if isinstance(path, str) and path.strip()}
++
++    def _update_workspace_read_uncertainty(
++        self, con: sqlite3.Connection, scope_key: str, workspace: str,
++        *, uncertain_paths: set[str] | None = None, clear_paths: set[str] | None = None,
++        bump_generation: bool = True,
++    ) -> bool:
++        key = self._workspace_read_uncertainty_key(scope_key, workspace)
++        current = self._workspace_read_uncertain_paths(con, scope_key, workspace)
++        updated = current - {str(path).replace("\\", "/") for path in (clear_paths or set())}
++        updated |= {str(path).replace("\\", "/") for path in (uncertain_paths or set())}
++        if updated == current:
++            return False
++        if updated:
++            con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (
++                key, json.dumps(sorted(updated), separators=(",", ":")),
++            ))
++        else:
++            con.execute("DELETE FROM rag_meta WHERE key=?", (key,))
++        if bump_generation:
++            self._bump_workspace_index_generation(con, scope_key, workspace)
++        return True
++
++    def _publish_workspace_read_uncertainty(
++        self, scope_key: str, workspace: str, uncertain_paths: set[str]
++    ) -> None:
++        if not uncertain_paths:
++            return
++
++        def publish() -> None:
++            with closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                changed = self._update_workspace_read_uncertainty(
++                    con, scope_key, workspace,
++                    uncertain_paths=uncertain_paths,
++                    bump_generation=False,
++                )
++                if changed:
++                    self._bump_workspace_index_generation(con, scope_key, workspace)
++                con.commit()
++
++        retry_busy(
++            publish,
++            retries=self._sqlite_write_retries,
++            base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
++        )
++
+     def _workspace_index_generation(self, con: sqlite3.Connection, scope_key: str, workspace: str) -> int:
+         key = self._workspace_index_generation_key(scope_key, workspace)
+         row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
+@@ -669,6 +731,34 @@
+             models.get("embedding_digest") or models.get("model_digest")
+             or models.get("embedding_revision") or models.get("model_revision")
+         )
++
++    def _embedding_space_cache_identity_known(self) -> bool:
++        service_space = getattr(self.services, "space_id", None)
++        if service_space and not callable(service_space):
++            return True
++        embedder = getattr(self.services, "embeddings", None)
++        return bool(getattr(embedder, "_active_cache_identity", None))
++
++    def _embedding_dimension_cache_identity(self) -> dict[str, Any]:
++        models = self.config.get("models", {})
++        cpu_cfg = self.config.get("cpu_retrieval", {})
++
++        def valid_dimension(value: Any) -> int | None:
++            return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
++
++        dimensions: dict[str, Any] = {
++            "configured_model": valid_dimension(models.get("embedding_dimension")),
++            "configured_cpu": valid_dimension(cpu_cfg.get("embedding_dimension")),
++        }
++        for owner_name, owner in (
++            ("services", self.services),
++            ("embedder", getattr(self.services, "embeddings", None)),
++        ):
++            for attribute in ("_active_embedding_dimension", "embedding_dimension", "dimension"):
++                dimension = valid_dimension(getattr(owner, attribute, None)) if owner is not None else None
++                if dimension is not None:
++                    dimensions[f"{owner_name}_{attribute}"] = dimension
++        return dimensions
+ 
+     def _embedding_space_id(self, result: dict[str, Any] | None = None) -> str:
+         if isinstance(result, dict) and result.get("embedding_space_id"):
+@@ -776,6 +866,7 @@
+         embedding_space = self._embedding_space_id()
+ 
+         with closing(self._connect()) as con:
++            uncertain_retry_paths = self._workspace_read_uncertain_paths(con, scope_key, workspace)
+             old_files_rows = con.execute(
+                 "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
+                 (scope_key, workspace),
+@@ -787,7 +878,8 @@
+         old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_files_rows}
+         old_chunks = {
+             (r[0], int(r[1]), r[2]): r[3]
+-            for r in old_chunk_rows if str(r[4] or "") == embedding_space
++            for r in old_chunk_rows
++            if embedding_space and str(r[4] or "").strip() == embedding_space
+         }
+         embedding_space_changed = any(
+             str(row[4] or "") != embedding_space for row in old_chunk_rows
+@@ -832,7 +924,10 @@
+         changed_paths: list[str] = []
+         for rel, (_path, mtime_ns, size) in current_meta.items():
+             old = old_files.get(rel)
+-            if old and old["mtime_ns"] == mtime_ns and old["size"] == size:
++            if (
++                old and old["mtime_ns"] == mtime_ns and old["size"] == size
++                and rel not in uncertain_retry_paths
++            ):
+                 unchanged_paths.append(rel)
+             else:
+                 changed_paths.append(rel)
+@@ -842,6 +937,7 @@
+ 
+         changed_records: list[dict[str, Any]] = []
+         file_rows: list[tuple[str, int, int, str]] = []
++        read_uncertain_paths: set[str] = set()
+         skipped = 0
+         read_files = 0
+         reused_chunks = 0
+@@ -862,13 +958,14 @@
+                 raw = _read_bounded_file(path, max_file_bytes)
+                 if raw is None:
+                     skipped += 1
+-                    deleted_paths = sorted(set(deleted_paths) | {rel})
++                    read_uncertain_paths.add(rel)
+                     continue
+                 read_files += 1
+                 text = raw.decode("utf-8", errors="replace")
+                 file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+             except Exception:
+                 skipped += 1
++                read_uncertain_paths.add(rel)
+                 continue
+             file_rows.append((rel, mtime_ns, size, file_hash))
+             file_chunks = self._chunks(text, path=rel)
+@@ -901,14 +998,7 @@
+                 else:
+                     reused_chunks += 1
+ 
+-        if embedding_space_changed and skipped:
+-            return {
+-                "success": False,
+-                "retryable": True,
+-                "workspace": workspace,
+-                "error": "embedding-space reindex could not read every changed file",
+-                "skipped_files": skipped,
+-            }
++        self._publish_workspace_read_uncertainty(scope_key, workspace, read_uncertain_paths)
+ 
+         if changed_texts:
+             # Cross-workspace chunk reuse check
+@@ -922,7 +1012,7 @@
+                     batch_h = missing_hashes[i:i + 500]
+                     placeholders = ",".join("?" for _ in batch_h)
+                     rows = con.execute(
+-                        f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND (embedding_space=? OR embedding_space='' OR embedding_space IS NULL) AND content_hash IN ({placeholders})",
++                        f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND embedding_space=? AND embedding_space<>'' AND content_hash IN ({placeholders})",
+                         (scope_key, embedding_space, *batch_h),
+                     ).fetchall()
+                     for r in rows:
+@@ -983,7 +1073,9 @@
+         def publish() -> None:
+             with self._get_workspace_lock(workspace), closing(self._connect()) as con:
+                 con.execute("BEGIN IMMEDIATE")
+-                del_paths = [(scope_key, workspace, rel) for rel in (deleted_paths + changed_paths)]
++                successfully_read_paths = {str(row[0]) for row in file_rows}
++                publish_paths = deleted_paths + [rel for rel in changed_paths if rel in successfully_read_paths]
++                del_paths = [(scope_key, workspace, rel) for rel in publish_paths]
+                 if del_paths:
+                     con.executemany("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                     con.executemany("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", del_paths)
+@@ -1002,6 +1094,14 @@
+                     "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+                     [(scope_key, workspace, rel, mtime_ns, size, file_hash) for rel, mtime_ns, size, file_hash in file_rows],
+                 )
++                uncertainty_changed = self._update_workspace_read_uncertainty(
++                    con, scope_key, workspace,
++                    uncertain_paths=read_uncertain_paths,
++                    clear_paths=set(publish_paths),
++                    bump_generation=False,
++                )
++                if publish_paths or uncertainty_changed:
++                    self._bump_workspace_index_generation(con, scope_key, workspace)
+                 con.commit()
+ 
+         retry_busy(
+@@ -1033,6 +1133,7 @@
+             "embedded_chunks": len(changed_indices),
+             "reused_chunks": reused_chunks,
+             "skipped_files": skipped,
++            "read_uncertain_paths": sorted(read_uncertain_paths),
+             "near_duplicates_skipped": near_duplicates_skipped,
+         }
+ 
+@@ -1181,6 +1282,7 @@
+             # 1. Read files and chunk
+             file_data: list[dict[str, Any]] = []
+             policy_deleted: set[str] = set()
++            read_uncertain_paths: set[str] = set()
+             ignored_dirs = {
+                 str(name).lower() for name in self.config.get("rag", {}).get("ignore_dirs", [])
+             }
+@@ -1231,7 +1333,7 @@
+                     if override is None:
+                         raw = _read_bounded_file(path, max_bytes)
+                         if raw is None:
+-                            policy_deleted.add(rel)
++                            read_uncertain_paths.add(rel)
+                             continue
+                         text = raw.decode("utf-8", errors="replace")
+                         file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+@@ -1244,18 +1346,29 @@
+                     chunks = list(self._chunks(text, path=rel))
+                     file_data.append({"rel": rel, "stat": stat, "file_hash": file_hash, "chunks": chunks})
+                 except Exception:
++                    read_uncertain_paths.add(rel)
+                     continue
++
++            self._publish_workspace_read_uncertainty(scope_key, workspace, read_uncertain_paths)
+ 
+             deleted_unique = sorted(
+                 {str(p).replace("\\", "/") for p in (deleted_paths or []) if str(p).strip()}
+                 | policy_deleted
+             )
+             if not file_data and not deleted_unique:
++                if read_uncertain_paths:
++                    with closing(self._connect()) as con:
++                        con.execute("BEGIN IMMEDIATE")
++                        self._update_workspace_read_uncertainty(
++                            con, scope_key, workspace, uncertain_paths=read_uncertain_paths,
++                        )
++                        con.commit()
+                 return {
+                     "success": True, "workspace": workspace, "preempted": False,
+                     "embedding_space_id": stored_space or embedding_space,
+                     "embedding_space_resolved": embedding_space_resolved,
+                     "processed_paths": [], "embedded_chunks": 0, "reused_chunks": 0,
++                    "read_uncertain_paths": sorted(read_uncertain_paths),
+                 }
+ 
+             # 2. Bulk load existing chunks
+@@ -1271,7 +1384,7 @@
+                         (scope_key, workspace, *batch_rels),
+                     ).fetchall()
+                     for r in rows:
+-                        if not r[4] or str(r[4] or "") == embedding_space:
++                        if embedding_space and str(r[4] or "").strip() == embedding_space:
+                             old_chunks[(str(r[0]), int(r[1]), str(r[2]))] = r[3]
+ 
+             # 3. Build records and identify missing embeddings
+@@ -1304,7 +1417,7 @@
+                         batch_h = missing_hashes[i:i + 500]
+                         placeholders = ",".join("?" for _ in batch_h)
+                         rows = con.execute(
+-                            f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND (embedding_space=? OR embedding_space='' OR embedding_space IS NULL) AND content_hash IN ({placeholders})",
++                            f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND embedding_space=? AND embedding_space<>'' AND content_hash IN ({placeholders})",
+                             (scope_key, embedding_space, *batch_h),
+                         ).fetchall()
+                         for r in rows:
+@@ -1418,7 +1531,13 @@
+                     )
+                     if embedding_space:
+                         self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
+-                    if all_rels:
++                    uncertainty_changed = self._update_workspace_read_uncertainty(
++                        con, scope_key, workspace,
++                        uncertain_paths=read_uncertain_paths,
++                        clear_paths=set(all_rels),
++                        bump_generation=False,
++                    )
++                    if all_rels or uncertainty_changed:
+                         self._bump_workspace_index_generation(con, scope_key, workspace)
+                     con.commit()
+ 
+@@ -1440,6 +1559,7 @@
+             "embedding_space_resolved": embedding_space_resolved,
+             "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+             "reused_chunks": reused_chunks,
++            "read_uncertain_paths": sorted(read_uncertain_paths),
+         }
+ 
+     def index_step(
+@@ -1568,7 +1688,7 @@
+                             batch_h = missing_hashes[i:i + 500]
+                             placeholders = ",".join("?" for _ in batch_h)
+                             rows = con.execute(
+-                                f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND (embedding_space=? OR embedding_space='' OR embedding_space IS NULL) AND content_hash IN ({placeholders})",
++                                f"SELECT content_hash, embedding FROM chunks WHERE tenant=? AND embedding_space=? AND embedding_space<>'' AND content_hash IN ({placeholders})",
+                                 (scope_key, embedding_space, *batch_h),
+                             ).fetchall()
+                             for r in rows:
+@@ -1748,15 +1868,85 @@
+     def search(self, query: str, tenant: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
+         clean_query = normalize_query(query)
+         revision = self.revision(tenant, workspace)
+-        key = stable_hash({"workspace": workspace, "revision": revision, "query": clean_query, "top_k": top_k, "reranker": use_reranker, "scope_path": scope_path})
+-        raw, hit, coalesced = self.search_flight.get_or_compute(
+-            key, lambda: self._search_uncached(clean_query, tenant, workspace, top_k, use_reranker, priority, scope_path)
+-        )
++        scope_key = self._scope_key(tenant)
++        cache_identity_known = self._embedding_space_cache_identity_known()
++        query_space = self._embedding_space_id()
++        with closing(self._connect()) as con:
++            generation = self._workspace_index_generation(con, scope_key, workspace)
++        cache_dimension = self._embedding_dimension_cache_identity()
++
++        def cache_key(space: str | None, dimension: dict[str, Any], index_generation: int) -> str:
++            return stable_hash({
++                "tenant": tenant, "scope": self.scope, "effective_scope": scope_key,
++                "workspace": workspace, "revision": revision, "generation": index_generation,
++                "query": clean_query, "top_k": top_k, "reranker": use_reranker,
++                "scope_path": scope_path,
++                "embedding_space": space if cache_identity_known else None,
++                "embedding_dimension": dimension,
++            })
++
++        key = cache_key(query_space, cache_dimension, generation)
++        observed_identity: dict[str, Any] = {}
++
++        def compute_search() -> dict[str, Any]:
++            raw_result = self._search_uncached(
++                clean_query, tenant, workspace, top_k, use_reranker, priority, scope_path
++            )
++            observed_identity["space"] = self._embedding_space_id()
++            observed_identity["dimension"] = self._embedding_dimension_cache_identity()
++            return raw_result
++
++        if cache_identity_known:
++            raw, hit, coalesced = self.search_flight.get_or_compute(
++                key,
++                compute_search,
++            )
++            actual_space = observed_identity.get("space")
++            actual_dimension = observed_identity.get("dimension")
++            if (
++                actual_dimension is not None
++                and (actual_space != query_space or actual_dimension != cache_dimension)
++            ):
++                self.search_flight.cache.delete(key)
++                key = cache_key(str(actual_space) if actual_space else None, actual_dimension, generation)
++                computed_raw = raw
++                raw, hit, coalesced = self.search_flight.get_or_compute(key, lambda: computed_raw)
++            if isinstance(raw, dict) and raw.get("retrieval_mode") == "lexical_fallback":
++                self.search_flight.cache.delete(key)
++        else:
++            raw = self._search_uncached(clean_query, tenant, workspace, top_k, use_reranker, priority, scope_path)
++            hit, coalesced = False, False
++        with closing(self._connect()) as con:
++            latest_generation = self._workspace_index_generation(con, scope_key, workspace)
++        if latest_generation != generation:
++            raw = self._search_uncached(clean_query, tenant, workspace, top_k, use_reranker, priority, scope_path)
++            hit, coalesced = False, False
+         result = dict(raw) if isinstance(raw, dict) else {"success": False, "error": "search failed"}
+         result["search_cache"] = {"hit": hit, "coalesced": coalesced, "revision": revision}
+         return self._postprocess_search_payload(result, top_k) if isinstance(result, dict) else result
+ 
+-    def _search_fts_candidates(self, query: str, tenant: str, workspace: str, limit: int = 16, scope_path: str | None = None) -> list[dict[str, Any]]:
++    @staticmethod
++    def _search_path_exclusion(
++        con: sqlite3.Connection, excluded_paths: set[str] | None, column: str
++    ) -> str:
++        paths = excluded_paths or set()
++        if "*" in paths:
++            return " AND 0"
++        if not paths:
++            return ""
++        con.execute("CREATE TEMP TABLE rag_uncertain_paths(path TEXT PRIMARY KEY)")
++        con.executemany(
++            "INSERT OR IGNORE INTO rag_uncertain_paths(path) VALUES(?)",
++            [(path,) for path in sorted(paths)],
++        )
++        con.commit()
++        return f" AND {column} NOT IN (SELECT path FROM rag_uncertain_paths)"
++
++    def _search_fts_candidates(
++        self, query: str, tenant: str, workspace: str, limit: int = 16,
++        scope_path: str | None = None, embedding_space: str | None = None,
++        excluded_paths: set[str] | None = None,
++    ) -> list[dict[str, Any]]:
+         scope_key = self._scope_key(tenant)
+         try:
+             tokens = [re.sub(r"[^\w_]", "", t) for t in query.split()]
+@@ -1764,25 +1954,28 @@
+             if not tokens:
+                 return []
+             fts_expr = " OR ".join(f'"{t}"' for t in tokens[:8])
++            space_filter = " AND c.embedding_space=?" if embedding_space is not None else ""
++            space_params = (embedding_space,) if embedding_space is not None else ()
+             with closing(self._connect()) as con:
++                path_filter = self._search_path_exclusion(con, excluded_paths, "c.path")
+                 if scope_path:
+                     norm_scope = scope_path.replace("\\", "/").rstrip("/")
+                     fts_rows = con.execute(
+-                        """SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
++                        f"""SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
+                            FROM chunk_fts
+                            JOIN chunks c ON c.tenant=chunk_fts.tenant AND c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
+-                           WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND (chunk_fts.path=? OR chunk_fts.path LIKE ? || '/%') AND chunk_fts MATCH ?
++                           WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND (chunk_fts.path=? OR chunk_fts.path LIKE ? || '/%'){space_filter}{path_filter} AND chunk_fts MATCH ?
+                            ORDER BY bm25(chunk_fts) LIMIT ?""",
+-                        (scope_key, workspace, norm_scope, norm_scope, fts_expr, limit),
++                        (scope_key, workspace, norm_scope, norm_scope, *space_params, fts_expr, limit),
+                     ).fetchall()
+                 else:
+                     fts_rows = con.execute(
+-                        """SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
++                        f"""SELECT c.path, c.chunk_no, c.text, c.content_hash, bm25(chunk_fts)
+                            FROM chunk_fts
+                            JOIN chunks c ON c.tenant=chunk_fts.tenant AND c.workspace=chunk_fts.workspace AND c.path=chunk_fts.path AND c.chunk_no=chunk_fts.chunk_no
+-                           WHERE chunk_fts.tenant=? AND chunk_fts.workspace=? AND chunk_fts MATCH ?
++                           WHERE chunk_fts.tenant=? AND chunk_fts.workspace=?{space_filter}{path_filter} AND chunk_fts MATCH ?
+                            ORDER BY bm25(chunk_fts) LIMIT ?""",
+-                        (scope_key, workspace, fts_expr, limit),
++                        (scope_key, workspace, *space_params, fts_expr, limit),
+                     ).fetchall()
+                 return [
+                     {
+@@ -1794,22 +1987,29 @@
+         except Exception:
+             return []
+ 
+-    def _search_token_overlap(self, query: str, tenant: str, workspace: str, limit: int = 16, scope_path: str | None = None) -> list[dict[str, Any]]:
++    def _search_token_overlap(
++        self, query: str, tenant: str, workspace: str, limit: int = 16,
++        scope_path: str | None = None, embedding_space: str | None = None,
++        excluded_paths: set[str] | None = None,
++    ) -> list[dict[str, Any]]:
+         scope_key = self._scope_key(tenant)
+         terms = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 1]
+         if not terms:
+             return []
++        space_filter = " AND embedding_space=?" if embedding_space is not None else ""
++        space_params = (embedding_space,) if embedding_space is not None else ()
+         with closing(self._connect()) as con:
++            path_filter = self._search_path_exclusion(con, excluded_paths, "path")
+             if scope_path:
+                 norm_scope = scope_path.replace("\\", "/").rstrip("/")
+                 rows = con.execute(
+-                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE tenant=? AND workspace=? AND (path=? OR path LIKE ? || '/%')",
+-                    (scope_key, workspace, norm_scope, norm_scope),
++                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE tenant=? AND workspace=? AND (path=? OR path LIKE ? || '/%')" + space_filter + path_filter,
++                    (scope_key, workspace, norm_scope, norm_scope, *space_params),
+                 ).fetchall()
+             else:
+                 rows = con.execute(
+-                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE tenant=? AND workspace=?",
+-                    (scope_key, workspace),
++                    "SELECT path, chunk_no, text, content_hash FROM chunks WHERE tenant=? AND workspace=?" + space_filter + path_filter,
++                    (scope_key, workspace, *space_params),
+                 ).fetchall()
+         scored: list[dict[str, Any]] = []
+         for r in rows:
+@@ -1826,6 +2026,12 @@
+ 
+     def _search_uncached(self, query: str, tenant: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
+         scope_key = self._scope_key(tenant)
++        with closing(self._connect()) as con:
++            uncertain_paths = self._workspace_read_uncertain_paths(con, scope_key, workspace)
++
++        def visible(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
++            return [item for item in candidates if "*" not in uncertain_paths and str(item.get("path", "")) not in uncertain_paths]
++
+         try:
+             query_result = self.services.embed([query], tenant, priority=priority, query=True)
+         except Exception as exc:
+@@ -1848,9 +2054,17 @@
+             if not valid_query_vector:
+                 query_result = {**query_result, "success": False, "error": "invalid_query_embedding"}
+         if not query_result.get("success"):
+-            candidates = self._search_fts_candidates(query, tenant, workspace, max(16, top_k * 2), scope_path)
++            lexical_backend = "fts5"
++            candidates = visible(self._search_fts_candidates(
++                query, tenant, workspace, max(16, top_k * 2), scope_path,
++                excluded_paths=uncertain_paths,
++            ))
+             if not candidates:
+-                candidates = self._search_token_overlap(query, tenant, workspace, max(16, top_k * 2), scope_path)
++                lexical_backend = "token_overlap"
++                candidates = visible(self._search_token_overlap(
++                    query, tenant, workspace, max(16, top_k * 2), scope_path,
++                    excluded_paths=uncertain_paths,
++                ))
+             results = [
+                 {
+                     "path": c["path"],
+@@ -1866,11 +2080,16 @@
+                 "workspace": workspace,
+                 "results": results,
+                 "degraded": True,
+-                "fallback": "bm25_fts",
++                "fallback": "source_read_uncertain" if uncertain_paths else "bm25_fts",
++                "retrieval_mode": "lexical_fallback",
++                "lexical_backend": lexical_backend,
+                 "reason": str(query_result.get("error", "embedder_unavailable")),
+             }
+         query_vec = query_result["embeddings"][0]
++        embedding_space = self._embedding_space_id(query_result)
+         fallbacks: list[str] = []
++        if uncertain_paths:
++            fallbacks.append("source_read_uncertain")
+         if query_result.get("degraded"):
+             fallbacks.append(str(query_result.get("fallback") or "embedding_backend"))
+ 
+@@ -1894,6 +2113,8 @@
+                 q = np.zeros(dimension, dtype=np.float32)
+ 
+         def offer(row: Any, score: float) -> None:
++            if "*" in uncertain_paths or str(row[0]) in uncertain_paths:
++                return
+             score = float(score)
+             if not math.isfinite(score):
+                 score = 0.0
+@@ -1916,13 +2137,16 @@
+         with closing(self._connect()) as con:
+             # Keep one read snapshot across keyset batches, but close each SQL
+             # cursor before vector parsing/scoring so the statement VM is idle.
++            path_filter = self._search_path_exclusion(con, uncertain_paths, "path")
+             con.execute("BEGIN")
+             norm_scope = scope_path.replace("\\", "/").rstrip("/") if scope_path else None
+             last_path: str | None = None
+             last_chunk_no: int | None = None
+             while True:
+-                predicates = ["tenant=?", "workspace=?"]
+-                params: list[Any] = [scope_key, workspace]
++                predicates = ["tenant=?", "workspace=?", "embedding_space=?", "embedding_space<>''"]
++                params: list[Any] = [scope_key, workspace, embedding_space]
++                if path_filter:
++                    predicates.append(path_filter.removeprefix(" AND "))
+                 if norm_scope is not None:
+                     predicates.append("(path=? OR path LIKE ? || '/%')")
+                     params.extend((norm_scope, norm_scope))
+@@ -1992,8 +2216,28 @@
+                         except (TypeError, ValueError, OverflowError, struct.error, json.JSONDecodeError):
+                             score = 0.0
+                         offer(row, score)
++            has_stale_embedding_rows = con.execute(
++                "SELECT 1 FROM chunks WHERE tenant=? AND workspace=? AND COALESCE(embedding_space,'')<>? LIMIT 1",
++                (scope_key, workspace, embedding_space),
++            ).fetchone() is not None
++
++        if has_stale_embedding_rows:
++            fallbacks.append("embedding_space_rebuild_pending")
+ 
+         if rows_seen == 0:
++            if uncertain_paths:
++                return {
++                    "success": True, "workspace": workspace, "results": [],
++                    "degraded": True, "fallback": "source_read_uncertain",
++                    "reason": "source files could not be read during indexing",
++                }
++            if has_stale_embedding_rows:
++                return {
++                    "success": True, "workspace": workspace, "results": [], "degraded": True,
++                    "fallback": "embedding_space_mismatch",
++                    "reason": "indexed vectors do not match the query embedding space",
++                    "reindex_required": True,
++                }
+             return {"success": True, "workspace": workspace, "results": [], "warning": "workspace has no matching indexed chunks"}
+ 
+         candidates = [
+@@ -2007,7 +2251,9 @@
+         ]
+ 
+         # Hybrid search: combine vector candidates with FTS5 keyword hits via Reciprocal Rank Fusion (RRF)
+-        fts_candidates = self._search_fts_candidates(query, tenant, workspace, 16, scope_path)
++        fts_candidates = visible(self._search_fts_candidates(
++            query, tenant, workspace, 16, scope_path, embedding_space, uncertain_paths
++        ))
+ 
+         is_hybrid = bool(fts_candidates)
+         if is_hybrid:
+@@ -2137,6 +2383,7 @@
+             "degraded": bool(fallbacks),
+             "fallback": fallbacks[0] if fallbacks else None,
+             "fallbacks": fallbacks,
++            "reindex_required": has_stale_embedding_rows,
+             "hybrid": is_hybrid,
+             "graphrag_enriched": graphrag_enriched,
+             "results": candidates[:top_k],
+

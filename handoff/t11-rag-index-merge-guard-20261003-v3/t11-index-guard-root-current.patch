@@ -1,0 +1,51 @@
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -942,7 +942,6 @@
+         read_files = 0
+         reused_chunks = 0
+         changed_indices: list[int] = []
+-        changed_texts: list[str] = []
+         rag_cfg = self.config.get("rag", {})
+         dedup_near_duplicates = bool(rag_cfg.get("dedup_near_duplicates", True))
+         max_hamming = int(rag_cfg.get("near_duplicate_max_hamming", 4))
+@@ -994,13 +993,12 @@
+                 changed_records.append(record)
+                 if record["embedding"] is None:
+                     changed_indices.append(idx)
+-                    changed_texts.append(chunk)
+                 else:
+                     reused_chunks += 1
+ 
+         self._publish_workspace_read_uncertainty(scope_key, workspace, read_uncertain_paths)
+ 
+-        if changed_texts:
++        if changed_indices:
+             # Cross-workspace chunk reuse check
+             pending_by_hash: dict[str, list[int]] = {}
+             for idx in changed_indices:
+@@ -1021,7 +1019,6 @@
+ 
+             if global_chunks:
+                 still_indices: list[int] = []
+-                still_texts: list[str] = []
+                 for chash, indices in pending_by_hash.items():
+                     if chash in global_chunks:
+                         for idx in indices:
+@@ -1031,14 +1028,11 @@
+                     else:
+                         first_idx = indices[0]
+                         still_indices.append(first_idx)
+-                        still_texts.append(str(changed_records[first_idx]["text"]))
+                 changed_indices = still_indices
+-                changed_texts = still_texts
+             else:
+                 changed_indices = [indices[0] for indices in pending_by_hash.values()]
+-                changed_texts = [str(changed_records[idx]["text"]) for idx in changed_indices]
+-
+-        if changed_texts:
++
++        if changed_indices:
+             observed_embedding_space: str | None = None
+             for offset in range(0, len(changed_indices), _INDEX_EMBED_BATCH_SIZE):
+                 batch_indices = changed_indices[offset:offset + _INDEX_EMBED_BATCH_SIZE]

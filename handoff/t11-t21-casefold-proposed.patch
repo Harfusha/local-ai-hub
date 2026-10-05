@@ -1,0 +1,56 @@
+diff --git a/src/local_ai_hub/project_config.py b/src/local_ai_hub/project_config.py
+--- a/src/local_ai_hub/project_config.py
++++ b/src/local_ai_hub/project_config.py
+@@ -1033,4 +1033,4 @@
+         if not candidate.is_absolute():
+             candidate = project_root / candidate
+-        if candidate.name in _LOCAL_CONFIG_FILES:
++        if candidate.name.casefold() in _LOCAL_CONFIG_FILES:
+             return False
+@@ -1043,4 +1043,4 @@
+         resolved_relative = resolved.relative_to(project_root).as_posix()
+     except (OSError, RuntimeError, ValueError):
+         return False
+-    if resolved.name in _LOCAL_CONFIG_FILES:
++    if resolved.name.casefold() in _LOCAL_CONFIG_FILES:
+@@ -1188,4 +1188,4 @@
+         if not candidate.is_absolute():
+             candidate = project_root / candidate
+-        if candidate.name in _LOCAL_CONFIG_FILES:
++        if candidate.name.casefold() in _LOCAL_CONFIG_FILES:
+             return False
+@@ -1197,4 +1197,4 @@
+         resolved_relative = resolved.relative_to(project_root).as_posix()
+     except (OSError, RuntimeError, ValueError):
+         return False
+-    if resolved.name in _LOCAL_CONFIG_FILES or hard_denied:
++    if resolved.name.casefold() in _LOCAL_CONFIG_FILES or hard_denied:
+diff --git a/tests/test_project_config.py b/tests/test_project_config.py
+--- a/tests/test_project_config.py
++++ b/tests/test_project_config.py
+@@ -459,6 +459,24 @@
+     )
+ 
+ 
++@pytest.mark.parametrize(
++    "config_name",
++    (".LOCAL-AI.TOML", ".LOCAL-AI.WORKTREE.TOML"),
++)
++def test_shared_path_policy_excludes_case_variant_local_config_names(
++    tmp_path: Path, config_name: str
++) -> None:
++    config_file = tmp_path / config_name
++    config_file.write_text("private config", encoding="utf-8")
++    config_dir = tmp_path / "nested" / config_name
++    config_dir.mkdir(parents=True)
++
++    settings = ProjectSettings()
++    assert not path_is_allowed(
++        tmp_path, config_file, settings, phase="search", size_bytes=14
++    )
++    assert not may_descend(tmp_path, config_dir, settings, phase="search")
++
+ def test_entry_points_are_literal_but_path_filters_keep_glob_support(
+     tmp_path: Path,
+ ) -> None:
+*** End Patch

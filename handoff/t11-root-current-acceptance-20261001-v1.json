@@ -1,0 +1,55 @@
+{
+  "date": "2026-10-01",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "candidate": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "overlay": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t11-root-current-overlay-d7928301cbac435aa595dca5205221be",
+  "patch": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-acceptance-20261001-v1.patch",
+  "patch_sha256": "afc9ba116de2e0486224984c37f6c0a3416e58cc0a969b5cc4b1192d9e229a9e",
+  "preimages": {
+    "src/local_ai_hub/rag.py": {
+      "root_sha256": "4c0ed5c52ec4cd9d82b41f0d6d2188812d607d1ce58c4ffea956d045fbb9048a",
+      "overlay_sha256": "4c0ed5c52ec4cd9d82b41f0d6d2188812d607d1ce58c4ffea956d045fbb9048a"
+    },
+    "tests/test_rag_read_bounds.py": {
+      "root_sha256": "9d9f3ee9daad5306570d9a7c2674da1a4cf3342541a1a2b43abb1f798ec0d002",
+      "overlay_sha256": "9d9f3ee9daad5306570d9a7c2674da1a4cf3342541a1a2b43abb1f798ec0d002"
+    },
+    "tests/test_rag_hybrid.py": {
+      "root_sha256": "5e8508f96b808a7369fa9e97617be359f7f23ea7a6213364eec71b99f5149160",
+      "overlay_sha256": "5e8508f96b808a7369fa9e97617be359f7f23ea7a6213364eec71b99f5149160"
+    },
+    "tests/test_rag_fragment_cache.py": {
+      "root_sha256": "50be2a48a96a7edf403bc09a9eef9032c315b1b068ce6015f032636b28d46293",
+      "overlay_sha256": "50be2a48a96a7edf403bc09a9eef9032c315b1b068ce6015f032636b28d46293"
+    },
+    "tests/test_t11_project_policy_consumers.py": {
+      "root_sha256": "356ca9710c313cc0eaf715d5608f7262ce4e003d9b0fc75db0c1d8184b3622db",
+      "overlay_sha256": "d79c4748e277b5eae20be56921765709a7180eb54cd7874041a483b16d3ff6a4"
+    }
+  },
+  "uncertain_retry_paths": {
+    "root_rag_line": 869,
+    "root_has_workspace_read_uncertain_paths_load": true,
+    "root_read_bounds_retry_test_line": 234,
+    "production_hunk_needed": false
+  },
+  "change": {
+    "path": "tests/test_t11_project_policy_consumers.py",
+    "added_lines": 34,
+    "removed_lines": 0,
+    "description": "Add explicit Windows-style RAG path test; assert canonical policy/storage path and normalized text."
+  },
+  "validation": {
+    "command": "python -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_hybrid.py tests/test_rag_fragment_cache.py tests/test_t11_project_policy_consumers.py",
+    "cwd": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t11-root-current-overlay-d7928301cbac435aa595dca5205221be",
+    "result": "38 passed in 11.83s",
+    "exit_code": 0,
+    "strict_apply_check": "git -C <root> apply --check <patch>",
+    "strict_apply_check_exit_code": 0,
+    "scope": "isolated overlay only; no root write; no 100k, GPU, or live-model validation"
+  },
+  "candidate_prior_patch_sha256": "a5f885cc87927b44e45fcced8d780417de74df7f042728e6aa5fe0c0db85d804",
+  "root_status_for_inspected_paths": "M src/local_ai_hub/rag.py\n M tests/test_rag_fragment_cache.py\n M tests/test_rag_hybrid.py\n?? tests/test_rag_read_bounds.py\n?? tests/test_t11_project_policy_consumers.py"
+}

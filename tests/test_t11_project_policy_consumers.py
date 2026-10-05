@@ -346,7 +346,9 @@ def test_rag_policy_digest_prunes_excluded_chunks_and_invalidates_identity(
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
     scope = store._scope_key("tenant")
-    digest_key = store._workspace_project_config_key(scope, workspace)
+    digest_key = store._workspace_project_config_key(
+        scope, workspace, store._project_root_identity(root)
+    )
     source_stat = (root / "private" / "secret.py").stat()
     with closing(store._connect()) as con:
         con.execute(
@@ -401,7 +403,9 @@ def test_explicit_rag_ingestion_removes_policy_rejected_source_paths(
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
     scope = store._scope_key("tenant")
-    digest_key = store._workspace_project_config_key(scope, workspace)
+    digest_key = store._workspace_project_config_key(
+        scope, workspace, store._project_root_identity(root)
+    )
     rejected = ["private/secret.py", "payload.binx", "large.py"]
     with closing(store._connect()) as con:
         con.execute(
@@ -434,6 +438,105 @@ def test_explicit_rag_ingestion_removes_policy_rejected_source_paths(
             "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=?",
             (scope, workspace),
         ).fetchone()[0] == 0
+
+
+def test_explicit_rag_ingestion_reconciles_hard_ignored_paths(
+    tmp_path: Path, monkeypatch
+):
+    _install_policy(monkeypatch)
+    root = tmp_path / "project"
+    target = root / "blocked" / "keep.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("x=1\n", encoding="utf-8")
+    config = _config(tmp_path)
+    services = SimpleNamespace(
+        embed=lambda texts, _tenant, **_kwargs: {
+            "success": True,
+            "embedding_space_id": "test-space",
+            "embeddings": [[1.0, 0.0] for _ in texts],
+        }
+    )
+    store = RAGStore(config, services=services)
+    workspace = store.workspace_id(str(root.resolve()))
+    scope = store._scope_key("tenant")
+
+    indexed = store.index_paths_step(str(root), "tenant", workspace, ["blocked/keep.py"])
+    assert indexed["success"] is True
+    with closing(store._connect()) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM files WHERE tenant=? AND workspace=? AND path=?",
+            (scope, workspace, "blocked/keep.py"),
+        ).fetchone()[0] == 1
+
+    config["rag"]["ignore_dirs"] = ["blocked"]
+    reconciled = store.index_paths_step(str(root), "tenant", workspace, ["blocked/keep.py"])
+
+    assert reconciled["success"] is True
+    with closing(store._connect()) as con:
+        for table in ("files", "chunks", "chunk_fts"):
+            assert con.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE tenant=? AND workspace=? AND path=?",
+                (scope, workspace, "blocked/keep.py"),
+            ).fetchone()[0] == 0
+
+
+def test_explicit_rag_ingestion_accepts_project_custom_text_extension(
+    tmp_path: Path, monkeypatch
+):
+    _install_policy(monkeypatch)
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "guide.mdx").write_text("guide\n", encoding="utf-8")
+    config = _config(tmp_path)
+    services = SimpleNamespace(
+        embed=lambda texts, _tenant, **_kwargs: {
+            "success": True,
+            "embedding_space_id": "test-space",
+            "embeddings": [[1.0, 0.0] for _ in texts],
+        }
+    )
+    store = RAGStore(config, services=services)
+    workspace = store.workspace_id(str(root.resolve()))
+
+    result = store.index_paths_step(str(root), "tenant", workspace, ["guide.mdx"])
+
+    assert result["success"] is True
+    with closing(store._connect()) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM files WHERE tenant=? AND workspace=? AND path=?",
+            (store._scope_key("tenant"), workspace, "guide.mdx"),
+        ).fetchone()[0] == 1
+
+
+def test_explicit_rag_ingestion_normalizes_windows_path_before_policy_and_storage(
+    tmp_path: Path, monkeypatch
+):
+    _install_policy(monkeypatch)
+    root = tmp_path / "project"
+    (root / "private").mkdir(parents=True)
+    (root / "private" / "keep.py").write_text("keep\n", encoding="utf-8")
+    services = SimpleNamespace(
+        embed=lambda texts, _tenant, **_kwargs: {
+            "success": True,
+            "embedding_space_id": "test-space",
+            "embeddings": [[1.0, 0.0] for _ in texts],
+        }
+    )
+    store = RAGStore(_config(tmp_path), services=services)
+    workspace = store.workspace_id(str(root.resolve()))
+
+    result = store.index_paths_step(
+        str(root), "tenant", workspace, [r"private\keep.py"]
+    )
+
+    assert result["success"] is True
+    assert result["processed_paths"] == ["private/keep.py"]
+    with closing(store._connect()) as con:
+        row = con.execute(
+            "SELECT path,text FROM chunks WHERE tenant=? AND workspace=?",
+            (store._scope_key("tenant"), workspace),
+        ).fetchone()
+    assert row == ("private/keep.py", "keep\n")
 
 
 def test_rag_worktree_consumer_inherits_committed_project_path_policy(tmp_path: Path):
@@ -483,6 +586,106 @@ def test_rag_worktree_consumer_inherits_committed_project_path_policy(tmp_path: 
     assert rag_store.project_context(worktree).settings.force_include_paths == (
         "private/keep.py", "private/secret.py"
     )
+
+
+def test_rag_reindexes_same_head_worktree_after_local_config_change(tmp_path: Path):
+    pytest.importorskip("local_ai_hub.project_config")
+
+    class _EmbeddingServices:
+        space_id = "worktree-config-reindex-space"
+
+        def __init__(self):
+            self.calls = 0
+
+        def embed(self, texts, _tenant, **_kwargs):
+            self.calls += len(texts)
+            return {
+                "success": True,
+                "embeddings": [[1.0, 0.0] for _ in texts],
+                "embedding_space_id": self.space_id,
+            }
+
+    primary = tmp_path / "primary"
+    worktree = tmp_path / "worktrees" / "feature"
+    primary.mkdir()
+    worktree.parent.mkdir(parents=True)
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(primary), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+
+    git("init", "--quiet")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    (primary / "module.py").write_text("def useful():\n    return 42\n", encoding="utf-8")
+    git("add", "module.py")
+    git("commit", "--quiet", "-m", "tracked source")
+    git("worktree", "add", "--quiet", "--detach", str(worktree), "HEAD")
+
+    def head(path: Path) -> str:
+        return subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+
+    store = RAGStore(_config(tmp_path), services=_EmbeddingServices())
+    workspace = store.workspace_id(str(worktree.resolve()))
+    initial_head = head(worktree)
+    initial = store.index(str(worktree), "tenant", workspace)
+    assert initial["success"] is True
+    assert initial["files"] == 1
+    assert store.services.calls > 0
+    initial_embed_calls = store.services.calls
+    before_config_change = store.search("useful", "tenant", workspace, use_reranker=False)
+    cached_before_config_change = store.search("useful", "tenant", workspace, use_reranker=False)
+    assert [row["path"] for row in before_config_change["results"]] == ["module.py"]
+    assert cached_before_config_change["search_cache"]["hit"] is True
+
+    override = worktree / ".local-ai.worktree.toml"
+    override.write_text("[file_limits]\nmax_file_size_bytes = 1\n", encoding="utf-8")
+    restricted = store.index(str(worktree), "tenant", workspace)
+    with closing(store._connect()) as con:
+        restricted_counts = tuple(
+                con.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE tenant=? AND workspace=?",
+                    (store._scope_key("tenant"), workspace),
+                ).fetchone()[0]
+                for table in ("files", "chunks", "chunk_fts")
+        )
+
+    assert restricted["success"] is True
+    assert restricted_counts == (0, 0, 0)
+    after_config_change = store.search("useful", "tenant", workspace, use_reranker=False)
+    assert after_config_change["search_cache"]["hit"] is False
+    assert after_config_change["results"] == []
+    assert head(primary) == head(worktree) == initial_head
+
+    override.unlink()
+    restored = store.index(str(worktree), "tenant", workspace)
+    with closing(store._connect()) as con:
+        restored_paths = [
+            row[0]
+            for row in con.execute(
+                "SELECT path FROM files WHERE tenant=? AND workspace=?",
+                (store._scope_key("tenant"), workspace),
+            )
+        ]
+
+    assert restored["success"] is True
+    assert restored_paths == ["module.py"]
+    assert store.services.calls > initial_embed_calls
+    after_config_restore = store.search("useful", "tenant", workspace, use_reranker=False)
+    assert after_config_restore["search_cache"]["hit"] is False
+    assert [row["path"] for row in after_config_restore["results"]] == ["module.py"]
+    assert head(worktree) == initial_head
 
 
 def test_rag_policy_change_invalidates_cached_search_results(tmp_path: Path, monkeypatch):

@@ -1,0 +1,44 @@
+diff --git a/tests/test_rag_hybrid.py b/tests/test_rag_hybrid.py
+index 4c32420..f2e9cde 100644
+--- a/tests/test_rag_hybrid.py
++++ b/tests/test_rag_hybrid.py
+@@ -224,6 +224,10 @@ def test_rag_index_retries_transient_publish_lock(tmp_path, monkeypatch):
+     root = tmp_path / "project"
+     root.mkdir()
+     (root / "locked.py").write_text("def locked():\n    return 1\n", encoding="utf-8")
++    workspace = "locked-workspace"
++    store._sync_workspace_project_policy_identity(
++        root, store._scope_key("test_tenant"), workspace, store.project_context(root)
++    )
+ 
+     state = {"failures": 1, "begins": 0}
+ 
+@@ -248,7 +252,7 @@ def test_rag_index_retries_transient_publish_lock(tmp_path, monkeypatch):
+     original_connect = store._connect
+     monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
+ 
+-    result = store.index(str(root), "test_tenant", workspace="locked-workspace")
++    result = store.index(str(root), "test_tenant", workspace=workspace)
+ 
+     assert result["success"] is True
+     assert state["begins"] == 2
+@@ -260,6 +264,10 @@ def test_rag_index_paths_step_retries_publish_lock_without_reembedding(tmp_path,
+     root = tmp_path / "project-step"
+     root.mkdir()
+     (root / "locked.py").write_text("def locked_step():\n    return 1\n", encoding="utf-8")
++    workspace = "step-workspace"
++    store._sync_workspace_project_policy_identity(
++        root, store._scope_key("test_tenant"), workspace, store.project_context(root)
++    )
+     state = {"failures": 1, "begins": 0}
+ 
+     class _FlakyConnection:
+@@ -284,7 +292,7 @@ def test_rag_index_paths_step_retries_publish_lock_without_reembedding(tmp_path,
+     monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
+ 
+     result = store.index_paths_step(
+-        str(root), "test_tenant", "step-workspace", ["locked.py"]
++        str(root), "test_tenant", workspace, ["locked.py"]
+     )
+ 
+     assert result["success"] is True

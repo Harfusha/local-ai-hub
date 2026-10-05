@@ -1,0 +1,32 @@
+{
+  "receipt_version": 1,
+  "scope": "T11 candidate only",
+  "command": "python -m pytest -q --tb=short tests/test_rag_quality_contract.py::test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors",
+  "result": "1 passed in 0.38s",
+  "dataset_revision_sha256": "ce2f9e38eb084b906bb3b1d422f38316a648527f54819d9e4d3f9f53f8bb16cc",
+  "dataset": {
+    "rows": 64,
+    "relevant": 6,
+    "distractors": 58,
+    "query": "weekly credential rotation"
+  },
+  "embedding_space_id": "quality-space",
+  "paired_workspaces": [
+    "credential-golden-baseline",
+    "credential-golden-candidate"
+  ],
+  "assertions": {
+    "same_content_hashes": true,
+    "same_embedding_space": true,
+    "same_top_10_order": true,
+    "baseline_recall_at_10": 1.0,
+    "candidate_recall_at_10": 1.0,
+    "baseline_ndcg_at_10": 1.0,
+    "candidate_ndcg_at_10": 1.0,
+    "improvement_claimed": false
+  },
+  "limits": [
+    "Synthetic vectors and corpus; no live model quality evidence.",
+    "Candidate parity receipt; not root integration or deployment acceptance."
+  ]
+}

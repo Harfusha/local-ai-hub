@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import sqlite3
+import struct
 import threading
 from contextlib import closing
+from pathlib import Path
 
 from local_ai_hub.rag import RAGStore, _fragment_hash
 
@@ -215,6 +218,10 @@ def test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces(tm
 
         def embed(self, texts, tenant, **kwargs):
             result = super().embed(texts, tenant, **kwargs)
+            result["embeddings"] = [
+                [float(len(text)), float(ord(self.output_space[6]))]
+                for text in texts
+            ]
             result["embedding_space_id"] = self.output_space
             return result
 
@@ -225,8 +232,13 @@ def test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces(tm
     shared_text = "def shared_value():\n    return 1\n"
     (source_root / "shared.py").write_text(shared_text, encoding="utf-8")
     assert store.index(str(source_root), "tenant", workspace="source")["success"] is True
+    with closing(store._connect()) as con:
+        source_embedding = con.execute(
+            "SELECT embedding FROM chunks WHERE tenant=? AND workspace=? AND path=?",
+            (store._scope_key("tenant"), "source", "shared.py"),
+        ).fetchone()[0]
 
-    for mode in ("index", "index_paths_step"):
+    for mode in ("index", "index_paths_step", "index_step"):
         target_root = tmp_path / mode
         target_root.mkdir()
         (target_root / "shared.py").write_text(shared_text, encoding="utf-8")
@@ -235,18 +247,70 @@ def test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces(tm
         workspace = f"target:{mode}"
         if mode == "index":
             result = store.index(str(target_root), "tenant", workspace=workspace)
-        else:
+        elif mode == "index_paths_step":
             result = store.index_paths_step(
                 str(target_root), "tenant", workspace, ["shared.py", "new.py"]
             )
+        else:
+            result = store.index_step(
+                str(target_root), "tenant", workspace=workspace, max_files=2
+            )
         assert result["success"] is True
         with closing(store._connect()) as con:
-            spaces = dict(con.execute(
-                "SELECT path,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
+            rows = {
+                row[0]: (row[1], row[2])
+                for row in con.execute(
+                "SELECT path,embedding_space,embedding FROM chunks WHERE tenant=? AND workspace=?",
                 (store._scope_key("tenant"), workspace),
-            ).fetchall())
-        assert spaces["shared.py"] == "model-b@revision-2"
-        assert spaces["new.py"] == "model-b@revision-2"
+                ).fetchall()
+            }
+        assert rows["shared.py"][0] == "model-b@revision-2"
+        assert rows["new.py"][0] == "model-b@revision-2"
+        value = rows["shared.py"][1]
+        embedding = (
+            struct.unpack(f"{len(value) // 4}f", value)
+            if isinstance(value, bytes)
+            else json.loads(value)
+        )
+        assert tuple(embedding) == (float(len(shared_text)), float(ord("b")))
+        assert rows["shared.py"][1] != source_embedding
+
+
+def test_same_workspace_blank_space_chunk_is_reembedded_not_relabelled(tmp_path):
+    services = _Services(space_id="space-current")
+    store = _store(tmp_path, services)
+    root = tmp_path / "project"
+    root.mkdir()
+    source = root / "same.py"
+    source.write_text("def same_value():\n    return 4\n", encoding="utf-8")
+    workspace = "same-workspace"
+    assert store.index_paths_step(str(root), "tenant", workspace, ["same.py"])["success"]
+    calls_before = len(services.calls)
+    with closing(store._connect()) as con:
+        con.execute(
+            "UPDATE chunks SET embedding='[99.0, 99.0]', embedding_space='' "
+            "WHERE tenant=? AND workspace=? AND path=?",
+            (store._scope_key("tenant"), workspace, "same.py"),
+        )
+        con.commit()
+
+    result = store.index_paths_step(str(root), "tenant", workspace, ["same.py"])
+
+    assert result["success"] is True
+    assert len(services.calls) > calls_before
+    with closing(store._connect()) as con:
+        row = con.execute(
+            "SELECT text,embedding,embedding_space FROM chunks "
+            "WHERE tenant=? AND workspace=? AND path=?",
+            (store._scope_key("tenant"), workspace, "same.py"),
+        ).fetchone()
+    assert row[2] == "space-current"
+    embedding = (
+        struct.unpack(f"{len(row[1]) // 4}f", row[1])
+        if isinstance(row[1], bytes)
+        else json.loads(row[1])
+    )
+    assert tuple(embedding) == (float(len(row[0])), 1.0)
 
 
 def test_configured_embedding_space_id_is_stable_across_store_instances(tmp_path):
@@ -459,6 +523,48 @@ def test_search_rechecks_generation_after_cache_lookup(tmp_path, monkeypatch):
     assert interleaved["hit"] is True
     assert result["search_cache"]["hit"] is False
     assert result["results"][0]["text"] == "def new_value():\n    return 2\n"
+
+
+def test_search_rechecks_generation_after_uncertain_source_read(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    source = root / "one.py"
+    source.write_text("def old_value():\n    return 1\n", encoding="utf-8")
+    services = _Services(space_id="runtime-space-a")
+    store = _store(tmp_path, services)
+    store.config["rag"]["max_file_bytes"] = 32
+    indexed = store.index(str(root), "tenant")
+    workspace = indexed["workspace"]
+    initial = store.search("value query", "tenant", workspace, use_reranker=False)
+    assert initial["results"][0]["text"] == "def old_value():\n    return 1\n"
+
+    source.write_text("def new_value():\n    return 2\n", encoding="utf-8")
+    original_open = Path.open
+
+    def grow_after_stat(candidate: Path, mode="r", *args, **kwargs):
+        if candidate.resolve() == source.resolve() and mode == "rb":
+            return io.BytesIO(b"x" * 33)
+        return original_open(candidate, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", grow_after_stat)
+    original_lookup = store.search_flight.get_or_compute
+    interleaved: dict[str, object] = {}
+
+    def publish_uncertainty_before_lookup(key, compute):
+        staged = store.index_paths_step(str(root), "tenant", workspace, ["one.py"])
+        assert staged["success"] is True
+        assert staged["read_uncertain_paths"] == ["one.py"]
+        raw, hit, coalesced = original_lookup(key, compute)
+        interleaved["hit"] = hit
+        return raw, hit, coalesced
+
+    monkeypatch.setattr(store.search_flight, "get_or_compute", publish_uncertainty_before_lookup)
+    result = store.search("value query", "tenant", workspace, use_reranker=False)
+
+    assert interleaved["hit"] is True
+    assert result["search_cache"]["hit"] is False
+    assert result["results"] == []
+    assert result["fallback"] == "source_read_uncertain"
 
 
 def test_index_step_reindexes_explicit_same_stat_dirty_path(tmp_path):

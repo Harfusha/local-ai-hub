@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "head_at_resume": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "resume_inventory": {
+    "modified_entries": [
+      "src/local_ai_hub/embeddings.py",
+      "src/local_ai_hub/rag.py",
+      "src/local_ai_hub/reranker.py",
+      "tests/test_model_release_lifecycle.py",
+      "tests/test_rag_fragment_cache.py",
+      "tests/test_rag_hybrid.py",
+      "tests/test_rag_quality_contract.py",
+      "tests/test_t11_project_policy_consumers.py",
+      "tests/test_t11_rag_ingestion_contract.py",
+      "tests/test_t11_rag_seed_integrity.py"
+    ],
+    "untracked_entries": [
+      "handoff/",
+      "src/local_ai_hub/project_config.py",
+      "tests/test_rag_read_bounds.py"
+    ],
+    "top_level_entry_count": 13,
+    "handoff_directory": "existing aggregate preserved; prior files unchanged"
+  },
+  "ownership": {
+    "t11_owned_inherited": [
+      "src/local_ai_hub/embeddings.py",
+      "src/local_ai_hub/rag.py",
+      "src/local_ai_hub/reranker.py",
+      "tests/test_model_release_lifecycle.py",
+      "tests/test_rag_fragment_cache.py",
+      "tests/test_rag_hybrid.py",
+      "tests/test_rag_quality_contract.py",
+      "tests/test_t11_project_policy_consumers.py",
+      "tests/test_t11_rag_ingestion_contract.py",
+      "tests/test_t11_rag_seed_integrity.py",
+      "tests/test_rag_read_bounds.py"
+    ],
+    "t21_boundary_inherited_untouched": [
+      "src/local_ai_hub/project_config.py"
+    ],
+    "root_t20_untouched": true
+  },
+  "resume_hashes": {
+    "src/local_ai_hub/embeddings.py": {
+      "resume_sha256": "2360fb9e4e9dda72dc633a5e4f33ecbab2ec3e8a26dc728f61114acc2496d170",
+      "current_sha256": "2360fb9e4e9dda72dc633a5e4f33ecbab2ec3e8a26dc728f61114acc2496d170",
+      "changed_this_resume": false
+    },
+    "src/local_ai_hub/rag.py": {
+      "resume_sha256": "54de5b1d64a4f51f6193920f98c2c4ec642581afb7f890b16fd87c59d66c97b6",
+      "current_sha256": "db181093f53f0d6666a890413bfea5f52359890ce8236def0160df744cf0c6ff",
+      "changed_this_resume": true
+    },
+    "src/local_ai_hub/reranker.py": {
+      "resume_sha256": "ee8b660c9fa261ea34fb63587f8eaaf6119b83b544a4053d22669ef8d9c5c562",
+      "current_sha256": "ee8b660c9fa261ea34fb63587f8eaaf6119b83b544a4053d22669ef8d9c5c562",
+      "changed_this_resume": false
+    },
+    "tests/test_model_release_lifecycle.py": {
+      "resume_sha256": "50c061dbc8d2bfa37337fdd77f796dcb328f786f407e1ad389200991e2ee5c50",
+      "current_sha256": "50c061dbc8d2bfa37337fdd77f796dcb328f786f407e1ad389200991e2ee5c50",
+      "changed_this_resume": false
+    },
+    "tests/test_rag_fragment_cache.py": {
+      "resume_sha256": "a7bd3335691aa7c291d4f42a600a2c7d790475f5770d534d9033ff6620a22002",
+      "current_sha256": "a7bd3335691aa7c291d4f42a600a2c7d790475f5770d534d9033ff6620a22002",
+      "changed_this_resume": false
+    },
+    "tests/test_rag_hybrid.py": {
+      "resume_sha256": "4d150a95022f5c80571e3c98782c084ebf76d068aa2dea98c7021d6fa13ce5a2",
+      "current_sha256": "4d150a95022f5c80571e3c98782c084ebf76d068aa2dea98c7021d6fa13ce5a2",
+      "changed_this_resume": false
+    },
+    "tests/test_rag_quality_contract.py": {
+      "resume_sha256": "81c17571143a4256cf9d9a9017137b82cfd564cd4f45b21e48e5f3fbecba7a3c",
+      "current_sha256": "81c17571143a4256cf9d9a9017137b82cfd564cd4f45b21e48e5f3fbecba7a3c",
+      "changed_this_resume": false
+    },
+    "tests/test_t11_project_policy_consumers.py": {
+      "resume_sha256": "c075b57bba5fe1e4f08d1bde502165ebdd528a4316206dfa9b35dde23b273157",
+      "current_sha256": "e4ea70d1036a5109b80e390b255f4106664e0238ab7067e59322760997d0c4f5",
+      "changed_this_resume": true
+    },
+    "tests/test_t11_rag_ingestion_contract.py": {
+      "resume_sha256": "4876d98a26b9eb26701a841799ba088f3dac3021b842a2b55945f53641306914",
+      "current_sha256": "4876d98a26b9eb26701a841799ba088f3dac3021b842a2b55945f53641306914",
+      "changed_this_resume": false
+    },
+    "tests/test_t11_rag_seed_integrity.py": {
+      "resume_sha256": "943aed3fc4cc11fcec48a99500d1967e869b0276f6af600736254ca375ab0e02",
+      "current_sha256": "943aed3fc4cc11fcec48a99500d1967e869b0276f6af600736254ca375ab0e02",
+      "changed_this_resume": false
+    },
+    "src/local_ai_hub/project_config.py": {
+      "resume_sha256": "f51cd2bd05ac993139c388ca553ff816c4b39d572182afd433e3fa7430a766d5",
+      "current_sha256": "f51cd2bd05ac993139c388ca553ff816c4b39d572182afd433e3fa7430a766d5",
+      "changed_this_resume": false
+    },
+    "tests/test_rag_read_bounds.py": {
+      "resume_sha256": "ae19c08bc2aa9ca45d0b7f26dcff23dd8abdb3a1d843f54a7830045a8a568aa2",
+      "current_sha256": "ae19c08bc2aa9ca45d0b7f26dcff23dd8abdb3a1d843f54a7830045a8a568aa2",
+      "changed_this_resume": false
+    }
+  },
+  "new_delta": {
+    "files": [
+      "src/local_ai_hub/rag.py",
+      "tests/test_t11_project_policy_consumers.py"
+    ],
+    "patch": "t11-resume-acceptance-v1.patch",
+    "patch_sha256": "a5f885cc87927b44e45fcced8d780417de74df7f042728e6aa5fe0c0db85d804",
+    "performance_receipt": "t11-resume-rag-16k-perf-receipt-20261001.json",
+    "performance_receipt_sha256": "65138497c78525fb9425f607593902d49ad09f9c8bc22f7dc236d26087b01a37"
+  },
+  "test_receipt": "175 passed, 3 skipped in 33.02s; skip gates are live Ollama, ingestion batch benchmark, and 100k retrieval benchmark",
+  "performance": "16k CPU receipt, exact source and harness fingerprints included; prior 100k receipt historical only"
+}

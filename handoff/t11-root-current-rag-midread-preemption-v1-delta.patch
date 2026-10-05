@@ -1,0 +1,144 @@
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -1408,6 +1408,9 @@
+             }
+             for rel in paths:
+                 if callable(should_yield) and should_yield():
++                    self._publish_workspace_read_uncertainty(
++                        scope_key, workspace, read_uncertain_paths
++                    )
+                     return {
+                         "success": True, "workspace": workspace, "preempted": True,
+                         "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+@@ -1743,6 +1746,9 @@
+                     "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
+                     (scope_key, workspace),
+                 ).fetchall()
++                uncertain_retry_paths = self._workspace_read_uncertain_paths(
++                    con, scope_key, workspace
++                )
+             if stored_space is None and old_chunk_rows:
+                 space_counts: dict[str, int] = {}
+                 for row in old_chunk_rows:
+@@ -1781,6 +1787,7 @@
+                     or old_files[rel]["size"] != sz
+                     or rel in stale_embedding_paths
+                     or rel in explicit_dirty_paths
++                    or rel in uncertain_retry_paths
+                 )
+             ]
+             changed_all.sort(key=lambda rel: (rel not in explicit_dirty_paths, rel))
+diff --git a/tests/test_rag_fragment_cache.py b/tests/test_rag_fragment_cache.py
+--- a/tests/test_rag_fragment_cache.py
++++ b/tests/test_rag_fragment_cache.py
+@@ -218,6 +218,10 @@
+ 
+         def embed(self, texts, tenant, **kwargs):
+             result = super().embed(texts, tenant, **kwargs)
++            result["embeddings"] = [
++                [float(len(text)), float(ord(self.output_space[6]))]
++                for text in texts
++            ]
+             result["embedding_space_id"] = self.output_space
+             return result
+ 
+@@ -228,8 +232,13 @@
+     shared_text = "def shared_value():\n    return 1\n"
+     (source_root / "shared.py").write_text(shared_text, encoding="utf-8")
+     assert store.index(str(source_root), "tenant", workspace="source")["success"] is True
+-
+-    for mode in ("index", "index_paths_step"):
++    with closing(store._connect()) as con:
++        source_embedding = con.execute(
++            "SELECT embedding FROM chunks WHERE tenant=? AND workspace=? AND path=?",
++            (store._scope_key("tenant"), "source", "shared.py"),
++        ).fetchone()[0]
++
++    for mode in ("index", "index_paths_step", "index_step"):
+         target_root = tmp_path / mode
+         target_root.mkdir()
+         (target_root / "shared.py").write_text(shared_text, encoding="utf-8")
+@@ -238,18 +247,33 @@
+         workspace = f"target:{mode}"
+         if mode == "index":
+             result = store.index(str(target_root), "tenant", workspace=workspace)
+-        else:
++        elif mode == "index_paths_step":
+             result = store.index_paths_step(
+                 str(target_root), "tenant", workspace, ["shared.py", "new.py"]
+             )
++        else:
++            result = store.index_step(
++                str(target_root), "tenant", workspace=workspace, max_files=2
++            )
+         assert result["success"] is True
+         with closing(store._connect()) as con:
+-            spaces = dict(con.execute(
+-                "SELECT path,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
++            rows = {
++                row[0]: (row[1], row[2])
++                for row in con.execute(
++                "SELECT path,embedding_space,embedding FROM chunks WHERE tenant=? AND workspace=?",
+                 (store._scope_key("tenant"), workspace),
+-            ).fetchall())
+-        assert spaces["shared.py"] == "model-b@revision-2"
+-        assert spaces["new.py"] == "model-b@revision-2"
++                ).fetchall()
++            }
++        assert rows["shared.py"][0] == "model-b@revision-2"
++        assert rows["new.py"][0] == "model-b@revision-2"
++        value = rows["shared.py"][1]
++        embedding = (
++            struct.unpack(f"{len(value) // 4}f", value)
++            if isinstance(value, bytes)
++            else json.loads(value)
++        )
++        assert tuple(embedding) == (float(len(shared_text)), float(ord("b")))
++        assert rows["shared.py"][1] != source_embedding
+ 
+ 
+ def test_same_workspace_blank_space_chunk_is_reembedded_not_relabelled(tmp_path):
+diff --git a/tests/test_rag_read_bounds.py b/tests/test_rag_read_bounds.py
+--- a/tests/test_rag_read_bounds.py
++++ b/tests/test_rag_read_bounds.py
+@@ -183,6 +183,39 @@
+     assert [row["text"] for row in result["results"]] == ["value = 'after!'\n"]
+ 
+ 
++def test_incremental_index_retries_uncertain_path_when_metadata_matches_old_snapshot(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++):
++    store = _store(tmp_path, max_file_bytes=256)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 'before'\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index_step(str(root), tenant, workspace)["success"] is True
++    old_stat = path.stat()
++    path.write_text("value = 'after!'\n", encoding="utf-8")
++    original_open = Path.open
++
++    def fail_read(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == path.resolve() and mode == "rb":
++            raise PermissionError("forced source read failure")
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", fail_read)
++    failed = store.index_step(str(root), tenant, workspace)
++    assert failed["success"] is True
++    os.utime(path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
++    monkeypatch.setattr(Path, "open", original_open)
++
++    recovered = store.index_step(str(root), tenant, workspace)
++
++    assert recovered["success"] is True
++    assert recovered["processed_files"] == 1
++    result = store.search("value after", tenant, workspace, use_reranker=False)
++    assert [row["text"] for row in result["results"]] == ["value = 'after!'\n"]
++
++
+ def test_incremental_preemption_publishes_uncertainty_from_prior_read(
+     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+ ):

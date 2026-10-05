@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "created_utc": "2026-10-02T08:24:49.2409114Z",
+  "status": "T11_ACCEPTANCE_OPEN; NO_BENCHMARK_SLOT",
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "current_pins": {
+    "handoff/T11-CPU-SLOT-20261002-11/01-privacy-selector.receipt.json": "FDBE7D119612BF4658120DEDE2F2AE2CCA2C851155BFBEA9E272E641647FC110",
+    "src/local_ai_hub/project_config.py": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+    "tests/test_project_config.py": "0196D8FA417DD2B56BFC0D143217D25E2986E1B1B1DF6CEFFADD3C0EEB9FBCEA",
+    "src/local_ai_hub/rag.py": "F47259DAFC72C6A584F53D84E51FAC270CE0969E48EC3CDB58C1CCEB6F554992",
+    "handoff/t11-project-config-integration-20261002.json": "66761BBF4DA638BC0135BC969419227643574E4B2DAC5BC0D92407539229EA38",
+    "handoff/T11-CPU-SLOT-20261002-11/02-offline-suite.receipt.json": "33134D8B2CFCA594C703FBA46AAC32470CFB93E24A7534B8D9B47335DFCF41D8",
+    "tests/test_rag_quality_contract.py": "0A82654D5BBA505F69437037E8F906DEFAF5F983ACA0305445E11F0854BBD9C5"
+  },
+  "coordination": {
+    "T02": {
+      "status": "idle",
+      "cursor": "9f3059e9-3334-4352-aca8-2cc5a19b1b6b:24",
+      "latest": "Explicitly did not grant T11 CPU slot; release waits for T01 correctness failures and missing T08/T10 inputs; T20 must assign slot.",
+      "thread_id": "01a0d30b-ffee-7fa2-bc6e-f503a4bc18b7"
+    },
+    "T20": {
+      "status": "idle",
+      "cursor": "f6f94544-4020-443b-b20d-3c1de22d9a32:216",
+      "latest": "T10 root AST impact module passed: 11 passed in 1.22s; T01 failures remain under owner review; T08 preimage and T03 schema handoff remain blockers; T10 patch not integrated; T11 benchmark deferred.",
+      "thread_id": "01a0d322-b3bd-7930-b552-14e9b7020fec"
+    }
+  },
+  "action_taken": "Revalidated current hashes and owner coordination. No tests or benchmark executed; no source edits.",
+  "next_gate": "Wait for T20 to assign an exclusive T11 benchmark slot after owner gates clear; run 100k matrix only after assignment, then request a separate live-reranker slot."
+}

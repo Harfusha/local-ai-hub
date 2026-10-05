@@ -1,0 +1,44 @@
+{
+  "schema": "t11-root-current-p1-receipt-v1",
+  "date": "2026-10-05",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "rag_sha256": "BDC94FFE14252A7CB18460E1E1B5C513134F66C451FA1CD3DF90B21FCCB09EE7",
+    "test_rag_hybrid_sha256": "CA14B2DF15B2E7DB1C7268B9CD5A4C1C57C2E9074BCEDDDEC15F6D26E729AAA8"
+  },
+  "root": {
+    "path": "C:\\Users\\Adam\\.local-ai-hub",
+    "head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+    "preimage_sha256": {
+      "src/local_ai_hub/rag.py": "9328914E6D09EA6E88FB035FA7A8FD13779FEC564188B0016E1710B73E0F14CC",
+      "tests/test_rag_hybrid.py": "038A15AA053CC75DEC69B8216D754508C75B9D1B721ACE5159D9963E9FD3737E"
+    },
+    "postimage_sha256": {
+      "src/local_ai_hub/rag.py": "B162AC451953E0FCB3A9549EFA2A66CD500A8EEB0892FB931194E5EF5B269CC6",
+      "tests/test_rag_hybrid.py": "1FD09F7AB94C1945984B96891803B49239B28E83B9BF700181C685C935ADE8DD"
+    },
+    "writes": 0,
+    "tests_run": 0
+  },
+  "patch": {
+    "path": "handoff/t11-root-current-rag-hardening-20261003/t11-root-current-owned-fixes-20261005.patch",
+    "sha256": "2B4414C59987691CF5A41D7DED9E249A85C68C513431FC7F44A2B8A70EC66633",
+    "bytes": 29625,
+    "paths": ["src/local_ai_hub/rag.py", "tests/test_rag_hybrid.py"],
+    "apply_check": "PASS: git apply --check --recount --whitespace=error; not applied"
+  },
+  "candidate_validation": [
+    {"scope": "new project-policy regressions", "result": "6 passed"},
+    {"scope": "previous focused selectors plus new regressions", "result": "17 passed"},
+    {
+      "scope": "wider RAG/embedding suite",
+      "command": "python -B -m pytest -q --tb=short -p no:cacheprovider -k 'not retrieval_latency_and_peak_memory_baseline and not t11_ingestion_batch_benchmark' tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_t11_project_policy_consumers.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py",
+      "result": "185 passed, 1 skipped, 2 deselected in 56.22s",
+      "note": "live Ollama skip requires T11_REAL_OLLAMA=1; benchmarks excluded"
+    }
+  ],
+  "synthetic_root_postimage_compile": "PASS",
+  "project_config_included": false,
+  "hub_tooling_used": false
+}

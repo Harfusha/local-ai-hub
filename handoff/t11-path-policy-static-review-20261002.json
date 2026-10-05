@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-02",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "reviewed_source": "src/local_ai_hub/project_config.py",
+  "source_sha256": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+  "reviewed_test": "tests/test_project_config.py",
+  "test_sha256": "0196D8FA417DD2B56BFC0D143217D25E2986E1B1B1DF6CEFFADD3C0EEB9FBCEA",
+  "review_scope": [
+    "project_config.py:1003-1057 phase and path admission checks",
+    "project_config.py:1084-1170 pinned context and entry point resolution",
+    "project_config.py:1173-1231 directory traversal admission",
+    "project_config.py:1240-1352 safe path glob matching",
+    "project_config.py:37-39 local configuration filename constants"
+  ],
+  "findings": [
+    {
+      "severity": "P2 candidate",
+      "location": "src/local_ai_hub/project_config.py:37-39,1035,1045,1190,1200",
+      "summary": "Local configuration exclusion compares raw path basenames against lowercase constants. On Windows, differently cased names can resolve to the same case-insensitive file while bypassing these exact string checks, potentially admitting the local configuration file to project scanning.",
+      "evidence": "The Windows path glob normalizer lowercases values at lines 1346-1352; extension matching casefolds names at lines 465-468. Local config exclusion does neither. Current transferred tests use lowercase config filenames; no case-variant regression was found by bounded search.",
+      "recommended_owner_action": "T21 owner should normalize basename comparisons consistently and add Windows coverage for path_is_allowed and may_descend with case-variant local config names.",
+      "runtime_verified": false,
+      "acceptance_effect": "Keep project_config acceptance open until owner review and an assigned serial regression selector establish the intended Windows behavior."
+    }
+  ],
+  "validation": "Read-only source and bounded test-name inspection only; no tests or runtime probes run.",
+  "ownership": "T21-owned source/test were read only; no source changes made."
+}

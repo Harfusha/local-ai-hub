@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "status": "REVIEW / OPEN",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "root_was_not_modified": true,
+  "overlay_patch": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-overlay-20261002.patch",
+  "patch_sha256": "910ff7dabf98202c2d7bc9b3c4fde1633377782c0493e869c1a164fa7009e145",
+  "current_root_apply_check": {
+    "result": "PASS",
+    "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-overlay-20261002.patch"
+  },
+  "files": [
+    {
+      "path": "src/local_ai_hub/embeddings.py",
+      "owner": "T11 production scope; current root is T20-owned",
+      "root_pre_sha256": "21a6282871005d1045b2e76a2cc65599deedb877477e007c1aa8fb31bfaccd08",
+      "root_post_sha256": "21a6282871005d1045b2e76a2cc65599deedb877477e007c1aa8fb31bfaccd08",
+      "candidate_reference_sha256": "2360fb9e4e9dda72dc633a5e4f33ecbab2ec3e8a26dc728f61114acc2496d170",
+      "overlay_action": "no source change; current root already includes the T11 production behavior"
+    },
+    {
+      "path": "src/local_ai_hub/rag.py",
+      "owner": "T11 production scope; current root is T20-owned",
+      "root_pre_sha256": "4c0ed5c52ec4cd9d82b41f0d6d2188812d607d1ce58c4ffea956d045fbb9048a",
+      "root_post_sha256": "4c0ed5c52ec4cd9d82b41f0d6d2188812d607d1ce58c4ffea956d045fbb9048a",
+      "candidate_reference_sha256": "231ca7c6ba2af653eae20af1bc64bea949a028abbcee68cbff32838a42608c19",
+      "overlay_action": "no source change; current root already includes the T11 production behavior"
+    },
+    {
+      "path": "src/local_ai_hub/reranker.py",
+      "owner": "T11 production scope; current root is T20-owned",
+      "root_pre_sha256": "12773e04a90db8f8a367e618d725a3ea995faf4b624244907b8a13f30ced2ec7",
+      "root_post_sha256": "12773e04a90db8f8a367e618d725a3ea995faf4b624244907b8a13f30ced2ec7",
+      "candidate_reference_sha256": "ee8b660c9fa261ea34fb63587f8eaaf6119b83b544a4053d22669ef8d9c5c562",
+      "overlay_action": "no source change; current root already includes the T11 production behavior"
+    },
+    {
+      "path": "tests/test_rag_hybrid.py",
+      "owner": "T11 regression test",
+      "root_pre_sha256": "5e8508f96b808a7369fa9e97617be359f7f23ea7a6213364eec71b99f5149160",
+      "root_post_sha256": "d1d13680748299525129f7e688e5012a30862aca2d0185e855c9b44a8013b175",
+      "candidate_reference_sha256": "939a60a6f58929b811192e2b4d8807bdc8bbce14e30b2a3fb9228ae19cd53cce",
+      "overlay_action": "add warm-search no-write-lock regression test"
+    }
+  ],
+  "ownership": {
+    "root": "T20",
+    "src/local_ai_hub/embeddings.py": "T11 production; lifecycle release already present in current root",
+    "src/local_ai_hub/rag.py": "T11 production; exact embedding-space isolation/bounded ingestion present; current root search has no search-time BEGIN IMMEDIATE",
+    "src/local_ai_hub/reranker.py": "T11 production; synchronized release and best-effort CUDA cleanup already present",
+    "src/local_ai_hub/project_config.py": "T21; excluded",
+    "/api/context/pack": "owner-controlled; excluded",
+    "tests/test_rag_hybrid.py": "T11 regression overlay"
+  },
+  "candidate_test_receipt": {
+    "result": "176 passed, 3 skipped in 39.49s",
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+    "skips": [
+      "100k retrieval benchmark",
+      "live Ollama selector",
+      "ingestion benchmark"
+    ]
+  },
+  "performance": {
+    "status": "NOT PROVEN",
+    "fresh_red_p95_ms": 972.658,
+    "configured_batch": 4096,
+    "limit_ms": 750.0,
+    "instruction": "Do not rerun without T20 benchmark slot"
+  },
+  "root_validation_scope": "read-only apply-check only; root source/test hashes captured before and after remain unchanged; no root tests or writes"
+}

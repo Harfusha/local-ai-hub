@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "created_utc": "2026-10-02T09:04:17.7063045Z",
+  "status": "T11_PERFORMANCE_ACCEPTANCE_OPEN_POST_RELEASE",
+  "source_steering_thread": "01a0ca2a-3dd2-7590-b2b5-1e47ba06d57c",
+  "source_steering": "Functional release first; no T11 performance slot; benchmark deferred post-release.",
+  "input_sha256": {
+    "tests/test_project_config.py": "0196D8FA417DD2B56BFC0D143217D25E2986E1B1B1DF6CEFFADD3C0EEB9FBCEA",
+    "handoff/T11-CPU-SLOT-20261002-11/02-offline-suite.receipt.json": "33134D8B2CFCA594C703FBA46AAC32470CFB93E24A7534B8D9B47335DFCF41D8",
+    "handoff/t11-queue-update-20261002.json": "6DC3DA3A4E5ED94FEB1F82E1776ED3CB5BD92774E9DF66E578528AC7DD74D1C2",
+    "src/local_ai_hub/rag.py": "F47259DAFC72C6A584F53D84E51FAC270CE0969E48EC3CDB58C1CCEB6F554992",
+    "handoff/T11-CPU-SLOT-20261002-11/01-privacy-selector.receipt.json": "FDBE7D119612BF4658120DEDE2F2AE2CCA2C851155BFBEA9E272E641647FC110",
+    "src/local_ai_hub/project_config.py": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+    "tests/test_rag_quality_contract.py": "0A82654D5BBA505F69437037E8F906DEFAF5F983ACA0305445E11F0854BBD9C5",
+    "handoff/t11-queue-revalidation-20261002.json": "C337D651EED1A0E759936A48F264C58E1B8CB91E730CCC597475114E12A2B7B0",
+    "handoff/t11-performance-acceptance-record-20261002.md": "B62E4728FA59C149D0CC221A1C31F86A60D55B99E8BD50EC218ACF6C84CC1806",
+    "handoff/t11-project-config-integration-20261002.json": "066577B9C6FA3D1D6E57827221395B646E85F9935D85B0E7994E155EDD954502"
+  },
+  "findings": {
+    "current_t11_release_blocker": "No current-hash correctness blocker demonstrated by T11 privacy/offline receipts.",
+    "current_performance": "Unverified; current-hash 100k and live reranker not run.",
+    "historical_red": "972.658 ms and 1698.727 ms vs 750 ms from older source/test pins.",
+    "offline": "179 passed, 3 skipped; privacy selector 1 passed."
+  },
+  "action": "Updated T11 manifest and performance acceptance record to mark benchmark work post-release. T11 slot request withdrawn. No T11 tests/benchmarks or source edits.",
+  "next": "Keep T11 acceptance open; revisit current-hash 100k and live reranker after functional release."
+}

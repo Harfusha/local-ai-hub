@@ -1,0 +1,53 @@
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -2394,12 +2394,15 @@
+                             except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+                                 continue
+                     norms = np.linalg.norm(matrix, axis=1)
+-                    scores = np.zeros(len(batch), dtype=np.float32)
+                     valid = np.isfinite(norms) & (norms > 1e-9)
+                     if q_norm > 1e-9 and valid.any():
+-                        dot_scores = np.dot(matrix, q)
+-                        scores[valid] = dot_scores[valid] / norms[valid]
+-                    scores = np.where(np.isfinite(scores), scores, 0.0)
++                        scores = np.dot(matrix, q)
++                        np.divide(scores, norms, out=scores, where=valid)
++                        scores[~valid] = 0.0
++                    else:
++                        scores = norms
++                        scores.fill(0.0)
++                    np.nan_to_num(scores, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+                     local_count = min(candidate_limit, len(batch))
+                     if local_count < len(batch):
+                         kth = len(batch) - local_count
+--- a/tests/test_rag_quality_contract.py
++++ b/tests/test_rag_quality_contract.py
+@@ -125,6 +125,28 @@
+ 
+     assert result["success"] is True
+     assert [row["chunk_no"] for row in result["results"]] == [0, 1, 2, 3]
++
++
++def test_vector_search_reuses_norm_buffer_for_scores(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.config["rag"]["search_batch_size"] = 32
++    tenant, workspace = "tenant", "score-buffer-workspace"
++    vectors = np.asarray([[1.0, 0.0]] * 31 + [[0.0, 0.0]], dtype=np.float32)
++    _insert_vectors(store, tenant, workspace, vectors)
++
++    zeros = np.zeros
++
++    def reject_batch_score_buffer(shape, *args, **kwargs):
++        if shape == 32:
++            raise AssertionError("vector scoring should reuse an existing batch array")
++        return zeros(shape, *args, **kwargs)
++
++    monkeypatch.setattr(np, "zeros", reject_batch_score_buffer)
++    result = store._search_uncached("score buffer query", tenant, workspace, top_k=4, use_reranker=False)
++
++    assert result["success"] is True
++    assert [row["chunk_no"] for row in result["results"]] == [0, 1, 2, 3]
++    assert all(np.isfinite(row["embedding_score"]) for row in result["results"])
+ 
+ 
+ def test_vector_search_keeps_deterministic_ties_at_candidate_cutoff(tmp_path):

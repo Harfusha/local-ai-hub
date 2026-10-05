@@ -1,0 +1,79 @@
+{
+  "date": "2026-10-01",
+  "task": "T11 four root-current quality selector RCA and fixture provenance repair",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "candidate": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "overlay": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t11-root-current-acceptance-fixed-fixture-da469c2e519c4c55bf25d68ea61bd371",
+  "root_preimages": {
+    "tests/test_rag_quality_contract.py": "4ba233cb1e69c8c42a782021f4d545a6cd1fd4c748104439fa479b473a10c51f",
+    "src/local_ai_hub/rag.py": "4c0ed5c52ec4cd9d82b41f0d6d2188812d607d1ce58c4ffea956d045fbb9048a",
+    "src/local_ai_hub/embeddings.py": "21a6282871005d1045b2e76a2cc65599deedb877477e007c1aa8fb31bfaccd08"
+  },
+  "candidate_pins": {
+    "src/local_ai_hub/rag.py": "db181093f53f0d6666a890413bfea5f52359890ce8236def0160df744cf0c6ff",
+    "src/local_ai_hub/embeddings.py": "2360fb9e4e9dda72dc633a5e4f33ecbab2ec3e8a26dc728f61114acc2496d170",
+    "tests/test_rag_quality_contract.py": "81c17571143a4256cf9d9a9017137b82cfd564cd4f45b21e48e5f3fbecba7a3c"
+  },
+  "red_before": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py tests/test_rag_quality_contract.py tests/test_rag_hybrid.py tests/test_rag_read_bounds.py tests/test_t11_project_policy_consumers.py",
+    "result": "69 passed, 4 failed, 2 skipped in 36.00s",
+    "failures": {
+      "tests/test_rag_quality_contract.py::test_vector_search_streams_rows_and_keeps_golden_relevance": "expected chunk_no [2,3,1], got []",
+      "tests/test_rag_quality_contract.py::test_numpy_vector_parse_skips_integer_overflow": "empty results",
+      "tests/test_rag_quality_contract.py::test_equal_scores_use_semantic_path_order_not_row_order": "empty results",
+      "tests/test_rag_quality_contract.py::test_vector_cursor_closes_before_scoring_batch": "closed_before_dot=false"
+    }
+  },
+  "green_four_root_source": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py::test_vector_search_streams_rows_and_keeps_golden_relevance tests/test_rag_quality_contract.py::test_numpy_vector_parse_skips_integer_overflow tests/test_rag_quality_contract.py::test_equal_scores_use_semantic_path_order_not_row_order tests/test_rag_quality_contract.py::test_vector_cursor_closes_before_scoring_batch",
+    "result": "4 passed in 0.45s"
+  },
+  "green_four_candidate_source": {
+    "same_selectors": [
+      "tests/test_rag_quality_contract.py::test_vector_search_streams_rows_and_keeps_golden_relevance",
+      "tests/test_rag_quality_contract.py::test_numpy_vector_parse_skips_integer_overflow",
+      "tests/test_rag_quality_contract.py::test_equal_scores_use_semantic_path_order_not_row_order",
+      "tests/test_rag_quality_contract.py::test_vector_cursor_closes_before_scoring_batch"
+    ],
+    "result": "4 passed in 0.56s"
+  },
+  "green_full_root_overlay": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py tests/test_rag_quality_contract.py tests/test_rag_hybrid.py tests/test_rag_read_bounds.py tests/test_t11_project_policy_consumers.py",
+    "result": "73 passed, 2 skipped in 20.00s",
+    "exit_code": 0,
+    "skips": [
+      "live Ollama/reranker opt-in",
+      "bounded retrieval benchmark opt-in"
+    ]
+  },
+  "rca": {
+    "root_exact_space_filter": "rag.py lines 2155-2156 filters exact, nonempty embedding_space",
+    "fixture_gap": "query fixture omitted embedding_space_id; direct-SQL vectors omitted embedding_space; strict isolation correctly excluded unprovenanced rows",
+    "cursor": "root closes cursor lines 2171-2174 before dot scoring line 2203; no eligible rows meant dot never ran, so the false close flag did not prove a cursor-order bug",
+    "wrapper": "candidate search persists resolved workspace embedding-space metadata; wrapped test connections need commit forwarding"
+  },
+  "patch": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-quality-fixture-provenance-20261001-v1.patch",
+    "sha256": "f6a232af6dea372f601ab88f7aff9c3772cce352fdaf5bd3598e84b585a7651e",
+    "changed_paths": [
+      "tests/test_rag_quality_contract.py"
+    ],
+    "added_lines": 14,
+    "removed_lines": 8,
+    "assertions_changed": false,
+    "root_strict_apply_check": "passed, exit 0",
+    "applied_to_root": false,
+    "readonly": true,
+    "overlay_postimage_sha256": "e783c6bac08d827b4ff5f404b5a521b4e041821992c8734a730d1441350149ef"
+  },
+  "scope": {
+    "root_written": false,
+    "api_context_pack_touched": false,
+    "production_source_changed": false,
+    "gpu": false,
+    "100k": false,
+    "live_model": false
+  }
+}

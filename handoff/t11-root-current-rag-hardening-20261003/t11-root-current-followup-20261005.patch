@@ -1,0 +1,245 @@
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -31,6 +31,8 @@
+ 
+ _MAX_RERANK_CANDIDATES = 512
+ _INDEX_EMBED_BATCH_SIZE = 64
++_VECTOR_BATCH_MEMORY_BUDGET_BYTES = 16 * 1024 * 1024
++_MAX_VECTOR_BATCH_SIZE = 8192
+ 
+ 
+ class ProjectPolicySyncError(RuntimeError):
+@@ -284,6 +286,9 @@
+                     value TEXT NOT NULL
+                 )"""
+             )
++            fts_exists = con.execute(
++                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
++            ).fetchone() is not None
+             previous = con.execute("SELECT value FROM rag_meta WHERE key='index_fingerprint'").fetchone()
+             current = self.index_fingerprint
+             if previous is None:
+@@ -292,10 +297,14 @@
+                 if existing:
+                     con.execute("DELETE FROM chunks")
+                     con.execute("DELETE FROM files")
++                    if fts_exists:
++                        con.execute("DELETE FROM chunk_fts")
+             elif str(previous[0]) != current:
+                 self.index_reset = True
+                 con.execute("DELETE FROM chunks")
+                 con.execute("DELETE FROM files")
++                if fts_exists:
++                    con.execute("DELETE FROM chunk_fts")
+             con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES('index_fingerprint',?)", (current,))
+             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_workspace ON chunks(tenant, workspace)")
+             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_embedding_space ON chunks(tenant, workspace, embedding_space, path, chunk_no)")
+@@ -1056,7 +1065,10 @@
+             with self._get_workspace_lock(resolved_workspace):
+                 result = self._index_locked(resolved_root, tenant, resolved_workspace)
+         except Exception as exc:
+-            result = {"success": False, "error": str(exc), "retryable": True}
++            result = {
++                "success": False, "error": str(exc),
++                "retryable": bool(getattr(exc, "retryable", is_busy_error(exc))),
++            }
+         finally:
+             flight["result"] = result
+             flight["event"].set()
+@@ -1092,9 +1104,11 @@
+         workspace = workspace or self.workspace_id(str(root_path))
+         scope_key = self._scope_key(tenant)
+         self._sync_workspace_project_policy_identity(root_path, scope_key, workspace, project_context)
+-        embedding_space = _space_override or self._embedding_space_id()
++        configured_space = _space_override or self._embedding_space_id()
++        identity_resolved = _space_override is not None or self._embedding_space_is_resolved()
+ 
+         with closing(self._connect()) as con:
++            stored_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
+             uncertain_retry_paths = self._workspace_read_uncertain_paths(con, scope_key, workspace)
+             old_files_rows = con.execute(
+                 "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
+@@ -1104,6 +1118,12 @@
+                 "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
+                 (scope_key, workspace),
+             ).fetchall()
++        old_space_counts: dict[str, int] = {}
++        for row in old_chunk_rows:
++            old_space_counts[str(row[4] or "")] = old_space_counts.get(str(row[4] or ""), 0) + 1
++        if stored_space is None and old_space_counts:
++            stored_space = sorted(old_space_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
++        embedding_space = configured_space if identity_resolved else (stored_space or configured_space)
+         old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_files_rows}
+         old_chunks = {
+             (r[0], int(r[1]), r[2]): r[3]
+@@ -1189,7 +1209,7 @@
+                     read_uncertain_paths.add(rel)
+                     continue
+                 read_files += 1
+-                text = raw.decode("utf-8", errors="replace")
++                text = _canonical_fragment_text(raw.decode("utf-8", errors="replace"))
+                 file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+             except Exception:
+                 skipped += 1
+@@ -1363,6 +1383,8 @@
+             "success": True,
+             "scope": self.scope,
+             "workspace": workspace,
++            "embedding_space_id": embedding_space,
++            "embedding_space_resolved": bool(identity_resolved or observed_embedding_space or stored_space),
+             "files_root": str(root_path),
+             "files": int(file_count),
+             "chunks": int(chunk_count),
+@@ -1592,10 +1614,10 @@
+                         if raw is None:
+                             read_uncertain_paths.add(rel)
+                             continue
+-                        text = raw.decode("utf-8", errors="replace")
++                        text = _canonical_fragment_text(raw.decode("utf-8", errors="replace"))
+                         file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+                     else:
+-                        text = str(override)
++                        text = _canonical_fragment_text(str(override))
+                         if len(text.encode("utf-8")) > max_bytes:
+                             policy_deleted.add(rel)
+                             continue
+@@ -1614,12 +1636,9 @@
+             )
+             if not file_data and not deleted_unique:
+                 if read_uncertain_paths:
+-                    with closing(self._connect()) as con:
+-                        con.execute("BEGIN IMMEDIATE")
+-                        self._update_workspace_read_uncertainty(
+-                            con, scope_key, workspace, uncertain_paths=read_uncertain_paths,
+-                        )
+-                        con.commit()
++                    self._publish_workspace_read_uncertainty(
++                        scope_key, workspace, read_uncertain_paths
++                    )
+                 return {
+                     "success": True, "workspace": workspace, "preempted": False,
+                     "embedding_space_id": stored_space or embedding_space,
+@@ -1947,7 +1966,7 @@
+                 path, mtime_ns, size = current_meta[rel]
+                 try:
+                     raw = path.read_bytes()
+-                    text = raw.decode("utf-8", errors="replace")
++                    text = _canonical_fragment_text(raw.decode("utf-8", errors="replace"))
+                     file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+                 except Exception:
+                     continue
+@@ -2386,7 +2405,8 @@
+ 
+         rag_cfg = self.config.get("rag", {})
+         candidate_limit = min(_MAX_RERANK_CANDIDATES, max(16, int(rag_cfg.get("rerank_candidates", 16))))
+-        batch_size = min(2048, max(32, int(rag_cfg.get("search_batch_size", 512))))
++        configured_batch_size = max(32, int(rag_cfg.get("search_batch_size", 512)))
++        batch_size = min(2048, configured_batch_size)
+         best: list[tuple[float, tuple[int, ...], int, tuple[int, ...], dict[str, Any]]] = []
+         rows_seen = 0
+         try:
+@@ -2397,6 +2417,8 @@
+         if np is not None:
+             q = np.asarray(query_vec, dtype=np.float32).reshape(-1)
+             dimension = int(q.size)
++            memory_batch_limit = _VECTOR_BATCH_MEMORY_BUDGET_BYTES // max(16, dimension * 16)
++            batch_size = min(_MAX_VECTOR_BATCH_SIZE, memory_batch_limit, configured_batch_size)
+             q_norm = float(np.linalg.norm(q))
+             if q_norm > 1e-9:
+                 q = q / q_norm
+@@ -2479,12 +2501,15 @@
+                             except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+                                 continue
+                     norms = np.linalg.norm(matrix, axis=1)
+-                    scores = np.zeros(len(batch), dtype=np.float32)
+                     valid = np.isfinite(norms) & (norms > 1e-9)
+                     if q_norm > 1e-9 and valid.any():
+-                        dot_scores = np.dot(matrix, q)
+-                        scores[valid] = dot_scores[valid] / norms[valid]
+-                    scores = np.where(np.isfinite(scores), scores, 0.0)
++                        scores = np.dot(matrix, q)
++                        np.divide(scores, norms, out=scores, where=valid)
++                        scores[~valid] = 0.0
++                    else:
++                        scores = norms
++                        scores.fill(0.0)
++                    np.nan_to_num(scores, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+                     local_count = min(candidate_limit, len(batch))
+                     if local_count < len(batch):
+                         kth = len(batch) - local_count
+diff --git a/tests/test_rag_hybrid.py b/tests/test_rag_hybrid.py
+--- a/tests/test_rag_hybrid.py
++++ b/tests/test_rag_hybrid.py
+@@ -8,6 +8,7 @@
+ import json
+ import struct
+ from contextlib import closing
++from pathlib import Path
+ 
+ from local_ai_hub.agent_events import AgentEvent, AgentStateStore
+ from local_ai_hub import rag as rag_module
+diff --git a/tests/test_rag_fragment_cache.py b/tests/test_rag_fragment_cache.py
+--- a/tests/test_rag_fragment_cache.py
++++ b/tests/test_rag_fragment_cache.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import io
++import os
+ import threading
+ import sqlite3
+ import json
+diff --git a/tests/test_t11_rag_ingestion_contract.py b/tests/test_t11_rag_ingestion_contract.py
+--- a/tests/test_t11_rag_ingestion_contract.py
++++ b/tests/test_t11_rag_ingestion_contract.py
+@@ -812,18 +812,24 @@
+         metadata={"owner": "team"},
+     )
+ 
+-    assert requests[0][1] == {
+-        "workspace": "specs",
+-        "content": "Explicit content",
+-        "title": "Explicit title",
+-        "metadata": {"owner": "team"},
+-    }
+-    assert requests[1][1] == {
+-        "workspace": "diagrams",
+-        "image_path": str(tmp_path / "diagram.png"),
+-        "caption": "Explicit caption",
+-        "metadata": {"owner": "team"},
+-    }
++    rag_requests = [
++        payload for path, payload in requests
++        if path in {"/api/rag/ingest_document", "/api/rag/ingest_diagram"}
++    ]
++    assert rag_requests == [
++        {
++            "workspace": "specs",
++            "content": "Explicit content",
++            "title": "Explicit title",
++            "metadata": {"owner": "team"},
++        },
++        {
++            "workspace": "diagrams",
++            "image_path": str(tmp_path / "diagram.png"),
++            "caption": "Explicit caption",
++            "metadata": {"owner": "team"},
++        },
++    ]
+ 
+ 
+ @pytest.mark.skipif(os.environ.get("T11_REAL_OLLAMA") != "1", reason="set T11_REAL_OLLAMA=1 for isolated live Ollama verification")
+@@ -1196,7 +1202,11 @@
+         query="unrelated path",
+     )
+ 
+-    assert calls == [
++    rag_calls = [
++        (path, payload) for path, payload in calls
++        if path in {"/api/rag/ingest_document", "/api/rag/ingest_diagram"}
++    ]
++    assert rag_calls == [
+         (
+             "/api/rag/ingest_document",
+             {

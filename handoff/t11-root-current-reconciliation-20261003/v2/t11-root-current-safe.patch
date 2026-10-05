@@ -1,0 +1,2524 @@
+diff --git a/src/local_ai_hub/embeddings.py b/src/local_ai_hub/embeddings.py
+--- a/src/local_ai_hub/embeddings.py
++++ b/src/local_ai_hub/embeddings.py
+@@ -63,6 +63,14 @@
+         self._loaded_model_name = self.model_name
+         self._active_cache_identity: str | None = None
+         self._active_embedding_dimension: int | None = None
++        self._identity_dimension_lock = threading.Lock()
++        self._dimensions_by_identity: dict[str, int] = {}
++        self._model_provenance_lock = threading.Lock()
++        self._model_provenance_by_identity: dict[str, dict[str, str | None]] = {}
++        self._loaded_model_revision: str | None = None
++        self._loaded_model_digest: str | None = None
++        self._encoder_lock = threading.RLock()
++        self._execution_local = threading.local()
+ 
+     @staticmethod
+     def _valid_cached_vector(cached: Any, identity: str, expected_dimension: int | None) -> list[float] | None:
+@@ -84,6 +92,66 @@
+             return None
+         return converted
+ 
++    @staticmethod
++    def _resolved_model_revision(model: Any) -> str | None:
++        candidates = [model]
++        try:
++            candidates.append(model[0])
++        except (IndexError, KeyError, TypeError):
++            pass
++        candidates.extend(getattr(candidate, "auto_model", None) for candidate in tuple(candidates))
++        for candidate in candidates:
++            config = getattr(candidate, "config", None)
++            revision = getattr(config, "_commit_hash", None)
++            if isinstance(revision, str):
++                value = revision.strip().lower()
++                if len(value) in {40, 64} and all(char in "0123456789abcdef" for char in value):
++                    return value
++        return None
++
++    def _record_model_provenance(
++        self,
++        identity: str,
++        *,
++        model: Any = None,
++        revision: str | None = None,
++        digest: str | None = None,
++    ) -> dict[str, str | None]:
++        resolved = {
++            "revision": revision or self._resolved_model_revision(model),
++            "digest": digest or getattr(model, "digest", None),
++        }
++        with self._model_provenance_lock:
++            self._model_provenance_by_identity[identity] = resolved
++        if identity == getattr(self, "_active_cache_identity", None) or identity.startswith(
++            f"{self.active_backend or ''}:{self.active_device or ''}:"
++        ):
++            self._loaded_model_revision = resolved["revision"]
++            self._loaded_model_digest = resolved["digest"]
++        return resolved
++
++    def _model_provenance(self, identity: str | None) -> dict[str, str | None]:
++        if identity:
++            lock = getattr(self, "_model_provenance_lock", None)
++            if lock is not None:
++                with lock:
++                    known = getattr(self, "_model_provenance_by_identity", {}).get(identity)
++                if isinstance(known, dict):
++                    return known
++        models = self.config.get("models", {})
++        return {
++            "revision": models.get("embedding_revision") or models.get("model_revision"),
++            "digest": models.get("embedding_digest") or models.get("model_digest"),
++        }
++
++    def _identity_cacheable(self, identity: str | None) -> bool:
++        if not identity:
++            return False
++        provider = identity.split(":", 1)[0]
++        if provider not in {"sentence-transformers", "openvino"}:
++            return True
++        return bool(self._model_provenance(identity).get("revision"))
++
+     def _configured_embedding_dimension(self) -> int | None:
+         models = self.config.get("models", {})
+         cpu_cfg = self.config.get("cpu_retrieval", {})
+@@ -91,6 +159,79 @@
+             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                 return value
+         return None
++
++    def _dimension_identity_key(self, identity: str) -> str:
++        provenance = self._model_provenance(identity)
++        provider, _, remainder = identity.partition(":")
++        model_name = remainder.partition(":")[2] if provider in {"sentence-transformers", "openvino"} else remainder
++        return stable_hash({
++            "identity": identity,
++            "model": model_name,
++            "digest": provenance.get("digest"),
++            "revision": provenance.get("revision"),
++            "normalized": self._embedding_normalized(identity),
++            "configured_dimension": self._configured_embedding_dimension(),
++        })
++
++    def _dimension_for_identity(self, identity: str) -> int | None:
++        identity_key = self._dimension_identity_key(identity)
++        dimensions = getattr(self, "_dimensions_by_identity", None)
++        lock = getattr(self, "_identity_dimension_lock", None)
++        if isinstance(dimensions, dict) and lock is not None:
++            with lock:
++                known = dimensions.get(identity_key)
++            if known is not None:
++                return known
++
++        cache = getattr(self, "cache", None)
++        if (
++            cache is not None
++            and bool(getattr(self, "cache_enabled", False))
++            and self._identity_cacheable(identity)
++        ):
++            try:
++                metadata = cache.get(stable_hash({"embedding_dimension_metadata": identity_key}))
++            except Exception:
++                metadata = None
++            if isinstance(metadata, dict) and metadata.get("identity") == identity_key:
++                dimension = metadata.get("dimension")
++                configured = self._configured_embedding_dimension()
++                if (
++                    isinstance(dimension, int)
++                    and not isinstance(dimension, bool)
++                    and dimension > 0
++                    and (configured is None or configured == dimension)
++                ):
++                    self._remember_dimension(identity, dimension, persist=False)
++                    return dimension
++        return self._configured_embedding_dimension()
++
++    def _remember_dimension(self, identity: str, dimension: int, *, persist: bool = True) -> None:
++        lock = getattr(self, "_identity_dimension_lock", None)
++        if lock is None:
++            lock = threading.Lock()
++            self._identity_dimension_lock = lock
++        dimensions = getattr(self, "_dimensions_by_identity", None)
++        if not isinstance(dimensions, dict):
++            dimensions = {}
++            self._dimensions_by_identity = dimensions
++        identity_key = self._dimension_identity_key(identity)
++        with lock:
++            dimensions[identity_key] = int(dimension)
++        cache = getattr(self, "cache", None)
++        if (
++            persist
++            and cache is not None
++            and bool(getattr(self, "cache_enabled", False))
++            and self._identity_cacheable(identity)
++        ):
++            try:
++                cache.set(
++                    stable_hash({"embedding_dimension_metadata": identity_key}),
++                    {"identity": identity_key, "dimension": int(dimension)},
++                )
++            except Exception:
++                pass
+ 
+     def _embedding_normalized(self, identity: str | None = None) -> bool | None:
+         if identity and identity.startswith("ollama:"):
+@@ -102,38 +243,34 @@
+             return False
+         return None
+ 
+-    def _embedding_cache_key(self, identity: str, query: bool, text: str) -> str:
+-        model_name = self._ollama_model_name if identity.startswith("ollama:") else self._loaded_model_name
+-        models = self.config.get("models", {})
+-        model_digest = (
+-            getattr(self, "_loaded_model_digest", None)
+-            or getattr(getattr(self, "_model", None), "digest", None)
+-            or models.get("embedding_digest")
+-            or models.get("model_digest")
+-        )
+-        model_revision = (
+-            getattr(self, "_loaded_model_revision", None)
+-            or getattr(getattr(self, "_model", None), "revision", None)
+-            or models.get("embedding_revision")
+-            or models.get("model_revision")
+-        )
++    def _embedding_cache_key(
++        self,
++        identity: str,
++        query: bool,
++        text: str,
++        *,
++        dimension: int | None = None,
++    ) -> str:
++        provider, _, remainder = identity.partition(":")
++        model_name = remainder.partition(":")[2] if provider in {"sentence-transformers", "openvino"} else remainder
++        provenance = self._model_provenance(identity)
+         return stable_hash({
+             "space": stable_hash({
+                 "identity": identity,
+                 "provider": identity.split(":", 1)[0],
+                 "model": model_name,
+-                "digest": model_digest,
+-                "revision": model_revision,
+-                "dimension": self._configured_embedding_dimension(),
++                "digest": provenance.get("digest"),
++                "revision": provenance.get("revision"),
++                "dimension": dimension if dimension is not None else self._dimension_for_identity(identity),
+                 "normalized": self._embedding_normalized(identity),
+             }),
+             "query": query,
+             "text": text,
+         })
+ 
+-    def embedding_space_id(self, identity: str | None = None) -> str:
++    def embedding_space_id(self, identity: str | None = None, *, dimension: int | None = None) -> str:
+         selected = identity or self._active_cache_identity or f"configured:{self.backend}:{self.device}:{self.model_name}"
+-        return self._embedding_cache_key(selected, False, "")
++        return self._embedding_cache_key(selected, False, "", dimension=dimension)
+ 
+     def _encode_request_key(self, texts: list[str], query: bool) -> str:
+         identity = self._active_cache_identity or f"configured:{self.backend}:{self.device}:{self.model_name}"
+@@ -182,6 +319,10 @@
+                 "device": str(device).lower(),
+                 "trust_remote_code": self.trust_remote_code,
+             }
++            models = self.config.get("models", {})
++            configured_revision = models.get("embedding_revision") or models.get("model_revision")
++            if isinstance(configured_revision, str) and configured_revision.strip():
++                kwargs["revision"] = configured_revision.strip()
+             if backend == "openvino":
+                 # SentenceTransformers is still an nn.Module and calls .to(device) on
+                 # its pooling/output modules.  Passing "npu" there can make PyTorch
+@@ -235,6 +376,8 @@
+             self._loaded_model_name = loaded_model_name
+             self.active_backend = backend
+             self.active_device = str(device)
++            identity = f"{backend}:{device}:{loaded_model_name}"
++            self._record_model_provenance(identity, model=model)
+             self._load_error = None
+             return True
+         except Exception as exc:
+@@ -306,6 +449,19 @@
+             model = self._model
+             if model is None:
+                 return None, self.active_backend or "sentence-transformers"
++            backend = self.active_backend or "sentence-transformers"
++            device = str(self.active_device or self.device)
++            model_name = self._loaded_model_name
++            identity = f"{backend}:{device}:{model_name}"
++            provenance = self._model_provenance(identity)
++            execution_snapshot = {
++                "identity": identity,
++                "backend": backend,
++                "device": device,
++                "model": model_name,
++                "revision": provenance.get("revision"),
++                "digest": provenance.get("digest"),
++            }
+             if (
+                 self.active_backend == "openvino"
+                 and str(self.active_device or "").upper().startswith("NPU")
+@@ -315,19 +471,21 @@
+                 # single input and fallback switches accelerators, finish the rest
+                 # of this logical batch on the new device in one call.
+                 vectors: list[list[float]] = []
+-                for index, text in enumerate(batch_texts):
++                for text in batch_texts:
+                     item_vectors, active = self._encode_st_batch([text], query=query, priority=priority)
+                     if item_vectors is None:
+                         return None, active
+                     vectors.extend(item_vectors)
+                     if not str(self.active_device or "").upper().startswith("NPU"):
+-                        remaining = batch_texts[index + 1 :]
+-                        if remaining:
+-                            rest_vectors, active = self._encode_st_batch(remaining, query=query, priority=priority)
+-                            if rest_vectors is None:
+-                                return None, active
+-                            vectors.extend(rest_vectors)
+-                        return vectors, active
++                        # Earlier items may already be NPU vectors. Re-encode the
++                        # whole batch on the fallback device so one batch never
++                        # mixes embedding spaces or precision.
++                        restarted, active = self._encode_st_batch(
++                            batch_texts, query=query, priority=priority
++                        )
++                        if restarted is None:
++                            return None, active
++                        return restarted, active
+                 return vectors, self.active_backend or "sentence-transformers"
+             prompts = getattr(model, "prompts", {}) or {}
+             kwargs: dict[str, Any] = {
+@@ -345,7 +503,8 @@
+                 for vector in encoded:
+                     as_list = vector.tolist() if hasattr(vector, "tolist") else list(vector)
+                     vectors.append([float(v) for v in as_list])
+-                return vectors, self.active_backend or "sentence-transformers"
++                self._execution_local.snapshot = execution_snapshot
++                return vectors, backend
+             except Exception as exc:
+                 # OpenVINO may discover an NPU but reject a particular model/shape
+                 # at first inference. Advance to iGPU/CPU instead of poisoning RAG.
+@@ -420,6 +579,7 @@
+         return None
+ 
+     def encode(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
++        self._execution_local.snapshot = None
+         request_key = self._encode_request_key(texts, query)
+         result, _coalesced = self.flight_group.do(
+             request_key,
+@@ -444,27 +604,29 @@
+         # Establish a verified identity before the first lookup. Previously this
+         # was assigned only after computing a miss, making every fresh process
+         # ignore its persistent cross-worktree embedding cache for its first batch.
+-        if cache_identity is None and self.cache_enabled:
+-            if self.backend in {"sentence-transformers", "openvino"} and self._ensure_model():
+-                active = self.active_backend or "sentence-transformers"
+-                device = self.active_device or self.device
+-                self._active_cache_identity = f"{active}:{device}:{self._loaded_model_name}"
+-            elif self.backend == "ollama":
+-                self._active_cache_identity = f"ollama:{self._ollama_model_name}"
++        if self.cache_enabled and self.backend in {"sentence-transformers", "openvino"}:
++            with self._encoder_lock:
++                model_ready = self._ensure_model()
++                if model_ready:
++                    active = self.active_backend or "sentence-transformers"
++                    device = self.active_device or self.device
++                    self._active_cache_identity = f"{active}:{device}:{self._loaded_model_name}"
++            if model_ready:
++                cache_identity = self._active_cache_identity
++        elif cache_identity is None and self.cache_enabled and self.backend == "ollama":
++            self._active_cache_identity = f"ollama:{self._ollama_model_name}"
+             cache_identity = self._active_cache_identity
+-        used_backend = self.active_backend or self.backend
++        used_backend = cache_identity.split(":", 1)[0] if cache_identity else (self.active_backend or self.backend)
+         backend_fallback = False
++        cache_identity_usable = self.cache_enabled and self._identity_cacheable(cache_identity)
+         for i, text in enumerate(texts):
+             clean_text = str(text).replace("\r\n", "\n")
+-            key = self._embedding_cache_key(cache_identity, query, clean_text) if cache_identity else ""
+-            cached = self.cache.get(key) if self.cache_enabled and key else None
+-            if cached is None and self.cache_enabled and cache_identity:
+-                legacy_key = stable_hash({"identity": cache_identity, "query": query, "text": clean_text})
+-                cached = self.cache.get(legacy_key)
++            key = self._embedding_cache_key(cache_identity, query, clean_text) if cache_identity_usable else ""
++            cached = self.cache.get(key) if cache_identity_usable and key else None
+             # Runtime dimension is shared mutable state. Concurrent requests may
+-            # finish on different backends, so only use configured dimension when
+-            # validating an entry before this request has produced its own vector.
+-            expected_dimension = self._configured_embedding_dimension()
++            # finish on different backends, so use dimensions learned for this
++            # exact cache identity rather than a process-wide last result.
++            expected_dimension = self._dimension_for_identity(cache_identity) if cache_identity_usable else None
+             cached_vector = self._valid_cached_vector(cached, cache_identity, expected_dimension) if cache_identity else None
+             if cached_vector is not None:
+                 vectors[i] = cached_vector
+@@ -489,6 +651,7 @@
+         batch_deduplicated = sum(len(group) - 1 for group in missing_groups)
+         recomputed_cached = 0
+         response_cache_identity = cache_identity
++        result_cache_enabled = cache_identity_usable
+ 
+         if missing_texts:
+             computed_vectors: list[list[float]] | None = None
+@@ -521,7 +684,7 @@
+                 for _restart in range(max_restarts):
+                     all_st_vectors: list[list[float]] = []
+                     failed = False
+-                    execution_identity: tuple[str, str] | None = None
++                    execution_identity: tuple[str, str, str, str | None] | None = None
+                     switched = False
+                     for start in range(0, len(missing_texts), self.batch_size):
+                         stop = min(len(missing_texts), start + self.batch_size)
+@@ -530,14 +693,28 @@
+                         if encoded is None:
+                             failed = True
+                             break
+-                        current_identity = (active, str(self.active_device or self.device))
++                        snapshot = getattr(self._execution_local, "snapshot", None)
++                        if isinstance(snapshot, dict):
++                            current_identity = (
++                                str(snapshot["backend"]),
++                                str(snapshot["device"]),
++                                str(snapshot["model"]),
++                                snapshot.get("revision"),
++                            )
++                        else:
++                            current_identity = (
++                                active,
++                                str(self.active_device or self.device),
++                                self._loaded_model_name,
++                                self._loaded_model_revision,
++                            )
+                         if execution_identity is None:
+                             execution_identity = current_identity
+                         elif current_identity != execution_identity:
+                             switched = True
+                             break
+                         all_st_vectors.extend(encoded)
+-                        used_backend = active
++                        used_backend = current_identity[0]
+                     if switched:
+                         continue
+                     if failed or len(all_st_vectors) != len(missing_texts):
+@@ -549,12 +726,28 @@
+                     return {"success": False, "error": self._load_error or "embedding accelerator repeatedly changed", "model": self.model_name}
+ 
+             # 3. Store in vectors and persist to cache
++            execution_snapshot = getattr(self._execution_local, "snapshot", None)
+             model_identity = self._ollama_model_name if used_backend == "ollama" else self._loaded_model_name
+             if used_backend == "ollama":
+                 result_cache_identity = f"ollama:{model_identity}"
++                result_device = "ollama"
+             else:
+-                result_cache_identity = f"{used_backend}:{self.active_device or self.device}:{model_identity}"
+-            self._active_cache_identity = result_cache_identity
++                if isinstance(execution_snapshot, dict) and execution_snapshot.get("backend") == used_backend:
++                    result_cache_identity = str(execution_snapshot["identity"])
++                    model_identity = str(execution_snapshot["model"])
++                    result_device = str(execution_snapshot["device"])
++                else:
++                    result_device = str(self.active_device or self.device)
++                    result_cache_identity = f"{used_backend}:{result_device}:{model_identity}"
++            with self._encoder_lock:
++                current_identity = (
++                    f"{self.active_backend}:{self.active_device or self.device}:{self._loaded_model_name}"
++                    if self.active_backend
++                    else None
++                )
++                if used_backend == "ollama" or current_identity == result_cache_identity:
++                    self._active_cache_identity = result_cache_identity
++            result_cache_enabled = self.cache_enabled and self._identity_cacheable(result_cache_identity)
+             if len(computed_vectors) != len(missing_texts) or any(
+                 not isinstance(vector, list) for vector in computed_vectors
+             ):
+@@ -577,6 +770,7 @@
+                 return {"success": False, "error": "embedding backend returned an invalid vector", "model": self.model_name}
+             result_dimension = dimensions.pop()
+             self._active_embedding_dimension = result_dimension
++            self._remember_dimension(result_cache_identity, result_dimension, persist=result_cache_enabled)
+ 
+             if result_cache_identity != cache_identity and cached_items:
+                 cached_groups: dict[str, list[int]] = {}
+@@ -588,7 +782,12 @@
+                 for start in range(0, len(cached_texts), self.batch_size):
+                     batch = cached_texts[start:start + self.batch_size]
+                     encoded, active = self._encode_st_batch(batch, query=query, priority=priority)
+-                    active_identity = f"{active}:{self.active_device or self.device}:{self._loaded_model_name}"
++                    snapshot = getattr(self._execution_local, "snapshot", None)
++                    active_identity = (
++                        str(snapshot["identity"])
++                        if isinstance(snapshot, dict)
++                        else f"{active}:{self.active_device or self.device}:{self._loaded_model_name}"
++                    )
+                     if encoded is None or len(encoded) != len(batch) or active_identity != result_cache_identity:
+                         return {"success": False, "error": "embedding backend changed while reconciling cached vectors", "model": self.model_name}
+                     for vector in encoded:
+@@ -607,8 +806,8 @@
+                 for text, vector in zip(cached_texts, cached_vectors):
+                     for index in cached_groups[text]:
+                         vectors[index] = vector
+-                    if self.cache_enabled:
+-                        key = self._embedding_cache_key(result_cache_identity, query, text)
++                    if result_cache_enabled:
++                        key = self._embedding_cache_key(result_cache_identity, query, text, dimension=result_dimension)
+                         self.cache.set(key, {"identity": result_cache_identity, "dimension": result_dimension, "vector": vector})
+                 recomputed_cached = len(cached_texts)
+                 batch_deduplicated += sum(len(indices) - 1 for indices in cached_groups.values())
+@@ -618,20 +817,69 @@
+             for indices, text, vector in zip(missing_groups, missing_texts, computed_vectors):
+                 for idx in indices:
+                     vectors[idx] = vector
+-                if self.cache_enabled:
++                if result_cache_enabled:
+                     clean_text = str(text).replace("\r\n", "\n")
+-                    key = self._embedding_cache_key(result_cache_identity, query, clean_text)
++                    key = self._embedding_cache_key(result_cache_identity, query, clean_text, dimension=result_dimension)
+                     self.cache.set(key, {"identity": result_cache_identity, "dimension": result_dimension, "vector": vector})
+                 self._computed += 1
+             self._computed += recomputed_cached
+             self._batch_deduplicated += batch_deduplicated
+ 
++        if any(vector is None for vector in vectors):
++            return {"success": False, "error": "embedding backend returned incomplete vectors", "model": self.model_name}
++        vector_dimensions = {len(vector) for vector in vectors if vector is not None}
++        if len(vector_dimensions) != 1:
++            return {"success": False, "error": "embedding backend returned inconsistent vector dimensions", "model": self.model_name}
++        result_dimension = vector_dimensions.pop()
++        if response_cache_identity:
++            self._remember_dimension(
++                response_cache_identity,
++                result_dimension,
++                persist=self.cache_enabled and self._identity_cacheable(response_cache_identity),
++            )
++        execution_snapshot = getattr(self._execution_local, "snapshot", None)
++        provenance = self._model_provenance(response_cache_identity)
++        if used_backend == "ollama":
++            models = self.config.get("models", {})
++            model_digest = models.get("embedding_digest") or models.get("model_digest")
++            model_revision = models.get("embedding_revision") or models.get("model_revision")
++            result_device = "ollama"
++        else:
++            model_digest = (
++                execution_snapshot.get("digest")
++                if isinstance(execution_snapshot, dict)
++                and execution_snapshot.get("identity") == response_cache_identity
++                else provenance.get("digest")
++            )
++            model_revision = (
++                execution_snapshot.get("revision")
++                if isinstance(execution_snapshot, dict)
++                and execution_snapshot.get("identity") == response_cache_identity
++                else provenance.get("revision")
++            )
++            result_device = (
++                str(execution_snapshot["device"])
++                if isinstance(execution_snapshot, dict)
++                and execution_snapshot.get("identity") == response_cache_identity
++                else str(self.active_device or self.device)
++            )
++        if self.backend in {"auto", "ollama"}:
++            backend_fallback = used_backend != "ollama"
++        else:
++            backend_fallback = (
++                used_backend != self.backend
++                or str(result_device).lower() != str(self.device).lower()
++            )
+         return {
+             "success": True,
+             "model": self.model_name,
+             "backend": used_backend,
+-            "device": self.active_device or self.device,
+-            "embedding_space_id": self.embedding_space_id(response_cache_identity),
++            "device": result_device,
++            "embedding_space_id": self.embedding_space_id(response_cache_identity, dimension=result_dimension),
++            "embedding_dimension": result_dimension,
++            "normalized": self._embedding_normalized(response_cache_identity),
++            "model_digest": model_digest,
++            "model_revision": model_revision,
+             "degraded": backend_fallback,
+             "fallback": used_backend if backend_fallback else None,
+             "embeddings": vectors,
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -22,6 +22,13 @@
+ from .scheduler import QueueFullError
+ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy, quick_sanity_check
+ from .process_utils import canonical_root
++from .project_policy_adapter import (
++    custom_extension_kind,
++    may_descend,
++    path_allowed,
++    phase_allowed,
++    resolve_project_context,
++)
+ 
+ 
+ import re
+@@ -97,6 +104,7 @@
+             return None
+     except (TypeError, ValueError, OverflowError):
+         return None
++
+     if not values or not all(math.isfinite(value) for value in values) or not any(value != 0.0 for value in values):
+         return None
+     try:
+@@ -157,6 +165,11 @@
+             "app_version": __version__,
+             "embedding": model_cfg.get("embedding"),
+             "backend": model_cfg.get("embedding_backend"),
++            "device": model_cfg.get("embedding_device"),
++            "digest": model_cfg.get("embedding_digest") or model_cfg.get("model_digest"),
++            "revision": model_cfg.get("embedding_revision") or model_cfg.get("model_revision"),
++            "dimension": model_cfg.get("embedding_dimension", cpu_cfg.get("embedding_dimension")),
++            "normalized": model_cfg.get("embedding_normalized"),
+             "max_seq": cpu_cfg.get("embedding_max_seq_length", 8192),
+             "chunk_chars": rag_cfg.get("chunk_chars", 4500),
+             "chunk_overlap": rag_cfg.get("chunk_overlap_chars", 450),
+@@ -271,18 +284,28 @@
+                     value TEXT NOT NULL
+                 )"""
+             )
++            fts_exists = con.execute(
++                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
++            ).fetchone() is not None
+             previous = con.execute("SELECT value FROM rag_meta WHERE key='index_fingerprint'").fetchone()
+             current = self.index_fingerprint
++            self.index_reset = legacy_schema_reset
+             if previous is None:
+                 existing = int(con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
+                 self.index_reset = legacy_schema_reset or existing > 0
+                 if existing:
+                     con.execute("DELETE FROM chunks")
+                     con.execute("DELETE FROM files")
++                    if fts_exists:
++                        con.execute("DELETE FROM chunk_fts")
+             elif str(previous[0]) != current:
+                 self.index_reset = True
+                 con.execute("DELETE FROM chunks")
+                 con.execute("DELETE FROM files")
++                if fts_exists:
++                    con.execute("DELETE FROM chunk_fts")
++            if self.index_reset:
++                con.execute("DELETE FROM rag_meta WHERE key LIKE 'workspace_embedding_space:%'")
+             con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES('index_fingerprint',?)", (current,))
+             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_workspace ON chunks(tenant, workspace)")
+             con.execute("CREATE INDEX IF NOT EXISTS idx_chunks_embedding_space ON chunks(tenant, workspace, embedding_space, path, chunk_no)")
+@@ -764,8 +787,34 @@
+         if isinstance(result, dict) and result.get("embedding_space_id"):
+             return str(result["embedding_space_id"])
+         service_space = getattr(self.services, "space_id", None)
+-        if service_space:
++        if service_space and not callable(service_space):
+             return str(service_space)
++        if isinstance(result, dict) and result.get("success"):
++            models = self.config.get("models", {})
++            backend = str(result.get("backend") or models.get("embedding_backend", "unknown"))
++            model = str(result.get("model") or models.get("embedding", "unknown"))
++            embeddings = result.get("embeddings")
++            result_dimension = None
++            if isinstance(embeddings, (list, tuple)) and embeddings:
++                try:
++                    result_dimension = len(embeddings[0])
++                except TypeError:
++                    result_dimension = None
++            normalized = result.get("normalized", models.get("embedding_normalized"))
++            if normalized is None and backend in {"sentence-transformers", "openvino"}:
++                normalized = True
++            elif normalized is None and backend == "ollama":
++                normalized = False
++            payload = {
++                "backend": backend,
++                "model": model,
++                "digest": result.get("model_digest") or models.get("embedding_digest") or models.get("model_digest"),
++                "revision": result.get("model_revision") or models.get("embedding_revision") or models.get("model_revision"),
++                "device": result.get("device") or models.get("embedding_device"),
++                "dimension": result_dimension if isinstance(result_dimension, int) and not isinstance(result_dimension, bool) else models.get("embedding_dimension"),
++                "normalized": normalized,
++            }
++            return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+         embedder = getattr(self.services, "embeddings", None)
+         identity_factory = getattr(embedder, "embedding_space_id", None)
+         if callable(identity_factory):
+@@ -773,7 +822,15 @@
+         models = self.config.get("models", {})
+         backend = str((result or {}).get("backend") or models.get("embedding_backend", "unknown"))
+         model = str((result or {}).get("model") or models.get("embedding", "unknown"))
+-        normalized = models.get("embedding_normalized")
++        result_dimension = (result or {}).get("embedding_dimension")
++        if (not isinstance(result_dimension, int) or isinstance(result_dimension, bool)) and isinstance((result or {}).get("embeddings"), (list, tuple)):
++            embeddings = (result or {}).get("embeddings")
++            if embeddings:
++                try:
++                    result_dimension = len(embeddings[0])
++                except TypeError:
++                    result_dimension = None
++        normalized = (result or {}).get("normalized", models.get("embedding_normalized"))
+         if normalized is None and backend in {"sentence-transformers", "openvino"}:
+             normalized = True
+         elif normalized is None and backend == "ollama":
+@@ -781,11 +838,11 @@
+         payload = {
+             "backend": backend,
+             "model": model,
+-            "digest": models.get("embedding_digest") or models.get("model_digest"),
+-            "revision": models.get("embedding_revision") or models.get("model_revision"),
+-            "dimension": models.get("embedding_dimension"),
++            "digest": (result or {}).get("model_digest") or models.get("embedding_digest") or models.get("model_digest"),
++            "revision": (result or {}).get("model_revision") or models.get("embedding_revision") or models.get("model_revision"),
++            "device": (result or {}).get("device") or models.get("embedding_device"),
++            "dimension": result_dimension if isinstance(result_dimension, int) and not isinstance(result_dimension, bool) else models.get("embedding_dimension"),
+             "normalized": normalized,
+-            "service_instance": id(self.services),
+         }
+         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+ 
+@@ -862,8 +919,16 @@
+                 "skipped": True, "reason": "project phase disabled",
+             }
+         workspace = workspace or self.workspace_id(str(root_path))
++        project_context = self.project_context(root_path)
++        if not phase_allowed(project_context, "rag"):
++            removed = self.prune_missing(root, tenant, workspace, [])
++            return {"success": True, "workspace": workspace, "skipped": True, "removed_paths": removed}
+         scope_key = self._scope_key(tenant)
+-        embedding_space = self._embedding_space_id()
++        self._sync_workspace_project_policy_identity(
++            root_path, scope_key, workspace, project_context
++        )
++        configured_space = _space_override or self._embedding_space_id()
++        identity_resolved = _space_override is not None or self._embedding_space_is_resolved()
+ 
+         with closing(self._connect()) as con:
+             uncertain_retry_paths = self._workspace_read_uncertain_paths(con, scope_key, workspace)
+@@ -875,6 +940,12 @@
+                 "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
+                 (scope_key, workspace),
+             ).fetchall()
++        old_space_counts: dict[str, int] = {}
++        for row in old_chunk_rows:
++            old_space_counts[str(row[4] or "")] = old_space_counts.get(str(row[4] or ""), 0) + 1
++        if stored_space is None and old_space_counts:
++            stored_space = sorted(old_space_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
++        embedding_space = configured_space if identity_resolved else (stored_space or configured_space)
+         old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_files_rows}
+         old_chunks = {
+             (r[0], int(r[1]), r[2]): r[3]
+@@ -942,7 +1013,6 @@
+         read_files = 0
+         reused_chunks = 0
+         changed_indices: list[int] = []
+-        changed_texts: list[str] = []
+         rag_cfg = self.config.get("rag", {})
+         dedup_near_duplicates = bool(rag_cfg.get("dedup_near_duplicates", True))
+         max_hamming = int(rag_cfg.get("near_duplicate_max_hamming", 4))
+@@ -961,7 +1031,7 @@
+                     read_uncertain_paths.add(rel)
+                     continue
+                 read_files += 1
+-                text = raw.decode("utf-8", errors="replace")
++                text = _canonical_fragment_text(raw.decode("utf-8", errors="replace"))
+                 file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+             except Exception:
+                 skipped += 1
+@@ -994,7 +1064,6 @@
+                 changed_records.append(record)
+                 if record["embedding"] is None:
+                     changed_indices.append(idx)
+-                    changed_texts.append(chunk)
+                 else:
+                     reused_chunks += 1
+ 
+@@ -1021,7 +1090,6 @@
+ 
+             if global_chunks:
+                 still_indices: list[int] = []
+-                still_texts: list[str] = []
+                 for chash, indices in pending_by_hash.items():
+                     if chash in global_chunks:
+                         for idx in indices:
+@@ -1031,12 +1099,9 @@
+                     else:
+                         first_idx = indices[0]
+                         still_indices.append(first_idx)
+-                        still_texts.append(str(changed_records[first_idx]["text"]))
+                 changed_indices = still_indices
+-                changed_texts = still_texts
+             else:
+                 changed_indices = [indices[0] for indices in pending_by_hash.values()]
+-                changed_texts = [str(changed_records[idx]["text"]) for idx in changed_indices]
+ 
+         if changed_texts:
+             observed_embedding_space: str | None = None
+@@ -1079,10 +1144,8 @@
+                 if del_paths:
+                     con.executemany("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                     con.executemany("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", del_paths)
+-                    try:
++                    if fts_exists:
+                         con.executemany("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", del_paths)
+-                    except Exception:
+-                        pass
+                 con.executemany(
+                     "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+                     [
+@@ -1090,6 +1153,14 @@
+                         for r in changed_records
+                     ],
+                 )
++                if fts_exists:
++                    con.executemany(
++                        "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++                        [
++                            (scope_key, workspace, record["path"], record["chunk_no"], record["text"])
++                            for record in changed_records
++                        ],
++                    )
+                 con.executemany(
+                     "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+                     [(scope_key, workspace, rel, mtime_ns, size, file_hash) for rel, mtime_ns, size, file_hash in file_rows],
+@@ -1122,6 +1193,8 @@
+             "success": True,
+             "scope": self.scope,
+             "workspace": workspace,
++            "embedding_space_id": embedding_space,
++            "embedding_space_resolved": bool(identity_resolved or observed_embedding_space or stored_space),
+             "files_root": str(root_path),
+             "files": int(file_count),
+             "chunks": int(chunk_count),
+@@ -1143,6 +1216,12 @@
+         scope_key = self._scope_key(tenant)
+         current = set(current_paths)
+         with self._get_workspace_lock(workspace), closing(self._connect()) as con:
++            policy_removed = 0
++            if Path(root).is_dir():
++                policy_context = self.project_context(root)
++                policy_removed = self._sync_workspace_project_policy_identity(
++                    root, scope_key, workspace, policy_context
++                )
+             existing = {str(r[0]) for r in con.execute(
+                 "SELECT path FROM files WHERE tenant=? AND workspace=?", (scope_key, workspace)
+             ).fetchall()}
+@@ -1154,8 +1233,10 @@
+                     con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+                 except Exception:
+                     pass
++            if deleted:
++                self._bump_workspace_index_generation(con, scope_key, workspace)
+             con.commit()
+-        return len(deleted)
++        return policy_removed + len(deleted)
+ 
+     def remove_paths(self, tenant: str, workspace: str, paths: list[str]) -> int:
+         """Remove explicitly known paths from a semantic workspace.
+@@ -1181,6 +1262,7 @@
+                 except Exception:
+                     pass
+                 removed += int(row is not None)
++            self._bump_workspace_index_generation(con, scope_key, workspace)
+             con.commit()
+         return removed
+ 
+@@ -1193,6 +1275,9 @@
+         should_yield: Any | None = None,
+         content_overrides: dict[str, str] | None = None,
+         deleted_paths: list[str] | None = None,
++        *,
++        _space_override: str | None = None,
++        _identity_retry: bool = False,
+     ) -> dict[str, Any]:
+         """Index only explicitly dirty paths supplied by Local AI preprocessing.
+ 
+@@ -1209,10 +1294,12 @@
+                 "embedded_chunks": 0, "reused_chunks": 0,
+             }
+         scope_key = self._scope_key(tenant)
+-        embedding_space = self._embedding_space_id()
++        configured_space = _space_override or self._embedding_space_id()
++        identity_resolved = _space_override is not None or self._embedding_space_is_resolved()
+         processed_paths: list[str] = []
+         embedded_chunks = 0
+         reused_chunks = 0
++        observed_embedding_space: str | None = None
+         with self._get_workspace_lock(workspace):
+             with closing(self._connect()) as con:
+                 stored_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
+@@ -1389,7 +1476,6 @@
+                             old_chunks[(str(r[0]), int(r[1]), str(r[2]))] = r[3]
+ 
+             # 3. Build records and identify missing embeddings
+-            all_missing_texts: list[str] = []
+             missing_pointers: list[tuple[int, int]] = []  # (file_idx, record_idx)
+ 
+             for f_idx, item in enumerate(file_data):
+@@ -1403,14 +1489,13 @@
+                         "embedding_space": embedding_space if embedding is not None else "",
+                     })
+                     if embedding is None:
+-                        all_missing_texts.append(chunk)
+                         missing_pointers.append((f_idx, len(records) - 1))
+                     else:
+                         reused_chunks += 1
+                 item["records"] = records
+ 
+             # 4. Cross-workspace / cross-worktree instant chunk embedding reuse
+-            if all_missing_texts:
++            if missing_pointers:
+                 missing_hashes = [file_data[f_idx]["records"][rec_idx]["hash"] for f_idx, rec_idx in missing_pointers]
+                 global_chunks: dict[str, Any] = {}
+                 with closing(self._connect()) as con:
+@@ -1426,18 +1511,15 @@
+                                 global_chunks[str(r[0])] = r[1]
+ 
+                 if global_chunks:
+-                    still_missing_texts: list[str] = []
+                     still_missing_pointers: list[tuple[int, int]] = []
+-                    for (f_idx, rec_idx), text in zip(missing_pointers, all_missing_texts):
++                    for f_idx, rec_idx in missing_pointers:
+                         chash = file_data[f_idx]["records"][rec_idx]["hash"]
+                         if chash in global_chunks:
+                             file_data[f_idx]["records"][rec_idx]["embedding"] = global_chunks[chash]
+                             file_data[f_idx]["records"][rec_idx]["embedding_space"] = embedding_space
+                             reused_chunks += 1
+                         else:
+-                            still_missing_texts.append(text)
+                             still_missing_pointers.append((f_idx, rec_idx))
+-                    all_missing_texts = still_missing_texts
+                     missing_pointers = still_missing_pointers
+ 
+             # 5. Embed bounded batches. Do not publish partial vector batches.
+@@ -1493,7 +1575,8 @@
+                     "reused_chunks": reused_chunks,
+                 }
+ 
+-            # 5. Bulk SQLite transaction
++            # 5. Bulk SQLite transaction. Embedding is complete before this
++            # atomic publish; busy retries replay only the bounded DB phase.
+             chunks_to_insert: list[tuple[Any, ...]] = []
+             files_to_insert: list[tuple[Any, ...]] = []
+             for item in file_data:
+@@ -1570,6 +1653,7 @@
+         workspace: str | None = None,
+         max_files: int = 2,
+         should_yield: Any | None = None,
++        dirty_paths: list[str] | None = None,
+     ) -> dict[str, Any]:
+         """Index only a few changed files so idle preprocessing stays preemptible.
+ 
+@@ -1587,13 +1671,25 @@
+                 "processed_files": 0,
+             }
+         workspace = workspace or self.workspace_id(str(root_path))
++        project_context = self.project_context(root_path)
++        if not phase_allowed(project_context, "rag"):
++            removed = self.prune_missing(root, tenant, workspace, [])
++            return {
++                "success": True, "workspace": workspace, "skipped": True,
++                "removed_paths": removed, "processed_files": 0, "done": True,
++            }
++        scope_key = self._scope_key(tenant)
+         with self._get_workspace_lock(workspace):
+-            scope_key = self._scope_key(tenant)
+-            embedding_space = self._embedding_space_id()
++            self._sync_workspace_project_policy_identity(
++                root_path, scope_key, workspace, project_context
++            )
++            configured_space = self._embedding_space_id()
++            identity_resolved = self._embedding_space_is_resolved()
+             if callable(should_yield) and should_yield():
+                 return {"success": True, "workspace": workspace, "preempted": True, "done": False, "processed_files": 0}
+ 
+             with closing(self._connect()) as con:
++                stored_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
+                 old_rows = con.execute(
+                     "SELECT path,mtime_ns,size,content_hash FROM files WHERE tenant=? AND workspace=?",
+                     (scope_key, workspace),
+@@ -1613,6 +1709,10 @@
+                 (r[0], int(r[1]), r[2]): r[3]
+                 for r in old_chunk_rows if str(r[4] or "") == embedding_space
+             }
++            stale_embedding_paths = (
++                {str(r[0]) for r in old_chunk_rows if str(r[4] or "") != embedding_space}
++                if stored_space is not None or identity_resolved else set()
++            )
+ 
+             current_meta: dict[str, tuple[Path, int, int]] = {}
+             for path in self._iter_files(root_path, project_context):
+@@ -1623,33 +1723,55 @@
+                 except OSError:
+                     continue
+             deleted = sorted(set(old_files) - set(current_meta))
++            explicit_dirty_paths = {
++                str(path).replace("\\", "/")
++                for path in (dirty_paths or [])
++                if str(path).strip()
++            } & set(current_meta)
+             changed_all = [
+                 rel for rel, (_p, mt, sz) in current_meta.items()
+                 if rel not in old_files or old_files[rel]["mtime_ns"] != mt or old_files[rel]["size"] != sz
+                 or rel in stale_embedding_paths
+                 or rel in uncertain_retry_paths
+             ]
+-            changed_all.sort()
++            changed_all.sort(key=lambda rel: (rel not in explicit_dirty_paths, rel))
+             selected = changed_all[: max(1, int(max_files))]
+ 
+-            pending = sorted(set(changed_all) | set(deleted))
++            pending = changed_all + deleted
+             selected = pending[: max(1, int(max_files))]
+             selected_changed = [rel for rel in selected if rel in current_meta]
+             selected_deleted = [rel for rel in selected if rel in deleted]
+             staged = self.index_paths_step(
+                 str(root_path), tenant, workspace, selected_changed,
+                 should_yield=should_yield, deleted_paths=selected_deleted,
++                _space_override=embedding_space if identity_resolved or stored_space else None,
+             )
+             if not staged.get("success"):
+                 return staged
+-            remaining = max(0, len(pending) - len(selected))
++            processed_paths = {str(path).replace("\\", "/") for path in staged.get("processed_paths", [])}
++            published_deletions = {str(path).replace("\\", "/") for path in staged.get("deleted_paths", [])}
++            completed_paths = processed_paths | published_deletions
++            target_space = staged.get("embedding_space_id") or embedding_space
++            target_known = bool(staged.get("embedding_space_resolved") or identity_resolved or stored_space)
++            remaining_paths = {path for path in pending if path not in completed_paths}
++            if target_known and target_space:
++                with closing(self._connect()) as con:
++                    remaining_paths.update(
++                        str(row[0])
++                        for row in con.execute(
++                            "SELECT DISTINCT path FROM chunks WHERE tenant=? AND workspace=? AND embedding_space<>?",
++                            (scope_key, workspace, target_space),
++                        ).fetchall()
++                    )
+             return {
+                 "success": True, "workspace": workspace,
++                "embedding_space_id": target_space,
++                "embedding_space_resolved": target_known,
+                 "preempted": bool(staged.get("preempted", False)),
+-                "done": remaining == 0 and not staged.get("preempted", False),
+-                "processed_files": len(staged.get("processed_paths", [])) + len(selected_deleted),
+-                "remaining_changed_files": remaining,
+-                "deleted_files": len(selected_deleted),
++                "done": not remaining_paths and not staged.get("preempted", False),
++                "processed_files": len(completed_paths),
++                "remaining_changed_files": len(remaining_paths),
++                "deleted_files": len(published_deletions),
+                 "embedded_chunks": staged.get("embedded_chunks", 0),
+                 "reused_chunks": staged.get("reused_chunks", 0),
+             }
+@@ -1668,7 +1790,7 @@
+                 path, mtime_ns, size = current_meta[rel]
+                 try:
+                     raw = path.read_bytes()
+-                    text = raw.decode("utf-8", errors="replace")
++                    text = _canonical_fragment_text(raw.decode("utf-8", errors="replace"))
+                     file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+                 except Exception:
+                     continue
+@@ -2104,9 +2226,13 @@
+ 
+         rag_cfg = self.config.get("rag", {})
+         candidate_limit = min(_MAX_RERANK_CANDIDATES, max(16, int(rag_cfg.get("rerank_candidates", 16))))
+-        batch_size = min(2048, max(32, int(rag_cfg.get("search_batch_size", 512))))
++        configured_batch_size = max(32, int(rag_cfg.get("search_batch_size", 512)))
+         best: list[tuple[float, tuple[int, ...], int, tuple[int, ...], dict[str, Any]]] = []
+         rows_seen = 0
++        has_stale_embedding_rows = False
++        embedding_space_resolved = self._embedding_space_is_resolved(query_result)
++        stored_embedding_space: str | None = None
++        stored_embedding_space_read = False
+         try:
+             import numpy as np
+         except Exception:
+@@ -2115,11 +2241,16 @@
+         if np is not None:
+             q = np.asarray(query_vec, dtype=np.float32).reshape(-1)
+             dimension = int(q.size)
++            # Bound several simultaneous scoring arrays, not just decoded vectors.
++            memory_batch_limit = _VECTOR_BATCH_MEMORY_BUDGET_BYTES // max(16, dimension * 16)
++            batch_size = min(_MAX_VECTOR_BATCH_SIZE, memory_batch_limit, configured_batch_size)
+             q_norm = float(np.linalg.norm(q))
+             if q_norm > 1e-9:
+                 q = q / q_norm
+             else:
+                 q = np.zeros(dimension, dtype=np.float32)
++        else:
++            batch_size = min(2048, configured_batch_size)
+ 
+         def offer(row: Any, score: float) -> None:
+             if "*" in uncertain_paths or str(row[0]) in uncertain_paths:
+@@ -2160,8 +2291,8 @@
+                     predicates.append("(path=? OR path LIKE ? || '/%')")
+                     params.extend((norm_scope, norm_scope))
+                 if last_path is not None:
+-                    predicates.append("(path>? OR (path=? AND chunk_no>?))")
+-                    params.extend((last_path, last_path, last_chunk_no))
++                    predicates.append("(path, chunk_no) > (?, ?)")
++                    params.extend((last_path, last_chunk_no))
+                 cursor = con.execute(
+                     "SELECT path, chunk_no, embedding, content_hash FROM chunks WHERE "
+                     + " AND ".join(predicates)
+@@ -2197,7 +2328,6 @@
+                             except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+                                 continue
+                     norms = np.linalg.norm(matrix, axis=1)
+-                    scores = np.zeros(len(batch), dtype=np.float32)
+                     valid = np.isfinite(norms) & (norms > 1e-9)
+                     if q_norm > 1e-9 and valid.any():
+                         dot_scores = np.dot(matrix, q)
+@@ -2246,6 +2376,31 @@
+                 "SELECT 1 FROM chunks WHERE tenant=? AND workspace=? AND COALESCE(embedding_space,'')<>? LIMIT 1",
+                 (scope_key, workspace, embedding_space),
+             ).fetchone() is not None
++
++        if has_stale_embedding_rows:
++            fallbacks.append("embedding_space_rebuild_pending")
++
++            has_stale_embedding_rows = con.execute(
++                "SELECT 1 FROM chunks WHERE tenant=? AND workspace=? AND embedding_space<>? LIMIT 1",
++                (scope_key, workspace, embedding_space),
++            ).fetchone() is not None
++            if embedding_space_resolved:
++                try:
++                    stored_embedding_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
++                    stored_embedding_space_read = True
++                except sqlite3.Error:
++                    pass
++
++        if embedding_space_resolved:
++            try:
++                if not stored_embedding_space_read or stored_embedding_space != embedding_space:
++                    with closing(self._connect()) as con:
++                        con.execute("BEGIN IMMEDIATE")
++                        if self._stored_workspace_embedding_space(con, scope_key, workspace) != embedding_space:
++                            self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
++                        con.commit()
++            except sqlite3.Error:
++                fallbacks.append("embedding_space_metadata")
+ 
+         if has_stale_embedding_rows:
+             fallbacks.append("embedding_space_rebuild_pending")
+diff --git a/src/local_ai_hub/reranker.py b/src/local_ai_hub/reranker.py
+--- a/src/local_ai_hub/reranker.py
++++ b/src/local_ai_hub/reranker.py
+@@ -64,7 +64,13 @@
+         backend = self.active_backend or self.backend
+         device = str(self.active_device or self.device or "cpu").strip().lower()
+         revision = self._loaded_model_revision() or ""
+-        return f"{backend}:{device}:{self.model_name}:{revision}"
++        return stable_hash({
++            "backend": backend,
++            "device": device,
++            "model": self.model_name,
++            "revision": revision,
++            "max_length": self.max_length,
++        })
+ 
+     def _cache_identity(self) -> str | None:
+         if self._loaded_model_revision() is None:
+diff --git a/tests/test_rag_fragment_cache.py b/tests/test_rag_fragment_cache.py
+--- a/tests/test_rag_fragment_cache.py
++++ b/tests/test_rag_fragment_cache.py
+@@ -12,11 +12,12 @@
+ 
+ 
+ class _Services:
+-    def __init__(self, block: bool = False) -> None:
++    def __init__(self, block: bool = False, space_id: str | None = None) -> None:
+         self.calls: list[list[str]] = []
+         self.started = threading.Event()
+         self.release = threading.Event()
+         self.block = block
++        self.space_id = space_id
+ 
+     def embed(self, texts, _tenant, **_kwargs):
+         batch = list(texts)
+@@ -24,7 +25,10 @@
+         self.started.set()
+         if self.block:
+             assert self.release.wait(2)
+-        return {"success": True, "embeddings": [[float(len(text)), 1.0] for text in batch]}
++        result = {"success": True, "embeddings": [[float(len(text)), 1.0] for text in batch]}
++        if self.space_id:
++            result["embedding_space_id"] = self.space_id
++        return result
+ 
+ 
+ class _Reranker:
+@@ -255,18 +259,27 @@
+ 
+         def embed(self, texts, tenant, **kwargs):
+             result = super().embed(texts, tenant, **kwargs)
++            result["embeddings"] = [
++                [float(len(text)), float(ord(self.output_space[6]))]
++                for text in texts
++            ]
+             result["embedding_space_id"] = self.output_space
+             return result
+ 
+-    services = _FallbackServices()
++    services = _ChangingSpaceServices()
+     store = _store(tmp_path, services)
+     source_root = tmp_path / "source"
+     source_root.mkdir()
+     shared_text = "def shared_value():\n    return 1\n"
+     (source_root / "shared.py").write_text(shared_text, encoding="utf-8")
+     assert store.index(str(source_root), "tenant", workspace="source")["success"] is True
+-
+-    for mode in ("index", "index_paths_step"):
++    with closing(store._connect()) as con:
++        source_embedding = con.execute(
++            "SELECT embedding FROM chunks WHERE tenant=? AND workspace=? AND path=?",
++            (store._scope_key("tenant"), "source", "shared.py"),
++        ).fetchone()[0]
++
++    for mode in ("index", "index_paths_step", "index_step"):
+         target_root = tmp_path / mode
+         target_root.mkdir()
+         (target_root / "shared.py").write_text(shared_text, encoding="utf-8")
+@@ -275,18 +288,449 @@
+         workspace = f"target:{mode}"
+         if mode == "index":
+             result = store.index(str(target_root), "tenant", workspace=workspace)
+-        else:
++        elif mode == "index_paths_step":
+             result = store.index_paths_step(
+                 str(target_root), "tenant", workspace, ["shared.py", "new.py"]
+             )
++        else:
++            result = store.index_step(
++                str(target_root), "tenant", workspace=workspace, max_files=2
++            )
+         assert result["success"] is True
+         with closing(store._connect()) as con:
+-            spaces = dict(con.execute(
+-                "SELECT path,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
++            rows = {
++                row[0]: (row[1], row[2])
++                for row in con.execute(
++                "SELECT path,embedding_space,embedding FROM chunks WHERE tenant=? AND workspace=?",
+                 (store._scope_key("tenant"), workspace),
+-            ).fetchall())
+-        assert spaces["shared.py"] == "model-a@revision-1"
+-        assert spaces["new.py"] == "model-b@revision-2"
++                ).fetchall()
++            }
++        assert rows["shared.py"][0] == "model-b@revision-2"
++        assert rows["new.py"][0] == "model-b@revision-2"
++        value = rows["shared.py"][1]
++        embedding = (
++            struct.unpack(f"{len(value) // 4}f", value)
++            if isinstance(value, bytes)
++            else json.loads(value)
++        )
++        assert tuple(embedding) == (float(len(shared_text)), float(ord("b")))
++        assert rows["shared.py"][1] != source_embedding
++
++
++def test_same_workspace_blank_space_chunk_is_reembedded_not_relabelled(tmp_path):
++    services = _Services(space_id="space-current")
++    store = _store(tmp_path, services)
++    root = tmp_path / "project"
++    root.mkdir()
++    source = root / "same.py"
++    source.write_text("def same_value():\n    return 4\n", encoding="utf-8")
++    workspace = "same-workspace"
++    assert store.index_paths_step(str(root), "tenant", workspace, ["same.py"])["success"]
++    calls_before = len(services.calls)
++    with closing(store._connect()) as con:
++        con.execute(
++            "UPDATE chunks SET embedding='[99.0, 99.0]', embedding_space='' "
++            "WHERE tenant=? AND workspace=? AND path=?",
++            (store._scope_key("tenant"), workspace, "same.py"),
++        )
++        con.commit()
++
++    result = store.index_paths_step(str(root), "tenant", workspace, ["same.py"])
++
++    assert result["success"] is True
++    assert len(services.calls) > calls_before
++    with closing(store._connect()) as con:
++        row = con.execute(
++            "SELECT text,embedding,embedding_space FROM chunks "
++            "WHERE tenant=? AND workspace=? AND path=?",
++            (store._scope_key("tenant"), workspace, "same.py"),
++        ).fetchone()
++    assert row[2] == "space-current"
++    embedding = (
++        struct.unpack(f"{len(row[1]) // 4}f", row[1])
++        if isinstance(row[1], bytes)
++        else json.loads(row[1])
++    )
++    assert tuple(embedding) == (float(len(row[0])), 1.0)
++
++
++def test_configured_embedding_space_id_is_stable_across_store_instances(tmp_path):
++    first = _store(tmp_path, _Services())
++    second = _store(tmp_path, _Services())
++
++    assert first._embedding_space_id() == second._embedding_space_id()
++
++
++def test_index_fingerprint_tracks_embedding_space_configuration(tmp_path):
++    base_models = {
++        "embedding": "model-a",
++        "embedding_backend": "ollama",
++        "embedding_dimension": 2,
++        "embedding_normalized": False,
++        "embedding_digest": "digest-a",
++        "embedding_revision": "revision-a",
++    }
++
++    def make_store(state_name, models):
++        return RAGStore(
++            {
++                "server": {"state_dir": str(tmp_path / state_name)},
++                "models": models,
++                "cpu_retrieval": {},
++                "workspace_cache": {},
++                "rag": {"extensions": [".py"], "ignore_dirs": []},
++            },
++            _Services(),
++            _Reranker(),
++        )
++
++    baseline = make_store("fingerprint-base", base_models).index_fingerprint
++    changed = [
++        {"embedding_digest": "digest-b"},
++        {"embedding_revision": "revision-b"},
++        {"embedding_dimension": 3},
++        {"embedding_normalized": True},
++    ]
++
++    for index, values in enumerate(changed):
++        models = {**base_models, **values}
++        assert make_store(f"fingerprint-{index}", models).index_fingerprint != baseline
++
++
++def test_index_fingerprint_reset_clears_orphaned_fts_rows(tmp_path):
++    state_dir = tmp_path / "fingerprint-reset"
++    base_models = {
++        "embedding": "model-a",
++        "embedding_backend": "ollama",
++        "embedding_dimension": 2,
++        "embedding_digest": "digest-a",
++    }
++
++    def make_store(models):
++        return RAGStore(
++            {
++                "server": {"state_dir": str(state_dir)},
++                "models": models,
++                "cpu_retrieval": {},
++                "workspace_cache": {},
++                "rag": {"extensions": [".py"], "ignore_dirs": []},
++            },
++            _Services(),
++            _Reranker(),
++        )
++
++    first = make_store(base_models)
++    scope_key = first._scope_key("tenant")
++    with closing(first._connect()) as con:
++        con.execute(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
++            (scope_key, "workspace", "old.py", 0, "hash", "old text", "[]", "model-a"),
++        )
++        con.execute(
++            "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
++            (scope_key, "workspace", "old.py", 1, 8, "hash"),
++        )
++        con.execute(
++            "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++            (scope_key, "workspace", "old.py", 0, "old text"),
++        )
++        con.commit()
++
++    rebuilt = make_store({**base_models, "embedding_digest": "digest-b"})
++
++    assert rebuilt.index_reset is True
++    with closing(rebuilt._connect()) as con:
++        assert con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 0
++        assert con.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
++        assert con.execute("SELECT COUNT(*) FROM chunk_fts").fetchone()[0] == 0
++
++
++def test_index_reembeds_unchanged_files_when_runtime_space_changes(tmp_path):
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / "one.py").write_text("def stable():\n    return 1\n", encoding="utf-8")
++    services = _Services(space_id="runtime-space-a")
++    store = _store(tmp_path, services)
++
++    first = store.index(str(root), "tenant")
++    assert first["success"] is True
++    first_call_count = len(services.calls)
++    services.space_id = "runtime-space-b"
++
++    rebuilt = store.index(str(root), "tenant", workspace=first["workspace"])
++
++    assert rebuilt["success"] is True
++    assert len(services.calls) > first_call_count
++    with closing(store._connect()) as con:
++        spaces = {row[0] for row in con.execute("SELECT DISTINCT embedding_space FROM chunks")}
++    assert spaces == {"runtime-space-b"}
++
++
++def test_cold_unresolved_index_reuses_persisted_workspace_space(tmp_path):
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / "one.py").write_text("def stable():\n    return 1\n", encoding="utf-8")
++    first_services = _Services(space_id="runtime-space-a")
++    first_store = _store(tmp_path, first_services)
++    first = first_store.index(str(root), "tenant")
++    second_services = _Services()
++    second_store = _store(tmp_path, second_services)
++
++    reused = second_store.index(str(root), "tenant", workspace=first["workspace"])
++
++    assert reused["success"] is True
++    assert reused["embedding_space_id"] == "runtime-space-a"
++    assert second_services.calls == []
++
++
++def test_index_step_rebuilds_only_stale_space_paths_incrementally(tmp_path):
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / "one.py").write_text("def one():\n    return 1\n", encoding="utf-8")
++    (root / "two.py").write_text("def two():\n    return 2\n", encoding="utf-8")
++    services = _Services(space_id="runtime-space-a")
++    store = _store(tmp_path, services)
++    first = store.index(str(root), "tenant")
++    services.space_id = "runtime-space-b"
++
++    step = store.index_step(str(root), "tenant", workspace=first["workspace"], max_files=1)
++
++    assert step["success"] is True
++    assert step["done"] is False
++    assert step["processed_files"] == 1
++    with closing(store._connect()) as con:
++        rows = con.execute("SELECT path, embedding_space FROM chunks ORDER BY path").fetchall()
++    spaces_by_path = {path: space for path, space in rows}
++    assert len(set(spaces_by_path.values())) == 2
++
++
++def test_search_cache_tracks_incremental_reindex_generation(tmp_path):
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / "one.py").write_text("def one():\n    return 1\n", encoding="utf-8")
++    (root / "two.py").write_text("def two():\n    return 222222\n", encoding="utf-8")
++    (root / "three.py").write_text("def three():\n    return 333333333\n", encoding="utf-8")
++    services = _Services(space_id="runtime-space-a")
++    store = _store(tmp_path, services)
++    first = store.index(str(root), "tenant")
++    services.space_id = "runtime-space-b"
++
++    initial_step = store.index_step(str(root), "tenant", workspace=first["workspace"], max_files=1)
++    assert initial_step["done"] is False
++    first_search = store.search("qzxunknown", "tenant", first["workspace"], use_reranker=False)
++    repeated_search = store.search("qzxunknown", "tenant", first["workspace"], use_reranker=False)
++    assert len(first_search["results"]) == 1
++    assert repeated_search["search_cache"]["hit"] is True
++
++    middle_step = store.index_step(str(root), "tenant", workspace=first["workspace"], max_files=1)
++    assert middle_step["done"] is False
++    middle_search = store.search("qzxunknown", "tenant", first["workspace"], use_reranker=False)
++    assert middle_search["search_cache"]["hit"] is False
++    assert len(middle_search["results"]) == 2
++
++    final_step = store.index_step(str(root), "tenant", workspace=first["workspace"], max_files=1)
++    assert final_step["done"] is True
++    rebuilt_search = store.search("qzxunknown", "tenant", first["workspace"], use_reranker=False)
++
++    assert rebuilt_search["search_cache"]["hit"] is False
++    assert len(rebuilt_search["results"]) == 3
++
++
++def test_search_rechecks_generation_after_cache_lookup(tmp_path, monkeypatch):
++    root = tmp_path / "project"
++    root.mkdir()
++    source = root / "one.py"
++    source.write_text("def old_value():\n    return 1\n", encoding="utf-8")
++    store = _store(tmp_path, _Services(space_id="runtime-space-a"))
++    indexed = store.index(str(root), "tenant")
++    workspace = indexed["workspace"]
++    initial = store.search("value query", "tenant", workspace, use_reranker=False)
++    assert initial["results"][0]["text"] == "def old_value():\n    return 1\n"
++
++    source.write_text("def new_value():\n    return 2\n", encoding="utf-8")
++    original_lookup = store.search_flight.get_or_compute
++    interleaved: dict[str, object] = {}
++
++    def publish_before_lookup(key, compute):
++        staged = store.index_paths_step(str(root), "tenant", workspace, ["one.py"])
++        assert staged["success"] is True
++        raw, hit, coalesced = original_lookup(key, compute)
++        interleaved["hit"] = hit
++        return raw, hit, coalesced
++
++    monkeypatch.setattr(store.search_flight, "get_or_compute", publish_before_lookup)
++    result = store.search("value query", "tenant", workspace, use_reranker=False)
++
++    assert interleaved["hit"] is True
++    assert result["search_cache"]["hit"] is False
++    assert result["results"][0]["text"] == "def new_value():\n    return 2\n"
++
++
++def test_search_rechecks_generation_after_uncertain_source_read(tmp_path, monkeypatch):
++    root = tmp_path / "project"
++    root.mkdir()
++    source = root / "one.py"
++    source.write_text("def old_value():\n    return 1\n", encoding="utf-8")
++    services = _Services(space_id="runtime-space-a")
++    store = _store(tmp_path, services)
++    store.config["rag"]["max_file_bytes"] = 32
++    indexed = store.index(str(root), "tenant")
++    workspace = indexed["workspace"]
++    initial = store.search("value query", "tenant", workspace, use_reranker=False)
++    assert initial["results"][0]["text"] == "def old_value():\n    return 1\n"
++
++    source.write_text("def new_value():\n    return 2\n", encoding="utf-8")
++    original_open = Path.open
++
++    def grow_after_stat(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == source.resolve() and mode == "rb":
++            return io.BytesIO(b"x" * 33)
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", grow_after_stat)
++    original_lookup = store.search_flight.get_or_compute
++    interleaved: dict[str, object] = {}
++
++    def publish_uncertainty_before_lookup(key, compute):
++        staged = store.index_paths_step(str(root), "tenant", workspace, ["one.py"])
++        assert staged["success"] is True
++        assert staged["read_uncertain_paths"] == ["one.py"]
++        raw, hit, coalesced = original_lookup(key, compute)
++        interleaved["hit"] = hit
++        return raw, hit, coalesced
++
++    monkeypatch.setattr(store.search_flight, "get_or_compute", publish_uncertainty_before_lookup)
++    result = store.search("value query", "tenant", workspace, use_reranker=False)
++
++    assert interleaved["hit"] is True
++    assert result["search_cache"]["hit"] is False
++    assert result["results"] == []
++    assert result["fallback"] == "source_read_uncertain"
++
++
++def test_index_step_reindexes_explicit_same_stat_dirty_path(tmp_path):
++    root = tmp_path / "project"
++    root.mkdir()
++    source = root / "one.py"
++    original_text = "def value():\n    return 'old'\n"
++    updated_text = "def value():\n    return 'new'\n"
++    source.write_text(original_text, encoding="utf-8")
++    store = _store(tmp_path, _Services(space_id="runtime-space-a"))
++    indexed = store.index(str(root), "tenant")
++    workspace = indexed["workspace"]
++    original_stat = source.stat()
++
++    source.write_text(updated_text, encoding="utf-8")
++    assert source.stat().st_size == original_stat.st_size
++    os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
++    unchanged = store.index_step(str(root), "tenant", workspace=workspace, max_files=1)
++    assert unchanged["processed_files"] == 0
++    with closing(store._connect()) as con:
++        rows = con.execute(
++            "SELECT text FROM chunks WHERE tenant=? AND workspace=? AND path=?",
++            (store._scope_key("tenant"), workspace, "one.py"),
++        ).fetchall()
++    assert [row[0] for row in rows] == [original_text]
++
++    updated = store.index_step(
++        str(root), "tenant", workspace=workspace, max_files=1, dirty_paths=["one.py"]
++    )
++
++    assert updated["processed_files"] == 1
++    with closing(store._connect()) as con:
++        rows = con.execute(
++            "SELECT text FROM chunks WHERE tenant=? AND workspace=? AND path=?",
++            (store._scope_key("tenant"), workspace, "one.py"),
++        ).fetchall()
++    assert [row[0] for row in rows] == [updated_text]
++
++
++def test_index_step_keeps_unpublished_paths_pending(tmp_path, monkeypatch):
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / "one.py").write_text("def pending():\n    return 1\n", encoding="utf-8")
++    store = _store(tmp_path, _Services())
++    monkeypatch.setattr(
++        store,
++        "index_paths_step",
++        lambda *_args, **_kwargs: {
++            "success": True, "preempted": True, "processed_paths": [], "deleted_paths": []
++        },
++    )
++
++    result = store.index_step(str(root), "tenant", max_files=1)
++
++    assert result["preempted"] is True
++    assert result["done"] is False
++    assert result["remaining_changed_files"] == 1
++
++
++def test_index_step_keeps_skipped_paths_pending(tmp_path, monkeypatch):
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / "one.py").write_text("def unreadable():\n    return 1\n", encoding="utf-8")
++    store = _store(tmp_path, _Services())
++    monkeypatch.setattr(
++        store,
++        "index_paths_step",
++        lambda *_args, **_kwargs: {
++            "success": True, "preempted": False, "processed_paths": [], "deleted_paths": []
++        },
++    )
++
++    result = store.index_step(str(root), "tenant", max_files=1)
++
++    assert result["done"] is False
++    assert result["processed_files"] == 0
++    assert result["remaining_changed_files"] == 1
++
++
++def test_legacy_unidentified_embedding_is_not_reused(tmp_path):
++    services = _Services()
++    store = _store(tmp_path, services)
++    text = "def shared_legacy():\n    return 9\n"
++    with closing(store._connect()) as con:
++        con.execute(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            (store._scope_key("tenant"), "legacy", "shared.py", 0, _fragment_hash(text), text, json.dumps([99.0, 99.0]), ""),
++        )
++        con.commit()
++    root = tmp_path / "target"
++    root.mkdir()
++    (root / "shared.py").write_text(text, encoding="utf-8")
++
++    result = store.index_paths_step(str(root), "tenant", "target", ["shared.py"])
++
++    assert result["success"] is True
++    assert len(services.calls) == 1
++
++
++def test_incremental_index_does_not_reuse_unidentified_embedding_for_known_space(tmp_path):
++    services = _Services(space_id="model-a@revision-1")
++    store = _store(tmp_path, services)
++    text = "def shared_incremental():\n    return 11\n"
++    with closing(store._connect()) as con:
++        con.execute(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            (store._scope_key("tenant"), "legacy-empty", "shared.py", 0, _fragment_hash(text), text, json.dumps([99.0, 99.0]), ""),
++        )
++        con.commit()
++    root = tmp_path / "incremental-target"
++    root.mkdir()
++    (root / "shared.py").write_text(text, encoding="utf-8")
++
++    result = store.index_step(str(root), "tenant")
++
++    assert result["success"] is True
++    assert len(services.calls) == 1
++    with closing(store._connect()) as con:
++        row = con.execute(
++            "SELECT embedding_space FROM chunks WHERE tenant=? AND workspace=? AND path=?",
++            (store._scope_key("tenant"), result["workspace"], "shared.py"),
++        ).fetchone()
++    assert row == ("model-a@revision-1",)
+ 
+ 
+ def test_index_publish_disk_full_keeps_previous_snapshot(tmp_path, monkeypatch):
+diff --git a/tests/test_rag_hybrid.py b/tests/test_rag_hybrid.py
+--- a/tests/test_rag_hybrid.py
++++ b/tests/test_rag_hybrid.py
+@@ -5,6 +5,8 @@
+ import struct
+ from contextlib import closing
+ 
++from local_ai_hub.agent_events import AgentEvent, AgentStateStore
++from local_ai_hub import rag as rag_module
+ from local_ai_hub.rag import RAGStore, _fragment_hash
+ 
+ 
+@@ -100,12 +102,396 @@
+     assert result["fallback"] == "sentence-transformers"
+ 
+ 
+-def test_rag_index_retries_transient_publish_lock(tmp_path, monkeypatch):
+-    store = _store(tmp_path)
++def test_search_excludes_vectors_from_other_embedding_spaces(tmp_path):
++    store = _store(tmp_path)
++    store.services.embed = lambda *_args, **_kwargs: {
++        "success": True,
++        "embedding_space_id": "space-a",
++        "embeddings": [[1.0, 0.0]],
++    }
++    tenant = "tenant"
++    workspace = "mixed-spaces"
++    with closing(store._connect()) as con:
++        con.executemany(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            [
++                (store._scope_key(tenant), workspace, "a.py", 0, "hash-a", "space a", "[1.0,0.0]", "space-a"),
++                (store._scope_key(tenant), workspace, "b.py", 0, "hash-b", "space b", "[0.0,1.0]", "space-b"),
++            ],
++        )
++        con.commit()
++
++    result = store._search_uncached("query", tenant, workspace, top_k=2, use_reranker=False)
++
++    assert [row["path"] for row in result["results"]] == ["a.py"]
++
++
++def test_search_reports_degraded_when_index_has_no_matching_embedding_space(tmp_path):
++    store = _store(tmp_path)
++    store.services.embed = lambda texts, *_args, **_kwargs: {
++        "success": True,
++        "embedding_space_id": "space-current",
++        "embeddings": [[1.0, 0.0] for _ in texts],
++    }
++    tenant = "tenant"
++    workspace = "stale-space"
++    with closing(store._connect()) as con:
++        con.execute(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            (store._scope_key(tenant), workspace, "old.py", 0, "old-hash", "unrelated words", "[1.0,0.0]", "space-old"),
++        )
++        con.commit()
++
++    result = store._search_uncached("zebra query", tenant, workspace, top_k=2, use_reranker=False)
++
++    assert result["success"] is True
++    assert result["results"] == []
++    assert result["degraded"] is True
++    assert result["fallback"] == "embedding_space_mismatch"
++
++
++def test_search_reports_pending_rebuild_for_partial_embedding_space(tmp_path):
++    store = _store(tmp_path)
++    store.services.embed = lambda *_args, **_kwargs: {
++        "success": True,
++        "embedding_space_id": "space-current",
++        "embeddings": [[1.0, 0.0]],
++    }
++    tenant = "tenant"
++    workspace = "partial-spaces"
++    with closing(store._connect()) as con:
++        con.executemany(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            [
++                (store._scope_key(tenant), workspace, "current.py", 0, "current", "current result", "[1.0,0.0]", "space-current"),
++                (store._scope_key(tenant), workspace, "old.py", 0, "old", "old result", "[0.0,1.0]", "space-old"),
++            ],
++        )
++        con.commit()
++
++    result = store._search_uncached("query", tenant, workspace, top_k=2, use_reranker=False)
++
++    assert [row["path"] for row in result["results"]] == ["current.py"]
++    assert result["degraded"] is True
++    assert result["reindex_required"] is True
++    assert "embedding_space_rebuild_pending" in result["fallbacks"]
++    with closing(store._connect()) as con:
++        assert store._stored_workspace_embedding_space(con, store._scope_key(tenant), workspace) == "space-current"
++
++
++def test_search_cache_key_tracks_runtime_embedding_space(tmp_path):
++    store = _store(tmp_path)
++    active_space = {"value": "space-a"}
++    calls = []
++    store.services.space_id = active_space["value"]
++
++    def embed(texts, _tenant, **_kwargs):
++        calls.append(list(texts))
++        return {
++            "success": True,
++            "embedding_space_id": active_space["value"],
++            "embeddings": [[1.0, 0.0] for _ in texts],
++        }
++
++    store.services.embed = embed
++    tenant, workspace = "tenant", "cache-spaces"
++    with closing(store._connect()) as con:
++        con.executemany(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            [
++                (store._scope_key(tenant), workspace, "a.py", 0, "hash-a", "space a", "[1.0,0.0]", "space-a"),
++                (store._scope_key(tenant), workspace, "b.py", 0, "hash-b", "space b", "[1.0,0.0]", "space-b"),
++            ],
++        )
++        con.commit()
++
++    first = store.search("same query", tenant, workspace, use_reranker=False)
++    repeated = store.search("same query", tenant, workspace, use_reranker=False)
++    active_space["value"] = "space-b"
++    store.services.space_id = active_space["value"]
++    second = store.search("same query", tenant, workspace, use_reranker=False)
++
++    assert [row["path"] for row in first["results"]] == ["a.py"]
++    assert repeated["search_cache"]["hit"] is True
++    assert [row["path"] for row in second["results"]] == ["b.py"]
++    assert second["search_cache"]["hit"] is False
++    assert len(calls) == 2
++
++
++def test_warm_search_skips_embedding_space_write_lock(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.services.space_id = "space-a"
++    tenant, workspace = "tenant", "warm-space-metadata"
++    original_connect = store._connect
++    with closing(original_connect()) as con:
++        store._store_workspace_embedding_space(con, store._scope_key(tenant), workspace, "space-a")
++        con.commit()
++    begin_immediate_calls = []
++
++    class _TrackingConnection:
++        def __init__(self, connection):
++            self._connection = connection
++
++        def execute(self, sql, *args):
++            if sql == "BEGIN IMMEDIATE":
++                begin_immediate_calls.append(sql)
++            return self._connection.execute(sql, *args)
++
++        def close(self):
++            self._connection.close()
++
++        def __getattr__(self, name):
++            return getattr(self._connection, name)
++
++    monkeypatch.setattr(store, "_connect", lambda: _TrackingConnection(original_connect()))
++
++    for query in ("first query", "second query"):
++        result = store._search_uncached(query, tenant, workspace, use_reranker=False)
++        assert result["success"] is True
++    assert begin_immediate_calls == []
++
++    with closing(store._connect()) as con:
++        assert store._stored_workspace_embedding_space(con, store._scope_key(tenant), workspace) == "space-a"
++
++
++def test_warm_search_reads_embedding_space_from_vector_snapshot(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.services.space_id = "space-a"
++    tenant, workspace = "tenant", "snapshot-space-metadata"
++    scope_key = store._scope_key(tenant)
++    with closing(store._connect()) as con:
++        store._store_workspace_embedding_space(con, scope_key, workspace, "space-a")
++        con.execute(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            (scope_key, workspace, "known.py", 0, "known", "known result", "[1.0, 0.0]", "space-a"),
++        )
++        con.commit()
++
++    transaction_states = []
++    read_metadata = store._stored_workspace_embedding_space
++
++    def observe_snapshot(connection, observed_scope, observed_workspace):
++        transaction_states.append(connection.in_transaction)
++        return read_metadata(connection, observed_scope, observed_workspace)
++
++    monkeypatch.setattr(store, "_stored_workspace_embedding_space", observe_snapshot)
++    result = store._search_uncached("query", tenant, workspace, use_reranker=False)
++
++    assert result["success"] is True
++    assert [row["path"] for row in result["results"]] == ["known.py"]
++    assert transaction_states == [True]
++
++
++def test_public_search_cache_isolated_by_tenant(tmp_path):
++    store = _store(tmp_path)
++    store.scope = "tenant"
++    store.services.space_id = "shared-runtime-space"
++    store.services.embed = lambda *_args, **_kwargs: {
++        "success": True,
++        "embedding_space_id": "shared-runtime-space",
++        "embeddings": [[1.0, 0.0]],
++    }
++    workspace = "same-workspace"
++    with closing(store._connect()) as con:
++        con.executemany(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            [
++                ("tenant-a", workspace, "same.py", 0, "same-metadata", "tenant a", "[1.0,0.0]", "shared-runtime-space"),
++                ("tenant-b", workspace, "same.py", 0, "same-metadata", "tenant b", "[1.0,0.0]", "shared-runtime-space"),
++            ],
++        )
++        con.commit()
++
++    first = store.search("same query", "tenant-a", workspace, use_reranker=False)
++    second = store.search("same query", "tenant-b", workspace, use_reranker=False)
++
++    assert [row["text"] for row in first["results"]] == ["tenant a"]
++    assert [row["text"] for row in second["results"]] == ["tenant b"]
++    assert second["search_cache"]["hit"] is False
++
++
++def test_public_search_cache_tracks_runtime_embedding_dimension(tmp_path):
++    store = _store(tmp_path)
++    store.services.space_id = "same-runtime-space"
++
++    class _RuntimeDimension:
++        _active_embedding_dimension = 2
++
++    runtime = _RuntimeDimension()
++    store.services.embeddings = runtime
++    calls = []
++
++    def uncached(query, tenant, workspace, top_k=8, use_reranker=True, priority=3, scope_path=None):
++        calls.append(runtime._active_embedding_dimension)
++        return {"success": True, "results": [{"path": f"dimension-{runtime._active_embedding_dimension}"}]}
++
++    store._search_uncached = uncached
++    first = store.search("same query", "tenant", "same-workspace", use_reranker=False)
++    runtime._active_embedding_dimension = 3
++    second = store.search("same query", "tenant", "same-workspace", use_reranker=False)
++
++    assert first["results"][0]["path"] == "dimension-2"
++    assert second["results"][0]["path"] == "dimension-3"
++    assert second["search_cache"]["hit"] is False
++    assert calls == [2, 3]
++
++
++def test_public_search_rekeys_when_runtime_embedding_identity_changes_during_query(tmp_path):
++    store = _store(tmp_path)
++    store.services.space_id = "space-before"
++
++    class _RuntimeDimension:
++        _active_embedding_dimension = 2
++
++    runtime = _RuntimeDimension()
++    store.services.embeddings = runtime
++    query_calls = []
++
++    def embed(texts, _tenant, **kwargs):
++        if kwargs.get("query", False):
++            query_calls.append(list(texts))
++            if len(query_calls) == 1:
++                store.services.space_id = "space-after"
++                runtime._active_embedding_dimension = 3
++            dimension = runtime._active_embedding_dimension
++            return {
++                "success": True,
++                "embedding_space_id": store.services.space_id,
++                "embeddings": [[1.0] * dimension for _ in texts],
++            }
++        return {"success": True, "embedding_space_id": store.services.space_id, "embeddings": []}
++
++    store.services.embed = embed
++
++    first = store.search("same query", "tenant", "same-workspace", use_reranker=False)
++    second = store.search("same query", "tenant", "same-workspace", use_reranker=False)
++
++    assert first["success"] is True
++    assert second["search_cache"]["hit"] is True
++    assert len(query_calls) == 1
++
++
++def test_hybrid_fts_excludes_foreign_and_empty_embedding_spaces(tmp_path):
++    store = _store(tmp_path)
++    store.scope = "tenant"
++    store.services.space_id = "space-current"
++    store.services.embed = lambda texts, *_args, **_kwargs: {
++        "success": True,
++        "embedding_space_id": "space-current",
++        "embeddings": [[1.0, 0.0] for _ in texts],
++    }
+     root = tmp_path / "project"
+     root.mkdir()
+-    (root / "locked.py").write_text("def locked():\n    return 1\n", encoding="utf-8")
+-
++    (root / "current.py").write_text("# sharedprobe current\ndef current():\n    return 1\n", encoding="utf-8")
++    (root / "foreign.py").write_text("# sharedprobe foreign\ndef foreign():\n    return 2\n", encoding="utf-8")
++    (root / "legacy.py").write_text("# sharedprobe legacy\ndef legacy():\n    return 3\n", encoding="utf-8")
++    workspace = "hybrid-spaces"
++    indexed = store.index(str(root), "tenant", workspace=workspace)
++    assert indexed["success"] is True, indexed
++    with closing(store._connect()) as con:
++        con.execute(
++            "UPDATE chunks SET embedding_space='space-old' WHERE tenant=? AND workspace=? AND path='foreign.py'",
++            (store._scope_key("tenant"), workspace),
++        )
++        con.execute(
++            "UPDATE chunks SET embedding_space='' WHERE tenant=? AND workspace=? AND path='legacy.py'",
++            (store._scope_key("tenant"), workspace),
++        )
++        con.executemany(
++            "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++            [
++                (store._scope_key("tenant"), workspace, "current.py", 0, "sharedprobe current"),
++                (store._scope_key("tenant"), workspace, "foreign.py", 0, "sharedprobe foreign"),
++                (store._scope_key("tenant"), workspace, "legacy.py", 0, "sharedprobe legacy"),
++            ],
++        )
++        con.commit()
++
++    result = store._search_uncached("sharedprobe", "tenant", workspace, use_reranker=False)
++
++    assert [row["path"] for row in result["results"]] == ["current.py"]
++
++    store.services.embed = lambda *_args, **_kwargs: {"success": False, "error": "offline"}
++    lexical = store._search_uncached("sharedprobe", "tenant", workspace, use_reranker=False)
++
++    assert {row["path"] for row in lexical["results"]} == {"current.py", "foreign.py", "legacy.py"}
++    assert lexical["retrieval_mode"] == "lexical_fallback"
++    assert lexical["lexical_backend"] == "fts5"
++
++
++def test_uncertain_fts_paths_do_not_consume_candidate_limit(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    tenant, workspace = "tenant", "uncertainty-limit"
++    scope_key = store._scope_key(tenant)
++    with closing(store._connect()) as con:
++        for chunk_no in range(20):
++            text = "needle " * 12
++            con.execute(
++                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++                "VALUES(?,?,?,?,?,?,?,?)",
++                (scope_key, workspace, "uncertain.py", chunk_no, f"u{chunk_no}", text, "[1.0,0.0]", "space"),
++            )
++            con.execute(
++                "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++                (scope_key, workspace, "uncertain.py", chunk_no, text),
++            )
++        con.execute(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            (scope_key, workspace, "healthy.py", 0, "healthy", "needle healthy", "[1.0,0.0]", "space"),
++        )
++        con.execute(
++            "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++            (scope_key, workspace, "healthy.py", 0, "needle healthy"),
++        )
++        store._update_workspace_read_uncertainty(
++            con, scope_key, workspace, uncertain_paths={"uncertain.py"}
++        )
++        con.commit()
++    store.services.embed = lambda *_args, **_kwargs: {"success": False, "error": "offline"}
++    monkeypatch.setattr(store, "_search_token_overlap", lambda *_args, **_kwargs: [])
++
++    result = store._search_uncached("needle", tenant, workspace, top_k=1, use_reranker=False)
++
++    assert [row["path"] for row in result["results"]] == ["healthy.py"]
++
++
++def test_unresolved_embedding_uses_explicit_lexical_fallback(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.services.embed = lambda *_args, **_kwargs: {"success": False, "error": "offline"}
++    monkeypatch.setattr(store, "_search_fts_candidates", lambda *_args, **_kwargs: [])
++    monkeypatch.setattr(
++        store,
++        "_search_token_overlap",
++        lambda *_args, **_kwargs: [{"path": "lexical.py", "chunk_no": 0, "text": "needle text", "content_hash": "h", "fts_score": 1.0}],
++    )
++
++    result = store._search_uncached("needle", "tenant", "lexical-workspace", use_reranker=False)
++
++    assert [row["path"] for row in result["results"]] == ["lexical.py"]
++    assert result["degraded"] is True
++    assert result["retrieval_mode"] == "lexical_fallback"
++    assert result["lexical_backend"] == "token_overlap"
++
++
++def test_project_policy_identity_retries_transient_publish_lock(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    root = tmp_path / "policy-lock-project"
++    root.mkdir()
++    (root / ".local-ai.toml").write_text(
++        'exclude_paths = ["vendor/**"]\n', encoding="utf-8"
++    )
++    context = store.project_context(root)
++    assert context is not None
++    assert context.config_digest
++    workspace = "policy-lock-workspace"
++    scope_key = store._scope_key("test_tenant")
+     state = {"failures": 1, "begins": 0}
+ 
+     class _FlakyConnection:
+@@ -129,7 +515,99 @@
+     original_connect = store._connect
+     monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
+ 
+-    result = store.index(str(root), "test_tenant", workspace="locked-workspace")
++    removed = store._sync_workspace_project_policy_identity(
++        root, scope_key, workspace, context
++    )
++
++    assert removed == 0
++    assert state["begins"] == 2
++    key = store._workspace_project_config_key(scope_key, workspace)
++    with closing(original_connect()) as con:
++        row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
++    assert row is not None
++    assert row[0] == context.config_digest
++
++
++def test_index_paths_step_retries_uncertain_only_publish_lock(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    root = tmp_path / "uncertain-lock-project"
++    root.mkdir()
++    (root / "unreadable.py").write_text("content", encoding="utf-8")
++    monkeypatch.setattr(rag_module, "_read_bounded_file", lambda *_args: None)
++    state = {"begins": 0, "failures": 1}
++
++    class _FlakyConnection:
++        def __init__(self, connection):
++            self._connection = connection
++
++        def execute(self, sql, *args):
++            if sql == "BEGIN IMMEDIATE":
++                state["begins"] += 1
++                # Identity sync and first uncertainty publish succeed. Inject one
++                # busy failure in the uncertain-only follow-up transaction.
++                if state["begins"] == 3 and state["failures"]:
++                    state["failures"] -= 1
++                    raise sqlite3.OperationalError("database is locked")
++            return self._connection.execute(sql, *args)
++
++        def close(self):
++            self._connection.close()
++
++        def __getattr__(self, name):
++            return getattr(self._connection, name)
++
++    original_connect = store._connect
++    monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
++
++    result = store.index_paths_step(
++        str(root), "test_tenant", "uncertain-lock-workspace", ["unreadable.py"]
++    )
++
++    assert result["success"] is True
++    assert result["read_uncertain_paths"] == ["unreadable.py"]
++    assert state["begins"] == 4
++    key = store._scope_key("test_tenant")
++    with closing(original_connect()) as con:
++        uncertain = store._workspace_read_uncertain_paths(
++            con, key, "uncertain-lock-workspace"
++        )
++    assert uncertain == {"unreadable.py"}
++
++
++def test_rag_index_retries_transient_publish_lock(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / "locked.py").write_text("def locked():\n    return 1\n", encoding="utf-8")
++    workspace = "locked-workspace"
++    store._sync_workspace_project_policy_identity(
++        root, store._scope_key("test_tenant"), workspace, store.project_context(root)
++    )
++
++    state = {"failures": 1, "begins": 0}
++
++    class _FlakyConnection:
++        def __init__(self, connection):
++            self._connection = connection
++
++        def execute(self, sql, *args):
++            if sql == "BEGIN IMMEDIATE":
++                state["begins"] += 1
++                if state["failures"]:
++                    state["failures"] -= 1
++                    raise sqlite3.OperationalError("database is locked")
++            return self._connection.execute(sql, *args)
++
++        def close(self):
++            self._connection.close()
++
++        def __getattr__(self, name):
++            return getattr(self._connection, name)
++
++    original_connect = store._connect
++    monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(original_connect()))
++
++    result = store.index(str(root), "test_tenant", workspace=workspace)
+ 
+     assert result["success"] is True
+     assert state["begins"] == 2
+diff --git a/tests/test_rag_quality_contract.py b/tests/test_rag_quality_contract.py
+--- a/tests/test_rag_quality_contract.py
++++ b/tests/test_rag_quality_contract.py
+@@ -1,15 +1,18 @@
+ from __future__ import annotations
+ 
++import hashlib
+ import json
+ import math
+ import os
+ import sqlite3
++import threading
+ import time
+ import tracemalloc
+ from contextlib import closing
+ from pathlib import Path
+ 
+ import numpy as np
++import pytest
+ 
+ from local_ai_hub.embeddings import EmbeddingModel
+ from local_ai_hub.rag import RAGStore
+@@ -103,6 +106,165 @@
+     assert [row["chunk_no"] for row in result["results"][:3]] == [2, 3, 1]
+ 
+ 
++def test_vector_search_skips_redundant_local_sort_for_unique_scores(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.config["rag"]["search_batch_size"] = 32
++    tenant, workspace = "tenant", "unique-score-workspace"
++    vectors = np.asarray([[1.0, float(i + 1)] for i in range(96)], dtype=np.float32)
++    _insert_vectors(store, tenant, workspace, vectors)
++
++    def unexpected_lexsort(*_args, **_kwargs):
++        raise AssertionError("unique-score batch should not need local candidate ordering")
++
++    monkeypatch.setattr(np, "lexsort", unexpected_lexsort)
++    result = store._search_uncached("unique score query", tenant, workspace, top_k=4, use_reranker=False)
++
++    assert result["success"] is True
++    assert [row["chunk_no"] for row in result["results"]] == [0, 1, 2, 3]
++
++
++def test_vector_search_reuses_norm_buffer_for_scores(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.config["rag"]["search_batch_size"] = 32
++    tenant, workspace = "tenant", "score-buffer-workspace"
++    vectors = np.asarray([[1.0, 0.0]] * 31 + [[0.0, 0.0]], dtype=np.float32)
++    _insert_vectors(store, tenant, workspace, vectors)
++
++    zeros = np.zeros
++
++    def reject_batch_score_buffer(shape, *args, **kwargs):
++        if shape == 32:
++            raise AssertionError("vector scoring should reuse an existing batch array")
++        return zeros(shape, *args, **kwargs)
++
++    monkeypatch.setattr(np, "zeros", reject_batch_score_buffer)
++    result = store._search_uncached("score buffer query", tenant, workspace, top_k=4, use_reranker=False)
++
++    assert result["success"] is True
++    assert [row["chunk_no"] for row in result["results"]] == [0, 1, 2, 3]
++    assert all(np.isfinite(row["embedding_score"]) for row in result["results"])
++
++
++def test_vector_search_keeps_deterministic_ties_at_candidate_cutoff(tmp_path):
++    store = _store(tmp_path)
++    vectors = np.asarray([[1.0, 0.0]] * 32, dtype=np.float32)
++    _insert_vectors(store, "tenant", "tie-workspace", vectors)
++
++    result = store._search_uncached(
++        "tie query", "tenant", "tie-workspace", top_k=16, use_reranker=False
++    )
++
++    assert result["success"] is True
++    assert [row["chunk_no"] for row in result["results"]] == list(range(16))
++
++
++def test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors(tmp_path):
++    store = _store(tmp_path, dimension=3)
++    tenant = "tenant"
++    baseline_workspace = "credential-golden-baseline"
++    candidate_workspace = "credential-golden-candidate"
++    relevant = [
++        (
++            "runbooks/credential-rotation.md",
++            "Credential rotation runbook: rotate service credentials every 30 days.",
++            [1.0, 0.0, 0.0],
++        ),
++        (
++            "security/api-key-rollover.md",
++            "API key rollover procedure deploys replacement credentials before revoking old keys.",
++            [0.99, 0.12, 0.0],
++        ),
++        (
++            "operations/token-expiry.md",
++            "Rotate authentication tokens before expiry and verify each service account.",
++            [0.97, 0.22, 0.0],
++        ),
++        (
++            "database/secret-renewal.md",
++            "Database secret renewal schedule includes rotation, validation, and rollback.",
++            [0.95, 0.31, 0.0],
++        ),
++        (
++            "audit/credential-review.md",
++            "Credential rotation audit records owner, interval, and successful rollout.",
++            [0.92, 0.39, 0.0],
++        ),
++        (
++            "identity/service-token-guide.md",
++            "Service token guide explains staged credential replacement and rotation.",
++            [0.89, 0.46, 0.0],
++        ),
++    ]
++    corpus = list(relevant)
++    corpus.extend(
++        (
++            f"reference/topic-{index:02d}.md",
++            f"Reference notes for unrelated topic {index}: geography, cooking, music, and weather.",
++            [0.02, 1.0, 0.0],
++        )
++        for index in range(58)
++    )
++    dataset_revision = hashlib.sha256(
++        json.dumps(corpus, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    ).hexdigest()
++    vectors = np.asarray([row[2] for row in corpus], dtype=np.float32)
++    revision_hashes = {f"{dataset_revision}:{index}" for index in range(len(corpus))}
++    scope_key = store._scope_key(tenant)
++    for workspace in (baseline_workspace, candidate_workspace):
++        _insert_vectors(store, tenant, workspace, vectors)
++        with closing(store._connect()) as con:
++            for index, (path, content, _vector) in enumerate(corpus):
++                con.execute(
++                    "UPDATE chunks SET path=?,chunk_no=0,content_hash=?,text=? "
++                    "WHERE tenant=? AND workspace=? AND content_hash=?",
++                    (
++                        path,
++                        f"{dataset_revision}:{index}",
++                        content,
++                        scope_key,
++                        workspace,
++                        f"hash-{index}",
++                    ),
++                )
++            con.commit()
++
++    with closing(store._connect()) as con:
++        for workspace in (baseline_workspace, candidate_workspace):
++            rows = con.execute(
++                "SELECT content_hash,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
++                (scope_key, workspace),
++            ).fetchall()
++            assert {str(row[0]) for row in rows} == revision_hashes
++            assert {str(row[1]) for row in rows} == {"quality-space"}
++
++    store.config["rag"]["rerank_candidates"] = 16
++    relevant_paths = {row[0] for row in relevant}
++
++    def paired_metrics(workspace: str) -> tuple[list[str], float, float]:
++        result = store._search_uncached(
++            "weekly credential rotation", tenant, workspace, top_k=10, use_reranker=False
++        )
++        assert result["success"] is True
++        result_paths = [row["path"] for row in result["results"]]
++        assert len(result_paths) == 10
++        relevance = [int(path in relevant_paths) for path in result_paths]
++        recall_at_10 = sum(relevance) / len(relevant_paths)
++        dcg_at_10 = sum(score / math.log2(rank + 2) for rank, score in enumerate(relevance))
++        ideal_dcg_at_10 = sum(
++            1.0 / math.log2(rank + 2) for rank in range(len(relevant_paths))
++        )
++        return result_paths, recall_at_10, dcg_at_10 / ideal_dcg_at_10
++
++    baseline = paired_metrics(baseline_workspace)
++    candidate = paired_metrics(candidate_workspace)
++
++    assert baseline[0] == candidate[0]
++    assert baseline[0][0] == relevant[0][0]
++    assert candidate[1:] == baseline[1:]
++    assert baseline[1] == candidate[1] == 1.0
++    assert baseline[2] == candidate[2] == 1.0
++
++
+ def test_python_cosine_fallback_rejects_non_finite_vectors():
+     assert RAGStore._cosine([float("nan"), 1.0], [1.0, 0.0]) == 0.0
+     assert RAGStore._cosine([float("inf"), 1.0], [1.0, 0.0]) == 0.0
+@@ -155,7 +317,11 @@
+ 
+     model = EmbeddingModel.__new__(EmbeddingModel)
+     model.config = {
+-        "models": {"embedding": "primary-model", "embedding_dimension": 2},
++        "models": {
++            "embedding": "primary-model",
++            "embedding_dimension": 2,
++            "embedding_revision": "test-revision",
++        },
+         "cache": {"embeddings": True},
+     }
+     model.model_name = "primary-model"
+@@ -167,6 +333,12 @@
+     model._active_embedding_dimension = 2
+     model._ollama_model_name = "primary-model"
+     model._loaded_model_name = "fallback-model"
++    model._loaded_model_revision = "test-revision"
++    model._encoder_lock = threading.RLock()
++    model._identity_dimension_lock = threading.Lock()
++    model._dimensions_by_identity = {}
++    model._model_provenance_lock = threading.Lock()
++    model._model_provenance_by_identity = {}
+     model.cache = _Cache()
+     model.cache_enabled = True
+     model.batch_size = 32
+@@ -174,6 +346,7 @@
+     model._computed = 0
+     model._batch_deduplicated = 0
+     model._load_error = None
++    model._execution_local = threading.local()
+     model._encode_ollama = lambda _texts: None
+     model._candidate_specs = lambda: [("sentence-transformers", "cpu")]
+ 
+@@ -186,7 +359,13 @@
+     fallback_identity = "sentence-transformers:cpu:fallback-model"
+     assert result["backend"] == "sentence-transformers"
+     assert result["embedding_space_id"] == model.embedding_space_id(fallback_identity)
+-    assert next(iter(model.cache.values.values()))["identity"] == fallback_identity
++    vector_entries = [
++        entry
++        for entry in model.cache.values.values()
++        if isinstance(entry, dict) and "vector" in entry
++    ]
++    assert len(vector_entries) == 1
++    assert vector_entries[0]["identity"] == fallback_identity
+ 
+ 
+ def test_subthreshold_query_embedding_returns_degraded_empty_results(tmp_path):
+@@ -290,12 +469,67 @@
+     assert len(result["results"]) <= 512
+ 
+ 
+-def test_vector_cursor_closes_before_scoring_batch(tmp_path, monkeypatch):
++@pytest.mark.parametrize(
++    ("dimension", "configured_batch_size", "expected_batch_size"),
++    [(2, None, 512), (2, 8192, 8192), (384, 8192, 2730)],
++)
++def test_search_uses_larger_bounded_vector_batches_when_configured(
++    tmp_path, monkeypatch, dimension, configured_batch_size, expected_batch_size
++):
++    store = _store(tmp_path, dimension)
++    tenant, workspace = "tenant", "larger-batch-workspace"
++    vector = np.zeros(dimension, dtype=np.float32)
++    vector[0] = 1.0
++    _insert_vectors(store, tenant, workspace, vector.reshape(1, -1))
++    if configured_batch_size is not None:
++        store.config["rag"]["search_batch_size"] = configured_batch_size
++    fetch_sizes = []
++    connect = store._connect
++
++    class _Cursor:
++        def __init__(self, cursor):
++            self._cursor = cursor
++
++        def fetchmany(self, size):
++            fetch_sizes.append(size)
++            return self._cursor.fetchmany(size)
++
++        def close(self):
++            self._cursor.close()
++
++        def __getattr__(self, name):
++            return getattr(self._cursor, name)
++
++    class _Connection:
++        def __init__(self, connection):
++            self._connection = connection
++
++        def execute(self, sql, *args):
++            cursor = self._connection.execute(sql, *args)
++            if "SELECT path, chunk_no, embedding, content_hash FROM chunks" in sql:
++                return _Cursor(cursor)
++            return cursor
++
++        def close(self):
++            self._connection.close()
++
++        def commit(self):
++            self._connection.commit()
++
++    monkeypatch.setattr(store, "_connect", lambda: _Connection(connect()))
++
++    result = store._search_uncached("larger batch", tenant, workspace, top_k=1, use_reranker=False)
++
++    assert result["success"] is True
++    assert fetch_sizes and max(fetch_sizes) == expected_batch_size
++
++
++def test_vector_cursor_closes_before_scoring_and_after_search(tmp_path, monkeypatch):
+     import local_ai_hub.rag as rag_module
+ 
+     store = _store(tmp_path)
+     _insert_vectors(store, "tenant", "cursor-workspace", np.asarray([[1.0, 0.0]], dtype=np.float32))
+-    state = {"cursor": None, "closed_before_dot": False}
++    state = {"cursor": None, "cursor_open_during_dot": False, "fetches": 0}
+     real_dot = np.dot
+ 
+     class _Cursor:
+@@ -305,6 +539,7 @@
+             state["cursor"] = self
+ 
+         def fetchmany(self, size):
++            state["fetches"] += 1
+             return self._cursor.fetchmany(size)
+ 
+         def close(self):
+@@ -334,19 +569,21 @@
+     monkeypatch.setattr(store, "_connect", lambda: _Connection(connect()))
+ 
+     def checked_dot(*args, **kwargs):
+-        state["closed_before_dot"] = bool(state["cursor"] and state["cursor"].closed)
++        state["cursor_open_during_dot"] = bool(state["cursor"] and not state["cursor"].closed)
+         return real_dot(*args, **kwargs)
+ 
+     monkeypatch.setattr(np, "dot", checked_dot)
+     result = store._search_uncached("cursor query", "tenant", "cursor-workspace", top_k=1, use_reranker=False)
+     assert result["success"] is True
+-    assert state["closed_before_dot"] is True
++    assert state["cursor_open_during_dot"] is False
++    assert state["fetches"] >= 2
++    assert state["cursor"].closed is True
+ 
+ 
+ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
+     if os.environ.get("RAG_BENCHMARK") != "1":
+         import pytest
+-        pytest.skip("set RAG_BENCHMARK=1 to run bounded retrieval measurements")
++        pytest.skip("set RAG_BENCHMARK=1 to run 100k chunk retrieval measurements")
+ 
+     dimension = 384
+     tenant, workspace = "benchmark-tenant", "benchmark-workspace"
+@@ -358,16 +595,27 @@
+         vectors = rng.standard_normal((count, dimension), dtype=np.float32)
+         vectors[0] = 0.0
+         vectors[0, 0] = 1.0
++        store = _store(tmp_path / str(count), dimension)
+         _insert_vectors(store, tenant, workspace, vectors)
+ 
+-        samples_ms = []
+-        peak_bytes = 0
+-        for _ in range(3):
++        for batch_size in batch_sizes:
++            store.config["rag"]["search_batch_size"] = batch_size
++            samples_ms = []
++            peak_bytes = 0
++            sample_count = 20 if count == 100_000 else 5
++            for _ in range(2):
++                warmup = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
++                assert warmup["success"] is True
++                assert warmup["results"][0]["chunk_no"] == 0
++            for _ in range(sample_count):
++                started = time.perf_counter()
++                result = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
++                samples_ms.append((time.perf_counter() - started) * 1000.0)
++                assert result["success"] is True
++                assert result["results"][0]["chunk_no"] == 0
+             tracemalloc.start()
+-            started = time.perf_counter()
+-            result = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
+-            samples_ms.append((time.perf_counter() - started) * 1000.0)
+-            _, sample_peak = tracemalloc.get_traced_memory()
++            memory_result = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
++            _, peak_bytes = tracemalloc.get_traced_memory()
+             tracemalloc.stop()
+             peak_bytes = max(peak_bytes, sample_peak)
+             assert result["success"] is True

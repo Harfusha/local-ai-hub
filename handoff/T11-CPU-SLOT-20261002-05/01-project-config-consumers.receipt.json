@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-05",
+  "task": "T11 project_config + owned consumer checks",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_project_config.py tests/test_t11_project_policy_consumers.py",
+  "exit_code": 0,
+  "result": "93 passed in 6.63s",
+  "output_log": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\T11-CPU-SLOT-20261002-05\\01-project-config-consumers.log",
+  "output_sha256": "ed6219422a2d0ac42e58469fca0816d0f83893908dbb5c80fa3a6672f3acc840",
+  "inventory_sha256": "dca36e199ed44f367a9cecc0ba81d3a33ef409c8ce31685101c65d184d52d116",
+  "input_sha256": {
+    "src/local_ai_hub/project_config.py": "ffd425b1260b285f25b1d121a7c6bcd585c618b5c7e26415e2ad0a7014196b0b",
+    "src/local_ai_hub/project_policy_adapter.py": "11d4a5c6519989f6f65632edc880c521c407ddbc335c181480116c6827afb98a",
+    "tests/test_project_config.py": "0196d8fa417dd2b56bfc0d143217d25e2986e1b1b1df6ceffadd3c0eeb9fbcea",
+    "tests/test_t11_project_policy_consumers.py": "e4ea70d1036a5109b80e390b255f4106664e0238ab7067e59322760997d0c4f5"
+  },
+  "tests_run": [
+    "tests/test_project_config.py",
+    "tests/test_t11_project_policy_consumers.py"
+  ],
+  "benchmarks_run": false,
+  "next_tests_started": false,
+  "slot_status": "RELEASED TO T20 per latest coordinator instruction"
+}

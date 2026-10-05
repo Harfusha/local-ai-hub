@@ -1,0 +1,46 @@
+diff --git a/tests/test_rag_hybrid.py b/tests/test_rag_hybrid.py
+--- a/tests/test_rag_hybrid.py
++++ b/tests/test_rag_hybrid.py
+@@ -38,6 +38,42 @@
+         _Services(),
+         _Reranker(),
+     )
++
++
++def test_warm_search_skips_embedding_space_write_lock(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.services.space_id = "space-a"
++    tenant, workspace = "tenant", "warm-space-metadata"
++    original_connect = store._connect
++    with closing(original_connect()) as con:
++        store._store_workspace_embedding_space(con, store._scope_key(tenant), workspace, "space-a")
++        con.commit()
++    begin_immediate_calls = []
++
++    class _TrackingConnection:
++        def __init__(self, connection):
++            self._connection = connection
++
++        def execute(self, sql, *args):
++            if sql == "BEGIN IMMEDIATE":
++                begin_immediate_calls.append(sql)
++            return self._connection.execute(sql, *args)
++
++        def close(self):
++            self._connection.close()
++
++        def __getattr__(self, name):
++            return getattr(self._connection, name)
++
++    monkeypatch.setattr(store, "_connect", lambda: _TrackingConnection(original_connect()))
++
++    for query in ("first query", "second query"):
++        result = store._search_uncached(query, tenant, workspace, use_reranker=False)
++        assert result["success"] is True
++    assert begin_immediate_calls == []
++
++    with closing(store._connect()) as con:
++        assert store._stored_workspace_embedding_space(con, store._scope_key(tenant), workspace) == "space-a"
+ 
+ 
+ def test_hybrid_rag_search_combines_fts_and_vector(tmp_path):

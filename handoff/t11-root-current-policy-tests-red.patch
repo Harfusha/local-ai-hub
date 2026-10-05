@@ -1,0 +1,233 @@
+diff --git a/tests/test_t11_rag_project_policy.py b/tests/test_t11_rag_project_policy.py
+--- a/tests/test_t11_rag_project_policy.py
++++ b/tests/test_t11_rag_project_policy.py
+@@ -83,3 +83,65 @@
+     assert result["success"] is True
+     assert result.get("skipped") is True
+     assert _stored_paths(store, "tenant", workspace) == set()
++
++def test_rag_index_paths_respects_hard_ignored_directory_with_force_include(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    (root / ".local-ai.toml").write_text(
++        'force_include_paths = ["generated/keep.py"]\n', encoding="utf-8"
++    )
++    generated = root / "generated"
++    generated.mkdir()
++    (generated / "keep.py").write_text("keep = True\n", encoding="utf-8")
++    rag_config = {"extensions": [".py"], "ignore_dirs": [], "max_file_bytes": 1024}
++    config: dict[str, object] = {
++        "server": {"state_dir": str(tmp_path / "state")}, "rag": rag_config,
++    }
++    store = RAGStore(config, services=RecordingEmbedder())
++    workspace = store.workspace_id(str(root))
++    assert store.index_paths_step(
++        str(root), "tenant", workspace, ["generated/keep.py"]
++    )["success"] is True
++    assert _stored_paths(store, "tenant", workspace) == {"generated/keep.py"}
++
++    rag_config["ignore_dirs"] = ["generated"]
++    result = store.index_paths_step(str(root), "tenant", workspace, ["generated/keep.py"])
++
++    assert result["success"] is True
++    assert _stored_paths(store, "tenant", workspace) == set()
++
++
++@pytest.mark.parametrize("entrypoint", ["index", "index_paths_step"])
++def test_rag_ingestion_applies_custom_extension_and_project_size_policy(
++    tmp_path: Path, entrypoint: str,
++) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    (root / ".local-ai.toml").write_text(
++        '[custom_extensions]\ntext = [".tmpl"]\nbinary = [".blob"]\n'
++        '[file_limits]\nmax_file_size_bytes = 12\n',
++        encoding="utf-8",
++    )
++    (root / "view.tmpl").write_text("view\n", encoding="utf-8")
++    (root / "asset.blob").write_text("binary\n", encoding="utf-8")
++    (root / "large.tmpl").write_text("x" * 13, encoding="utf-8")
++    (root / "included.py").write_text("ok\n", encoding="utf-8")
++    config: dict[str, object] = {
++        "server": {"state_dir": str(tmp_path / "state")},
++        "rag": {"extensions": [".py"], "ignore_dirs": [], "max_file_bytes": 1024},
++    }
++    store = RAGStore(config, services=RecordingEmbedder())
++    workspace = store.workspace_id(str(root))
++
++    if entrypoint == "index":
++        result = store.index(str(root), "tenant", workspace)
++    elif entrypoint == "index_step":
++        result = store.index_step(str(root), "tenant", workspace, max_files=10)
++    else:
++        result = store.index_paths_step(
++            str(root), "tenant", workspace,
++            ["view.tmpl", "asset.blob", "large.tmpl", "included.py"],
++        )
++
++    assert result["success"] is True
++    assert _stored_paths(store, "tenant", workspace) == {"view.tmpl", "included.py"}
+diff --git a/tests/test_rag_read_bounds.py b/tests/test_rag_read_bounds.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_rag_read_bounds.py
+@@ -0,0 +1,143 @@
++from __future__ import annotations
++
++import io
++from contextlib import closing
++from pathlib import Path
++
++import pytest
++
++from local_ai_hub.rag import RAGStore
++
++
++class _VectorServices:
++    def __init__(self):
++        self.document_calls: list[str] = []
++
++    def embed(self, texts, tenant, **kwargs):
++        if not kwargs.get("query", False):
++            self.document_calls.append(tenant)
++        return {
++            "success": True,
++            "embedding_space_id": "shared-test-space",
++            "embeddings": [[1.0, 0.0] for _ in texts],
++        }
++
++
++def _store(
++    tmp_path: Path,
++    *,
++    max_file_bytes: int = 32,
++    scope: str = "shared",
++) -> RAGStore:
++    return RAGStore(
++        {
++            "server": {"state_dir": str(tmp_path / "state")},
++            "models": {},
++            "cpu_retrieval": {},
++            "workspace_cache": {},
++            "rag": {
++                "extensions": [".py"],
++                "ignore_dirs": [],
++                "max_file_bytes": max_file_bytes,
++                "scope": scope,
++            },
++            "resilience": {"singleflight_wait_timeout_seconds": 2},
++            "features": {"reranker": False},
++        },
++        services=_VectorServices(),
++    )
++
++
++def _indexed_counts(store: RAGStore, tenant: str, workspace: str, path: str):
++    scope_key = store._scope_key(tenant)
++    with closing(store._connect()) as con:
++        return tuple(
++            con.execute(
++                f"SELECT COUNT(*) FROM {table} WHERE tenant=? AND workspace=? AND path=?",
++                (scope_key, workspace, path),
++            ).fetchone()[0]
++            for table in ("files", "chunks", "chunk_fts")
++        )
++
++
++@pytest.mark.parametrize("entrypoint", ["index", "index_step", "index_paths_step"])
++def test_file_growth_after_stat_never_reads_or_keeps_oversized_snapshot(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str
++):
++    store = _store(tmp_path, max_file_bytes=32)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 'before'\n", encoding="utf-8")
++    initial_size = path.stat().st_size
++    tenant, workspace = "tenant", "workspace"
++    assert store.index_paths_step(str(root), tenant, workspace, ["module.py"])["success"]
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++
++    path.write_text("value = 'changed'\n", encoding="utf-8")
++    original_open = Path.open
++
++    def grow_after_stat(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == path.resolve() and mode == "rb":
++            return io.BytesIO(b"x" * 33)
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", grow_after_stat)
++    if entrypoint == "index":
++        result = store.index(str(root), tenant, workspace)
++    else:
++        result = store.index_paths_step(str(root), tenant, workspace, ["module.py"])
++
++    assert result["success"] is (entrypoint == "index_paths_step")
++    expected_counts = (1, 1, 1) if entrypoint == "index" else (0, 0, 0)
++    assert _indexed_counts(store, tenant, workspace, "module.py") == expected_counts
++    if entrypoint == "index":
++        with closing(store._connect()) as con:
++            indexed_size = con.execute(
++                "SELECT size FROM files WHERE tenant=? AND workspace=? AND path=?",
++                (store._scope_key(tenant), workspace, "module.py"),
++            ).fetchone()[0]
++        assert indexed_size == initial_size
++
++
++def test_content_override_obeys_configured_file_limit(tmp_path: Path):
++    store = _store(tmp_path, max_file_bytes=32)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 1\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index_paths_step(str(root), tenant, workspace, ["module.py"])["success"]
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++
++    result = store.index_paths_step(
++        str(root), tenant, workspace, ["module.py"],
++        content_overrides={"module.py": "x" * 33},
++    )
++
++    assert result["success"] is True
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (0, 0, 0)
++
++
++def test_oversized_stat_removes_previous_incremental_snapshot(tmp_path: Path):
++    store = _store(tmp_path, max_file_bytes=32)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 1\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index_paths_step(str(root), tenant, workspace, ["module.py"])["success"]
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++
++    path.write_text("x" * 33, encoding="utf-8")
++    result = store.index_paths_step(str(root), tenant, workspace, ["module.py"])
++
++    assert result["success"] is True
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (0, 0, 0)
++
++
++def test_tenant_isolation_blocks_cross_tenant_chunk_reuse_and_search(
++    tmp_path: Path,
++):
++    store = _store(tmp_path, scope="tenant")
++    root_a = tmp_path / "tenant-a-project"
++    root_b = tmp_path / "tenant-b-project"
++    root_a.mkdir()
++    root_b.mkdir()
++    (root_a / "secret.py").write_text("needle tenant-a-private marker\n", encoding="utf-8")
++    (root_b / "public.py").write_text("ordinary tenant-b content\n", encoding="utf-8")
++    workspace = "shared-workspace"
++
++    assert store.index(str(root_a), "tenant-a", workspace)["success"] is True
++    assert store.index(str(root_b), "tenant-b", workspace)["success"] is True
++    assert "tenant-a" in store.services.document_calls
++    assert "tenant-b" in store.services.document_calls
++
++    result = store.search("needle", "tenant-b", workspace, use_reranker=False)
++
++    assert result["success"] is True
++    assert all("tenant-a-private" not in row.get("text", "") for row in result["results"])

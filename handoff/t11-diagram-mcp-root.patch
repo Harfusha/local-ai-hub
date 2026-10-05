@@ -1,0 +1,113 @@
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -2046,21 +2046,41 @@
+             return {"success": False, "error": f"unsupported diagram format: {suffix}"}
+ 
+         clean_ws = str(workspace or "default").strip()
+-        doc_title = f"diagram_{p_img.stem}"
++        doc_title = f"diagram_{p_img.stem}_{_fragment_hash(str(p_img))[:16]}"
+ 
+         diagram_text = ""
++        svg_text_nodes: list[str] = []
+         if suffix == ".svg":
+             try:
+-                raw_svg = p_img.read_text(encoding="utf-8", errors="replace")
++                rag_cfg = self.config.get("rag", {})
++                max_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
++                if int(p_img.stat().st_size) > max_bytes:
++                    return {
++                        "success": False,
++                        "error": "diagram exceeds configured file size limit",
++                        "diagram_indexed": False,
++                    }
++                with p_img.open("rb") as svg_file:
++                    raw_bytes = svg_file.read(max_bytes + 1)
++                if len(raw_bytes) > max_bytes:
++                    return {
++                        "success": False,
++                        "error": "diagram exceeds configured file size limit",
++                        "diagram_indexed": False,
++                    }
++                raw_svg = raw_bytes.decode("utf-8", errors="replace")
+                 texts = re.findall(r"<text[^>]*>(.*?)</text>", raw_svg, re.DOTALL | re.I)
+-                diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}\nText nodes:\n" + "\n".join(t.strip() for t in texts if t.strip())
++                svg_text_nodes = [t.strip() for t in texts if t.strip()]
++                diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}\nText nodes:\n" + "\n".join(svg_text_nodes)
+             except Exception:
+-                diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}"
++                return {
++                    "success": False,
++                    "error": "diagram could not be read",
++                    "diagram_indexed": False,
++                }
+         else:
+             file_size_kb = round(p_img.stat().st_size / 1024, 1)
+             diagram_text = f"Architectural Diagram / Visual Asset: {p_img.name}\nFormat: {suffix.lstrip('.')}\nSize: {file_size_kb} KB\nCaption: {caption}\nFile path: {str(p_img)}"
+-            if metadata:
+-                diagram_text += f"\nMetadata: {json_dumps(metadata, ensure_ascii=False)}"
+ 
+         res = self.ingest_document(
+             workspace=clean_ws,
+@@ -2070,6 +2090,8 @@
+             tenant=tenant,
+         )
+         if isinstance(res, dict):
+-            res["diagram_indexed"] = True
++            res["diagram_indexed"] = bool(res.get("success"))
+             res["image_path"] = str(p_img)
++            res["diagram_content_mode"] = "svg_text_nodes" if svg_text_nodes else "metadata_only"
++            res["vision_or_ocr_used"] = False
+         return res
+--- a/src/local_ai_hub/mcp_server.py
++++ b/src/local_ai_hub/mcp_server.py
+@@ -2295,8 +2295,13 @@
+     max_response_tokens: int = 0,
+     response_profile: str = "",
+     reuse_key: str = "",
++    content: str = "",
++    title: str = "",
++    metadata: dict[str, Any] | None = None,
++    image_path: str = "",
++    caption: str = "",
+ ) -> dict[str, Any]:
+-    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
++    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. For document ingestion pass content, title, and metadata; for diagram ingestion pass image_path, caption, and metadata. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
+     if not FEATURES.rag:
+         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
+     action = action.strip().lower().replace("-", "_")
+@@ -2319,14 +2324,32 @@
+             "name": workspace or "default", "query": query, "top_k": max(1, min(top_k, 12)),
+         }))
+     if action == "ingest_document":
++        if not isinstance(content, str) or not content.strip():
++            return _compact({
++                "success": False,
++                "terminal": True,
++                "retryable": False,
++                "error": "content is required for ingest_document",
++            }, "status")
+         return _compact(CLIENT.post("/api/rag/ingest_document", {
+-            "workspace": workspace or "default", "content": query or root,
++            "workspace": workspace or "default",
++            "content": content,
++            "title": title,
++            "metadata": metadata if isinstance(metadata, dict) else None,
+         }, timeout=_timeout("quick")), "status")
+     if action == "ingest_diagram":
++        if not isinstance(image_path, str) or not image_path.strip():
++            return _compact({
++                "success": False,
++                "terminal": True,
++                "retryable": False,
++                "error": "image_path is required for ingest_diagram",
++            }, "status")
+         return _compact(CLIENT.post("/api/rag/ingest_diagram", {
+             "workspace": workspace or "default",
+-            "image_path": query or root,
+-            "caption": (extra_fields[0] if extra_fields else ""),
++            "image_path": image_path,
++            "caption": caption,
++            "metadata": metadata if isinstance(metadata, dict) else None,
+         }, timeout=_timeout("quick")), "status")
+     return _invalid_action("local_ai_rag", action, tuple(RagAction.__args__), "Use RAG only when cheaper Local AI Hub evidence is insufficient.")
+ 

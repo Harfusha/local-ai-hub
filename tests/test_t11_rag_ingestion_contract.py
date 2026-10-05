@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import inspect
+import math
 import json
 import os
+import statistics
 import sqlite3
 import struct
 import sys
+import time
 from contextlib import closing
 from types import ModuleType, SimpleNamespace
 
@@ -101,6 +104,36 @@ def _inject_sqlite_write_failure(
     return state
 
 
+def test_document_ingest_embeds_title_metadata_and_content(tmp_path):
+    store = _store(tmp_path)
+    embedded_texts = []
+
+    class _RecordingServices:
+        def embed(self, texts, _tenant, **_kwargs):
+            batch = list(texts)
+            embedded_texts.extend(batch)
+            return {
+                "success": True,
+                "embedding_space_id": "document-ingestion-test-space",
+                "embeddings": [[1.0, 0.0] for _ in batch],
+            }
+
+    store.services = _RecordingServices()
+    result = store.ingest_document(
+        "specs",
+        "The system rotates service credentials weekly.",
+        title="Credential Rotation Plan",
+        metadata={"owner": "identity-team", "revision": 7},
+    )
+
+    assert result["success"] is True
+    embedded_text = "\n".join(embedded_texts)
+    assert "Title: Credential Rotation Plan" in embedded_text
+    assert '"owner":"identity-team"' in embedded_text
+    assert '"revision":7' in embedded_text
+    assert "Content:\nThe system rotates service credentials weekly." in embedded_text
+
+
 def test_document_ingest_indexes_title_and_metadata(tmp_path):
     store = _store(tmp_path)
 
@@ -188,6 +221,46 @@ def test_document_ingest_replay_replaces_one_stable_document_snapshot(tmp_path):
 
     assert files == 1
     assert chunks == second["chunks_ingested"]
+
+
+def test_document_ingest_rejects_embedding_space_change_between_batches_and_preserves_snapshot(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("local_ai_hub.rag._INDEX_EMBED_BATCH_SIZE", 1)
+    store = _store(tmp_path)
+
+    class _SwitchingServices:
+        def __init__(self):
+            self.mode = "stable"
+            self.transition_calls = 0
+
+        def embed(self, texts, _tenant, **_kwargs):
+            if self.mode == "stable":
+                space = "document-stable-space"
+            else:
+                self.transition_calls += 1
+                space = "document-space-a" if self.transition_calls == 1 else "document-space-b"
+            return {
+                "success": True,
+                "embedding_space_id": space,
+                "embeddings": [[0.25, 0.75] for _ in texts],
+            }
+
+    services = _SwitchingServices()
+    store.services = services
+    title = "Embedding Space Change"
+    previous = store.ingest_document("specs", "old section " * 400, title=title)
+    assert previous["success"] is True
+    before = _rag_snapshot(store, "default", "specs")
+
+    services.mode = "change"
+    result = store.ingest_document("specs", "new section " * 400, title=title)
+
+    assert result["success"] is False
+    assert result["error"] == "embedding_space_changed_during_document_ingest"
+    assert result["retryable"] is False
+    assert services.transition_calls == 2
+    assert _rag_snapshot(store, "default", "specs") == before
 
 
 def test_document_ingest_retries_publish_busy_without_reembedding(tmp_path, monkeypatch):
@@ -293,6 +366,39 @@ def test_incremental_index_fts_write_failure_keeps_previous_snapshot(
     path.write_text("after = 'new snapshot'\n", encoding="utf-8")
     injected = _inject_sqlite_write_failure(store, monkeypatch, failed_statement)
     result = store.index_paths_step(str(root), "tenant", workspace, ["module.py"])
+
+    assert result["success"] is False
+    assert result["retryable"] is False
+    assert injected["attempts"] == 1
+    assert _rag_snapshot(store, "tenant", workspace) == previous
+
+
+@pytest.mark.parametrize("failed_statement", ["INSERT INTO chunk_fts", "DELETE FROM chunk_fts"])
+def test_full_index_fts_write_failure_keeps_previous_snapshot(
+    tmp_path, monkeypatch, failed_statement
+):
+    store = _store(tmp_path)
+    root = tmp_path / "project"
+    root.mkdir()
+    path = root / "module.py"
+    path.write_text("before = 'old snapshot'\n", encoding="utf-8")
+
+    class _VectorServices:
+        def embed(self, texts, _tenant, **_kwargs):
+            return {
+                "success": True,
+                "embedding_space_id": "atomic-full-index-test-space",
+                "embeddings": [[0.25, 0.75] for _ in texts],
+            }
+
+    store.services = _VectorServices()
+    workspace = "atomic-full-index-workspace"
+    assert store.index(str(root), "tenant", workspace)["success"] is True
+    previous = _rag_snapshot(store, "tenant", workspace)
+
+    path.write_text("after = 'new snapshot'\n", encoding="utf-8")
+    injected = _inject_sqlite_write_failure(store, monkeypatch, failed_statement)
+    result = store.index(str(root), "tenant", workspace)
 
     assert result["success"] is False
     assert result["retryable"] is False
@@ -845,6 +951,44 @@ def test_t11_live_ollama_rag_ingest_and_reranker_truthfulness(tmp_path):
             assert result["reranked"] is True
             assert result["degraded"] is False
             assert result["fallback"] is None
+
+            # Measure warm transformer-only latency separately from the 100k
+            # vector scan. Unique query strings bypass pair-cache reuse.
+            benchmark_documents = [
+                f"Candidate {index}: " + ("credential rotation and access review. " * 24)
+                for index in range(16)
+            ]
+            reranker = app.rag.reranker
+            for index in range(2):
+                warm = reranker.rerank(
+                    f"T11 reranker warmup {index}", benchmark_documents, top_k=8
+                )
+                assert warm.get("success") is True, warm.get("error")
+            samples_ms = []
+            identities = set()
+            for index in range(20):
+                started = time.perf_counter()
+                measured = reranker.rerank(
+                    f"T11 reranker sample {index}", benchmark_documents, top_k=8
+                )
+                samples_ms.append((time.perf_counter() - started) * 1000.0)
+                assert measured.get("success") is True, measured.get("error")
+                assert measured.get("computed") == len(benchmark_documents)
+                identities.add((measured.get("backend"), measured.get("device")))
+            ordered_ms = sorted(samples_ms)
+            p95_index = min(len(ordered_ms) - 1, math.ceil(0.95 * len(ordered_ms)) - 1)
+            print("T11_RERANKER_BUDGET=" + json.dumps({
+                "model": reranker.model_name,
+                "backend_devices": sorted([list(item) for item in identities], key=lambda item: (str(item[0]), str(item[1]))),
+                "candidate_count": len(benchmark_documents),
+                "warmup_samples": 2,
+                "measured_samples": len(samples_ms),
+                "p50_ms": round(float(statistics.median(samples_ms)), 3),
+                "p95_ms": round(float(ordered_ms[p95_index]), 3),
+                "min_ms": round(float(ordered_ms[0]), 3),
+                "max_ms": round(float(ordered_ms[-1]), 3),
+                "peak_memory": "not measured",
+            }, sort_keys=True))
         else:
             assert result["reranked"] is False
             assert result["degraded"] is True
@@ -888,7 +1032,7 @@ def test_offline_missing_reranker_weights_degrade_without_false_reranked_claim(t
             "embeddings": [[float(len(text)), 1.0] for text in batch],
         }
 
-    store.services.embed = deterministic_embed
+    store.services = SimpleNamespace(embed=deterministic_embed)
     reranker = Reranker({
         "server": {"state_dir": str(tmp_path / "state")},
         "models": {

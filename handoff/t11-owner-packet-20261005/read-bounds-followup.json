@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "kind": "candidate_owner_delta_followup",
+  "date": "2026-10-05",
+  "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "path": "tests/test_rag_read_bounds.py",
+  "ownership": "T11-owned; file was inherited as untracked in candidate before this follow-up",
+  "change": "Normalize CRLF to LF in four text-result assertions; expectation content unchanged.",
+  "pre_sha256": "AE19C08BC2AA9CA45D0B7F26DCFF23DD8ABDB3A1D843F54A7830045A8A568AA2",
+  "post_sha256": "699D0D3B7C19C5176A70126E75F3E897C238CDBE2894B3D906E74381AA70BE3A",
+  "preimage_verified_against_prior_manifest": true,
+  "test": {
+    "command": "python -m pytest -q --tb=short tests/test_rag_read_bounds.py",
+    "result": "9 passed in 3.36s",
+    "exit_code": 0
+  },
+  "root": {
+    "current_sha256": "9D9F3EE9DAAD5306570D9A7C2674DA1A4CF3342541A1A2B43ABB1F798EC0D002",
+    "relation": "root already normalizes CRLF in these assertions; this four-assertion delta is not needed on root. Whole files otherwise differ; no transfer."
+  },
+  "patch_sha256": null,
+  "root_modified": false,
+  "other_inherited_paths_touched": false
+}

@@ -1,0 +1,84 @@
+{
+  "schema": "t11-p1-runtime-fix-v1",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "t11_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "merge_base": "a7b0868ac964fd14e160001024e6e0ecaaf4e9db",
+  "patch_scope": "5 non-rag files; rag.py withheld after independent review found semantic defects in partial textual merge",
+  "rag_withheld_reason": "Prior root-current patch retained changed_texts use after removing its assignments; path-step partial merge failed to initialize embedding_space before record construction. Keep whole rag.py out of patch until method-level reconciliation. T11 source currently indexes by changed_indices and initializes embedding_space before record construction.",
+  "rag_candidate_has_changed_texts_reference": false,
+  "rag_candidate_changed_indices_reference": true,
+  "rag_candidate_space_init_before_record": true,
+  "tests_added": [
+    "test_index_embeds_changed_chunks_without_undefined_text_list",
+    "test_index_paths_step_sets_embedding_space_before_nonempty_records"
+  ],
+  "tests_run": false,
+  "t02_slot": "held; T02 thread still active",
+  "live_benchmark_run": false,
+  "patch": "t11-root-current-safe-excluding-rag.patch",
+  "patch_sha256": "ECB3FB752A3ADE63D7F77B6166DA9189350CAAC3BC2240C21BFF694EBD856955",
+  "combined_apply_check": "pass",
+  "combined_apply_error": null,
+  "files": [
+    {
+      "path": "src/local_ai_hub/embeddings.py",
+      "base_sha256": "9E6C3FF12C4114A05F6F2F363FD665E95EE73C5A9F550C9A7A0C5769CAE838AB",
+      "root_preimage_sha256": "21A6282871005D1045B2E76A2CC65599DEEDB877477E007C1AA8FB31BFACCD08",
+      "t11_candidate_sha256": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170",
+      "status": "partial-merge-root-conflicts-preserved",
+      "conflict_hunks": 2,
+      "root_conflict_bytes_preserved": 1672,
+      "t11_conflict_bytes_omitted": 1794,
+      "included": true,
+      "apply_check": "pass"
+    },
+    {
+      "path": "src/local_ai_hub/reranker.py",
+      "base_sha256": "1AE3526C827D34AAF37390E7625C7D968B0E19771F538DDF3E307ACF7B000D34",
+      "root_preimage_sha256": "12773E04A90DB8F8A367E618D725A3EA995FAF4B624244907B8A13F30CED2EC7",
+      "t11_candidate_sha256": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562",
+      "status": "clean-three-way-merge",
+      "conflict_hunks": 0,
+      "root_conflict_bytes_preserved": 0,
+      "t11_conflict_bytes_omitted": 0,
+      "included": true,
+      "apply_check": "pass"
+    },
+    {
+      "path": "tests/test_rag_fragment_cache.py",
+      "base_sha256": "A20136FF7EB60F7B85E15F0CA3C5AFDB50FE6E042D1F0BDEA16500D23E5C1623",
+      "root_preimage_sha256": "50BE2A48A96A7EDF403BC09A9EEF9032C315B1B068CE6015F032636B28D46293",
+      "t11_candidate_sha256": "A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002",
+      "status": "partial-merge-root-conflicts-preserved",
+      "conflict_hunks": 3,
+      "root_conflict_bytes_preserved": 1894,
+      "t11_conflict_bytes_omitted": 197,
+      "included": true,
+      "apply_check": "pass"
+    },
+    {
+      "path": "tests/test_rag_hybrid.py",
+      "base_sha256": "282D7F94D8FF770CA67FAA60272E235C97C5250866FBD07B36225AD03A3CCD31",
+      "root_preimage_sha256": "5E8508F96B808A7369FA9E97617BE359F7F23EA7A6213364EEC71B99F5149160",
+      "t11_candidate_sha256": "8396D5A114D14BAEBFEAF9022E6C569D3B475DEA8D9075794195DB13DFFDC75E",
+      "status": "partial-merge-root-conflicts-preserved",
+      "conflict_hunks": 2,
+      "root_conflict_bytes_preserved": 10773,
+      "t11_conflict_bytes_omitted": 4485,
+      "included": true,
+      "apply_check": "pass"
+    },
+    {
+      "path": "tests/test_rag_quality_contract.py",
+      "base_sha256": "4FC4C2FF0D13453EAE94BAD854BF9E4D7CAB79CC7CA0178F951B20D967809AC6",
+      "root_preimage_sha256": "273C1EEA3645F78596009340096D2C381FD8749FE71CE8F2ECB7A8AECE723572",
+      "t11_candidate_sha256": "0A82654D5BBA505F69437037E8F906DEFAF5F983ACA0305445E11F0854BBD9C5",
+      "status": "partial-merge-root-conflicts-preserved",
+      "conflict_hunks": 3,
+      "root_conflict_bytes_preserved": 3391,
+      "t11_conflict_bytes_omitted": 5575,
+      "included": true,
+      "apply_check": "pass"
+    }
+  ]
+}

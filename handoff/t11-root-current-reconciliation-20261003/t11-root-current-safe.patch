@@ -1,0 +1,18 @@
+diff --git a/src/local_ai_hub/reranker.py b/src/local_ai_hub/reranker.py
+--- a/src/local_ai_hub/reranker.py
++++ b/src/local_ai_hub/reranker.py
+@@ -64,7 +64,13 @@
+         backend = self.active_backend or self.backend
+         device = str(self.active_device or self.device or "cpu").strip().lower()
+         revision = self._loaded_model_revision() or ""
+-        return f"{backend}:{device}:{self.model_name}:{revision}"
++        return stable_hash({
++            "backend": backend,
++            "device": device,
++            "model": self.model_name,
++            "revision": revision,
++            "max_length": self.max_length,
++        })
+ 
+     def _cache_identity(self) -> str | None:
+         if self._loaded_model_revision() is None:

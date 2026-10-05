@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "task": "T11 live transformer reranker acceptance",
+  "date": "2026-10-01",
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "command": "$env:T11_REAL_OLLAMA='1'; $env:T11_REAL_RERANKER='1'; python -B -m pytest -q -p no:cacheprovider --tb=short -c pyproject.toml tests/test_t11_rag_ingestion_contract.py::test_t11_live_ollama_rag_ingest_and_reranker_truthfulness",
+  "result": "1 passed in 23.47s",
+  "exit_code": 0,
+  "embedding_backend": "ollama",
+  "embedding_model": "qwen3-embedding:0.6b",
+  "reranker_backend": "sentence_transformers.CrossEncoder",
+  "reranker_model": "BAAI/bge-reranker-base",
+  "offline_huggingface": true,
+  "assertions": [
+    "embedded=true",
+    "reranked=true",
+    "degraded=false",
+    "fallback=null",
+    "top_path=doc:Credential Rotation Plan"
+  ],
+  "first_attempt": "Pytest failed at teardown with PytestUnraisableExceptionWarning because test-started Ollama Popen remained alive; behavioral assertions and captured live output succeeded.",
+  "clean_attempt": "Prestarted Ollama serve; same test passed. Owned Ollama and llama-server process tree stopped afterward.",
+  "root_modified": false
+}

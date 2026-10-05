@@ -1,0 +1,55 @@
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -1870,6 +1870,7 @@
+                 "reason": str(query_result.get("error", "embedder_unavailable")),
+             }
+         query_vec = query_result["embeddings"][0]
++        embedding_space = self._embedding_space_id(query_result)
+         fallbacks: list[str] = []
+         if query_result.get("degraded"):
+             fallbacks.append(str(query_result.get("fallback") or "embedding_backend"))
+@@ -1921,8 +1922,8 @@
+             last_path: str | None = None
+             last_chunk_no: int | None = None
+             while True:
+-                predicates = ["tenant=?", "workspace=?"]
+-                params: list[Any] = [scope_key, workspace]
++                predicates = ["tenant=?", "workspace=?", "embedding_space=?"]
++                params: list[Any] = [scope_key, workspace, embedding_space]
+                 if norm_scope is not None:
+                     predicates.append("(path=? OR path LIKE ? || '/%')")
+                     params.extend((norm_scope, norm_scope))
+@@ -1993,7 +1994,25 @@
+                             score = 0.0
+                         offer(row, score)
+ 
++            has_stale_embedding_rows = con.execute(
++                "SELECT 1 FROM chunks WHERE tenant=? AND workspace=? AND embedding_space<>? LIMIT 1",
++                (scope_key, workspace, embedding_space),
++            ).fetchone() is not None
++
++        if has_stale_embedding_rows:
++            fallbacks.append("embedding_space_rebuild_pending")
++
+         if rows_seen == 0:
++            if has_stale_embedding_rows:
++                return {
++                    "success": True,
++                    "workspace": workspace,
++                    "results": [],
++                    "degraded": True,
++                    "fallback": "embedding_space_mismatch",
++                    "reason": "indexed vectors do not match the query embedding space",
++                    "reindex_required": True,
++                }
+             return {"success": True, "workspace": workspace, "results": [], "warning": "workspace has no matching indexed chunks"}
+ 
+         candidates = [
+@@ -2137,6 +2156,7 @@
+             "degraded": bool(fallbacks),
+             "fallback": fallbacks[0] if fallbacks else None,
+             "fallbacks": fallbacks,
++            "reindex_required": has_stale_embedding_rows,
+             "hybrid": is_hybrid,
+             "graphrag_enriched": graphrag_enriched,
+             "results": candidates[:top_k],

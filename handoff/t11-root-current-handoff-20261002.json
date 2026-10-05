@@ -1,0 +1,270 @@
+{
+  "schema_version": 1,
+  "task": "T11 RAG root-current patch handoff",
+  "date": "2026-10-02",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "patch_path": "handoff/t11-candidate-delta-20261002.patch",
+    "patch_sha256": "be6cd039e6c1311bcd8aab08237069cacdc6200845a7236252bda27019c83ce0",
+    "patch_bytes": 112369,
+    "t11_owned_paths": [
+      {
+        "path": "src/local_ai_hub/embeddings.py",
+        "candidate_sha256": "2360fb9e4e9dda72dc633a5e4f33ecbab2ec3e8a26dc728f61114acc2496d170",
+        "t11_base_exists": true,
+        "t11_base_preimage_sha256": "e88373a0a9185caa6a1714ec5b7eb84e30cbb060f912f430f7daa456a0ac9bf9",
+        "root_status": "M src/local_ai_hub/embeddings.py",
+        "root_current_sha256": "21a6282871005d1045b2e76a2cc65599deedb877477e007c1aa8fb31bfaccd08",
+        "root_preimage_matches_t11_base": false
+      },
+      {
+        "path": "src/local_ai_hub/rag.py",
+        "candidate_sha256": "c70c385ce679d9b4a84037bbcd6c352598fe265f95617311228d75096eecea8a",
+        "t11_base_exists": true,
+        "t11_base_preimage_sha256": "dc6ec0dfaff8c8e5eb133e96ef276148586f6fa79e5203cb4398c613b07ed184",
+        "root_status": "M src/local_ai_hub/rag.py",
+        "root_current_sha256": "88836fe1782a3d01ed3606bc8dd2fccc40168ac4411c7cfb73b67da802933c27",
+        "root_preimage_matches_t11_base": false
+      },
+      {
+        "path": "src/local_ai_hub/reranker.py",
+        "candidate_sha256": "ee8b660c9fa261ea34fb63587f8eaaf6119b83b544a4053d22669ef8d9c5c562",
+        "t11_base_exists": true,
+        "t11_base_preimage_sha256": "17d56db72127d3dc67b0be3fddc1225efc81baf6ea8928da21a1c1f6e9619493",
+        "root_status": "M src/local_ai_hub/reranker.py",
+        "root_current_sha256": "12773e04a90db8f8a367e618d725a3ea995faf4b624244907b8a13f30ced2ec7",
+        "root_preimage_matches_t11_base": false
+      },
+      {
+        "path": "tests/test_model_release_lifecycle.py",
+        "candidate_sha256": "50c061dbc8d2bfa37337fdd77f796dcb328f786f407e1ad389200991e2ee5c50",
+        "t11_base_exists": true,
+        "t11_base_preimage_sha256": "e8fa2053112746547836feb75f3018d74bcf9e5cf6fdafebeed2a55af9ca8813",
+        "root_status": "?? tests/test_model_release_lifecycle.py",
+        "root_current_sha256": "50c061dbc8d2bfa37337fdd77f796dcb328f786f407e1ad389200991e2ee5c50",
+        "root_preimage_matches_t11_base": false
+      },
+      {
+        "path": "tests/test_rag_fragment_cache.py",
+        "candidate_sha256": "a7bd3335691aa7c291d4f42a600a2c7d790475f5770d534d9033ff6620a22002",
+        "t11_base_exists": true,
+        "t11_base_preimage_sha256": "f67344cb80e40977204fe4bd7a87ba8ea5e9c65b33314450df62ce9da4d7775d",
+        "root_status": "M tests/test_rag_fragment_cache.py",
+        "root_current_sha256": "50be2a48a96a7edf403bc09a9eef9032c315b1b068ce6015f032636b28d46293",
+        "root_preimage_matches_t11_base": false
+      },
+      {
+        "path": "tests/test_rag_hybrid.py",
+        "candidate_sha256": "dec8b30ce2a5de797b2b552e1f6b00a62a99b7ffadee89dfce6314322ef90314",
+        "t11_base_exists": true,
+        "t11_base_preimage_sha256": "ffe5d320d8f0d38e535866224e597a729162fe3eec58840f8c5bdb3d5db61dac",
+        "root_status": "M tests/test_rag_hybrid.py",
+        "root_current_sha256": "5e8508f96b808a7369fa9e97617be359f7f23ea7a6213364eec71b99f5149160",
+        "root_preimage_matches_t11_base": false
+      },
+      {
+        "path": "tests/test_rag_quality_contract.py",
+        "candidate_sha256": "0a82654d5bba505f69437037e8f906defaf5f983aca0305445e11f0854bbd9c5",
+        "t11_base_exists": true,
+        "t11_base_preimage_sha256": "6a633151c7052e0e233b60518f9f67a9a9ba4798b55d4a34d4d1e5eba3bc06bb",
+        "root_status": "M tests/test_rag_quality_contract.py",
+        "root_current_sha256": "273c1eea3645f78596009340096d2c381fd8749fe71ce8f2ecb7a8aece723572",
+        "root_preimage_matches_t11_base": false
+      },
+      {
+        "path": "tests/test_t11_project_policy_consumers.py",
+        "candidate_sha256": "e4ea70d1036a5109b80e390b255f4106664e0238ab7067e59322760997d0c4f5",
+        "t11_base_exists": true,
+        "t11_base_preimage_sha256": "80aeb38d1baeee953786837734df6ede397c42483df17547e9174944b8916529",
+        "root_status": "?? tests/test_t11_project_policy_consumers.py",
+        "root_current_sha256": "d79c4748e277b5eae20be56921765709a7180eb54cd7874041a483b16d3ff6a4",
+        "root_preimage_matches_t11_base": false
+      },
+      {
+        "path": "tests/test_t11_rag_ingestion_contract.py",
+        "candidate_sha256": "c4e9a80373a3964e1ef9cb7b1f07114d5dd09bf7a68bdd308d167613dbcb8ee1",
+        "t11_base_exists": true,
+        "t11_base_preimage_sha256": "04fb237d97b157e5c8e7c67e750bdc9de354b11da76d577bfee163fcd3d61a6f",
+        "root_status": "?? tests/test_t11_rag_ingestion_contract.py",
+        "root_current_sha256": "4876d98a26b9eb26701a841799ba088f3dac3021b842a2b55945f53641306914",
+        "root_preimage_matches_t11_base": false
+      },
+      {
+        "path": "tests/test_t11_rag_seed_integrity.py",
+        "candidate_sha256": "943aed3fc4cc11fcec48a99500d1967e869b0276f6af600736254ca375ab0e02",
+        "t11_base_exists": true,
+        "t11_base_preimage_sha256": "1f30e205044f9cc1ef7be53e11721a066e7df3060d4876f36fb2f461212e2ffd",
+        "root_status": "?? tests/test_t11_rag_seed_integrity.py",
+        "root_current_sha256": "1eaebd71367cb99bca2b1263eef195ef892cda3a215a743e7ce64c02843fdd30",
+        "root_preimage_matches_t11_base": false
+      },
+      {
+        "path": "tests/test_rag_read_bounds.py",
+        "candidate_sha256": "ae19c08bc2aa9ca45d0b7f26dcff23dd8abdb3a1d843f54a7830045a8a568aa2",
+        "t11_base_exists": false,
+        "t11_base_preimage_sha256": null,
+        "root_status": "?? tests/test_rag_read_bounds.py",
+        "root_current_sha256": "9d9f3ee9daad5306570d9a7c2674da1a4cf3342541a1a2b43abb1f798ec0d002",
+        "root_preimage_matches_t11_base": false
+      }
+    ]
+  },
+  "root_preimage": {
+    "root": "C:\\Users\\Adam\\.local-ai-hub",
+    "head": "276ecabdec84e5a76dfb155090c5f0641fa8a9f2",
+    "merge_base": "a7b0868ac964fd14e160001024e6e0ecaaf4e9db",
+    "all_11_paths_overlap_existing_root_work": true,
+    "note": "All 11 T11-owned paths already have dirty/untracked root content. Per-hunk comparison is in handoff/t11-root-hunk-reconciliation-20261002.json. No root edits.",
+    "per_hunk_report": {
+      "path": "handoff/t11-root-hunk-reconciliation-20261002.json",
+      "sha256": "722f843df922105fa549844d833e8b5bb39ca2c07275d0b8c48cf69722b54636"
+    },
+    "head_at_initial_review": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "all_11_t11_path_hashes_unchanged_since_prior_review": true
+  },
+  "apply_check": {
+    "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-candidate-delta-20261002.patch",
+    "exit_code": 1,
+    "result": "Current 2026-10-03 check failed; no patch applied.",
+    "stderr": [
+      "patch failed: src/local_ai_hub/embeddings.py:403",
+      "patch failed: src/local_ai_hub/rag.py:119",
+      "patch failed: src/local_ai_hub/reranker.py:159",
+      "patch failed: tests/test_model_release_lifecycle.py:1",
+      "patch failed: tests/test_rag_fragment_cache.py:1",
+      "patch failed: tests/test_rag_hybrid.py:4",
+      "patch failed: tests/test_rag_quality_contract.py:8",
+      "patch failed: tests/test_t11_project_policy_consumers.py:436",
+      "patch failed: tests/test_t11_rag_ingestion_contract.py:101",
+      "patch failed: tests/test_rag_read_bounds.py: already exists in working directory"
+    ],
+    "resolution": "Do not apply. Root has parallel dirty/untracked changes across all 11 T11-owned paths; owner reconciliation required.",
+    "packaging_repair": "Tracked-file diff packaging corrected. Remaining failures are root preimage conflicts; no root writes."
+  },
+  "ownership": {
+    "included": "Only T11-owned RAG source/tests: embeddings.py, rag.py, reranker.py, model_release_lifecycle.py, rag_fragment_cache.py, rag_hybrid.py, rag_quality_contract.py, t11_project_policy_consumers.py, t11_rag_ingestion_contract.py, t11_rag_seed_integrity.py, rag_read_bounds.py.",
+    "excluded": "T21-owned project_config.py and test_project_config.py. T20-owned release matrix untouched.",
+    "root_changes": "All 11 scoped root paths have dirty/untracked overlap. Four T11-added contract files are distinct from candidate content; test_model_release_lifecycle.py is byte-identical. Other root hunks are owner-unknown from path/status alone. T21-owned project_config.py and test_project_config.py are separate overlaps and excluded."
+  },
+  "acceptance_receipt": {
+    "go": "T20 serial GO #14",
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+    "runner": "local_ai_command",
+    "request_id": "req_bb59b6696466",
+    "execution_id": "75ce538a3a584f4fa00efe17066b712d",
+    "repository_revision": "0f49a2e6238e30f1f2ea755e2ab278c7e74cbabce5281530daff30eed35b4495",
+    "exit_code": 0,
+    "duration_seconds": 48.8884,
+    "passed": 181,
+    "skipped": 3,
+    "failed": 0,
+    "skips": [
+      "100k chunk retrieval benchmark requires RAG_BENCHMARK=1",
+      "live Ollama verification requires T11_REAL_OLLAMA=1",
+      "synthetic RAG batch/seed benchmark requires T11_RAG_BENCHMARK=1"
+    ],
+    "benchmarks": "NOT RUN; skipped checks remain unverified",
+    "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "post_run_head_unchanged": true,
+    "input_pins": [
+      {
+        "path": "src/local_ai_hub/rag.py",
+        "sha256": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+        "post_run_matches": true
+      },
+      {
+        "path": "src/local_ai_hub/embeddings.py",
+        "sha256": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170",
+        "post_run_matches": true
+      },
+      {
+        "path": "src/local_ai_hub/reranker.py",
+        "sha256": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562",
+        "post_run_matches": true
+      },
+      {
+        "path": "src/local_ai_hub/project_config.py",
+        "sha256": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+        "post_run_matches": true
+      },
+      {
+        "path": "tests/test_rag_read_bounds.py",
+        "sha256": "AE19C08BC2AA9CA45D0B7F26DCFF23DD8ABDB3A1D843F54A7830045A8A568AA2",
+        "post_run_matches": true
+      },
+      {
+        "path": "tests/test_rag_fragment_cache.py",
+        "sha256": "A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002",
+        "post_run_matches": true
+      },
+      {
+        "path": "tests/test_rag_hybrid.py",
+        "sha256": "DEC8B30CE2A5DE797B2B552E1F6B00A62A99B7FFADEE89DFCE6314322EF90314",
+        "post_run_matches": true
+      },
+      {
+        "path": "tests/test_rag_quality_contract.py",
+        "sha256": "0A82654D5BBA505F69437037E8F906DEFAF5F983ACA0305445E11F0854BBD9C5",
+        "post_run_matches": true
+      },
+      {
+        "path": "tests/test_rag_dedup.py",
+        "sha256": "2E8A76309C2024071DC6BD0362921C100EF9013E588BED8425C992DE9104C6D6",
+        "post_run_matches": true
+      },
+      {
+        "path": "tests/test_t11_project_policy_consumers.py",
+        "sha256": "E4EA70D1036A5109B80E390B255F4106664E0238AB7067E59322760997D0C4F5",
+        "post_run_matches": true
+      },
+      {
+        "path": "tests/test_t11_rag_ingestion_contract.py",
+        "sha256": "C4E9A80373A3964E1EF9CB7B1F07114D5DD09BF7A68BDD308D167613DBCB8EE1",
+        "post_run_matches": true
+      },
+      {
+        "path": "tests/test_t11_rag_seed_integrity.py",
+        "sha256": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02",
+        "post_run_matches": true
+      },
+      {
+        "path": "tests/test_reranker_cache_identity.py",
+        "sha256": "32160E2B0F963DDDF6FBC3A15838E1532EF696424AB011581C4BF3AEEAD27C0B",
+        "post_run_matches": true
+      },
+      {
+        "path": "tests/test_embedding_cache.py",
+        "sha256": "3BADFED3EA66802AF00522CFCDC979BFC2BA6A27DFAA08C241AB0440AD1887AE",
+        "post_run_matches": true
+      },
+      {
+        "path": "tests/test_embedding_batch_deduplication.py",
+        "sha256": "C96FE56FB6A6B6C7AED973AF2EE1FFF116EF2029AAEB0EC307C50F9AF0BA2196",
+        "post_run_matches": true
+      },
+      {
+        "path": "tests/test_model_release_lifecycle.py",
+        "sha256": "50C061DBC8D2BFA37337FDD77F796DCB328F786F407E1AD389200991E2EE5C50",
+        "post_run_matches": true
+      },
+      {
+        "path": "handoff/t11-rag-sqlite-lock-fix-20261002.json",
+        "sha256": "FA03785E50C3E253AF8F0E69DFE59ECA3862F919F1F6ACC8248485172F4506C9",
+        "post_run_matches": true
+      },
+      {
+        "path": "handoff/t11-project-config-integration-20261002.json",
+        "sha256": "F4682E54A92091FE2DE0D9C2AC97E7EB55A18370A3BB06438FB970CB332AAF9F",
+        "post_run_matches": true
+      },
+      {
+        "path": "handoff/t11-performance-acceptance-record-20261002.md",
+        "sha256": "98F9B1DBCB7345955B7EA62CA64621B0C0FEC33EA2AADFAC2F76F6A5C77D26CF",
+        "post_run_matches": true
+      }
+    ],
+    "post_run_pytest_process_count": 0,
+    "post_run_T11_runner_count": 0
+  }
+}

@@ -1,0 +1,122 @@
+diff --git a/tests/test_t11_project_policy_consumers.py b/tests/test_t11_project_policy_consumers.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_t11_project_policy_consumers.py
+@@ -0,0 +1,117 @@
++from __future__ import annotations
++
++import fnmatch
++import sys
++import types
++from pathlib import Path
++from types import SimpleNamespace
++
++from local_ai_hub.rag import RAGStore
++
++
++def _install_policy(monkeypatch, *, skip_phases=()):
++    settings = SimpleNamespace(
++        exclude_paths=("private/secret.py",),
++        force_include_paths=("private/keep.py", "private/secret.py", "blocked/keep.py"),
++        preprocess_exclude_paths=("build/**",),
++        text_extensions=(".mdx",),
++        binary_extensions=(".binx",),
++        max_file_size_bytes=8,
++        skip_phases=tuple(skip_phases),
++    )
++
++    def relative(root, path):
++        return Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
++
++    def matches(path, patterns):
++        return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
++
++    module = types.ModuleType("local_ai_hub.project_config")
++    module.resolve_project_context = lambda root, _state_dir=None: SimpleNamespace(
++        root=Path(root), settings=settings, config_digest="test-config-digest"
++    )
++    module.custom_extension_kind = lambda name, _settings: (
++        "binary" if str(name).lower().endswith(".binx")
++        else "text" if str(name).lower().endswith(".mdx")
++        else None
++    )
++    module.phase_is_allowed = lambda _settings, phase: phase not in settings.skip_phases
++
++    def path_is_allowed(root, path, _settings, *, phase, soft_ignored=False,
++                        hard_denied=False, binary=False, size_bytes=None):
++        if hard_denied or binary or phase in settings.skip_phases:
++            return False
++        rel = relative(root, path)
++        if phase == "preprocess" and matches(rel, settings.preprocess_exclude_paths):
++            return False
++        forced = matches(rel, settings.force_include_paths)
++        if matches(rel, settings.exclude_paths):
++            return False
++        if size_bytes is not None and size_bytes > settings.max_file_size_bytes:
++            return False
++        return not soft_ignored or forced
++
++    def may_descend(root, directory, _settings, *, phase, soft_ignored=False,
++                    hard_denied=False):
++        if hard_denied or phase in settings.skip_phases:
++            return False
++        rel = relative(root, directory)
++        if phase == "preprocess" and matches(rel, settings.preprocess_exclude_paths):
++            return False
++        return not matches(rel, settings.exclude_paths)
++
++    module.path_is_allowed = path_is_allowed
++    module.may_descend = may_descend
++    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", module)
++    return SimpleNamespace(settings=settings, api=module)
++
++
++def _files(root: Path) -> None:
++    (root / "src").mkdir(parents=True)
++    (root / "private").mkdir()
++    (root / "build").mkdir()
++    (root / "src" / "app.py").write_text("x=1\n", encoding="utf-8")
++    (root / "private" / "secret.py").write_text("secret\n", encoding="utf-8")
++    (root / "private" / "keep.py").write_text("keep\n", encoding="utf-8")
++    (root / "guide.mdx").write_text("guide\n", encoding="utf-8")
++    (root / "build" / "generated.py").write_text("x\n", encoding="utf-8")
++    (root / "payload.binx").write_bytes(b"binary")
++    (root / "large.py").write_text("x" * 12, encoding="utf-8")
++
++
++def _config(tmp_path: Path) -> dict:
++    return {
++        "server": {"state_dir": str(tmp_path / "state")},
++        "rag": {"extensions": [".py"], "ignore_dirs": [], "max_file_bytes": 128},
++    }
++
++
++def test_rag_inventory_applies_project_paths_types_and_file_limit(tmp_path: Path, monkeypatch):
++    _install_policy(monkeypatch)
++    root = tmp_path / "project"
++    root.mkdir()
++    _files(root)
++    store = RAGStore(_config(tmp_path))
++    project_context = store.project_context(root)
++
++    indexed = {
++        path.relative_to(root).as_posix()
++        for path in store._iter_files(root, project_context)
++    }
++
++    assert indexed == {
++        "src/app.py", "private/keep.py", "guide.mdx", "build/generated.py"
++    }
++    assert project_context.config_digest == "test-config-digest"
++
++
++def test_rag_force_include_cannot_override_hard_denied_directory(tmp_path: Path, monkeypatch):
++    _install_policy(monkeypatch)
++    root = tmp_path / "project"
++    (root / "blocked").mkdir(parents=True)
++    (root / "blocked" / "keep.py").write_text("x\n", encoding="utf-8")
++    config = _config(tmp_path)
++    config["rag"]["ignore_dirs"] = ["blocked"]
++    store = RAGStore(config)
++
++    assert list(store._iter_files(root, store.project_context(root))) == []

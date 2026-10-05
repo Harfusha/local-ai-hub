@@ -1,0 +1,27 @@
+{
+  "schema": "t11-full-index-fts-transactional-regression-v1",
+  "date": "2026-10-03",
+  "owner_worktree": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "scope": "one parametrized regression test for full RAGStore.index() FTS DELETE/INSERT rollback",
+  "preimage_sha256_reconstructed_by_removing_added_test": "B5659958E1EBD3EB856BC162E49281DE466FEECF55140C37FBBEF1DD5A9653D3",
+  "postimage_sha256": "5379581182535E3A2696FF2E437BC11ABB8A31F17049A828AFDE93455660EC1F",
+  "source_file": "tests/test_t11_rag_ingestion_contract.py",
+  "rag_source_sha256": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+  "root_test_state": "untracked existing root file; not edited",
+  "root_test_sha256": "4876D98A26B9EB26701A841799BA088F3DAC3021B842A2B55945F53641306914",
+  "patch_file": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-full-index-fts-transactional-regression-20261003\\t11-full-index-fts-transactional-regression.patch",
+  "patch_sha256": "D59C5ECE3E9CE6D370DCC39C37F3D528341A97DF9F855CA2CE27879F5322A21B",
+  "checks": {
+    "candidate_patch_reverse_check": "PASS",
+    "root_patch_apply_check": "FAIL: root current test file differs at tests/test_t11_rag_ingestion_contract.py:329; no root write",
+    "candidate_diff_check": "PASS",
+    "tests": "NOT RUN; T20 GO absent"
+  },
+  "test_selector": "tests/test_t11_rag_ingestion_contract.py::test_full_index_fts_write_failure_keeps_previous_snapshot [INSERT INTO chunk_fts, DELETE FROM chunk_fts]",
+  "assertions": "both FTS write failures return non-retryable failure and preserve files/chunks/FTS/embedding-space/generation snapshot",
+  "source_changes": false,
+  "root_writes": false
+}

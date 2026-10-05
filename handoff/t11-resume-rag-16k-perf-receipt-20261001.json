@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "benchmark": "rag_retrieval_latency_16k_cpu",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "rag_source_sha256": "db181093f53f0d6666a890413bfea5f52359890ce8236def0160df744cf0c6ff",
+    "harness_sha256": "81c17571143a4256cf9d9a9017137b82cfd564cd4f45b21e48e5f3fbecba7a3c"
+  },
+  "dataset": {
+    "generator": "numpy.default_rng(41).standard_normal",
+    "seed": 41,
+    "corpus_count": 16384,
+    "dimension": 384,
+    "dtype": "float32",
+    "first_vector": "[1,0,...,0]",
+    "query": "benchmark query",
+    "top_k": 8
+  },
+  "method": {
+    "warmup_samples": 2,
+    "timed_samples_per_batch": 5,
+    "timing_tracemalloc": false,
+    "memory_measured_separately": true,
+    "batch_sizes": [512, 2048, 4096, 8192]
+  },
+  "metrics": [
+    {"search_batch_size": 512, "median_ms": 68.089, "p95_ms": 75.848, "peak_traced_mib": 2.485},
+    {"search_batch_size": 2048, "median_ms": 55.722, "p95_ms": 56.527, "peak_traced_mib": 9.975},
+    {"search_batch_size": 4096, "median_ms": 55.251, "p95_ms": 57.193, "peak_traced_mib": 9.975},
+    {"search_batch_size": 8192, "median_ms": 54.169, "p95_ms": 59.891, "peak_traced_mib": 9.975}
+  ],
+  "complexity_probe": {
+    "search_batch_size": 2048,
+    "scored_chunks": 16384,
+    "scoring_batches": 8,
+    "max_scoring_batch_rows": 2048,
+    "first_result_chunk_no": 0
+  },
+  "prior_100k_receipt": {
+    "file": "handoff/t11-rag-benchmark-receipt.json",
+    "source_and_harness_hashes_present": false,
+    "receipt_timestamp_precedes_current_rag_and_harness": true,
+    "status": "historical; not claimed as current-source performance"
+  },
+  "limitations": [
+    "CPU only",
+    "16,384 rows only; no 100k rerun",
+    "synthetic fixed-vector data, not production traffic"
+  ]
+}

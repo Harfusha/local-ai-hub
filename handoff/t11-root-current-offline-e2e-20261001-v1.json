@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-01",
+  "task": "T11 root-current offline end-to-end checkpoint validation",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "candidate": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "overlay": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t11-root-current-checkpoint-23d66221f65c4fa3a4c1cf7434937ed2",
+  "root_source_and_test_pins": {
+    "src/local_ai_hub/rag.py": "4c0ed5c52ec4cd9d82b41f0d6d2188812d607d1ce58c4ffea956d045fbb9048a",
+    "src/local_ai_hub/embeddings.py": "21a6282871005d1045b2e76a2cc65599deedb877477e007c1aa8fb31bfaccd08",
+    "tests/test_rag_quality_contract.py": "e783c6bac08d827b4ff5f404b5a521b4e041821992c8734a730d1441350149ef",
+    "tests/test_t11_rag_ingestion_contract.py": "4876d98a26b9eb26701a841799ba088f3dac3021b842a2b55945f53641306914",
+    "tests/test_rag_hybrid.py": "5e8508f96b808a7369fa9e97617be359f7f23ea7a6213364eec71b99f5149160",
+    "tests/test_rag_read_bounds.py": "9d9f3ee9daad5306570d9a7c2674da1a4cf3342541a1a2b43abb1f798ec0d002",
+    "tests/test_t11_project_policy_consumers.py": "d79c4748e277b5eae20be56921765709a7180eb54cd7874041a483b16d3ff6a4",
+    "tests/test_rag_fragment_cache.py": "50be2a48a96a7edf403bc09a9eef9032c315b1b068ce6015f032636b28d46293",
+    "tests/test_rag_dedup.py": "f450c05a0db810481b45499cec5b0a080f2fa92a490f8f98bea4dca5589c2b66",
+    "tests/test_t11_rag_seed_integrity.py": "1eaebd71367cb99bca2b1263eef195ef892cda3a215a743e7ce64c02843fdd30",
+    "tests/test_reranker_cache_identity.py": "46230856b87b38d580e2a66dd184ddc34c0b418ae55bc7fb67c0a93076b1dfb7",
+    "tests/test_embedding_cache.py": "3670dc935458d8a513edbdd760b18900eeacb27d6292278c38e6d695e847b736",
+    "tests/test_embedding_batch_deduplication.py": "47adfe7bfbaaeaf01a9fb5329df7d9910d582531e3e539ef80644ea298af7960",
+    "tests/test_model_release_lifecycle.py": "50c061dbc8d2bfa37337fdd77f796dcb328f786f407e1ad389200991e2ee5c50"
+  },
+  "overlay_pins": {
+    "src/local_ai_hub/rag.py": "4c0ed5c52ec4cd9d82b41f0d6d2188812d607d1ce58c4ffea956d045fbb9048a",
+    "src/local_ai_hub/embeddings.py": "21a6282871005d1045b2e76a2cc65599deedb877477e007c1aa8fb31bfaccd08",
+    "tests/test_rag_quality_contract.py": "e783c6bac08d827b4ff5f404b5a521b4e041821992c8734a730d1441350149ef",
+    "tests/test_t11_rag_ingestion_contract.py": "4876d98a26b9eb26701a841799ba088f3dac3021b842a2b55945f53641306914",
+    "tests/test_rag_hybrid.py": "5e8508f96b808a7369fa9e97617be359f7f23ea7a6213364eec71b99f5149160",
+    "tests/test_rag_read_bounds.py": "9d9f3ee9daad5306570d9a7c2674da1a4cf3342541a1a2b43abb1f798ec0d002",
+    "tests/test_t11_project_policy_consumers.py": "d79c4748e277b5eae20be56921765709a7180eb54cd7874041a483b16d3ff6a4",
+    "tests/test_rag_fragment_cache.py": "50be2a48a96a7edf403bc09a9eef9032c315b1b068ce6015f032636b28d46293",
+    "tests/test_rag_dedup.py": "f450c05a0db810481b45499cec5b0a080f2fa92a490f8f98bea4dca5589c2b66",
+    "tests/test_t11_rag_seed_integrity.py": "1eaebd71367cb99bca2b1263eef195ef892cda3a215a743e7ce64c02843fdd30",
+    "tests/test_reranker_cache_identity.py": "46230856b87b38d580e2a66dd184ddc34c0b418ae55bc7fb67c0a93076b1dfb7",
+    "tests/test_embedding_cache.py": "3670dc935458d8a513edbdd760b18900eeacb27d6292278c38e6d695e847b736",
+    "tests/test_embedding_batch_deduplication.py": "47adfe7bfbaaeaf01a9fb5329df7d9910d582531e3e539ef80644ea298af7960",
+    "tests/test_model_release_lifecycle.py": "50c061dbc8d2bfa37337fdd77f796dcb328f786f407e1ad389200991e2ee5c50"
+  },
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py tests/test_t11_rag_ingestion_contract.py tests/test_rag_hybrid.py tests/test_rag_read_bounds.py tests/test_t11_project_policy_consumers.py tests/test_rag_fragment_cache.py tests/test_rag_dedup.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+  "result": "128 passed, 3 skipped in 33.46s",
+  "exit_code": 0,
+  "skips": [
+    "live Ollama/reranker opt-in",
+    "bounded retrieval latency benchmark opt-in",
+    "synthetic RAG seed/batch benchmark opt-in"
+  ],
+  "integrated_fixture_patch": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-quality-fixture-provenance-20261001-v1.patch",
+    "sha256": "f6a232af6dea372f601ab88f7aff9c3772cce352fdaf5bd3598e84b585a7651e",
+    "root_reverse_apply_check": "passed, exit 0",
+    "root_quality_test_sha256": "e783c6bac08d827b4ff5f404b5a521b4e041821992c8734a730d1441350149ef"
+  },
+  "scope": {
+    "all_tests_ran_in_overlay": true,
+    "root_written_by_this_validation": false,
+    "api_context_pack_touched": false,
+    "live_model": false,
+    "gpu": false,
+    "100k": false
+  },
+  "note": "One earlier accidental pytest command launched from root was interrupted after 38 progress dots; final 128/3 receipt is from named temp overlay. Root preimage hashes/status verified afterward."
+}

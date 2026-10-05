@@ -1,0 +1,54 @@
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -1743,6 +1743,9 @@
+                     "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=?",
+                     (scope_key, workspace),
+                 ).fetchall()
++                uncertain_retry_paths = self._workspace_read_uncertain_paths(
++                    con, scope_key, workspace
++                )
+             if stored_space is None and old_chunk_rows:
+                 space_counts: dict[str, int] = {}
+                 for row in old_chunk_rows:
+diff --git a/tests/test_t11_project_policy_consumers.py b/tests/test_t11_project_policy_consumers.py
+--- a/tests/test_t11_project_policy_consumers.py
++++ b/tests/test_t11_project_policy_consumers.py
+@@ -504,6 +504,37 @@
+         ).fetchone()[0] == 1
+ 
+ 
++def test_explicit_rag_ingestion_normalizes_windows_path_before_policy_and_storage(
++    tmp_path: Path, monkeypatch
++):
++    _install_policy(monkeypatch)
++    root = tmp_path / "project"
++    (root / "private").mkdir(parents=True)
++    (root / "private" / "keep.py").write_text("keep\n", encoding="utf-8")
++    services = SimpleNamespace(
++        embed=lambda texts, _tenant, **_kwargs: {
++            "success": True,
++            "embedding_space_id": "test-space",
++            "embeddings": [[1.0, 0.0] for _ in texts],
++        }
++    )
++    store = RAGStore(_config(tmp_path), services=services)
++    workspace = store.workspace_id(str(root.resolve()))
++
++    result = store.index_paths_step(
++        str(root), "tenant", workspace, [r"private\keep.py"]
++    )
++
++    assert result["success"] is True
++    assert result["processed_paths"] == ["private/keep.py"]
++    with closing(store._connect()) as con:
++        row = con.execute(
++            "SELECT path,text FROM chunks WHERE tenant=? AND workspace=?",
++            (store._scope_key("tenant"), workspace),
++        ).fetchone()
++    assert row == ("private/keep.py", "keep\n")
++
++
+ def test_rag_worktree_consumer_inherits_committed_project_path_policy(tmp_path: Path):
+     pytest.importorskip("local_ai_hub.project_config")
+     primary = tmp_path / "primary"

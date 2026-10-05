@@ -1,0 +1,416 @@
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -1952,18 +1952,44 @@
+         tenant: str = "default",
+     ) -> dict[str, Any]:
+         """Ingest raw document or specification content into a RAG workspace."""
+-        clean_text = str(content or "").strip()
++        raw_text = str(content or "")
++        rag_cfg = self.config.get("rag", {})
++        max_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
++        content_bytes = len(raw_text.encode("utf-8"))
++        if content_bytes > max_bytes:
++            return {
++                "success": False,
++                "error": "document content exceeds configured file size limit",
++                "content_bytes": content_bytes,
++                "max_file_bytes": max_bytes,
++            }
++        clean_text = raw_text.strip()
+         if not clean_text:
+             return {"success": False, "error": "content is required"}
+ 
+         clean_ws = str(workspace or "default").strip()
+-        doc_title = str(title or (metadata.get("title") if isinstance(metadata, dict) else "")).strip() or f"doc_{_fragment_hash(clean_text)[:8]}"
++        doc_metadata = metadata if isinstance(metadata, dict) else {}
++        doc_title = str(title or "").strip() or str(doc_metadata.get("title") or "").strip() or f"doc_{_fragment_hash(clean_text)[:8]}"
+         doc_path = f"doc:{doc_title}"
+         scope_key = self._scope_key(tenant)
+ 
+-        raw_chunks = self._text_chunks(clean_text, size=1000, overlap=100)
++        index_parts = [f"Title: {doc_title}"]
++        if doc_metadata:
++            index_parts.append(f"Metadata: {json_dumps(doc_metadata, sort_keys=True, default=str)}")
++        index_parts.append(f"Content:\n{clean_text}")
++        indexed_bytes = sum(len(part.encode("utf-8")) for part in index_parts) + len(index_parts) - 1
++        if indexed_bytes > max_bytes:
++            return {
++                "success": False,
++                "error": "indexed document exceeds configured file size limit",
++                "indexed_bytes": indexed_bytes,
++                "max_file_bytes": max_bytes,
++            }
++        indexed_text = "\n".join(index_parts)
++
++        raw_chunks = self._text_chunks(indexed_text, size=1000, overlap=100)
+         if not raw_chunks:
+-            raw_chunks = [clean_text[:1000]]
++            raw_chunks = [indexed_text[:1000]]
+ 
+         records: list[dict[str, Any]] = []
+         for i, ch_text in enumerate(raw_chunks):
+@@ -1976,56 +2002,89 @@
+             })
+ 
+         if self.services is not None:
+-            try:
+-                vec_res = self.services.embed([r["text"] for r in records], tenant, priority=2, query=False)
+-                if isinstance(vec_res, dict) and vec_res.get("success"):
+-                    for idx, vec in enumerate(vec_res.get("embeddings", [])):
+-                        if idx >= len(records):
+-                            break
+-                        embedding = _serialize_embedding(vec)
++            for offset in range(0, len(records), _INDEX_EMBED_BATCH_SIZE):
++                batch_records = records[offset:offset + _INDEX_EMBED_BATCH_SIZE]
++                try:
++                    vec_res = self.services.embed(
++                        [record["text"] for record in batch_records],
++                        tenant,
++                        priority=2,
++                        query=False,
++                    )
++                    if not isinstance(vec_res, dict) or not vec_res.get("success"):
++                        break
++                    vectors = vec_res.get("embeddings", [])
++                    if len(vectors) > len(batch_records):
++                        break
++                    embedding_space = self._embedding_space_id(vec_res)
++                    for record, vector in zip(batch_records, vectors):
++                        embedding = _serialize_embedding(vector)
+                         if embedding is not None:
+-                            records[idx]["embedding"] = embedding
+-                            records[idx]["embedding_space"] = self._embedding_space_id(vec_res)
+-            except Exception:
+-                pass
++                            record["embedding"] = embedding
++                            record["embedding_space"] = embedding_space
++                    if len(vectors) < len(batch_records):
++                        break
++                except Exception:
++                    break
+ 
+         for r in records:
+             if r["embedding"] is None:
+                 r["embedding"] = ""
+ 
+-        with self._get_workspace_lock(clean_ws), closing(self._connect()) as con:
+-            con.execute("BEGIN IMMEDIATE")
+-            con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
+-            con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
+-            try:
+-                con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
+-            except Exception:
+-                pass
+-
+-            now_ns = time.time_ns()
+-            con.execute(
+-                "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+-                (scope_key, clean_ws, doc_path, now_ns, len(clean_text.encode("utf-8")), _fragment_hash(clean_text)),
++        def publish_document() -> None:
++            with self._get_workspace_lock(clean_ws), closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
++                con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
++                fts_exists = con.execute(
++                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
++                ).fetchone()
++                if fts_exists:
++                    con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
++
++                now_ns = time.time_ns()
++                con.execute(
++                    "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
++                    (scope_key, clean_ws, doc_path, now_ns, len(indexed_text.encode("utf-8")), _fragment_hash(indexed_text)),
++                )
++                con.executemany(
++                    "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
++                    [(scope_key, clean_ws, doc_path, r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"]) for r in records],
++                )
++                if fts_exists:
++                    con.executemany(
++                        "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++                        [(scope_key, clean_ws, doc_path, r["chunk_no"], r["text"]) for r in records],
++                    )
++                con.commit()
++
++        try:
++            retry_busy(
++                publish_document,
++                retries=self._sqlite_write_retries,
++                base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
+             )
+-            con.executemany(
+-                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+-                [(scope_key, clean_ws, doc_path, r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"]) for r in records],
+-            )
+-            try:
+-                con.executemany(
+-                    "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
+-                    [(scope_key, clean_ws, doc_path, r["chunk_no"], r["text"]) for r in records],
+-                )
+-            except Exception:
+-                pass
+-            con.commit()
+-
++        except Exception as exc:
++            return {
++                "success": False,
++                "workspace": clean_ws,
++                "document_title": doc_title,
++                "error": "ingest_publish_failed",
++                "detail": str(exc),
++                "retryable": is_busy_error(exc),
++            }
++
++        embedded_chunks = sum(bool(r["embedding_space"]) for r in records)
++        embedded = embedded_chunks == len(records)
+         return {
+             "success": True,
+             "workspace": clean_ws,
+             "document_title": doc_title,
+             "chunks_ingested": len(records),
+-            "embedded": any(bool(r["embedding_space"]) for r in records),
++            "embedded": embedded,
++            "embedded_chunks": embedded_chunks,
++            "embedding_status": "embedded" if embedded else "degraded",
++            "degraded": not embedded,
+         }
+ 
+     def ingest_diagram(
+--- a/tests/test_t11_rag_ingestion_contract.py
++++ b/tests/test_t11_rag_ingestion_contract.py
+@@ -99,6 +99,36 @@
+ 
+     monkeypatch.setattr(store, "_connect", lambda: _FailingConnection(connect()))
+     return state
++
++
++def test_document_ingest_embeds_title_metadata_and_content(tmp_path):
++    store = _store(tmp_path)
++    embedded_texts = []
++
++    class _RecordingServices:
++        def embed(self, texts, _tenant, **_kwargs):
++            batch = list(texts)
++            embedded_texts.extend(batch)
++            return {
++                "success": True,
++                "embedding_space_id": "document-ingestion-test-space",
++                "embeddings": [[1.0, 0.0] for _ in batch],
++            }
++
++    store.services = _RecordingServices()
++    result = store.ingest_document(
++        "specs",
++        "The system rotates service credentials weekly.",
++        title="Credential Rotation Plan",
++        metadata={"owner": "identity-team", "revision": 7},
++    )
++
++    assert result["success"] is True
++    embedded_text = "\n".join(embedded_texts)
++    assert "Title: Credential Rotation Plan" in embedded_text
++    assert '"owner":"identity-team"' in embedded_text
++    assert '"revision":7' in embedded_text
++    assert "Content:\nThe system rotates service credentials weekly." in embedded_text
+ 
+ 
+ def test_document_ingest_indexes_title_and_metadata(tmp_path):
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -2046,21 +2046,41 @@
+             return {"success": False, "error": f"unsupported diagram format: {suffix}"}
+ 
+         clean_ws = str(workspace or "default").strip()
+-        doc_title = f"diagram_{p_img.stem}"
++        doc_title = f"diagram_{p_img.stem}_{_fragment_hash(str(p_img))[:16]}"
+ 
+         diagram_text = ""
++        svg_text_nodes: list[str] = []
+         if suffix == ".svg":
+             try:
+-                raw_svg = p_img.read_text(encoding="utf-8", errors="replace")
++                rag_cfg = self.config.get("rag", {})
++                max_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
++                if int(p_img.stat().st_size) > max_bytes:
++                    return {
++                        "success": False,
++                        "error": "diagram exceeds configured file size limit",
++                        "diagram_indexed": False,
++                    }
++                with p_img.open("rb") as svg_file:
++                    raw_bytes = svg_file.read(max_bytes + 1)
++                if len(raw_bytes) > max_bytes:
++                    return {
++                        "success": False,
++                        "error": "diagram exceeds configured file size limit",
++                        "diagram_indexed": False,
++                    }
++                raw_svg = raw_bytes.decode("utf-8", errors="replace")
+                 texts = re.findall(r"<text[^>]*>(.*?)</text>", raw_svg, re.DOTALL | re.I)
+-                diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}\nText nodes:\n" + "\n".join(t.strip() for t in texts if t.strip())
++                svg_text_nodes = [t.strip() for t in texts if t.strip()]
++                diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}\nText nodes:\n" + "\n".join(svg_text_nodes)
+             except Exception:
+-                diagram_text = f"SVG Diagram: {p_img.name}\nCaption: {caption}"
++                return {
++                    "success": False,
++                    "error": "diagram could not be read",
++                    "diagram_indexed": False,
++                }
+         else:
+             file_size_kb = round(p_img.stat().st_size / 1024, 1)
+             diagram_text = f"Architectural Diagram / Visual Asset: {p_img.name}\nFormat: {suffix.lstrip('.')}\nSize: {file_size_kb} KB\nCaption: {caption}\nFile path: {str(p_img)}"
+-            if metadata:
+-                diagram_text += f"\nMetadata: {json_dumps(metadata, ensure_ascii=False)}"
+ 
+         res = self.ingest_document(
+             workspace=clean_ws,
+@@ -2070,6 +2090,8 @@
+             tenant=tenant,
+         )
+         if isinstance(res, dict):
+-            res["diagram_indexed"] = True
++            res["diagram_indexed"] = bool(res.get("success"))
+             res["image_path"] = str(p_img)
++            res["diagram_content_mode"] = "svg_text_nodes" if svg_text_nodes else "metadata_only"
++            res["vision_or_ocr_used"] = False
+         return res
+--- a/src/local_ai_hub/mcp_server.py
++++ b/src/local_ai_hub/mcp_server.py
+@@ -2295,8 +2295,13 @@
+     max_response_tokens: int = 0,
+     response_profile: str = "",
+     reuse_key: str = "",
++    content: str = "",
++    title: str = "",
++    metadata: dict[str, Any] | None = None,
++    image_path: str = "",
++    caption: str = "",
+ ) -> dict[str, Any]:
+-    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
++    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. For document ingestion pass content, title, and metadata; for diagram ingestion pass image_path, caption, and metadata. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
+     if not FEATURES.rag:
+         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
+     action = action.strip().lower().replace("-", "_")
+@@ -2319,14 +2324,32 @@
+             "name": workspace or "default", "query": query, "top_k": max(1, min(top_k, 12)),
+         }))
+     if action == "ingest_document":
++        if not isinstance(content, str) or not content.strip():
++            return _compact({
++                "success": False,
++                "terminal": True,
++                "retryable": False,
++                "error": "content is required for ingest_document",
++            }, "status")
+         return _compact(CLIENT.post("/api/rag/ingest_document", {
+-            "workspace": workspace or "default", "content": query or root,
++            "workspace": workspace or "default",
++            "content": content,
++            "title": title,
++            "metadata": metadata if isinstance(metadata, dict) else None,
+         }, timeout=_timeout("quick")), "status")
+     if action == "ingest_diagram":
++        if not isinstance(image_path, str) or not image_path.strip():
++            return _compact({
++                "success": False,
++                "terminal": True,
++                "retryable": False,
++                "error": "image_path is required for ingest_diagram",
++            }, "status")
+         return _compact(CLIENT.post("/api/rag/ingest_diagram", {
+             "workspace": workspace or "default",
+-            "image_path": query or root,
+-            "caption": (extra_fields[0] if extra_fields else ""),
++            "image_path": image_path,
++            "caption": caption,
++            "metadata": metadata if isinstance(metadata, dict) else None,
+         }, timeout=_timeout("quick")), "status")
+     return _invalid_action("local_ai_rag", action, tuple(RagAction.__args__), "Use RAG only when cheaper Local AI Hub evidence is insufficient.")
+ 
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -29,6 +29,7 @@
+ 
+ 
+ _MAX_RERANK_CANDIDATES = 512
++_INDEX_EMBED_BATCH_SIZE = 64
+ 
+ 
+ def _reverse_text_order(value: str) -> tuple[int, ...]:
+@@ -1142,7 +1143,7 @@
+                     all_missing_texts = still_missing_texts
+                     missing_pointers = still_missing_pointers
+ 
+-            # 5. Single bulk embedding call for truly novel chunks
++            # 5. Embed bounded batches. Do not publish partial vector batches.
+             if all_missing_texts:
+                 if callable(should_yield) and should_yield():
+                     return {
+@@ -1150,27 +1151,44 @@
+                         "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+                         "reused_chunks": reused_chunks,
+                     }
+-                try:
+-                    vectors_result = self.services.embed(all_missing_texts, tenant, priority=0, query=False, background=True)
+-                except (TimeoutError, QueueFullError) as exc:
+-                    return {
+-                        "success": True, "workspace": workspace, "preempted": True,
+-                        "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+-                        "reused_chunks": reused_chunks, "note": f"embedder busy or timed out: {exc}",
+-                    }
+-                if not vectors_result.get("success"):
+-                    return vectors_result
+-                vectors = vectors_result.get("embeddings", [])
+-                if len(vectors) != len(all_missing_texts):
+-                    return {"success": False, "error": "embedding count mismatch during background RAG path step"}
+-                embedding_space = self._embedding_space_id(vectors_result)
+-                for (f_idx, rec_idx), vector in zip(missing_pointers, vectors):
+-                    embedding = _serialize_embedding(vector)
+-                    if embedding is None:
+-                        return {"success": False, "error": "embedding backend returned an invalid vector"}
+-                    file_data[f_idx]["records"][rec_idx]["embedding"] = embedding
+-                    file_data[f_idx]["records"][rec_idx]["embedding_space"] = embedding_space
+-                embedded_chunks += len(all_missing_texts)
++                batch_embedding_space = None
++                for offset in range(0, len(all_missing_texts), _INDEX_EMBED_BATCH_SIZE):
++                    if offset and callable(should_yield) and should_yield():
++                        return {
++                            "success": True, "workspace": workspace, "preempted": True,
++                            "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
++                            "reused_chunks": reused_chunks,
++                        }
++                    batch_texts = all_missing_texts[offset:offset + _INDEX_EMBED_BATCH_SIZE]
++                    batch_pointers = missing_pointers[offset:offset + _INDEX_EMBED_BATCH_SIZE]
++                    try:
++                        vectors_result = self.services.embed(batch_texts, tenant, priority=0, query=False, background=True)
++                    except (TimeoutError, QueueFullError) as exc:
++                        return {
++                            "success": True, "workspace": workspace, "preempted": True,
++                            "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
++                            "reused_chunks": reused_chunks, "note": f"embedder busy or timed out: {exc}",
++                        }
++                    if not isinstance(vectors_result, dict) or not vectors_result.get("success"):
++                        return vectors_result if isinstance(vectors_result, dict) else {"success": False, "error": "embed failed"}
++                    vectors = vectors_result.get("embeddings", [])
++                    if len(vectors) != len(batch_pointers):
++                        return {"success": False, "error": "embedding count mismatch during background RAG path step"}
++                    current_space = self._embedding_space_id(vectors_result)
++                    if batch_embedding_space is not None and current_space != batch_embedding_space:
++                        return {"success": False, "error": "embedding identity changed during RAG path step", "retryable": True}
++                    if batch_embedding_space is None:
++                        batch_embedding_space = current_space
++                        if batch_embedding_space != embedding_space and reused_chunks:
++                            return {"success": False, "error": "embedding identity changed during RAG path step", "retryable": True}
++                        embedding_space = batch_embedding_space
++                    for (f_idx, rec_idx), vector in zip(batch_pointers, vectors):
++                        embedding = _serialize_embedding(vector)
++                        if embedding is None:
++                            return {"success": False, "error": "embedding backend returned an invalid vector"}
++                        file_data[f_idx]["records"][rec_idx]["embedding"] = embedding
++                        file_data[f_idx]["records"][rec_idx]["embedding_space"] = batch_embedding_space
++                    embedded_chunks += len(batch_pointers)
+ 
+             if callable(should_yield) and should_yield():
+                 return {

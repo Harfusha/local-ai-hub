@@ -1,0 +1,115 @@
+diff --git a/tests/test_rag_read_bounds.py b/tests/test_rag_read_bounds.py
+--- a/tests/test_rag_read_bounds.py
++++ b/tests/test_rag_read_bounds.py
+@@ -61,7 +61,7 @@
+ 
+ 
+ @pytest.mark.parametrize("entrypoint", ["index", "index_paths_step"])
+-def test_file_growth_after_stat_never_reads_or_keeps_oversized_snapshot(
++def test_file_growth_preserves_snapshot_and_suppresses_results_until_retry(
+     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str
+ ):
+     store = _store(tmp_path, max_file_bytes=32)
+@@ -69,10 +69,11 @@
+     root.mkdir()
+     path = root / "module.py"
+     path.write_text("value = 'before'\n", encoding="utf-8")
+-    initial_size = path.stat().st_size
+     tenant, workspace = "tenant", "workspace"
+     assert store.index_paths_step(str(root), tenant, workspace, ["module.py"])["success"]
+     assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++    committed = store.search("value before", tenant, workspace, use_reranker=False)
++    assert committed["results"][0]["text"] == "value = 'before'\n"
+ 
+     path.write_text("value = 'changed'\n", encoding="utf-8")
+     original_open = Path.open
+@@ -88,16 +89,21 @@
+     else:
+         result = store.index_paths_step(str(root), tenant, workspace, ["module.py"])
+ 
+-    assert result["success"] is (entrypoint == "index_paths_step")
+-    expected_counts = (1, 1, 1) if entrypoint == "index" else (0, 0, 0)
+-    assert _indexed_counts(store, tenant, workspace, "module.py") == expected_counts
++    assert result["success"] is True
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++    uncertain = store.search("value before", tenant, workspace, use_reranker=False)
++    assert uncertain["results"] == []
++    assert uncertain["fallback"] == "source_read_uncertain"
++
++    monkeypatch.setattr(Path, "open", original_open)
+     if entrypoint == "index":
+-        with closing(store._connect()) as con:
+-            indexed_size = con.execute(
+-                "SELECT size FROM files WHERE tenant=? AND workspace=? AND path=?",
+-                (store._scope_key(tenant), workspace, "module.py"),
+-            ).fetchone()[0]
+-        assert indexed_size == initial_size
++        recovered = store.index(str(root), tenant, workspace)
++    else:
++        recovered = store.index_paths_step(str(root), tenant, workspace, ["module.py"])
++
++    assert recovered["success"] is True
++    refreshed = store.search("value before", tenant, workspace, use_reranker=False)
++    assert [row["text"] for row in refreshed["results"]] == ["value = 'changed'\n"]
+ 
+ 
+ def test_content_override_obeys_configured_file_limit(tmp_path: Path):
+diff --git a/tests/test_rag_fragment_cache.py b/tests/test_rag_fragment_cache.py
+--- a/tests/test_rag_fragment_cache.py
++++ b/tests/test_rag_fragment_cache.py
+@@ -1,8 +1,10 @@
+ from __future__ import annotations
+ 
++import io
+ import threading
+ import sqlite3
+ from contextlib import closing
++from pathlib import Path
+ 
+ from local_ai_hub.rag import RAGStore, _fragment_hash
+ 
+@@ -327,3 +329,44 @@
+             (store_one._scope_key("tenant"), workspace),
+         ).fetchall()
+     assert {row[0] for row in rows} == {"one.py", "two.py"}
++
++
++def test_search_rechecks_generation_after_uncertain_source_read(tmp_path, monkeypatch):
++    root = tmp_path / "project"
++    root.mkdir()
++    source = root / "one.py"
++    source.write_text("def old_value():\n    return 1\n", encoding="utf-8")
++    store = _store(tmp_path, _Services())
++    store.config["rag"]["max_file_bytes"] = 32
++    indexed = store.index(str(root), "tenant")
++    workspace = indexed["workspace"]
++    initial = store.search("value query", "tenant", workspace, use_reranker=False)
++    assert initial["results"][0]["text"] == "def old_value():\n    return 1\n"
++
++    source.write_text("def new_value():\n    return 2\n", encoding="utf-8")
++    original_open = Path.open
++
++    def grow_after_stat(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == source.resolve() and mode == "rb":
++            return io.BytesIO(b"x" * 33)
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", grow_after_stat)
++    original_lookup = store.search_flight.get_or_compute
++    interleaved = {}
++
++    def publish_uncertainty_before_lookup(key, compute):
++        staged = store.index_paths_step(str(root), "tenant", workspace, ["one.py"])
++        assert staged["success"] is True
++        assert staged["read_uncertain_paths"] == ["one.py"]
++        raw, hit, coalesced = original_lookup(key, compute)
++        interleaved["hit"] = hit
++        return raw, hit, coalesced
++
++    monkeypatch.setattr(store.search_flight, "get_or_compute", publish_uncertainty_before_lookup)
++    result = store.search("value query", "tenant", workspace, use_reranker=False)
++
++    assert interleaved["hit"] is True
++    assert result["search_cache"]["hit"] is False
++    assert result["results"] == []
++    assert result["fallback"] == "source_read_uncertain"

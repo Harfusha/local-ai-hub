@@ -1,0 +1,56 @@
+{
+  "schema": "t11-root-targeted-followup-v1",
+  "captured_date": "2026-10-05",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476"
+  },
+  "shared_root": {
+    "root": "C:\\Users\\Adam\\.local-ai-hub",
+    "head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+    "written_or_tested_by_this_task": false,
+    "post_correction_targeted_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_fragment_cache.py::test_configured_embedding_space_id_is_stable_across_store_instances tests/test_rag_fragment_cache.py::test_index_fingerprint_tracks_embedding_space_configuration tests/test_rag_fragment_cache.py::test_reused_chunks_keep_original_space_when_embedder_falls_back tests/test_rag_hybrid.py::test_search_reports_pending_rebuild_for_partial_embedding_space tests/test_rag_hybrid.py::test_warm_search_skips_embedding_space_write_lock tests/test_rag_hybrid.py::test_rag_index_paths_step_retries_publish_lock_without_reembedding tests/test_rag_hybrid.py::test_search_cache_key_tracks_runtime_embedding_space tests/test_rag_hybrid.py::test_public_search_cache_tracks_runtime_embedding_dimension tests/test_rag_fragment_cache.py::test_index_step_keeps_unpublished_paths_pending tests/test_embedding_cache.py::test_embedding_cache_key_changes_with_digest_and_revision tests/test_embedding_cache.py::test_embed_reuses_cached_vectors_and_preserves_batch_order tests/test_t11_rag_ingestion_contract.py::test_document_ingest_embeds_title_metadata_and_content",
+    "post_correction_targeted_result": "4 failed, 8 passed in 3.47s",
+    "sha256_at_capture": {
+      "src/local_ai_hub/rag.py": "9328914E6D09EA6E88FB035FA7A8FD13779FEC564188B0016E1710B73E0F14CC",
+      "tests/test_rag_fragment_cache.py": "F5641D678EDAD903E64BA13E2E360E04C297F2BB23FFEF987152498C9024EADF",
+      "tests/test_rag_hybrid.py": "038A15AA053CC75DEC69B8216D754508C75B9D1B721ACE5159D9963E9FD3737E"
+    }
+  },
+  "failures": [
+    {
+      "selector": "tests/test_rag_fragment_cache.py::test_reused_chunks_keep_original_space_when_embedder_falls_back",
+      "classification": "T11 missing output-identity retry",
+      "evidence": "shared.py remained model-a@revision-1; expected model-b@revision-2 at line 308. Candidate _index_locked and index_paths_step compare returned batch identity against configured identity and restart with _space_override when reused vectors would otherwise cross spaces. Root lacks this retry; fixture is now local and correct.",
+      "candidate_receipt": "test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces: 1 passed"
+    },
+    {
+      "selector": "tests/test_rag_hybrid.py::test_search_reports_pending_rebuild_for_partial_embedding_space",
+      "classification": "T11 missing resolved-space metadata write",
+      "evidence": "Search returns rebuild-pending diagnostics, but workspace_embedding_space remains NULL instead of space-current. Candidate _search_uncached captures a resolved query identity, reads current metadata, and publishes the resolved embedding-space key after stale-space detection.",
+      "candidate_receipt": "included in 6-selector focused run: 6 passed"
+    },
+    {
+      "selector": "tests/test_rag_hybrid.py::test_rag_index_paths_step_retries_publish_lock_without_reembedding",
+      "classification": "T21 dependency; excluded from T11 packet",
+      "evidence": "AttributeError: RAGStore has no _sync_workspace_project_policy_identity. Candidate helper and call belong to project_config policy synchronization. Do not modify project_config.py or weaken the consumer test; wait for T21-owned packet."
+    },
+    {
+      "selector": "tests/test_rag_fragment_cache.py::test_index_step_keeps_unpublished_paths_pending",
+      "classification": "T11 pending accounting defect",
+      "evidence": "Root computes len(pending)-len(selected), returning 0 even when staged reports preempted with no processed/deleted paths. Candidate computes pending minus completed_paths, returning 1.",
+      "candidate_receipt": "included in 5-selector focused run: 5 passed"
+    }
+  ],
+  "candidate_focused_receipts": [
+    "6 selectors: configured embedding ID, fingerprint, partial-space pending, warm lock skip, retry publish lock, document ingest metadata; 6 passed in 2.71s",
+    "changed-space reused chunks: 1 passed in 0.70s",
+    "5 selectors: search cache identity, unpublished paths, embedding-cache identity and order; 5 passed in 0.59s"
+  ],
+  "scope": {
+    "root_mutations": 0,
+    "root_test_runs_by_this_task": 0,
+    "excluded": ["src/local_ai_hub/project_config.py", "src/local_ai_hub/services.py", "src/local_ai_hub/retrieval.py"],
+    "local_ai_hub_tool_use": "ignored at user request"
+  }
+}

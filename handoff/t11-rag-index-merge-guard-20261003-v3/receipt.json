@@ -1,0 +1,27 @@
+{
+  "schema": "t11-index-guard-minimal-patch-v1",
+  "date": "2026-10-03",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "file": "src/local_ai_hub/rag.py",
+  "method": "RAGStore._index_locked",
+  "root_preimage_sha256": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27",
+  "simulated_postimage_sha256": "6BEB439ED677230D508BAE126EF142572C8497C47E233597319A5F36D4A3CD43",
+  "patch": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-rag-index-merge-guard-20261003-v3\\t11-index-guard-root-current.patch",
+  "patch_sha256": "FD69872676AC0929EBE573597374357BAA078B2B6FDB251F8338A6BFDB331E67",
+  "patch_paths": [
+    "src/local_ai_hub/rag.py"
+  ],
+  "patch_scope": "Only _index_locked(): replace two changed_texts guards with changed_indices; remove redundant parallel changed_texts bookkeeping. No index_paths_step change.",
+  "root_apply_check": "pass",
+  "root_apply_error": null,
+  "patch_applied": false,
+  "static_checks": {
+    "root_locked_index_has_complete_changed_texts_lifecycle": true,
+    "minimal_patch_removes_changed_texts_from_locked_index": true,
+    "candidate_locked_index_uses_changed_indices": true,
+    "path_step_embedding_space_before_records": true
+  },
+  "tests_run": false,
+  "test_gate": "wait for explicit T01 slot assignment"
+}

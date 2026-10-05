@@ -1,0 +1,204 @@
+{
+  "schema_version": 1,
+  "packet_type": "immutable_owner_manifest_only",
+  "created_client_date": "2026-10-05",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "dirty_state": "Inherited T11 worktree changes present before this packet; this packet adds manifest only.",
+    "owned_scope": [
+      "src/local_ai_hub/rag.py",
+      "src/local_ai_hub/embeddings.py",
+      "src/local_ai_hub/reranker.py",
+      "tests/test_rag_fragment_cache.py",
+      "tests/test_rag_hybrid.py",
+      "tests/test_rag_quality_contract.py",
+      "tests/test_t11_rag_ingestion_contract.py",
+      "tests/test_t11_rag_seed_integrity.py",
+      "tests/test_t11_project_policy_consumers.py",
+      "tests/test_rag_read_bounds.py"
+    ],
+    "excluded_dirty_paths": [
+      "tests/test_model_release_lifecycle.py",
+      "src/local_ai_hub/project_config.py",
+      "tests/test_project_config.py"
+    ]
+  },
+  "root": {
+    "root": "C:\\Users\\Adam\\.local-ai-hub",
+    "head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+    "modified_by_this_work": false,
+    "reported_rag_result": {
+      "result": "37 failed",
+      "source": "parent/orchestrator instruction",
+      "command": "unavailable in this packet; not rerun",
+      "classification": "root result, separate from candidate receipts"
+    },
+    "path_relation": [
+      {
+        "path": "src/local_ai_hub/rag.py",
+        "root_current_sha256": "E1F67AA741945BFF05704BBDA385D9DCF90F42C1CA2880A1FE3C9F2B1BB59CA1",
+        "candidate_post_sha256": "BDC94FFE14252A7CB18460E1E1B5C513134F66C451FA1CD3DF90B21FCCB09EE7",
+        "relation": "different; hunk overlap not cleared"
+      },
+      {
+        "path": "src/local_ai_hub/embeddings.py",
+        "root_current_sha256": "B80C15DEBB62724BB20113E86324B8268C685A1076D5508A22BBF4246FEA07E0",
+        "candidate_post_sha256": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170",
+        "relation": "different; hunk overlap not cleared"
+      },
+      {
+        "path": "src/local_ai_hub/reranker.py",
+        "root_current_sha256": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562",
+        "candidate_post_sha256": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562",
+        "relation": "identical; no integration delta"
+      },
+      {
+        "path": "tests/test_rag_fragment_cache.py",
+        "root_current_sha256": "71706EABACABD2AA9B8FE20DAA173069E63837E942DFFC6B055F0C85254B2590",
+        "candidate_post_sha256": "A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002",
+        "relation": "different; hunk overlap not cleared"
+      },
+      {
+        "path": "tests/test_rag_hybrid.py",
+        "root_current_sha256": "833B366DE3C1141B69C946D365933CB86BCAC9A05D83C9F4FCEFD621460E7CA8",
+        "candidate_post_sha256": "CA14B2DF15B2E7DB1C7268B9CD5A4C1C57C2E9074BCEDDDEC15F6D26E729AAA8",
+        "relation": "different; hunk overlap not cleared"
+      },
+      {
+        "path": "tests/test_rag_quality_contract.py",
+        "root_current_sha256": "CCDC179B6AC957566668AC6694063DB2A1C5945099168C364888AD781CF9CC7B",
+        "candidate_post_sha256": "EF90FC86269D89FFDB6E5CC508BF54917D4A6ED2243447E85DE372B94D5CF3E9",
+        "relation": "different; hunk overlap not cleared"
+      },
+      {
+        "path": "tests/test_t11_rag_ingestion_contract.py",
+        "root_current_sha256": "05F7F27BABC8A6714E661B6B35B3E2E0D97C52A97854D62F79315B5673BB88ED",
+        "candidate_post_sha256": "A5C2C6B7BD5C6E1C7383DEAFDB6070FCC212DF335DEFDA9C21ED3B9398CAC7B8",
+        "relation": "different; root contains gaming-mode fixture isolation; do not replace with candidate file"
+      },
+      {
+        "path": "tests/test_t11_rag_seed_integrity.py",
+        "root_current_sha256": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02",
+        "candidate_post_sha256": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02",
+        "relation": "identical; no integration delta"
+      },
+      {
+        "path": "tests/test_t11_project_policy_consumers.py",
+        "root_current_sha256": "D79C4748E277B5EAE20BE56921765709A7180EB54CD7874041A483B16D3FF6A4",
+        "candidate_post_sha256": "98FB176272F7C8F2C41CEF885B5CDA0E6A41E32DCB0D511BA12F16311FE4AEC6",
+        "relation": "different; hunk overlap not cleared"
+      },
+      {
+        "path": "tests/test_rag_read_bounds.py",
+        "root_current_sha256": "9D9F3EE9DAAD5306570D9A7C2674DA1A4CF3342541A1A2B43ABB1F798EC0D002",
+        "candidate_post_sha256": "AE19C08BC2AA9CA45D0B7F26DCFF23DD8ABDB3A1D843F54A7830045A8A568AA2",
+        "relation": "different; candidate file untracked at base; hunk overlap not cleared"
+      }
+    ],
+    "prior_root_current_packet": {
+      "path": "handoff/t11-root-current-rag-hardening-20261003/t11-root-current-followup-20261005-v2.patch",
+      "sha256": "A12BFF22FFA48A29786C7A3C33065B70B55187068F1812E14151396FD15AC7B0",
+      "status": "historical only; its rag.py postimage matches current root, while its ingestion-test postimage does not; do not apply"
+    },
+    "integration_recommendation": "NO: no transferable patch generated; divergent candidate/root hunks lack ownership/overlap clearance."
+  },
+  "candidate_file_hashes": [
+    {
+      "path": "src/local_ai_hub/rag.py",
+      "pre_sha256": "DC6EC0DFAFF8C8E5EB133E96EF276148586F6FA79E5203CB4398C613B07ED184",
+      "post_sha256": "BDC94FFE14252A7CB18460E1E1B5C513134F66C451FA1CD3DF90B21FCCB09EE7"
+    },
+    {
+      "path": "src/local_ai_hub/embeddings.py",
+      "pre_sha256": "E88373A0A9185CAA6A1714EC5B7EB84E30CBB060F912F430F7DAA456A0AC9BF9",
+      "post_sha256": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170"
+    },
+    {
+      "path": "src/local_ai_hub/reranker.py",
+      "pre_sha256": "17D56DB72127D3DC67B0BE3FDDC1225EFC81BAF6EA8928DA21A1C1F6E9619493",
+      "post_sha256": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562"
+    },
+    {
+      "path": "tests/test_rag_fragment_cache.py",
+      "pre_sha256": "F67344CB80E40977204FE4BD7A87BA8EA5E9C65B33314450DF62CE9DA4D7775D",
+      "post_sha256": "A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002"
+    },
+    {
+      "path": "tests/test_rag_hybrid.py",
+      "pre_sha256": "FFE5D320D8F0D38E535866224E597A729162FE3EEC58840F8C5BDB3D5DB61DAC",
+      "post_sha256": "CA14B2DF15B2E7DB1C7268B9CD5A4C1C57C2E9074BCEDDDEC15F6D26E729AAA8"
+    },
+    {
+      "path": "tests/test_rag_quality_contract.py",
+      "pre_sha256": "6A633151C7052E0E233B60518F9F67A9A9BA4798B55D4A34D4D1E5EBA3BC06BB",
+      "post_sha256": "EF90FC86269D89FFDB6E5CC508BF54917D4A6ED2243447E85DE372B94D5CF3E9"
+    },
+    {
+      "path": "tests/test_t11_rag_ingestion_contract.py",
+      "pre_sha256": "04FB237D97B157E5C8E7C67E750BDC9DE354B11DA76D577BFEE163FCD3D61A6F",
+      "post_sha256": "A5C2C6B7BD5C6E1C7383DEAFDB6070FCC212DF335DEFDA9C21ED3B9398CAC7B8"
+    },
+    {
+      "path": "tests/test_t11_rag_seed_integrity.py",
+      "pre_sha256": "1F30E205044F9CC1EF7BE53E11721A066E7DF3060D4876F36FB2F461212E2FFD",
+      "post_sha256": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02"
+    },
+    {
+      "path": "tests/test_t11_project_policy_consumers.py",
+      "pre_sha256": "80AEB38D1BAEEE953786837734DF6EDE397C42483DF17547E9174944B8916529",
+      "post_sha256": "98FB176272F7C8F2C41CEF885B5CDA0E6A41E32DCB0D511BA12F16311FE4AEC6"
+    },
+    {
+      "path": "tests/test_rag_read_bounds.py",
+      "pre_sha256": null,
+      "post_sha256": "AE19C08BC2AA9CA45D0B7F26DCFF23DD8ABDB3A1D843F54A7830045A8A568AA2",
+      "note": "untracked at candidate HEAD; no base preimage"
+    }
+  ],
+  "candidate_receipts": [
+    {
+      "command": "python -m pytest -q --tb=short tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_t11_rag_ingestion_contract.py tests/test_rag_read_bounds.py tests/test_t11_rag_seed_integrity.py tests/test_t11_project_policy_consumers.py tests/test_model_release_lifecycle.py",
+      "result": "154 passed, 3 skipped in 36.46s",
+      "scope": "candidate dirty state; skips were benchmark/live selectors"
+    },
+    {
+      "command": "python -m pytest -q --tb=short tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_rag_dedup.py tests/test_storage_service_reliability.py",
+      "result": "38 passed in 4.33s"
+    },
+    {
+      "command": "T11_REAL_OLLAMA=1 python -m pytest -q --tb=short tests/test_t11_rag_ingestion_contract.py::test_t11_live_ollama_rag_ingest_and_reranker_truthfulness",
+      "result": "1 passed in 23.89s",
+      "scope": "real qwen3-embedding:0.6b; real reranker disabled"
+    },
+    {
+      "command": "python -m pytest -q --tb=short tests/test_t11_rag_ingestion_contract.py::test_mcp_rag_ingest_accepts_explicit_document_and_diagram_fields tests/test_t11_rag_ingestion_contract.py::test_mcp_rag_ingest_requires_explicit_input tests/test_t11_rag_ingestion_contract.py::test_mcp_rag_ingest_forwards_explicit_fields_only",
+      "result": "4 passed in 2.16s"
+    },
+    {
+      "command": "RAG_BENCHMARK=1 python -m pytest -s -q --tb=short tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline",
+      "result": "1 passed in 39.76s",
+      "receipt": "handoff/t11-rag-benchmark-receipt-20261005.json"
+    },
+    {
+      "command": "T11_RAG_BENCHMARK=1 python -m pytest -s -q --tb=short tests/test_t11_rag_seed_integrity.py::test_t11_ingestion_batch_benchmark",
+      "result": "1 passed in 12.71s",
+      "receipt": "handoff/t11-rag-ingest-benchmark-receipt-20261005.json"
+    },
+    {
+      "command": "$env:T11_REAL_OLLAMA=1; $env:T11_REAL_RERANKER=1; python -m pytest -q --tb=short tests/test_t11_rag_ingestion_contract.py::test_t11_live_ollama_rag_ingest_and_reranker_truthfulness",
+      "result": "UNRESOLVED: reached dot/[100%] after approximately 147s; final summary/exit code unavailable; do not infer pass"
+    },
+    {
+      "path": "handoff/t11-transformer-reranker-live-receipt.json",
+      "result": "historical 2026-10-01 candidate receipt: 1 passed in 23.47s; not evidence for current run"
+    }
+  ],
+  "immutability": {
+    "candidate_patch_sha256": null,
+    "candidate_patch_status": "not generated: latest instruction requested manifest-only; no root patch/apply-check performed for current candidate delta",
+    "root_edits": false,
+    "source_edits_in_this_continuation": false,
+    "live_test_rerun": false
+  }
+}

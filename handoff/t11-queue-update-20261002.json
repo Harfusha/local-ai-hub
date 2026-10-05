@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "created_utc": "2026-10-02T08:55:48.6539333Z",
+  "status": "T11_ACCEPTANCE_OPEN; SLOT_AVAILABLE_BUT_NOT_ASSIGNED; T08 SELECTOR UNKNOWN",
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "current_pins": {
+    "tests/test_rag_quality_contract.py": "0A82654D5BBA505F69437037E8F906DEFAF5F983ACA0305445E11F0854BBD9C5",
+    "src/local_ai_hub/project_config.py": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+    "tests/test_project_config.py": "0196D8FA417DD2B56BFC0D143217D25E2986E1B1B1DF6CEFFADD3C0EEB9FBCEA",
+    "handoff/t11-project-config-integration-20261002.json": "66761BBF4DA638BC0135BC969419227643574E4B2DAC5BC0D92407539229EA38",
+    "handoff/T11-CPU-SLOT-20261002-11/01-privacy-selector.receipt.json": "FDBE7D119612BF4658120DEDE2F2AE2CCA2C851155BFBEA9E272E641647FC110",
+    "src/local_ai_hub/rag.py": "F47259DAFC72C6A584F53D84E51FAC270CE0969E48EC3CDB58C1CCEB6F554992",
+    "handoff/T11-CPU-SLOT-20261002-11/02-offline-suite.receipt.json": "33134D8B2CFCA594C703FBA46AAC32470CFB93E24A7534B8D9B47335DFCF41D8",
+    "handoff/t11-queue-revalidation-20261002.json": "C337D651EED1A0E759936A48F264C58E1B8CB91E730CCC597475114E12A2B7B0"
+  },
+  "coordination": {
+    "T20": {
+      "latest": "T20 is checking T06 manifest pins. T08 slot36 routed through local_ai_command and returned outcome_unknown; no test log, only preflight and UNKNOWN receipt. No retry.",
+      "thread_id": "01a0d322-b3bd-7930-b552-14e9b7020fec",
+      "status": "active",
+      "cursor": "f6f94544-4020-443b-b20d-3c1de22d9a32:306"
+    },
+    "T01": {
+      "latest": "T01 diagnosed slots22/24 failures as test fake retaining a mutable payload reference plus async telemetry cross-call. Recommended snapshot payload and filter business endpoints; production behavior intentional. No edits or reruns.",
+      "thread_id": "01a0d30b-fffc-7810-a1ca-9cdde7be9264",
+      "status": "idle",
+      "cursor": "db160967-2033-4574-9adb-c87c16b5c708:21"
+    },
+    "T02": {
+      "latest": "T02 says slot free, no test or benchmark. This confirms availability only; no T11-specific assignment.",
+      "thread_id": "01a0d30b-ffee-7fa2-bc6e-f503a4bc18b7",
+      "status": "idle",
+      "cursor": "9f3059e9-3334-4352-aca8-2cc5a19b1b6b:38"
+    }
+  },
+  "base_revalidation_receipt": "handoff/t11-queue-revalidation-20261002.json",
+  "base_revalidation_sha256": "C337D651EED1A0E759936A48F264C58E1B8CB91E730CCC597475114E12A2B7B0",
+  "action_taken": "Rechecked T11 input hashes and recorded new coordination state. No T11 tests or benchmarks executed; no T11 source edits.",
+  "next_gate": "Obtain explicit T20 assignment for T11 100k benchmark after T02 grant and owner gates. Do not treat free capacity or UNKNOWN slot36 as T11 release."
+}

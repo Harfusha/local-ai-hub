@@ -1,0 +1,106 @@
+{
+  "schema": "t11-root-acceptance-diagnosis-v1",
+  "captured_date": "2026-10-05",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476"
+  },
+  "shared_root": {
+    "root": "C:\\Users\\Adam\\.local-ai-hub",
+    "head_at_acceptance_run": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+    "written_or_tested_by_this_task": false,
+    "root_acceptance_command": "python -B -m pytest -q --tb=short -p no:cacheprovider -k 'not retrieval_latency_and_peak_memory_baseline and not t11_ingestion_batch_benchmark' tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py",
+    "root_acceptance_result": "37 failed, 119 passed, 1 skipped, 2 deselected in 35.80s; supplied by root owner, not rerun",
+    "root_vs_candidate_sha256": {
+      "src/local_ai_hub/embeddings.py": {
+        "root": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170",
+        "candidate": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170"
+      },
+      "src/local_ai_hub/rag.py": {
+        "root": "6FC7BA447CD7D755697FA73002BB42D3197664ACC07BE0FAF2473B20E302E6D1",
+        "candidate": "C0D562897DA5B080157538A9BFAC9683906EB12D19ABF6963DB9BD2B0D886BA9"
+      },
+      "tests/test_rag_fragment_cache.py": {
+        "root": "1F5F92060DDCCAF5E9FDBB48E52197F2E5CFCF970CB3745F2817F2E5E228BBA2",
+        "candidate": "A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002"
+      },
+      "tests/test_rag_hybrid.py": {
+        "root": "038A15AA053CC75DEC69B8216D754508C75B9D1B721ACE5159D9963E9FD3737E",
+        "candidate": "8396D5A114D14BAEBFEAF9022E6C569D3B475DEA8D9075794195DB13DFFDC75E"
+      },
+      "tests/test_rag_quality_contract.py": {
+        "root": "CCDC179B6AC957566668AC6694063DB2A1C5945099168C364888AD781CF9CC7B",
+        "candidate": "EF90FC86269D89FFDB6E5CC508BF54917D4A6ED2243447E85DE372B94D5CF3E9"
+      },
+      "tests/test_t11_rag_ingestion_contract.py": {
+        "root": "9710F1846DE6D35CF9D8045EC8D7DF3663488FC94C479AE41BAF1A20DF614294",
+        "candidate": "A5C2C6B7BD5C6E1C7383DEAFDB6070FCC212DF335DEFDA9C21ED3B9398CAC7B8"
+      },
+      "tests/test_t11_rag_seed_integrity.py": {
+        "root": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02",
+        "candidate": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02"
+      }
+    }
+  },
+  "diagnosis": {
+    "classification": "T11 integration packet incomplete plus stale root dirty test; not a candidate regression",
+    "evidence": [
+      "Current T11 source patch manifest scopes rag.py to _index_locked changed_indices, atomic FTS and workspace embedding-space metadata; it does not contain candidate index_fingerprint or _embedding_space_id changes.",
+      "Root rag.py still hashes service_instance=id(self.services) in embedding identity and its index_fingerprint omits embedding device, digest, revision, dimension and normalization; candidate removes the per-instance identity and includes these configured dimensions.",
+      "Root test_reused_chunks_keep_original_space_when_embedder_falls_back defines _FallbackServices locally but invokes _ChangingSpaceServices; that name exists only as a local class in another root test. Candidate has the corrected changed-space test with its helper in the same function.",
+      "Root and candidate hashes differ on rag.py and five T11 test files; embeddings.py and seed-integrity test match. Root test patch was added-only and left the stale root test present."
+    ],
+    "unresolved_root_failure_groups": [
+      "pending rebuild and publish-lock retry",
+      "vector batch and cache behavior",
+      "explicit MCP ingestion fields",
+      "all remaining failures among the 37 are not individually bisected by this diagnosis"
+    ],
+    "external_scope": "The separately reported missing local_ai_hub.project_config is T21-owned and excluded from this T11 patch. T14 services.py/retrieval.py are excluded."
+  },
+  "correction_packet": {
+    "path": "t11-root-acceptance-correction-20261005.patch",
+    "sha256": "F45ABB77B47DB84C1412BB89BCC9CF08B24C3562FF47228B0EA71F3919199984",
+    "bytes": 5701,
+    "target_paths": [
+      "src/local_ai_hub/rag.py",
+      "tests/test_rag_fragment_cache.py"
+    ],
+    "root_preimage_sha256": {
+      "src/local_ai_hub/rag.py": "6FC7BA447CD7D755697FA73002BB42D3197664ACC07BE0FAF2473B20E302E6D1",
+      "tests/test_rag_fragment_cache.py": "1F5F92060DDCCAF5E9FDBB48E52197F2E5CFCF970CB3745F2817F2E5E228BBA2"
+    },
+    "changes": [
+      "Add configured embedding device/digest/revision/dimension/normalization to index fingerprint.",
+      "Derive stable embedding identity from successful result metadata; omit service-instance identity.",
+      "Change the stale root fallback test to instantiate its locally defined _FallbackServices fixture."
+    ],
+    "root_apply_check": "PASS with git apply --check --recount using absolute packet path; patch not applied"
+  },
+  "candidate_focused_validation": [
+    {
+      "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_fragment_cache.py::test_configured_embedding_space_id_is_stable_across_store_instances tests/test_rag_fragment_cache.py::test_index_fingerprint_tracks_embedding_space_configuration tests/test_rag_hybrid.py::test_search_reports_pending_rebuild_for_partial_embedding_space tests/test_rag_hybrid.py::test_warm_search_skips_embedding_space_write_lock tests/test_rag_hybrid.py::test_rag_index_paths_step_retries_publish_lock_without_reembedding tests/test_t11_rag_ingestion_contract.py::test_document_ingest_embeds_title_metadata_and_content",
+      "result": "6 passed in 2.71s"
+    },
+    {
+      "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_fragment_cache.py::test_changed_embedding_space_reembeds_reused_chunks_without_mixing_spaces",
+      "result": "1 passed in 0.70s"
+    },
+    {
+      "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_hybrid.py::test_search_cache_key_tracks_runtime_embedding_space tests/test_rag_hybrid.py::test_public_search_cache_tracks_runtime_embedding_dimension tests/test_rag_fragment_cache.py::test_index_step_keeps_unpublished_paths_pending tests/test_embedding_cache.py::test_embedding_cache_key_changes_with_digest_and_revision tests/test_embedding_cache.py::test_embed_reuses_cached_vectors_and_preserves_batch_order",
+      "result": "5 passed in 0.59s"
+    }
+  ],
+  "preserved_command_errors": [
+    "One initial candidate selector spelling used test_index_paths_step_retries_publish_lock_without_reembedding; pytest reported not found and ran no tests. Correct selector test_rag_index_paths_step_retries_publish_lock_without_reembedding then passed in the 6-test run.",
+    "First apply-check used a packet path relative to the candidate while git -C targeted root and failed to open the patch; corrected absolute-path apply-check passed."
+  ],
+  "status": {
+    "root_edits": false,
+    "root_tests": false,
+    "patch_applied": false,
+    "T21_project_config_touched": false,
+    "T14_paths_touched": false,
+    "completion": "PARTIAL; targeted T11 failures traced to missing packet hunks and stale root dirty test; remaining root failure groups need owner-controlled follow-up after root reconciliation"
+  }
+}

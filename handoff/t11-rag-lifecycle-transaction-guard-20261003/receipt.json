@@ -1,0 +1,33 @@
+{
+  "schema": "t11-rag-lifecycle-transaction-patch-v1",
+  "date": "2026-10-03",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "root_preimage_sha256": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27",
+  "file": "src/local_ai_hub/rag.py",
+  "method_scope": "RAGStore._index_locked only",
+  "patch": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-rag-lifecycle-transaction-guard-20261003\\t11-rag-lifecycle-transaction-root-current.patch",
+  "patch_sha256": "83D0BBFFAA5DD298C4813130E9E9B38BFB09C9E7D3B7B2B338DF2A59DAB72911",
+  "root_apply_check": "PASS",
+  "patch_applied": false,
+  "scope": "changed_indices lifecycle; optional FTS existence guard; atomic FTS delete+insert and workspace embedding-space metadata with chunks/files/generation. No embeddings.py/reranker.py hunks.",
+  "static_checks": {
+    "only_index_locked_method_changed": true,
+    "changed_indices_is_guard_and_batch_source": true,
+    "fts_delete_and_insert_are_transaction_guarded": true,
+    "embedding_space_meta_same_transaction": true,
+    "index_paths_step_already_has_ftsed_rows": true
+  },
+  "test_candidate_selectors": {
+    "tests/test_rag_hybrid.py": {
+      "test_rag_index_retries_transient_publish_lock": true
+    },
+    "tests/test_t11_rag_ingestion_contract.py": {
+      "test_incremental_index_fts_write_failure_keeps_previous_snapshot": true
+    }
+  },
+  "tests_run": false,
+  "performance_run": false,
+  "validation_gate": "T01 slot required",
+  "live_gpu_or_model_benchmark": false
+}

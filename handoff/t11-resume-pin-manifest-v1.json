@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476"
+  },
+  "scope": "T11 resumed acceptance; T20 root and T21 project_config core untouched",
+  "source_and_test_sha256": {
+    "src/local_ai_hub/rag.py": "db181093f53f0d6666a890413bfea5f52359890ce8236def0160df744cf0c6ff",
+    "tests/test_t11_project_policy_consumers.py": "e4ea70d1036a5109b80e390b255f4106664e0238ab7067e59322760997d0c4f5",
+    "tests/test_rag_quality_contract.py": "81c17571143a4256cf9d9a9017137b82cfd564cd4f45b21e48e5f3fbecba7a3c",
+    "src/local_ai_hub/project_config.py": "f51cd2bd05ac993139c388ca553ff816c4b39d572182afd433e3fa7430a766d5"
+  },
+  "artifacts": {
+    "handoff/t11-resume-acceptance-v1.patch": "a5f885cc87927b44e45fcced8d780417de74df7f042728e6aa5fe0c0db85d804",
+    "handoff/t11-resume-rag-16k-perf-receipt-20261001.json": "65138497c78525fb9425f607593902d49ad09f9c8bc22f7dc236d26087b01a37",
+    "handoff/t11-resume-inventory-20261001.json": "f729ac29efd5fac04b28dc773424afc4aeb3e6833572040e63a6c2a87102da1e",
+    "handoff/t11-resume-acceptance-report-20261001.md": "6d2b913aa2cc28731d1bcbf621e8331441a41e6c2a0ae67869d54337b0f34b51"
+  },
+  "receipts": {
+    "focused_suite": "175 passed, 3 skipped in 33.02s",
+    "new_retry_regressions": "3 passed in 1.54s",
+    "windows_path_consumer": "1 passed in 0.33s",
+    "golden_quality": "passed in focused suite; Recall@10=1.0; nDCG@10=1.0",
+    "current_perf": "16,384 x 384 float32 CPU, seed 41; batch 2048 p95 56.527ms, peak traced 9.975MiB; receipt fingerprinted"
+  },
+  "remaining_limits": [
+    "current-source 100k performance not rerun",
+    "live Ollama/reranker not rerun",
+    "deployment/installed instance not verified"
+  ]
+}

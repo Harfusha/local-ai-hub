@@ -1,0 +1,653 @@
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -8,6 +8,7 @@
+ import json
+ import math
+ import os
++import errno
+ import sqlite3
+ import sys
+ import threading
+@@ -30,6 +31,13 @@
+ 
+ _MAX_RERANK_CANDIDATES = 512
+ _INDEX_EMBED_BATCH_SIZE = 64
++
++
++class ProjectPolicySyncError(RuntimeError):
++    def __init__(self, message: str, *, retryable: bool) -> None:
++        super().__init__(message)
++        self.retryable = retryable
++
+ 
+ 
+ def _reverse_text_order(value: str) -> tuple[int, ...]:
+@@ -630,6 +638,23 @@
+         return "workspace_index_generation:" + stable_hash({"tenant": scope_key, "workspace": workspace})
+ 
+     @staticmethod
++    def _project_root_identity(root: str | Path) -> str:
++        canonical = canonical_root(str(Path(root).resolve(strict=False)))
++        return stable_hash({"root": canonical})
++
++    @staticmethod
++    def _workspace_root_identity_key(scope_key: str, workspace: str) -> str:
++        return "workspace_root_identity:" + stable_hash({"tenant": scope_key, "workspace": workspace})
++
++    @staticmethod
++    def _workspace_project_config_key(
++        scope_key: str, workspace: str, root_identity: str
++    ) -> str:
++        return "workspace_project_config:" + stable_hash({
++            "tenant": scope_key, "workspace": workspace, "root": root_identity,
++        })
++
++    @staticmethod
+     def _workspace_read_uncertainty_key(scope_key: str, workspace: str) -> str:
+         return "workspace_read_uncertainty:" + stable_hash({"tenant": scope_key, "workspace": workspace})
+ 
+@@ -688,6 +713,167 @@
+         retry_busy(
+             publish,
+             retries=self._sqlite_write_retries,
++            base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
++        )
++
++    def _sync_workspace_project_policy_identity(
++        self,
++        root: str | Path,
++        scope_key: str,
++        workspace: str,
++        project_context: Any | None,
++    ) -> int:
++        """Bind policy state to one root and prune only paths conclusively rejected."""
++        digest = getattr(project_context, "config_digest", None)
++        if not isinstance(digest, str) or not digest:
++            return 0
++        root_path = Path(root).resolve(strict=False)
++        root_identity = self._project_root_identity(root_path)
++        context_root = getattr(project_context, "root", None)
++        if context_root is not None and self._project_root_identity(context_root) != root_identity:
++            raise ProjectPolicySyncError(
++                "project policy context belongs to a different root",
++                retryable=False,
++            )
++        key = self._workspace_project_config_key(scope_key, workspace, root_identity)
++        root_key = self._workspace_root_identity_key(scope_key, workspace)
++        with closing(self._connect()) as con:
++            bound_root = con.execute("SELECT value FROM rag_meta WHERE key=?", (root_key,)).fetchone()
++            if bound_root is not None and str(bound_root[0]) != root_identity:
++                raise ProjectPolicySyncError(
++                    "RAG workspace is already bound to a different project root",
++                    retryable=False,
++                )
++            previous = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
++            previous_digest = str(previous[0]) if previous is not None else None
++            if previous_digest == digest and bound_root is not None:
++                return 0
++            rows = con.execute(
++                "SELECT path FROM files WHERE tenant=? AND workspace=?",
++                (scope_key, workspace),
++            ).fetchall()
++
++        cfg = self.config.get("rag", {})
++        extensions = {str(ext).lower() for ext in cfg.get("extensions", [])}
++        ignored = {str(name).lower() for name in cfg.get("ignore_dirs", [])}
++        max_bytes = int(cfg.get("max_file_bytes", 2_000_000))
++        settings = project_context.settings
++        if settings.max_file_size_bytes is not None:
++            max_bytes = min(max_bytes, int(settings.max_file_size_bytes))
++        rag_enabled = self._project_phase_allowed(project_context, "rag")
++        rejected: list[str] = []
++        uncertain: set[str] = set()
++        for row in rows:
++            rel = str(row[0]).replace("\\", "/")
++            try:
++                candidate = (root_path / rel).resolve(strict=False)
++                candidate.relative_to(root_path)
++                stat = candidate.stat()
++                if not candidate.is_file():
++                    rejected.append(rel)
++                    continue
++                api = self.project_config_api()
++                kind = api.custom_extension_kind(candidate.name, settings) if api is not None else None
++                if (
++                    not rag_enabled
++                    or any(part.lower() in ignored for part in Path(rel).parts[:-1])
++                    or (extensions and candidate.suffix.lower() not in extensions and kind != "text")
++                    or int(stat.st_size) > max_bytes
++                ):
++                    rejected.append(rel)
++                    continue
++                allowed, kind = self._project_path_decision(
++                    root_path, candidate, project_context, phase="rag",
++                    size_bytes=int(stat.st_size),
++                )
++                if not allowed or kind == "binary":
++                    rejected.append(rel)
++            except ValueError:
++                rejected.append(rel)
++                continue
++            except OSError as exc:
++                if exc.errno in {errno.ENOENT, errno.ENOTDIR}:
++                    rejected.append(rel)
++                    continue
++                uncertain.add(rel)
++            except RuntimeError:
++                uncertain.add(rel)
++
++        if uncertain:
++            self._publish_workspace_read_uncertainty(scope_key, workspace, uncertain)
++            raise ProjectPolicySyncError(
++                "project policy scan could not verify indexed paths; retry required",
++                retryable=True,
++            )
++
++        def verify_current_context() -> None:
++            current_context = self.project_context(root_path)
++            current_digest = getattr(current_context, "config_digest", None)
++            current_root = getattr(current_context, "root", None)
++            if (
++                current_digest != digest
++                or (current_root is not None and self._project_root_identity(current_root) != root_identity)
++            ):
++                raise ProjectPolicySyncError(
++                    "project policy changed during RAG policy synchronization",
++                    retryable=True,
++                )
++
++        def persist_identity() -> int:
++            with closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                current_root = con.execute(
++                    "SELECT value FROM rag_meta WHERE key=?", (root_key,)
++                ).fetchone()
++                if current_root is not None and str(current_root[0]) != root_identity:
++                    con.rollback()
++                    raise ProjectPolicySyncError(
++                        "RAG workspace was concurrently bound to a different project root",
++                        retryable=False,
++                    )
++                current = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
++                current_digest = str(current[0]) if current is not None else None
++                if current_digest == digest and current_root is not None:
++                    con.rollback()
++                    return 0
++                if current_digest != previous_digest:
++                    con.rollback()
++                    raise ProjectPolicySyncError(
++                        "project policy identity changed during RAG policy synchronization",
++                        retryable=True,
++                    )
++                verify_current_context()
++                if rejected:
++                    pairs = [(scope_key, workspace, rel) for rel in sorted(set(rejected))]
++                    con.executemany(
++                        "DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", pairs
++                    )
++                    con.executemany(
++                        "DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", pairs
++                    )
++                    fts_exists = con.execute(
++                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
++                    ).fetchone() is not None
++                    if fts_exists:
++                        con.executemany(
++                            "DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", pairs
++                        )
++                    self._update_workspace_read_uncertainty(
++                        con, scope_key, workspace, clear_paths=set(rejected), bump_generation=False
++                    )
++                con.execute(
++                    "INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)",
++                    (root_key, root_identity),
++                )
++                con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (key, digest))
++                self._bump_workspace_index_generation(con, scope_key, workspace)
++                verify_current_context()
++                con.commit()
++            return len(set(rejected))
++
++        return retry_busy(
++            persist_identity,
++            retries=5,
+             base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
+         )
+ 
+@@ -878,7 +1064,10 @@
+                 self._index_flights.pop(flight_key, None)
+         return result
+ 
+-    def _index_locked(self, root: str, tenant: str, workspace: str | None = None) -> dict[str, Any]:
++    def _index_locked(
++        self, root: str, tenant: str, workspace: str | None = None, *,
++        _space_override: str | None = None, _identity_retry: bool = False,
++    ) -> dict[str, Any]:
+         try:
+             root_path = Path(root).resolve()
+             root_available = root_path.exists() and root_path.is_dir()
+@@ -902,7 +1091,8 @@
+             }
+         workspace = workspace or self.workspace_id(str(root_path))
+         scope_key = self._scope_key(tenant)
+-        embedding_space = self._embedding_space_id()
++        self._sync_workspace_project_policy_identity(root_path, scope_key, workspace, project_context)
++        embedding_space = _space_override or self._embedding_space_id()
+ 
+         with closing(self._connect()) as con:
+             uncertain_retry_paths = self._workspace_read_uncertain_paths(con, scope_key, workspace)
+@@ -1091,7 +1281,15 @@
+                 if observed_embedding_space is not None and observed_embedding_space != batch_space:
+                     return {"success": False, "error": "embedding identity changed during atomic index build", "retryable": True}
+                 observed_embedding_space = batch_space
+-                embedding_space = batch_space
++                if batch_space != embedding_space:
++                    if _identity_retry:
++                        return {"success": False, "error": "embedding identity changed during atomic index retry", "retryable": True}
++                    if old_chunk_rows or reused_chunks:
++                        return self._index_locked(
++                            str(root_path), tenant, workspace,
++                            _space_override=batch_space, _identity_retry=True,
++                        )
++                    embedding_space = batch_space
+                 for idx, vector in zip(batch_indices, vectors):
+                     embedding = _serialize_embedding(vector)
+                     if embedding is None:
+@@ -1186,6 +1384,12 @@
+         scope_key = self._scope_key(tenant)
+         current = set(current_paths)
+         with self._get_workspace_lock(workspace), closing(self._connect()) as con:
++            policy_removed = 0
++            if Path(root).is_dir():
++                policy_context = self.project_context(root)
++                policy_removed = self._sync_workspace_project_policy_identity(
++                    root, scope_key, workspace, policy_context
++                )
+             existing = {str(r[0]) for r in con.execute(
+                 "SELECT path FROM files WHERE tenant=? AND workspace=?", (scope_key, workspace)
+             ).fetchall()}
+@@ -1197,8 +1401,10 @@
+                     con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
+                 except Exception:
+                     pass
++            if deleted:
++                self._bump_workspace_index_generation(con, scope_key, workspace)
+             con.commit()
+-        return len(deleted)
++        return policy_removed + len(deleted)
+ 
+     def remove_paths(self, tenant: str, workspace: str, paths: list[str]) -> int:
+         """Remove explicitly known paths from a semantic workspace.
+@@ -1236,6 +1442,7 @@
+         should_yield: Any | None = None,
+         content_overrides: dict[str, str] | None = None,
+         deleted_paths: list[str] | None = None,
++        *, _space_override: str | None = None, _identity_retry: bool = False,
+     ) -> dict[str, Any]:
+         """Index only explicitly dirty paths supplied by Local AI preprocessing.
+ 
+@@ -1252,11 +1459,17 @@
+                 "embedded_chunks": 0, "reused_chunks": 0,
+             }
+         scope_key = self._scope_key(tenant)
+-        embedding_space = self._embedding_space_id()
++        embedding_space = _space_override or self._embedding_space_id()
+         processed_paths: list[str] = []
+         embedded_chunks = 0
+         reused_chunks = 0
+         with self._get_workspace_lock(workspace):
++            try:
++                self._sync_workspace_project_policy_identity(
++                    root_path, scope_key, workspace, project_context
++                )
++            except ProjectPolicySyncError as exc:
++                return {"success": False, "error": str(exc), "retryable": exc.retryable}
+             with closing(self._connect()) as con:
+                 stored_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
+                 legacy_rows = (
+@@ -1519,7 +1732,17 @@
+                         return {"success": False, "error": "embedding identity changed during RAG path step", "retryable": True}
+                     if batch_embedding_space is None:
+                         batch_embedding_space = current_space
+-                        embedding_space = batch_embedding_space
++                        if current_space != embedding_space:
++                            if _identity_retry and reused_chunks:
++                                return {"success": False, "error": "embedding identity changed during RAG path retry", "retryable": True}
++                            if reused_chunks:
++                                return self.index_paths_step(
++                                    str(root_path), tenant, workspace, paths,
++                                    should_yield=should_yield, content_overrides=content_overrides,
++                                    deleted_paths=deleted_paths, _space_override=current_space,
++                                    _identity_retry=True,
++                                )
++                            embedding_space = batch_embedding_space
+                         embedding_space_resolved = True
+                     for (f_idx, rec_idx), vector in zip(batch_pointers, vectors):
+                         embedding = _serialize_embedding(vector)
+@@ -1632,6 +1855,12 @@
+         workspace = workspace or self.workspace_id(str(root_path))
+         with self._get_workspace_lock(workspace):
+             scope_key = self._scope_key(tenant)
++            try:
++                self._sync_workspace_project_policy_identity(
++                    root_path, scope_key, workspace, project_context
++                )
++            except ProjectPolicySyncError as exc:
++                return {"success": False, "error": str(exc), "retryable": exc.retryable}
+             embedding_space = self._embedding_space_id()
+             if callable(should_yield) and should_yield():
+                 return {"success": True, "workspace": workspace, "preempted": True, "done": False, "processed_files": 0}
+@@ -1685,7 +1914,14 @@
+             )
+             if not staged.get("success"):
+                 return staged
+-            remaining = max(0, len(pending) - len(selected))
++            completed_paths = {
++                str(path).replace("\\\\", "/") for path in staged.get("processed_paths", [])
++            }
++            completed_paths.update(
++                str(path).replace("\\\\", "/") for path in staged.get("deleted_paths", [])
++            )
++            remaining_paths = set(pending) - completed_paths
++            remaining = len(remaining_paths)
+             return {
+                 "success": True, "workspace": workspace,
+                 "preempted": bool(staged.get("preempted", False)),
+@@ -2139,6 +2375,9 @@
+             }
+         query_vec = query_result["embeddings"][0]
+         embedding_space = self._embedding_space_id(query_result)
++        embedding_space_resolved = self._embedding_space_is_resolved(query_result)
++        stored_embedding_space: str | None = None
++        stored_embedding_space_read = False
+         fallbacks: list[str] = []
+         if uncertain_paths:
+             fallbacks.append("source_read_uncertain")
+@@ -2289,6 +2528,23 @@
+                 "SELECT 1 FROM chunks WHERE tenant=? AND workspace=? AND COALESCE(embedding_space,'')<>? LIMIT 1",
+                 (scope_key, workspace, embedding_space),
+             ).fetchone() is not None
++            if embedding_space_resolved:
++                try:
++                    stored_embedding_space = self._stored_workspace_embedding_space(con, scope_key, workspace)
++                    stored_embedding_space_read = True
++                except sqlite3.Error:
++                    pass
++
++        if embedding_space_resolved:
++            try:
++                if not stored_embedding_space_read or stored_embedding_space != embedding_space:
++                    with closing(self._connect()) as con:
++                        con.execute("BEGIN IMMEDIATE")
++                        if self._stored_workspace_embedding_space(con, scope_key, workspace) != embedding_space:
++                            self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
++                        con.commit()
++            except sqlite3.Error:
++                fallbacks.append("embedding_space_metadata")
+ 
+         if has_stale_embedding_rows:
+             fallbacks.append("embedding_space_rebuild_pending")
+diff --git a/tests/test_rag_hybrid.py b/tests/test_rag_hybrid.py
+--- a/tests/test_rag_hybrid.py
++++ b/tests/test_rag_hybrid.py
+@@ -1,6 +1,10 @@
+ from __future__ import annotations
+ 
+ import sqlite3
++import errno
++import threading
++
++import pytest
+ import json
+ import struct
+ from contextlib import closing
+@@ -560,11 +564,247 @@
+ 
+     assert removed == 0
+     assert state["begins"] == 2
+-    key = store._workspace_project_config_key(scope_key, workspace)
++    key = store._workspace_project_config_key(
++        scope_key, workspace, store._project_root_identity(root)
++    )
+     with closing(original_connect()) as con:
+         row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
+     assert row is not None
+     assert row[0] == context.config_digest
++
++
++def test_project_policy_identity_does_not_commit_stale_concurrent_snapshot(
++    tmp_path, monkeypatch
++):
++    store = _store(tmp_path)
++    root = tmp_path / "policy-race-project"
++    vendor = root / "vendor"
++    vendor.mkdir(parents=True)
++    source = vendor / "old.py"
++    source.write_text("old indexed source\n", encoding="utf-8")
++    config_path = root / ".local-ai.toml"
++    config_path.write_text('exclude_paths = ["initial/**"]\n', encoding="utf-8")
++    workspace = "policy-race-workspace"
++    scope = store._scope_key("tenant")
++
++    initial = store.project_context(root)
++    assert initial is not None
++    store._sync_workspace_project_policy_identity(root, scope, workspace, initial)
++    stat = source.stat()
++    with closing(store._connect()) as con:
++        con.execute(
++            "INSERT INTO files VALUES(?,?,?,?,?,?)",
++            (scope, workspace, "vendor/old.py", stat.st_mtime_ns, stat.st_size, "old-hash"),
++        )
++        con.execute(
++            "INSERT INTO chunks VALUES(?,?,?,?,?,?,?,?)",
++            (scope, workspace, "vendor/old.py", 0, "old-hash", "old indexed source", "[]", "space"),
++        )
++        con.commit()
++
++    config_path.write_text('exclude_paths = ["other/**"]\n', encoding="utf-8")
++    stale_context = store.project_context(root)
++    assert stale_context is not None
++    config_path.write_text('exclude_paths = ["vendor/**"]\n', encoding="utf-8")
++    current_context = store.project_context(root)
++    assert current_context is not None
++
++    entered_scan = threading.Event()
++    release_scan = threading.Event()
++    original_path_decision = store._project_path_decision
++
++    def pause_stale_scan(scan_root, path, context, *, phase, size_bytes):
++        if context.config_digest == stale_context.config_digest:
++            entered_scan.set()
++            assert release_scan.wait(3)
++        return original_path_decision(
++            scan_root, path, context, phase=phase, size_bytes=size_bytes
++        )
++
++    monkeypatch.setattr(store, "_project_path_decision", pause_stale_scan)
++    outcome = {}
++
++    def run_stale_sync():
++        try:
++            outcome["value"] = store._sync_workspace_project_policy_identity(
++                root, scope, workspace, stale_context
++            )
++        except Exception as exc:  # captured for assertion in the test thread
++            outcome["error"] = exc
++
++    worker = threading.Thread(target=run_stale_sync, daemon=True)
++    worker.start()
++    assert entered_scan.wait(3)
++    removed = store._sync_workspace_project_policy_identity(
++        root, scope, workspace, current_context
++    )
++    release_scan.set()
++    worker.join(3)
++
++    assert not worker.is_alive()
++    assert removed == 1
++    assert isinstance(outcome.get("error"), rag_module.ProjectPolicySyncError)
++    assert outcome["error"].retryable is True
++    key = store._workspace_project_config_key(
++        scope, workspace, store._project_root_identity(root)
++    )
++    with closing(store._connect()) as con:
++        digest = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()[0]
++        remaining = con.execute(
++            "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=?",
++            (scope, workspace),
++        ).fetchone()[0]
++    assert digest == current_context.config_digest
++    assert remaining == 0
++
++
++@pytest.mark.parametrize("error_code", [errno.EACCES, errno.EIO])
++def test_project_policy_identity_does_not_prune_on_transient_stat_error(
++    tmp_path, monkeypatch, error_code
++):
++    store = _store(tmp_path)
++    root = tmp_path / f"policy-stat-{error_code}"
++    root.mkdir()
++    source = root / "denied.py"
++    source.write_text("retained source\n", encoding="utf-8")
++    config_path = root / ".local-ai.toml"
++    config_path.write_text('exclude_paths = ["initial/**"]\n', encoding="utf-8")
++    workspace = f"policy-stat-workspace-{error_code}"
++    scope = store._scope_key("tenant")
++    old_context = store.project_context(root)
++    assert old_context is not None
++    store._sync_workspace_project_policy_identity(root, scope, workspace, old_context)
++    stat = source.stat()
++    with closing(store._connect()) as con:
++        con.execute(
++            "INSERT INTO files VALUES(?,?,?,?,?,?)",
++            (scope, workspace, "denied.py", stat.st_mtime_ns, stat.st_size, "file-hash"),
++        )
++        con.execute(
++            "INSERT INTO chunks VALUES(?,?,?,?,?,?,?,?)",
++            (scope, workspace, "denied.py", 0, "file-hash", "retained source", "[]", "space"),
++        )
++        con.commit()
++    config_path.write_text('exclude_paths = ["other/**"]\n', encoding="utf-8")
++    new_context = store.project_context(root)
++    assert new_context is not None
++
++    original_stat = Path.stat
++
++    def fail_indexed_path(path, *args, **kwargs):
++        if path == source:
++            raise OSError(error_code, "transient indexed-path stat failure")
++        return original_stat(path, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "stat", fail_indexed_path)
++    with pytest.raises(rag_module.ProjectPolicySyncError) as error:
++        store._sync_workspace_project_policy_identity(root, scope, workspace, new_context)
++
++    assert error.value.retryable is True
++    key = store._workspace_project_config_key(
++        scope, workspace, store._project_root_identity(root)
++    )
++    uncertain_key = store._workspace_read_uncertainty_key(scope, workspace)
++    with closing(store._connect()) as con:
++        digest = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()[0]
++        file_count = con.execute(
++            "SELECT COUNT(*) FROM files WHERE tenant=? AND workspace=?",
++            (scope, workspace),
++        ).fetchone()[0]
++        chunk_count = con.execute(
++            "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=?",
++            (scope, workspace),
++        ).fetchone()[0]
++        uncertain = con.execute(
++            "SELECT value FROM rag_meta WHERE key=?", (uncertain_key,)
++        ).fetchone()[0]
++    assert digest == old_context.config_digest
++    assert file_count == chunk_count == 1
++    assert "denied.py" in uncertain
++
++
++def test_project_policy_identity_prunes_confirmed_missing_path(tmp_path):
++    store = _store(tmp_path)
++    root = tmp_path / "policy-missing-project"
++    root.mkdir()
++    config_path = root / ".local-ai.toml"
++    config_path.write_text('exclude_paths = ["initial/**"]\n', encoding="utf-8")
++    workspace = "policy-missing-workspace"
++    scope = store._scope_key("tenant")
++    old_context = store.project_context(root)
++    assert old_context is not None
++    store._sync_workspace_project_policy_identity(root, scope, workspace, old_context)
++    with closing(store._connect()) as con:
++        con.execute(
++            "INSERT INTO files VALUES(?,?,?,?,?,?)",
++            (scope, workspace, "missing.py", 1, 1, "missing-hash"),
++        )
++        con.execute(
++            "INSERT INTO chunks VALUES(?,?,?,?,?,?,?,?)",
++            (scope, workspace, "missing.py", 0, "missing-hash", "gone", "[]", "space"),
++        )
++        con.commit()
++    config_path.write_text('exclude_paths = ["other/**"]\n', encoding="utf-8")
++    new_context = store.project_context(root)
++    assert new_context is not None
++
++    assert store._sync_workspace_project_policy_identity(
++        root, scope, workspace, new_context
++    ) == 1
++    key = store._workspace_project_config_key(
++        scope, workspace, store._project_root_identity(root)
++    )
++    with closing(store._connect()) as con:
++        digest = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()[0]
++        remaining = con.execute(
++            "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=?",
++            (scope, workspace),
++        ).fetchone()[0]
++    assert digest == new_context.config_digest
++    assert remaining == 0
++
++
++def test_project_policy_identity_rejects_workspace_bound_to_another_root(tmp_path):
++    store = _store(tmp_path)
++    root_a = tmp_path / "root-a"
++    root_b = tmp_path / "root-b"
++    root_a.mkdir()
++    root_b.mkdir()
++    source = root_a / "from-a.py"
++    source.write_text("root a source\n", encoding="utf-8")
++    workspace = "shared-explicit-workspace"
++    scope = store._scope_key("tenant")
++    context_a = store.project_context(root_a)
++    context_b = store.project_context(root_b)
++    assert context_a is not None and context_b is not None
++    store._sync_workspace_project_policy_identity(root_a, scope, workspace, context_a)
++    stat = source.stat()
++    with closing(store._connect()) as con:
++        con.execute(
++            "INSERT INTO files VALUES(?,?,?,?,?,?)",
++            (scope, workspace, "from-a.py", stat.st_mtime_ns, stat.st_size, "root-a-hash"),
++        )
++        con.execute(
++            "INSERT INTO chunks VALUES(?,?,?,?,?,?,?,?)",
++            (scope, workspace, "from-a.py", 0, "root-a-hash", "root a source", "[]", "space"),
++        )
++        con.commit()
++
++    with pytest.raises(rag_module.ProjectPolicySyncError) as error:
++        store._sync_workspace_project_policy_identity(root_b, scope, workspace, context_b)
++
++    assert error.value.retryable is False
++    root_key = store._workspace_root_identity_key(scope, workspace)
++    with closing(store._connect()) as con:
++        bound_root = con.execute(
++            "SELECT value FROM rag_meta WHERE key=?", (root_key,)
++        ).fetchone()[0]
++        paths = con.execute(
++            "SELECT path FROM files WHERE tenant=? AND workspace=?",
++            (scope, workspace),
++        ).fetchall()
++    assert bound_root == store._project_root_identity(root_a)
++    assert [row[0] for row in paths] == ["from-a.py"]
+ 
+ 
+ def test_index_paths_step_retries_uncertain_only_publish_lock(tmp_path, monkeypatch):

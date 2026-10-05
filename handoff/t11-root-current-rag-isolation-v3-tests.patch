@@ -1,0 +1,475 @@
+--- a/tests/test_rag_hybrid.py
++++ b/tests/test_rag_hybrid.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import sqlite3
++from contextlib import closing
+ 
+ from local_ai_hub.rag import RAGStore, _fragment_hash
+ 
+@@ -131,3 +132,212 @@
+     assert result["success"] is True
+     assert state["begins"] == 2
+     assert len(store.services.calls) == 1
++
++
++
++def test_public_search_cache_isolated_by_tenant(tmp_path):
++    store = _store(tmp_path)
++    store.scope = "tenant"
++    store.services.space_id = "shared-runtime-space"
++    store.services.embed = lambda *_args, **_kwargs: {
++        "success": True,
++        "embedding_space_id": "shared-runtime-space",
++        "embeddings": [[1.0, 0.0]],
++    }
++    workspace = "same-workspace"
++    with closing(store._connect()) as con:
++        con.executemany(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
++            [
++                ("tenant-a", workspace, "same.py", 0, "same-metadata", "tenant a", "[1.0,0.0]", "shared-runtime-space"),
++                ("tenant-b", workspace, "same.py", 0, "same-metadata", "tenant b", "[1.0,0.0]", "shared-runtime-space"),
++            ],
++        )
++        con.commit()
++    first = store.search("same query", "tenant-a", workspace, use_reranker=False)
++    second = store.search("same query", "tenant-b", workspace, use_reranker=False)
++    assert [row["text"] for row in first["results"]] == ["tenant a"]
++    assert [row["text"] for row in second["results"]] == ["tenant b"]
++    assert second["search_cache"]["hit"] is False
++
++
++def test_public_search_cache_tracks_runtime_embedding_dimension(tmp_path):
++    store = _store(tmp_path)
++    store.services.space_id = "same-runtime-space"
++
++    class _RuntimeDimension:
++        _active_embedding_dimension = 2
++
++    runtime = _RuntimeDimension()
++    store.services.embeddings = runtime
++    calls = []
++    def uncached(query, tenant, workspace, top_k=8, use_reranker=True, priority=3, scope_path=None):
++        calls.append(runtime._active_embedding_dimension)
++        return {"success": True, "results": [{"path": f"dimension-{runtime._active_embedding_dimension}"}]}
++    store._search_uncached = uncached
++    first = store.search("same query", "tenant", "same-workspace", use_reranker=False)
++    runtime._active_embedding_dimension = 3
++    second = store.search("same query", "tenant", "same-workspace", use_reranker=False)
++    assert first["results"][0]["path"] == "dimension-2"
++    assert second["results"][0]["path"] == "dimension-3"
++    assert second["search_cache"]["hit"] is False
++    assert calls == [2, 3]
++
++
++def test_public_search_rekeys_when_runtime_embedding_identity_changes_during_query(tmp_path):
++    store = _store(tmp_path)
++    store.services.space_id = "space-before"
++
++    class _RuntimeDimension:
++        _active_embedding_dimension = 2
++
++    runtime = _RuntimeDimension()
++    store.services.embeddings = runtime
++    query_calls = []
++
++    def embed(texts, _tenant, **kwargs):
++        if kwargs.get("query", False):
++            query_calls.append(list(texts))
++            if len(query_calls) == 1:
++                store.services.space_id = "space-after"
++                runtime._active_embedding_dimension = 3
++            dimension = runtime._active_embedding_dimension
++            return {
++                "success": True,
++                "embedding_space_id": store.services.space_id,
++                "embeddings": [[1.0] * dimension for _ in texts],
++            }
++        return {"success": True, "embedding_space_id": store.services.space_id, "embeddings": []}
++
++    store.services.embed = embed
++    first = store.search("same query", "tenant", "same-workspace", use_reranker=False)
++    second = store.search("same query", "tenant", "same-workspace", use_reranker=False)
++
++    assert first["success"] is True
++    assert second["search_cache"]["hit"] is True
++    assert len(query_calls) == 1
++
++
++def test_hybrid_fts_respects_space_and_keeps_unresolved_fallback_lexical(tmp_path):
++    store = _store(tmp_path)
++    store.scope = "tenant"
++    store.services.space_id = "space-current"
++    store.services.embed = lambda texts, *_args, **_kwargs: {
++        "success": True,
++        "embedding_space_id": "space-current",
++        "embeddings": [[1.0, 0.0] for _ in texts],
++    }
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / "current.py").write_text("# sharedprobe current\ndef current():\n    return 1\n", encoding="utf-8")
++    (root / "foreign.py").write_text("# sharedprobe foreign\ndef foreign():\n    return 2\n", encoding="utf-8")
++    (root / "legacy.py").write_text("# sharedprobe legacy\ndef legacy():\n    return 3\n", encoding="utf-8")
++    workspace = "hybrid-spaces"
++    assert store.index(str(root), "tenant", workspace=workspace)["success"] is True
++    with closing(store._connect()) as con:
++        con.execute("UPDATE chunks SET embedding_space='space-old' WHERE tenant=? AND workspace=? AND path='foreign.py'", (store._scope_key("tenant"), workspace))
++        con.execute("UPDATE chunks SET embedding_space='' WHERE tenant=? AND workspace=? AND path='legacy.py'", (store._scope_key("tenant"), workspace))
++        con.executemany(
++            "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++            [
++                (store._scope_key("tenant"), workspace, "current.py", 0, "sharedprobe current"),
++                (store._scope_key("tenant"), workspace, "foreign.py", 0, "sharedprobe foreign"),
++                (store._scope_key("tenant"), workspace, "legacy.py", 0, "sharedprobe legacy"),
++            ],
++        )
++        con.commit()
++    result = store._search_uncached("sharedprobe", "tenant", workspace, use_reranker=False)
++    assert [row["path"] for row in result["results"]] == ["current.py"]
++    store.services.embed = lambda *_args, **_kwargs: {"success": False, "error": "offline"}
++    lexical = store._search_uncached("sharedprobe", "tenant", workspace, use_reranker=False)
++    assert {row["path"] for row in lexical["results"]} == {"current.py", "foreign.py", "legacy.py"}
++    assert lexical["retrieval_mode"] == "lexical_fallback"
++    assert lexical["lexical_backend"] == "fts5"
++
++
++def test_uncertain_fts_paths_do_not_consume_candidate_limit(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    tenant, workspace = "tenant", "uncertainty-limit"
++    scope_key = store._scope_key(tenant)
++    with closing(store._connect()) as con:
++        for chunk_no in range(20):
++            text = "needle " * 12
++            con.execute(
++                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++                "VALUES(?,?,?,?,?,?,?,?)",
++                (scope_key, workspace, "uncertain.py", chunk_no, f"u{chunk_no}", text, "[1.0,0.0]", "space"),
++            )
++            con.execute(
++                "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++                (scope_key, workspace, "uncertain.py", chunk_no, text),
++            )
++        con.execute(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            (scope_key, workspace, "healthy.py", 0, "healthy", "needle healthy", "[1.0,0.0]", "space"),
++        )
++        con.execute(
++            "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++            (scope_key, workspace, "healthy.py", 0, "needle healthy"),
++        )
++        store._update_workspace_read_uncertainty(
++            con, scope_key, workspace, uncertain_paths={"uncertain.py"}
++        )
++        con.commit()
++    store.services.embed = lambda *_args, **_kwargs: {"success": False, "error": "offline"}
++    store._search_token_overlap = lambda *_args, **_kwargs: []
++
++    result = store._search_uncached("needle", tenant, workspace, top_k=1, use_reranker=False)
++
++    assert [row["path"] for row in result["results"]] == ["healthy.py"]
++
++
++def test_unresolved_embedding_token_fallback_is_explicit(tmp_path, monkeypatch):
++    store = _store(tmp_path)
++    store.services.embed = lambda *_args, **_kwargs: {"success": False, "error": "offline"}
++    monkeypatch.setattr(store, "_search_fts_candidates", lambda *_args, **_kwargs: [])
++    monkeypatch.setattr(store, "_search_token_overlap", lambda *_args, **_kwargs: [
++        {"path": "lexical.py", "chunk_no": 0, "text": "needle text", "content_hash": "h", "fts_score": 1.0}
++    ])
++    result = store._search_uncached("needle", "tenant", "lexical-workspace", use_reranker=False)
++    assert [row["path"] for row in result["results"]] == ["lexical.py"]
++    assert result["degraded"] is True
++    assert result["retrieval_mode"] == "lexical_fallback"
++    assert result["lexical_backend"] == "token_overlap"
++
++
++def test_cross_workspace_legacy_embeddings_are_recomputed_in_every_index_path(tmp_path):
++    text = "def shared_legacy():\n    return 17\n"
++    for mode in ("index", "index_step", "index_paths_step"):
++        services = _Services()
++        services.space_id = f"space-{mode}"
++        store = _store(tmp_path / mode)
++        store.services = services
++        store.scope = "tenant"
++        tenant = f"tenant-{mode}"
++        with closing(store._connect()) as con:
++            con.execute(
++                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
++                (store._scope_key(tenant), "source-workspace", "shared.py", 0, _fragment_hash(text), text, "[99.0,99.0]", ""),
++            )
++            con.commit()
++        root = tmp_path / f"target-{mode}"
++        root.mkdir()
++        (root / "shared.py").write_text(text, encoding="utf-8")
++        if mode == "index":
++            result = store.index(str(root), tenant, workspace="target-workspace")
++            workspace = "target-workspace"
++        elif mode == "index_step":
++            result = store.index_step(str(root), tenant, max_files=2)
++            workspace = result["workspace"]
++        else:
++            workspace = "target-workspace"
++            result = store.index_paths_step(str(root), tenant, workspace, ["shared.py"])
++        assert result["success"] is True, result
++        assert any(text in item.replace("\r\n", "\n") for batch in services.calls for item in batch), (mode, result, services.calls)
++        with closing(store._connect()) as con:
++            row = con.execute(
++                "SELECT embedding,embedding_space FROM chunks WHERE tenant=? AND workspace=? AND path='shared.py'",
++                (store._scope_key(tenant), workspace),
++            ).fetchone()
++        assert row is not None and row[0] != "[99.0,99.0]" and row[1]
+
+--- a/tests/test_rag_fragment_cache.py
++++ b/tests/test_rag_fragment_cache.py
+@@ -1,8 +1,12 @@
+ from __future__ import annotations
+ 
++import io
+ import threading
+ import sqlite3
++import json
++import struct
+ from contextlib import closing
++from pathlib import Path
+ 
+ from local_ai_hub.rag import RAGStore, _fragment_hash
+ 
+@@ -198,6 +202,48 @@
+             (store._scope_key("tenant"),),
+         ).fetchall()
+     assert [row[0] for row in spaces] == ["model-a@revision-1", "model-b@revision-1"]
++
++
++def test_same_workspace_blank_space_chunk_is_reembedded_not_relabelled(tmp_path):
++    class _SpaceServices(_Services):
++        def __init__(self):
++            super().__init__()
++            self.space_id = "space-current"
++
++        def embed(self, texts, tenant, **kwargs):
++            result = super().embed(texts, tenant, **kwargs)
++            result["embedding_space_id"] = self.space_id
++            return result
++
++    services = _SpaceServices()
++    store = _store(tmp_path, services)
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / "same.py").write_text("def same_value():\n    return 4\n", encoding="utf-8")
++    workspace = "same-workspace"
++    assert store.index_paths_step(str(root), "tenant", workspace, ["same.py"])["success"]
++    calls_before = len(services.calls)
++    with closing(store._connect()) as con:
++        con.execute(
++            "UPDATE chunks SET embedding='[99.0,99.0]',embedding_space='' "
++            "WHERE tenant=? AND workspace=? AND path='same.py'",
++            (store._scope_key("tenant"), workspace),
++        )
++        con.commit()
++
++    result = store.index_paths_step(str(root), "tenant", workspace, ["same.py"])
++
++    assert result["success"] is True
++    assert len(services.calls) > calls_before
++    with closing(store._connect()) as con:
++        row = con.execute(
++            "SELECT text,embedding,embedding_space FROM chunks "
++            "WHERE tenant=? AND workspace=? AND path='same.py'",
++            (store._scope_key("tenant"), workspace),
++        ).fetchone()
++    vector = struct.unpack(f"{len(row[1]) // 4}f", row[1]) if isinstance(row[1], bytes) else json.loads(row[1])
++    assert row[2] == "space-current"
++    assert tuple(vector) == (float(len(row[0])), 1.0)
+ 
+ 
+ def test_reused_chunks_keep_original_space_when_embedder_falls_back(tmp_path):
+@@ -327,3 +373,45 @@
+             (store_one._scope_key("tenant"), workspace),
+         ).fetchall()
+     assert {row[0] for row in rows} == {"one.py", "two.py"}
++
++
++def test_search_rechecks_generation_after_uncertain_source_read(tmp_path, monkeypatch):
++    root = tmp_path / "project"
++    root.mkdir()
++    source = root / "one.py"
++    source.write_text("def old_value():\n    return 1\n", encoding="utf-8")
++    store = _store(tmp_path, _Services())
++    store.services.space_id = "race-space"
++    store.config["rag"]["max_file_bytes"] = 32
++    indexed = store.index(str(root), "tenant")
++    workspace = indexed["workspace"]
++    initial = store.search("value query", "tenant", workspace, use_reranker=False)
++    assert initial["results"][0]["text"].replace("\r\n", "\n") == "def old_value():\n    return 1\n"
++
++    source.write_text("def new_value():\n    return 2\n", encoding="utf-8")
++    original_open = Path.open
++
++    def grow_after_stat(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == source.resolve() and mode == "rb":
++            return io.BytesIO(b"x" * 33)
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", grow_after_stat)
++    original_lookup = store.search_flight.get_or_compute
++    interleaved = {}
++
++    def publish_uncertainty_before_lookup(key, compute):
++        staged = store.index_paths_step(str(root), "tenant", workspace, ["one.py"])
++        assert staged["success"] is True
++        assert staged["read_uncertain_paths"] == ["one.py"]
++        raw, hit, coalesced = original_lookup(key, compute)
++        interleaved["hit"] = hit
++        return raw, hit, coalesced
++
++    monkeypatch.setattr(store.search_flight, "get_or_compute", publish_uncertainty_before_lookup)
++    result = store.search("value query", "tenant", workspace, use_reranker=False)
++
++    assert interleaved["hit"] is True
++    assert result["search_cache"]["hit"] is False
++    assert result["results"] == []
++    assert result["fallback"] == "source_read_uncertain"
+
+--- a/tests/test_rag_read_bounds.py
++++ b/tests/test_rag_read_bounds.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import io
++import os
+ from contextlib import closing
+ from pathlib import Path
+ 
+@@ -61,7 +62,7 @@
+ 
+ 
+ @pytest.mark.parametrize("entrypoint", ["index", "index_paths_step"])
+-def test_file_growth_after_stat_never_reads_or_keeps_oversized_snapshot(
++def test_file_growth_preserves_snapshot_and_suppresses_results_until_retry(
+     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str
+ ):
+     store = _store(tmp_path, max_file_bytes=32)
+@@ -69,10 +70,11 @@
+     root.mkdir()
+     path = root / "module.py"
+     path.write_text("value = 'before'\n", encoding="utf-8")
+-    initial_size = path.stat().st_size
+     tenant, workspace = "tenant", "workspace"
+     assert store.index_paths_step(str(root), tenant, workspace, ["module.py"])["success"]
+     assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++    committed = store.search("value before", tenant, workspace, use_reranker=False)
++    assert committed["results"][0]["text"].replace("\r\n", "\n") == "value = 'before'\n"
+ 
+     path.write_text("value = 'changed'\n", encoding="utf-8")
+     original_open = Path.open
+@@ -88,16 +90,97 @@
+     else:
+         result = store.index_paths_step(str(root), tenant, workspace, ["module.py"])
+ 
+-    assert result["success"] is (entrypoint == "index_paths_step")
+-    expected_counts = (1, 1, 1) if entrypoint == "index" else (0, 0, 0)
+-    assert _indexed_counts(store, tenant, workspace, "module.py") == expected_counts
++    assert result["success"] is True, result
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++    uncertain = store.search("value before", tenant, workspace, use_reranker=False)
++    assert uncertain["results"] == []
++    assert uncertain["fallback"] == "source_read_uncertain"
++
++    monkeypatch.setattr(Path, "open", original_open)
+     if entrypoint == "index":
+-        with closing(store._connect()) as con:
+-            indexed_size = con.execute(
+-                "SELECT size FROM files WHERE tenant=? AND workspace=? AND path=?",
+-                (store._scope_key(tenant), workspace, "module.py"),
+-            ).fetchone()[0]
+-        assert indexed_size == initial_size
++        recovered = store.index(str(root), tenant, workspace)
++    else:
++        recovered = store.index_paths_step(str(root), tenant, workspace, ["module.py"])
++
++    assert recovered["success"] is True
++    refreshed = store.search("value before", tenant, workspace, use_reranker=False)
++    assert [row["text"].replace("\r\n", "\n") for row in refreshed["results"]] == ["value = 'changed'\n"]
++
++
++@pytest.mark.parametrize("entrypoint", ["index", "index_paths_step"])
++def test_read_uncertainty_published_before_mixed_embed_failure(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str
++):
++    store = _store(tmp_path, max_file_bytes=256)
++    root = tmp_path / "project"
++    root.mkdir()
++    unreadable = root / "unreadable.py"
++    changed = root / "changed.py"
++    unreadable.write_text("private_old_marker = 1\n", encoding="utf-8")
++    changed.write_text("changed_old_marker = 1\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index(str(root), tenant, workspace)["success"]
++    unreadable.write_text("private_new_marker = 2\n", encoding="utf-8")
++    changed.write_text("changed_new_marker = 2\n", encoding="utf-8")
++    original_open = Path.open
++
++    def fail_selected_read(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == unreadable.resolve() and mode == "rb":
++            raise PermissionError("forced source read failure")
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", fail_selected_read)
++    original_embed = store.services.embed
++
++    def fail_document_embedding(texts, tenant_arg, **kwargs):
++        if not kwargs.get("query", False):
++            return {"success": False, "error": "forced embedding failure"}
++        return original_embed(texts, tenant_arg, **kwargs)
++
++    monkeypatch.setattr(store.services, "embed", fail_document_embedding)
++    if entrypoint == "index":
++        result = store.index(str(root), tenant, workspace)
++    else:
++        result = store.index_paths_step(
++            str(root), tenant, workspace, ["unreadable.py", "changed.py"]
++        )
++
++    assert result["success"] is False
++    exposed = store.search("private_old_marker", tenant, workspace, use_reranker=False)
++    assert all(row["path"] != "unreadable.py" for row in exposed["results"])
++    assert all("private_old_marker" not in row.get("text", "") for row in exposed["results"])
++
++
++def test_full_index_retries_uncertain_path_when_metadata_matches_old_snapshot(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++):
++    store = _store(tmp_path, max_file_bytes=256)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 'before'\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index(str(root), tenant, workspace)["success"]
++    old_stat = path.stat()
++    path.write_text("value = 'after!'\n", encoding="utf-8")
++    original_open = Path.open
++
++    def fail_read(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == path.resolve() and mode == "rb":
++            raise PermissionError("forced source read failure")
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", fail_read)
++    failed = store.index(str(root), tenant, workspace)
++    assert failed["success"] is True
++    os.utime(path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
++    monkeypatch.setattr(Path, "open", original_open)
++
++    recovered = store.index(str(root), tenant, workspace)
++
++    assert recovered["success"] is True
++    result = store.search("value after", tenant, workspace, use_reranker=False)
++    assert [row["text"].replace("\r\n", "\n") for row in result["results"]] == ["value = 'after!'\n"]
+ 
+ 
+ def test_content_override_obeys_configured_file_limit(tmp_path: Path):
+

@@ -1,0 +1,85 @@
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -29,6 +29,7 @@
+ 
+ 
+ _MAX_RERANK_CANDIDATES = 512
++_INDEX_EMBED_BATCH_SIZE = 64
+ 
+ 
+ def _reverse_text_order(value: str) -> tuple[int, ...]:
+@@ -1142,7 +1143,7 @@
+                     all_missing_texts = still_missing_texts
+                     missing_pointers = still_missing_pointers
+ 
+-            # 5. Single bulk embedding call for truly novel chunks
++            # 5. Embed bounded batches. Do not publish partial vector batches.
+             if all_missing_texts:
+                 if callable(should_yield) and should_yield():
+                     return {
+@@ -1150,27 +1151,44 @@
+                         "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+                         "reused_chunks": reused_chunks,
+                     }
+-                try:
+-                    vectors_result = self.services.embed(all_missing_texts, tenant, priority=0, query=False, background=True)
+-                except (TimeoutError, QueueFullError) as exc:
+-                    return {
+-                        "success": True, "workspace": workspace, "preempted": True,
+-                        "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+-                        "reused_chunks": reused_chunks, "note": f"embedder busy or timed out: {exc}",
+-                    }
+-                if not vectors_result.get("success"):
+-                    return vectors_result
+-                vectors = vectors_result.get("embeddings", [])
+-                if len(vectors) != len(all_missing_texts):
+-                    return {"success": False, "error": "embedding count mismatch during background RAG path step"}
+-                embedding_space = self._embedding_space_id(vectors_result)
+-                for (f_idx, rec_idx), vector in zip(missing_pointers, vectors):
+-                    embedding = _serialize_embedding(vector)
+-                    if embedding is None:
+-                        return {"success": False, "error": "embedding backend returned an invalid vector"}
+-                    file_data[f_idx]["records"][rec_idx]["embedding"] = embedding
+-                    file_data[f_idx]["records"][rec_idx]["embedding_space"] = embedding_space
+-                embedded_chunks += len(all_missing_texts)
++                batch_embedding_space = None
++                for offset in range(0, len(all_missing_texts), _INDEX_EMBED_BATCH_SIZE):
++                    if offset and callable(should_yield) and should_yield():
++                        return {
++                            "success": True, "workspace": workspace, "preempted": True,
++                            "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
++                            "reused_chunks": reused_chunks,
++                        }
++                    batch_texts = all_missing_texts[offset:offset + _INDEX_EMBED_BATCH_SIZE]
++                    batch_pointers = missing_pointers[offset:offset + _INDEX_EMBED_BATCH_SIZE]
++                    try:
++                        vectors_result = self.services.embed(batch_texts, tenant, priority=0, query=False, background=True)
++                    except (TimeoutError, QueueFullError) as exc:
++                        return {
++                            "success": True, "workspace": workspace, "preempted": True,
++                            "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
++                            "reused_chunks": reused_chunks, "note": f"embedder busy or timed out: {exc}",
++                        }
++                    if not isinstance(vectors_result, dict) or not vectors_result.get("success"):
++                        return vectors_result if isinstance(vectors_result, dict) else {"success": False, "error": "embed failed"}
++                    vectors = vectors_result.get("embeddings", [])
++                    if len(vectors) != len(batch_pointers):
++                        return {"success": False, "error": "embedding count mismatch during background RAG path step"}
++                    current_space = self._embedding_space_id(vectors_result)
++                    if batch_embedding_space is not None and current_space != batch_embedding_space:
++                        return {"success": False, "error": "embedding identity changed during RAG path step", "retryable": True}
++                    if batch_embedding_space is None:
++                        batch_embedding_space = current_space
++                        if batch_embedding_space != embedding_space and reused_chunks:
++                            return {"success": False, "error": "embedding identity changed during RAG path step", "retryable": True}
++                        embedding_space = batch_embedding_space
++                    for (f_idx, rec_idx), vector in zip(batch_pointers, vectors):
++                        embedding = _serialize_embedding(vector)
++                        if embedding is None:
++                            return {"success": False, "error": "embedding backend returned an invalid vector"}
++                        file_data[f_idx]["records"][rec_idx]["embedding"] = embedding
++                        file_data[f_idx]["records"][rec_idx]["embedding_space"] = batch_embedding_space
++                    embedded_chunks += len(batch_pointers)
+ 
+             if callable(should_yield) and should_yield():
+                 return {

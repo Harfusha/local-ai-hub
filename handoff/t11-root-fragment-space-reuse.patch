@@ -1,0 +1,11 @@
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -1308,8 +1308,6 @@
+                         return {"success": False, "error": "embedding identity changed during RAG path step", "retryable": True}
+                     if batch_embedding_space is None:
+                         batch_embedding_space = current_space
+-                        if batch_embedding_space != embedding_space and reused_chunks:
+-                            return {"success": False, "error": "embedding identity changed during RAG path step", "retryable": True}
+                         embedding_space = batch_embedding_space
+                         embedding_space_resolved = True
+                     for (f_idx, rec_idx), vector in zip(batch_pointers, vectors):

@@ -1,0 +1,142 @@
+{
+  "schema": "t11-closeout-evidence-v1",
+  "captured_client_date": "2026-10-05",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "task_ownership": "confirmed by active worktree attachment",
+    "status_before_packet": {
+      "tracked_modified": 10,
+      "untracked_entries": 183,
+      "untracked_handoff_files": 180,
+      "untracked_source_or_test_files": 3
+    },
+    "ownership_partition": {
+      "T11_owned_tracked_modified": [
+        "src/local_ai_hub/rag.py",
+        "src/local_ai_hub/embeddings.py",
+        "src/local_ai_hub/reranker.py",
+        "tests/test_rag_fragment_cache.py",
+        "tests/test_rag_hybrid.py",
+        "tests/test_rag_quality_contract.py",
+        "tests/test_t11_rag_ingestion_contract.py",
+        "tests/test_t11_rag_seed_integrity.py",
+        "tests/test_t11_project_policy_consumers.py"
+      ],
+      "T11_owned_untracked": [
+        "tests/test_rag_read_bounds.py"
+      ],
+      "inherited_excluded_tracked": [
+        "tests/test_model_release_lifecycle.py"
+      ],
+      "inherited_excluded_untracked": [
+        "src/local_ai_hub/project_config.py",
+        "tests/test_project_config.py"
+      ],
+      "handoff_files_are_existing_untracked_state": true,
+      "services_py_edited": false,
+      "api_context_pack_edited": false,
+      "T21_project_config_edited_net": false
+    },
+    "owned_file_hashes": [
+      {"path":"src/local_ai_hub/rag.py","base_sha256":"DC6EC0DFAFF8C8E5EB133E96EF276148586F6FA79E5203CB4398C613B07ED184","post_sha256":"BDC94FFE14252A7CB18460E1E1B5C513134F66C451FA1CD3DF90B21FCCB09EE7"},
+      {"path":"src/local_ai_hub/embeddings.py","base_sha256":"E88373A0A9185CAA6A1714EC5B7EB84E30CBB060F912F430F7DAA456A0AC9BF9","post_sha256":"2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170"},
+      {"path":"src/local_ai_hub/reranker.py","base_sha256":"17D56DB72127D3DC67B0BE3FDDC1225EFC81BAF6EA8928DA21A1C1F6E9619493","post_sha256":"EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562","root_current_same_hash":true},
+      {"path":"tests/test_rag_fragment_cache.py","base_sha256":"F67344CB80E40977204FE4BD7A87BA8EA5E9C65B33314450DF62CE9DA4D7775D","post_sha256":"A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002"},
+      {"path":"tests/test_rag_hybrid.py","base_sha256":"FFE5D320D8F0D38E535866224E597A729162FE3EEC58840F8C5BDB3D5DB61DAC","post_sha256":"CA14B2DF15B2E7DB1C7268B9CD5A4C1C57C2E9074BCEDDDEC15F6D26E729AAA8"},
+      {"path":"tests/test_rag_quality_contract.py","base_sha256":"6A633151C7052E0E233B60518F9F67A9A9BA4798B55D4A34D4D1E5EBA3BC06BB","post_sha256":"EF90FC86269D89FFDB6E5CC508BF54917D4A6ED2243447E85DE372B94D5CF3E9"},
+      {"path":"tests/test_t11_rag_ingestion_contract.py","base_sha256":"04FB237D97B157E5C8E7C67E750BDC9DE354B11DA76D577BFEE163FCD3D61A6F","post_sha256":"A5C2C6B7BD5C6E1C7383DEAFDB6070FCC212DF335DEFDA9C21ED3B9398CAC7B8"},
+      {"path":"tests/test_t11_rag_seed_integrity.py","base_sha256":"1F30E205044F9CC1EF7BE53E11721A066E7DF3060D4876F36FB2F461212E2FFD","post_sha256":"943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02","root_current_same_hash":true},
+      {"path":"tests/test_t11_project_policy_consumers.py","base_sha256":"80AEB38D1BAEEE953786837734DF6EDE397C42483DF17547E9174944B8916529","post_sha256":"98FB176272F7C8F2C41CEF885B5CDA0E6A41E32DCB0D511BA12F16311FE4AEC6"},
+      {"path":"tests/test_rag_read_bounds.py","base_at_head":null,"pre_followup_working_sha256":"AE19C08BC2AA9CA45D0B7F26DCFF23DD8ABDB3A1D843F54A7830045A8A568AA2","post_sha256":"699D0D3B7C19C5176A70126E75F3E897C238CDBE2894B3D906E7432254E7EE70","change":"CRLF-to-LF normalization in four text-result assertions; test expectations unchanged"}
+    ]
+  },
+  "candidate_validation": [
+    {
+      "kind":"focused_current_retrieval_ingestion",
+      "command":"python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_rag_fragment_cache.py::test_configured_embedding_space_id_is_stable_across_store_instances tests/test_rag_fragment_cache.py::test_index_fingerprint_tracks_embedding_space_configuration tests/test_rag_hybrid.py::test_search_reports_pending_rebuild_for_partial_embedding_space tests/test_rag_hybrid.py::test_warm_search_skips_embedding_space_write_lock tests/test_rag_hybrid.py::test_rag_index_paths_step_retries_publish_lock_without_reembedding tests/test_rag_hybrid.py::test_search_cache_key_tracks_runtime_embedding_space tests/test_rag_hybrid.py::test_public_search_cache_tracks_runtime_embedding_dimension tests/test_t11_rag_ingestion_contract.py::test_document_ingest_rejects_embedding_space_change_between_batches_and_preserves_snapshot tests/test_t11_rag_ingestion_contract.py::test_document_ingest_replay_replaces_one_stable_document_snapshot tests/test_t11_rag_ingestion_contract.py::test_mcp_rag_ingest_accepts_explicit_document_and_diagram_fields tests/test_t11_rag_ingestion_contract.py::test_mcp_rag_ingest_requires_explicit_input tests/test_t11_rag_ingestion_contract.py::test_mcp_rag_ingest_forwards_explicit_fields_only",
+      "result":"13 passed in 4.66s",
+      "exit_code":0
+    },
+    {
+      "kind":"read_bounds_focused",
+      "command":"python -m pytest -q --tb=short tests/test_rag_read_bounds.py",
+      "result":"9 passed in 3.36s",
+      "exit_code":0,
+      "receipt_sha256":"84F08484FA1F7982986ECBCF310B2DC561E9869C858D851744C8732254E7EE70"
+    },
+    {
+      "kind":"candidate_offline_full_selector",
+      "command":"python -m pytest -q --tb=short tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_t11_rag_ingestion_contract.py tests/test_rag_read_bounds.py tests/test_t11_rag_seed_integrity.py tests/test_t11_project_policy_consumers.py tests/test_model_release_lifecycle.py",
+      "result":"154 passed, 3 skipped in 36.46s",
+      "receipt_scope":"before read_bounds CRLF assertion normalization; that file's final postimage separately passed 9 focused tests"
+    },
+    {
+      "kind":"embedding_storage_reliability",
+      "command":"python -m pytest -q --tb=short tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_rag_dedup.py tests/test_storage_service_reliability.py",
+      "result":"38 passed in 4.33s"
+    },
+    {
+      "kind":"candidate_mcp_ingest_selectors",
+      "command":"python -m pytest -q --tb=short tests/test_t11_rag_ingestion_contract.py::test_mcp_rag_ingest_accepts_explicit_document_and_diagram_fields tests/test_t11_rag_ingestion_contract.py::test_mcp_rag_ingest_requires_explicit_input tests/test_t11_rag_ingestion_contract.py::test_mcp_rag_ingest_forwards_explicit_fields_only",
+      "result":"4 passed in 2.16s"
+    },
+    {
+      "kind":"live_embedding_smoke",
+      "command":"T11_REAL_OLLAMA=1 python -m pytest -q --tb=short tests/test_t11_rag_ingestion_contract.py::test_t11_live_ollama_rag_ingest_and_reranker_truthfulness",
+      "result":"1 passed in 23.89s; real qwen3-embedding:0.6b used; real reranker disabled"
+    }
+  ],
+  "quality_and_performance": {
+    "paired_golden_quality": {
+      "command":"python -m pytest -q --tb=short tests/test_rag_quality_contract.py::test_golden_corpus_keeps_relevant_credentials_above_realistic_distractors",
+      "result":"1 passed in 0.38s",
+      "dataset_revision_sha256":"ce2f9e38eb084b906bb3b1d422f38316a648527f54819d9e4d3f9f53f8bb16cc",
+      "dataset":"64 synthetic rows; 6 relevant, 58 distractors; query weekly credential rotation",
+      "baseline_candidate_top10_order_equal":true,
+      "baseline_candidate_recall_at_10":[1.0,1.0],
+      "baseline_candidate_ndcg_at_10":[1.0,1.0],
+      "improvement_claimed":false,
+      "receipt_sha256":"B31E1D82C013B54F6308CE8A8045768CE58C782D545350E1327D46D9932B468F",
+      "limits":"synthetic corpus/vectors; no live-model quality claim"
+    },
+    "retrieval_latency_memory": {
+      "command":"RAG_BENCHMARK=1 python -m pytest -s -q --tb=short tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline",
+      "result":"1 passed in 39.76s",
+      "rows":100000,
+      "acceptance":{"p95_ms_max":750,"traced_memory_mib_max":16},
+      "metrics_by_batch_size":{"512":{"p95_ms":335.424,"traced_memory_mib":2.455},"2048":{"p95_ms":414.484,"traced_memory_mib":9.869},"4096":{"p95_ms":355.302,"traced_memory_mib":13.213},"8192":{"p95_ms":365.542,"traced_memory_mib":13.210}},
+      "receipt_sha256":"9AB20D3BCE22B44DDA0D340E006904FA6817A53B7DE35F8572A8C651E14289D8",
+      "receipt_hash_binding":"receipt records worktree and command, not source/test content hashes"
+    },
+    "synthetic_ingest_seed": {
+      "command":"T11_RAG_BENCHMARK=1 python -m pytest -s -q --tb=short tests/test_t11_rag_seed_integrity.py::test_t11_ingestion_batch_benchmark",
+      "result":"1 passed in 12.71s",
+      "metrics":"128 files; seed 616.23 files/s; explicit ingest 206.38 files/s; integrated profile 11.58 files/s; synthetic embedder, not model throughput",
+      "receipt_sha256":"BFEA7796B6BFEE49D1586AD6379D4CB9BA98F7976DE8C0B2872C8895C442CC5D"
+    }
+  },
+  "root_diagnostics": {
+    "root":"C:\\Users\\Adam\\.local-ai-hub",
+    "head":"7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+    "owner_receipt":"handoff/t11-root-current-rag-hardening-20261003/root-acceptance-diagnosis-20261005.json",
+    "owner_receipt_sha256":"9F7F9E7AFDAB50FE17849C225C0B1294C27B33109F6B703BC7E596D227D77043",
+    "command":"python -B -m pytest -q --tb=short -p no:cacheprovider -k 'not retrieval_latency_and_peak_memory_baseline and not t11_ingestion_batch_benchmark' tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py",
+    "owner_reported_result":"37 failed, 119 passed, 1 skipped, 2 deselected in 35.80s; not rerun",
+    "root_rag_sha256_at_run":"6FC7BA447CD7D755697FA73002BB42D3197664ACC07BE0FAF2473B20E302E6D1",
+    "current_root_rag_sha256_read_only":"E1F67AA741945BFF05704BBDA385D9DCF90F42C1CA2880A1FE3C9F2B1BB59CA1",
+    "current_root_test_hashes_differ_from_run_receipt":true,
+    "current_root_acceptance":"unresolved; receipt binds an older dirty root state",
+    "root_written_by_this_closeout":false,
+    "candidate_root_integration":"NO; shared hunks not fully reconciled"
+  },
+  "unresolved_acceptance": [
+    "Current live CrossEncoder run remains unknown: PID 17692 is not running; stored output ended at dot/[100%], no final summary or exit code. Do not rerun under this packet.",
+    "No paired baseline-versus-candidate CPU performance capture has current owner slot approval.",
+    "Golden quality evidence is synthetic; live reranker quality remains unverified.",
+    "Root full-selector result is stale against current root dirty hashes; no current root receipt and no root edit in this task.",
+    "Root 37 failures are only partly attributed in the owner diagnosis; remaining groups were not individually bisected.",
+    "Shared services.py and T14 /api/context/pack were not edited."
+  ],
+  "closeout_status":"PARTIAL; candidate retrieval and ingestion focused acceptance pass, full T11 acceptance blocked by unresolved live reranker and root/current-state receipts"
+}

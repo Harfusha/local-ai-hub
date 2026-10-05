@@ -1,0 +1,40 @@
+{
+  "manifest": "t11-root-current-rag-v5",
+  "root": {
+    "path": "C:\\Users\\Adam\\.local-ai-hub",
+    "owner": "T20",
+    "t11_modified": false,
+    "current_source_sha256": "4c0ed5c52ec4cd9d82b41f0d6d2188812d607d1ce58c4ffea956d045fbb9048a",
+    "source_at_fail_first_sha256": "494594ba69ce6c18fe2a141b7d43debbc08f32d7151764fd730c3fd11781da25"
+  },
+  "pins": [
+    {
+      "path": "tests/test_rag_hybrid.py",
+      "scope": "root",
+      "sha256": "8119845b5242761efad5811e803c415d2a89523a65d769b9589e15e0175d9200"
+    },
+    {
+      "path": "tests/test_rag_read_bounds.py",
+      "scope": "root",
+      "sha256": "9d9f3ee9daad5306570d9a7c2674da1a4cf3342541a1a2b43abb1f798ec0d002"
+    },
+    {
+      "path": "handoff/t11-root-current-rag-v5-legacy-space-test.patch",
+      "scope": "candidate",
+      "sha256": "f13e2190012edd870c484c9eaa36502f48346f1b97961cdd6d89582d3a0af7e6"
+    },
+    {
+      "path": "handoff/t11-root-current-rag-v5-validation.md",
+      "scope": "candidate",
+      "sha256": "58c87e08db1ba3f8c09115ca27881105f4c09914d2c4ccdbd34172373ce099e1"
+    }
+  ],
+  "verification": {
+    "fresh_copy_source_match": true,
+    "focused_acceptance": "35 passed",
+    "patch_strict_apply_check": "passed, no files applied",
+    "current_root_contains_p1_p2_fixes": true,
+    "end_to_end": "pending T20 integration receipts",
+    "gpu_100k_live_ollama": "not run"
+  }
+}

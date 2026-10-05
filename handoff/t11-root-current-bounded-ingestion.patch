@@ -1,0 +1,254 @@
+diff --git a/src/local_ai_hub/rag.py b/src/local_ai_hub/rag.py
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -109,6 +109,14 @@
+         return json_dumps(values, separators=(",", ":"))
+     except (TypeError, ValueError, OverflowError):
+         return None
++
++
++def _read_bounded_file(path: Path, max_bytes: int) -> bytes | None:
++    """Read at most max_bytes plus one byte to detect growth after stat."""
++    limit = max(0, int(max_bytes))
++    with path.open("rb") as source:
++        raw = source.read(limit + 1)
++    return raw if len(raw) <= limit else None
+ 
+ 
+ class RAGStore:
+@@ -843,11 +851,19 @@
+         dedup_near_duplicates = bool(rag_cfg.get("dedup_near_duplicates", True))
+         max_hamming = int(rag_cfg.get("near_duplicate_max_hamming", 4))
+         near_duplicates_skipped = 0
++        max_file_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
++        settings = project_context.settings if project_context is not None else None
++        if settings is not None and settings.max_file_size_bytes is not None:
++            max_file_bytes = min(max_file_bytes, int(settings.max_file_size_bytes))
+ 
+         for rel in changed_paths:
+             path, mtime_ns, size = current_meta[rel]
+             try:
+-                raw = path.read_bytes()
++                raw = _read_bounded_file(path, max_file_bytes)
++                if raw is None:
++                    skipped += 1
++                    deleted_paths = sorted(set(deleted_paths) | {rel})
++                    continue
+                 read_files += 1
+                 text = raw.decode("utf-8", errors="replace")
+                 file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+@@ -1164,6 +1180,7 @@
+             embedding_space_resolved = bool(stored_space or self._embedding_space_is_resolved())
+             # 1. Read files and chunk
+             file_data: list[dict[str, Any]] = []
++            policy_deleted: set[str] = set()
+             for rel in paths:
+                 if callable(should_yield) and should_yield():
+                     return {
+@@ -1187,10 +1204,11 @@
+                         api = self.project_config_api() if project_context is not None else None
+                         if api is None or api.custom_extension_kind(path.name, project_context.settings) != "text":
+                             continue
+-                    max_bytes = int(cfg.get("max_file_bytes", 2_000_000))
++                    max_bytes = max(0, int(cfg.get("max_file_bytes", 2_000_000)))
+                     if project_context is not None and project_context.settings.max_file_size_bytes is not None:
+                         max_bytes = min(max_bytes, int(project_context.settings.max_file_size_bytes))
+                     if int(stat.st_size) > max_bytes:
++                        policy_deleted.add(rel)
+                         continue
+                     allowed, kind = self._project_path_decision(
+                         root_path, path, project_context, phase="rag", size_bytes=int(stat.st_size),
+@@ -1199,18 +1217,27 @@
+                         continue
+                     override = (content_overrides or {}).get(rel)
+                     if override is None:
+-                        raw = path.read_bytes()
++                        raw = _read_bounded_file(path, max_bytes)
++                        if raw is None:
++                            policy_deleted.add(rel)
++                            continue
+                         text = raw.decode("utf-8", errors="replace")
+                         file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+                     else:
+                         text = str(override)
++                        if len(text.encode("utf-8")) > max_bytes:
++                            policy_deleted.add(rel)
++                            continue
+                         file_hash = hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+                     chunks = list(self._chunks(text, path=rel))
+                     file_data.append({"rel": rel, "stat": stat, "file_hash": file_hash, "chunks": chunks})
+                 except Exception:
+                     continue
+ 
+-            deleted_unique = sorted({str(p).replace("\\", "/") for p in (deleted_paths or []) if str(p).strip()})
++            deleted_unique = sorted(
++                {str(p).replace("\\", "/") for p in (deleted_paths or []) if str(p).strip()}
++                | policy_deleted
++            )
+             if not file_data and not deleted_unique:
+                 return {
+                     "success": True, "workspace": workspace, "preempted": False,
+diff --git a/tests/test_rag_read_bounds.py b/tests/test_rag_read_bounds.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_rag_read_bounds.py
+@@ -0,0 +1,143 @@
++from __future__ import annotations
++
++import io
++from contextlib import closing
++from pathlib import Path
++
++import pytest
++
++from local_ai_hub.rag import RAGStore
++
++
++class _VectorServices:
++    def __init__(self):
++        self.document_calls: list[str] = []
++
++    def embed(self, texts, tenant, **kwargs):
++        if not kwargs.get("query", False):
++            self.document_calls.append(tenant)
++        return {
++            "success": True,
++            "embedding_space_id": "shared-test-space",
++            "embeddings": [[1.0, 0.0] for _ in texts],
++        }
++
++
++def _store(
++    tmp_path: Path,
++    *,
++    max_file_bytes: int = 32,
++    scope: str = "shared",
++) -> RAGStore:
++    return RAGStore(
++        {
++            "server": {"state_dir": str(tmp_path / "state")},
++            "models": {},
++            "cpu_retrieval": {},
++            "workspace_cache": {},
++            "rag": {
++                "extensions": [".py"],
++                "ignore_dirs": [],
++                "max_file_bytes": max_file_bytes,
++                "scope": scope,
++            },
++            "resilience": {"singleflight_wait_timeout_seconds": 2},
++            "features": {"reranker": False},
++        },
++        services=_VectorServices(),
++    )
++
++
++def _indexed_counts(store: RAGStore, tenant: str, workspace: str, path: str):
++    scope_key = store._scope_key(tenant)
++    with closing(store._connect()) as con:
++        return tuple(
++            con.execute(
++                f"SELECT COUNT(*) FROM {table} WHERE tenant=? AND workspace=? AND path=?",
++                (scope_key, workspace, path),
++            ).fetchone()[0]
++            for table in ("files", "chunks", "chunk_fts")
++        )
++
++
++@pytest.mark.parametrize("entrypoint", ["index", "index_paths_step"])
++def test_file_growth_after_stat_never_reads_or_keeps_oversized_snapshot(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str
++):
++    store = _store(tmp_path, max_file_bytes=32)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 'before'\n", encoding="utf-8")
++    initial_size = path.stat().st_size
++    tenant, workspace = "tenant", "workspace"
++    assert store.index_paths_step(str(root), tenant, workspace, ["module.py"])["success"]
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++
++    path.write_text("value = 'changed'\n", encoding="utf-8")
++    original_open = Path.open
++
++    def grow_after_stat(candidate: Path, mode="r", *args, **kwargs):
++        if candidate.resolve() == path.resolve() and mode == "rb":
++            return io.BytesIO(b"x" * 33)
++        return original_open(candidate, mode, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "open", grow_after_stat)
++    if entrypoint == "index":
++        result = store.index(str(root), tenant, workspace)
++    else:
++        result = store.index_paths_step(str(root), tenant, workspace, ["module.py"])
++
++    assert result["success"] is (entrypoint == "index_paths_step")
++    expected_counts = (1, 1, 1) if entrypoint == "index" else (0, 0, 0)
++    assert _indexed_counts(store, tenant, workspace, "module.py") == expected_counts
++    if entrypoint == "index":
++        with closing(store._connect()) as con:
++            indexed_size = con.execute(
++                "SELECT size FROM files WHERE tenant=? AND workspace=? AND path=?",
++                (store._scope_key(tenant), workspace, "module.py"),
++            ).fetchone()[0]
++        assert indexed_size == initial_size
++
++
++def test_content_override_obeys_configured_file_limit(tmp_path: Path):
++    store = _store(tmp_path, max_file_bytes=32)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 1\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index_paths_step(str(root), tenant, workspace, ["module.py"])["success"]
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++
++    result = store.index_paths_step(
++        str(root), tenant, workspace, ["module.py"],
++        content_overrides={"module.py": "x" * 33},
++    )
++
++    assert result["success"] is True
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (0, 0, 0)
++
++
++def test_oversized_stat_removes_previous_incremental_snapshot(tmp_path: Path):
++    store = _store(tmp_path, max_file_bytes=32)
++    root = tmp_path / "project"
++    root.mkdir()
++    path = root / "module.py"
++    path.write_text("value = 1\n", encoding="utf-8")
++    tenant, workspace = "tenant", "workspace"
++    assert store.index_paths_step(str(root), tenant, workspace, ["module.py"])["success"]
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (1, 1, 1)
++
++    path.write_text("x" * 33, encoding="utf-8")
++    result = store.index_paths_step(str(root), tenant, workspace, ["module.py"])
++
++    assert result["success"] is True
++    assert _indexed_counts(store, tenant, workspace, "module.py") == (0, 0, 0)
++
++
++def test_tenant_isolation_blocks_cross_tenant_chunk_reuse_and_search(
++    tmp_path: Path,
++):
++    store = _store(tmp_path, scope="tenant")
++    root_a = tmp_path / "tenant-a-project"
++    root_b = tmp_path / "tenant-b-project"
++    root_a.mkdir()
++    root_b.mkdir()
++    (root_a / "secret.py").write_text("needle tenant-a-private marker\n", encoding="utf-8")
++    (root_b / "public.py").write_text("ordinary tenant-b content\n", encoding="utf-8")
++    workspace = "shared-workspace"
++
++    assert store.index(str(root_a), "tenant-a", workspace)["success"] is True
++    assert store.index(str(root_b), "tenant-b", workspace)["success"] is True
++    assert "tenant-a" in store.services.document_calls
++    assert "tenant-b" in store.services.document_calls
++
++    result = store.search("needle", "tenant-b", workspace, use_reranker=False)
++
++    assert result["success"] is True
++    assert all("tenant-a-private" not in row.get("text", "") for row in result["results"])

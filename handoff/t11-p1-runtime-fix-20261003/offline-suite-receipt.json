@@ -1,0 +1,41 @@
+{
+  "schema": "t11-offline-acceptance-receipt-v1",
+  "date": "2026-10-03",
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "t11_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "suite_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_project_policy_consumers.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_model_release_lifecycle.py",
+  "exit_code": 0,
+  "summary": "183 passed, 3 skipped in 42.04s",
+  "new_regressions": [
+    "test_index_embeds_changed_chunks_without_undefined_text_list",
+    "test_index_paths_step_sets_embedding_space_before_nonempty_records"
+  ],
+  "skipped": [
+    "100k retrieval benchmark requires RAG_BENCHMARK=1",
+    "live Ollama verification requires T11_REAL_OLLAMA=1",
+    "synthetic ingestion/seed benchmark requires T11_RAG_BENCHMARK=1"
+  ],
+  "live_reranker_or_gpu_run": false,
+  "live_benchmarks_verified": false,
+  "patch": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-p1-runtime-fix-20261003\\t11-root-current-safe-excluding-rag.patch",
+  "patch_sha256": "ECB3FB752A3ADE63D7F77B6166DA9189350CAAC3BC2240C21BFF694EBD856955",
+  "patch_root_apply_check": "pass",
+  "patch_root_apply_error": null,
+  "included_file_preimages_match_current_root": true,
+  "root_current_preimage_sha256": {
+    "src/local_ai_hub/embeddings.py": "21A6282871005D1045B2E76A2CC65599DEEDB877477E007C1AA8FB31BFACCD08",
+    "src/local_ai_hub/reranker.py": "12773E04A90DB8F8A367E618D725A3EA995FAF4B624244907B8A13F30CED2EC7",
+    "tests/test_rag_fragment_cache.py": "50BE2A48A96A7EDF403BC09A9EEF9032C315B1B068CE6015F032636B28D46293",
+    "tests/test_rag_hybrid.py": "5E8508F96B808A7369FA9E97617BE359F7F23EA7A6213364EEC71B99F5149160",
+    "tests/test_rag_quality_contract.py": "273C1EEA3645F78596009340096D2C381FD8749FE71CE8F2ECB7A8AECE723572"
+  },
+  "t11_source_sha256": {
+    "src/local_ai_hub/rag.py": "C70C385CE679D9B4A84037BBCD6C352598FE265F95617311228D75096EECEA8A",
+    "tests/test_rag_hybrid.py": "8396D5A114D14BAEBFEAF9022E6C569D3B475DEA8D9075794195DB13DFFDC75E"
+  },
+  "patch_receipt_sha256": "8C6EF884ED0B51F4A009BB5FF909B7B6E2DFD918DB131CC37B4B995AD6DDDE99",
+  "rag.py_patch_action": "withheld; regenerated patch omits entire rag.py because previous partial merge introduced the two reviewed runtime defects",
+  "root_edited": false
+}

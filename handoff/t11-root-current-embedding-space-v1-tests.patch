@@ -1,0 +1,82 @@
+--- a/tests/test_rag_hybrid.py
++++ b/tests/test_rag_hybrid.py
+@@ -131,3 +131,79 @@
+     assert result["success"] is True
+     assert state["begins"] == 2
+     assert len(store.services.calls) == 1
++
++
++def test_search_uses_only_exact_embedding_space_and_reports_stale_rows(tmp_path):
++    store = _store(tmp_path)
++    store.scope = "tenant"
++    store.services.embed = lambda *_args, **_kwargs: {
++        "success": True,
++        "embedding_space_id": "space-current",
++        "embeddings": [[1.0, 0.0]],
++    }
++    tenant = "tenant"
++    workspace = "mixed-spaces"
++    with sqlite3.connect(store.db_path) as con:
++        con.executemany(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            [
++                (store._scope_key(tenant), workspace, "allowed/current.py", 0, "current", "current text", "[0.0,1.0]", "space-current"),
++                (store._scope_key(tenant), workspace, "allowed/foreign.py", 0, "foreign", "foreign text", "[1.0,0.0]", "space-old"),
++                (store._scope_key(tenant), workspace, "allowed/legacy.py", 0, "legacy", "legacy text", "[1.0,0.0]", ""),
++                (store._scope_key(tenant), workspace, "outside.py", 0, "outside", "outside text", "[1.0,0.0]", "space-current"),
++                (store._scope_key("other-tenant"), workspace, "allowed/other-tenant.py", 0, "tenant", "tenant text", "[1.0,0.0]", "space-current"),
++                (store._scope_key(tenant), "other-workspace", "allowed/other-workspace.py", 0, "workspace", "workspace text", "[1.0,0.0]", "space-current"),
++            ],
++        )
++        con.commit()
++
++    result = store._search_uncached("qwertyprobe", tenant, workspace, top_k=8, use_reranker=False, scope_path="allowed")
++
++    assert [row["path"] for row in result["results"]] == ["allowed/current.py"]
++    assert result["degraded"] is True
++    assert "embedding_space_rebuild_pending" in result["fallbacks"]
++
++
++def test_search_reports_mismatch_when_only_foreign_or_empty_space_rows_exist(tmp_path):
++    store = _store(tmp_path)
++    store.services.embed = lambda *_args, **_kwargs: {
++        "success": True,
++        "embedding_space_id": "space-current",
++        "embeddings": [[1.0, 0.0]],
++    }
++    tenant = "tenant"
++    workspace = "stale-spaces"
++    with sqlite3.connect(store.db_path) as con:
++        con.executemany(
++            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
++            "VALUES(?,?,?,?,?,?,?,?)",
++            [
++                (store._scope_key(tenant), workspace, "foreign.py", 0, "foreign", "foreign text", "[1.0,0.0]", "space-old"),
++                (store._scope_key(tenant), workspace, "legacy.py", 0, "legacy", "legacy text", "[1.0,0.0]", ""),
++            ],
++        )
++        con.commit()
++
++    result = store._search_uncached("qwertyprobe", tenant, workspace, top_k=8, use_reranker=False)
++
++    assert result["results"] == []
++    assert result["degraded"] is True
++    assert result["fallback"] == "embedding_space_mismatch"
++    assert result["reindex_required"] is True
++
++
++
++def test_search_keeps_fts_fallback_labeled_when_query_embedding_fails(tmp_path):
++    store = _store(tmp_path)
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / "guide.py").write_text("def credential_lookup():\n    return 'needle phrase'\n", encoding="utf-8")
++    assert store.index(str(root), "tenant", workspace="fts-fallback")["success"] is True
++    store.services.embed = lambda *_args, **_kwargs: {"success": False, "error": "offline"}
++
++    result = store._search_uncached("needle phrase", "tenant", "fts-fallback", use_reranker=False)
++
++    assert [row["path"] for row in result["results"]] == ["guide.py"]
++    assert result["degraded"] is True
++    assert result["fallback"] == "bm25_fts"

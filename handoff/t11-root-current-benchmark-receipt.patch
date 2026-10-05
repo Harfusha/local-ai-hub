@@ -1,0 +1,104 @@
+diff --git a/tests/test_rag_quality_contract.py b/tests/test_rag_quality_contract.py
+--- a/tests/test_rag_quality_contract.py
++++ b/tests/test_rag_quality_contract.py
+@@ -1,11 +1,13 @@
+ from __future__ import annotations
+ 
+ import json
++import math
+ import os
+ import sqlite3
+ import time
+ import tracemalloc
+ from contextlib import closing
++from pathlib import Path
+ 
+ import numpy as np
+ 
+@@ -307,7 +309,7 @@
+     assert state["closed_before_dot"] is True
+ 
+ 
+-def test_retrieval_latency_and_peak_memory_baseline(tmp_path, capsys):
++def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
+     if os.environ.get("RAG_BENCHMARK") != "1":
+         import pytest
+         pytest.skip("set RAG_BENCHMARK=1 to run bounded retrieval measurements")
+@@ -315,7 +317,8 @@
+     dimension = 384
+     tenant, workspace = "benchmark-tenant", "benchmark-workspace"
+     metrics = []
+-    for count in (1024, 8192, 16384):
++    corpus_counts = (1024, 8192, 16384)
++    for count in corpus_counts:
+         store = _store(tmp_path / str(count), dimension)
+         rng = np.random.default_rng(41)
+         vectors = rng.standard_normal((count, dimension), dtype=np.float32)
+@@ -335,11 +338,66 @@
+             peak_bytes = max(peak_bytes, sample_peak)
+             assert result["success"] is True
+             assert result["results"][0]["chunk_no"] == 0
++        configured_batch_size = max(32, int(store.config.get("rag", {}).get("search_batch_size", 512)))
++        real_dot = np.dot
++        scoring_batch_rows = []
++
++        def observe_dot(matrix, query):
++            if (
++                getattr(matrix, "ndim", None) == 2
++                and matrix.shape[1] == dimension
++                and tuple(getattr(query, "shape", ())) == (dimension,)
++            ):
++                scoring_batch_rows.append(int(matrix.shape[0]))
++            return real_dot(matrix, query)
++
++        monkeypatch.setattr(np, "dot", observe_dot)
++        probe = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
++        monkeypatch.setattr(np, "dot", real_dot)
++        assert probe["success"] is True
++        assert probe["results"][0]["chunk_no"] == 0
++        assert scoring_batch_rows
++        assert sum(scoring_batch_rows) == count
++        assert max(scoring_batch_rows) <= configured_batch_size
++
+         metrics.append({
+             "chunks": count,
++            "search_batch_size": configured_batch_size,
+             "median_ms": round(float(np.median(samples_ms)), 3),
+             "peak_traced_mib": round(peak_bytes / (1024 * 1024), 3),
++            "measured_samples": len(samples_ms),
++            "peak_memory_samples": len(samples_ms),
++            "scoring_batches": len(scoring_batch_rows),
++            "max_scoring_batch_rows": max(scoring_batch_rows),
++            "scored_chunks": sum(scoring_batch_rows),
+         })
+ 
++    assert len(metrics) == len(corpus_counts)
++    assert [int(row["chunks"]) for row in metrics] == list(corpus_counts)
++    for row in metrics:
++        assert row["measured_samples"] == 3
++        assert row["peak_memory_samples"] == 3
++        assert row["scored_chunks"] == row["chunks"]
++        assert row["max_scoring_batch_rows"] <= row["search_batch_size"]
++        assert math.isfinite(float(row["median_ms"])) and float(row["median_ms"]) >= 0.0
++        assert math.isfinite(float(row["peak_traced_mib"])) and float(row["peak_traced_mib"]) >= 0.0
++
++    receipt = {
++        "schema_version": 1,
++        "benchmark": "rag_retrieval_latency_and_peak_memory",
++        "corpus_counts": list(corpus_counts),
++        "dimension": dimension,
++        "dtype": "float32",
++        "search_batch_sizes": sorted({int(row["search_batch_size"]) for row in metrics}),
++        "measured_samples_per_corpus": 3,
++        "peak_memory_samples_per_corpus": 3,
++        "complexity_guard": "each corpus row is scored once in dot-product batches bounded by search_batch_size",
++        "metrics": metrics,
++    }
++    receipt_path = Path(os.environ.get(
++        "RAG_BENCHMARK_RECEIPT", str(tmp_path / "rag-benchmark-receipt.json")
++    ))
++    receipt_path.parent.mkdir(parents=True, exist_ok=True)
++    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print("RAG_BENCHMARK_RECEIPT=" + str(receipt_path))
+     print("RAG_BENCHMARK=" + json.dumps(metrics, sort_keys=True))
+-    assert len(metrics) == 3

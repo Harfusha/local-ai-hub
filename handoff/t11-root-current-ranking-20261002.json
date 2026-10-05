@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "status": "REVIEW / OPEN — T20 INTEGRATED; SELECTORS WAITING FOR T20 SLOT AFTER T15/T02",
+  "patch": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-ranking-20261002.patch",
+  "patch_sha256": "ee8095d24547b4e9692b89d6a0dc2b474963544875ab198229db9d13fbe2bb07",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_preimage_sha256": {
+    "src/local_ai_hub/rag.py": "4c0ed5c52ec4cd9d82b41f0d6d2188812d607d1ce58c4ffea956d045fbb9048a",
+    "tests/test_rag_quality_contract.py": "e783c6bac08d827b4ff5f404b5a521b4e041821992c8734a730d1441350149ef"
+  },
+  "scratch_postimage_sha256": {
+    "src/local_ai_hub/rag.py": "88836fe1782a3d01ed3606bc8dd2fccc40168ac4411c7cfb73b67da802933c27",
+    "tests/test_rag_quality_contract.py": "273c1eea3645f78596009340096d2c381fd8749fe71ce8f2ecb7a8aece723572"
+  },
+  "lf_normalized_postimage_match": {
+    "src/local_ai_hub/rag.py": true,
+    "tests/test_rag_quality_contract.py": true
+  },
+  "scratch_apply_check": "PASS",
+  "scope": "Only root-current vector candidate ranking hunk and two ranking contract tests. No root writes.",
+  "implementation": "Use argpartition for batch top-candidate selection; lexsort exact cutoff ties by path/chunk/content hash only. Keep heap tie order.",
+  "selectors_after_T02_release": [
+    "tests/test_rag_quality_contract.py::test_vector_search_skips_redundant_local_sort_for_unique_scores",
+    "tests/test_rag_quality_contract.py::test_vector_search_keeps_deterministic_ties_at_candidate_cutoff",
+    "tests/test_rag_quality_contract.py::test_equal_scores_use_semantic_path_order_not_row_order"
+  ],
+  "measurement": "No benchmark/profile run. Existing RED p95 972.658 ms at batch 4096; 1698.727 ms at batch 512; gate 750 ms. No speedup claim.",
+  "root_integration": {
+    "reported_by": "T20 release acceptance thread 01a0d322-b3bd-7930-b552-14e9b7020fec",
+    "integration": "Applied after exact patch/source/test SHA checks and git apply --check; root files not written by T11 agent.",
+    "patch_sha256": "ee8095d24547b4e9692b89d6a0dc2b474963544875ab198229db9d13fbe2bb07",
+    "root_postimage_sha256": {
+      "src/local_ai_hub/rag.py": "88836fe1782a3d01ed3606bc8dd2fccc40168ac4411c7cfb73b67da802933c27",
+      "tests/test_rag_quality_contract.py": "273c1eea3645f78596009340096d2c381fd8749fe71ce8f2ecb7a8aece723572"
+    },
+    "diff_summary_reported": "src/local_ai_hub/rag.py and tests/test_rag_quality_contract.py only"
+  },
+  "verification": {
+    "status": "PENDING — T02 slot 04 active; await explicit T20 T11 slot after T02/T15",
+    "selectors": [
+      "tests/test_rag_quality_contract.py::test_vector_search_skips_redundant_local_sort_for_unique_scores",
+      "tests/test_rag_quality_contract.py::test_vector_search_keeps_deterministic_ties_at_candidate_cutoff",
+      "tests/test_rag_quality_contract.py::test_equal_scores_use_semantic_path_order_not_row_order"
+    ],
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py::test_vector_search_skips_redundant_local_sort_for_unique_scores tests/test_rag_quality_contract.py::test_vector_search_keeps_deterministic_ties_at_candidate_cutoff tests/test_rag_quality_contract.py::test_equal_scores_use_semantic_path_order_not_row_order",
+    "slot_owner_status": "T02 has exclusive slot 04; fresh prepare/measurement receipt pending. No T11 selectors may run until T20 explicitly assigns a slot.",
+    "tests_run_by_T11_after_root_integration": false
+  },
+  "performance_gate_status": "RED / OPEN; T02 slot 04 active. No duplicate benchmark or overlapping tests.",
+  "acceptance_status": "REVIEW",
+  "done": false
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-02",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "reviewed_tests": {
+    "tests/test_rag_quality_contract.py": "0A82654D5BBA505F69437037E8F906DEFAF5F983ACA0305445E11F0854BBD9C5",
+    "tests/test_t11_rag_ingestion_contract.py": "C4E9A80373A3964E1EF9CB7B1F07114D5DD09BF7A68BDD308D167613DBCB8EE1"
+  },
+  "review_scope": [
+    "test_rag_quality_contract.py:559-704 100k latency/memory matrix",
+    "test_t11_rag_ingestion_contract.py:796-930 live embedding/reranker measurement"
+  ],
+  "findings": [],
+  "evidence": {
+    "retrieval_matrix": "3 corpus sizes x 4 batch sizes; 100k uses 2 warmups and 20 timed samples; latency samples occur before a separate single tracemalloc memory sample",
+    "retrieval_gates": "Each 100k batch p95 <= 750 ms; peak traced <= 16 MiB; 100k peak <= 16k peak + 1.5 MiB; every corpus row scored once in configured-size-bounded dot batches",
+    "retrieval_receipt": "Structured JSON metrics and complexity probes are written to RAG_BENCHMARK_RECEIPT when set; default path is inside pytest tmp_path",
+    "reranker_probe": "2 warmups + 20 unique queries over 16 candidates; computed count checked to exclude pair-cache hits; model/backend/device/p50/p95/min/max emitted; peak memory explicitly not measured",
+    "reranker_threshold": "No p50/p95 threshold is specified by the current plan; record measured budget without inventing one"
+  },
+  "prepared_retrieval_command": "$env:RAG_BENCHMARK='1'; $env:RAG_BENCHMARK_RECEIPT='handoff/t11-rag-benchmark-receipt-20261002.json'; python -B -m pytest -q -s --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline",
+  "validation": "Read-only source inspection only; no benchmark or tests run."
+}

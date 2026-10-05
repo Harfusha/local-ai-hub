@@ -1,0 +1,218 @@
+--- a/src/local_ai_hub/rag.py
++++ b/src/local_ai_hub/rag.py
+@@ -1952,18 +1952,44 @@
+         tenant: str = "default",
+     ) -> dict[str, Any]:
+         """Ingest raw document or specification content into a RAG workspace."""
+-        clean_text = str(content or "").strip()
++        raw_text = str(content or "")
++        rag_cfg = self.config.get("rag", {})
++        max_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
++        content_bytes = len(raw_text.encode("utf-8"))
++        if content_bytes > max_bytes:
++            return {
++                "success": False,
++                "error": "document content exceeds configured file size limit",
++                "content_bytes": content_bytes,
++                "max_file_bytes": max_bytes,
++            }
++        clean_text = raw_text.strip()
+         if not clean_text:
+             return {"success": False, "error": "content is required"}
+ 
+         clean_ws = str(workspace or "default").strip()
+-        doc_title = str(title or (metadata.get("title") if isinstance(metadata, dict) else "")).strip() or f"doc_{_fragment_hash(clean_text)[:8]}"
++        doc_metadata = metadata if isinstance(metadata, dict) else {}
++        doc_title = str(title or "").strip() or str(doc_metadata.get("title") or "").strip() or f"doc_{_fragment_hash(clean_text)[:8]}"
+         doc_path = f"doc:{doc_title}"
+         scope_key = self._scope_key(tenant)
+ 
+-        raw_chunks = self._text_chunks(clean_text, size=1000, overlap=100)
++        index_parts = [f"Title: {doc_title}"]
++        if doc_metadata:
++            index_parts.append(f"Metadata: {json_dumps(doc_metadata, sort_keys=True, default=str)}")
++        index_parts.append(f"Content:\n{clean_text}")
++        indexed_bytes = sum(len(part.encode("utf-8")) for part in index_parts) + len(index_parts) - 1
++        if indexed_bytes > max_bytes:
++            return {
++                "success": False,
++                "error": "indexed document exceeds configured file size limit",
++                "indexed_bytes": indexed_bytes,
++                "max_file_bytes": max_bytes,
++            }
++        indexed_text = "\n".join(index_parts)
++
++        raw_chunks = self._text_chunks(indexed_text, size=1000, overlap=100)
+         if not raw_chunks:
+-            raw_chunks = [clean_text[:1000]]
++            raw_chunks = [indexed_text[:1000]]
+ 
+         records: list[dict[str, Any]] = []
+         for i, ch_text in enumerate(raw_chunks):
+@@ -1976,56 +2002,89 @@
+             })
+ 
+         if self.services is not None:
+-            try:
+-                vec_res = self.services.embed([r["text"] for r in records], tenant, priority=2, query=False)
+-                if isinstance(vec_res, dict) and vec_res.get("success"):
+-                    for idx, vec in enumerate(vec_res.get("embeddings", [])):
+-                        if idx >= len(records):
+-                            break
+-                        embedding = _serialize_embedding(vec)
++            for offset in range(0, len(records), _INDEX_EMBED_BATCH_SIZE):
++                batch_records = records[offset:offset + _INDEX_EMBED_BATCH_SIZE]
++                try:
++                    vec_res = self.services.embed(
++                        [record["text"] for record in batch_records],
++                        tenant,
++                        priority=2,
++                        query=False,
++                    )
++                    if not isinstance(vec_res, dict) or not vec_res.get("success"):
++                        break
++                    vectors = vec_res.get("embeddings", [])
++                    if len(vectors) > len(batch_records):
++                        break
++                    embedding_space = self._embedding_space_id(vec_res)
++                    for record, vector in zip(batch_records, vectors):
++                        embedding = _serialize_embedding(vector)
+                         if embedding is not None:
+-                            records[idx]["embedding"] = embedding
+-                            records[idx]["embedding_space"] = self._embedding_space_id(vec_res)
+-            except Exception:
+-                pass
++                            record["embedding"] = embedding
++                            record["embedding_space"] = embedding_space
++                    if len(vectors) < len(batch_records):
++                        break
++                except Exception:
++                    break
+ 
+         for r in records:
+             if r["embedding"] is None:
+                 r["embedding"] = ""
+ 
+-        with self._get_workspace_lock(clean_ws), closing(self._connect()) as con:
+-            con.execute("BEGIN IMMEDIATE")
+-            con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
+-            con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
+-            try:
+-                con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
+-            except Exception:
+-                pass
+-
+-            now_ns = time.time_ns()
+-            con.execute(
+-                "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
+-                (scope_key, clean_ws, doc_path, now_ns, len(clean_text.encode("utf-8")), _fragment_hash(clean_text)),
++        def publish_document() -> None:
++            with self._get_workspace_lock(clean_ws), closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
++                con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
++                fts_exists = con.execute(
++                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
++                ).fetchone()
++                if fts_exists:
++                    con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, clean_ws, doc_path))
++
++                now_ns = time.time_ns()
++                con.execute(
++                    "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
++                    (scope_key, clean_ws, doc_path, now_ns, len(indexed_text.encode("utf-8")), _fragment_hash(indexed_text)),
++                )
++                con.executemany(
++                    "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
++                    [(scope_key, clean_ws, doc_path, r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"]) for r in records],
++                )
++                if fts_exists:
++                    con.executemany(
++                        "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
++                        [(scope_key, clean_ws, doc_path, r["chunk_no"], r["text"]) for r in records],
++                    )
++                con.commit()
++
++        try:
++            retry_busy(
++                publish_document,
++                retries=self._sqlite_write_retries,
++                base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
+             )
+-            con.executemany(
+-                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+-                [(scope_key, clean_ws, doc_path, r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"]) for r in records],
+-            )
+-            try:
+-                con.executemany(
+-                    "INSERT INTO chunk_fts(tenant,workspace,path,chunk_no,text) VALUES(?,?,?,?,?)",
+-                    [(scope_key, clean_ws, doc_path, r["chunk_no"], r["text"]) for r in records],
+-                )
+-            except Exception:
+-                pass
+-            con.commit()
+-
++        except Exception as exc:
++            return {
++                "success": False,
++                "workspace": clean_ws,
++                "document_title": doc_title,
++                "error": "ingest_publish_failed",
++                "detail": str(exc),
++                "retryable": is_busy_error(exc),
++            }
++
++        embedded_chunks = sum(bool(r["embedding_space"]) for r in records)
++        embedded = embedded_chunks == len(records)
+         return {
+             "success": True,
+             "workspace": clean_ws,
+             "document_title": doc_title,
+             "chunks_ingested": len(records),
+-            "embedded": any(bool(r["embedding_space"]) for r in records),
++            "embedded": embedded,
++            "embedded_chunks": embedded_chunks,
++            "embedding_status": "embedded" if embedded else "degraded",
++            "degraded": not embedded,
+         }
+ 
+     def ingest_diagram(
+--- a/tests/test_t11_rag_ingestion_contract.py
++++ b/tests/test_t11_rag_ingestion_contract.py
+@@ -99,6 +99,36 @@
+ 
+     monkeypatch.setattr(store, "_connect", lambda: _FailingConnection(connect()))
+     return state
++
++
++def test_document_ingest_embeds_title_metadata_and_content(tmp_path):
++    store = _store(tmp_path)
++    embedded_texts = []
++
++    class _RecordingServices:
++        def embed(self, texts, _tenant, **_kwargs):
++            batch = list(texts)
++            embedded_texts.extend(batch)
++            return {
++                "success": True,
++                "embedding_space_id": "document-ingestion-test-space",
++                "embeddings": [[1.0, 0.0] for _ in batch],
++            }
++
++    store.services = _RecordingServices()
++    result = store.ingest_document(
++        "specs",
++        "The system rotates service credentials weekly.",
++        title="Credential Rotation Plan",
++        metadata={"owner": "identity-team", "revision": 7},
++    )
++
++    assert result["success"] is True
++    embedded_text = "\n".join(embedded_texts)
++    assert "Title: Credential Rotation Plan" in embedded_text
++    assert '"owner":"identity-team"' in embedded_text
++    assert '"revision":7' in embedded_text
++    assert "Content:\nThe system rotates service credentials weekly." in embedded_text
+ 
+ 
+ def test_document_ingest_indexes_title_and_metadata(tmp_path):

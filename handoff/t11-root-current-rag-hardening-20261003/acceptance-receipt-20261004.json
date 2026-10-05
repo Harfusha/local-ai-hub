@@ -1,0 +1,143 @@
+{
+  "schema": "t11-root-acceptance-receipt-v1",
+  "date": "2026-10-04",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "candidate": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+  "candidate_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+  "scope": [
+    "embedding-space isolation",
+    "atomic ingestion and FTS snapshot",
+    "retrieval batching and latency",
+    "synthetic CPU ingestion/seed throughput"
+  ],
+  "root_changes_applied": false,
+  "candidate_patch_applied": true,
+  "root_preimage_sha256": {
+    "tests/test_rag_hybrid.py": "3A6C0BF3A388DBE0C472ED056E1820BB4452E1B1139BC9E9C3D75AE05CB06D38",
+    "tests/test_t11_rag_ingestion_contract.py": "4876D98A26B9EB26701A841799BA088F3DAC3021B842A2B55945F53641306914",
+    "src/local_ai_hub/embeddings.py": "A3E04B9D1623979AECEB95643F74A7405E2C3739ECA82EB815E0299CB6F57E16",
+    "tests/test_t11_rag_seed_integrity.py": "1EAEBD71367CB99BCA2B1263EEF195EF892CDA3A215A743E7CE64C02843FDD30",
+    "src/local_ai_hub/rag.py": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27",
+    "tests/test_rag_quality_contract.py": "9B8D07437E99C6DCA71A5F2ED6CC8C2771810253B671FCDED3D4EB113E63B91F",
+    "tests/test_rag_fragment_cache.py": "4C08E7EDD5845F2907DDD3D1F12D30D6A22EC5E8D887327CDCB734579223D9B6"
+  },
+  "candidate_postimage_sha256": {
+    "tests/test_rag_hybrid.py": "8396D5A114D14BAEBFEAF9022E6C569D3B475DEA8D9075794195DB13DFFDC75E",
+    "tests/test_t11_rag_ingestion_contract.py": "5379581182535E3A2696FF2E437BC11ABB8A31F17049A828AFDE93455660EC1F",
+    "src/local_ai_hub/embeddings.py": "2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170",
+    "tests/test_t11_rag_seed_integrity.py": "943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02",
+    "src/local_ai_hub/rag.py": "6DF666C2DC877D69FF8DF8F6A089C15533247FF95BA896F644720F0FA3AA85D5",
+    "tests/test_rag_quality_contract.py": "EF90FC86269D89FFDB6E5CC508BF54917D4A6ED2243447E85DE372B94D5CF3E9",
+    "tests/test_rag_fragment_cache.py": "A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002",
+    "src/local_ai_hub/reranker.py": "EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562"
+  },
+  "patches": [
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-rag-hardening-20261003\\t11-root-current-source.patch",
+      "sha256": "6BA6596E1A7321D0B80F5D0C9D582ABC522913DC59BB4A2341996E6352558231",
+      "root_apply_check": "PASS"
+    },
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-rag-hardening-20261003\\t11-root-index-error-retryability-20261004.patch",
+      "sha256": "3BD729EECAB2ABF1339F9D6BC89C12390050AB48FB4C4E7056E6A24573C2DDED",
+      "root_apply_check": "PASS"
+    },
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-rag-hardening-20261003\\t11-root-current-owned-tests.patch",
+      "sha256": "EF731CCC636E92418DB227E32444E23E22E635F5018623CF790BFFCF65B167AD",
+      "root_apply_check": "PASS"
+    }
+  ],
+  "commands": [
+    {
+      "kind": "initial_offline_red",
+      "command": "python -B -m pytest -q --tb=short -p no:cacheprovider -k 'not retrieval_latency_and_peak_memory_baseline and not t11_ingestion_batch_benchmark' tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py",
+      "exit_code": 1,
+      "result": "159 passed, 1 skipped, 2 failed, 2 deselected in 164.00s; permanent FTS write failures incorrectly returned retryable=true"
+    },
+    {
+      "kind": "focused_regression_after_fix",
+      "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py::test_full_index_fts_write_failure_keeps_previous_snapshot tests/test_t11_rag_ingestion_contract.py::test_document_ingest_fts_write_failure_keeps_previous_snapshot tests/test_t11_rag_ingestion_contract.py::test_exhausted_publish_busy_retries_preserve_snapshot_and_report_retryable",
+      "exit_code": 0,
+      "result": "6 passed in 14.25s"
+    },
+    {
+      "kind": "offline_acceptance_after_fix",
+      "command": "python -B -m pytest -q --tb=short -p no:cacheprovider -k 'not retrieval_latency_and_peak_memory_baseline and not t11_ingestion_batch_benchmark' tests/test_rag_read_bounds.py tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_rag_dedup.py tests/test_t11_rag_ingestion_contract.py tests/test_t11_rag_seed_integrity.py tests/test_reranker_cache_identity.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py",
+      "exit_code": 0,
+      "result": "161 passed, 1 skipped, 2 deselected in 49.75s; skip: live Ollama"
+    },
+    {
+      "kind": "synthetic_cpu_benchmarks",
+      "command": "$env:RAG_BENCHMARK=1; $env:T11_RAG_BENCHMARK=1; python -B -m pytest -q --tb=short -p no:cacheprovider -s tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline tests/test_t11_rag_seed_integrity.py::test_t11_ingestion_batch_benchmark",
+      "exit_code": 0,
+      "result": "2 passed in 53.27s",
+      "retrieval_receipt_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\pytest-of-Adam\\pytest-10200\\test_retrieval_latency_and_pea0\\rag-benchmark-receipt.json",
+      "retrieval_receipt_sha256": "0C77DE7A16B04C40F85D31AAB64895F2CB3D1BBC9D136DD76A6509EB68F097F1",
+      "retrieval_100k_metrics": [
+        {
+          "search_batch_size": 512,
+          "peak_traced_mib": 2.455,
+          "vector_batch_buffer_mib": 0.75,
+          "p95_ms": 342.918
+        },
+        {
+          "search_batch_size": 2048,
+          "peak_traced_mib": 9.869,
+          "vector_batch_buffer_mib": 3.0,
+          "p95_ms": 382.73
+        },
+        {
+          "search_batch_size": 4096,
+          "peak_traced_mib": 13.21,
+          "vector_batch_buffer_mib": 6.0,
+          "p95_ms": 426.3
+        },
+        {
+          "search_batch_size": 8192,
+          "peak_traced_mib": 13.21,
+          "vector_batch_buffer_mib": 12.0,
+          "p95_ms": 429.782
+        }
+      ],
+      "ingestion": {
+        "explicit_batch_64_files_per_second": 150.56,
+        "seed_files_per_second": 507.05,
+        "integrated_batch_6_files_per_second": 53.88,
+        "explicit_batch_64_ms": 850.161,
+        "seed_ms": 252.441,
+        "integrated_batch_6_ms": 2375.792
+      },
+      "performance_scope": "synthetic deterministic embedder; not model throughput",
+      "live_reranker_gpu": "NOT RUN",
+      "retrieval_receipt_retention": "Temporary pytest artifact was pruned by a later pytest invocation; exact measured rows are preserved inline in this handoff receipt."
+    }
+  ],
+  "acceptance": "Candidate offline tests, focused FTS rollback tests and synthetic CPU benchmarks pass. Root patches are preflighted only and remain unapplied; live reranker/GPU quality unverified.",
+  "root_patch_apply_sequence": [
+    "t11-root-current-source.patch",
+    "t11-root-index-error-retryability-20261004.patch",
+    "t11-root-current-owned-tests.patch"
+  ],
+  "notes": [
+    "Root HEAD and dirty workspace preserved; no root writes.",
+    "Patches are three independently apply-checked files because combined duplicate rag.py diff was rejected by git apply.",
+    "Project-policy consumer tests and model lifecycle test remain excluded by owner scope.",
+    "No commit created."
+  ],
+  "preflight_commands": [
+    {
+      "exit_code": 0,
+      "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check --recount C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-rag-hardening-20261003\\t11-root-current-source.patch"
+    },
+    {
+      "exit_code": 0,
+      "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check --recount C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-rag-hardening-20261003\\t11-root-index-error-retryability-20261004.patch"
+    },
+    {
+      "exit_code": 0,
+      "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check --recount C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub\\handoff\\t11-root-current-rag-hardening-20261003\\t11-root-current-owned-tests.patch"
+    }
+  ]
+}
