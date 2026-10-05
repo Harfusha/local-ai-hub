@@ -1954,7 +1954,7 @@ class Handler(BaseHTTPRequestHandler):
             data.setdefault("retryable", retryable)
             data.setdefault("terminal", not retryable)
         request_id = getattr(self, "_journal_request_id", None)
-        if request_id and isinstance(data, dict) and (status >= 400 or "request_id" in data):
+        if request_id and isinstance(data, dict):
             data = dict(data)
             data.setdefault("request_id", request_id)
         if request_id and APP is not None and not getattr(self, "_journal_finished", False):
