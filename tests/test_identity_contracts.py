@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -135,7 +136,13 @@ def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_pat
         store.promote(repository_record.record_id, AgentScope.GLOBAL, approver="agent")
 
     # This direct store test checks its approval marker only; it cannot authenticate a human actor.
-    shared = store.promote(repository_record.record_id, AgentScope.GLOBAL, approver="user")
+    shared = store.promote(
+        repository_record.record_id,
+        AgentScope.GLOBAL,
+        approver="user",
+        root=str(tmp_path / "repo-a"),
+        repository_id="repo-a",
+    )
     records = store.find_for_context(root=str(tmp_path / "repo-b"))
     assert any(record.record_id == shared.record_id for record in records)
 
@@ -229,6 +236,7 @@ def test_tenant_scoped_rag_search_cache_keeps_index_results_isolated(tmp_path):
     )
     workspace = "shared-workspace"
     path = "src/data.py"
+    embedding_space = store._embedding_space_id()
     with closing(store._connect()) as con:
         for tenant, content_hash, text in (
             ("identity-a", "hash-a", "identity a result"),
@@ -240,8 +248,8 @@ def test_tenant_scoped_rag_search_cache_keeps_index_results_isolated(tmp_path):
                 (scope_key, workspace, path, 1, len(text), content_hash),
             )
             con.execute(
-                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
-                (scope_key, workspace, path, 0, content_hash, text, "[1.0, 0.0]"),
+                "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
+                (scope_key, workspace, path, 0, content_hash, text, "[1.0, 0.0]", embedding_space),
             )
         con.commit()
 
@@ -387,4 +395,8 @@ def test_memory_delete_requires_matching_scope_identity(tmp_path):
         actor="user",
     )
     assert store.delete(legacy.record_id, scope=AgentScope.SESSION) is False
-    assert store.get(legacy.record_id) is not None
+    with closing(sqlite3.connect(store.state_store.db_path)) as con:
+        assert con.execute(
+            "SELECT 1 FROM agent_memory_records WHERE record_id = ?",
+            (legacy.record_id,),
+        ).fetchone() is not None
