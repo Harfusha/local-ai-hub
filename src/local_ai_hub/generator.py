@@ -113,7 +113,13 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
     batch_line = '- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.' if features.tasks else ''
     return f"""## Context economy contract
 
-- Every Hub response is aggregate-bounded (default ≈{budget} tokens); explicit `max_response_tokens` below 128 are rejected, never silently raised.
+- Every Hub response is aggregate-bounded (default ≈{budget} tokens).
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
 {batch_line}
@@ -776,6 +782,12 @@ Load and follow this skill before any coding or repository task. Apply its disco
 
 ### 6. MCP Response Economy
 - Hub responses are aggregate-bounded; use `max_response_tokens` only for a bounded exception.
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer compact/minimal profiles, stable `reuse_key` values, cache reuse, and artifact slices.
 - Keep command output at summary/status level; fetch exact logs only when needed.
 """
@@ -807,6 +819,12 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.\n"
         "- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
+        "- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.\n"
+        "- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.\n"
+        "- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.\n"
+        "- Reject `max_response_tokens` below 128; never raise the request silently.\n"
+        "- Native fallback requires an explicit `terminal=true` and `retryable=false` result.\n"
+        "- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.\n"
         + local_model_line
         + "<!-- END TOKEN ECONOMY POLICY -->"
     )

@@ -62,6 +62,12 @@ Local model policy is profile-aware: integrated reserves qwen2.5-coder:0.5b for 
 - Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
 - Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
 - Surgical edits: Prefer targeted block replacements over rewriting entire files.
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Local model delegation follows the active profile: integrated uses qwen2.5-coder:0.5b preprocessing, qwen2.5-coder:1.5b quick, qwen2.5-coder:3b involved, qwen2.5-coder:7b hard and qwen3-vl:4b vision; balanced uses qwen2.5-coder:1.5b preprocessing, qwen2.5-coder:3b fast, qwen2.5-coder:7b ordinary/hard and qwen3.5:9b extreme/vision. Use `local_ai_task` only for bounded semantic work after deterministic evidence.
 <!-- END TOKEN ECONOMY POLICY -->
 
