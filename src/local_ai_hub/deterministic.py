@@ -4147,7 +4147,7 @@ def test_{sym}_regression_edge_cases():
             # Fallback to repo_tools iter_files which respects .gitignore and ignores Library/node_modules
             all_files = [str(p.relative_to(resolved_root)).replace("\\", "/") for p in self.repo_tools.iter_files(str(resolved_root))]
             for rel in all_files:
-                f_lower = rel.lower()
+                _ = rel.lower()
                 if is_test_source(rel):
                     db_test_paths.append(rel)
                     if len(db_test_paths) >= 50:
