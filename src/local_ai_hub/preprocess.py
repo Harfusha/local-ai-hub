@@ -67,6 +67,40 @@ PROJECT_SCHEMA = {
 }
 
 
+def _project_git_identity(root: str) -> tuple[str, bool]:
+    """Return a local Git common-dir identity without guessing from path names."""
+    try:
+        resolved_root = Path(root).resolve(strict=False)
+        marker = resolved_root / ".git"
+        if marker.is_dir():
+            return str(marker.resolve(strict=False)), False
+        if not marker.is_file():
+            return str(resolved_root), False
+
+        marker_text = marker.read_text(encoding="utf-8", errors="replace")[:1024]
+        prefix, separator, raw_git_dir = marker_text.partition(":")
+        if prefix.strip().casefold() != "gitdir" or not separator or not raw_git_dir.strip():
+            return str(resolved_root), False
+        git_dir = Path(raw_git_dir.strip())
+        if not git_dir.is_absolute():
+            git_dir = resolved_root / git_dir
+        git_dir = git_dir.resolve(strict=False)
+
+        common_dir_file = git_dir / "commondir"
+        if not common_dir_file.is_file():
+            return str(git_dir), False
+        raw_common_dir = common_dir_file.read_text(encoding="utf-8", errors="replace")[:1024].strip()
+        if not raw_common_dir:
+            return str(resolved_root), False
+        common_dir = Path(raw_common_dir)
+        if not common_dir.is_absolute():
+            common_dir = git_dir / common_dir
+        common_dir = common_dir.resolve(strict=False)
+        return str(common_dir), common_dir != git_dir
+    except (OSError, RuntimeError, ValueError):
+        return str(root), False
+
+
 class ProjectPreprocessor:
     """Durable idle-time project preprocessing.
 
@@ -1246,6 +1280,7 @@ class ProjectPreprocessor:
                 rows = con.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
             projects: list[dict[str, Any]] = []
             for row in rows:
+                git_common_dir, is_worktree = _project_git_identity(str(row["root"]))
                 status_str = str(row["status"] or "queued")
                 phase_str = "complete" if status_str == "complete" else str(row["phase"] or "inventory")
                 total_phases = len(self.PHASES)
@@ -1495,6 +1530,7 @@ class ProjectPreprocessor:
                     project_stats = {}
                 projects.append({
                     "root": row["root"], "project": Path(row["root"]).name, "workspace": row["workspace"],
+                    "git_common_dir": git_common_dir, "is_worktree": is_worktree,
                     "status": status_str, "phase": phase_str,
                     "paused": is_paused_row, "waiting": is_waiting_row, "last_error": last_err, "last_error_short": last_err_short,
                     "retry_after": retry_after_val, "waiting_reason": waiting_reason,
