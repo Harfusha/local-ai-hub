@@ -20,14 +20,26 @@ import time
 import uuid
 from typing import Any
 
-from tools.benchmark_surfaces import (
-    _BenchmarkCheckpoint,
-    _implementation_fingerprint,
-    _revision,
-    _resolve_outside_repo,
-    _total_memory_bytes,
-    summarize_samples,
-)
+if __package__:
+    from tools.benchmark_surfaces import (
+        _BenchmarkCheckpoint,
+        _implementation_fingerprint,
+        _revision,
+        _resolve_outside_repo,
+        _total_memory_bytes,
+        summarize_samples,
+    )
+    from tools.t02_queue_diagnostics import admission_failure_code, cancellation_failure_code
+else:  # Direct script execution puts tools/, not the repository root, on sys.path.
+    from benchmark_surfaces import (
+        _BenchmarkCheckpoint,
+        _implementation_fingerprint,
+        _revision,
+        _resolve_outside_repo,
+        _total_memory_bytes,
+        summarize_samples,
+    )
+    from t02_queue_diagnostics import admission_failure_code, cancellation_failure_code
 
 
 _MAX_REPETITIONS = 1_000
@@ -183,9 +195,10 @@ def run_queue_benchmark(
 
         app = LocalAIApp(str(config_path))
 
-        def attempt(level: int, repetition: int, slot: int) -> tuple[float, str | None]:
+        def attempt(level: int, repetition: int, slot: int) -> tuple[float, str | None, str | None]:
             started = time.perf_counter()
             error_type: str | None = None
+            error_code: str | None = None
             job_id: str | None = None
             cancelled = False
             try:
@@ -197,11 +210,13 @@ def run_queue_benchmark(
                     dispatch_delay_seconds=_DISPATCH_DELAY_SECONDS,
                 )
                 if submitted.get("success") is not True or not submitted.get("job_id"):
+                    error_code = admission_failure_code(submitted)
                     raise RuntimeError("Hub async job admission failed")
                 job_id = str(submitted["job_id"])
                 cancelled_result = app.async_jobs.cancel("benchmark", job_id)
                 cancelled = cancelled_result.get("success") is True and cancelled_result.get("state") == "cancelled"
                 if not cancelled:
+                    error_code = cancellation_failure_code(cancelled_result)
                     raise RuntimeError("Hub async job was not cancelled before worker service")
             except Exception as exc:  # capture type only; payloads and exception text are not evidence
                 error_type = type(exc).__name__
@@ -212,7 +227,7 @@ def run_queue_benchmark(
                         cancelled = cleanup.get("success") is True and cleanup.get("state") == "cancelled"
                     except Exception:
                         pass
-            return (time.perf_counter() - started) * 1000.0, error_type
+            return (time.perf_counter() - started) * 1000.0, error_type, error_code
 
         progress = checkpoint.stage_progress("queue_admission")
         levels = progress.setdefault("by_concurrency", {})
@@ -221,6 +236,7 @@ def run_queue_benchmark(
         warm_samples: list[float] = []
         error_count = 0
         error_types: set[str] = set()
+        error_codes: set[str] = set()
         batch_seconds_total = 0.0
         by_concurrency: dict[str, Any] = {}
 
@@ -232,6 +248,7 @@ def run_queue_benchmark(
                 "warm_samples_ms": [],
                 "error_count": 0,
                 "error_types": [],
+                "error_codes": [],
                 "batch_seconds": 0.0,
             })
             level_samples = [float(value) for value in item["samples_ms"]]
@@ -239,6 +256,7 @@ def run_queue_benchmark(
             level_warm = [float(value) for value in item["warm_samples_ms"]]
             level_errors = int(item["error_count"])
             level_error_types = set(item["error_types"])
+            level_error_codes = set(item.get("error_codes", []))
             level_seconds = float(item["batch_seconds"])
             next_repetition = int(item["next_repetition"])
 
@@ -252,12 +270,14 @@ def run_queue_benchmark(
                         ))
                     level_seconds += time.perf_counter() - batch_started
                     target = level_cold if repetition == 0 else level_warm
-                    for elapsed_ms, error_type in outcomes:
+                    for elapsed_ms, error_type, error_code in outcomes:
                         level_samples.append(elapsed_ms)
                         target.append(elapsed_ms)
                         if error_type:
                             level_errors += 1
                             level_error_types.add(error_type)
+                        if error_code:
+                            level_error_codes.add(error_code)
 
                 next_repetition += count
                 item.update({
@@ -267,6 +287,7 @@ def run_queue_benchmark(
                     "warm_samples_ms": level_warm,
                     "error_count": level_errors,
                     "error_types": sorted(level_error_types),
+                    "error_codes": sorted(level_error_codes),
                     "batch_seconds": level_seconds,
                 })
                 checkpoint.save_progress("queue_admission", progress)
@@ -276,10 +297,12 @@ def run_queue_benchmark(
             warm_samples.extend(level_warm)
             error_count += level_errors
             error_types.update(level_error_types)
+            error_codes.update(level_error_codes)
             batch_seconds_total += level_seconds
             by_concurrency[str(level)] = {
                 **summarize_samples(level_samples),
                 "error_count": level_errors,
+                "error_codes": sorted(level_error_codes),
                 "error_rate_pct": round(level_errors * 100.0 / max(1, len(level_samples)), 3),
                 "concurrent_admissions_per_second": round(
                     level * light_repetitions / level_seconds, 3,
@@ -303,6 +326,7 @@ def run_queue_benchmark(
             "error_count": error_count,
             "error_rate_pct": round(error_count * 100.0 / max(1, len(all_samples)), 3),
             "error_types": sorted(error_types),
+            "error_codes": sorted(error_codes),
             "http_response_body_bytes": 0,
             "whitespace_token_estimate": 0,
             "response_measurement": "not_applicable_no_http_response",
