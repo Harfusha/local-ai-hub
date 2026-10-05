@@ -52,6 +52,7 @@ Route test/lint/typecheck/build/read-only commands through `local_ai_command` be
 Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and compression, `local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos.
 
 Local model policy is profile-aware: integrated reserves qwen2.5-coder:0.5b for preprocessing, qwen2.5-coder:1.5b for quick work, qwen2.5-coder:3b for involved work, qwen2.5-coder:7b for hard reasoning and qwen3-vl:4b for vision; balanced reserves qwen2.5-coder:1.5b for preprocessing, qwen2.5-coder:3b for fast work, qwen2.5-coder:7b for ordinary/hard work and qwen3.5:9b for extreme reasoning/vision; high raises reasoning/general/vision to 9b; max raises heavy/general/reasoning/vision to 9b. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
+
 <!-- END LOCAL AI HUB TOOL POLICY -->
 
 <!-- BEGIN TOKEN ECONOMY POLICY -->
