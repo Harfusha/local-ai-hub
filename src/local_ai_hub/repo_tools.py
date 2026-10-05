@@ -144,7 +144,7 @@ class RepositoryTools:
             raise ValueError(f"root directory does not exist: {path}")
         return path
 
-    def _git_files(self, root: Path) -> list[Path] | None:
+    def _git_files(self, root: Path, *, max_files: int | None = None) -> list[Path] | None:
         """Return tracked + untracked files using bounded, coalesced Git probes.
 
         A short cache absorbs bursts, a per-root flight lock prevents concurrent
@@ -154,13 +154,16 @@ class RepositoryTools:
         """
         if not self.prefer_git or not (root / ".git").exists():
             return None
+        limit = self.max_files if max_files is None else max(0, int(max_files))
         key = str(root)
         now = time.monotonic()
         with self._git_files_lock:
             cached = self._git_files_cache.get(key)
             if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
-                self._git_stats["file_list_hits"] += 1
-                return [(root / rel).resolve(strict=False) for rel in cached[1]]
+                cache_is_complete = len(cached[1]) < self.max_files
+                if max_files is None or cache_is_complete or len(cached[1]) >= limit:
+                    self._git_stats["file_list_hits"] += 1
+                    return [(root / rel).resolve(strict=False) for rel in cached[1][:limit]]
             if now < self._git_files_slow_until.get(key, 0.0):
                 return None
             flight = self._git_files_flights.setdefault(key, threading.Lock())
@@ -175,9 +178,11 @@ class RepositoryTools:
             with self._git_files_lock:
                 cached = self._git_files_cache.get(key)
                 if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
-                    self._git_stats["file_list_hits"] += 1
-                    self._git_stats["file_list_coalesced"] += 1
-                    return [(root / rel).resolve(strict=False) for rel in cached[1]]
+                    cache_is_complete = len(cached[1]) < self.max_files
+                    if max_files is None or cache_is_complete or len(cached[1]) >= limit:
+                        self._git_stats["file_list_hits"] += 1
+                        self._git_stats["file_list_coalesced"] += 1
+                        return [(root / rel).resolve(strict=False) for rel in cached[1][:limit]]
                 if now < self._git_files_slow_until.get(key, 0.0):
                     return None
                 self._git_stats["file_list_misses"] += 1
@@ -199,15 +204,29 @@ class RepositoryTools:
                         candidate.relative_to(root)
                     except ValueError:
                         continue
+                    if max_files is not None:
+                        relative = Path(rel)
+                        if any(part.lower() in self.ignore_dirs for part in relative.parts[:-1]):
+                            continue
+                        if candidate.suffix.lower() in self.ignore_extensions:
+                            continue
+                        if self.extensions and candidate.suffix.lower() not in self.extensions and candidate.name.lower() not in self.special_filenames:
+                            continue
+                        try:
+                            if candidate.stat().st_size > self.max_file_bytes:
+                                continue
+                        except OSError:
+                            continue
                     rels.append(rel)
-                    if len(rels) >= self.max_files:
+                    if len(rels) >= limit:
                         break
                 with self._git_files_lock:
-                    self._git_files_cache[key] = (time.monotonic(), tuple(rels))
+                    if max_files is None:
+                        self._git_files_cache[key] = (time.monotonic(), tuple(rels))
+                        if len(self._git_files_cache) > 64:
+                            for k in list(self._git_files_cache.keys())[:-32]:
+                                self._git_files_cache.pop(k, None)
                     self._git_files_slow_until.pop(key, None)
-                    if len(self._git_files_cache) > 64:
-                        for k in list(self._git_files_cache.keys())[:-32]:
-                            self._git_files_cache.pop(k, None)
                 return [(root / rel).resolve(strict=False) for rel in rels]
             except subprocess.TimeoutExpired:
                 with self._git_files_lock:
@@ -221,9 +240,10 @@ class RepositoryTools:
         finally:
             flight.release()
 
-    def iter_files(self, root: str, max_depth: int = 25) -> Iterable[Path]:
+    def iter_files(self, root: str, max_depth: int = 25, *, max_files: int | None = None) -> Iterable[Path]:
         base = self._root(root)
-        git_files = self._git_files(base)
+        limit = self.max_files if max_files is None else max(0, int(max_files))
+        git_files = self._git_files(base, max_files=limit) if max_files is not None else self._git_files(base)
         if git_files is not None:
             candidates = git_files
         else:
@@ -262,14 +282,20 @@ class RepositoryTools:
                         continue
                     if self.extensions and p.suffix.lower() not in self.extensions and p.name.lower() not in self.special_filenames:
                         continue
+                    if max_files is not None:
+                        try:
+                            if p.stat().st_size > self.max_file_bytes:
+                                continue
+                        except OSError:
+                            continue
                     candidates.append(p)
-                    if len(candidates) >= self.max_files:
+                    if len(candidates) >= limit:
                         break
-                if len(candidates) >= self.max_files:
+                if len(candidates) >= limit:
                     break
         count = 0
         for path in candidates:
-            if count >= self.max_files:
+            if count >= limit:
                 break
             try:
                 relative = path.relative_to(base)
@@ -882,17 +908,23 @@ class RepositoryTools:
         effective_snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
         hits: list[dict[str, Any]] = []
         scanned = 0
+        read_errors = 0
+        truncation_reasons: list[str] = []
+        candidate_limit = max(1, self.max_hits * 4)
         candidate_engine = "python"
-        candidates, accelerator_failed = self._ripgrep_candidates(base, terms, self.max_hits * 4)
+        candidates, accelerator_failed = self._ripgrep_candidates(base, terms, candidate_limit + 1)
         accelerated = candidates is not None
         if accelerated:
             candidate_engine = "ripgrep"
         else:
-            candidates, git_grep_failed = self._git_grep_candidates(base, terms, self.max_hits * 4)
+            candidates, git_grep_failed = self._git_grep_candidates(base, terms, candidate_limit + 1)
             accelerator_failed = accelerator_failed or git_grep_failed
             accelerated = candidates is not None
             if accelerated:
                 candidate_engine = "git-grep"
+        if candidates is not None and len(candidates) > candidate_limit:
+            truncation_reasons.append("result_limit")
+            candidates = candidates[:candidate_limit]
         if candidates:
             per_path_lines: dict[str, list[int]] = {}
             for rel, line_no in candidates:
@@ -901,7 +933,8 @@ class RepositoryTools:
                 path = (base / rel).resolve(strict=False)
                 try:
                     file_hash, lines = self._read_snapshot(path)
-                except Exception:
+                except OSError:
+                    read_errors += 1
                     continue
                 scanned += 1
                 path_lower = rel.lower()
@@ -930,13 +963,17 @@ class RepositoryTools:
                 "retryable": True,
             }
         if not hits and not accelerated:
-            for path in self.iter_files(str(base)):
+            for path in self.iter_files(str(base), max_files=self.max_files + 1):
+                if scanned >= self.max_files:
+                    truncation_reasons.append("file_limit")
+                    break
                 scanned += 1
                 rel = str(path.relative_to(base)).replace("\\", "/")
                 path_lower = rel.lower()
                 try:
                     file_hash, lines = self._read_snapshot(path)
-                except Exception:
+                except OSError:
+                    read_errors += 1
                     continue
                 for idx, line in enumerate(lines):
                     low = line.lower()
@@ -955,12 +992,18 @@ class RepositoryTools:
                         "path": rel, "start_line": start + 1, "end_line": end,
                         "score": round(score, 3), "text": snippet, "file_sha256": file_hash,
                     })
-                    if len(hits) >= self.max_hits * 4:
+                    if len(hits) > candidate_limit:
+                        hits.pop()
+                        if "result_limit" not in truncation_reasons:
+                            truncation_reasons.append("result_limit")
                         break
+                if "result_limit" in truncation_reasons:
+                    break
         hits.sort(key=lambda x: (-x["score"], x["path"], x["start_line"]))
         dedup: list[dict[str, Any]] = []
         seen: set[tuple[str, int]] = set()
         per_file: Counter[str] = Counter()
+        result_limit = max(1, int(top_k))
         for hit in hits:
             key = (hit["path"], hit["start_line"] // max(1, self.snippet_lines))
             if key in seen or per_file[hit["path"]] >= self.max_snippets_per_file:
@@ -968,11 +1011,26 @@ class RepositoryTools:
             seen.add(key)
             per_file[hit["path"]] += 1
             dedup.append(hit)
-            if len(dedup) >= max(1, int(top_k)):
+            if len(dedup) > result_limit:
+                if "result_limit" not in truncation_reasons:
+                    truncation_reasons.append("result_limit")
                 break
+        dedup = dedup[:result_limit]
         candidate_pool = hits[: max(len(dedup), max(1, int(top_k)) * 4)]
         candidate_tokens = sum(estimate_tokens(str(item.get("text", ""))) for item in candidate_pool)
-        result = {"success": True, "root": str(base), "scanned_files": scanned, "terms": terms, "results": dedup, "engine": candidate_engine}
+        if read_errors:
+            truncation_reasons.append("read_errors")
+        result = {
+            "success": True,
+            "root": str(base),
+            "scanned_files": scanned,
+            "terms": terms,
+            "results": dedup,
+            "engine": candidate_engine,
+            "truncated": bool(truncation_reasons or read_errors),
+            "truncation_reasons": truncation_reasons,
+            "read_errors": read_errors,
+        }
         if candidate_tokens:
             # Diagnostic only. Local RG-like filtering is not proof that a cloud
             # agent would otherwise have paid for the candidate snippets.
