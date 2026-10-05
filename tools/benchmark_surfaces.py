@@ -33,6 +33,11 @@ from typing import Any, Callable
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+if __package__:
+    from tools.t02_queue_diagnostics import admission_failure_code, cancellation_failure_code
+else:  # Direct script execution puts tools/, not the repository root, on sys.path.
+    from t02_queue_diagnostics import admission_failure_code, cancellation_failure_code
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _FULL_FILE_SIZES = {100, 10_000, 100_000}
@@ -1064,9 +1069,10 @@ def run_benchmark(
             definition="Direct LocalAIApp RAGStore._chunks calls on one synthetic source file; excludes retrieval, embeddings, reranking, and model inference.",
         ))
 
-        def queue_admission_attempt(_value: int) -> tuple[float, str | None]:
+        def queue_admission_attempt(_value: int) -> tuple[float, str | None, str | None]:
             queued_at = time.perf_counter()
             error_type: str | None = None
+            error_code: str | None = None
             try:
                 task_id = f"benchmark-{uuid.uuid4().hex}"
                 submitted = app.async_jobs.submit(
@@ -1074,18 +1080,21 @@ def run_benchmark(
                     dispatch_delay_seconds=30.0,
                 )
                 if submitted.get("success") is not True or not submitted.get("job_id"):
+                    error_code = admission_failure_code(submitted)
                     raise RuntimeError("Hub async job admission failed")
                 cancelled = app.async_jobs.cancel("benchmark", str(submitted["job_id"]))
                 if cancelled.get("success") is not True or cancelled.get("state") != "cancelled":
+                    error_code = cancellation_failure_code(cancelled)
                     raise RuntimeError("Hub async job was not cancelled before worker service")
             except Exception as exc:
                 error_type = type(exc).__name__
-            return (time.perf_counter() - queued_at) * 1000.0, error_type
+            return (time.perf_counter() - queued_at) * 1000.0, error_type, error_code
 
         queue_samples: list[float] = []
         queue_cold_samples: list[float] = []
         queue_warm_samples: list[float] = []
         queue_error_types: set[str] = set()
+        queue_error_codes: set[str] = set()
         queue_error_count = 0
         queue_measurements: dict[str, Any] = {}
         total_admissions = 0
@@ -1096,13 +1105,14 @@ def run_benchmark(
         for level in concurrency:
             level_progress = progress_by_concurrency.setdefault(str(level), {
                 "next_repetition": 0, "samples_ms": [], "cold_samples_ms": [], "warm_samples_ms": [],
-                "error_count": 0, "error_types": [], "batch_seconds": 0.0,
+                "error_count": 0, "error_types": [], "error_codes": [], "batch_seconds": 0.0,
             })
             level_samples = [float(value) for value in level_progress["samples_ms"]]
             level_cold_samples = [float(value) for value in level_progress["cold_samples_ms"]]
             level_warm_samples = [float(value) for value in level_progress["warm_samples_ms"]]
             level_errors = int(level_progress["error_count"])
             level_types = set(level_progress["error_types"])
+            level_codes = set(level_progress.get("error_codes", []))
             level_batch_seconds = float(level_progress["batch_seconds"])
             repetition_index = int(level_progress["next_repetition"])
             while repetition_index < light_repetitions:
@@ -1114,18 +1124,21 @@ def run_benchmark(
                     batch_seconds = time.perf_counter() - batch_started
                     level_batch_seconds += batch_seconds
                     sample_regime = level_cold_samples if repetition_index + batch_offset == 0 else level_warm_samples
-                    for elapsed_ms, error_type in outcomes:
+                    for elapsed_ms, error_type, error_code in outcomes:
                         level_samples.append(elapsed_ms)
                         sample_regime.append(elapsed_ms)
                         if error_type:
                             level_errors += 1
                             level_types.add(error_type)
+                        if error_code:
+                            level_codes.add(error_code)
                     batch_started = time.perf_counter()
                 repetition_index += batch_count
                 level_progress.update({
                     "next_repetition": repetition_index, "samples_ms": level_samples,
                     "cold_samples_ms": level_cold_samples, "warm_samples_ms": level_warm_samples,
                     "error_count": level_errors, "error_types": sorted(level_types),
+                    "error_codes": sorted(level_codes),
                     "batch_seconds": level_batch_seconds,
                 })
                 if checkpoint is not None:
@@ -1137,9 +1150,11 @@ def run_benchmark(
             queue_warm_samples.extend(level_warm_samples)
             queue_error_count += level_errors
             queue_error_types.update(level_types)
+            queue_error_codes.update(level_codes)
             queue_measurements[str(level)] = {
                 **summarize_samples(level_samples),
                 "error_count": level_errors,
+                "error_codes": sorted(level_codes),
                 "error_rate_pct": round(level_errors * 100.0 / max(1, len(level_samples)), 3),
                 "concurrent_admissions_per_second": round(level * light_repetitions / level_batch_seconds, 3) if level_batch_seconds else None,
                 "cold_warm": _cold_warm_summary(level_samples),
@@ -1157,6 +1172,7 @@ def run_benchmark(
             "error_count": queue_error_count,
             "error_rate_pct": round(queue_error_count * 100.0 / max(1, len(queue_samples)), 3),
             "error_types": sorted(queue_error_types),
+            "error_codes": sorted(queue_error_codes),
             "http_response_body_bytes": 0,
             "whitespace_token_estimate": 0,
             "response_measurement": "not_applicable_no_http_response",
