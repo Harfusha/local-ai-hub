@@ -28,10 +28,10 @@ SOURCE_FILES = {
 DYNAMIC_ROUTE_REGISTRY = (
     {
         "path": "/api/context/pack",
-        "method": "GET",
+        "method": "POST",
         "match": "exact",
         "classification": "registered_dynamic",
-        "owner_task": "T01",
+        "owner_task": "T14",
         "note": "Handler implementation excluded from T01 inspection.",
     },
 )
