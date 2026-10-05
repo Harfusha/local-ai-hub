@@ -37,11 +37,16 @@ function isAmbiguousCommitResult(result) {
   );
 }
 
-function isValidCommitResponse(result) {
+function isValidCommitResponse(result, expectedRequestId) {
   if (!result || typeof result !== "object" || Array.isArray(result) || typeof result.success !== "boolean") {
     return false;
   }
-  if (result.success) return typeof result.bundle_artifact_id === "string" && Boolean(result.bundle_artifact_id.trim());
+  if (result.request_id !== undefined && result.request_id !== expectedRequestId) return false;
+  if (result.success) {
+    return result.request_id === expectedRequestId
+      && typeof result.bundle_artifact_id === "string"
+      && Boolean(result.bundle_artifact_id.trim());
+  }
   return typeof result.error_code === "string" && Boolean(result.error_code.trim());
 }
 
@@ -272,11 +277,11 @@ async function captureCurrentTab(tab) {
       } catch (_) {
         return {success: false, error_code: "commit_outcome_unknown", request_id: requestId, fallback: false};
       }
-      if (!isValidCommitResponse(committed) || isAmbiguousCommitResult(committed)) {
+      if (!isValidCommitResponse(committed, requestId) || isAmbiguousCommitResult(committed)) {
         return {success: false, error_code: "commit_outcome_unknown", request_id: requestId, fallback: false};
       }
     }
-    if (!isValidCommitResponse(committed)) {
+    if (!isValidCommitResponse(committed, requestId)) {
       // A malformed 2xx response cannot prove whether the server committed.
       // Replay once with the same idempotency key, then preserve ambiguity.
       try {
@@ -284,7 +289,7 @@ async function captureCurrentTab(tab) {
       } catch (_) {
         return {success: false, error_code: "commit_outcome_unknown", request_id: requestId, fallback: false};
       }
-      if (!isValidCommitResponse(committed) || isAmbiguousCommitResult(committed)) {
+      if (!isValidCommitResponse(committed, requestId) || isAmbiguousCommitResult(committed)) {
         return {success: false, error_code: "commit_outcome_unknown", request_id: requestId, fallback: false};
       }
     }
