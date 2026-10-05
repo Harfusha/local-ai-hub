@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sqlite3
+import sys
 from contextlib import closing
 from pathlib import Path
 
@@ -213,6 +215,57 @@ def test_idle_diagnostics_baseline(mock_repo: Path, tmp_path: Path):
         assert row is not None
         assert row["exit_code"] == 0
         assert "all clear" in row["stdout_preview"]
+
+
+def test_idle_diagnostics_runs_quoted_unicode_command_without_shell(tmp_path: Path, monkeypatch):
+    repo_root = tmp_path / "projekt s čárkou"
+    repo_root.mkdir()
+    state_dir = tmp_path / "state"
+    config = {
+        "server": {"state_dir": str(state_dir)},
+        "preprocessing": {"enabled": True, "idle_diagnostics_enabled": True},
+    }
+    command = subprocess.list2cmdline(
+        [sys.executable, "-c", "print('validace žluťoučká')"]
+    )
+
+    class MockServices:
+        def repo_profile(self, root):
+            return {"validation_commands": [{"command": command}]}
+
+    class MockScheduler:
+        def background_allowed(self):
+            return True
+
+        def foreground_busy(self):
+            return False
+
+    calls = []
+    original_popen = subprocess.Popen
+
+    def capture_popen(args, *pos_args, **kwargs):
+        calls.append((args, kwargs.get("shell", False)))
+        return original_popen(args, *pos_args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", capture_popen)
+    pre = ProjectPreprocessor(
+        config, services=MockServices(), rag=None, scheduler=MockScheduler(),
+        runtime=None, repo_tools=RepositoryTools(config), code_index=None,
+    )
+    pre._init_db()
+
+    assert pre._step_diagnostics({"root": str(repo_root)}) is True
+
+    assert len(calls) == 1
+    assert calls[0][1] is False
+    with pre._db_lock, closing(pre._connect()) as con:
+        row = con.execute(
+            "SELECT exit_code, stdout_preview FROM diagnostic_baselines WHERE root=?",
+            (str(repo_root),),
+        ).fetchone()
+    assert row is not None
+    assert row["exit_code"] == 0
+    assert "validace žluťoučká" in row["stdout_preview"]
 
 
 def test_worktree_cache_inheritance(mock_repo: Path, tmp_path: Path):
