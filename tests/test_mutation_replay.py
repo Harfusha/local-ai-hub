@@ -31,13 +31,17 @@ def _broker(tmp_path) -> CommandBroker:
     )
 
 
-def test_repair_loop_replays_validation_by_default(tmp_path, monkeypatch) -> None:
+def test_repair_loop_replays_explicitly_safe_validation(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
     command = "python -m pytest -q tests/test_example.py"
     executions: list[str] = []
     generated: list[str] = []
 
-    monkeypatch.setattr(broker, "classify", lambda _command: {"class": "validation"})
+    monkeypatch.setattr(
+        broker,
+        "classify",
+        lambda _command: {"class": "validation", "replay_safe": True},
+    )
     monkeypatch.setattr(
         broker,
         "run",
@@ -61,6 +65,34 @@ def test_repair_loop_replays_validation_by_default(tmp_path, monkeypatch) -> Non
     assert result["repaired"] is True
     assert executions == [command]
     assert generated == [command]
+
+
+def test_repair_loop_does_not_replay_unclassified_validation(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    command = "python -m pytest -q tests/test_example.py"
+    executions: list[str] = []
+    generated: list[str] = []
+
+    monkeypatch.setattr(broker, "classify", lambda _command: {"class": "validation"})
+    monkeypatch.setattr(
+        broker,
+        "run",
+        lambda cmd, *_args, **_kwargs: executions.append(cmd) or {"success": True},
+    )
+    result = broker.repair_loop(
+        command,
+        tmp_path,
+        "tenant",
+        max_attempts=1,
+        fix_generator=lambda cmd, *_args: generated.append(cmd) or {"repair_candidate.txt": "candidate"},
+        initial_result={"success": False, "outcome_unknown": False},
+    )
+
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is True
+    assert result["attempts"] == 0
+    assert executions == []
+    assert generated == []
 
 
 def test_repair_loop_honors_explicit_replay_unsafe_classification(tmp_path, monkeypatch) -> None:

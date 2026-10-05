@@ -7055,9 +7055,7 @@ class CommandBroker:
 
         classification = self.classify(command)
         replay_safe = bool(
-            classification.get(
-                "replay_safe", classification.get("class") == "validation"
-            )
+            classification.get("replay_safe", False)
         )
         uncertain = bool(initial.get("outcome_unknown") or initial.get("timed_out") or initial.get("in_progress"))
         unsafe_class = classification.get("class") in {"mutating", "dangerous"}
