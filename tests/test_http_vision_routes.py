@@ -349,6 +349,19 @@ def test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin
             assert response.headers["Access-Control-Allow-Origin"] == "chrome-extension://token-only"
             assert "X-LocalAI-Token" in response.headers["Access-Control-Allow-Headers"]
 
+        browser_preflight = urllib.request.Request(
+            f"{base}/api/browser/capture",
+            headers={
+                "Origin": "chrome-extension://token-only",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type, x-localai-token",
+            }, method="OPTIONS"
+        )
+        with urllib.request.urlopen(browser_preflight) as response:
+            assert response.status == 204
+            assert response.headers["Access-Control-Allow-Origin"] == "chrome-extension://token-only"
+            assert "X-LocalAI-Token" in response.headers["Access-Control-Allow-Headers"]
+
         capability = _post(
             f"{base}/api/browser/capability",
             {"origin": "chrome-extension://token-only", "tab_id": 7, "window_id": 3},
