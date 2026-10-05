@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import copy
 import json
 import os
+import shlex
 import sqlite3
 import tempfile
 import threading
@@ -3207,8 +3208,15 @@ class ProjectPreprocessor:
         from .process_utils import hidden_run_kwargs, terminate_tree
         proc = None
         try:
+            if isinstance(cmd_str, (list, tuple)):
+                command = [str(part) for part in cmd_str]
+            elif os.name == "nt":
+                # CreateProcess parses a quoted command line without invoking cmd.exe.
+                command = cmd_str
+            else:
+                command = shlex.split(cmd_str)
             proc = subprocess.Popen(
-                cmd_str, shell=True, cwd=root,
+                command, cwd=root,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 encoding="utf-8", errors="replace",
                 **hidden_run_kwargs(),
