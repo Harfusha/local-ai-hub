@@ -36,6 +36,7 @@ For durable work, create and checkpoint one Agent OS task contract before edits.
 If Hub is unavailable, make one bounded health/retry attempt, then use one native fallback. Native validation still requires `terminal=true` and `retryable=false`; never poll or repeat an identical operation."""
 
 from local_ai_hub.features import FeatureSet
+from local_ai_hub.operation_contracts import operation_metadata, operation_parameters_schema
 from local_ai_hub.prompt_contracts import capability_for
 
 
@@ -1149,6 +1150,10 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 },
             },
         }
+
+    for name, schema in schemas.items():
+        schema["parameters"] = operation_parameters_schema(name, fs)
+        schema["x-operation-contract"] = operation_metadata(name)
 
     _apply_response_budget_schema(schemas, cfg)
     return schemas

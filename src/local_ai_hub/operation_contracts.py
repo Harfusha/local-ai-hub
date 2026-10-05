@@ -535,7 +535,10 @@ def operation_metadata(tool: str) -> dict[str, Any]:
         "projection": contract["projection"],
         "actions": contract["actions"],
     }
-    return json.loads(json.dumps(raw))
+    # Preserve the registry's exact Python contract shape (including tuples).
+    # Tuples remain JSON-serializable as arrays, while the JSON round-trip here
+    # made generated metadata compare differently from the authoritative registry.
+    return deepcopy(raw)
 
 
 def operation_input_schema(tool: str, action: str) -> dict[str, Any]:
