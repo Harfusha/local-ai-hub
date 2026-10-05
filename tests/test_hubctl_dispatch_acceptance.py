@@ -14,7 +14,7 @@ def _invoke(monkeypatch, *args: str) -> int:
 
 
 def test_hubctl_status_dispatch_reports_offline(monkeypatch, capsys):
-    monkeypatch.setattr(hubctl, "status", lambda: {"running": False})
+    monkeypatch.setattr(hubctl, "status", lambda *_args: {"running": False})
     monkeypatch.setattr(hubctl, "load_config", lambda *_args: {})
 
     assert _invoke(monkeypatch, "status") == 0

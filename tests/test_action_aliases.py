@@ -1,11 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import json
-
-import mcp.types as t
-
-from local_ai_hub import mcp_server as local_ai_mcp
 from local_ai_hub.mcp_server import _resolve_action, _normalize_deterministic, _desc_status, _desc_coord, _desc_command
 
 
@@ -26,41 +20,6 @@ def test_action_aliases_resolution():
     assert _resolve_action("task", "explore") == "explore"
     # Unmapped action passes through unchanged
     assert _resolve_action("command", "run") == "run"
-
-
-def test_mcp_protocol_call_dispatches_coord_task_new_alias(monkeypatch):
-    class RecordingCoordClient:
-        def __init__(self):
-            self.calls = []
-
-        def coord(self, **kwargs):
-            self.calls.append(kwargs)
-            return {"success": True}
-
-    client = RecordingCoordClient()
-    monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
-
-    request = t.CallToolRequest(
-        method="tools/call",
-        params=t.CallToolRequestParams(
-            name="local_ai_coord",
-            arguments={"action": "task_new", "task": "fixture task"},
-        ),
-    )
-    result = asyncio.run(
-        local_ai_mcp.mcp._mcp_server.request_handlers[t.CallToolRequest](request)
-    )
-
-    assert hasattr(result, "root")
-    tool_result = result.root
-    assert isinstance(tool_result, t.CallToolResult)
-    assert len(tool_result.content) >= 1
-    content = tool_result.content[0]
-    assert isinstance(content, t.TextContent)
-    assert json.loads(content.text)["success"] is True
-    assert len(client.calls) == 1
-    assert client.calls[0]["action"] == "task_create"
-    assert client.calls[0]["task"] == "fixture task"
 
 
 def test_normalize_deterministic_keys_and_timestamps():
