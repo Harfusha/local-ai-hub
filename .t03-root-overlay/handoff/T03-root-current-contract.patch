@@ -1,0 +1,306 @@
+--- a/src/local_ai_hub/operation_contracts.py
++++ b/src/local_ai_hub/operation_contracts.py
+@@ -190,7 +190,10 @@
+         "steps": frozenset({"pipeline"}),
+         "is_worktree": frozenset({"preprocess"}),
+         "parent_root": frozenset({"preprocess"}),
+-        "path_hints": frozenset({"search"}),
++        "path_hints": frozenset({"search", "context"}),
++        "directory_hints": frozenset({"context"}),
++        "exclude_paths": frozenset({"context"}),
++        "force_include_paths": frozenset({"context"}),
+         "receipt": frozenset({"verify_receipt"}),
+     },
+ }
+@@ -248,6 +251,14 @@
+                     },
+                     "additionalProperties": False,
+                 },
++            },
++            **{
++                name: {
++                    "type": "array",
++                    "maxItems": 64,
++                    "items": {"type": "string", "minLength": 1},
++                }
++                for name in ("directory_hints", "exclude_paths", "force_include_paths")
+             },
+             "include_tests": {"type": "boolean", "default": False},
+             "phase": {"type": "string", "default": ""},
+@@ -594,6 +605,18 @@
+             },
+             "then": then,
+         })
++    if tool == "local_ai_repo" and "context" in actions:
++        for field in ("path_hints", "directory_hints", "exclude_paths", "force_include_paths"):
++            conditions.append({
++                "if": {
++                    "properties": {
++                        "action": {"const": "context"},
++                        "mode": {"not": {"const": "adaptive"}},
++                    },
++                    "required": ["action", "mode"],
++                },
++                "then": {"not": {"required": [field]}},
++            })
+     if conditions:
+         schema["allOf"] = conditions
+     else:
+@@ -781,30 +804,58 @@
+     return [text_result, evidence_result, binary_result, failure]
+ 
+ 
++_OPEN_OUTPUT_OBJECT = {"type": "object", "additionalProperties": True}
++_OUTPUT_ENVELOPE_PROPERTIES: dict[str, dict[str, Any]] = {
++    "success": {"type": "boolean"},
++    "status": {"type": "string"},
++    "status_code": {"type": "integer"},
++    "error": {"type": "string"},
++    "warning": {"anyOf": [{"type": "string"}, {"type": "null"}]},
++    "message": {"type": "string"},
++    "hub_online": {"type": "boolean"},
++    "terminal": {"type": "boolean"},
++    "retryable": {"type": "boolean"},
++    "degraded": {"type": "boolean"},
++    "stale": {"type": "boolean"},
++    "fallback_used": {"type": "boolean"},
++    "requires_override": {"type": "boolean"},
++    "requires_approval": {"type": "boolean"},
++    "decision_recorded": {"type": "boolean"},
++    "decision_persisted": {"type": "boolean"},
++    "task_status": {"type": "string"},
++    "waiting": {"type": "boolean"},
++    "context_id": {"type": "string"},
++    "response_budget": _OPEN_OUTPUT_OBJECT,
++    "warnings": {"type": "array", "items": {"anyOf": [{"type": "string"}, _OPEN_OUTPUT_OBJECT]}},
++    "warning_ids": {"type": "array", "items": {"type": "string"}},
++    "retry_after_seconds": {"type": "number"},
++    "outcome_unknown": {"type": "boolean"},
++    "request_not_sent": {"type": "boolean"},
++    "retried": {"type": "boolean"},
++    "evidence_ids": {"type": "array", "items": {"type": "string"}},
++    "evidence": {"type": "array", "items": _OPEN_OUTPUT_OBJECT},
++    "cancel": _OPEN_OUTPUT_OBJECT,
++    "cancel_requested": {"type": "boolean"},
++    "cancelled": {"type": "boolean"},
++    "cancel_reason": {"type": "string"},
++    "timed_out": {"type": "boolean"},
++    "complete": {"type": "boolean"},
++    "partial": {"type": "boolean"},
++    "truncated": {"type": "boolean"},
++    "estimated_tokens": {"type": "integer"},
++    "reuse_key": {"type": "string"},
++    "reused": {"type": "boolean"},
++    "unchanged": {"type": "boolean"},
++    "request_id": {"type": "string"},
++    "unsupported": {"type": "boolean"},
++}
++
++
+ def operation_tool_output_schema(tool: str, features: Any = None) -> dict[str, Any]:
+-    """Return a bounded union of distinct output shapes for MCP tools/list."""
+-    actions = operation_actions(tool, features)
+-    if not actions:
+-        return {"type": "object", "properties": {}, "additionalProperties": True}
+-    unique: list[dict[str, Any]] = []
+-    seen: set[str] = set()
+-    for action in actions:
+-        schema = operation_output_schema(tool, action)
+-        canonical = {key: value for key, value in schema.items() if key not in {"title", "description"}}
+-        key = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+-        if key not in seen:
+-            seen.add(key)
+-            unique.append(schema)
+-    if len(unique) == 1:
+-        schema = unique[0]
+-        schema["title"] = f"{tool} result"
+-        schema["description"] = "Shared typed response envelope; action contracts are listed in x-operation-contract metadata."
+-        return schema
++    """Return the shared open MCP response envelope; action schemas remain available internally."""
+     return {
+         "type": "object",
+-        "title": f"{tool} result",
+-        "description": "Output matches one of the distinct action result shapes listed in x-operation-contract metadata.",
+-        "anyOf": unique,
++        "properties": json.loads(json.dumps(_OUTPUT_ENVELOPE_PROPERTIES)),
+         "additionalProperties": True,
+     }
+ 
+@@ -1100,6 +1151,12 @@
+             if len(scoped_names) == 1:
+                 return f"{field} is only valid for action='{scoped_names[0]}'"
+             return f"{field} is only valid for actions {scoped_names}"
++    if tool == "local_ai_repo" and action == "context":
++        mode = arguments.get("mode", properties.get("mode", {}).get("default", "adaptive"))
++        if mode != "adaptive":
++            for field in ("path_hints", "directory_hints", "exclude_paths", "force_include_paths"):
++                if field in arguments:
++                    return f"{field} requires mode='adaptive' for action='context'"
+     for field in action_contract["required"]:
+         if field not in arguments or (field in action_contract["non_empty"] and not arguments[field]):
+             return f"{field} is required for action='{action}'"
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -379,6 +379,8 @@
+ 
+ 
+ def test_live_repo_action_literal_respects_batch_replacement_feature():
++    from local_ai_hub.operation_contracts import operation_tool_input_schema, validate_operation_arguments
++
+     disabled_config = _config()
+     disabled_config["features"].update({"repo": True, "batch_replacement": False})
+     disabled_features = FeatureSet.from_config(disabled_config)
+@@ -390,6 +392,15 @@
+     enabled_actions = get_args(local_ai_mcp._repo_action_type(enabled_features))
+     assert "batch_replace" not in disabled_actions
+     assert "batch_replace" in enabled_actions
++    disabled_schema = operation_tool_input_schema("local_ai_repo", disabled_features)
++    enabled_schema = operation_tool_input_schema("local_ai_repo", enabled_features)
++    assert "edits" not in disabled_schema["properties"]
++    assert "dry_run" not in disabled_schema["properties"]
++    assert "edits" in enabled_schema["properties"]
++    assert "dry_run" in enabled_schema["properties"]
++    assert validate_operation_arguments(
++        "local_ai_repo", "context", {"edits": []}, features=disabled_features
++    ) is not None
+ 
+ 
+ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
+@@ -414,7 +425,7 @@
+     }
+ 
+ 
+-def test_repo_search_path_hints_schema_is_bounded_and_search_only():
++def test_repo_path_hints_schema_is_bounded_and_context_scoped():
+     from local_ai_hub.operation_contracts import (
+         operation_input_schema,
+         operation_tool_input_schema,
+@@ -429,13 +440,35 @@
+     assert item["required"] == ["path", "purpose", "scope"]
+     assert item["properties"]["path"]["maxLength"] == 1024
+     assert item["additionalProperties"] is False
+-    assert "path_hints" not in operation_input_schema("local_ai_repo", "context")["properties"]
++    context_schema = operation_input_schema("local_ai_repo", "context")
++    search_schema = operation_input_schema("local_ai_repo", "search")
++    context_fields = ("path_hints", "directory_hints", "exclude_paths", "force_include_paths")
++    assert all(field in context_schema["properties"] for field in context_fields)
++    assert all(field not in search_schema["properties"] for field in context_fields[1:])
++    assert all(schema["properties"][field]["maxItems"] == 64 for field in context_fields[1:])
++    for field in context_fields:
++        assert any(
++            rule.get("if", {}).get("properties", {}).get("mode") == {"not": {"const": "adaptive"}}
++            and rule.get("then", {}).get("not", {}).get("required") == [field]
++            for rule in schema.get("allOf", [])
++        )
+ 
+     valid = {"path_hints": [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}]}
+     assert validate_operation_arguments("local_ai_repo", "search", valid) is None
+-    assert validate_operation_arguments("local_ai_repo", "context", valid) == (
+-        "path_hints is only valid for action='search'"
+-    )
++    context_hints = {
++        **valid,
++        "directory_hints": ["src"],
++        "exclude_paths": ["vendor"],
++        "force_include_paths": ["README.md"],
++    }
++    assert validate_operation_arguments("local_ai_repo", "context", context_hints) is None
++    assert validate_operation_arguments(
++        "local_ai_repo", "context", {"mode": "adaptive", **context_hints}
++    ) is None
++    for mode in ("fast", "full", "custom", None):
++        assert validate_operation_arguments(
++            "local_ai_repo", "context", {"mode": mode, "path_hints": None}
++        ) is not None
+     assert validate_operation_arguments(
+         "local_ai_repo", "search", {"path_hints": [{"path": "src/auth.py", "purpose": "repository_search"}]}
+     ) is not None
+@@ -451,8 +484,10 @@
+ def test_repo_verify_receipt_is_action_scoped():
+     from local_ai_hub.operation_contracts import (
+         operation_input_schema,
++        operation_tool_input_schema,
+         validate_operation_arguments,
+     )
++    from local_ai_hub.features import FeatureSet
+ 
+     assert "receipt" not in operation_input_schema("local_ai_repo", "search")["properties"]
+     assert "receipt" not in operation_input_schema("local_ai_repo", "context")["properties"]
+@@ -463,6 +498,20 @@
+     }
+     assert validate_operation_arguments(
+         "local_ai_repo", "search", {"receipt": valid_receipt}
++    ) == "receipt is only valid for action='verify_receipt'"
++
++    disabled_config = _config()
++    disabled_config["features"]["agent_os"] = False
++    disabled_features = FeatureSet.from_config(disabled_config)
++    disabled_schema = operation_tool_input_schema("local_ai_repo", disabled_features)
++    assert "verify_receipt" not in disabled_schema["properties"]["action"]["enum"]
++    assert any(
++        rule.get("if", {}).get("properties", {}).get("action") == {"const": "context"}
++        and rule.get("then", {}).get("not", {}).get("anyOf")
++        for rule in disabled_schema.get("allOf", [])
++    )
++    assert validate_operation_arguments(
++        "local_ai_repo", "context", {"receipt": valid_receipt}, features=disabled_features
+     ) == "receipt is only valid for action='verify_receipt'"
+ 
+ 
+@@ -727,10 +776,11 @@
+     )
+ 
+ 
+-def test_mcp_tools_list_publishes_artifact_output_shape_union():
++def test_mcp_tools_list_publishes_shared_output_envelope():
+     import asyncio
+ 
+     from local_ai_hub import mcp_server
++    from local_ai_hub.operation_contracts import operation_tool_output_schema
+ 
+     tool = next(
+         item for item in asyncio.run(mcp_server.mcp.list_tools())
+@@ -738,18 +788,13 @@
+     )
+     output_schema = tool.outputSchema
+ 
+-    assert len(output_schema["anyOf"]) == 2
+-    list_action = next(
+-        shape for shape in output_schema["anyOf"]
+-        if any("artifacts" in variant.get("properties", {}) for variant in shape["anyOf"])
+-    )
+-    list_shape = next(
+-        variant for variant in list_action["anyOf"]
+-        if "artifacts" in variant.get("properties", {})
+-    )
+-    assert list_shape["properties"]["artifacts"]["items"]["required"] == [
+-        "artifact_id", "kind", "size_bytes", "created_at", "mime_type"
+-    ]
++    assert output_schema == operation_tool_output_schema("local_ai_artifact")
++    assert output_schema["type"] == "object"
++    assert output_schema["additionalProperties"] is True
++    assert "anyOf" not in output_schema
++    assert {"success", "status", "status_code", "error", "warning", "terminal", "retryable"} <= set(
++        output_schema["properties"]
++    )
+ 
+ 
+ def test_mcp_tools_list_scopes_artifact_list_arguments():
+--- a/tests/test_mcp_contract_dispatch.py
++++ b/tests/test_mcp_contract_dispatch.py
+@@ -102,11 +102,10 @@
+         for branch in input_schema["allOf"]
+     )
+     assert output_schema["type"] == "object"
+-    assert output_schema["anyOf"]
+-    assert all(
+-        branch["properties"]["success"]["type"] == "boolean"
+-        for branch in output_schema["anyOf"]
+-    )
++    assert output_schema["additionalProperties"] is True
++    assert "anyOf" not in output_schema
++    assert output_schema["properties"]["success"]["type"] == "boolean"
++    assert output_schema["properties"]["status"]["type"] == "string"
+ 
+ 
+ def test_live_mcp_schemas_match_registry_for_every_public_tool() -> None:

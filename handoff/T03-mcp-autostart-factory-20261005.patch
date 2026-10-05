@@ -1,0 +1,18 @@
+--- a/src/local_ai_hub/mcp_server.py
++++ b/src/local_ai_hub/mcp_server.py
+@@ -99,8 +99,14 @@
+ _workspace_hash = hashlib.sha1(_workspace.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
+ TENANT = os.environ.get("LOCAL_AI_TENANT") or f"{AGENT_NAME}:{_workspace_hash}"
+ 
++
++def _build_mcp_client(tenant: str, config_path: str | None) -> HubClient:
++    """Build the stdio MCP HTTP proxy without an in-process app stack."""
++    return HubClient(tenant=tenant, config_path=config_path, auto_start=True)
++
++
+ try:
+-    CLIENT = HubClient(tenant=TENANT)
++    CLIENT = _build_mcp_client(TENANT, os.environ.get("LOCAL_AI_CONFIG"))
+     CFG = load_config(os.environ.get("LOCAL_AI_CONFIG"))
+     FEATURES = FeatureSet.from_config(CFG)
+     MCP_CFG = CFG.get("mcp", {})

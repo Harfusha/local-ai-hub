@@ -1,0 +1,214 @@
+{
+  "execution_scope": "one bounded live MCP process diagnostic",
+  "client_count": 8,
+  "clients": [
+    {
+      "returncode": 0,
+      "stdout_nonempty_line_count": 2,
+      "stdout_objects": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "c2fa78222add2d680af962aaf85c1e8c359f55797bf6c5871b54268a433ee79d"
+    },
+    {
+      "returncode": 0,
+      "stdout_nonempty_line_count": 2,
+      "stdout_objects": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "c2fa78222add2d680af962aaf85c1e8c359f55797bf6c5871b54268a433ee79d"
+    },
+    {
+      "returncode": 0,
+      "stdout_nonempty_line_count": 2,
+      "stdout_objects": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "c2fa78222add2d680af962aaf85c1e8c359f55797bf6c5871b54268a433ee79d"
+    },
+    {
+      "returncode": 0,
+      "stdout_nonempty_line_count": 2,
+      "stdout_objects": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "c2fa78222add2d680af962aaf85c1e8c359f55797bf6c5871b54268a433ee79d"
+    },
+    {
+      "returncode": 0,
+      "stdout_nonempty_line_count": 2,
+      "stdout_objects": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "c2fa78222add2d680af962aaf85c1e8c359f55797bf6c5871b54268a433ee79d"
+    },
+    {
+      "returncode": 0,
+      "stdout_nonempty_line_count": 2,
+      "stdout_objects": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "c2fa78222add2d680af962aaf85c1e8c359f55797bf6c5871b54268a433ee79d"
+    },
+    {
+      "returncode": 0,
+      "stdout_nonempty_line_count": 2,
+      "stdout_objects": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "c2fa78222add2d680af962aaf85c1e8c359f55797bf6c5871b54268a433ee79d"
+    },
+    {
+      "returncode": 0,
+      "stdout_nonempty_line_count": 2,
+      "stdout_objects": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "c2fa78222add2d680af962aaf85c1e8c359f55797bf6c5871b54268a433ee79d"
+    }
+  ]
+}

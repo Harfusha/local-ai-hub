@@ -1,0 +1,613 @@
+diff --git a/tests/test_mcp_live_30_client_acceptance.py b/tests/test_mcp_live_30_client_acceptance.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_mcp_live_30_client_acceptance.py
+@@ -0,0 +1,608 @@
++from __future__ import annotations
++
++import json
++import os
++import re
++import shlex
++import shutil
++import socket
++import subprocess
++import sys
++import threading
++import time
++import uuid
++from concurrent.futures import ThreadPoolExecutor
++from pathlib import Path
++from typing import Callable
++
++import pytest
++
++from local_ai_hub.process_utils import find_listening_pid, pid_alive, process_identity, terminate_tree
++
++CLIENT_COUNT = 30
++TOTAL_DEADLINE_SECONDS = 150.0
++CLEANUP_RESERVE_SECONDS = 15.0
++
++
++def _validate_isolated_daemon_launch(
++    command: list[str], env: dict[str, str], config_path: Path
++) -> Path | None:
++    config = config_path.expanduser().resolve()
++    lowered = [str(part).replace("\\", "/").lower() for part in command]
++    if any("tools/service.py" in part or "tools/service.ps1" in part for part in lowered):
++        raise ValueError("service manager launch is forbidden in isolated client test")
++    try:
++        module_index = command.index("-m")
++        module_name = command[module_index + 1]
++        config_index = command.index("--config")
++        launched_config = command[config_index + 1]
++    except (ValueError, IndexError) as exc:
++        raise ValueError("daemon launch must pass -m local_ai_hub --config <temp>") from exc
++    if module_name != "local_ai_hub":
++        raise ValueError("only direct local_ai_hub daemon launch is permitted")
++    if Path(launched_config).expanduser().resolve() != config:
++        raise ValueError("daemon launch config differs from isolated temp config")
++    if Path(env.get("LOCAL_AI_CONFIG", "")).expanduser().resolve() != config:
++        raise ValueError("daemon environment must carry isolated LOCAL_AI_CONFIG")
++    return config
++
++
++def _terminate_owned_process(
++    pid: int,
++    expected_identity: object,
++    actual_identity: object,
++    command: list[str],
++    config_path: Path,
++    current_command_line: str,
++    terminator: Callable[[int], bool],
++    identity_reader: Callable[[int], object] | None = None,
++) -> bool:
++    if pid <= 0 or expected_identity is None or actual_identity != expected_identity:
++        return False
++    recorded_command = subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
++    if (
++        not _is_daemon_command(recorded_command)
++        or not _command_uses_config(recorded_command, config_path)
++        or not _is_daemon_command(current_command_line)
++        or not _command_uses_config(current_command_line, config_path)
++    ):
++        return False
++    if identity_reader is not None and identity_reader(pid) != expected_identity:
++        return False
++    return bool(terminator(pid))
++
++
++def _remaining(deadline: float, reserve: float = 0.0) -> float:
++    return max(0.0, deadline - time.monotonic() - reserve)
++
++
++def _is_daemon_command(command_line: str) -> bool:
++    return re.search(
++        r'(?:^|\s)-m\s+"?local_ai_hub"?(?:\s|$)', command_line, re.IGNORECASE
++    ) is not None
++
++
++def _command_uses_config(command_line: str, config_path: Path) -> bool:
++    if os.name == "nt":
++        normalized = os.path.normcase(str(config_path.resolve()))
++        return "--config" in command_line.lower() and normalized in os.path.normcase(command_line)
++    try:
++        args = shlex.split(command_line)
++        index = args.index("--config")
++        return index + 1 < len(args) and Path(args[index + 1]).resolve() == config_path.resolve()
++    except (ValueError, OSError):
++        return False
++
++
++def _is_service_manager_command(command_line: str) -> bool:
++    return re.search(r"service\.py[^\r\n]*\bstart\b", command_line, re.IGNORECASE) is not None
++
++
++def _read_processes(deadline: float) -> list[dict[str, object]]:
++    if os.name == "nt":
++        command = (
++            "$ErrorActionPreference='Stop'; "
++            "$rows=@(Get-CimInstance Win32_Process | Where-Object { "
++            "$_.CommandLine -and ($_.CommandLine -match 'local_ai_hub|service\\.py') "
++            "} | Select-Object @{n='pid';e={$_.ProcessId}},@{n='command';e={$_.CommandLine}}); "
++            "if ($rows.Count -gt 0) { ConvertTo-Json -InputObject $rows -Compress } else { '[]' }"
++        )
++        kwargs: dict[str, object] = {}
++        try:
++            from local_ai_hub.process_utils import hidden_run_kwargs
++
++            kwargs.update(hidden_run_kwargs(detached=False))
++        except Exception:
++            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
++        completed = subprocess.run(
++            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
++            capture_output=True,
++            text=True,
++            timeout=_remaining(deadline, CLEANUP_RESERVE_SECONDS),
++            check=False,
++            **kwargs,
++        )
++        if completed.returncode != 0:
++            raise RuntimeError(f"process preflight failed: {completed.stderr[-200:]}")
++        payload = json.loads(completed.stdout or "[]")
++        rows = payload if isinstance(payload, list) else [payload]
++        return [
++            {"pid": int(row["pid"]), "command": str(row.get("command") or "")}
++            for row in rows
++            if isinstance(row, dict) and row.get("pid")
++        ]
++
++    if sys.platform != "linux":
++        pytest.skip("live MCP harness supports Windows and Linux only")
++    rows: list[dict[str, object]] = []
++    for entry in Path("/proc").iterdir():
++        if not entry.name.isdigit():
++            continue
++        try:
++            raw = (entry / "cmdline").read_bytes()
++            command_line = " ".join(
++                part.decode("utf-8", "replace") for part in raw.split(b"\0") if part
++            )
++        except OSError:
++            continue
++        if "local_ai_hub" in command_line or "service.py" in command_line:
++            rows.append({"pid": int(entry.name), "command": command_line})
++    return rows
++
++
++def _process_command(pid: int, deadline: float) -> str:
++    for row in _read_processes(deadline):
++        if int(row["pid"]) == pid:
++            return str(row["command"])
++    return ""
++
++
++def _wait_for_identity(pid: int, deadline: float) -> dict[str, object]:
++    while _remaining(deadline) > 0:
++        identity = process_identity(pid)
++        if identity is not None:
++            return identity
++        time.sleep(min(0.02, _remaining(deadline)))
++    raise TimeoutError(f"could not establish process identity for pid {pid}")
++
++
++def _write_launch_record(
++    launch_dir: Path, pid: int, identity: dict[str, object], command: list[str], config: Path
++) -> None:
++    record = {
++        "pid": pid,
++        "identity": identity,
++        "command": command,
++        "config": str(config.resolve()),
++    }
++    target = launch_dir / f"{pid}-{uuid.uuid4().hex}.json"
++    target.write_text(json.dumps(record, separators=(",", ":")), encoding="utf-8")
++
++
++def _rpc_messages(index: int) -> str:
++    messages = [
++        {
++            "jsonrpc": "2.0",
++            "id": 1,
++            "method": "initialize",
++            "params": {
++                "protocolVersion": "2025-06-18",
++                "capabilities": {},
++                "clientInfo": {"name": f"t03-live-{index}", "version": "1"},
++            },
++        },
++        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
++        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
++        {
++            "jsonrpc": "2.0",
++            "id": 3,
++            "method": "tools/call",
++            "params": {"name": "local_ai_status", "arguments": {"detail": "brief"}},
++        },
++    ]
++    return "".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages)
++
++
++def _wait_until(predicate: Callable[[], bool], deadline: float, label: str) -> None:
++    while _remaining(deadline, CLEANUP_RESERVE_SECONDS) > 0:
++        if predicate():
++            return
++        time.sleep(min(0.05, _remaining(deadline, CLEANUP_RESERVE_SECONDS)))
++    raise TimeoutError(f"deadline waiting for {label}")
++
++
++def _read_json(path: Path) -> dict[str, object]:
++    value = json.loads(path.read_text(encoding="utf-8"))
++    if not isinstance(value, dict):
++        raise ValueError(f"expected JSON object in {path.name}")
++    return value
++
++
++def _terminate_checked(
++    pid: int,
++    identity: object,
++    marker: str,
++    deadline: float,
++) -> bool:
++    if _remaining(deadline) <= 0:
++        return False
++    actual = process_identity(pid)
++    command = _process_command(pid, deadline)
++    if actual is None or actual != identity or marker not in command:
++        return False
++    if process_identity(pid) != identity:
++        return False
++    return terminate_tree(
++        pid,
++        grace_seconds=min(2.0, max(0.1, _remaining(deadline))),
++    )
++
++
++def _make_worker_script() -> str:
++    return r'''import json, os, sys, time, uuid
++from pathlib import Path
++import subprocess
++src, config_name, ready_name, gate_name, launch_dir_name, marker, deadline_name = sys.argv[1:]
++sys.path.insert(0, src)
++os.environ["LOCAL_AI_CONFIG"] = config_name
++from local_ai_hub import client as client_module, mcp_server, process_utils
++config = Path(config_name).resolve()
++if Path(mcp_server.CONFIG_PATH).resolve() != config:
++    raise SystemExit("MCP server did not load the isolated config")
++real_popen = subprocess.Popen
++def guarded_popen(args, *positional, **kwargs):
++    command = [str(part) for part in args]
++    child_env = kwargs.get("env") or os.environ.copy()
++    cfg = Path(config_name)
++    lowered = [part.replace("\\", "/").lower() for part in command]
++    if any("tools/service.py" in part or "tools/service.ps1" in part for part in lowered):
++        raise RuntimeError("service manager launch forbidden by isolated test")
++    try:
++        module_index = command.index("-m")
++        config_index = command.index("--config")
++        direct = command[module_index + 1] == "local_ai_hub"
++        child_config = Path(command[config_index + 1]).resolve()
++    except (ValueError, IndexError):
++        direct, child_config = False, None
++    if not direct or child_config != cfg or Path(child_env.get("LOCAL_AI_CONFIG", "")).resolve() != cfg:
++        raise RuntimeError("child launch lacks the isolated daemon config")
++    proc = real_popen(args, *positional, **kwargs)
++    try:
++        identity = process_utils.process_identity(proc.pid)
++        if identity is None:
++            raise RuntimeError("cannot prove daemon process identity")
++        record = {"pid": proc.pid, "identity": identity, "command": command, "config": str(cfg)}
++        target = Path(launch_dir_name) / (str(proc.pid) + "-" + uuid.uuid4().hex + ".json")
++        temporary = target.with_suffix(".tmp")
++        temporary.write_text(json.dumps(record, separators=(",", ":")), encoding="utf-8")
++        temporary.replace(target)
++    except BaseException:
++        if proc.poll() is None:
++            proc.terminate()
++            try:
++                proc.wait(timeout=2)
++            except subprocess.TimeoutExpired:
++                proc.kill()
++        raise
++    return proc
++client_module.subprocess.Popen = guarded_popen
++ready = {
++    "pid": os.getpid(),
++    "identity": process_utils.process_identity(os.getpid()),
++    "marker": marker,
++    "enabled_tools": list(mcp_server.FEATURES.enabled_tools),
++}
++if ready["identity"] is None:
++    raise SystemExit("cannot prove worker identity")
++ready_path = Path(ready_name)
++ready_path.write_text(json.dumps(ready, separators=(",", ":")), encoding="utf-8")
++gate = Path(gate_name)
++deadline = float(deadline_name)
++while not gate.exists() and time.monotonic() < deadline:
++    time.sleep(.01)
++if not gate.exists():
++    raise SystemExit("client barrier expired")
++mcp_server.main()
++'''
++
++
++def test_thirty_live_mcp_clients_share_one_isolated_hub(tmp_path: Path) -> None:
++    if os.name != "nt" and sys.platform != "linux":
++        pytest.skip("live acceptance supports Windows and Linux only")
++    deadline = time.monotonic() + TOTAL_DEADLINE_SECONDS
++    repo = Path(__file__).resolve().parents[1]
++    src = repo / "src"
++    run_root = tmp_path / "t03-live-mcp-30"
++    run_root.mkdir()
++    state_dir = run_root / "state"
++    launch_dir = run_root / "launches"
++    ready_dir = run_root / "ready"
++    state_dir.mkdir()
++    launch_dir.mkdir()
++    ready_dir.mkdir()
++    with socket.socket() as probe:
++        probe.bind(("127.0.0.1", 0))
++        port = probe.getsockname()[1]
++    config = run_root / "hub.toml"
++    config.write_text(
++        "[server]\n"
++        'bind="127.0.0.1"\n'
++        f"port={port}\n"
++        f'state_dir="{state_dir.as_posix()}"\n'
++        "auto_start_ollama=false\nmax_request_body_bytes=1048576\n"
++        "[hardware]\nprofile=\"cpu\"\nauto_tune=false\n"
++        "[prewarm]\nenabled=false\n"
++        "[preprocessing]\nenabled=false\n"
++        "[code_intelligence]\nenabled=false\n"
++        "[background_gpu]\nenabled=false\n"
++        "[observability]\nenabled=false\n"
++        "[resilience]\nwatchdog_enabled=false\n",
++        encoding="utf-8",
++    )
++    try:
++        assert find_listening_pid(port) is None, "isolated port already has a listener"
++        preflight = _read_processes(deadline)
++        matching_before = [
++            row for row in preflight
++            if _command_uses_config(str(row["command"]), config)
++        ]
++        assert not matching_before, "pre-existing process already uses the temporary config"
++    except BaseException:
++        shutil.rmtree(run_root, ignore_errors=True)
++        raise
++
++    count = CLIENT_COUNT
++    gate = run_root / "go"
++    marker_prefix = f"t03-live-mcp-worker-{uuid.uuid4().hex}"
++    worker_script = _make_worker_script()
++    env = os.environ.copy()
++    env["LOCAL_AI_CONFIG"] = str(config)
++    env["PYTHONPATH"] = os.pathsep.join(
++        item for item in (str(src), env.get("PYTHONPATH", "")) if item
++    )
++    clients: list[subprocess.Popen[str]] = []
++    worker_expectations: list[tuple[int, object, str]] = []
++    workers: list[dict[str, object]] = []
++    responses_by_client: list[dict[int, dict[str, object]]] = [dict() for _ in range(count)]
++    malformed_clients: list[bool] = [False for _ in range(count)]
++    response_condition = threading.Condition()
++    reader_threads: list[threading.Thread] = []
++    returncodes: list[int | None] = []
++    failure: BaseException | None = None
++    try:
++        for index in range(count):
++            marker = f"{marker_prefix}-{index}"
++            client = subprocess.Popen(
++                [
++                    sys.executable, "-B", "-c", worker_script, str(src), str(config),
++                    str(ready_dir / f"{index}.json"), str(gate), str(launch_dir), marker,
++                    str(deadline - CLEANUP_RESERVE_SECONDS),
++                ],
++                cwd=repo,
++                env=env,
++                stdin=subprocess.PIPE,
++                stdout=subprocess.PIPE,
++                stderr=subprocess.PIPE,
++                text=True,
++                encoding="utf-8",
++            )
++            clients.append(client)
++            identity = process_identity(client.pid)
++            if identity is None:
++                client.terminate()
++                try:
++                    client.wait(timeout=max(0.05, _remaining(deadline, CLEANUP_RESERVE_SECONDS)))
++                except subprocess.TimeoutExpired:
++                    pass
++                raise AssertionError("cannot prove spawned worker identity")
++            worker_expectations.append((client.pid, identity, marker))
++
++        _wait_until(
++            lambda: len(list(ready_dir.glob("*.json"))) == count,
++            deadline,
++            f"all {count} isolated MCP workers ready",
++        )
++        for index in range(count):
++            ready = _read_json(ready_dir / f"{index}.json")
++            if (
++                ready.get("marker") != f"{marker_prefix}-{index}"
++                or int(ready.get("pid", -1)) != clients[index].pid
++            ):
++                raise AssertionError("worker readiness marker mismatch")
++            workers.append(ready)
++        gate.touch()
++
++        def consume_stdout(index: int, stream: object) -> None:
++            try:
++                for line in stream:
++                    try:
++                        message = json.loads(line)
++                    except (json.JSONDecodeError, TypeError):
++                        malformed_clients[index] = True
++                        continue
++                    if isinstance(message, dict) and isinstance(message.get("id"), int):
++                        with response_condition:
++                            responses_by_client[index][message["id"]] = message
++                            response_condition.notify_all()
++            except (OSError, ValueError):
++                return
++
++        def drain_stderr(stream: object) -> None:
++            try:
++                while stream.read(4096):
++                    pass
++            except (OSError, ValueError):
++                return
++
++        for index, client in enumerate(clients):
++            assert client.stdin is not None
++            client.stdin.write(_rpc_messages(index))
++            client.stdin.flush()
++            assert client.stdout is not None and client.stderr is not None
++            out_thread = threading.Thread(
++                target=consume_stdout, args=(index, client.stdout), daemon=True
++            )
++            err_thread = threading.Thread(target=drain_stderr, args=(client.stderr,), daemon=True)
++            out_thread.start()
++            err_thread.start()
++            reader_threads.extend((out_thread, err_thread))
++        gate.touch()
++
++        with response_condition:
++            while not all({1, 2, 3}.issubset(item) for item in responses_by_client):
++                remaining = _remaining(deadline, CLEANUP_RESERVE_SECONDS)
++                if remaining <= 0:
++                    missing = [i for i, item in enumerate(responses_by_client) if not {1, 2, 3}.issubset(item)]
++                    raise TimeoutError(f"JSON-RPC response deadline; incomplete workers={len(missing)}")
++                response_condition.wait(timeout=min(0.1, remaining))
++        for client in clients:
++            if client.stdin is not None:
++                client.stdin.close()
++                client.stdin = None
++        with ThreadPoolExecutor(max_workers=count) as pool:
++            waiters = [pool.submit(client.wait) for client in clients]
++            for waiter in waiters:
++                waiter.result(timeout=_remaining(deadline, CLEANUP_RESERVE_SECONDS))
++        returncodes = [client.returncode for client in clients]
++        _wait_until(lambda: all(not thread.is_alive() for thread in reader_threads), deadline, "stdio reader shutdown")
++
++        if len(returncodes) != count:
++            raise AssertionError(f"received {len(returncodes)} of {count} worker exits")
++        for index, responses in enumerate(responses_by_client):
++            if malformed_clients[index]:
++                raise AssertionError(f"worker {index} emitted malformed MCP response lines")
++            if returncodes[index] != 0:
++                raise AssertionError(f"worker {index} exited with status {returncodes[index]}")
++            if not {1, 2, 3}.issubset(responses):
++                raise AssertionError(f"worker {index} missed JSON-RPC responses")
++            if responses[1].get("error"):
++                raise AssertionError(f"worker {index} initialize returned an error")
++            tools = responses[2].get("result", {}).get("tools", [])
++            actual_names = {tool.get("name") for tool in tools if isinstance(tool, dict)}
++            expected_names = set(workers[index].get("enabled_tools", []))
++            if actual_names != expected_names:
++                raise AssertionError(f"worker {index} tool list differs from its isolated feature set")
++            call = responses[3]
++            if call.get("error") or call.get("result", {}).get("isError"):
++                raise AssertionError(f"worker {index} local_ai_status failed")
++
++        records = [_read_json(path) for path in launch_dir.glob("*.json")]
++        daemon_pids = sorted({int(record["pid"]) for record in records})
++        if len(daemon_pids) != 1:
++            raise AssertionError(f"dedicated config launched {len(daemon_pids)} daemon PIDs")
++        daemon_pid = daemon_pids[0]
++        daemon_records = [record for record in records if int(record["pid"]) == daemon_pid]
++        for record in daemon_records:
++            if Path(str(record["config"])).resolve() != config.resolve():
++                raise AssertionError("launch record contains a non-isolated config")
++            if _process_command(daemon_pid, deadline) == "":
++                raise AssertionError("dedicated daemon exited before assertion")
++        daemon_command = _process_command(daemon_pid, deadline)
++        if not _is_daemon_command(daemon_command) or not _command_uses_config(daemon_command, config):
++            raise AssertionError("live daemon command does not prove dedicated config ownership")
++        if find_listening_pid(port) != daemon_pid:
++            raise AssertionError("isolated listener is not the sole dedicated-config daemon")
++    except BaseException as exc:
++        failure = exc
++    finally:
++        cleanup_deadline = deadline
++        try:
++            for index, client in enumerate(clients):
++                if client.poll() is None and index < len(worker_expectations):
++                    pid, identity, marker = worker_expectations[index]
++                    try:
++                        _terminate_checked(pid, identity, marker, cleanup_deadline)
++                    except Exception:
++                        if failure is None:
++                            failure = AssertionError("could not safely clean up a live worker")
++            for path in launch_dir.glob("*.json"):
++                try:
++                    record = _read_json(path)
++                    pid = int(record["pid"])
++                    _terminate_owned_process(
++                        pid,
++                        record["identity"],
++                        process_identity(pid),
++                        list(record["command"]),
++                        config,
++                        _process_command(pid, cleanup_deadline),
++                        lambda owned_pid: terminate_tree(
++                            owned_pid,
++                            grace_seconds=min(2.0, max(0.1, _remaining(cleanup_deadline))),
++                        ),
++                        identity_reader=process_identity,
++                    )
++                except Exception:
++                    if failure is None:
++                        failure = AssertionError("could not safely clean up the dedicated daemon")
++            for client in clients:
++                try:
++                    client.wait(timeout=max(0.05, _remaining(cleanup_deadline)))
++                except subprocess.TimeoutExpired:
++                    pass
++            for thread in reader_threads:
++                thread.join(timeout=max(0.0, _remaining(cleanup_deadline)))
++            for client in clients:
++                for stream_name in ("stdin", "stdout", "stderr"):
++                    stream = getattr(client, stream_name)
++                    if stream is not None:
++                        stream.close()
++                        setattr(client, stream_name, None)
++            still_owned = [
++                row for row in _read_processes(cleanup_deadline)
++                if _command_uses_config(str(row["command"]), config)
++            ] if _remaining(cleanup_deadline) > 0 else []
++            if still_owned and failure is None:
++                failure = AssertionError("dedicated-config daemon remained after cleanup")
++        except BaseException as cleanup_error:
++            if failure is None:
++                failure = AssertionError(f"cleanup failed: {type(cleanup_error).__name__}")
++        finally:
++            shutil.rmtree(run_root, ignore_errors=True)
++    if failure is not None:
++        raise failure
++    assert len(returncodes) == CLIENT_COUNT
++
++
++def test_launcher_requires_direct_daemon_and_explicit_isolated_config(tmp_path: Path) -> None:
++    config = tmp_path / "hub.toml"
++    config.write_text("[server]\nstate_dir='isolated'\n", encoding="utf-8")
++    command = ["python", "-m", "local_ai_hub", "--config", str(config)]
++    env = {"LOCAL_AI_CONFIG": str(config)}
++
++    assert _validate_isolated_daemon_launch(command, env, config) == config.resolve()
++
++
++def test_launcher_rejects_service_manager_that_uses_root_config(tmp_path: Path) -> None:
++    config = tmp_path / "hub.toml"
++    env = {"LOCAL_AI_CONFIG": str(config)}
++    command = ["python", "tools/service.py", "start"]
++
++    try:
++        _validate_isolated_daemon_launch(command, env, config)
++    except ValueError:
++        return
++    raise AssertionError("unsafe service manager launch was accepted")
++
++
++def test_cleanup_refuses_pid_reuse_before_terminate(tmp_path: Path) -> None:
++    config = tmp_path / "hub.toml"
++    command = ["python", "-m", "local_ai_hub", "--config", str(config)]
++    calls: list[int] = []
++
++    def terminate(pid: int) -> bool:
++        calls.append(pid)
++        return True
++
++    result = _terminate_owned_process(
++        42,
++        {"creation": "original"},
++        {"creation": "reused"},
++        command,
++        config,
++        subprocess.list2cmdline(command),
++        terminate,
++    )
++
++    assert result is False
++    assert calls == []

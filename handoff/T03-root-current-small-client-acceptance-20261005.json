@@ -1,0 +1,198 @@
+{
+  "packet_version": 1,
+  "task": "T03 current isolated process measurements for 1 and 10 MCP clients; root-current evidence only",
+  "candidate_worktree": "C:\\Users\\Adam\\.codex\\worktrees\\e809\\.local-ai-hub",
+  "candidate_head": "d68ee694c6d3f75db5c1ab2f63497226880e5010",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "root_modified_by_this_task": false,
+  "root_current_patch": "none: no production patch required; the prior T03 SSE patch postimages are already present byte-for-byte in root",
+  "changed_candidate_files": [
+    {
+      "path": "tests/test_mcp_live_30_client_acceptance.py",
+      "candidate_pre_sha256": "2c4fdc463f49b594cbe74fbc9ed3b91c8603ef2d60345872adbdb52b2d5ac6c7",
+      "candidate_post_sha256": "2467bc378599e70d0ede71f70571938888966666ecbd4fee9fc11e4745b7525a",
+      "root_preimage": "absent",
+      "root_current": "absent",
+      "integration_note": "root file absent; candidate-only measured harness"
+    },
+    {
+      "path": "handoff/test_t03_stdio_http_proxy.py",
+      "candidate_pre_sha256": "01ff52158ec022d75f39a1ee41c8c5e85a167f1c6ed7b325a67f29bf5405b6e8",
+      "candidate_post_sha256": "9ed7df7f025747b4b4b00398fc7401098745057c2cdfd239369d4d7cd9913d91",
+      "root_preimage": "absent",
+      "root_current": "absent",
+      "integration_note": "handoff fixture only; root target absent"
+    },
+    {
+      "path": "handoff/test_t03_multi_client_single_daemon.py",
+      "candidate_pre_sha256": "24f11c7fb015b1846cca7fc05af3ad02ae0911da8c72b85c00445aa3dd235f95",
+      "candidate_post_sha256": "67eb3f54f45005ead6aa219bd9daf10f54dfd3ab54cab87eaf962977825823ab",
+      "root_preimage": "absent",
+      "root_current": "absent",
+      "integration_note": "handoff fixture only; root target absent"
+    }
+  ],
+  "root_existing_sse_patch": {
+    "patch": "T03-root-current-sse-source-20261005.patch",
+    "patch_sha256": "4030f95ce922bbe4cee82bd51d8ff647d3f344446b3ea70f7259d9986877bfa8",
+    "source_manifest": "T03-root-current-source-acceptance-20261005.json",
+    "source_manifest_sha256": "1633c1c8f959536cddc6a6138589c78b3b544301856984aed86c5e64fba83162",
+    "disposition": "do not apply or overwrite; current root bytes match expected patch postimages",
+    "files": [
+      {
+        "path": "src/local_ai_hub/http_server.py",
+        "root_preimage_sha256": "e736143d9b2c6386a1f70549a6c990cd65f70db409410d553fc00af4aa8c19c9",
+        "patch_expected_postimage_sha256": "a8949253e023e42d4db432640caf4fbfa3544e1cf1565dfbe969c401f36125ca",
+        "current_root_sha256": "a8949253e023e42d4db432640caf4fbfa3544e1cf1565dfbe969c401f36125ca",
+        "exact_postimage_already_present": true
+      },
+      {
+        "path": "tests/test_sse_events_stream.py",
+        "root_preimage_sha256": "b466686507ee84cc83cdb0812a19826e2eb18c033d3be599a23cc71b361801f2",
+        "patch_expected_postimage_sha256": "c603e6006abdc13ad1d2636182e063caa42755900686edfd2ae70b4edc743a03",
+        "current_root_sha256": "c603e6006abdc13ad1d2636182e063caa42755900686edfd2ae70b4edc743a03",
+        "exact_postimage_already_present": true
+      }
+    ]
+  },
+  "current_measurements": [
+    {
+      "command": "$env:PYTHONPATH='src'; python -B -m pytest -q -s -p no:cacheprovider --tb=short 'tests/test_mcp_live_30_client_acceptance.py::test_measured_small_client_counts_share_one_isolated_hub[1-client]'",
+      "pytest_result": "1 passed in 12.37s",
+      "receipt": {
+        "all_client_returncodes_zero": true,
+        "all_responses_seconds": 7.536,
+        "client_count": 1,
+        "daemon_count_after_responses": 1,
+        "daemon_count_at_startup": 1,
+        "daemon_pid": 26520,
+        "daemon_spawned_seconds": 2.305,
+        "first_response_seconds": 7.378,
+        "gate_released_seconds": 2.551,
+        "hub_listener_ready_seconds": 6.002,
+        "isolated_config": "C:\\Users\\Adam\\AppData\\Local\\Temp\\pytest-of-Adam\\pytest-11252\\test_measured_small_client_cou0\\t03-live-mcp-1\\hub.toml",
+        "isolated_state_dir": "C:\\Users\\Adam\\AppData\\Local\\Temp\\pytest-of-Adam\\pytest-11252\\test_measured_small_client_cou0\\t03-live-mcp-1\\state",
+        "rss_samples": [
+          {
+            "phase": "listener_ready",
+            "pid": 26520,
+            "rss_bytes": 98762752,
+            "sampled_monotonic": 137160.6486708
+          },
+          {
+            "phase": "all_responses",
+            "pid": 26520,
+            "rss_bytes": 100380672,
+            "sampled_monotonic": 137163.1078989
+          }
+        ],
+        "worker_ready_seconds": 2.55
+      },
+      "receipt_tmp_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\pytest-of-Adam\\pytest-11252\\test_measured_small_client_cou0\\t03-live-mcp-1-receipt.json",
+      "receipt_file_sha256": "97731ab43e47ebf650ed8215f16b8793ff49037d447a1f510cc01bf2a54b6ddd",
+      "cleanup_verified": true
+    },
+    {
+      "command": "$env:PYTHONPATH='src'; python -B -m pytest -q -s -p no:cacheprovider --tb=short 'tests/test_mcp_live_30_client_acceptance.py::test_measured_small_client_counts_share_one_isolated_hub[10-client]'",
+      "pytest_result": "1 passed in 12.48s",
+      "receipt": {
+        "all_client_returncodes_zero": true,
+        "all_responses_seconds": 5.333,
+        "client_count": 10,
+        "daemon_count_after_responses": 1,
+        "daemon_count_at_startup": 1,
+        "daemon_pid": 42140,
+        "daemon_spawned_seconds": 2.272,
+        "first_response_seconds": 5.101,
+        "gate_released_seconds": 4.47,
+        "hub_listener_ready_seconds": 3.883,
+        "isolated_config": "C:\\Users\\Adam\\AppData\\Local\\Temp\\pytest-of-Adam\\pytest-11253\\test_measured_small_client_cou0\\t03-live-mcp-10\\hub.toml",
+        "isolated_state_dir": "C:\\Users\\Adam\\AppData\\Local\\Temp\\pytest-of-Adam\\pytest-11253\\test_measured_small_client_cou0\\t03-live-mcp-10\\state",
+        "rss_samples": [
+          {
+            "phase": "listener_ready",
+            "pid": 42140,
+            "rss_bytes": 98578432,
+            "sampled_monotonic": 137179.1303781
+          },
+          {
+            "phase": "all_responses",
+            "pid": 42140,
+            "rss_bytes": 100728832,
+            "sampled_monotonic": 137181.9054631
+          }
+        ],
+        "worker_ready_seconds": 4.468
+      },
+      "receipt_tmp_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\pytest-of-Adam\\pytest-11253\\test_measured_small_client_cou0\\t03-live-mcp-10-receipt.json",
+      "receipt_file_sha256": "bb1af1a37cb302a2339710a6d158d77f8d9c3c0f9ba4ae327bd8e52e316d16ad",
+      "cleanup_verified": true
+    }
+  ],
+  "fixture_selector_results": [
+    {
+      "command": "$env:PYTHONPATH='src'; python -B -m pytest -q -p no:cacheprovider --tb=short handoff/test_t03_stdio_http_proxy.py::test_stdio_initialize_tools_list_and_call_use_root_http_proxy",
+      "result": "1 passed in 2.86s",
+      "root_cause": "stale fixture monkeypatched missing mcp_server aliases for a read-only status action; removed unnecessary no-op patches, did not import/copy T13 code"
+    },
+    {
+      "command": "$env:PYTHONPATH='src'; python -B -m pytest -q -p no:cacheprovider --tb=short handoff/test_t03_multi_client_single_daemon.py::test_concurrent_process_clients_have_one_supervisor_spawn_authority",
+      "result": "1 passed in 3.82s",
+      "root_cause": "worker argv slice excluded source_root and imported absent T13 operational_mode module unnecessarily; corrected slice and removed unused import/stub; 8-client and one-authority assertions unchanged"
+    }
+  ],
+  "measurement_harness_initial_failure": {
+    "command": "$env:PYTHONPATH='src'; python -B -m pytest -q -s -p no:cacheprovider --tb=short 'tests/test_mcp_live_30_client_acceptance.py::test_measured_small_client_counts_share_one_isolated_hub[1-client]'",
+    "result": "1 failed in 135.25s: TimeoutError waiting for all 1 isolated MCP workers ready",
+    "cause": "the newly added child-script spawn timestamp line was initially mis-indented, causing child SyntaxError; fixed before successful 1/10 measurements"
+  },
+  "worker_no_hub_diagnostic": {
+    "method": "one spawned worker with never-opened startup gate; no Hub daemon launch",
+    "result": "ready_marker=True; returncode=1 after barrier expiry; stdout/stderr empty; temp tree removed"
+  },
+  "historical_30_client_receipt": {
+    "file": "T03-live-mcp-30-client-acceptance-20261005.json",
+    "client_count": 30,
+    "timings_seconds": {
+      "clients_ready": 6.621,
+      "gate_released": 6.627,
+      "hub_ready": 13.759,
+      "first_response": 14.052,
+      "all_responses": 14.418
+    },
+    "resource_samples": [
+      {
+        "pid": 25704,
+        "rss_bytes": 102174720,
+        "cpu_seconds": 0.671875,
+        "sampled_monotonic": 117167.8270907
+      },
+      {
+        "pid": 25704,
+        "rss_bytes": 100401152,
+        "cpu_seconds": 0.921875,
+        "sampled_monotonic": 117168.4417287
+      }
+    ],
+    "daemon_count_at_startup": 1,
+    "root_revision_fields_present": {},
+    "current_root_attestation": "missing root HEAD/content revision/source hash; archival metrics cannot be attributed to current root HEAD or content revision; treat as stale for current acceptance"
+  },
+  "current_30_client_limit": {
+    "safe_packet": "T03-live-mcp-30-client-acceptance-safe-20261005.json",
+    "safe_packet_sha256": "0a467cd4a524bf7c07ed8fb4efa878345dc310dd8e0dfb0c584c3473626b928d",
+    "result": "outcome_unknown",
+    "request_id": "req_b259c00611e5",
+    "rerun": "prohibited and not performed"
+  },
+  "t13_boundary": {
+    "candidate_operational_mode_module": "absent",
+    "decision": "no T13 source copied; missing module is relevant only to heavy-mode MCP gates, while the measured local_ai_status read path does not require it"
+  },
+  "remaining_no_go": [
+    "The 30-client acceptance result for the current safe harness remains outcome_unknown; no current 30-client E2E receipt.",
+    "The older 30-client metric JSON has no root revision identity and is archival only.",
+    "Full T03 suite and T13 operational-mode integration were not validated by these selectors."
+  ]
+}

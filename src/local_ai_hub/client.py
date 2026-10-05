@@ -26,6 +26,7 @@ from .operation_contracts import MAX_EVENT_SEQUENCE, normalize_transport_error
 
 
 MAX_STARTUP_WAIT_SECONDS = 60.0
+MAX_STARTUP_WAITERS = 128
 
 
 def bounded_startup_wait(value: Any) -> float:
@@ -104,6 +105,141 @@ def _live_start_lock(path: Path, stale_seconds: float) -> bool:
             # Before daemon metadata is published, the launcher owns the lock.
             return True
     return age <= max(1.0, stale_seconds) and pid_alive(pid)
+
+
+def _write_start_waiter(waiters_dir: Path, generation: str, token: str) -> Path | None:
+    """Atomically register this process as relying on a startup generation."""
+    waiters_dir.mkdir(parents=True, exist_ok=True)
+    pid = os.getpid()
+    identity = process_identity(pid)
+    record = {
+        "generation": generation,
+        "pid": pid,
+        "creation_identity_type": identity.get("creation_identity_type") if identity else None,
+        "creation_identity": str(identity.get("creation_identity")) if identity else None,
+        "created_at": time.time(),
+    }
+    path = waiters_dir / f"{generation}.{pid}.{token}.json"
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(record, separators=(",", ":")), encoding="ascii")
+        os.replace(temporary, path)
+        return path
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
+def _start_waiter_is_live(record: dict[str, Any]) -> bool:
+    try:
+        pid = int(record.get("pid", 0))
+    except (TypeError, ValueError):
+        return True
+    if pid <= 0:
+        return True
+    identity_type = record.get("creation_identity_type")
+    identity_value = record.get("creation_identity")
+    current = process_identity(pid)
+    if identity_type and identity_value and current:
+        return bool(
+            current.get("creation_identity_type") == identity_type
+            and str(current.get("creation_identity")) == str(identity_value)
+        )
+    # Missing identity is uncertainty, not proof that the waiter is stale.
+    return pid_alive(pid)
+
+
+def _live_start_waiter_count(waiters_dir: Path, generation: str) -> int:
+    """Count live waiters and prune only records disproved by process identity."""
+    try:
+        candidates = waiters_dir.glob(f"{generation}.*.json")
+    except OSError:
+        return MAX_STARTUP_WAITERS
+    count = 0
+    for index, path in enumerate(candidates):
+        if index >= MAX_STARTUP_WAITERS:
+            return MAX_STARTUP_WAITERS
+        try:
+            value = json.loads(path.read_text(encoding="ascii"))
+            if not isinstance(value, dict) or value.get("generation") != generation:
+                count += 1
+                continue
+            if _start_waiter_is_live(value):
+                count += 1
+            else:
+                path.unlink(missing_ok=True)
+        except (OSError, ValueError, TypeError):
+            # Malformed records remain live until a later bounded stale check.
+            count += 1
+    return count
+
+
+def _cleanup_start_child(
+    pid: int,
+    identity_type: str | None,
+    identity_value: str | None,
+    *,
+    process: subprocess.Popen[Any] | None = None,
+) -> bool:
+    """Terminate only the recorded child generation and confirm it has exited."""
+    if pid <= 0:
+        return True
+    if process is not None and getattr(process, "pid", None) == pid:
+        child = process
+    else:
+        with _DETACHED_CHILDREN_LOCK:
+            child = next((item for item in _DETACHED_CHILDREN if getattr(item, "pid", None) == pid), None)
+    if child is not None and child.poll() is not None:
+        return True
+    current = process_identity(pid)
+    if identity_type and identity_value:
+        if current is None:
+            return not pid_alive(pid)
+        if (
+            current.get("creation_identity_type") != identity_type
+            or str(current.get("creation_identity")) != str(identity_value)
+        ):
+            # The old child is gone; never signal a process that reused its PID.
+            return True
+    elif pid_alive(pid):
+        # An unverified PID is not safe to terminate.
+        return False
+
+    try:
+        terminate_tree(pid, process_group=pid, grace_seconds=0.25)
+    except Exception:
+        pass
+    if child is not None:
+        try:
+            child.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            try:
+                child.kill()
+            except OSError:
+                pass
+            try:
+                child.wait(timeout=1.0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return child.poll() is not None
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if not pid_alive(pid):
+            return True
+        current = process_identity(pid)
+        if identity_type and identity_value and current and (
+            current.get("creation_identity_type") != identity_type
+            or str(current.get("creation_identity")) != str(identity_value)
+        ):
+            return True
+        time.sleep(0.02)
+    return not pid_alive(pid)
 
 
 def _try_start_lock_guard(path: Path) -> int | None:
@@ -366,8 +502,16 @@ class HubClient:
                 f" {owner_identity['creation_identity']}"
             )
         lock_pid_path = lock_path.with_name(f"{lock_path.name}.{lock_nonce}.pid")
+        waiters_dir = state_dir / "hub.start.waiters"
+        waiter_token = uuid.uuid4().hex
+        waiter_path: Path | None = None
+        waiter_generation: str | None = None
+        waiter_lock_token: str | None = None
+        failed_marker_path: Path | None = None
+        waiter_succeeded = False
         owner = False
         keep_lock = False
+        spawned_process: subprocess.Popen[Any] | None = None
 
         def publish_lock_pid(pid: int) -> None:
             for _ in range(5):
@@ -390,6 +534,178 @@ class HubClient:
                     # A contender may hold a short-lived read handle on Windows.
                     time.sleep(0.01)
 
+        def register_waiter(generation: str, token: str) -> bool:
+            nonlocal waiter_path, waiter_generation, waiter_lock_token, failed_marker_path
+            if waiter_path is not None and waiter_generation == generation:
+                return True
+            if waiter_path is not None:
+                try:
+                    waiter_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                waiter_path = None
+            marker = state_dir / f"hub.start.failed.{generation}"
+            if marker.exists() or _live_start_waiter_count(waiters_dir, generation) >= MAX_STARTUP_WAITERS:
+                return False
+            record_path = _write_start_waiter(waiters_dir, generation, waiter_token)
+            if record_path is None:
+                return False
+            waiter_path = record_path
+            waiter_generation = generation
+            waiter_lock_token = token
+            failed_marker_path = marker
+            return True
+
+        def release_waiter(*, succeeded: bool) -> None:
+            nonlocal waiter_path
+            own_path = waiter_path
+            generation = waiter_generation
+            if own_path is None or generation is None:
+                return
+            waiter_path = None
+            marker = failed_marker_path or state_dir / f"hub.start.failed.{generation}"
+            generation_pid_path = lock_path.with_name(f"{lock_path.name}.{generation}.pid")
+            cleanup_target: tuple[int, str | None, str | None] | None = None
+            guard_fd = None
+            for _ in range(5):
+                guard_fd = _try_start_lock_guard(guard_path)
+                if guard_fd is not None:
+                    break
+                time.sleep(0.01)
+            if guard_fd is None:
+                # Leave the durable waiter record; another bounded pass can prove it stale.
+                waiter_path = own_path
+                return
+            try:
+                try:
+                    own_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                try:
+                    lock_contents = lock_path.read_text(encoding="ascii").strip()
+                except OSError:
+                    lock_contents = ""
+                same_generation = bool(
+                    lock_contents
+                    and len(lock_contents.split()) >= 3
+                    and lock_contents.split()[2] == generation
+                    and (waiter_lock_token is None or lock_contents == waiter_lock_token)
+                )
+                if succeeded:
+                    if same_generation:
+                        try:
+                            lock_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        try:
+                            generation_pid_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    try:
+                        marker.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                elif marker.exists() and _live_start_waiter_count(waiters_dir, generation) == 0:
+                    try:
+                        if marker.read_text(encoding="ascii").strip() == "failed":
+                            marker.write_text("stopping", encoding="ascii")
+                            pid = 0
+                            identity_type = None
+                            identity_value = None
+                            try:
+                                parts = generation_pid_path.read_text(encoding="ascii").strip().split()
+                                pid = int(parts[0])
+                                if len(parts) >= 3:
+                                    identity_type, identity_value = parts[1], parts[2]
+                            except (OSError, ValueError, IndexError):
+                                pass
+                            cleanup_target = (pid, identity_type, identity_value)
+                    except OSError:
+                        pass
+            finally:
+                _release_start_lock_guard(guard_fd)
+
+            if cleanup_target is None:
+                return
+            cleanup_confirmed = _cleanup_start_child(*cleanup_target, process=spawned_process)
+            if not cleanup_confirmed:
+                return
+            guard_fd = None
+            for _ in range(5):
+                guard_fd = _try_start_lock_guard(guard_path)
+                if guard_fd is not None:
+                    break
+                time.sleep(0.01)
+            if guard_fd is None:
+                return
+            try:
+                try:
+                    lock_contents = lock_path.read_text(encoding="ascii").strip()
+                    lock_readable = True
+                except OSError:
+                    lock_contents = ""
+                    lock_readable = False
+                same_generation = bool(
+                    lock_contents
+                    and len(lock_contents.split()) >= 3
+                    and lock_contents.split()[2] == generation
+                )
+                lock_removed = not lock_path.exists()
+                if same_generation:
+                    try:
+                        lock_path.unlink(missing_ok=True)
+                        lock_removed = not lock_path.exists()
+                    except OSError:
+                        lock_removed = False
+                if lock_removed or (lock_readable and not same_generation):
+                    try:
+                        generation_pid_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                else:
+                    # Keep the lock stale-detectable when Windows denies its
+                    # removal after the recorded child has already exited.
+                    try:
+                        generation_pid_path.write_text("0", encoding="ascii")
+                    except OSError:
+                        pass
+                try:
+                    marker.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                for index, stale_waiter in enumerate(waiters_dir.glob(f"{generation}.*.json")):
+                    if index >= MAX_STARTUP_WAITERS:
+                        break
+                    try:
+                        stale_waiter.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            finally:
+                _release_start_lock_guard(guard_fd)
+
+        def mark_generation_failed() -> None:
+            marker = state_dir / f"hub.start.failed.{lock_nonce}"
+            guard_fd = None
+            for _ in range(5):
+                guard_fd = _try_start_lock_guard(guard_path)
+                if guard_fd is not None:
+                    break
+                time.sleep(0.01)
+            if guard_fd is None:
+                return
+            try:
+                try:
+                    current_token = lock_path.read_text(encoding="ascii").strip()
+                except OSError:
+                    current_token = ""
+                if current_token == lock_token:
+                    try:
+                        marker.write_text("failed", encoding="ascii")
+                    except OSError:
+                        pass
+            finally:
+                _release_start_lock_guard(guard_fd)
+
         # Serialize lock creation, stale removal, and release across processes.
         # The guard itself is an OS lock, so crashes release it automatically.
         guard_path = state_dir / "hub.start.guard"
@@ -400,6 +716,8 @@ class HubClient:
                 guard_fd = _try_start_lock_guard(guard_path)
                 if guard_fd is None:
                     if self._online(remaining()):
+                        waiter_succeeded = True
+                        release_waiter(succeeded=True)
                         return True
                     time.sleep(min(self.startup_poll, remaining()))
             if guard_fd is None:
@@ -407,8 +725,11 @@ class HubClient:
 
             wait_for_owner = False
             fatal_lock_error = False
+            release_success_after_guard = False
             try:
                 if self._online(remaining()):
+                    waiter_succeeded = True
+                    release_success_after_guard = True
                     return True
                 try:
                     fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -422,11 +743,34 @@ class HubClient:
                         fatal_lock_error = True
                     finally:
                         os.close(fd)
+                    if not fatal_lock_error and not register_waiter(lock_nonce, lock_token):
+                        try:
+                            lock_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        fatal_lock_error = True
                     owner = not fatal_lock_error
                 except FileExistsError:
                     if _live_start_lock(lock_path, self.start_lock_stale):
-                        wait_for_owner = True
+                        try:
+                            existing_token = lock_path.read_text(encoding="ascii").strip()
+                            existing_parts = existing_token.split()
+                            generation = existing_parts[2] if len(existing_parts) >= 3 else ""
+                        except OSError:
+                            existing_token = ""
+                            generation = ""
+                        if generation:
+                            wait_for_owner = register_waiter(generation, existing_token)
                     else:
+                        if waiter_path is not None:
+                            try:
+                                waiter_path.unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                            waiter_path = None
+                            waiter_generation = None
+                            waiter_lock_token = None
+                            failed_marker_path = None
                         try:
                             lock_path.unlink(missing_ok=True)
                         except OSError:
@@ -435,24 +779,34 @@ class HubClient:
                     fatal_lock_error = True
             finally:
                 _release_start_lock_guard(guard_fd)
+                if release_success_after_guard:
+                    release_waiter(succeeded=True)
 
             if owner:
                 break
             if fatal_lock_error:
+                release_waiter(succeeded=False)
                 return False
             if wait_for_owner:
                 if lock_wait_deadline is None:
                     lock_wait_deadline = min(deadline, time.monotonic() + self.startup_wait)
                 if time.monotonic() >= lock_wait_deadline:
-                    return self._online(remaining())
+                    waiter_succeeded = self._online(remaining())
+                    release_waiter(succeeded=waiter_succeeded)
+                    return waiter_succeeded
                 if self._online(remaining()):
+                    waiter_succeeded = True
+                    release_waiter(succeeded=True)
                     return True
                 time.sleep(min(self.startup_poll, remaining(), lock_wait_deadline - time.monotonic()))
 
         if not owner:
-            return self._online(remaining())
+            waiter_succeeded = self._online(remaining())
+            release_waiter(succeeded=waiter_succeeded)
+            return waiter_succeeded
         try:
             if self._online(remaining()):
+                waiter_succeeded = True
                 return True
             if remaining() <= 0:
                 publish_lock_pid(0)
@@ -479,37 +833,24 @@ class HubClient:
             except OSError:
                 publish_lock_pid(0)
                 return False
+            spawned_process = process
             child_pid = getattr(process, "pid", os.getpid())
             publish_lock_pid(child_pid)
             _retain_detached_child(process)
             while remaining() > 0:
                 if self._online(remaining()):
+                    waiter_succeeded = True
                     return True
                 time.sleep(min(self.startup_poll, remaining()))
             if self._online(remaining()):
+                waiter_succeeded = True
                 return True
-            # Reap only the child created by this startup attempt. A listener
-            # may belong to another successful starter while health warms.
+            # A failed generation retains its lock while live waiters still
+            # rely on the same child; the final waiter owns bounded cleanup.
             if process.poll() is None and not find_listening_pid(port):
-                try:
-                    terminate_tree(process.pid, process_group=process.pid, grace_seconds=0.25)
-                except Exception:
-                    pass
-                try:
-                    process.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
-                    try:
-                        process.kill()
-                    except OSError:
-                        pass
-                    try:
-                        process.wait(timeout=1.0)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-            if process.poll() is None:
-                publish_lock_pid(child_pid)
+                keep_lock = True
+                mark_generation_failed()
+            elif process.poll() is None:
                 keep_lock = True
             else:
                 publish_lock_pid(0)
@@ -546,6 +887,7 @@ class HubClient:
                         lock_pid_path.unlink(missing_ok=True)
                     except OSError:
                         pass
+            release_waiter(succeeded=waiter_succeeded)
 
     @staticmethod
     def _terminal_preflight(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:

@@ -1,0 +1,215 @@
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -532,8 +532,9 @@
+ 
+ 
+ AGENT_EVENT_PAGE_MAX_BYTES = 1024 * 1024
+ AGENT_EVENT_PAGE_MAX_LIMIT = 100
++SSE_REPLAY_MAX_EVENTS = 10_000
+ 
+ 
+ def _minimum_json_bytes(value: Any, ceiling: int) -> int:
+     """Return lower bound for UTF-8 JSON size without encoding huge strings."""
+@@ -2092,13 +2093,15 @@
+             last_seq = after_seq
+             if stream_id and after_seq >= 0:
+                 replay_cursor = after_seq
+                 replay_through_seq = None
+-                while True:
++                replayed_events = 0
++                while replayed_events < SSE_REPLAY_MAX_EVENTS:
++                    page_limit = min(AGENT_EVENT_PAGE_MAX_LIMIT, SSE_REPLAY_MAX_EVENTS - replayed_events)
+                     page = APP.agent_state.event_page(
+                         stream_id=stream_id,
+                         after_seq=replay_cursor,
+-                        limit=100,
++                        limit=page_limit,
+                         through_seq=replay_through_seq,
+                     )
+                     if page.get("success") is not True:
+                         stream_success = False
+@@ -2110,9 +2113,40 @@
+                         except OSError:
+                             stream_error = "client disconnected"
+                         return
+                     if replay_through_seq is None:
+-                        replay_through_seq = int(page.get("last_seq", replay_cursor) or replay_cursor)
++                        raw_high_water = page.get("last_seq", replay_cursor)
++                        replay_through_seq = max(0, int(replay_cursor if raw_high_water is None else raw_high_water))
++                        if replay_cursor > replay_through_seq:
++                            first_retained = max(0, int(page.get("first_retained_seq", 0) or 0))
++                            checkpoint = min(max(0, first_retained - 1), replay_through_seq)
++                            cursor_reset = {
++                                "requested_after_seq": replay_cursor,
++                                "last_seq": replay_through_seq,
++                                "resume_after_seq": checkpoint,
++                                "cursor_ahead": True,
++                            }
++                            if first_retained > 1:
++                                cursor_reset.update({
++                                    "retention_gap": True,
++                                    "missing_from_seq": 1,
++                                    "missing_through_seq": min(first_retained - 1, replay_through_seq),
++                                    "first_available_seq": first_retained,
++                                })
++                            reset_msg = (
++                                f"id: {checkpoint}\nevent: replay_cursor_reset\ndata: "
++                                f"{json_dumps(cursor_reset, separators=(',', ':'))}\n\n"
++                            ).encode("utf-8")
++                            try:
++                                self.wfile.write(reset_msg)
++                                self.wfile.flush()
++                            except OSError:
++                                stream_success = False
++                                stream_error = "client disconnected"
++                                return
++                            replay_cursor = checkpoint
++                            last_seq = checkpoint
++                            continue
+                     page_payload = json_dumps(page, separators=(",", ":"))
+                     page_msg = f"id: {page.get('next_seq', replay_cursor)}\nevent: replay_page\ndata: {page_payload}\n\n".encode("utf-8")
+                     try:
+                         self.wfile.write(page_msg)
+@@ -2123,9 +2157,12 @@
+                         return
+                     if page.get("cursor_reset") is True:
+                         first_retained = int(page.get("first_retained_seq", 0) or 0)
+                         last_seq = max(0, first_retained - 1)
+-                    for raw_event in page.get("events", []):
++                    replay_events = page.get("events", [])
++                    if not isinstance(replay_events, (list, tuple)):
++                        replay_events = []
++                    for raw_event in replay_events:
+                         if not isinstance(raw_event, dict):
+                             continue
+                         event_seq = int(raw_event.get("seq", 0) or 0)
+                         event_kind = str(raw_event.get("kind", ""))
+@@ -2140,10 +2177,31 @@
+                         except OSError:
+                             stream_success = False
+                             stream_error = "client disconnected"
+                             return
++                    replayed_events += len(replay_events)
+                     next_cursor = int(page.get("next_seq", replay_cursor) or 0)
+-                    if page.get("has_more") is not True or next_cursor <= replay_cursor:
++                    has_more = page.get("has_more") is True
++                    if replayed_events >= SSE_REPLAY_MAX_EVENTS:
++                        if has_more:
++                            limit_reached = {
++                                "replay_limit": SSE_REPLAY_MAX_EVENTS,
++                                "last_seq": last_seq,
++                                "has_more": True,
++                            }
++                            limit_msg = (
++                                f"id: {last_seq}\nevent: replay_limit\ndata: "
++                                f"{json_dumps(limit_reached, separators=(',', ':'))}\n\n"
++                            ).encode("utf-8")
++                            try:
++                                self.wfile.write(limit_msg)
++                                self.wfile.flush()
++                            except OSError:
++                                stream_success = False
++                                stream_error = "client disconnected"
++                                return
++                        break
++                    if not has_more or next_cursor <= replay_cursor:
+                         break
+                     replay_cursor = next_cursor
+ 
+             start_time = time.monotonic()
+diff --git a/tests/test_sse_events_stream.py b/tests/test_sse_events_stream.py
+--- a/tests/test_sse_events_stream.py
++++ b/tests/test_sse_events_stream.py
+@@ -205,4 +205,91 @@
+     assert events[0][0] == "task.created"
+     assert events[0][1]["step"] == 1
+     assert events[1][0] == "task.completed"
+     assert events[1][1]["ok"] is True
++
++class _T03ReplayPageState:
++    def __init__(self, total: int):
++        self.total = total
++        self.calls = []
++        self.enabled = True
++
++    def subscribe(self, maxsize: int):
++        return http_server.queue.Queue(maxsize=maxsize)
++
++    def unsubscribe(self, subscriber) -> None:
++        pass
++
++    def event_page(self, *, stream_id, after_seq, limit, through_seq=None):
++        self.calls.append((stream_id, after_seq, limit))
++        high_water = self.total if through_seq is None else min(self.total, through_seq)
++        last = min(after_seq + limit, high_water)
++        events = [
++            {"seq": seq, "kind": "task.created", "stream_id": stream_id, "payload": {}}
++            for seq in range(after_seq + 1, last + 1)
++        ]
++        return {
++            "success": True,
++            "events": events,
++            "first_retained_seq": 1,
++            "last_seq": self.total,
++            "next_seq": last,
++            "has_more": last < high_water,
++            "cursor_reset": False,
++            "gap_ranges": [],
++        }
++
++
++def test_sse_future_cursor_resets_and_replays_real_agent_event_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    store = AgentStateStore(tmp_path / "agent_state.sqlite3")
++    store.append(AgentEvent.create("task-1", "task.created", {"step": 1}, "k1"))
++    store.append(AgentEvent.create("task-1", "task.updated", {"step": 2}, "k2"))
++
++    class DummyApp:
++        agent_state = store
++        config = {}
++
++    monkeypatch.setattr(http_server, "APP", DummyApp())
++    handler = DummyHandler(DummyApp())
++    handler._stream_agent_events(stream_id="task-1", after_seq=99, timeout=0.05)
++
++    output = handler.wfile.getvalue().decode("utf-8")
++    assert "id: 0\nevent: replay_cursor_reset" in output
++    assert '"requested_after_seq":99' in output
++    assert '"last_seq":2' in output
++    assert '"resume_after_seq":0' in output
++    assert "id: 1\nevent: task.created" in output
++    assert "id: 2\nevent: task.updated" in output
++
++
++def test_sse_replay_has_more_caps_without_probe_and_false_stops(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    state = _T03ReplayPageState(total=http_server.SSE_REPLAY_MAX_EVENTS + 1)
++
++    class DummyApp:
++        agent_state = state
++        config = {}
++
++    monkeypatch.setattr(http_server, "APP", DummyApp())
++    handler = DummyHandler(DummyApp())
++    handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.05)
++
++    output = handler.wfile.getvalue().decode("utf-8")
++    assert output.count("event: task.created") == http_server.SSE_REPLAY_MAX_EVENTS
++    assert f"id: {http_server.SSE_REPLAY_MAX_EVENTS}\nevent: replay_limit" in output
++    assert '"replay_limit":10000' in output
++    assert state.calls == [
++        ("task-1", after_seq, http_server.AGENT_EVENT_PAGE_MAX_LIMIT)
++        for after_seq in range(0, http_server.SSE_REPLAY_MAX_EVENTS, http_server.AGENT_EVENT_PAGE_MAX_LIMIT)
++    ]
++    assert ("task-1", http_server.SSE_REPLAY_MAX_EVENTS, 1) not in state.calls
++
++    short = _T03ReplayPageState(total=http_server.AGENT_EVENT_PAGE_MAX_LIMIT)
++
++    class ShortApp:
++        agent_state = short
++        config = {}
++
++    monkeypatch.setattr(http_server, "APP", ShortApp())
++    short_handler = DummyHandler(ShortApp())
++    short_handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.05)
++    assert len(short.calls) == 1
++    assert "event: replay_limit" not in short_handler.wfile.getvalue().decode("utf-8")

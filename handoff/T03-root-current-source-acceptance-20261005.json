@@ -1,0 +1,194 @@
+{
+  "packet_version": 1,
+  "task": "T03 root-current source acceptance; minimal SSE replay patch",
+  "candidate_worktree": "C:\\Users\\Adam\\.codex\\worktrees\\e809\\.local-ai-hub",
+  "candidate_base": "d68ee694c6d3f75db5c1ab2f63497226880e5010",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "root_worktree_status_for_owned_paths": [
+    " M src/local_ai_hub/generator.py",
+    " M src/local_ai_hub/http_server.py",
+    " M src/local_ai_hub/mcp_server.py",
+    " M src/local_ai_hub/resilience.py",
+    " M tests/test_features.py",
+    " M tests/test_sse_events_stream.py",
+    "?? src/local_ai_hub/operation_contracts.py",
+    "?? tests/test_mcp_contract_dispatch.py",
+    "?? tests/test_operation_contracts.py"
+  ],
+  "owned_paths": [
+    "src/local_ai_hub/http_server.py",
+    "tests/test_sse_events_stream.py"
+  ],
+  "owned_hunks": [
+    {
+      "path": "src/local_ai_hub/http_server.py",
+      "scope": "agent-event SSE replay only: 10,000-event cap driven by event_page has_more, no look-ahead probe, future cursor reset to min(first_retained_seq - 1, last_seq), replay retained window"
+    },
+    {
+      "path": "tests/test_sse_events_stream.py",
+      "scope": "future cursor replay, has_more cap/no-probe and has_more=false regression coverage"
+    }
+  ],
+  "equivalent_or_excluded": [
+    {
+      "path": "src/local_ai_hub/mcp_server.py",
+      "decision": "no patch; root factory already wraps HubClient with auto_start=True; scoped behavior equivalent"
+    },
+    {
+      "path": "src/local_ai_hub/operation_contracts.py",
+      "decision": "no patch; receipt/public dispatch contract already present; path_hints excluded as T21-owned"
+    },
+    {
+      "path": "src/local_ai_hub/generator.py",
+      "decision": "no patch; typed receipt schema behavior already present"
+    },
+    {
+      "path": "src/local_ai_hub/resilience.py",
+      "decision": "no patch; RecoveryJournal.begin supports identity and payload"
+    },
+    {
+      "path": "src/local_ai_hub/http_server.py",
+      "decision": "path_hints excluded as T21-owned; /api/context/pack excluded as T14-owned; mutating routes excluded as T06-owned; client.py excluded as T04-owned"
+    },
+    {
+      "path": "src/local_ai_hub/services.py",
+      "decision": "excluded as T21-owned"
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "decision": "excluded as T04-owned"
+    }
+  ],
+  "root_file_images": {
+    "src/local_ai_hub/operation_contracts.py": {
+      "tracked_at_head": false,
+      "base_sha256": null,
+      "root_pre_sha256": "79abad111dddbca541d0e8e7a439742f54ba431fac51918a704fccb7fbe06930",
+      "patch_post_sha256": "79abad111dddbca541d0e8e7a439742f54ba431fac51918a704fccb7fbe06930",
+      "root_actual_post_sha256": "79abad111dddbca541d0e8e7a439742f54ba431fac51918a704fccb7fbe06930"
+    },
+    "src/local_ai_hub/mcp_server.py": {
+      "tracked_at_head": true,
+      "base_sha256": "dc03e510e1f38c23f036516c6bb03036c24019a9137df402e87803031556bc4e",
+      "root_pre_sha256": "88949aaf1660bad4ffa40a3f27614cc0014868c669d633ca1e5e346e58f29e36",
+      "patch_post_sha256": "88949aaf1660bad4ffa40a3f27614cc0014868c669d633ca1e5e346e58f29e36",
+      "root_actual_post_sha256": "88949aaf1660bad4ffa40a3f27614cc0014868c669d633ca1e5e346e58f29e36"
+    },
+    "src/local_ai_hub/http_server.py": {
+      "tracked_at_head": true,
+      "base_sha256": "4c10b31778ba89fa694c0029fc95b363af7acffc4c2caceb5e52ce4b9a9bff80",
+      "root_pre_sha256": "e736143d9b2c6386a1f70549a6c990cd65f70db409410d553fc00af4aa8c19c9",
+      "patch_post_sha256": "a8949253e023e42d4db432640caf4fbfa3544e1cf1565dfbe969c401f36125ca",
+      "root_actual_post_sha256": "e736143d9b2c6386a1f70549a6c990cd65f70db409410d553fc00af4aa8c19c9"
+    },
+    "src/local_ai_hub/generator.py": {
+      "tracked_at_head": true,
+      "base_sha256": "ed55413ac932dd9d87b9ad13d0328c5b843c7cb3974ca47a820729378aa4b67d",
+      "root_pre_sha256": "5ea7feee62e07731a75d31991a3e26a0461fff6d318dea85f2995b405123d11b",
+      "patch_post_sha256": "5ea7feee62e07731a75d31991a3e26a0461fff6d318dea85f2995b405123d11b",
+      "root_actual_post_sha256": "5ea7feee62e07731a75d31991a3e26a0461fff6d318dea85f2995b405123d11b"
+    },
+    "src/local_ai_hub/resilience.py": {
+      "tracked_at_head": true,
+      "base_sha256": "18330e7101b514c9ab5be30454470b9b31866a5e195aa0c0b641f8d19adf3d2b",
+      "root_pre_sha256": "88c16039afc2919bb5e7f8deaf2165ac09c2c064ad496ba15c1fd2ffac2ac67e",
+      "patch_post_sha256": "88c16039afc2919bb5e7f8deaf2165ac09c2c064ad496ba15c1fd2ffac2ac67e",
+      "root_actual_post_sha256": "88c16039afc2919bb5e7f8deaf2165ac09c2c064ad496ba15c1fd2ffac2ac67e"
+    },
+    "tests/test_operation_contracts.py": {
+      "tracked_at_head": false,
+      "base_sha256": null,
+      "root_pre_sha256": "7a22137b1d17c52163f938ae206264d0a788f1481b460b4cab9ef073c8477c88",
+      "patch_post_sha256": "7a22137b1d17c52163f938ae206264d0a788f1481b460b4cab9ef073c8477c88",
+      "root_actual_post_sha256": "7a22137b1d17c52163f938ae206264d0a788f1481b460b4cab9ef073c8477c88"
+    },
+    "tests/test_features.py": {
+      "tracked_at_head": true,
+      "base_sha256": "7cb5516ba6aec96bef7310657f86e919fa5015503aeca4caf529ab3e22600c40",
+      "root_pre_sha256": "1d3c99b341eb68c0916621f7b95a71d0c7343f971a59456ee42f702c1a4150d9",
+      "patch_post_sha256": "1d3c99b341eb68c0916621f7b95a71d0c7343f971a59456ee42f702c1a4150d9",
+      "root_actual_post_sha256": "1d3c99b341eb68c0916621f7b95a71d0c7343f971a59456ee42f702c1a4150d9"
+    },
+    "tests/test_sse_events_stream.py": {
+      "tracked_at_head": true,
+      "base_sha256": "2cee8b11f162790e23825c27f737e6511ff25159c0482cb046001fbb912a6f47",
+      "root_pre_sha256": "b466686507ee84cc83cdb0812a19826e2eb18c033d3be599a23cc71b361801f2",
+      "patch_post_sha256": "c603e6006abdc13ad1d2636182e063caa42755900686edfd2ae70b4edc743a03",
+      "root_actual_post_sha256": "b466686507ee84cc83cdb0812a19826e2eb18c033d3be599a23cc71b361801f2"
+    },
+    "tests/test_mcp_contract_dispatch.py": {
+      "tracked_at_head": false,
+      "base_sha256": null,
+      "root_pre_sha256": "ab81768f86ad19735d5e7cebfd72cc5a05e4a341d867ed6750ea7be6f272c400",
+      "patch_post_sha256": "ab81768f86ad19735d5e7cebfd72cc5a05e4a341d867ed6750ea7be6f272c400",
+      "root_actual_post_sha256": "ab81768f86ad19735d5e7cebfd72cc5a05e4a341d867ed6750ea7be6f272c400"
+    }
+  },
+  "patch": {
+    "file": "T03-root-current-sse-source-20261005.patch",
+    "sha256": "4030f95ce922bbe4cee82bd51d8ff647d3f344446b3ea70f7259d9986877bfa8",
+    "changed_paths": [
+      "src/local_ai_hub/http_server.py",
+      "tests/test_sse_events_stream.py"
+    ],
+    "apply_check": "passed: git -C C:\\Users\\Adam\\.local-ai-hub apply --check --whitespace=error <patch>",
+    "applied_to_root": false
+  },
+  "tests": [
+    {
+      "environment": "temporary copy of current root src/local_ai_hub and tests/test_sse_events_stream.py; patch applied in temp; no root files written",
+      "argv": [
+        "C:\\Python313\\python.exe",
+        "-B",
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--tb=short",
+        "tests/test_sse_events_stream.py",
+        "-k",
+        "future_cursor or replay_has_more or replays_all_bounded_pages"
+      ],
+      "result": "3 passed, 4 deselected in 0.74s"
+    },
+    {
+      "environment": "T03 candidate worktree; non-live unit regressions",
+      "command": "$env:PYTHONPATH='src'; python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_sse_events_stream.py -k 'future_cursor or has_more or without_has_more'",
+      "result": "5 passed, 26 deselected in 0.42s"
+    }
+  ],
+  "root_tests": "not run; root remains read-only and T20 owns root test slot",
+  "test_only_live_30_client_packet": "separate artifact; final live result remains outcome_unknown and is not source-acceptance evidence",
+  "hub_audit": {
+    "context": {
+      "action": "local_ai_repo(context)",
+      "status": "success",
+      "context_id": "74be7c4624cdd19a522d4c30",
+      "repo_revision": "d1eaf553d6e869c6a68881a0ad2ef0e8a9d0d5affb6dbcd655afe9f9c91908e5",
+      "evidence_ids": [
+        "E5f0593c12d7cf604d4e1",
+        "E691cd9b6c15237e163a8",
+        "Ed2160fa46b23fd0184b1",
+        "E85308c222b31feebfe4d",
+        "Ee0198326a50e9c3f3e15",
+        "E713a453805a14d70e8d1",
+        "Ee8b851e4a1606eb7cf1a",
+        "Efc43668bc65061d82e24",
+        "E4f594a035e4c18ad762b",
+        "E7164c815fe81c0d56c65",
+        "Ed7bffc4df9a762d3707e"
+      ],
+      "truncated": true
+    },
+    "solve": {
+      "action": "local_ai_repo(solve)",
+      "success": true,
+      "returned_tokens": 158,
+      "truncated": true
+    },
+    "further_hub_calls": "stopped as instructed; no live Hub retry"
+  },
+  "root_mutated": false
+}

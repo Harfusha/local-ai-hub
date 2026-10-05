@@ -1,0 +1,65 @@
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -1357,11 +1357,11 @@ class Handler(BaseHTTPRequestHandler):
+         self._authorization_actor = (
+             "api_token" if global_valid else
+             "action_token" if scoped_valid else
+-            "local" if not expected and not action_tokens and local_client else
++            "local" if not expected and local_client else
+             "unrecognized"
+         )
+         if global_valid or scoped_valid:
+             return True
+-        if expected or action_tokens:
++        if expected:
+             return False
+         return local_client
+diff --git a/tests/test_t03_o5_admin_action_auth.py b/tests/test_t03_o5_admin_action_auth.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_t03_o5_admin_action_auth.py
+@@ -0,0 +1,43 @@
++from types import SimpleNamespace
++
++from local_ai_hub import http_server
++
++
++def _handler(path: str, client_ip: str, command: str = "POST"):
++    handler = http_server.Handler.__new__(http_server.Handler)
++    handler.path = path
++    handler.command = command
++    handler.headers = {"X-LocalAI-Token": ""}
++    handler.client_address = (client_ip, 23456)
++    handler.server = None
++    handler.responses = []
++    handler._validate_host_and_origin = lambda: True
++    handler._tenant_binding_allowed = lambda: True
++    handler._send = lambda status, payload: handler.responses.append((status, payload))
++    return handler
++
++
++def test_empty_api_token_keeps_trusted_local_admin_and_read_only_badge(monkeypatch):
++    monkeypatch.setattr(
++        http_server,
++        "APP",
++        SimpleNamespace(
++            config={
++                "security": {
++                    "api_token": "",
++                    "action_tokens": {"trace.read": "trace-read-token-123456"},
++                }
++            },
++            telemetry=SimpleNamespace(record_system=lambda *_args, **_kwargs: None),
++        ),
++    )
++
++    local_update = _handler("/api/admin/mode", "127.0.0.1")
++    remote_update = _handler("/api/admin/mode", "203.0.113.7")
++    local_badge = _handler("/api/mode", "127.0.0.1", "GET")
++
++    assert local_update._require_authorized() is True
++    assert local_update._authorization_actor == "local"
++    assert remote_update._require_authorized() is False
++    assert remote_update.responses == [(401, {"success": False, "error": "unauthorized"})]
++    assert local_badge._require_authorized() is True

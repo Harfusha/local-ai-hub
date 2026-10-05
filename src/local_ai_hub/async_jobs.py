@@ -269,10 +269,13 @@ class AsyncJobManager:
         raw_snapshot = snapshot.get("snapshot")
         response = gate_error(raw_snapshot) if callable(gate_error) and raw_snapshot is not None else None
         if not isinstance(response, dict):
+            mode = str(snapshot.get("mode", "maintenance"))
             response = {
                 "success": False,
-                "error": f"async job blocked by operational mode: {snapshot['mode']}",
-                "error_code": "operational_mode_blocked",
+                "mode": mode,
+                "error": f"hub paused: {mode} mode active",
+                "terminal": True,
+                "retryable": False,
             }
         admission = self._admission("rejected", "operational_mode_blocked", retryable=False)
         return {

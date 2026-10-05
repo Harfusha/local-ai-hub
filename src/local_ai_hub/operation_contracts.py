@@ -104,6 +104,10 @@ ACTION_SPECIFIC_FIELDS: dict[str, dict[str, frozenset[str]]] = {
     "local_ai_status": {"detail": frozenset({""})},
     "local_ai_task": {
         **{
+            name: frozenset({"delegate", "explore", "reason", "review", "second_opinion", "compress"})
+            for name in ("phase", "focus", "preload_profile", "repository_revision", "changed_paths")
+        },
+        **{
             name: frozenset({"vision"})
             for name in (
                 "image_artifact_id", "screenshot_artifact_id", "bundle_artifact_id",
@@ -194,6 +198,15 @@ ACTION_SPECIFIC_FIELDS: dict[str, dict[str, frozenset[str]]] = {
     },
     # Pipeline and experimental batch fields only apply to their owning actions.
     "local_ai_repo": {
+        **{
+            name: frozenset({"context_compile"})
+            for name in (
+                "include_diagnostics", "clone_id", "worktree_id", "branch",
+                "repository_id", "session_id", "repository_revision",
+            )
+        },
+        "is_worktree": frozenset({"preprocess"}),
+        "parent_root": frozenset({"preprocess"}),
         "steps": frozenset({"pipeline"}),
         "edits": frozenset({"batch_replace", "pipeline"}),
         "dry_run": frozenset({"batch_replace", "pipeline"}),
@@ -201,11 +214,17 @@ ACTION_SPECIFIC_FIELDS: dict[str, dict[str, frozenset[str]]] = {
         "include_tests": frozenset({"complexity", "pipeline"}),
         "language": frozenset({"resolve_imports", "pipeline"}),
         "path_hints": frozenset({"search"}),
+        "directory_hints": frozenset({"context"}),
+        "exclude_paths": frozenset({"context"}),
+        "force_include_paths": frozenset({"context"}),
+        "receipt": frozenset({"verify_receipt"}),
     },
 }
 
 ACTION_SPECIFIC_FIELD_DEFAULTS: dict[str, dict[str, Any]] = {
     "local_ai_task": {
+        "phase": "", "focus": None, "preload_profile": "",
+        "repository_revision": "", "changed_paths": None,
         "cloud_fallback": False, "candidate_data": None, "quality_pass": None,
         "test_pass": None, "evaluation_duration_ms": 0.0, "evaluation_days": 30,
         "cases": None, "tasks": None, "job_action": "reason", "job_id": "",
@@ -237,7 +256,11 @@ ACTION_SPECIFIC_FIELD_DEFAULTS: dict[str, dict[str, Any]] = {
     "local_ai_artifact": {"artifact_id": ""},
     "local_ai_repo": {
         "steps": None, "edits": None, "dry_run": False, "include_code": False,
-        "include_tests": False, "language": "auto",
+        "include_tests": False, "language": "auto", "include_diagnostics": False,
+        "clone_id": "", "worktree_id": "", "branch": "", "repository_id": "",
+        "session_id": "", "repository_revision": "", "is_worktree": False,
+        "parent_root": "", "directory_hints": None, "exclude_paths": None,
+        "force_include_paths": None,
     },
     "local_ai_work": {
         "root": ".", "task": "", "acceptance_criteria": None, "constraints": None,
@@ -250,6 +273,7 @@ ACTION_SPECIFIC_FIELD_DEFAULTS: dict[str, dict[str, Any]] = {
 ACTION_DEFAULTS = {"local_ai_status": "", "local_ai_artifact": "get"}
 ACTION_REQUIRED_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
     "local_ai_task": {"continue": ("conversation_id",)},
+    "local_ai_repo": {"verify_receipt": ("receipt",)},
     "local_ai_artifact": {"get": ("artifact_id",), "slice": ("artifact_id",)},
     "local_ai_work": {
         "submit": ("task",),
@@ -270,13 +294,28 @@ ACTION_SPECIFIC_BOUNDS: dict[str, dict[str, dict[str, dict[str, int]]]] = {
 _OPEN_OBJECT = {"type": "object", "additionalProperties": True}
 _OUTPUT_ENVELOPE_PROPERTIES: dict[str, dict[str, Any]] = {
     "success": {"type": "boolean"},
+    "status": {"type": "string"},
     "status_code": {"type": "integer"},
+    "mode": {"type": "string"},
     "error": {"type": "string"},
+    "warning": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "message": {"type": "string"},
     "hub_online": {"type": "boolean"},
     "terminal": {"type": "boolean"},
     "retryable": {"type": "boolean"},
     "degraded": {"type": "boolean"},
     "stale": {"type": "boolean"},
+    "fallback_used": {"type": "boolean"},
+    "requires_override": {"type": "boolean"},
+    "requires_approval": {"type": "boolean"},
+    "decision_recorded": {"type": "boolean"},
+    "decision_persisted": {"type": "boolean"},
+    "task_status": {"type": "string"},
+    "waiting": {"type": "boolean"},
+    "context_id": {"type": "string"},
+    "response_budget": _OPEN_OBJECT,
+    "warnings": {"type": "array", "items": {"anyOf": [{"type": "string"}, _OPEN_OBJECT]}},
+    "warning_ids": {"type": "array", "items": {"type": "string"}},
     "retry_after_seconds": {"type": "number"},
     "outcome_unknown": {"type": "boolean"},
     "request_not_sent": {"type": "boolean"},
@@ -284,8 +323,17 @@ _OUTPUT_ENVELOPE_PROPERTIES: dict[str, dict[str, Any]] = {
     "evidence_ids": {"type": "array", "items": {"type": "string"}},
     "evidence": {"type": "array", "items": _OPEN_OBJECT},
     "cancel": _OPEN_OBJECT,
+    "cancel_requested": {"type": "boolean"},
     "cancelled": {"type": "boolean"},
+    "cancel_reason": {"type": "string"},
     "timed_out": {"type": "boolean"},
+    "complete": {"type": "boolean"},
+    "partial": {"type": "boolean"},
+    "truncated": {"type": "boolean"},
+    "estimated_tokens": {"type": "integer"},
+    "reuse_key": {"type": "string"},
+    "reused": {"type": "boolean"},
+    "unchanged": {"type": "boolean"},
     "request_id": {"type": "string"},
     "unsupported": {"type": "boolean"},
 }
@@ -464,18 +512,42 @@ _OUTPUT_ACTION_PROPERTIES: dict[str, dict[str, dict[str, Any]]] = {
             "next_offset": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
         },
     },
+    "local_ai_command": {
+        "speculative_lint": {
+            "state": {"type": "string"},
+            "job_id": {"type": "string"},
+        },
+    },
 }
 
 _STATUS_OUTPUT_ALIASES = {"": "brief", "status": "brief", "health": "brief", "check": "brief", "info": "brief"}
+_ACTION_OUTPUT_ALIASES = {
+    "local_ai_task": {"gen": "delegate", "rev": "review", "del": "delegate"},
+    "local_ai_repo": {
+        "idx": "code_index", "review": "review_diff", "sec": "security_audit",
+        "ctx": "context",
+    },
+    "local_ai_command": {
+        "patch": "patch_and_verify", "fix": "auto_fix", "repair": "repair_loop",
+        "fmt": "format",
+    },
+    "local_ai_coord": {
+        "ctx": "context_compile", "compile_ctx": "context_compile",
+        "neg_rec": "negative_knowledge_record", "neg_find": "negative_knowledge_find",
+        "mem_put": "memory_record", "mem_rec": "memory_record",
+        "mem_get": "memory_get", "mem_find": "memory_find", "mem_search": "memory_find",
+        "task_new": "task_create", "task_chk": "task_checkpoint",
+        "task_done": "task_complete",
+    },
+}
 
 
 def operation_output_schema(tool_name: str, action: str) -> dict[str, Any]:
-    """Return typed, action-scoped envelope plus source-backed payload fields.
-
-    Upstream action payloads remain open where handlers proxy heterogeneous
-    backend responses. Known stable fields are still described explicitly.
-    """
-    canonical = _STATUS_OUTPUT_ALIASES.get(action, action) if tool_name == "local_ai_status" else action
+    """Return typed known fields while keeping variable action payloads open."""
+    if tool_name == "local_ai_status":
+        canonical = _STATUS_OUTPUT_ALIASES.get(action, action)
+    else:
+        canonical = _ACTION_OUTPUT_ALIASES.get(tool_name, {}).get(action, action)
     properties = deepcopy(_OUTPUT_ENVELOPE_PROPERTIES)
     properties.update(deepcopy(_OUTPUT_ACTION_PROPERTIES.get(tool_name, {}).get(canonical, {})))
     if tool_name == "local_ai_task":
@@ -493,9 +565,40 @@ def operation_output_schema(tool_name: str, action: str) -> dict[str, Any]:
 
 
 def operation_tool_output_schema(tool_name: str, actions: list[str] | tuple[str, ...]) -> dict[str, Any]:
-    """Keep outputs open until every public action has a source-backed contract."""
-    del tool_name, actions
-    return {"type": "object", "additionalProperties": True}
+    """Publish shared envelope and compact deltas for actions with output contracts."""
+    action_contracts: dict[str, dict[str, Any]] = {}
+    action_properties: dict[str, Any] = {}
+    for action in actions:
+        if tool_name == "local_ai_status":
+            canonical = _STATUS_OUTPUT_ALIASES.get(action, action)
+        else:
+            canonical = _ACTION_OUTPUT_ALIASES.get(tool_name, {}).get(action, action)
+        contracts = _OUTPUT_ACTION_PROPERTIES.get(tool_name, {})
+        if canonical not in contracts and tool_name != "local_ai_task":
+            continue
+        delta = deepcopy(contracts.get(canonical, {}))
+        if tool_name == "local_ai_task":
+            delta.update({
+                "task_context_id": {"type": "string"},
+                "task_context_etag": {"type": "string"},
+                "task_context_evidence_ids": {"type": "array", "items": {"type": "string"}},
+            })
+        action_contracts[action] = {
+            "type": "object",
+            "properties": delta,
+            "additionalProperties": True,
+        }
+        action_properties.update(delta)
+    if not action_contracts:
+        return {"type": "object", "additionalProperties": True}
+    properties = deepcopy(_OUTPUT_ENVELOPE_PROPERTIES)
+    properties.update(action_properties)
+    return {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": True,
+        "x-action-output-contracts": action_contracts,
+    }
 
 
 REPO_PIPELINE_MUTATING_ACTIONS = frozenset(
@@ -624,8 +727,8 @@ def repo_path_hints_schema() -> dict[str, Any]:
             "required": ["path", "purpose", "scope"],
             "properties": {
                 "path": {"type": "string", "minLength": 1, "maxLength": 1024},
-                "purpose": {"type": "string", "minLength": 1},
-                "scope": {"type": "string", "minLength": 1},
+                "purpose": {"type": "string", "enum": ["repository_search"]},
+                "scope": {"type": "string", "enum": ["repo_search"]},
                 **metadata,
             },
             "additionalProperties": False,
@@ -633,8 +736,46 @@ def repo_path_hints_schema() -> dict[str, Any]:
     }
 
 
+def repo_verify_receipt_schema() -> dict[str, Any]:
+    """Return the typed input contract for Agent OS verification receipts."""
+    return {
+        "type": "object",
+        "properties": {
+            "receipt_id": {"type": "string", "minLength": 1},
+            "task_id": {"type": "string", "minLength": 1},
+            "criterion": {"type": "string", "minLength": 1},
+            "passed": {"type": "boolean"},
+            "change_intent_id": {"type": "string"},
+            "evidence_id": {"type": "string"},
+            "command_id": {"type": "string"},
+            "repository_revision": {"type": "string"},
+            "observed_at": {"type": "number"},
+            "expires_at": {"type": ["number", "null"]},
+            "details": {"type": "object"},
+        },
+        "required": ["task_id", "criterion", "passed"],
+        "allOf": [{
+            "if": {
+                "properties": {"passed": {"enum": [True]}},
+                "required": ["passed"],
+            },
+            "then": {
+                "required": ["evidence_id"],
+                "properties": {"evidence_id": {"minLength": 1}},
+            },
+        }],
+    }
 def validate_schema_value(value: Any, schema: Mapping[str, Any], path: str) -> str | None:
     """Small bounded JSON-schema subset for the MCP tool's declared inputs."""
+    any_of = schema.get("anyOf")
+    if isinstance(any_of, list) and any_of:
+        if not any(validate_schema_value(value, branch, path) is None for branch in any_of):
+            return f"{path} does not match any allowed schema"
+    one_of = schema.get("oneOf")
+    if isinstance(one_of, list) and one_of:
+        matches = sum(validate_schema_value(value, branch, path) is None for branch in one_of)
+        if matches != 1:
+            return f"{path} must match exactly one schema"
     expected = schema.get("type")
     types = expected if isinstance(expected, list) else [expected]
     checks = {
@@ -735,6 +876,7 @@ def action_specific_schema_constraints(
         if available_actions is not None:
             allowed_actions = allowed_actions & available_actions
             if not allowed_actions:
+                constraints.append({"not": {"required": [field]}})
                 continue
         if len(allowed_actions) == 1:
             condition: dict[str, Any] = {"const": next(iter(allowed_actions))}
@@ -754,6 +896,20 @@ def action_specific_schema_constraints(
             "then": {"properties": {field: {}}},
             "else": otherwise,
         })
+    if tool_name == "local_ai_repo":
+        for field in ("directory_hints", "exclude_paths", "force_include_paths"):
+            if available_fields is not None and field not in available_fields:
+                continue
+            constraints.append({
+                "if": {
+                    "properties": {
+                        "action": {"const": "context"},
+                        "mode": {"not": {"const": "adaptive"}},
+                    },
+                    "required": ["action", "mode"],
+                },
+                "then": {"not": {"required": [field]}},
+            })
     for action, required_fields in ACTION_REQUIRED_FIELDS.get(tool_name, {}).items():
         if available_actions is not None and action not in available_actions:
             continue
@@ -843,12 +999,37 @@ def validate_action_specific_fields(
         if available_actions is not None:
             allowed_actions = allowed_actions & available_actions
             if not allowed_actions:
+                if field in arguments:
+                    return f"{path}.{field} is not supported by this configuration"
                 continue
         if field in arguments and action not in allowed_actions:
             if field in field_defaults and arguments[field] == field_defaults[field]:
                 continue
             allowed = ", ".join(sorted(allowed_actions))
             return f"{path}.{field} is only valid for action {allowed}"
+    if tool_name == "local_ai_repo" and action == "context":
+        if arguments.get("mode", "adaptive") != "adaptive":
+            for field in ("directory_hints", "exclude_paths", "force_include_paths"):
+                if field in arguments:
+                    return f"{path}.{field} requires mode adaptive for action context"
+    if tool_name == "local_ai_repo" and action == "verify_receipt" and "receipt" in arguments:
+        receipt = arguments["receipt"]
+        if not isinstance(receipt, Mapping):
+            return f"{path}.receipt must be an object"
+        receipt_schema = schema.get("properties", {}).get("receipt") if isinstance(schema, Mapping) else None
+        if not isinstance(receipt_schema, Mapping):
+            receipt_schema = repo_verify_receipt_schema()
+        error = validate_schema_value(receipt, receipt_schema, f"{path}.receipt")
+        if error:
+            return error
+        for field in ("task_id", "criterion"):
+            value = receipt.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return f"{path}.receipt.{field} is required for action verify_receipt"
+        if receipt.get("passed") is True:
+            evidence_id = receipt.get("evidence_id")
+            if not isinstance(evidence_id, str) or not evidence_id.strip():
+                return f"{path}.receipt.evidence_id is required for passed verification receipts"
     return None
 
 

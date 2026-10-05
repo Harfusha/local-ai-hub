@@ -1,0 +1,142 @@
+diff --git a/src/local_ai_hub/mcp_server.py b/src/local_ai_hub/mcp_server.py
+index 0d96c66..7efdb5f 100644
+--- a/src/local_ai_hub/mcp_server.py
++++ b/src/local_ai_hub/mcp_server.py
+@@ -5,6 +5,7 @@ import contextvars
+ import functools
+ import hashlib
+ import inspect
++from copy import deepcopy
+ import ntpath
+ import os
+ import queue
+@@ -318,6 +319,68 @@ def _resolve_action(tool_kind: str, action: str) -> str:
+     return tool_aliases.get(cleaned, cleaned)
+ 
+ 
++def _action_type_with_aliases(tool_name: str, features: Any = None) -> Any:
++    actions = operation_actions(tool_name, features)
++    tool_kind = tool_name.removeprefix("local_ai_")
++    aliases = tuple(
++        alias for alias, canonical in _ACTION_ALIASES.get(tool_kind, {}).items()
++        if canonical in actions
++    )
++    return Literal.__getitem__(tuple(dict.fromkeys((*actions, *aliases))))
++
++
++def _expand_action_alias_schema(
++    tool_name: str, schema: dict[str, Any], actions: tuple[str, ...]
++) -> None:
++    """Advertise only enabled aliases and mirror canonical action constraints."""
++    properties = schema.get("properties", {})
++    action_schema = properties.get("action") if isinstance(properties, dict) else None
++    enum = action_schema.get("enum") if isinstance(action_schema, dict) else None
++    if not isinstance(enum, list):
++        return
++    tool_kind = tool_name.removeprefix("local_ai_")
++    aliases = {
++        alias: canonical
++        for alias, canonical in _ACTION_ALIASES.get(tool_kind, {}).items()
++        if canonical in actions
++    }
++    if not aliases:
++        return
++    action_schema["enum"] = list(dict.fromkeys((*enum, *aliases)))
++    conditions = schema.get("allOf")
++    if not isinstance(conditions, list):
++        return
++    expanded = list(conditions)
++    for condition in conditions:
++        if not isinstance(condition, dict):
++            continue
++        action_condition = (
++            condition.get("if", {}).get("properties", {}).get("action", {})
++        )
++        if not isinstance(action_condition, dict):
++            continue
++        canonical = action_condition.get("const")
++        if isinstance(canonical, str):
++            for alias, target in aliases.items():
++                if target != canonical:
++                    continue
++                alias_condition = deepcopy(condition)
++                alias_condition["if"]["properties"]["action"]["const"] = alias
++                expanded.append(alias_condition)
++        elif isinstance(action_condition.get("enum"), list):
++            action_condition["enum"] = list(dict.fromkeys((
++                *action_condition["enum"],
++                *(alias for alias, target in aliases.items() if target in action_condition["enum"]),
++            )))
++    schema["allOf"] = expanded
++
++
++def _mcp_input_schema(tool_name: str, features: Any) -> dict[str, Any]:
++    schema = operation_tool_input_schema(tool_name, features)
++    _expand_action_alias_schema(tool_name, schema, operation_actions(tool_name, features))
++    return schema
++
++
+ def _normalize_deterministic(val: Any) -> Any:
+     """Sort dictionary keys and normalize microsecond timestamps to maintain stable prompt caches."""
+     if isinstance(val, dict):
+@@ -573,17 +636,17 @@ def _desc_artifact() -> str:
+     )
+ 
+ 
+-TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task"))
++TaskAction: TypeAlias = _action_type_with_aliases("local_ai_task")
+ 
+ 
+ def _repo_action_type(features: Any) -> Any:
+-    return Literal.__getitem__(operation_actions("local_ai_repo", features))
++    return _action_type_with_aliases("local_ai_repo", features)
+ 
+ 
+ RepoAction: TypeAlias = _repo_action_type(FEATURES)
+-RagAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_rag"))
+-CommandAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_command"))
+-CoordAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_coord"))
++RagAction: TypeAlias = _action_type_with_aliases("local_ai_rag")
++CommandAction: TypeAlias = _action_type_with_aliases("local_ai_command")
++CoordAction: TypeAlias = _action_type_with_aliases("local_ai_coord")
+ StatusDetail: TypeAlias = Literal.__getitem__(operation_actions("local_ai_status"))
+ _STATUS_ACTION_ALIASES = ("status", "health", "check", "info")
+ StatusAction: TypeAlias = Literal.__getitem__(
+@@ -3086,7 +3149,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
+         if _registered_tool is None or not _actions:
+             continue
+         if hasattr(_registered_tool, "parameters"):
+-            _registered_tool.parameters = operation_tool_input_schema(_tool_name, FEATURES)
++            _registered_tool.parameters = _mcp_input_schema(_tool_name, FEATURES)
+         _output_schema = operation_tool_output_schema(_tool_name, FEATURES)
+         _fn_metadata = getattr(_registered_tool, "fn_metadata", None)
+         if hasattr(_fn_metadata, "output_schema"):
+@@ -3094,7 +3157,18 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
+             getattr(_registered_tool, "__dict__", {}).pop("output_schema", None)
+ 
+     async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
+-        validation = validate_operation_call(name, arguments, features=FEATURES)
++        validation_arguments = arguments
++        requested_action = arguments.get("action")
++        if name != "local_ai_status" and isinstance(requested_action, str):
++            validation_arguments = {
++                **arguments,
++                "action": _resolve_action(
++                    name.removeprefix("local_ai_"), requested_action
++                ),
++            }
++        validation = validate_operation_call(
++            name, validation_arguments, features=FEATURES
++        )
+         if validation is not None:
+             status_code, error = validation
+             payload = {
+@@ -3128,6 +3202,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
+                 action = "brief"
+             elif isinstance(alias, str) and alias in operation_actions(name, FEATURES):
+                 action = alias
++        elif isinstance(action, str):
++            action = _resolve_action(name.removeprefix("local_ai_"), action)
+         if not isinstance(action, str) or action not in operation_actions(name, FEATURES):
+             available_actions = operation_actions(name, FEATURES)
+             action = available_actions[0] if available_actions else ""

@@ -1,0 +1,67 @@
+{
+  "packet_version": 1,
+  "task": "T03 isolated live MCP 30-client acceptance harness; test-only candidate",
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\e809\\.local-ai-hub",
+  "base_revision": "d68ee694c6d3f75db5c1ab2f63497226880e5010",
+  "changed_paths": [
+    "tests/test_mcp_live_30_client_acceptance.py"
+  ],
+  "source_sha256": "2c4fdc463f49b594cbe74fbc9ed3b91c8603ef2d60345872adbdb52b2d5ac6c7",
+  "patch_file": "T03-live-mcp-30-client-acceptance-safe-20261005.patch",
+  "patch_sha256": "c1ca6073878d4400d97a63ff629180883a988d259726affcd6f69ac2bbd434dc",
+  "test_results": [
+    {
+      "command": "python -m pytest -q tests/test_mcp_live_30_client_acceptance.py -k 'launcher or cleanup' --tb=short",
+      "result": "3 passed, 1 deselected in 0.10s",
+      "execution_id": "5b2ffbfe0b45422c8d9a5571b78d5cc0",
+      "scope": "earlier helper revision"
+    },
+    {
+      "command": "python -m pytest -q tests/test_mcp_live_30_client_acceptance.py::test_thirty_live_mcp_clients_share_one_isolated_hub --tb=short",
+      "result": "failed: worker 0 missed JSON-RPC responses; harness subsequently changed",
+      "execution_id": "3be6de637cf44224b3d9ece7913103a1"
+    },
+    {
+      "command": "python -m pytest -q tests/test_mcp_live_30_client_acceptance.py::test_thirty_live_mcp_clients_share_one_isolated_hub --tb=short",
+      "result": "failed: worker 0 listed 3 tools; test config had disabled feature flags; harness subsequently changed",
+      "execution_id": "b43dd2ee8bb647b68d8f74254ef99747"
+    },
+    {
+      "command": "python -m pytest -q tests/test_mcp_live_30_client_acceptance.py::test_thirty_live_mcp_clients_share_one_isolated_hub --tb=short",
+      "result": "failed: worker 0 listed 6 tools; pytest reported 60 unclosed worker stdout/stderr handles; handle cleanup subsequently added",
+      "execution_id": "80693c2d825347d580a2c52d236397d6"
+    },
+    {
+      "command": "python -m pytest -q tests/test_mcp_live_30_client_acceptance.py --tb=short",
+      "result": "outcome_unknown after transport failure; not retried",
+      "request_id": "req_b259c00611e5"
+    },
+    {
+      "command": "python -m py_compile tests/test_mcp_live_30_client_acceptance.py",
+      "result": "passed",
+      "execution_id": "2a7980c1399543e0930faca9a1f0461d"
+    },
+    {
+      "command": "python -m pytest -q tests/test_mcp_live_30_client_acceptance.py -k 'launcher or cleanup' --tb=short",
+      "result": "3 passed, 1 deselected in 0.14s",
+      "execution_id": "5370e22f5dd141e5829ee493c2e3e178",
+      "scope": "final helper revision; live acceptance deselected"
+    }
+  ],
+  "safety_scope": {
+    "daemon_config": "temporary TOML under pytest tmp_path; direct -m local_ai_hub --config launch only",
+    "service_manager": "tools/service.py and tools/service.ps1 launches rejected before spawn",
+    "state_and_launch_records": "pytest tmp_path only; run directory removed in cleanup",
+    "ownership": "dedicated config, port, process command line and PID identity checked",
+    "deadline_seconds_total": 150,
+    "process_platforms": [
+      "Windows",
+      "Linux"
+    ],
+    "root_worktree_edited_or_tested": false
+  },
+  "limitations": [
+    "Final live 30-client test not verified. Last full-file command returned outcome_unknown before final cleanup-only refinements; no retry or native bypass.",
+    "Earlier bounded live attempts exposed harness defects and failed; exact commands and results retained above."
+  ]
+}

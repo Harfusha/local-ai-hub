@@ -1,0 +1,159 @@
+diff --git a/src/local_ai_hub/operation_contracts.py b/src/local_ai_hub/operation_contracts.py
+--- a/src/local_ai_hub/operation_contracts.py
++++ b/src/local_ai_hub/operation_contracts.py
+@@ -198,5 +198,6 @@ ACTION_SPECIFIC_FIELDS: dict[str, dict[str, frozenset[str]]] = {
+         "include_tests": frozenset({"complexity", "pipeline"}),
+         "language": frozenset({"resolve_imports", "pipeline"}),
+         "path_hints": frozenset({"search"}),
++        "receipt": frozenset({"verify_receipt"}),
+     },
+ }
+@@ -251,3 +252,4 @@ ACTION_REQUIRED_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
+     "local_ai_task": {"continue": ("conversation_id",)},
++    "local_ai_repo": {"verify_receipt": ("receipt",)},
+     "local_ai_artifact": {"get": ("artifact_id",), "slice": ("artifact_id",)},
+     "local_ai_work": {
+@@ -635,4 +637,33 @@ def repo_path_hints_schema() -> dict[str, Any]:
+     }
+ 
+ 
++def repo_verify_receipt_schema() -> dict[str, Any]:
++    """Return the typed input contract for Agent OS verification receipts."""
++    return {
++        "type": "object",
++        "properties": {
++            "receipt_id": {"type": "string", "minLength": 1},
++            "task_id": {"type": "string", "minLength": 1},
++            "criterion": {"type": "string", "minLength": 1},
++            "passed": {"type": "boolean"},
++            "change_intent_id": {"type": "string"},
++            "evidence_id": {"type": "string"},
++            "command_id": {"type": "string"},
++            "repository_revision": {"type": "string"},
++            "observed_at": {"type": "number"},
++            "expires_at": {"type": ["number", "null"]},
++            "details": {"type": "object"},
++        },
++        "required": ["task_id", "criterion", "passed"],
++        "allOf": [{
++            "if": {
++                "properties": {"passed": {"enum": [True]}},
++                "required": ["passed"],
++            },
++            "then": {
++                "required": ["evidence_id"],
++                "properties": {"evidence_id": {"minLength": 1}},
++            },
++        }],
++    }
+ def validate_schema_value(value: Any, schema: Mapping[str, Any], path: str) -> str | None:
+@@ -880,4 +911,22 @@ def validate_action_specific_fields(
+                 continue
+             allowed = ", ".join(sorted(allowed_actions))
+             return f"{path}.{field} is only valid for action {allowed}"
++    if tool_name == "local_ai_repo" and action == "verify_receipt" and "receipt" in arguments:
++        receipt = arguments["receipt"]
++        if not isinstance(receipt, Mapping):
++            return f"{path}.receipt must be an object"
++        receipt_schema = schema.get("properties", {}).get("receipt") if isinstance(schema, Mapping) else None
++        if not isinstance(receipt_schema, Mapping):
++            receipt_schema = repo_verify_receipt_schema()
++        error = validate_schema_value(receipt, receipt_schema, f"{path}.receipt")
++        if error:
++            return error
++        for field in ("task_id", "criterion"):
++            value = receipt.get(field)
++            if not isinstance(value, str) or not value.strip():
++                return f"{path}.receipt.{field} is required for action verify_receipt"
++        if receipt.get("passed") is True:
++            evidence_id = receipt.get("evidence_id")
++            if not isinstance(evidence_id, str) or not evidence_id.strip():
++                return f"{path}.receipt.evidence_id is required for passed verification receipts"
+     return None
+diff --git a/src/local_ai_hub/generator.py b/src/local_ai_hub/generator.py
+--- a/src/local_ai_hub/generator.py
++++ b/src/local_ai_hub/generator.py
+@@ -27,3 +27,4 @@ from local_ai_hub.operation_contracts import (
+     repo_pipeline_step_schema,
+     repo_path_hints_schema,
++    repo_verify_receipt_schema,
+ )
+@@ -912,6 +913,6 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+                     "diff": {"type": "string", "default": ""},
+                     "workspace": {"type": "string", "default": ""},
+                     "evidence": {"type": "array", "items": {"type": "object"}},
+-                    "receipt": {"type": "object"},
++                    "receipt": repo_verify_receipt_schema(),
+                     "extra_fields": {"type": "array", "items": {"type": "string"}},
+                     "max_response_tokens": {"type": "integer", "default": 0},
+diff --git a/src/local_ai_hub/mcp_server.py b/src/local_ai_hub/mcp_server.py
+--- a/src/local_ai_hub/mcp_server.py
++++ b/src/local_ai_hub/mcp_server.py
+@@ -47,4 +47,5 @@ from local_ai_hub.operation_contracts import (
+     repo_pipeline_step_schema,
+     repo_path_hints_schema,
++    repo_verify_receipt_schema,
+     validate_repo_pipeline_step,
+     validate_action_specific_fields,
+@@ -3169,4 +3170,5 @@ def _mcp_contract_schema(schema_key: str) -> dict[str, Any] | None:
+         if "phase" in properties:
+             properties["phase"] = {"type": "string", "enum": list(REPO_PHASES), "default": ""}
+         properties["path_hints"] = repo_path_hints_schema()
++        properties["receipt"] = repo_verify_receipt_schema()
+         properties["steps"] = {
+diff --git a/tests/test_operation_contracts.py b/tests/test_operation_contracts.py
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -721,5 +721,52 @@ def test_local_ai_repo_search_rejects_backslash_traversal_for_posix_root(
+     assert calls == []
+ 
+ 
++def test_repo_verify_receipt_schema_is_typed_and_action_scoped() -> None:
++    import local_ai_hub.mcp_server as mcp_server
++    from local_ai_hub.generator import generate_mcp_tool_schemas
++    from local_ai_hub.operation_contracts import validate_action_specific_fields, validate_schema_object
++
++    live_schema = mcp_server._mcp_contract_schema("local_ai_repo")
++    generated_schema = generate_mcp_tool_schemas({})["local_ai_repo"]["parameters"]
++    assert live_schema is not None
++
++    for schema in (live_schema, generated_schema):
++        receipt_schema = schema["properties"]["receipt"]
++        assert receipt_schema["type"] == "object"
++        assert receipt_schema["required"] == ["task_id", "criterion", "passed"]
++        assert receipt_schema["properties"]["passed"]["type"] == "boolean"
++        assert receipt_schema["properties"]["observed_at"]["type"] == "number"
++        assert receipt_schema["properties"]["expires_at"]["type"] == ["number", "null"]
++        assert "verify_receipt" in schema["properties"]["action"]["enum"]
++
++        valid = {
++            "action": "verify_receipt",
++            "receipt": {"task_id": "task-1", "criterion": "focused test", "passed": False},
++        }
++        assert validate_schema_object(valid, schema) is None
++        assert validate_action_specific_fields("local_ai_repo", valid, schema=schema) is None
++
++        missing_passed = {"action": "verify_receipt", "receipt": {"task_id": "task-1", "criterion": "focused test"}}
++        assert validate_schema_object(missing_passed, schema) is not None
++        wrong_passed = {
++            "action": "verify_receipt",
++            "receipt": {"task_id": "task-1", "criterion": "focused test", "passed": "false"},
++        }
++        assert validate_schema_object(wrong_passed, schema) is not None
++        passed_without_evidence = {
++            "action": "verify_receipt",
++            "receipt": {"task_id": "task-1", "criterion": "focused test", "passed": True},
++        }
++        assert validate_action_specific_fields(
++            "local_ai_repo", passed_without_evidence, schema=schema
++        ) == "arguments.receipt.evidence_id is required for passed verification receipts"
++        wrong_action = {
++            "action": "search",
++            "receipt": {"task_id": "task-1", "criterion": "focused test", "passed": False},
++        }
++        assert validate_action_specific_fields(
++            "local_ai_repo", wrong_action, schema=schema
++        ) == "arguments.receipt is only valid for action verify_receipt"
++
+ 
+ def test_action_specific_rules_follow_active_schema_fields_and_actions() -> None:

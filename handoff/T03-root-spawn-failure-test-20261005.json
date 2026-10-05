@@ -1,0 +1,35 @@
+{
+  "packet": "T03-root-spawn-failure-test-20261005.patch",
+  "kind": "tests-only",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "target": "tests/test_client_startup_resilience.py",
+  "preimage_sha256": "d015e2a5d488b380372571d4d1898a4c36dbff4082263b3f515e869d8ca456a9",
+  "postimage_sha256": "fc699f172aa3c80a33fbcbf80969db440ec604cb60726ec12594977284eba414",
+  "patch_sha256": "fa09784f47e0c998a5af8cfe43ca6f07814161fab3da8a0b8a04a3668c215c5d",
+  "test": "test_spawn_failure_returns_false_and_releases_start_lock",
+  "covered_by_existing_root_tests": [
+    "test_mcp_client_bounds_auto_start_after_daemon_connection_refusal",
+    "test_mcp_client_bounds_daemon_off_start_failure_without_second_request",
+    "test_stdio_handshake_publishes_all_registry_input_and_output_schemas",
+    "test_stdio_main_does_not_gate_handshake_on_hub_startup",
+    "test_action_metadata_exposes_consistent_input_and_output_schemas",
+    "test_live_mcp_schemas_match_registry_for_every_public_tool"
+  ],
+  "validation": {
+    "new_test_red": "OSError propagated from client.py Popen; expected ensure_server False and startup-lock removal.",
+    "new_test_green": "1 passed after companion source fix in overlay.",
+    "root_autostart_and_wire_selectors": "5 passed (includes new spawn-failure test).",
+    "root_generator_registry_selectors": "2 passed.",
+    "root_apply_check": "passed against exact current root preimage"
+  },
+  "source_paths_changed": [],
+  "root_modified": false,
+  "overlay_snapshot": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t03-current-root-eejo_vyo\\repo",
+  "source_preimages_sha256": {
+    "src/local_ai_hub/operation_contracts.py": "79abad111dddbca541d0e8e7a439742f54ba431fac51918a704fccb7fbe06930",
+    "src/local_ai_hub/mcp_server.py": "16e4767cf1715241211144793add799cdd87f55523f6f1c9c0d54f6c5bef8e1e",
+    "tests/test_mcp_autostart_contract.py": "c8d99b8a3cc19119b938531ca4973a912c66030d3f08747a0abf4e8ebf0134cc",
+    "tests/test_mcp_live_wire_schema.py": "772d47a36c65a076b42cf2c70c3834c8eb99ceb0fa6e2e7808af84b523cddd29"
+  }
+}

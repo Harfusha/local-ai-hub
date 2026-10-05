@@ -1,0 +1,42 @@
+{
+  "scope": "one isolated MCP parent startup/cleanup; no RPC requests or batch",
+  "config_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t03-cleanup-proof-pkf2dm80\\hub.toml",
+  "state_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t03-cleanup-proof-pkf2dm80\\state",
+  "port": 55427,
+  "shared_hub_state_touched": false,
+  "cleanup_actions": [
+    {
+      "terminate_tree": 8100
+    },
+    {
+      "remove_dead_pid_file": 8100
+    }
+  ],
+  "pre": {
+    "config_pids": [],
+    "pid_file": false
+  },
+  "mcp_parent_pid": 46000,
+  "hub_pid": 8100,
+  "after_start": {
+    "config_pids": [
+      8100
+    ],
+    "pid_file": 8100,
+    "alive": true
+  },
+  "before_cleanup": {
+    "config_pids": [
+      8100
+    ],
+    "pid_file": 8100,
+    "mcp_parent_exit": 0
+  },
+  "post": {
+    "config_pids": [],
+    "hub_alive": false,
+    "pid_file_exists": false
+  },
+  "temp_paths_removed": true,
+  "status": "PASS"
+}

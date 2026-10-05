@@ -1,0 +1,1428 @@
+{
+  "execution_scope": "one bounded live MCP acceptance; isolated temporary Hub state",
+  "client_count_expected": 30,
+  "config_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\pytest-of-Adam\\pytest-10941\\test_thirty_real_stdio_clients0\\t03-live-mcp-30\\hub.toml",
+  "state_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\pytest-of-Adam\\pytest-10941\\test_thirty_real_stdio_clients0\\t03-live-mcp-30\\state",
+  "shared_hub_state_touched": false,
+  "timings_seconds": {
+    "clients_ready": 6.621,
+    "gate_released": 6.627,
+    "hub_ready": 13.759,
+    "first_response": 14.052,
+    "all_responses": 14.418
+  },
+  "resource_samples": [
+    {
+      "pid": 25704,
+      "rss_bytes": 102174720,
+      "cpu_seconds": 0.671875,
+      "sampled_monotonic": 117167.8270907
+    },
+    {
+      "pid": 25704,
+      "rss_bytes": 100401152,
+      "cpu_seconds": 0.921875,
+      "sampled_monotonic": 117168.4417287
+    }
+  ],
+  "preflight": {
+    "config_matched_server_pids": [],
+    "hub_pid_file_exists": false
+  },
+  "daemon_count_at_startup": 1,
+  "daemon_pids_at_startup": [
+    25704
+  ],
+  "daemon_count_after_responses": 1,
+  "daemon_pids_after_responses": [
+    25704
+  ],
+  "daemon_pids_before_cleanup": [
+    25704
+  ],
+  "hub_pid_file_before_cleanup": {
+    "exists": true,
+    "value": 25704
+  },
+  "cleanup": {
+    "pre_config_matched_pids": [],
+    "pre_pid_file_exists": false,
+    "owned_server_pids": [
+      25704
+    ],
+    "pid_file_value_before_cleanup": 25704,
+    "actions": [
+      {
+        "action": "terminate_tree",
+        "pid": 25704
+      },
+      {
+        "action": "remove_dead_owned_pid_file",
+        "pid": 25704
+      }
+    ],
+    "post_config_matched_pids": [],
+    "post_pid_file_exists": false,
+    "client_pids": [
+      58832,
+      45188,
+      39692,
+      35696,
+      10760,
+      45004,
+      56748,
+      45760,
+      4884,
+      15068,
+      17828,
+      11644,
+      32488,
+      23892,
+      3200,
+      26064,
+      30124,
+      26352,
+      58020,
+      10032,
+      50072,
+      49868,
+      29128,
+      44524,
+      9132,
+      21528,
+      56196,
+      37108,
+      54836,
+      41860
+    ],
+    "client_returncodes": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "cleanup_errors": [],
+    "clean": true,
+    "temp_run_root_removed": true
+  },
+  "clients": [
+    {
+      "client_index": 0,
+      "pid": 58832,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 1,
+      "pid": 45188,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 2,
+      "pid": 39692,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 3,
+      "pid": 35696,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 4,
+      "pid": 10760,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 5,
+      "pid": 45004,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 6,
+      "pid": 56748,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 7,
+      "pid": 45760,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 8,
+      "pid": 4884,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 9,
+      "pid": 15068,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 10,
+      "pid": 17828,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 11,
+      "pid": 11644,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 12,
+      "pid": 32488,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 13,
+      "pid": 23892,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 14,
+      "pid": 3200,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 15,
+      "pid": 26064,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 16,
+      "pid": 30124,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 17,
+      "pid": 26352,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 18,
+      "pid": 58020,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 19,
+      "pid": 10032,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 20,
+      "pid": 50072,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 21,
+      "pid": 49868,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 22,
+      "pid": 29128,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 23,
+      "pid": 44524,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 24,
+      "pid": 9132,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 25,
+      "pid": 21528,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 26,
+      "pid": 56196,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 27,
+      "pid": 37108,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 28,
+      "pid": 54836,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    },
+    {
+      "client_index": 29,
+      "pid": 41860,
+      "returncode": 0,
+      "stdout_nonempty_line_count": 3,
+      "response_ids": [
+        1,
+        2,
+        3
+      ],
+      "error_codes": [],
+      "response_shapes": [
+        {
+          "line_bytes": 281,
+          "line_sha256": "3bd31267ab30338bed6e82405b4fc9254448c031e357cf75970690e36272171b",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 1,
+          "error_code": null
+        },
+        {
+          "line_bytes": 38862,
+          "line_sha256": "3190a60cd0dbf4b6df9d4f6e36626cb79b166a3351e6f1634ed30f50f989aae0",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 2,
+          "error_code": null
+        },
+        {
+          "line_bytes": 572,
+          "line_sha256": "9e99c93e9e2cfe319b41dbe7a6f88bd7f793290954afe98897dc3478381e44c8",
+          "json_type": "object",
+          "method": null,
+          "id_type": "int",
+          "id_value": 3,
+          "error_code": null
+        }
+      ],
+      "stderr_line_count": 4,
+      "stderr_sha256": "a3824c2591fabed57f7eedc1b3899d00bea5d0d40e307e5b8c11dc44a1844659"
+    }
+  ],
+  "client_count_started": 30,
+  "test_status": "PASS"
+}

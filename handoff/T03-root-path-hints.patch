@@ -1,0 +1,285 @@
+diff --git a/src/local_ai_hub/operation_contracts.py b/src/local_ai_hub/operation_contracts.py
+--- a/src/local_ai_hub/operation_contracts.py
++++ b/src/local_ai_hub/operation_contracts.py
+@@ -172,3 +172,6 @@
+     "cross_repo_impact": ("agent_os",),
+ }
++_ACTION_SCOPED_FIELDS = {
++    "local_ai_repo": {"path_hints": frozenset({"search"})},
++}
+ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
+@@ -197,5 +202,24 @@
+             "path": {"type": "string", "default": ""},
+             "task": {"type": "string", "default": ""},
+             "task_id": {"type": "string", "default": ""},
+             "include_code": {"type": "boolean", "default": False},
++            "path_hints": {
++                "type": "array",
++                "maxItems": 64,
++                "items": {
++                    "type": "object",
++                    "required": ["path", "purpose", "scope"],
++                    "properties": {
++                        "path": {"type": "string", "minLength": 1, "maxLength": 1024},
++                        "purpose": {"type": "string", "minLength": 1},
++                        "scope": {"type": "string", "minLength": 1},
++                        "evidence_id": {"type": "string"},
++                        "provenance": {"type": "string"},
++                        "repository_revision": {"type": "string"},
++                        "config_digest": {"type": "string"},
++                        "expires_at": {"type": "string"},
++                    },
++                    "additionalProperties": False,
++                },
++            },
+             "include_tests": {"type": "boolean", "default": False},
+@@ -463,4 +486,6 @@
+     selector = str(contract.get("selector_field", "action"))
+     properties = schema.setdefault("properties", {})
+     properties[selector] = {**properties.get(selector, {}), "enum": [action]}
++    if action not in _ACTION_SCOPED_FIELDS.get(tool, {}).get("path_hints", ()):
++        properties.pop("path_hints", None)
+     allowed = contract["actions"][action].get("allowed")
+@@ -495,8 +521,10 @@
+         disallowed = (
+             set(schema["properties"])
+             - set(allowed)
+             - set(_RESPONSE_BUDGET_PROPERTIES)
+             - {"extra_fields", selector}
+             if allowed is not None else set()
+         )
++        if action not in _ACTION_SCOPED_FIELDS.get(tool, {}).get("path_hints", ()):
++            disallowed.add("path_hints")
+         then: dict[str, Any] = {}
+@@ -972,5 +1000,9 @@
+     if isinstance(value, dict):
+         for field in schema.get("required", ()):
+             if field not in value:
+                 return f"{path}.{field} is required for action='{action}'"
++        if schema.get("additionalProperties") is False:
++            unknown = sorted(set(value) - set(schema.get("properties", {})))
++            if unknown:
++                return f"{path} contains unsupported fields: {', '.join(unknown)}"
+         for field, field_schema in schema.get("properties", {}).items():
+@@ -1006,3 +1037,6 @@
+         if unexpected:
+             return f"{unexpected[0]} is not valid for action='{action}'"
++    for field, scoped_actions in _ACTION_SCOPED_FIELDS.get(tool, {}).items():
++        if field in arguments and action not in scoped_actions:
++            return f"{field} is only valid for action='search'"
+     for field in action_contract["required"]:
+@@ -1050,3 +1084,9 @@
+             if "maxItems" in schema and len(value) > int(schema["maxItems"]):
+                 return f"{field} must have at most {schema['maxItems']} items for action='{action}'"
++    if tool == "local_ai_repo" and "path_hints" in arguments:
++        error = _validate_nested_schema(
++            arguments["path_hints"], properties["path_hints"], "path_hints", action
++        )
++        if error:
++            return error
+     if tool == "local_ai_repo" and action == "verify_receipt":
+diff --git a/src/local_ai_hub/mcp_server.py b/src/local_ai_hub/mcp_server.py
+--- a/src/local_ai_hub/mcp_server.py
++++ b/src/local_ai_hub/mcp_server.py
+@@ -1,17 +1,19 @@
+ from __future__ import annotations
+ 
+ import atexit
+ import contextvars
+ import functools
+ import hashlib
+ import inspect
++import ntpath
+ import os
+ import queue
+ import re
+ import threading
+ from concurrent.futures import ThreadPoolExecutor
+ import time
+ from collections import OrderedDict
+-from pathlib import Path
++from collections.abc import Mapping
++from pathlib import Path, PureWindowsPath
+ from typing import Any, Literal, TypeAlias
+ from urllib.parse import quote
+@@ -141,4 +143,59 @@
+         return _workspace
+ 
+ 
++def _normalize_repo_search_path_hints(
++    root: str, path_hints: list[dict[str, Any]]
++) -> tuple[list[dict[str, Any]] | None, str | None]:
++    if not isinstance(path_hints, list):
++        return None, "path_hints must be an array"
++    if len(path_hints) > 64:
++        return None, "path_hints exceeds 64 items"
++    canonical = _client_root(root)
++    windows_root = PureWindowsPath(canonical)
++    normalized: list[dict[str, Any]] = []
++    for index, hint in enumerate(path_hints):
++        if not isinstance(hint, Mapping):
++            return None, f"path_hints[{index}] must be an object"
++        raw_path = hint.get("path")
++        if not isinstance(raw_path, str) or not raw_path.strip():
++            return None, f"path_hints[{index}].path must be a non-empty string"
++        try:
++            if windows_root.drive:
++                raw_windows = PureWindowsPath(raw_path.strip())
++                if raw_windows.drive and not raw_windows.is_absolute():
++                    raise ValueError("drive-relative hint")
++                if raw_windows.drive or raw_windows.root:
++                    candidate_text = str(raw_windows)
++                    if raw_windows.root and not raw_windows.drive:
++                        candidate_text = windows_root.drive + candidate_text
++                else:
++                    candidate_text = ntpath.join(str(windows_root), str(raw_windows))
++                root_text = ntpath.normpath(str(windows_root))
++                candidate_text = ntpath.normpath(candidate_text)
++                common = ntpath.commonpath((root_text, candidate_text))
++                if ntpath.normcase(common) != ntpath.normcase(root_text):
++                    raise ValueError("hint escapes repository root")
++                if os.name == "nt":
++                    relative = Path(candidate_text).resolve().relative_to(Path(root_text).resolve())
++                    relative_text = relative.as_posix()
++                else:
++                    relative_text = ntpath.relpath(candidate_text, root_text).replace("\\", "/")
++            else:
++                if PureWindowsPath(raw_path).drive:
++                    raise ValueError("foreign drive hint")
++                root_path = Path(canonical).resolve()
++                raw_candidate = Path(raw_path.replace("\\", "/")).expanduser()
++                if is_rooted_path(raw_path) and not raw_candidate.is_absolute():
++                    raise ValueError("foreign rooted hint")
++                candidate = raw_candidate if raw_candidate.is_absolute() else root_path / raw_candidate
++                relative = candidate.resolve().relative_to(root_path)
++                relative_text = relative.as_posix()
++        except (OSError, RuntimeError, ValueError):
++            return None, f"path_hints[{index}].path must resolve within root"
++        hint_copy = dict(hint)
++        hint_copy["path"] = relative_text or "."
++        normalized.append(hint_copy)
++    return normalized, None
++
++
+ _ACTION_ALIASES: dict[str, dict[str, str]] = {
+@@ -2290,4 +2348,32 @@
+     path_hints: list[dict[str, str]] | None = None,
+ ) -> dict[str, Any]:
+     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
++    forward: dict[str, Any] = {}
++    if path_hints is not None:
++        resolved_action = _resolve_action("repo", action)
++        validation_error = validate_operation_arguments(
++            "local_ai_repo", resolved_action, {"path_hints": path_hints}
++        )
++        if validation_error is not None:
++            return {"success": False, "error": validation_error, "status_code": 400,
++                    "terminal": True, "retryable": False}
++        normalized_hints, error = _normalize_repo_search_path_hints(root, path_hints)
++        if error is not None:
++            return {"success": False, "error": error, "status_code": 400,
++                    "terminal": True, "retryable": False}
++        if normalized_hints:
++            try:
++                parameters = inspect.signature(_local_ai_repo_impl).parameters
++            except (TypeError, ValueError):
++                parameters = {}
++            hint_parameter = parameters.get("path_hints")
++            supports_hints = (
++                hint_parameter.kind is not inspect.Parameter.POSITIONAL_ONLY
++                if hint_parameter is not None
++                else any(item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values())
++            )
++            if not supports_hints:
++                return {"success": False, "error": "path_hints are not supported by this repository consumer",
++                        "status_code": 501, "terminal": True, "retryable": False, "unsupported": True}
++            forward["path_hints"] = normalized_hints
+     return _local_ai_repo_impl(
+@@ -2297,4 +2393,4 @@
+         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
+         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
+-        token_budget, is_worktree, parent_root, steps, path_hints,
++        token_budget, is_worktree, parent_root, steps, **forward,
+     )
+diff --git a/tests/test_operation_contracts.py b/tests/test_operation_contracts.py
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -406,4 +406,62 @@
+     }
+ 
+ 
++def test_repo_search_path_hints_schema_is_bounded_and_search_only():
++    from local_ai_hub.operation_contracts import (
++        operation_input_schema,
++        operation_tool_input_schema,
++        validate_operation_arguments,
++    )
++
++    schema = operation_tool_input_schema("local_ai_repo")
++    hints = schema["properties"]["path_hints"]
++    assert hints["type"] == "array"
++    assert hints["maxItems"] == 64
++    item = hints["items"]
++    assert item["required"] == ["path", "purpose", "scope"]
++    assert item["properties"]["path"]["maxLength"] == 1024
++    assert item["additionalProperties"] is False
++    assert "path_hints" not in operation_input_schema("local_ai_repo", "context")["properties"]
++
++    valid = {"path_hints": [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}]}
++    assert validate_operation_arguments("local_ai_repo", "search", valid) is None
++    assert validate_operation_arguments("local_ai_repo", "context", valid) == (
++        "path_hints is only valid for action='search'"
++    )
++    assert validate_operation_arguments(
++        "local_ai_repo", "search", {"path_hints": [{"path": "src/auth.py", "purpose": "repository_search"}]}
++    ) is not None
++    assert validate_operation_arguments(
++        "local_ai_repo", "search", {"path_hints": [{"path": "x" * 1025, "purpose": "repository_search", "scope": "repo_search"}]}
++    ) is not None
++    assert validate_operation_arguments(
++        "local_ai_repo", "search", {"path_hints": [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search", "extra": "x"}]}
++    ) is not None
++    assert validate_operation_arguments("local_ai_repo", "search", {"path_hints": [{}] * 65}) is not None
++
++
++def test_local_ai_repo_path_hints_normalize_and_reject_root_escape(monkeypatch, tmp_path):
++    from local_ai_hub import mcp_server
++
++    captured = []
++    hint = {"path": str(tmp_path / "src"), "purpose": "repository_search", "scope": "repo_search"}
++
++    def consumer(*args, path_hints=None):
++        captured.append(path_hints)
++        return {"success": True}
++
++    monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", consumer)
++    result = mcp_server.local_ai_repo("search", root=str(tmp_path), path_hints=[hint])
++    assert result["success"] is True
++    assert captured == [[{**hint, "path": "src"}]]
++
++    rejected = mcp_server.local_ai_repo(
++        "search",
++        root=str(tmp_path),
++        path_hints=[{"path": "../escape", "purpose": "repository_search", "scope": "repo_search"}],
++    )
++    assert rejected["success"] is False
++    assert len(captured) == 1
++
++
+ def test_repo_verify_receipt_schema_and_runtime_require_complete_typed_receipt():
+diff --git a/tests/test_mcp_compact_transport.py b/tests/test_mcp_compact_transport.py
+--- a/tests/test_mcp_compact_transport.py
++++ b/tests/test_mcp_compact_transport.py
+@@ -143,4 +143,5 @@
+         approval=True,
++        path_hints=[{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}],
+     )
+ 
+     assert calls == [(
+@@ -160,4 +165,4 @@ def test_local_ai_repo_non_context_actions_ignore_guard_fields(monkeypatch) -> None:
+         {"root": str(Path("C:/repo")), "query": "route", "top_k": 12, "enrich": False},
+         120.0,
+-        None,
++        [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}],
+     )]
+

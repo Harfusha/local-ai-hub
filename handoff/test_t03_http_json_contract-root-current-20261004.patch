@@ -1,0 +1,59 @@
+diff --git a/tests/test_t03_http_json_contract.py b/tests/test_t03_http_json_contract.py
+new file mode 100644
+index 0000000..1d782a53fc7aabbfe6e20f77998958e7a558d2ac
+--- /dev/null
++++ b/tests/test_t03_http_json_contract.py
+@@ -0,0 +1,53 @@
++from __future__ import annotations
++
++import json
++from types import SimpleNamespace
++
++import pytest
++
++from local_ai_hub import http_server
++
++
++def _handler(raw: bytes, content_type: str = "application/json") -> http_server.Handler:
++    handler = http_server.Handler.__new__(http_server.Handler)
++    handler.headers = {"Content-Type": content_type}
++    handler._read_body = lambda *, limit: raw
++    return handler
++
++
++@pytest.mark.parametrize(
++    ("raw", "content_type"),
++    [
++        (b'{"action":"search","query":"needle"}', "application/json"),
++        (b'{"action":"patch","value":1}', "application/merge-patch+json"),
++    ],
++)
++def test_http_json_parser_accepts_object_contract(raw, content_type, monkeypatch):
++    monkeypatch.setattr(
++        http_server,
++        "APP",
++        SimpleNamespace(config={"server": {"max_request_body_bytes": 2048}}),
++    )
++
++    assert http_server.Handler._read_json(_handler(raw, content_type)) == json.loads(raw)
++
++
++@pytest.mark.parametrize(
++    ("raw", "content_type", "status", "message"),
++    [
++        (b"{bad", "application/json", 400, "invalid JSON body"),
++        (b"[]", "application/json", 400, "JSON request body must be an object"),
++        (b"{}", "text/plain", 415, "Content-Type must be application/json"),
++    ],
++)
++def test_http_json_parser_rejects_invalid_contract(raw, content_type, status, message, monkeypatch):
++    monkeypatch.setattr(
++        http_server,
++        "APP",
++        SimpleNamespace(config={"server": {"max_request_body_bytes": 2048}}),
++    )
++
++    with pytest.raises(http_server.RequestBodyError, match=message) as error:
++        http_server.Handler._read_json(_handler(raw, content_type))
++
++    assert error.value.status == status

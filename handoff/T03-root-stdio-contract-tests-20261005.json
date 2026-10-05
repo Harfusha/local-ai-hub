@@ -1,0 +1,36 @@
+{
+  "packet": "T03-root-stdio-contract-tests-20261005.patch",
+  "kind": "tests-only",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "target": "tests/test_mcp_contract_dispatch.py",
+  "preimage_sha256": "1608dcfb5a57b0a4f5ae8cddb80b2576d0a54a7d2ffe84035989041a344343d0",
+  "postimage_sha256": "e5c0b92ea2e79a9c5551dd4af9a5ecaf50565cbf1d2c59e2fbd2d2e2dd800dd6",
+  "patch_sha256": "74b6c98d167f300ff679893ed6d096cc2c1dd20934786eaeb7e19cb44726fcfd",
+  "source_preimages_sha256": {
+    "src/local_ai_hub/operation_contracts.py": "79abad111dddbca541d0e8e7a439742f54ba431fac51918a704fccb7fbe06930",
+    "src/local_ai_hub/mcp_server.py": "16e4767cf1715241211144793add799cdd87f55523f6f1c9c0d54f6c5bef8e1e",
+    "src/local_ai_hub/client.py": "3f1f6c53cb723063616c3fada6f3c35b1ae132d6ee1b3650f2b96c3c35fa22a0"
+  },
+  "changes": [
+    "Add stdio tools/list schema parity coverage and disabled-feature filtering coverage.",
+    "Isolate background MCP accounting in dispatch-only test while preserving gate and route assertions.",
+    "Align HubClient fixture with auto_start=True; preserve tenant/config checks and assert no eager request during construction."
+  ],
+  "tests": [
+    "test_stdio_tools_list_matches_registered_output_contracts",
+    "test_stdio_tools_list_hides_feature_disabled_tools",
+    "test_mcp_command_run_is_gated_as_heavy_and_repo_map_read_stays_lightweight",
+    "test_mcp_client_forwards_tenant_config_and_keeps_autostart_lazy"
+  ],
+  "validation": {
+    "red_two_existing_tests": "2 failed before fixture changes: telemetry accounting shared mock; FakeHubClient rejected auto_start.",
+    "green_two_fixed_tests": "2 passed",
+    "green_full_target_module": "17 passed",
+    "overlay_source_identity": "operation_contracts.py, mcp_server.py, and client.py SHA-256 match current root.",
+    "root_apply_check": "passed against unchanged current root preimage"
+  },
+  "overlay_snapshot": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t03-root-snapshot-usdxrljw\\repo",
+  "source_paths_changed": [],
+  "root_modified": false
+}

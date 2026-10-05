@@ -1,0 +1,68 @@
+{
+  "artifact_type": "T03 root-current adoption packet",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "candidate_base": "d68ee694c6d3f75db5c1ab2f63497226880e5010",
+  "t03_source_patch": "T03-mcp-autostart-factory-20261005.patch",
+  "t03_source_patch_sha256": "71BB23A8C6DEC3A9474F42E19C0BADF764E6AA725757B15382C19A376FE67B38",
+  "root_comparison": {
+    "result": "T03 auto-start factory behavior already present in root working tree",
+    "evidence": "src/local_ai_hub/mcp_server.py defines _build_mcp_client(tenant, config_path), calls HubClient(tenant=tenant, config_path=config_path, auto_start=True), wraps it in _MCPHubClientAdapter, then constructs CLIENT through the factory",
+    "supporting_source": "src/local_ai_hub/client.py exposes HubClient auto_start and ensure_server",
+    "adoption_action": "none",
+    "changed_paths": []
+  },
+  "root_images_sha256": {
+    "src/local_ai_hub/mcp_server.py": {
+      "base": "DC03E510E1F38C23F036516C6BB03036C24019A9137DF402E87803031556BC4E",
+      "pre": "88949AAF1660BAD4FFA40A3F27614CC0014868C669D633CA1E5E346E58F29E36",
+      "post": "88949AAF1660BAD4FFA40A3F27614CC0014868C669D633CA1E5E346E58F29E36"
+    },
+    "src/local_ai_hub/client.py": {
+      "base": "D1E1E09DD0890C0AA3A136B6E8D5C7CBB78FB958C1269AE9047884118D526CCD",
+      "pre": "0E240370CEF93F6E0899EAC37E7B0DC43716E42F86AE3D31D7E8E64E3537E95B",
+      "post": "0E240370CEF93F6E0899EAC37E7B0DC43716E42F86AE3D31D7E8E64E3537E95B"
+    },
+    "src/local_ai_hub/__main__.py": {
+      "base": "7A1371F69530B8020EB1C34FDA90312C05255B3502583C61CC0EFE7B4B6AA324",
+      "pre": "7A1371F69530B8020EB1C34FDA90312C05255B3502583C61CC0EFE7B4B6AA324",
+      "post": "7A1371F69530B8020EB1C34FDA90312C05255B3502583C61CC0EFE7B4B6AA324"
+    },
+    "src/local_ai_hub/http_server.py": {
+      "base": "4C10B31778BA89FA694C0029FC95B363AF7ACFFC4C2CACEB5E52CE4B9A9BFF80",
+      "pre": "22F3771584CEFD8C40E7B6E66967C7BC807778B12BA1A338C89B6CD3646478CF",
+      "post": "22F3771584CEFD8C40E7B6E66967C7BC807778B12BA1A338C89B6CD3646478CF"
+    },
+    "src/local_ai_hub/process_utils.py": {
+      "base": "E41E5982E43EEEA58FC412466B44A6CAB4AA404933A84F2284088C754984F578",
+      "pre": "4D5A1AFBCB23BAB1FE4EEC6B9639743D17920DE93E7A822EF64840815998D4EB",
+      "post": "4D5A1AFBCB23BAB1FE4EEC6B9639743D17920DE93E7A822EF64840815998D4EB"
+    },
+    "src/local_ai_hub/config.py": {
+      "base": "902B5B94C1F391BD1C12749C96287605062FA3540474A35357284F27B528D1AD",
+      "pre": "28D03A727CA41B2B089EE45114EDD4BF11BF0A7711C31CCC8032AAB75939A01A",
+      "post": "28D03A727CA41B2B089EE45114EDD4BF11BF0A7711C31CCC8032AAB75939A01A"
+    }
+  },
+  "root_worktree_existing_modified_paths": [
+    "src/local_ai_hub/client.py",
+    "src/local_ai_hub/http_server.py",
+    "src/local_ai_hub/mcp_server.py",
+    "src/local_ai_hub/process_utils.py"
+  ],
+  "candidate_validation": [
+    {
+      "command": "python -m pytest -q tests/test_mcp_autostart.py::test_mcp_main_uses_hubclient_autostart_before_serving_tools",
+      "result": "1 passed in 3.26s",
+      "execution_id": "3884bb7c956c41a68fb1bfb7f5f8822c"
+    },
+    {
+      "command": "python -m pytest -q tests/test_mcp_stdio_contract.py::test_stdio_handshake_publishes_all_registered_live_schemas tests/test_client_transport.py",
+      "result": "20 passed in 5.08s",
+      "execution_id": "328d70c04bb544cd95a1e3eddbf2e664"
+    }
+  ],
+  "root_validation": "not run; root source/test slot remains T20-owned",
+  "live_30_client_test": "not rerun",
+  "root_modified": false
+}

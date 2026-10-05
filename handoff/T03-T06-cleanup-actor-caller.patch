@@ -1,0 +1,11 @@
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+index 0000000..0000000 100644
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -2779,5 +2779,5 @@
+                 if action in {"cleanup_worktree", "task_cleanup_worktree"}:
+                     t_id = str(payload.get("task_id", ""))
+                     del_br = bool(payload.get("delete_branch", True))
+-                    self._send(200, APP.agent_tasks.cleanup_worktree(t_id, delete_branch=del_br)); return
++                    self._send(200, APP.agent_tasks.cleanup_worktree(t_id, delete_branch=del_br, actor=self._agent())); return
+                 if action in {"reap_expired", "zombie_reap", "recover_zombie_tasks"}:

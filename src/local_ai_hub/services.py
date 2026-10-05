@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import base64
 import copy
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -33,6 +34,59 @@ from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
 from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
+
+
+def _accepts_keyword_parameters(target: Any, names: tuple[str, ...]) -> bool:
+    try:
+        parameters = inspect.signature(target).parameters
+    except (TypeError, ValueError):
+        return False
+    has_var_keyword = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    for name in names:
+        parameter = parameters.get(name)
+        if parameter is not None:
+            if parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
+                return False
+        elif not has_var_keyword:
+            return False
+    return True
+
+
+def _write_set_unavailable(action: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "unsupported": True,
+        "terminal": True,
+        "retryable": False,
+        "error": f"{action} requires command broker support for task_id and explicit paths",
+    }
+
+
+def _required_write_set_error(action: str, task_id: Any, paths: Any) -> dict[str, Any] | None:
+    if not isinstance(task_id, str) or not task_id.strip():
+        return {
+            "success": False,
+            "invalid_write_set": True,
+            "terminal": True,
+            "retryable": False,
+            "error": f"{action} requires a non-empty task_id and explicit paths",
+        }
+    if (
+        not isinstance(paths, list)
+        or not paths
+        or any(not isinstance(path, str) or not path.strip() for path in paths)
+    ):
+        return {
+            "success": False,
+            "invalid_write_set": True,
+            "terminal": True,
+            "retryable": False,
+            "error": f"{action} requires a non-empty task_id and explicit paths",
+        }
+    return None
 from .adoption_metrics import AdoptionMetricsStore
 from .state_paths import configured_state_dir
 from .speculative_lint import normalize_changed_paths
@@ -2556,7 +2610,15 @@ class LocalAIServices:
     def repo_profile(self, root: str) -> dict[str, Any]:
         return self._repo_cached("profile", root, {}, lambda: self.repo_tools.project_profile(root))
 
-    def repo_search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None, enrich: bool = False) -> dict[str, Any]:
+    def repo_search(
+        self,
+        root: str,
+        query: str,
+        top_k: int = 12,
+        context_lines: int | None = None,
+        enrich: bool = False,
+        path_hints: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         if enrich and not rollout_feature_enabled(self.config, "enriched_search"):
             return {
                 "success": False,
@@ -2571,10 +2633,32 @@ class LocalAIServices:
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
-        # Local AI deterministic facts/symbols are the cheapest candidate source.
+        # Explicit bounded path hints lead the candidate set; repository indexes
+        # remain additional candidates and the exact full search remains fallback.
         paths: list[str] = []
+        hint_paths: list[str] = []
+        if isinstance(path_hints, list):
+            base = Path(root).expanduser().resolve()
+            for hint in path_hints[:64]:
+                raw_path = hint.get("path") if isinstance(hint, dict) else None
+                if not isinstance(raw_path, str) or not raw_path.strip():
+                    continue
+                try:
+                    candidate = Path(raw_path.strip())
+                    if not candidate.is_absolute():
+                        candidate = base / candidate
+                    relative = candidate.resolve(strict=False).relative_to(base).as_posix()
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                if relative not in hint_paths:
+                    hint_paths.append(relative or ".")
+        paths.extend(hint_paths)
+        # Local AI deterministic facts/symbols are the cheapest candidate source.
         if self.deterministic is not None:
-            try: paths.extend(self.deterministic.related_paths(root, query, max(16, top_k * 3)))
+            try:
+                for path in self.deterministic.related_paths(root, query, max(16, top_k * 3)):
+                    if path not in paths:
+                        paths.append(path)
             except Exception: pass
         if self.code_index is not None:
             try:
@@ -2634,7 +2718,11 @@ class LocalAIServices:
                 except Exception:
                     pass
             return result
-        return self._repo_cached("search", root, {"query": query, "top_k": top_k, "ci": paths[:24], "ctx": eff_ctx_lines}, compute)
+        return self._repo_cached(
+            "search", root,
+            {"query": query, "top_k": top_k, "ci": paths[:24], "ctx": eff_ctx_lines, "path_hints": hint_paths},
+            compute,
+        )
 
     def _refresh_changed_intelligence(self, root: str) -> None:
         """Synchronize only Git-changed files before serving a cache-miss intelligence query.
@@ -3093,10 +3181,26 @@ class LocalAIServices:
             return {"success": False, "error": "command broker unavailable"}
         return self.commands.stop_daemon(daemon_id)
 
-    def lint_fix(self, root: str, command: str | None = None, paths: list[str] | None = None, tenant: str = "agent", timeout: int | None = None) -> dict[str, Any]:
+    def lint_fix(
+        self,
+        root: str,
+        command: str | None = None,
+        paths: list[str] | None = None,
+        tenant: str = "agent",
+        timeout: int | None = None,
+        task_id: str = "",
+    ) -> dict[str, Any]:
         if not self.commands:
             return {"success": False, "error": "command broker unavailable"}
-        return self.commands.lint_fix(root, command=command, paths=paths, tenant=tenant, timeout=timeout)
+        write_set_error = _required_write_set_error("lint_fix", task_id, paths)
+        if write_set_error is not None:
+            return write_set_error
+        method = self.commands.lint_fix
+        if not _accepts_keyword_parameters(method, ("task_id", "paths")):
+            return _write_set_unavailable("lint_fix")
+        return self.commands.lint_fix(
+            root, command=command, paths=paths, tenant=tenant, timeout=timeout, task_id=task_id
+        )
 
     def http_probe(self, url: str, expected_status: int = 200, json_path: str | None = None, timeout: float = 5.0, headers: dict[str, str] | None = None) -> dict[str, Any]:
         if not self.commands:
@@ -5220,13 +5324,28 @@ class LocalAIServices:
             log_callback = _log_cb
 
         if action == "patch_and_verify":
+            if not _accepts_keyword_parameters(
+                self.commands.patch_and_verify, ("task_id", "paths")
+            ):
+                return _write_set_unavailable(action)
+            raw_paths = args.get("paths")
+            paths_list = (
+                list(raw_paths)
+                if isinstance(raw_paths, list) and all(isinstance(item, str) for item in raw_paths)
+                else None
+            )
+            task_id = args.get("task_id", "")
+            write_set_error = _required_write_set_error(action, task_id, paths_list)
+            if write_set_error is not None:
+                return write_set_error
             return self.commands.patch_and_verify(
                 str(args.get("patch", "")),
                 str(args.get("cwd", args.get("root", "."))),
                 tenant,
                 command=str(args.get("command", "")),
                 criterion=str(args.get("criterion", "")),
-                task_id=str(args.get("task_id", "")),
+                task_id=task_id,
+                paths=paths_list,
                 timeout=int(args.get("timeout", 0) or 0) or None,
                 auto_rollback=bool(args.get("auto_rollback", True)),
                 log_callback=log_callback,
@@ -5241,25 +5360,77 @@ class LocalAIServices:
                 timeout=int(args.get("timeout", 10) or 10),
             )
         if action in {"repair_loop", "auto_fix"}:
+            if not _accepts_keyword_parameters(
+                self.commands.repair_loop, ("task_id", "paths")
+            ):
+                return _write_set_unavailable(action)
+            raw_paths = args.get("paths")
+            paths_list = (
+                list(raw_paths)
+                if isinstance(raw_paths, list) and all(isinstance(item, str) for item in raw_paths)
+                else None
+            )
+            task_id = args.get("task_id", "")
+            write_set_error = _required_write_set_error(action, task_id, paths_list)
+            if write_set_error is not None:
+                return write_set_error
             return self.commands.repair_loop(
                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
                 timeout=int(args.get("timeout", 0) or 0) or None,
-                task_id=str(args.get("task_id", "")), criterion=str(args.get("criterion", "")),
+                task_id=task_id, criterion=str(args.get("criterion", "")),
+                paths=paths_list,
                 max_attempts=int(args.get("max_attempts", 3)),
                 fix_generator=self._synthesize_repair_patch,
                 log_callback=log_callback,
             )
         if action == "run":
+            raw_paths = args.get("paths")
+            paths_list = (
+                list(raw_paths)
+                if isinstance(raw_paths, list) and all(isinstance(item, str) for item in raw_paths)
+                else None
+            )
+            task_id = args.get("task_id", "")
+            command_text = str(args.get("command", ""))
+            try:
+                classification = self.commands.classify(command_text)
+            except Exception:
+                classification = {}
+            if (
+                not isinstance(classification, dict)
+                or classification.get("class") not in {"read", "validation", "build", "mutating"}
+                or not classification.get("allowed", False)
+            ):
+                return _write_set_unavailable("run")
+            is_mutating = bool(args.get("auto_fix", False)) or classification.get("class") == "mutating"
+            if is_mutating:
+                write_set_error = _required_write_set_error("run", task_id, paths_list)
+                if write_set_error is not None:
+                    return write_set_error
+            run_kwargs: dict[str, Any] = {
+                "timeout": int(args.get("timeout", 0) or 0) or None,
+                "force": bool(args.get("force", False)),
+                "task_id": task_id if isinstance(task_id, str) else "",
+                "criterion": str(args.get("criterion", "")),
+                "auto_fix": bool(args.get("auto_fix", False)),
+                "fix_generator": self._synthesize_repair_patch if bool(args.get("auto_fix", False)) else None,
+                "log_callback": log_callback,
+                "snapshot": bool(args.get("snapshot", False)),
+                "rollback_on_failure": bool(args.get("rollback_on_failure", False)),
+                "rollback_paths": paths_list,
+            }
+            if not _accepts_keyword_parameters(self.commands.run, ("task_id",)):
+                return _write_set_unavailable("run")
+            if _accepts_keyword_parameters(self.commands.run, ("paths",)):
+                run_kwargs["paths"] = paths_list
+            else:
+                if bool(args.get("auto_fix", False)):
+                    return _write_set_unavailable("auto_fix")
+                if classification.get("class") not in {"read", "validation", "build"}:
+                    return _write_set_unavailable("run")
             return self.commands.run(
                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
-                timeout=int(args.get("timeout", 0) or 0) or None, force=bool(args.get("force", False)),
-                task_id=str(args.get("task_id", "")), criterion=str(args.get("criterion", "")),
-                auto_fix=bool(args.get("auto_fix", False)),
-                fix_generator=self._synthesize_repair_patch if bool(args.get("auto_fix", False)) else None,
-                log_callback=log_callback,
-                snapshot=bool(args.get("snapshot", False)),
-                rollback_on_failure=bool(args.get("rollback_on_failure", False)),
-                rollback_paths=args.get("paths") if isinstance(args.get("paths"), list) else None,
+                **run_kwargs,
             )
         if action == "run_affected":
             root = str(args.get("cwd", args.get("root", ".")))
@@ -5284,7 +5455,25 @@ class LocalAIServices:
             return run_res
         if action == "format":
             root = str(args.get("cwd", args.get("root", ".")))
-            return self.commands.format(root, paths=args.get("paths"), tenant=tenant, timeout=int(args.get("timeout", 0) or 0) or None)
+            if not _accepts_keyword_parameters(self.commands.format, ("task_id", "paths")):
+                return _write_set_unavailable(action)
+            raw_paths = args.get("paths")
+            paths_list = (
+                list(raw_paths)
+                if isinstance(raw_paths, list) and all(isinstance(item, str) for item in raw_paths)
+                else None
+            )
+            task_id = args.get("task_id", "")
+            write_set_error = _required_write_set_error(action, task_id, paths_list)
+            if write_set_error is not None:
+                return write_set_error
+            return self.commands.format(
+                root,
+                paths=paths_list,
+                tenant=tenant,
+                timeout=int(args.get("timeout", 0) or 0) or None,
+                task_id=task_id,
+            )
         if action == "cancel":
             return self.commands.cancel(
                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
@@ -5307,7 +5496,24 @@ class LocalAIServices:
                 "deterministic": bool(scripts),
             }
         if action == "lint_fix":
-            return self.lint_fix(str(args.get("cwd", args.get("root", "."))), command=args.get("command"), paths=args.get("paths"), tenant=tenant, timeout=args.get("timeout"))
+            raw_paths = args.get("paths")
+            paths_list = (
+                list(raw_paths)
+                if isinstance(raw_paths, list) and all(isinstance(item, str) for item in raw_paths)
+                else None
+            )
+            task_id = args.get("task_id", "")
+            write_set_error = _required_write_set_error(action, task_id, paths_list)
+            if write_set_error is not None:
+                return write_set_error
+            return self.lint_fix(
+                str(args.get("cwd", args.get("root", "."))),
+                command=args.get("command"),
+                paths=paths_list,
+                tenant=tenant,
+                timeout=args.get("timeout"),
+                task_id=task_id,
+            )
         if action == "spawn_daemon":
             return self.spawn_daemon(str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), name=str(args.get("name", args.get("task_id", ""))), env=args.get("env"))
         if action == "daemon_status":

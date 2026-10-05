@@ -1,0 +1,12 @@
+{
+  "task": "T03 source-owned MCP factory hunk only",
+  "base_commit": "d68ee694c6d3f75db5c1ab2f63497226880e5010",
+  "source_file": "src/local_ai_hub/mcp_server.py",
+  "base_sha256": "986B1EB79ABF753F43D84C108E17E7BE3B24CBDE549BC258DED32F778F57B84C",
+  "pre_sha256": "24CB51FC19931D5E27508E48A3AAE59CDFA06914E7B8FD11A717C3A7EF8244E2",
+  "post_sha256": "3F42F304BCB557B0C55D9032BC9A86B6B95E2BC39DF3B071864CF7A517AB6CCC",
+  "patch_file": "T03-mcp-autostart-factory-20261005.patch",
+  "patch_sha256": "71BB23A8C6DEC3A9474F42E19C0BADF764E6AA725757B15382C19A376FE67B38",
+  "focused_selector": "tests/test_mcp_autostart.py::test_mcp_main_uses_hubclient_autostart_before_serving_tools",
+  "scope_note": "Factory forwards configured tenant and config path with auto_start=True. HubClient lifecycle remains T04-owned and is not included."
+}

@@ -1,0 +1,41 @@
+{
+  "task": "T03",
+  "scope": "HTTP SSE continuation/cursor reset and HTTP repository-search path_hints forwarding",
+  "base_head": "d68ee694c6d3f75db5c1ab2f63497226880e5010",
+  "repository_revision": "a0207b3147d0630c6b906f04093af9db50dbc342d18f58bc5e2ba62cb15b37f6",
+  "source_path": "src/local_ai_hub/http_server.py",
+  "preimage_sha256": "3047FC7C5161023586930FF4BD9DAC7FA8D438C241886AF08D5300FB8C70C06D",
+  "postimage_sha256": "BBC2510ED6365CE52DE207869F72C715F16345E7F216AC8050842278A5F2742B",
+  "patch_file": "T03-http-transport-20261005.patch",
+  "patch_sha256": "7E1E312C8A5DF12B2D7DDDBCF7B8F872056890AE05FDFF659ADBE0EAE77249D8",
+  "validation": [
+    {
+      "command": "pytest tests/test_sse_events_stream.py",
+      "result": "31 passed",
+      "execution_id": "437f8a09b71f404c92d46bc16280a72d",
+      "request_id": "req_df3086a0a876"
+    },
+    {
+      "command": "pytest tests/test_t03_http_search_hints.py tests/test_repo_path_hints_search.py",
+      "result": "3 passed",
+      "execution_id": "e221f5d0a8634bfb9cb3a9a32d38c075",
+      "request_id": "req_1e2e17ac32cb"
+    },
+    {
+      "command": "pytest tests/test_mcp_compact_transport.py::test_mcp_stdio_initialize_tools_list_and_call_use_http_proxy",
+      "result": "1 passed",
+      "execution_id": "eb9f0e76b11e4afbbcc58c37bb08c976",
+      "request_id": "req_ad21a73da4a6"
+    },
+    {
+      "command": "git diff --check -- src/local_ai_hub/http_server.py",
+      "result": "passed",
+      "execution_id": "2f67ab38f7d94974b6b854b3e89ed613",
+      "request_id": "req_8ae7ec02420f"
+    }
+  ],
+  "excludes": [
+    "src/local_ai_hub/client.py",
+    "tests/test_hub_startup_coordination.py"
+  ]
+}\n

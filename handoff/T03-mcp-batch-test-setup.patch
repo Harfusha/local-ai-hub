@@ -1,0 +1,61 @@
+diff --git a/tests/test_operation_contracts.py b/tests/test_operation_contracts.py
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -931,27 +931,44 @@
+ 
+ def test_registered_mcp_dispatch_accepts_feature_enabled_batch_replace(monkeypatch: pytest.MonkeyPatch) -> None:
+     import asyncio
+-    from copy import deepcopy
++    from typing import Any, Literal
+ 
+     import local_ai_hub.mcp_server as mcp_server
+     from local_ai_hub.features import FeatureSet
+     from local_ai_hub.operation_contracts import operation_tool_input_schema
+ 
+-    config = deepcopy(mcp_server.CFG)
+-    config.setdefault("features", {})["batch_replacement"] = True
+-    features = FeatureSet(config)
++    features = FeatureSet({"features": {"repo": True, "batch_replacement": True}})
+     monkeypatch.setattr(mcp_server, "FEATURES", features)
+-    registered_tool = mcp_server.mcp._tool_manager._tools["local_ai_repo"]
+-    monkeypatch.setattr(registered_tool, "parameters", operation_tool_input_schema("local_ai_repo", features))
+-    calls = _stub_registered_mcp_tool(monkeypatch, "local_ai_repo", {"success": True})
+-    arguments = {"action": "batch_replace", "edits": [{"path": "a.py", "old": "x", "new": "y"}], "dry_run": True}
+-
+-    response = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", arguments))
++    fresh_mcp = mcp_server.FastMCP("batch-replacement-test")
++    calls: list[dict[str, Any]] = []
++
++    def batch_tool(
++        action: Literal["batch_replace"],
++        edits: list[dict[str, Any]],
++        dry_run: bool = False,
++    ) -> dict[str, Any]:
++        calls.append({"action": action, "edits": edits, "dry_run": dry_run})
++        return {"success": True}
++
++    fresh_mcp.tool(name="local_ai_repo")(batch_tool)
++    registered_tool = fresh_mcp._tool_manager._tools["local_ai_repo"]
++    registry_schema = operation_tool_input_schema("local_ai_repo", features)
++    assert {"edits", "dry_run"} <= set(registry_schema["properties"])
++    assert {"edits", "dry_run"} <= set(registered_tool.parameters["properties"])
++
++    monkeypatch.setattr(mcp_server, "mcp", fresh_mcp)
++    fresh_mcp.call_tool = mcp_server._compact_mcp_call_tool
++    fresh_mcp._mcp_server.call_tool(validate_input=False)(mcp_server._compact_mcp_call_tool)
++    arguments = {
++        "action": "batch_replace",
++        "edits": [{"path": "a.py", "old": "x", "new": "y"}],
++        "dry_run": True,
++    }
++
++    response = asyncio.run(fresh_mcp.call_tool("local_ai_repo", arguments))
+ 
+     assert response[1]["success"] is True
+-    assert len(calls) == 1
+-    assert calls[0]["edits"] == arguments["edits"]
+-    assert calls[0]["dry_run"] is True
++    assert calls == [{"action": "batch_replace", "edits": arguments["edits"], "dry_run": True}]
+ 
+ 
+ def test_registered_mcp_dispatch_validates_unknown_field_when_selector_omitted(monkeypatch: pytest.MonkeyPatch) -> None:

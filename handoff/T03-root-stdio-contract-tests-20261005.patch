@@ -1,0 +1,954 @@
+--- a/tests/test_mcp_contract_dispatch.py
++++ b/tests/test_mcp_contract_dispatch.py
+@@ -1,412 +1,539 @@
+-from __future__ import annotations
+-
+-import asyncio
+-
+-import pytest
+-
+-def test_mcp_dispatch_rejects_unknown_arguments_before_http_tool_call(monkeypatch) -> None:
+-    from local_ai_hub import mcp_server
+-
+-    calls: list[str] = []
+-
+-    async def fake_call_tool(name, arguments, *, convert_result=False):
+-        calls.append(name)
+-        return {"success": True}
+-
+-    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+-
+-    _content, payload = asyncio.run(
+-        mcp_server._compact_mcp_call_tool(
+-            "local_ai_status",
+-            {"action": "brief", "unknown_argument": True},
+-        )
+-    )
+-
+-    assert payload["success"] is False
+-    assert payload["status_code"] == 400
+-    assert "unknown_argument" in payload["error"]
+-    assert calls == []
+-
+-
+-def test_mcp_dispatch_rejects_artifact_list_get_fields_before_tool_call(monkeypatch) -> None:
+-    from local_ai_hub import mcp_server
+-
+-    calls: list[str] = []
+-
+-    async def fake_call_tool(name, arguments, *, convert_result=False):
+-        calls.append(name)
+-        return {"success": True}
+-
+-    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+-
+-    _content, payload = asyncio.run(
+-        mcp_server._compact_mcp_call_tool(
+-            "local_ai_artifact",
+-            {"action": "list", "artifact_id": "artifact-1"},
+-        )
+-    )
+-
+-    assert payload["success"] is False
+-    assert payload["status_code"] == 400
+-    assert "artifact_id" in payload["error"]
+-    assert calls == []
+-
+-
+-@pytest.mark.parametrize(
+-    "arguments",
+-    [
+-        {"action": "slice", "artifact_id": "artifact-1", "offset": -1},
+-        {"action": "slice", "artifact_id": "artifact-1", "max_chars": 511},
+-        {"action": "slice", "artifact_id": "artifact-1", "max_chars": 12001},
+-    ],
+-)
+-def test_mcp_dispatch_rejects_out_of_range_artifact_slice_before_tool_call(
+-    monkeypatch, arguments
+-) -> None:
+-    from local_ai_hub import mcp_server
+-
+-    calls: list[str] = []
+-
+-    async def fake_call_tool(name, _arguments, *, convert_result=False):
+-        calls.append(name)
+-        return {"success": True}
+-
+-    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+-
+-    _content, payload = asyncio.run(
+-        mcp_server._compact_mcp_call_tool("local_ai_artifact", arguments)
+-    )
+-
+-    assert payload["success"] is False
+-    assert payload["status_code"] == 400
+-    assert calls == []
+-
+-
+-def test_mcp_dispatch_rejects_invalid_output_envelope(monkeypatch) -> None:
+-    from local_ai_hub import mcp_server
+-
+-    async def fake_call_tool(_name, _arguments, *, convert_result=False):
+-        return {"success": "yes"}
+-
+-    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+-
+-    _content, payload = asyncio.run(
+-        mcp_server._compact_mcp_call_tool(
+-            "local_ai_status",
+-            {"action": "brief"},
+-        )
+-    )
+-
+-    assert payload["success"] is False
+-    assert payload["status_code"] == 500
+-    assert "output contract" in payload["error"]
+-
+-
+-def test_mcp_dispatch_rejects_invalid_artifact_list_item_shape(monkeypatch) -> None:
+-    from local_ai_hub import mcp_server
+-
+-    async def fake_call_tool(_name, _arguments, *, convert_result=False):
+-        return {"success": True, "artifacts": [{"artifact_id": "artifact-1"}]}
+-
+-    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
+-
+-    _content, payload = asyncio.run(
+-        mcp_server._compact_mcp_call_tool(
+-            "local_ai_artifact", {"action": "list"}
+-        )
+-    )
+-
+-    assert payload["success"] is False
+-    assert payload["status_code"] == 500
+-    assert "output contract" in payload["error"]
+-
+-
+-def test_live_mcp_schema_publishes_action_conditions_and_output_schema() -> None:
+-    from local_ai_hub import mcp_server
+-
+-    registered = mcp_server.mcp._tool_manager._tools["local_ai_artifact"]
+-    input_schema = registered.parameters
+-    output_schema = registered.output_schema
+-
+-    assert "allOf" in input_schema
+-    assert any(
+-        branch.get("then", {}).get("required") == ["action", "artifact_id"]
+-        for branch in input_schema["allOf"]
+-    )
+-    assert output_schema["type"] == "object"
+-    assert output_schema["additionalProperties"] is True
+-    assert "anyOf" not in output_schema
+-    assert output_schema["properties"]["success"]["type"] == "boolean"
+-    assert output_schema["properties"]["status"]["type"] == "string"
+-
+-
+-def test_live_mcp_schemas_match_registry_for_every_public_tool() -> None:
+-    from local_ai_hub import mcp_server
+-    from local_ai_hub.operation_contracts import (
+-        OPERATION_CONTRACTS,
+-        operation_tool_input_schema,
+-        operation_tool_output_schema,
+-    )
+-
+-    registered = mcp_server.mcp._tool_manager._tools
+-    wire_tools = {tool.name: tool for tool in asyncio.run(mcp_server.mcp.list_tools())}
+-    assert set(wire_tools) == set(OPERATION_CONTRACTS)
+-
+-    for name in OPERATION_CONTRACTS:
+-        expected_input = operation_tool_input_schema(name, mcp_server.FEATURES)
+-        expected_output = operation_tool_output_schema(name, mcp_server.FEATURES)
+-        assert registered[name].parameters == expected_input, name
+-        assert wire_tools[name].inputSchema == expected_input, name
+-        assert registered[name].output_schema == expected_output, name
+-        assert wire_tools[name].outputSchema == expected_output, name
+-def test_mcp_command_run_is_gated_as_heavy_and_repo_map_read_stays_lightweight(monkeypatch) -> None:
+-    from local_ai_hub import mcp_server
+-
+-    gate_calls = []
+-    client_calls = []
+-
+-    def gate(snapshot, action, *, requires_heavy_work=True):
+-        gate_calls.append((action, requires_heavy_work))
+-        if requires_heavy_work:
+-            return {
+-                "success": False,
+-                "error_code": "operational_mode_blocked",
+-                "action": action,
+-                "terminal": True,
+-                "retryable": False,
+-            }
+-        return None
+-
+-    def post(path, payload, *, timeout):
+-        client_calls.append(path)
+-        return {"success": True, "tree": {}, "files": []}
+-
+-    monkeypatch.setattr(
+-        mcp_server,
+-        "load_operational_mode",
+-        lambda *_args, **_kwargs: mcp_server.OperationalModeSnapshot("gaming", 0, None),
+-    )
+-    monkeypatch.setattr(mcp_server, "operational_mode_gate_error", gate)
+-    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
+-    monkeypatch.setattr(mcp_server.FEATURES, "repo", True)
+-    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
+-
+-    command_result = mcp_server.local_ai_command(
+-        action="run", command="python -m pytest -q", cwd="."
+-    )
+-
+-    assert gate_calls == [("run", True)]
+-    assert command_result["error_code"] == "operational_mode_blocked"
+-    assert client_calls == []
+-
+-    read_result = mcp_server.local_ai_repo(action="map", root="C:/repo")
+-
+-    assert gate_calls == [("run", True), ("map", False)]
+-    assert read_result.get("error_code") != "operational_mode_blocked"
+-    assert client_calls == ["/api/repo/map"]
+-
+-
+-def test_instrumented_mcp_action_reaches_inprocess_client_with_classified_metadata(monkeypatch) -> None:
+-    from local_ai_hub import mcp_server
+-
+-    calls = []
+-
+-    class FakeHubClient:
+-        def request(
+-            self,
+-            path,
+-            payload=None,
+-            *,
+-            timeout=30.0,
+-            replay_safe=False,
+-            request_id=None,
+-            operational_action=None,
+-            requires_heavy_work=True,
+-        ):
+-            calls.append((
+-                path,
+-                operational_action,
+-                requires_heavy_work,
+-            ))
+-            return {"success": True, "items": []}
+-
+-        def post(self, path, payload=None, *, timeout=30.0):
+-            return self.request(path, payload, timeout=timeout)
+-
+-    monkeypatch.setattr(mcp_server, "CLIENT", mcp_server._MCPHubClientAdapter(FakeHubClient()))
+-    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda *_a, **_k: mcp_server.OperationalModeSnapshot("active", 0, None))
+-    monkeypatch.setattr(mcp_server, "operational_mode_gate_error", lambda *_a, **_k: None)
+-    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_a, **_k: None)
+-    monkeypatch.setattr(mcp_server, "_tool_catalog_schema_tokens", lambda: 0)
+-    monkeypatch.setattr(mcp_server, "finalize_tool_accounting", lambda **_k: {})
+-    monkeypatch.setattr(mcp_server.CONTEXT_LEDGER, "record", lambda **_k: None)
+-    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda *_a: None)
+-    monkeypatch.setattr(mcp_server, "semantic_handoff_hint", lambda *_a: None)
+-
+-    def local_ai_repo(action: str, root: str):
+-        return mcp_server.CLIENT.post("/api/search", {"action": action, "root": root})
+-
+-    dispatch = mcp_server._instrumented_tool()(local_ai_repo)
+-    dispatch(action="map", root="C:/repo")
+-    dispatch(action="search", root="C:/repo")
+-
+-    assert calls == [
+-        ("/api/search", "map", False),
+-        ("/api/search", "search", True),
+-    ]
+-
+-def test_mcp_client_adapter_forwards_semantic_metadata_to_hub_client_request() -> None:
+-    from local_ai_hub import mcp_server
+-
+-    calls = []
+-
+-    class FakeHubClient:
+-        def request(
+-            self,
+-            path,
+-            payload=None,
+-            *,
+-            timeout=30.0,
+-            replay_safe=False,
+-            request_id=None,
+-            operational_action=None,
+-            requires_heavy_work=True,
+-        ):
+-            calls.append((path, payload, {
+-                "timeout": timeout,
+-                "replay_safe": replay_safe,
+-                "request_id": request_id,
+-                "operational_action": operational_action,
+-                "requires_heavy_work": requires_heavy_work,
+-            }))
+-            return {"success": True}
+-
+-        def post(self, path, payload=None, *, timeout=30.0):
+-            return self.request(path, payload, timeout=timeout)
+-
+-        def get(
+-            self,
+-            path,
+-            *,
+-            timeout=15.0,
+-            operational_action=None,
+-            requires_heavy_work=True,
+-        ):
+-            return self.request(
+-                path,
+-                None,
+-                timeout=timeout,
+-                operational_action=operational_action,
+-                requires_heavy_work=requires_heavy_work,
+-            )
+-
+-    client = mcp_server._MCPHubClientAdapter(FakeHubClient())
+-    token = mcp_server._CURRENT_OPERATIONAL_CONTEXT.set(("map", False))
+-    try:
+-        result = client.post("/api/repo/map", {"root": "C:/repo"}, timeout=2.0)
+-        status = client.get("/api/live/status", timeout=1.0)
+-    finally:
+-        mcp_server._CURRENT_OPERATIONAL_CONTEXT.reset(token)
+-
+-    assert result == {"success": True}
+-    assert status == {"success": True}
+-    assert calls == [
+-        (
+-            "/api/repo/map",
+-            {"root": "C:/repo"},
+-            {
+-                "timeout": 2.0,
+-                "replay_safe": False,
+-                "request_id": None,
+-                "operational_action": "map",
+-                "requires_heavy_work": False,
+-            },
+-        ),
+-        (
+-            "/api/live/status",
+-            None,
+-            {
+-                "timeout": 1.0,
+-                "replay_safe": False,
+-                "request_id": None,
+-                "operational_action": "map",
+-                "requires_heavy_work": False,
+-            },
+-        ),
+-    ]
+-
+-def test_mcp_transport_metadata_keeps_deterministic_reads_light() -> None:
+-    from local_ai_hub.mcp_server import _classify_mcp_operation
+-
+-    assert _classify_mcp_operation("local_ai_repo", {"action": "map"}) == ("map", False)
+-    assert _classify_mcp_operation("local_ai_repo", {"action": "code_index"}) == ("code_index", False)
+-    assert _classify_mcp_operation("local_ai_artifact", {"action": "slice"}) == ("slice", False)
+-    assert _classify_mcp_operation("local_ai_status", {"detail": "brief"}) == ("brief", False)
+-    assert _classify_mcp_operation("local_ai_status", {}) == ("brief", False)
+-    assert _classify_mcp_operation("local_ai_status", {"detail": "agent_state"}) == ("agent_state", True)
+-    assert _classify_mcp_operation("local_ai_command", {"action": "run"}) == ("run", True)
+-    assert _classify_mcp_operation("local_ai_repo", {"action": "search"}) == ("search", True)
+-
+-def test_mcp_transport_selection_injects_lazy_transport_with_same_config_and_tenant(monkeypatch) -> None:
+-    from local_ai_hub import mcp_server
+-
+-    calls = {}
+-
+-    class FakeTransport:
+-        def __init__(self, *, config_path):
+-            calls["transport_config"] = config_path
+-
+-    class FakeHubClient:
+-        def __init__(self, *, tenant, config_path, inprocess_transport):
+-            self.inprocess_transport = inprocess_transport
+-            calls.update(
+-                tenant=tenant,
+-                client_config=config_path,
+-                transport=inprocess_transport,
+-            )
+-
+-    monkeypatch.setattr(mcp_server, "InProcessTransport", FakeTransport, raising=False)
+-    monkeypatch.setattr(mcp_server, "HubClient", FakeHubClient)
+-
+-    client = mcp_server._build_mcp_client("agent:workspace", "C:/config/hub.toml")
+-
+-    assert isinstance(client._client, FakeHubClient)
+-    assert calls == {
+-        "tenant": "agent:workspace",
+-        "client_config": "C:/config/hub.toml",
+-        "transport_config": "C:/config/hub.toml",
+-        "transport": client._client.inprocess_transport,
+-    }
+-
+-
+-def test_protocol_accounting_uses_shared_mcp_client_as_light_telemetry(monkeypatch) -> None:
+-    from local_ai_hub import mcp_server
+-
+-    calls = []
+-
+-    class SharedMCPClient:
+-        def post(self, path, payload, *, timeout):
+-            calls.append((
+-                path,
+-                payload,
+-                timeout,
+-                mcp_server._CURRENT_OPERATIONAL_CONTEXT.get(),
+-            ))
+-            return {"success": True}
+-
+-    def forbidden_client(*_args, **_kwargs):
+-        raise AssertionError("accounting must reuse MCP client, not create HTTP client")
+-
+-    monkeypatch.setattr(mcp_server, "CLIENT", SharedMCPClient())
+-    monkeypatch.setattr(mcp_server, "HubClient", forbidden_client)
+-    events = [{"tool": "local_ai_repo", "operation": "map", "request_tokens": 4}]
+-
+-    mcp_server._ProtocolAccountingReporter()._send(events)
+-
+-    assert len(calls) == 1
+-    path, payload, timeout, policy = calls[0]
+-    assert path == "/api/telemetry/tool-accounting"
+-    assert payload["events"] == events
+-    assert payload["batch_id"]
+-    assert timeout == 0.25
+-    assert policy == ("telemetry", False)
++from __future__ import annotations
++
++import asyncio
++
++import pytest
++
++def test_mcp_dispatch_rejects_unknown_arguments_before_http_tool_call(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    calls: list[str] = []
++
++    async def fake_call_tool(name, arguments, *, convert_result=False):
++        calls.append(name)
++        return {"success": True}
++
++    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
++
++    _content, payload = asyncio.run(
++        mcp_server._compact_mcp_call_tool(
++            "local_ai_status",
++            {"action": "brief", "unknown_argument": True},
++        )
++    )
++
++    assert payload["success"] is False
++    assert payload["status_code"] == 400
++    assert "unknown_argument" in payload["error"]
++    assert calls == []
++
++
++def test_mcp_dispatch_rejects_artifact_list_get_fields_before_tool_call(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    calls: list[str] = []
++
++    async def fake_call_tool(name, arguments, *, convert_result=False):
++        calls.append(name)
++        return {"success": True}
++
++    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
++
++    _content, payload = asyncio.run(
++        mcp_server._compact_mcp_call_tool(
++            "local_ai_artifact",
++            {"action": "list", "artifact_id": "artifact-1"},
++        )
++    )
++
++    assert payload["success"] is False
++    assert payload["status_code"] == 400
++    assert "artifact_id" in payload["error"]
++    assert calls == []
++
++
++@pytest.mark.parametrize(
++    "arguments",
++    [
++        {"action": "slice", "artifact_id": "artifact-1", "offset": -1},
++        {"action": "slice", "artifact_id": "artifact-1", "max_chars": 511},
++        {"action": "slice", "artifact_id": "artifact-1", "max_chars": 12001},
++    ],
++)
++def test_mcp_dispatch_rejects_out_of_range_artifact_slice_before_tool_call(
++    monkeypatch, arguments
++) -> None:
++    from local_ai_hub import mcp_server
++
++    calls: list[str] = []
++
++    async def fake_call_tool(name, _arguments, *, convert_result=False):
++        calls.append(name)
++        return {"success": True}
++
++    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
++
++    _content, payload = asyncio.run(
++        mcp_server._compact_mcp_call_tool("local_ai_artifact", arguments)
++    )
++
++    assert payload["success"] is False
++    assert payload["status_code"] == 400
++    assert calls == []
++
++
++def test_mcp_dispatch_rejects_invalid_output_envelope(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    async def fake_call_tool(_name, _arguments, *, convert_result=False):
++        return {"success": "yes"}
++
++    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
++
++    _content, payload = asyncio.run(
++        mcp_server._compact_mcp_call_tool(
++            "local_ai_status",
++            {"action": "brief"},
++        )
++    )
++
++    assert payload["success"] is False
++    assert payload["status_code"] == 500
++    assert "output contract" in payload["error"]
++
++
++def test_mcp_dispatch_rejects_invalid_artifact_list_item_shape(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    async def fake_call_tool(_name, _arguments, *, convert_result=False):
++        return {"success": True, "artifacts": [{"artifact_id": "artifact-1"}]}
++
++    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
++
++    _content, payload = asyncio.run(
++        mcp_server._compact_mcp_call_tool(
++            "local_ai_artifact", {"action": "list"}
++        )
++    )
++
++    assert payload["success"] is False
++    assert payload["status_code"] == 500
++    assert "output contract" in payload["error"]
++
++
++def test_live_mcp_schema_publishes_action_conditions_and_output_schema() -> None:
++    from local_ai_hub import mcp_server
++
++    registered = mcp_server.mcp._tool_manager._tools["local_ai_artifact"]
++    input_schema = registered.parameters
++    output_schema = registered.output_schema
++
++    assert "allOf" in input_schema
++    assert any(
++        branch.get("then", {}).get("required") == ["action", "artifact_id"]
++        for branch in input_schema["allOf"]
++    )
++    assert output_schema["type"] == "object"
++    assert output_schema["additionalProperties"] is True
++    assert "anyOf" not in output_schema
++    assert output_schema["properties"]["success"]["type"] == "boolean"
++    assert output_schema["properties"]["status"]["type"] == "string"
++
++
++def test_live_mcp_schemas_match_registry_for_every_public_tool() -> None:
++    from local_ai_hub import mcp_server
++    from local_ai_hub.operation_contracts import (
++        OPERATION_CONTRACTS,
++        operation_tool_input_schema,
++        operation_tool_output_schema,
++    )
++
++    registered = mcp_server.mcp._tool_manager._tools
++    wire_tools = {tool.name: tool for tool in asyncio.run(mcp_server.mcp.list_tools())}
++    assert set(wire_tools) == set(OPERATION_CONTRACTS)
++
++    for name in OPERATION_CONTRACTS:
++        expected_input = operation_tool_input_schema(name, mcp_server.FEATURES)
++        expected_output = operation_tool_output_schema(name, mcp_server.FEATURES)
++        assert registered[name].parameters == expected_input, name
++        assert wire_tools[name].inputSchema == expected_input, name
++        assert registered[name].output_schema == expected_output, name
++        assert wire_tools[name].outputSchema == expected_output, name
++def test_mcp_command_run_is_gated_as_heavy_and_repo_map_read_stays_lightweight(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    gate_calls = []
++    client_calls = []
++
++    def gate(snapshot, action, *, requires_heavy_work=True):
++        gate_calls.append((action, requires_heavy_work))
++        if requires_heavy_work:
++            return {
++                "success": False,
++                "error_code": "operational_mode_blocked",
++                "action": action,
++                "terminal": True,
++                "retryable": False,
++            }
++        return None
++
++    def post(path, payload, *, timeout):
++        client_calls.append(path)
++        return {"success": True, "tree": {}, "files": []}
++
++    monkeypatch.setattr(
++        mcp_server,
++        "load_operational_mode",
++        lambda *_args, **_kwargs: mcp_server.OperationalModeSnapshot("gaming", 0, None),
++    )
++    monkeypatch.setattr(mcp_server, "operational_mode_gate_error", gate)
++    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
++    monkeypatch.setattr(mcp_server.FEATURES, "repo", True)
++    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
++    # This test covers action gating and dispatch; isolate background accounting.
++    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda *_args: None)
++
++    command_result = mcp_server.local_ai_command(
++        action="run", command="python -m pytest -q", cwd="."
++    )
++
++    assert gate_calls == [("run", True)]
++    assert command_result["error_code"] == "operational_mode_blocked"
++    assert client_calls == []
++
++    read_result = mcp_server.local_ai_repo(action="map", root="C:/repo")
++
++    assert gate_calls == [("run", True), ("map", False)]
++    assert read_result.get("error_code") != "operational_mode_blocked"
++    assert client_calls == ["/api/repo/map"]
++
++
++def test_instrumented_mcp_action_reaches_inprocess_client_with_classified_metadata(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    calls = []
++
++    class FakeHubClient:
++        def request(
++            self,
++            path,
++            payload=None,
++            *,
++            timeout=30.0,
++            replay_safe=False,
++            request_id=None,
++            operational_action=None,
++            requires_heavy_work=True,
++        ):
++            calls.append((
++                path,
++                operational_action,
++                requires_heavy_work,
++            ))
++            return {"success": True, "items": []}
++
++        def post(self, path, payload=None, *, timeout=30.0):
++            return self.request(path, payload, timeout=timeout)
++
++    monkeypatch.setattr(mcp_server, "CLIENT", mcp_server._MCPHubClientAdapter(FakeHubClient()))
++    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda *_a, **_k: mcp_server.OperationalModeSnapshot("active", 0, None))
++    monkeypatch.setattr(mcp_server, "operational_mode_gate_error", lambda *_a, **_k: None)
++    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_a, **_k: None)
++    monkeypatch.setattr(mcp_server, "_tool_catalog_schema_tokens", lambda: 0)
++    monkeypatch.setattr(mcp_server, "finalize_tool_accounting", lambda **_k: {})
++    monkeypatch.setattr(mcp_server.CONTEXT_LEDGER, "record", lambda **_k: None)
++    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda *_a: None)
++    monkeypatch.setattr(mcp_server, "semantic_handoff_hint", lambda *_a: None)
++
++    def local_ai_repo(action: str, root: str):
++        return mcp_server.CLIENT.post("/api/search", {"action": action, "root": root})
++
++    dispatch = mcp_server._instrumented_tool()(local_ai_repo)
++    dispatch(action="map", root="C:/repo")
++    dispatch(action="search", root="C:/repo")
++
++    assert calls == [
++        ("/api/search", "map", False),
++        ("/api/search", "search", True),
++    ]
++
++def test_mcp_client_adapter_forwards_semantic_metadata_to_hub_client_request() -> None:
++    from local_ai_hub import mcp_server
++
++    calls = []
++
++    class FakeHubClient:
++        def request(
++            self,
++            path,
++            payload=None,
++            *,
++            timeout=30.0,
++            replay_safe=False,
++            request_id=None,
++            operational_action=None,
++            requires_heavy_work=True,
++        ):
++            calls.append((path, payload, {
++                "timeout": timeout,
++                "replay_safe": replay_safe,
++                "request_id": request_id,
++                "operational_action": operational_action,
++                "requires_heavy_work": requires_heavy_work,
++            }))
++            return {"success": True}
++
++        def post(self, path, payload=None, *, timeout=30.0):
++            return self.request(path, payload, timeout=timeout)
++
++        def get(
++            self,
++            path,
++            *,
++            timeout=15.0,
++            operational_action=None,
++            requires_heavy_work=True,
++        ):
++            return self.request(
++                path,
++                None,
++                timeout=timeout,
++                operational_action=operational_action,
++                requires_heavy_work=requires_heavy_work,
++            )
++
++    client = mcp_server._MCPHubClientAdapter(FakeHubClient())
++    token = mcp_server._CURRENT_OPERATIONAL_CONTEXT.set(("map", False))
++    try:
++        result = client.post("/api/repo/map", {"root": "C:/repo"}, timeout=2.0)
++        status = client.get("/api/live/status", timeout=1.0)
++    finally:
++        mcp_server._CURRENT_OPERATIONAL_CONTEXT.reset(token)
++
++    assert result == {"success": True}
++    assert status == {"success": True}
++    assert calls == [
++        (
++            "/api/repo/map",
++            {"root": "C:/repo"},
++            {
++                "timeout": 2.0,
++                "replay_safe": False,
++                "request_id": None,
++                "operational_action": "map",
++                "requires_heavy_work": False,
++            },
++        ),
++        (
++            "/api/live/status",
++            None,
++            {
++                "timeout": 1.0,
++                "replay_safe": False,
++                "request_id": None,
++                "operational_action": "map",
++                "requires_heavy_work": False,
++            },
++        ),
++    ]
++
++def test_mcp_transport_metadata_keeps_deterministic_reads_light() -> None:
++    from local_ai_hub.mcp_server import _classify_mcp_operation
++
++    assert _classify_mcp_operation("local_ai_repo", {"action": "map"}) == ("map", False)
++    assert _classify_mcp_operation("local_ai_repo", {"action": "code_index"}) == ("code_index", False)
++    assert _classify_mcp_operation("local_ai_artifact", {"action": "slice"}) == ("slice", False)
++    assert _classify_mcp_operation("local_ai_status", {"detail": "brief"}) == ("brief", False)
++    assert _classify_mcp_operation("local_ai_status", {}) == ("brief", False)
++    assert _classify_mcp_operation("local_ai_status", {"detail": "agent_state"}) == ("agent_state", True)
++    assert _classify_mcp_operation("local_ai_command", {"action": "run"}) == ("run", True)
++    assert _classify_mcp_operation("local_ai_repo", {"action": "search"}) == ("search", True)
++
++def test_mcp_client_forwards_tenant_config_and_keeps_autostart_lazy(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    calls = {}
++
++    class FakeHubClient:
++        def __init__(self, *, tenant, config_path, auto_start):
++            self.requests = []
++            calls.update(
++                tenant=tenant,
++                config_path=config_path,
++                auto_start=auto_start,
++                requests=self.requests,
++            )
++
++        def request(self, path, payload=None):
++            self.requests.append((path, payload))
++            return {"success": True}
++
++    monkeypatch.setattr(mcp_server, "HubClient", FakeHubClient)
++
++    client = mcp_server._build_mcp_client("agent:workspace", "C:/config/hub.toml")
++
++    assert isinstance(client._client, FakeHubClient)
++    assert calls == {
++        "tenant": "agent:workspace",
++        "config_path": "C:/config/hub.toml",
++        "auto_start": True,
++        "requests": [],
++    }
++
++
++def test_protocol_accounting_uses_shared_mcp_client_as_light_telemetry(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    calls = []
++
++    class SharedMCPClient:
++        def post(self, path, payload, *, timeout):
++            calls.append((
++                path,
++                payload,
++                timeout,
++                mcp_server._CURRENT_OPERATIONAL_CONTEXT.get(),
++            ))
++            return {"success": True}
++
++    def forbidden_client(*_args, **_kwargs):
++        raise AssertionError("accounting must reuse MCP client, not create HTTP client")
++
++    monkeypatch.setattr(mcp_server, "CLIENT", SharedMCPClient())
++    monkeypatch.setattr(mcp_server, "HubClient", forbidden_client)
++    events = [{"tool": "local_ai_repo", "operation": "map", "request_tokens": 4}]
++
++    mcp_server._ProtocolAccountingReporter()._send(events)
++
++    assert len(calls) == 1
++    path, payload, timeout, policy = calls[0]
++    assert path == "/api/telemetry/tool-accounting"
++    assert payload["events"] == events
++    assert payload["batch_id"]
++    assert timeout == 0.25
++    assert policy == ("telemetry", False)
++
++
++
++def test_stdio_tools_list_matches_registered_output_contracts() -> None:
++    import json
++    import os
++    import subprocess
++    import sys
++    from pathlib import Path
++
++    from local_ai_hub import mcp_server
++    from local_ai_hub.operation_contracts import OPERATION_CONTRACTS
++
++    root = Path(__file__).resolve().parents[1]
++    env = os.environ.copy()
++    env["PYTHONPATH"] = os.pathsep.join(
++        value for value in (str(root / "src"), env.get("PYTHONPATH", "")) if value
++    )
++    messages = [
++        {
++            "jsonrpc": "2.0",
++            "id": 1,
++            "method": "initialize",
++            "params": {
++                "protocolVersion": "2025-06-18",
++                "capabilities": {},
++                "clientInfo": {"name": "root-schema-test", "version": "1"},
++            },
++        },
++        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
++        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
++    ]
++    completed = subprocess.run(
++        [
++            sys.executable,
++            "-B",
++            "-c",
++            "from local_ai_hub import mcp_server; "
++            "mcp_server.CLIENT.ensure_server = lambda **_kwargs: True; "
++            "mcp_server.main()",
++        ],
++        cwd=root,
++        env=env,
++        input="".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages),
++        capture_output=True,
++        text=True,
++        timeout=15,
++        check=False,
++    )
++
++    assert completed.returncode == 0, completed.stderr[-2000:]
++    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
++    initialize = next(response for response in responses if response.get("id") == 1)
++    listing = next(response for response in responses if response.get("id") == 2)
++    assert initialize.get("result", {}).get("protocolVersion") == "2025-06-18"
++    wire_tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
++    expected_names = set(mcp_server.FEATURES.enabled_tools)
++    assert set(wire_tools) == expected_names
++    assert expected_names == set(OPERATION_CONTRACTS) & expected_names
++
++    registered = mcp_server.mcp._tool_manager._tools
++    for name in expected_names:
++        assert wire_tools[name]["inputSchema"] == registered[name].parameters, name
++        assert wire_tools[name]["outputSchema"] == registered[name].output_schema, name
++        assert registered[name].output_schema is not None, name
++    if "local_ai_rag" in wire_tools:
++        search_schema = wire_tools["local_ai_rag"]["outputSchema"]["x-action-output-contracts"]["search"]
++        result_item = search_schema["results"]["items"]
++        assert result_item["properties"]["chunk_no"] == {"type": "integer"}
++
++
++def test_stdio_tools_list_hides_feature_disabled_tools(tmp_path) -> None:
++    import json
++    import os
++    import subprocess
++    import sys
++    from pathlib import Path
++
++    root = Path(__file__).resolve().parents[1]
++    config = tmp_path / "disabled-features.toml"
++    config.write_text("[features]\nrag = false\ncommands = false\n", encoding="utf-8")
++    env = os.environ.copy()
++    env["LOCAL_AI_CONFIG"] = str(config)
++    env["PYTHONPATH"] = os.pathsep.join(
++        value for value in (str(root / "src"), env.get("PYTHONPATH", "")) if value
++    )
++    messages = [
++        {
++            "jsonrpc": "2.0",
++            "id": 1,
++            "method": "initialize",
++            "params": {
++                "protocolVersion": "2025-06-18",
++                "capabilities": {},
++                "clientInfo": {"name": "disabled-schema-test", "version": "1"},
++            },
++        },
++        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
++        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
++    ]
++    completed = subprocess.run(
++        [
++            sys.executable,
++            "-B",
++            "-c",
++            "from local_ai_hub import mcp_server; "
++            "mcp_server.CLIENT.ensure_server = lambda **_kwargs: True; "
++            "mcp_server.main()",
++        ],
++        cwd=root,
++        env=env,
++        input="".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages),
++        capture_output=True,
++        text=True,
++        timeout=15,
++        check=False,
++    )
++
++    assert completed.returncode == 0, completed.stderr[-2000:]
++    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
++    listing = next(response for response in responses if response.get("id") == 2)
++    wire_tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
++    assert "local_ai_rag" not in wire_tools
++    assert "local_ai_command" not in wire_tools
++    assert all(tool.get("outputSchema") for tool in wire_tools.values())

@@ -1,0 +1,20 @@
+{
+  "packet": "T03-root-spawn-failure-source-fix-20261005.patch",
+  "kind": "minimal-source-fix",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "target": "src/local_ai_hub/client.py",
+  "preimage_sha256": "3f1f6c53cb723063616c3fada6f3c35b1ae132d6ee1b3650f2b96c3c35fa22a0",
+  "postimage_sha256": "0e240370cef93f6e0899eac37e7b0dc43716e42f86ae3d31d7e8e64e3537e95b",
+  "patch_sha256": "57fe3113ba36993d98f6024afc5ee16e388c7231751ca468a383e59b6f2fe647",
+  "test_packet": "T03-root-spawn-failure-test-20261005.patch",
+  "test_packet_sha256": "fa09784f47e0c998a5af8cfe43ca6f07814161fab3da8a0b8a04a3668c215c5d",
+  "change": "Catch OSError from the unmanaged Hub subprocess spawn and return False; the existing finally block releases the startup lock.",
+  "validation": {
+    "red": "new spawn-failure test fails on unchanged root source with OSError",
+    "green": "new spawn-failure test passed in exact root snapshot overlay",
+    "root_apply_check": "passed against exact current root preimage"
+  },
+  "root_modified": false,
+  "overlay_snapshot": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t03-current-root-eejo_vyo\\repo"
+}

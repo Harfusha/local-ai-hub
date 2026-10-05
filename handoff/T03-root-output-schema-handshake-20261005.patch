@@ -1,0 +1,105 @@
+--- a/src/local_ai_hub/operation_contracts.py
++++ b/src/local_ai_hub/operation_contracts.py
+@@ -654,8 +654,30 @@
+     elif tool == "local_ai_status":
+         status_variants = _status_output_variants(action)
+         if status_variants:
+             schema["anyOf"] = status_variants
++    elif tool == "local_ai_rag" and action == "search":
++        schema["properties"].update({
++            "workspace": {"type": "string"},
++            "results": {
++                "type": "array",
++                "items": {
++                    "type": "object",
++                    "properties": {
++                        "path": {"type": "string"},
++                        "chunk_no": {"type": "integer"},
++                        "text": {"type": "string"},
++                        "content_hash": {"type": "string"},
++                        "score": {"type": "number"},
++                    },
++                    "additionalProperties": True,
++                },
++            },
++            "fallback": {"type": "string"},
++            "retrieval_mode": {"type": "string"},
++            "lexical_backend": {"type": "string"},
++            "reason": {"type": "string"},
++        })
+     return schema
+ 
+ 
+ def _status_output_variants(action: str) -> list[dict[str, Any]]:
+@@ -900,14 +922,32 @@
+     "unsupported": {"type": "boolean"},
+ }
+ 
+ 
++def _output_payload_delta(schema: dict[str, Any]) -> dict[str, Any]:
++    properties = schema.get("properties", {})
++    delta = {
++        name: value for name, value in properties.items()
++        if name not in _OUTPUT_ENVELOPE_PROPERTIES
++    }
++    if "anyOf" in schema:
++        delta["anyOf"] = schema["anyOf"]
++    return delta
++
++
+ def operation_tool_output_schema(tool: str, features: Any = None) -> dict[str, Any]:
+-    """Return the shared open MCP response envelope; action schemas remain available internally."""
++    """Publish the common envelope and compact action-specific output contracts."""
++    enabled_actions = operation_actions(tool, features) if operation_enabled(features, tool) else ()
++    action_schemas = {
++        action: delta
++        for action in enabled_actions
++        if (delta := _output_payload_delta(operation_output_schema(tool, action)))
++    }
+     return {
+         "type": "object",
+         "properties": json.loads(json.dumps(_OUTPUT_ENVELOPE_PROPERTIES)),
+         "additionalProperties": True,
++        "x-action-output-contracts": action_schemas,
+     }
+ 
+ 
+ def _validate_output_schema(value: Any, schema: dict[str, Any], path: str = "result") -> str | None:
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -819,8 +819,35 @@
+         output_schema["properties"]
+     )
+ 
+ 
++def test_mcp_tools_list_publishes_rag_search_output_contract():
++    import asyncio
++
++    from local_ai_hub import mcp_server
++    from local_ai_hub.operation_contracts import operation_tool_output_schema
++
++    rag_tool = next(
++        item for item in asyncio.run(mcp_server.mcp.list_tools())
++        if item.name == "local_ai_rag"
++    )
++    registered = mcp_server.mcp._tool_manager._tools["local_ai_rag"]
++    expected = operation_tool_output_schema("local_ai_rag", mcp_server.FEATURES)
++    search_delta = expected["x-action-output-contracts"]["search"]
++    result_item = search_delta["results"]["items"]
++
++    assert rag_tool.outputSchema == expected
++    assert registered.output_schema == expected
++    assert search_delta["workspace"] == {"type": "string"}
++    assert result_item["properties"] == {
++        "path": {"type": "string"},
++        "chunk_no": {"type": "integer"},
++        "text": {"type": "string"},
++        "content_hash": {"type": "string"},
++        "score": {"type": "number"},
++    }
++
++
+ def test_mcp_tools_list_scopes_artifact_list_arguments():
+     import asyncio
+ 
+     from local_ai_hub import mcp_server

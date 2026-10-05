@@ -1,6 +1,43 @@
 from local_ai_hub import mcp_server
 
 
+def test_reason_prompt_fallback_when_task_is_whitespace(monkeypatch):
+    calls = []
+
+    def post(path, payload, **kwargs):
+        calls.append((path, payload))
+        return {"success": True, "answer": "ok"}
+
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(mcp_server, "_mcp_operational_mode_block", lambda *_args: None)
+    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
+    result = mcp_server.local_ai_task(action="reason", task="  ", prompt="Explain this change")
+
+    assert result["success"] is True
+    assert calls[0][0] == "/api/reason"
+    assert calls[0][1]["problem"] == "Explain this change"
+
+
+def test_reason_rejects_empty_task_and_prompt_before_transport(monkeypatch):
+    def unexpected_post(*args, **kwargs):
+        raise AssertionError("reason validation must run before HTTP transport")
+
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(mcp_server, "_mcp_operational_mode_block", lambda *_args: None)
+    monkeypatch.setattr(mcp_server.CLIENT, "post", unexpected_post)
+    result = mcp_server.local_ai_task(action="reason", task="  ", prompt="\t")
+
+    assert result == {
+        "success": False,
+        "error_code": "missing_reason_input",
+        "error": "reason requires a non-empty task or prompt",
+        "terminal": True,
+        "retryable": False,
+    }
+
+
 def test_local_ai_task_loads_unified_context_before_model_call(monkeypatch):
     calls = []
 

@@ -1,0 +1,120 @@
+diff --git a/tests/test_operation_contracts.py b/tests/test_operation_contracts.py
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -2,7 +2,7 @@
+ import sys
+ from pathlib import Path
+ from types import SimpleNamespace
+-from typing import get_args
++from typing import Any, get_args
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+ sys.path.insert(0, str(ROOT / "src"))
+@@ -799,8 +799,8 @@
+     }
+ 
+     assert validate_operation_output("local_ai_repo", "search", valid_result) is None
+-    assert validate_operation_output("local_ai_repo", "search", "plain text") is None
+-    assert validate_operation_output("local_ai_repo", "search", None) is None
++    assert validate_operation_output("local_ai_repo", "search", "plain text") == "result must be an object"
++    assert validate_operation_output("local_ai_repo", "search", None) == "result must be an object"
+     assert validate_operation_output(
+         "local_ai_repo", "search", {**valid_result, "success": "yes"}
+     ) == "success must be boolean for action='search'"
+@@ -885,3 +885,96 @@
+     assert validate_operation_output(
+         "local_ai_status", "telemetry", malformed
+     ) == "result does not match a declared output variant for action='telemetry'"
++
++
++
++def _stub_registered_mcp_tool(monkeypatch, tool_name: str, value: Any):
++    import local_ai_hub.mcp_server as mcp_server
++
++    calls: list[dict[str, Any]] = []
++    registered_tool = mcp_server.mcp._tool_manager._tools[tool_name]
++
++    def fake_handler(**arguments: Any):
++        calls.append(arguments)
++        return value
++
++    monkeypatch.setattr(registered_tool, "fn", fake_handler)
++    return calls
++
++
++@pytest.mark.parametrize(
++    ("tool_name", "arguments"),
++    [
++        ("local_ai_rag", {"action": "ingest_document", "content": "body", "title": "doc", "metadata": {}}),
++        ("local_ai_rag", {"action": "ingest_diagram", "image_path": "diagram.svg", "caption": "diagram"}),
++        ("local_ai_task", {"action": "cancel", "job_id": "job-1"}),
++        ("local_ai_task", {"action": "eval_suite", "task_id": "task-1", "cases": [], "language": "python"}),
++        ("local_ai_command", {"action": "patch_and_verify", "execution_id": "exec-1", "paths": ["src/a.py"], "patch": "diff"}),
++        ("local_ai_coord", {"action": "task_complete", "task_id": "task-1", "criterion": "c1", "board_id": "board-1"}),
++    ],
++)
++def test_registered_mcp_dispatch_accepts_handler_inputs(
++    tool_name: str, arguments: dict[str, Any], monkeypatch: pytest.MonkeyPatch
++) -> None:
++    import asyncio
++    import local_ai_hub.mcp_server as mcp_server
++
++    calls = _stub_registered_mcp_tool(monkeypatch, tool_name, {"success": True})
++    response = asyncio.run(mcp_server.mcp.call_tool(tool_name, arguments))
++
++    assert response[1]["success"] is True
++    assert len(calls) == 1
++    assert all(calls[0][key] == value for key, value in arguments.items())
++
++
++def test_registered_mcp_dispatch_accepts_feature_enabled_batch_replace(monkeypatch: pytest.MonkeyPatch) -> None:
++    import asyncio
++    from copy import deepcopy
++
++    import local_ai_hub.mcp_server as mcp_server
++    from local_ai_hub.features import FeatureSet
++    from local_ai_hub.operation_contracts import operation_tool_input_schema
++
++    config = deepcopy(mcp_server.CFG)
++    config.setdefault("features", {})["batch_replacement"] = True
++    features = FeatureSet(config)
++    monkeypatch.setattr(mcp_server, "FEATURES", features)
++    registered_tool = mcp_server.mcp._tool_manager._tools["local_ai_repo"]
++    monkeypatch.setattr(registered_tool, "parameters", operation_tool_input_schema("local_ai_repo", features))
++    calls = _stub_registered_mcp_tool(monkeypatch, "local_ai_repo", {"success": True})
++    arguments = {"action": "batch_replace", "edits": [{"path": "a.py", "old": "x", "new": "y"}], "dry_run": True}
++
++    response = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", arguments))
++
++    assert response[1]["success"] is True
++    assert len(calls) == 1
++    assert calls[0]["edits"] == arguments["edits"]
++    assert calls[0]["dry_run"] is True
++
++
++def test_registered_mcp_dispatch_validates_unknown_field_when_selector_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
++    import asyncio
++
++    import local_ai_hub.mcp_server as mcp_server
++
++    calls = _stub_registered_mcp_tool(monkeypatch, "local_ai_status", {"success": True})
++    response = asyncio.run(mcp_server.mcp.call_tool("local_ai_status", {"unexpected": "value"}))
++
++    assert response[1]["status_code"] == 400
++    assert "unexpected" in response[1]["error"]
++    assert calls == []
++
++
++def test_registered_mcp_dispatch_rejects_non_object_output_without_replaying_handler(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    import asyncio
++
++    import local_ai_hub.mcp_server as mcp_server
++
++    calls = _stub_registered_mcp_tool(monkeypatch, "local_ai_repo", "plain text")
++    response = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {"action": "search"}))
++
++    assert response[1]["status_code"] == 500
++    assert "output contract" in response[1]["error"]
++    assert len(calls) == 1

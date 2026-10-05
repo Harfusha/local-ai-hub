@@ -27,6 +27,7 @@ from local_ai_hub.operation_contracts import (
     operation_tool_output_schema,
     repo_pipeline_step_schema,
     repo_path_hints_schema,
+    repo_verify_receipt_schema,
 )
 from local_ai_hub.prompt_contracts import capability_for
 
@@ -911,7 +912,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "diff": {"type": "string", "default": ""},
                     "workspace": {"type": "string", "default": ""},
                     "evidence": {"type": "array", "items": {"type": "object"}},
-                    "receipt": {"type": "object"},
+                    "receipt": repo_verify_receipt_schema(),
                     "extra_fields": {"type": "array", "items": {"type": "string"}},
                     "max_response_tokens": {"type": "integer", "default": 0},
                     "response_profile": {"type": "string", "enum": ["", "minimal", "compact", "standard", "debug", "delta"], "default": ""},

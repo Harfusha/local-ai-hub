@@ -47,6 +47,7 @@ from local_ai_hub.operation_contracts import (
     operation_tool_output_schema,
     repo_pipeline_step_schema,
     repo_path_hints_schema,
+    repo_verify_receipt_schema,
     validate_repo_pipeline_step,
     validate_action_specific_fields,
     validate_schema_object,
@@ -91,17 +92,76 @@ class _MissingMCP:
     def run(self) -> None:
         raise SystemExit("Missing MCP dependency. Re-run setup or install requirements-core.txt")
 
+
 # Module-level initialisation: FastMCP requires tool decorators at import
 # time, so HubClient, config and projectors must be created here. Any failure
 # produces a clear SystemExit instead of a confusing AttributeError later.
 AGENT_NAME = os.environ.get("LOCAL_AI_AGENT", "agent")
-_workspace = canonical_root(Path.cwd())
-_workspace_hash = hashlib.sha1(_workspace.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
+CONFIG_PATH = os.environ.get("LOCAL_AI_CONFIG")
+_hub_install_root = Path(__file__).resolve().parents[2]
+
+
+def _has_symlink_component(value: str | Path) -> bool:
+    """Reject paths traversing a symbolic link before canonicalization."""
+    try:
+        candidate = Path(os.path.abspath(os.fspath(value)))
+        current = Path(candidate.anchor)
+        for component in candidate.parts[1:] if candidate.anchor else candidate.parts:
+            current = current / component
+            is_junction = getattr(current, "is_junction", None)
+            if current.is_symlink() or (callable(is_junction) and is_junction()):
+                return True
+        return False
+    except (OSError, RuntimeError, ValueError):
+        return True
+
+
+def _validated_repo_root(value: str | Path, *, allow_hub_install: bool = False) -> str:
+    """Return an existing project root, excluding the shared Hub install tree."""
+    try:
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute() or not candidate.is_dir():
+            return ""
+        if _has_symlink_component(candidate):
+            return ""
+        resolved = candidate.resolve()
+        if not allow_hub_install and (resolved == _hub_install_root or _hub_install_root in resolved.parents):
+            return ""
+        if not any((resolved / marker).exists() for marker in (".git", "pyproject.toml", "package.json", "Cargo.toml", "go.mod", "setup.py")):
+            return ""
+        return canonical_root(resolved)
+    except (OSError, RuntimeError, ValueError):
+        return ""
+
+
+def _configured_repo_root() -> str:
+    configured = os.environ.get("LOCAL_AI_ROOT", "").strip()
+    return _validated_repo_root(configured, allow_hub_install=True) if configured else ""
+
+
+def _local_session_id(agent_name: str, config_path: str = "") -> str:
+    identity = config_path or "local-ai-hub"
+    digest = hashlib.sha256(str(identity).encode("utf-8", "replace")).hexdigest()[:12]
+    return f"{agent_name}:{digest}"
+
+
+_workspace = _configured_repo_root()
+_tenant_workspace = _workspace or canonical_root(Path.cwd())
+_workspace_hash = hashlib.sha1(
+    _tenant_workspace.encode("utf-8"), usedforsecurity=False
+).hexdigest()[:8]
 TENANT = os.environ.get("LOCAL_AI_TENANT") or f"{AGENT_NAME}:{_workspace_hash}"
+LOCAL_SESSION_ID = _local_session_id(AGENT_NAME, (CONFIG_PATH or "").strip())
+
+
+def _build_mcp_client(tenant: str, config_path: str | None) -> HubClient:
+    """Build the stdio MCP HTTP proxy without an in-process app stack."""
+    return HubClient(tenant=tenant, config_path=config_path, auto_start=True)
+
 
 try:
-    CLIENT = HubClient(tenant=TENANT)
-    CFG = load_config(os.environ.get("LOCAL_AI_CONFIG"))
+    CLIENT = _build_mcp_client(TENANT, CONFIG_PATH)
+    CFG = load_config(CONFIG_PATH)
     FEATURES = FeatureSet.from_config(CFG)
     MCP_CFG = CFG.get("mcp", {})
     PROJECTOR = AgentProjector(CFG)
@@ -134,18 +194,85 @@ def _timeout(kind: str) -> float:
 def _client_root(r: str = "") -> str:
     cleaned = str(r or "").strip()
     if not cleaned or cleaned == ".":
-        return _workspace
+        return _configured_repo_root()
     try:
         p = Path(cleaned)
         if not is_rooted_path(cleaned):
-            return canonical_root(Path(_workspace) / p)
+            if not _workspace:
+                return ""
+            p = Path(_workspace) / p
         # Preserve foreign-platform rooted paths. Calling Path.resolve() on a
         # Windows drive path while running on POSIX would incorrectly prefix cwd.
         if not p.is_absolute():
             return cleaned.replace("\\", "/")
-        return canonical_root(p)
+        if _has_symlink_component(p):
+            return ""
+        resolved = p.resolve()
+        return canonical_root(resolved)
     except Exception:
-        return _workspace
+        return ""
+
+
+def _agent_memory_kwargs(
+    *,
+    action: str,
+    root: str,
+    task_id: str,
+    scope: str = "",
+    session_id: str = "",
+    record: dict[str, Any] | None = None,
+    **fields: Any,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    canonical = _client_root(root)
+    record_scope = str((record or {}).get("scope", "")).strip().lower()
+    requested_scope = (scope or record_scope).strip().lower()
+    explicitly_unscoped = requested_scope in {"global", "user"} or (
+        requested_scope in {"session", "sessions"} and bool(session_id.strip())
+    )
+    if explicitly_unscoped and task_id.strip():
+        return None, {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "ambiguous_memory_scope",
+            "error": "Global or session memory scope cannot also include task_id",
+        }
+    if action != "memory_reap" and not canonical and not explicitly_unscoped:
+        return None, {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "repository_root_required",
+            "error": "Memory actions require an explicit project root, task/session identity, or explicit global scope",
+        }
+    safe_record = dict(record) if isinstance(record, dict) else record
+    if isinstance(safe_record, dict):
+        safe_record.pop("tenant", None)
+        safe_record.pop("root", None)
+        safe_record.pop("task_id", None)
+        provenance = safe_record.get("provenance")
+        if isinstance(provenance, dict):
+            provenance = dict(provenance)
+            provenance.pop("tenant", None)
+            provenance.pop("root", None)
+            provenance.pop("task_id", None)
+            safe_record["provenance"] = provenance
+        if not explicitly_unscoped:
+            if canonical:
+                safe_record["root"] = canonical
+            if task_id.strip():
+                safe_record["task_id"] = task_id
+    payload = {
+        "action": action,
+        "root": "" if explicitly_unscoped else canonical,
+        "session_id": session_id,
+        "scope": scope or record_scope,
+        "record": safe_record,
+        **fields,
+    }
+    if task_id.strip():
+        payload["task_id"] = task_id
+    return payload, None
 
 
 def _normalize_repo_search_path_hints(
@@ -156,6 +283,8 @@ def _normalize_repo_search_path_hints(
     if len(path_hints) > 64:
         return None, "path_hints exceeds 64 items"
     canonical = _client_root(root)
+    if not canonical:
+        return None, "repository_root_required: provide an existing project root or configure LOCAL_AI_ROOT"
     windows_root = PureWindowsPath(canonical)
     normalized: list[dict[str, Any]] = []
     for index, hint in enumerate(path_hints):
@@ -242,6 +371,13 @@ def _resolve_action(tool_kind: str, action: str) -> str:
     cleaned = str(action or "").strip().lower().replace("-", "_")
     tool_aliases = _ACTION_ALIASES.get(tool_kind, {})
     return tool_aliases.get(cleaned, cleaned)
+
+
+def _extend_action_aliases(action_type: Any, tool_kind: str) -> Any:
+    """Keep FastMCP's runtime Literal model aligned with the published aliases."""
+    canonical = getattr(action_type, "__args__", ())
+    aliases = _ACTION_ALIASES.get(tool_kind, {}).keys()
+    return Literal.__getitem__(tuple(dict.fromkeys((*canonical, *aliases))))
 
 
 def _normalize_deterministic(val: Any) -> Any:
@@ -428,7 +564,7 @@ def _desc_rag() -> str:
 
 def _desc_command() -> str:
     if LEAN_SCHEMAS:
-        return "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Speculative lint is opt-in, read-only, debounced, changed-path scoped, and cancellable. Actions: run, auto_fix, format, patch_and_verify, repair_loop, speculative_lint."
+        return "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Mutating run, auto_fix, format, patch_and_verify, repair_loop, and lint_fix require task_id plus explicit paths. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Speculative lint is opt-in, read-only, debounced, changed-path scoped, and cancellable. Actions: run, auto_fix, format, patch_and_verify, repair_loop, lint_fix, speculative_lint."
     agent_os_note = " Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts." if FEATURES.agent_os else ""
     return (
         "Bounded broker for test, lint, typecheck, or build commands; also repeatable analysis/read-only commands."
@@ -438,6 +574,7 @@ def _desc_command() -> str:
         f"{agent_os_note}"
         " Results are keyed by command + bounded repo state and duplicate runs coalesce across agents. Reuse fresh results."
         " Mutations never cache or single-flight."
+        " Mutating run, auto_fix, format, patch_and_verify, repair_loop, and lint_fix require task_id plus an explicit paths write set."
         " If run returns in_progress=true, DO NOT start the command natively or with force; continue independent work and retry later so the owner can populate the cache."
         " Native fallback requires terminal=true and retryable=false."
         " cancel only stops an active matching command. force=true is exceptional recovery/admin behavior, never a retry button."
@@ -446,9 +583,16 @@ def _desc_command() -> str:
     )
 
 
+_ROOT_SCOPED_COORD_ACTIONS = frozenset({"curate_dataset", "task_zombie_reap"})
+
+
 def _desc_coord() -> str:
+    scope_note = (
+        " `task_zombie_reap` and `curate_dataset` require a canonical project root; optional task_id narrows scope."
+        if FEATURES.agent_os else ""
+    )
     if LEAN_SCHEMAS:
-        return "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint. task_list accepts an optional query; task_create uses query as a goal fallback when task is omitted."
+        return "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint. task_list accepts an optional query; task_create uses query as a goal fallback when task is omitted." + scope_note
     if FEATURES.agent_os:
         agent_os_note = (
             " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task contract first;"
@@ -469,6 +613,7 @@ def _desc_coord() -> str:
         "Cross-agent coordination for ownership, checkpoints, and verification receipts."
         f"{_actions_note(FEATURES.supported_coord_actions())}"
         f"{agent_os_note}"
+        f"{scope_note}"
         " Claim overlapping edit paths before concurrent Hub work."
         " Search/get memos before repeating expensive investigation and store concise reusable findings after discovery."
         " Native peer subagents are coordinated by Codex rather than by this Hub tool."
@@ -537,7 +682,7 @@ CommandAction: TypeAlias = Literal[
 ]
 CoordAction: TypeAlias = Literal[
     "claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
-    "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",
+    "task_create", "task_new", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",
     "memory_record", "memory_get", "memory_find", "memory_promote", "memory_reap",
     "relation_record", "relation_find", "relation_traverse",
     "context_compile", "verify_receipt", "verify_completion",
@@ -548,6 +693,11 @@ CoordAction: TypeAlias = Literal[
     "pubsub_publish", "pubsub_poll", "simulate_merge",
     "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree",
 ]
+TaskAction = _extend_action_aliases(TaskAction, "task")
+RepoAction = _extend_action_aliases(RepoAction, "repo")
+RagAction = _extend_action_aliases(RagAction, "rag")
+CommandAction = _extend_action_aliases(CommandAction, "command")
+CoordAction = _extend_action_aliases(CoordAction, "coord")
 StatusDetail: TypeAlias = Literal.__getitem__(STATUS_DETAILS)
 StatusAction: TypeAlias = Literal.__getitem__(STATUS_ACTIONS)
 RepoPhase: TypeAlias = Literal.__getitem__(REPO_PHASES)
@@ -829,11 +979,27 @@ def _load_task_context(
     """Fetch one unified Agent OS + repository context for a model call."""
     if not task_id.strip():
         return context, {}
+    canonical = _client_root(root)
+    if not canonical:
+        return context, {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "repository_root_required",
+            "error": "Task context requires an explicit project root or configured LOCAL_AI_ROOT",
+        }
+    if not canonical:
+        return context, {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "repository_root_required",
+            "error": "Task context requires an explicit project root or configured LOCAL_AI_ROOT",
+        }
     payload = {
         "action": "compile",
-        "task_id": task_id,
         "token_budget": token_budget or 4000,
-        "root": _client_root(root),
+        "root": canonical,
         "phase": phase,
         "focus": list(focus or []),
         "preload_profile": preload_profile,
@@ -841,6 +1007,8 @@ def _load_task_context(
         "repository_revision": repository_revision,
         "compact": True,
     }
+    if task_id.strip():
+        payload["task_id"] = task_id
     raw = CLIENT.post("/api/agent-state/context", payload, timeout=_timeout("context"))
     if not isinstance(raw, dict):
         return "", {
@@ -985,7 +1153,7 @@ class _ProtocolAccountingReporter:
             return
         try:
             if self._client is None:
-                self._client = HubClient(tenant=TENANT, auto_start=False)
+                self._client = HubClient(tenant="", auto_start=False)
             # batch_id prevents HubClient single-flight from coalescing two
             # numerically identical accounting batches from concurrent MCP clients.
             self._client.post(
@@ -1299,7 +1467,7 @@ def _instrumented_tool():
                     schema_tokens_est=_tool_catalog_schema_tokens(),
                     metadata=metadata,
                 )
-                event.update({"tenant": TENANT, "agent": AGENT_NAME, "created_at": time.time()})
+                event.update({"agent": AGENT_NAME, "created_at": time.time()})
                 CONTEXT_LEDGER.record(
                     tool=fn.__name__,
                     operation=str(arguments.get("action") or "default"),
@@ -1308,7 +1476,7 @@ def _instrumented_tool():
                     saved_tokens=event.get("projected_response_saved_tokens_est", 0),
                     cache_outcome=event.get("cache_outcome", ""),
                     result_id=clean.get("result_id", "") if isinstance(clean, dict) else "",
-                    session_id=TENANT,
+                    session_id=LOCAL_SESSION_ID,
                 )
                 _ACCOUNTING_REPORTER.record(event)
             except Exception:
@@ -1559,6 +1727,26 @@ def local_ai_task(
     local model. Skip when: local-model tasks are disabled or Codex-owned
     subagent orchestration is the right owner; Local AI Hub does not route or manage native Codex agents."""
     action = _resolve_action("task", action)
+    if root.strip() or task_id.strip():
+        root = _client_root(root)
+        if task_id.strip() and not root:
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "repository_root_required",
+                "error": "Task-scoped model calls require an explicit project root or configured LOCAL_AI_ROOT",
+            }
+    if action == "reason":
+        task = task if task.strip() else prompt
+        if not task.strip():
+            return {
+                "success": False,
+                "error_code": "missing_reason_input",
+                "error": "reason requires a non-empty task or prompt",
+                "terminal": True,
+                "retryable": False,
+            }
     # The static contract requires summary, evidence, analysis, limitations
     # and next step. Requests below this floor routinely truncate after a
     # generic preamble, especially on 7b/9b models. Clamp instead of rejecting
@@ -1610,11 +1798,15 @@ def local_ai_task(
     if conversation and delivery.strip().lower() != "sync":
         return {"success": False, "error": "Conversations require delivery=sync", "terminal": True, "retryable": False}
     if action in {"submit", "status", "wait", "result", "cancel"}:
-        return _compact(CLIENT.post("/api/async-jobs", {
+        async_payload = {
             "action": action, "job_action": job_action, "job_id": job_id, "timeout_seconds": timeout_seconds,
             "task": task, "context": context, "candidate": candidate, "complexity": complexity,
-            "max_tokens": max_tokens, "tasks": tasks or [], "profile": profile, "root": root, "workspace": workspace,
-        }, timeout=_timeout("quick")), "status")
+            "max_tokens": max_tokens, "tasks": tasks or [], "profile": profile, "root": root,
+            "workspace": workspace,
+        }
+        if task_id.strip():
+            async_payload["task_id"] = task_id
+        return _compact(CLIENT.post("/api/async-jobs", async_payload, timeout=_timeout("quick")), "status")
     budgeted_actions = {"continue", "delegate", "explore", "reason", "review", "second_opinion", "compress"}
     if task_id.strip() and action in budgeted_actions and ROOT_FAMILY_BUDGET.default_limit:
         family_key = hashlib.sha1(_client_root(root).encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
@@ -2012,6 +2204,7 @@ def _local_ai_repo_impl(
     is_worktree: bool = False,
     parent_root: str = "",
     steps: list[dict[str, Any]] | None = None,
+    path_hints: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -2048,11 +2241,28 @@ def _local_ai_repo_impl(
         if not context_query:
             return contract_error("context query cannot be empty")
     if action in {"preprocess", "preprocess_refresh", "preprocess_cancel", "preprocess_unregister"}:
-        candidate = Path(root).expanduser()
+        candidate = Path(root).expanduser() if str(root or "").strip() not in {"", "."} else Path(_configured_repo_root())
         if not candidate.is_absolute():
             return {"success": False, "error": "Preprocessing requires an explicit absolute stable project root; do not use MCP process cwd"}
+        root = _client_root(str(candidate))
+        if not root:
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "repository_root_required",
+                "error": "Provide an existing project root or configure LOCAL_AI_ROOT",
+            }
     else:
         root = _client_root(root)
+        if not root:
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "repository_root_required",
+                "error": "Provide an existing project root or configure LOCAL_AI_ROOT",
+            }
     if action == "profile":
         return _compact(CLIENT.post("/api/repo/profile", {"root": root}, timeout=_timeout("quick")), "profile")
     if action == "investigate":
@@ -2092,9 +2302,12 @@ def _local_ai_repo_impl(
         extra = list(extra_fields or [])
         if enrich:
             extra.extend(["text", "raw"])
-        return _compact(CLIENT.post("/api/search", {
+        payload = {
             "root": root, "query": query or task, "top_k": 12, "enrich": enrich,
-        }, timeout=_timeout("quick")), "search", extra_fields=extra if extra else None)
+        }
+        if path_hints:
+            payload["path_hints"] = path_hints
+        return _compact(CLIENT.post("/api/search", payload, timeout=_timeout("quick")), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
@@ -2618,7 +2831,7 @@ if not FEATURES.batch_replacement:
 @_instrumented_tool()
 def local_ai_rag(
     action: RagAction,
-    root: str = ".",
+    root: str = "",
     workspace: str = "",
     query: str = "",
     top_k: int = 6,
@@ -2637,12 +2850,29 @@ def local_ai_rag(
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
     action = action.strip().lower().replace("-", "_")
     root = _client_root(root)
+    if action in {"index", "search", "docset_index"} and not root:
+        return {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "repository_root_required",
+            "error": "RAG repository actions require an explicit project root or configured LOCAL_AI_ROOT",
+        }
+    if action in {"docset_search", "ingest_document", "ingest_diagram"} and not workspace.strip():
+        return {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "workspace_required",
+            "error": "Document-set actions require an explicit workspace",
+        }
     effective_workspace = workspace.strip() or root
     if action == "index":
         return _compact(CLIENT.post("/api/rag/index", {"root": root, "workspace": effective_workspace}, timeout=_timeout("long")))
     if action == "search":
         return _compact(CLIENT.post("/api/rag/search", {
-            "query": query, "workspace": effective_workspace, "top_k": max(1, min(top_k, 12)), "use_reranker": True,
+            "root": root, "query": query, "workspace": effective_workspace,
+            "top_k": max(1, min(top_k, 12)), "use_reranker": True,
         }))
     if action == "list":
         return _compact(CLIENT.get("/api/rag/workspaces"))
@@ -2677,7 +2907,7 @@ def local_ai_rag(
 def local_ai_command(
     action: CommandAction,
     command: str = "",
-    cwd: str = ".",
+    cwd: str = "",
     timeout: int = 0,
     force: bool = False,
     task_id: str = "",
@@ -2699,11 +2929,24 @@ def local_ai_command(
     response_profile: str = "",
     reuse_key: str = "",
 ) -> dict[str, Any]:
-    """Bounded command broker. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded and tenant-scoped. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
+    """Bounded command broker. Mutating run, repair_loop, auto_fix, patch_and_verify, format, and lint_fix require task_id plus an explicit paths write set. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded and tenant-scoped. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     if not FEATURES.commands:
         return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
     action = _resolve_action("command", action)
     eff_cwd = _client_root(cwd)
+    repo_command_actions = {
+        "run", "run_affected", "repair_loop", "auto_fix", "patch_and_verify",
+        "format", "lint_fix", "speculative_lint", "flaky_detect", "record_mock",
+        "replay_mock", "webhook_replay",
+    }
+    if (action in repo_command_actions or task_id.strip()) and not eff_cwd:
+        return {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "repository_root_required",
+            "error": "Repository commands require an explicit caller cwd or configured LOCAL_AI_ROOT",
+        }
     host_timeout = _timeout("long")
     configured_command_timeout = int(CFG.get("commands", {}).get("timeout_seconds", 1800))
     requested_timeout = int(timeout or configured_command_timeout)
@@ -2736,28 +2979,30 @@ def local_ai_command(
         return _compact(CLIENT.post("/api/command/mock_server", {
             "action": sub_act, "root": eff_cwd, "port": port_val, "spec_path": criterion or None,
         }, timeout=host_timeout), "command")
-    paths_payload = (
-        paths if rollback_on_failure else
-        ([command] if (action == "format" and command and not command.startswith("-")) else None)
-    )
-    return _compact(CLIENT.post("/api/command", {
+    paths_payload = paths if action in {
+        "run", "repair_loop", "auto_fix", "patch_and_verify", "format", "lint_fix"
+    } else None
+    command_payload = {
         "action": action, "command": command, "cwd": eff_cwd, "root": eff_cwd,
         "timeout": effective_command_timeout, "force": force,
-        "task_id": task_id, "criterion": criterion,
+        "criterion": criterion,
         "auto_fix": auto_fix, "max_attempts": max_attempts,
         "stream": stream, "stream_id": stream_id, "execution_id": execution_id,
         "snapshot": snapshot, "rollback_on_failure": rollback_on_failure,
         "paths": paths_payload,
         "patch": patch,
         "auto_rollback": auto_rollback,
-    }, timeout=host_timeout), "command")
+    }
+    if task_id.strip():
+        command_payload["task_id"] = task_id
+    return _compact(CLIENT.post("/api/command", command_payload, timeout=host_timeout), "command")
 
 
 @mcp.tool()
 @_instrumented_tool()
 def local_ai_coord(
     action: CoordAction,
-    root: str = ".",
+    root: str = "",
     paths: list[str] | None = None,
     lease_id: str = "",
     key: str = "",
@@ -2808,32 +3053,72 @@ def local_ai_coord(
     if isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= MAX_EVENT_SEQUENCE:
         return contract_error(f"after_seq must be an integer between 0 and {MAX_EVENT_SEQUENCE}")
     action = _resolve_action("coord", action)
-    requested_root = str(root or "").strip()
     root = _client_root(root)
     if action == "task_sync":
+        if not root or not task_id.strip():
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "task_scope_required",
+                "error": "Event sync requires an explicit project root and task_id",
+            }
         sync_act = status.lower() if status in ("export", "import") else "export"
+        stream_id = f"task:{task_id}"
         if sync_act == "export":
             return _compact(CLIENT.post("/api/agent-state/events/delta", {
-                "action": "export", "stream_id": key or task_id or "", "after_seq": int(ttl_seconds or 0), "limit": max_tokens or 1000,
+                "action": "export", "stream_id": stream_id, "root": root, "task_id": task_id,
+                "after_seq": int(ttl_seconds or 0), "limit": max_tokens or 1000,
             }, timeout=_timeout("quick")), "status")
         else:
             return _compact(CLIENT.post("/api/agent-state/events/delta", {
-                "action": "import", "events": record or [],
+                "action": "import", "stream_id": stream_id, "root": root,
+                "task_id": task_id, "events": record or [],
             }, timeout=_timeout("quick")), "status")
     if action == "task_zombie_reap":
-        return _compact(CLIENT.post("/api/agent-state/tasks", {
-            "action": "reap_expired", "auto_recover": True,
-        }, timeout=_timeout("quick")), "status")
+        if not root:
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "task_scope_required",
+                "error": "Task zombie reaping requires a canonical project root",
+            }
+        payload = {"action": "reap_expired", "auto_recover": True, "root": root}
+        if task_id.strip():
+            payload["task_id"] = task_id.strip()
+        return _compact(
+            CLIENT.post("/api/agent-state/tasks", payload, timeout=_timeout("quick")),
+            "status",
+        )
     if action == "task_cleanup_worktree":
+        if not root or not (task_id or key).strip():
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "task_scope_required",
+                "error": "Worktree cleanup requires an explicit project root and task_id",
+            }
         return _compact(CLIENT.post("/api/agent-state/tasks", {
-            "action": "cleanup_worktree", "task_id": task_id or key or "",
+            "action": "cleanup_worktree", "root": root, "task_id": task_id or key or "",
         }, timeout=_timeout("quick")), "status")
     if action.startswith("task_"):
+        if not root:
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "repository_root_required",
+                "error": "Task actions require an explicit project root or configured LOCAL_AI_ROOT",
+            }
         task_kwargs = {
-            "action": action, "task_id": task_id, "contract": contract,
+            "action": action, "contract": contract,
             "checkpoint": checkpoint, "status": status, "reason": reason,
             "root": root, "ttl_seconds": ttl_seconds, "include_stale": include_stale,
         }
+        if task_id.strip():
+            task_kwargs["task_id"] = task_id
         if action == "task_list" and query:
             task_kwargs["query"] = query
         if action == "task_create":
@@ -2845,17 +3130,38 @@ def local_ai_coord(
             **task_kwargs,
         ), "status")
     if action.startswith("memory_"):
-        memory_kwargs = dict(
-            action=action, record=record, record_id=record_id,
-            target_scope=target_scope, approver=approver, key=key,
-            value=value, query=query, root=(root if requested_root else ""), scope=scope, scope_id=scope_id,
-            task_id=task_id, session_id=session_id, clone_id=clone_id,
-            worktree_id=worktree_id, branch=branch, repository_id=repository_id, tenant=tenant,
+        memory_kwargs, root_error = _agent_memory_kwargs(
+            action=action,
+            root=root,
+            task_id=task_id,
+            scope=scope,
+            session_id=session_id,
+            record=record,
+            record_id=record_id,
+            target_scope=target_scope,
+            approver=approver,
+            key=key,
+            value=value,
+            query=query,
+            scope_id=scope_id,
+            clone_id=clone_id,
+            worktree_id=worktree_id,
+            branch=branch,
+            repository_id=repository_id,
         )
+        if root_error:
+            return root_error
+        assert memory_kwargs is not None
         if ttl_seconds is not None and ttl_seconds > 0:
             memory_kwargs["ttl_seconds"] = ttl_seconds
         return _compact(CLIENT.coord(**memory_kwargs), "status")
     if action.startswith("relation_"):
+        if not root:
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error_code": "repository_root_required",
+                "error": "Repository relation actions require an explicit project root",
+            }
         return _compact(CLIENT.coord(
             action=action, source_entity=key or task_id or query or task,
             relation=reason or status or "relates_to",
@@ -2865,11 +3171,21 @@ def local_ai_coord(
             start_entity=key or task_id or query or task,
             max_depth=max_tokens or 2,
             limit=max_tokens or 50,
+            root=root,
+            **({"task_id": task_id} if task_id.strip() else {}),
         ), "status")
     if action == "context_compile":
+        if not root or not task_id.strip():
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "task_scope_required",
+                "error": "Context compile requires an explicit project root and task_id",
+            }
         since_hash = str(since_hash or fingerprint or record_id or status or "")
         return _compact(CLIENT.post("/api/agent-state/context", {
-            "action": "compile", "task_id": task_id or query or value or key,
+            "action": "compile", "task_id": task_id,
             "token_budget": max_tokens or ttl_seconds or 4000, "root": root,
             "changed_paths": paths or [],
             "since_hash": since_hash,
@@ -2895,67 +3211,116 @@ def local_ai_coord(
             receipt_payload = dict(checkpoint)
             receipt_payload.setdefault("task_id", task_id)
             receipt_payload.setdefault("criterion", criterion or key or value or query)
-        if not str(receipt_payload.get("task_id", "")).strip() or not str(receipt_payload.get("criterion", "")).strip():
+        receipt_task_id = str(receipt_payload.get("task_id", "")).strip()
+        if task_id.strip() and receipt_task_id and task_id.strip() != receipt_task_id:
             return {
                 "success": False,
                 "terminal": True,
                 "retryable": False,
-                "error": "verify_receipt requires task_id and criterion",
+                "error_code": "ambiguous_task_scope",
+                "error": "Receipt task_id must match the explicit task_id",
             }
+        if not root or not receipt_task_id or not str(receipt_payload.get("criterion", "")).strip():
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "task_scope_required",
+                "error": "verify_receipt requires project root, task_id, and criterion",
+            }
+        receipt_payload["task_id"] = receipt_task_id
         return _compact(CLIENT.post("/api/agent-state/verification", {
-            "action": "receipt", "receipt": receipt_payload, "root": root,
+            "action": "receipt", "receipt": receipt_payload, "root": root, "task_id": receipt_task_id,
         }, timeout=_timeout("quick")), "verify")
     if action == "verify_completion":
+        if not root or not task_id.strip():
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "task_scope_required",
+                "error": "verify_completion requires an explicit project root and task_id",
+            }
         return _compact(CLIENT.post("/api/agent-state/verification", {
-            "action": "completion", "task_id": task_id or query or value or key, "root": root,
+            "action": "completion", "task_id": task_id, "root": root,
             "repository_revision": repository_revision,
         }, timeout=_timeout("quick")), "verify")
     if action.startswith("negative_knowledge_"):
+        if not root:
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error_code": "repository_root_required",
+                "error": "Negative-knowledge actions require an explicit project root",
+            }
         sub_act = "record" if action == "negative_knowledge_record" else "find"
-        return _compact(CLIENT.post("/api/agent-state/incidents", {
+        incident_payload = {
             "action": sub_act, "error_class": key or "AgentError", "message": value or query,
             "query": query or key or value, "root": root,
             "root_cause": reason, "verified_fix": status,
             "incident_id": record_id,
-        }, timeout=_timeout("quick")), "status")
+        }
+        if task_id.strip():
+            incident_payload["task_id"] = task_id
+        return _compact(CLIENT.post("/api/agent-state/incidents", incident_payload, timeout=_timeout("quick")), "status")
     if action == "incident_decision":
+        if not root:
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error_code": "repository_root_required",
+                "error": "Incident decisions require an explicit project root",
+            }
         return _compact(CLIENT.coord(
             action="incident_decision", fingerprint=fingerprint or {},
-            tool_outcome=tool_outcome or {}, root=root,
+            tool_outcome=tool_outcome or {}, root=root, **({"task_id": task_id} if task_id.strip() else {}),
         ), "status")
     if action in ("claim", "claim_batch"):
-        claim_root = root
-        if (not requested_root or requested_root == ".") and paths:
-            first_abs = next((str(p) for p in paths if os.path.isabs(str(p)) or ":" in str(p)), None)
-            if first_abs:
-                try:
-                    candidate = Path(first_abs).resolve()
-                    for parent in [candidate.parent, *candidate.parents]:
-                        if any((parent / marker).exists() for marker in (".git", "pyproject.toml", "package.json", "Cargo.toml", ".local-ai")):
-                            claim_root = str(parent)
-                            break
-                except Exception:
-                    pass
+        if not root:
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error_code": "repository_root_required",
+                "error": "Lease claims require an explicit project root",
+            }
         return _compact(CLIENT.post("/api/leases/claim_batch", {
-            "root": claim_root, "paths": paths or [], "ttl_seconds": ttl_seconds or 900, "purpose": value or "agent edit",
+            "root": root, **({"task_id": task_id} if task_id.strip() else {}),
+            "paths": paths or [], "ttl_seconds": ttl_seconds or 900, "purpose": value or "agent edit",
         }))
     if action == "release":
-        return _compact(CLIENT.post("/api/leases/release", {"lease_id": lease_id}))
+        if not root:
+            return {"success": False, "terminal": True, "retryable": False, "error_code": "repository_root_required", "error": "Lease release requires an explicit project root"}
+        return _compact(CLIENT.post("/api/leases/release", {"root": root, **({"task_id": task_id} if task_id.strip() else {}), "lease_id": lease_id}))
     if action in ("renew", "lease_renew"):
-        return _compact(CLIENT.post("/api/leases/renew", {"lease_id": lease_id, "ttl_seconds": ttl_seconds or 900}))
+        if not root:
+            return {"success": False, "terminal": True, "retryable": False, "error_code": "repository_root_required", "error": "Lease renewal requires an explicit project root"}
+        return _compact(CLIENT.post("/api/leases/renew", {"root": root, **({"task_id": task_id} if task_id.strip() else {}), "lease_id": lease_id, "ttl_seconds": ttl_seconds or 900}))
     if action == "leases":
-        return _compact(CLIENT.get(f"/api/leases?root={quote(root)}"))
+        if not root:
+            return {"success": False, "terminal": True, "retryable": False, "error_code": "repository_root_required", "error": "Lease lookup requires an explicit project root"}
+        task_query = f"&task_id={quote(task_id, safe='')}" if task_id.strip() else ""
+        return _compact(CLIENT.get(f"/api/leases?root={quote(root, safe='')}{task_query}"))
+    if action in {"memo_put", "memo_get", "memo_search", "memo_delete"} and not root:
+        return {
+            "success": False, "terminal": True, "retryable": False,
+            "error_code": "repository_root_required",
+            "error": "Memo actions require an explicit project root",
+        }
     if action == "memo_put":
-        return _compact(CLIENT.post("/api/memory/put", {
-            "root": root, "key": key, "value": value, "ttl_seconds": ttl_seconds or 604800,
-        }))
+        memo_payload = {"root": root, "key": key, "value": value, "ttl_seconds": ttl_seconds or 604800}
+        if task_id.strip():
+            memo_payload["task_id"] = task_id
+        return _compact(CLIENT.post("/api/memory/put", memo_payload))
     if action == "memo_get":
-        return _compact(CLIENT.post("/api/memory/get", {"root": root, "key": key}))
+        return _compact(CLIENT.post("/api/memory/get", {"root": root, "key": key, **({"task_id": task_id} if task_id.strip() else {})}))
     if action == "memo_search":
-        return _compact(CLIENT.post("/api/memory/search", {"root": root, "query": query, "limit": 12}))
+        return _compact(CLIENT.post("/api/memory/search", {"root": root, "query": query, "limit": 12, **({"task_id": task_id} if task_id.strip() else {})}))
     if action == "memo_delete":
-        return _compact(CLIENT.post("/api/memory/delete", {"root": root, "key": key}))
+        return _compact(CLIENT.post("/api/memory/delete", {"root": root, "key": key, **({"task_id": task_id} if task_id.strip() else {})}))
     if action.startswith("blackboard_"):
+        if not root:
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error_code": "repository_root_required",
+                "error": "Blackboard actions require an explicit project root",
+            }
         sub = action[len("blackboard_"):]
         board = board_id.strip() or task_id or (key if sub in {"get", "list", "merge", "delete"} and not value else "") or "default"
         sec = section.strip() or (key if (value and sub == "delete") else (key or target_scope or ("" if sub in {"get", "delete"} else "main")))
@@ -2966,36 +3331,85 @@ def local_ai_coord(
             exp_v = checkpoint["expected_version"]
         elif status and status.isdigit():
             exp_v = int(status)
-        return _compact(CLIENT.post("/api/agent-state/blackboard", {
+        blackboard_payload = {
             "action": sub, "board_id": board, "section": sec or None,
             "content": content, "author": author,
             "remote_sections": record or {},
             "expected_version": exp_v,
-        }, timeout=_timeout("quick")), "status")
+            "root": root,
+        }
+        if task_id.strip():
+            blackboard_payload["task_id"] = task_id
+        return _compact(CLIENT.post("/api/agent-state/blackboard", blackboard_payload, timeout=_timeout("quick")), "status")
     if action == "swarm_dispatch":
+        if not root:
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error_code": "repository_root_required",
+                "error": "Swarm dispatch requires an explicit project root",
+            }
         return _compact(CLIENT.post("/api/agent-state/swarm/dispatch", {
             "goal": task or value or query,
             "target_paths": paths or [],
             "test_command": command or target_scope or "",
             "author": approver or "agent",
-            "root": root or ".",
+            "root": root,
+            **({"task_id": task_id} if task_id.strip() else {}),
         }, timeout=_timeout("quick")), "status")
     if action == "swarm_step":
+        if not root or not (task_id or key).strip():
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error_code": "task_scope_required",
+                "error": "Swarm step requires an explicit project root and swarm/task id",
+            }
         return _compact(CLIENT.post("/api/agent-state/swarm/step", {
             "swarm_id": task_id or key or "",
+            "root": root,
+            **({"task_id": task_id} if task_id.strip() else {}),
             "role": target_scope or "Coder",
             "action": query or "submit_patch",
             "payload": record or ({"value": value} if value else {}),
         }, timeout=_timeout("quick")), "status")
     if action == "swarm_status":
         sid = task_id or key or ""
-        return _compact(CLIENT.get(f"/api/agent-state/swarm/{quote(sid)}", timeout=_timeout("quick")), "status")
+        if not root or not sid:
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error_code": "task_scope_required",
+                "error": "Swarm status requires an explicit project root and swarm/task id",
+            }
+        task_query = f"&task_id={quote(task_id, safe='')}" if task_id.strip() else ""
+        return _compact(CLIENT.get(
+            f"/api/agent-state/swarm/{quote(sid)}?root={quote(root, safe='')}{task_query}",
+            timeout=_timeout("quick"),
+        ), "status")
     if action == "swarm_list":
+        if not root:
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error_code": "repository_root_required",
+                "error": "Swarm listing requires an explicit project root",
+            }
         st_param = f"?state={quote(status)}" if status else ""
-        return _compact(CLIENT.get(f"/api/agent-state/swarm{st_param}", timeout=_timeout("quick")), "status")
+        separator = "&" if st_param else "?"
+        return _compact(CLIENT.get(
+            f"/api/agent-state/swarm{st_param}{separator}root={quote(root, safe='')}",
+            timeout=_timeout("quick"),
+        ), "status")
     if action == "swarm_cancel":
         sid = task_id or key or ""
-        return _compact(CLIENT.post("/api/agent-state/swarm/cancel", {"swarm_id": sid, "reason": reason or value or "cancelled by agent"}, timeout=_timeout("quick")), "status")
+        if not root or not sid:
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error_code": "task_scope_required",
+                "error": "Swarm cancellation requires an explicit project root and swarm/task id",
+            }
+        return _compact(CLIENT.post("/api/agent-state/swarm/cancel", {
+            "swarm_id": sid, "root": root,
+            **({"task_id": task_id} if task_id.strip() else {}),
+            "reason": reason or value or "cancelled by agent",
+        }, timeout=_timeout("quick")), "status")
     if action == "worktree_lease":
         return _compact(CLIENT.coord(action="worktree_lease", root=root, branch=key or task or task_id or None), "status")
     if action == "worktree_release":
@@ -3008,12 +3422,27 @@ def local_ai_coord(
     if action == "simulate_merge":
         return _compact(CLIENT.coord(action="simulate_merge", root=root, source_branch=key or task_id or value, target_branch=target_scope or "HEAD"), "status")
     if action in {"curate_dataset", "curate_training_dataset"}:
-        return _compact(CLIENT.post("/api/agent-state/tasks", {
+        if not root:
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "task_scope_required",
+                "error": "Dataset curation requires a canonical project root",
+            }
+        payload = {
             "action": "curate_dataset",
+            "root": root,
             "output_path": key or value or query or "training_dataset.jsonl",
             "min_receipts": int(status) if (status and status.isdigit()) else 1,
             "format": target_scope or "jsonl",
-        }, timeout=_timeout("quick")), "status")
+        }
+        if task_id.strip():
+            payload["task_id"] = task_id.strip()
+        return _compact(
+            CLIENT.post("/api/agent-state/tasks", payload, timeout=_timeout("quick")),
+            "status",
+        )
     return _invalid_action("local_ai_coord", action, tuple(CoordAction.__args__), "Use coordination for bounded shared state; the main agent remains the owner of final integration.")
 
 
@@ -3021,7 +3450,7 @@ def local_ai_coord(
 @_instrumented_tool()
 def local_ai_work(
     action: WorkAction,
-    root: str = ".",
+    root: str = "",
     task: str = "",
     work_id: str = "",
     acceptance_criteria: list[str] | None = None,
@@ -3045,8 +3474,17 @@ def local_ai_work(
     action = action.strip().lower().replace("-", "_")
     if action not in WorkAction.__args__:
         return _invalid_action("local_ai_work", action, tuple(WorkAction.__args__), "Use submit for a closed task and one bounded wait/get for handoff.")
+    canonical_root = _client_root(root)
+    if not canonical_root:
+        return {
+            "success": False,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "repository_root_required",
+            "error": "Work actions require an explicit project root or configured LOCAL_AI_ROOT",
+        }
     payload: dict[str, Any] = {
-        "action": action, "root": _client_root(root), "task": task, "work_id": work_id,
+        "action": action, "root": canonical_root, "task": task, "work_id": work_id,
         "acceptance_criteria": acceptance_criteria or [], "constraints": constraints or [], "mode": mode,
         "permissions": permissions or {}, "budget": budget or {}, "timeout_seconds": timeout_seconds, "answer": answer,
         "response_profile": response_profile, "return_fields": return_fields or [], "max_output_tokens": max_output_tokens,
@@ -3134,6 +3572,75 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
         }
 
 
+def _expand_action_alias_schema(tool_name: str, schema: dict[str, Any]) -> None:
+    """Advertise aliases and apply each canonical action's schema constraints."""
+    properties = schema.get("properties", {})
+    action_schema = properties.get("action") if isinstance(properties, dict) else None
+    actions = action_schema.get("enum") if isinstance(action_schema, dict) else None
+    if not isinstance(actions, list):
+        return
+    aliases = {
+        alias: canonical
+        for alias, canonical in _ACTION_ALIASES.get(
+            tool_name.removeprefix("local_ai_"), {}
+        ).items()
+        if canonical in actions
+    }
+    if not aliases:
+        return
+    action_schema["enum"] = list(dict.fromkeys((*actions, *aliases)))
+    conditions = schema.get("allOf")
+    if not isinstance(conditions, list):
+        return
+    expanded: list[Any] = []
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            expanded.append(condition)
+            continue
+        condition = dict(condition)
+        condition_if = condition.get("if")
+        if isinstance(condition_if, dict):
+            condition_if = dict(condition_if)
+            condition_properties = condition_if.get("properties")
+            if isinstance(condition_properties, dict):
+                condition_properties = dict(condition_properties)
+                action_condition = condition_properties.get("action")
+                if isinstance(action_condition, dict):
+                    condition_properties["action"] = dict(action_condition)
+                condition_if["properties"] = condition_properties
+            condition["if"] = condition_if
+        expanded.append(condition)
+    schema["allOf"] = expanded
+    conditions = expanded
+    for condition in conditions:
+        condition_if = condition.get("if")
+        action_condition = (
+            condition_if.get("properties", {}).get("action", {})
+            if isinstance(condition_if, dict) else {}
+        )
+        if not isinstance(action_condition, dict):
+            continue
+        canonical = action_condition.get("const")
+        if isinstance(canonical, str):
+            for alias, target in aliases.items():
+                if target != canonical:
+                    continue
+                cloned_if = dict(condition["if"])
+                cloned_properties = dict(cloned_if.get("properties", {}))
+                cloned_action = dict(action_condition)
+                cloned_action["const"] = alias
+                cloned_properties["action"] = cloned_action
+                cloned_if["properties"] = cloned_properties
+                expanded.append({**condition, "if": cloned_if})
+        elif isinstance(action_condition.get("enum"), list):
+            canonical_actions = action_condition["enum"]
+            action_condition["enum"] = list(dict.fromkeys((
+                *canonical_actions,
+                *(alias for alias, target in aliases.items() if target in canonical_actions),
+            )))
+    schema["allOf"] = expanded
+
+
 def _mcp_contract_schema(schema_key: str) -> dict[str, Any] | None:
     manager = getattr(mcp, "_tool_manager", None)
     tools = getattr(manager, "_tools", {}) if manager is not None else {}
@@ -3164,6 +3671,7 @@ def _mcp_contract_schema(schema_key: str) -> dict[str, Any] | None:
         if "phase" in properties:
             properties["phase"] = {"type": "string", "enum": list(REPO_PHASES), "default": ""}
         properties["path_hints"] = repo_path_hints_schema()
+        properties["receipt"] = repo_verify_receipt_schema()
         properties["steps"] = {
             "type": "array",
             "items": repo_pipeline_step_schema(properties, FEATURES.supported_repo_actions()),
@@ -3191,6 +3699,21 @@ def _mcp_contract_schema(schema_key: str) -> dict[str, Any] | None:
         all_of = list(schema.get("allOf", []))
         all_of.extend(item for item in action_constraints if item not in all_of)
         schema["allOf"] = all_of
+    if tool_name == "local_ai_coord" and isinstance(action_enum, list):
+        scoped_actions = sorted(_ROOT_SCOPED_COORD_ACTIONS.intersection(map(str, action_enum)))
+        if scoped_actions:
+            all_of = list(schema.get("allOf", []))
+            root_scope = {
+                "if": {
+                    "properties": {"action": {"enum": scoped_actions}},
+                    "required": ["action"],
+                },
+                "then": {"required": ["root"]},
+            }
+            if root_scope not in all_of:
+                all_of.append(root_scope)
+            schema["allOf"] = all_of
+    _expand_action_alias_schema(tool_name, schema)
     return schema
 
 
@@ -3219,12 +3742,20 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             }
             return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)
         contract_schema = _mcp_contract_schema(name)
+        selector = "detail" if name == "local_ai_status" else "action"
+        validation_arguments = arguments
+        requested_action = arguments.get(selector)
+        if name != "local_ai_status" and isinstance(requested_action, str):
+            validation_arguments = {
+                **arguments,
+                selector: _resolve_action(name.removeprefix("local_ai_"), requested_action),
+            }
         if contract_schema is not None:
-            validation_error = validate_schema_object(arguments, contract_schema)
+            validation_error = validate_schema_object(validation_arguments, contract_schema)
             if validation_error:
                 payload = contract_error(validation_error)
                 return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)
-        validation_error = validate_action_specific_fields(name, arguments, schema=contract_schema)
+        validation_error = validate_action_specific_fields(name, validation_arguments, schema=contract_schema)
         if validation_error:
             payload = contract_error(validation_error)
             return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)

@@ -1,0 +1,52 @@
+{
+  "task": "T03",
+  "root": "C:/Users/Adam/.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "root_current_repository_revision": "6450116574f879bf328c67ca44102899a7fcac6d38200420c79bc95ad0797e31",
+  "target_path": "tests/test_t03_stdio_http_proxy.py",
+  "root_target_preimage": "absent",
+  "source_sha256": "01FF52158EC022D75F39A1EE41C8C5E85A167F1C6ED7B325A67F29BF5405B6E8",
+  "patch_file": "T03-root-stdio-proxy-20261005.patch",
+  "patch_sha256": "DB82AF57D3F26C34E312474BCC9040666B4824E9CA29931731AAC493E3AA8FCA",
+  "changed_paths": [
+    "tests/test_t03_stdio_http_proxy.py"
+  ],
+  "validation": {
+    "result": "1 passed; one pytest assertion-rewrite warning",
+    "execution_id": "b346d1239b1e42e08ba384bbaa1717ff",
+    "request_id": "req_1cf6ec3fb25a",
+    "root_source_preloaded": true
+  },
+  "excluded": [
+    "src/local_ai_hub/mcp_server.py",
+    "src/local_ai_hub/client.py",
+    "/api/context/pack"
+  ],
+  "old_packets": "Both original patches failed --check against post-T14 root preimages; HTTP path_hints/SSE and stdio contract tests already exist in current root. This packet adds only the missing proxy round-trip regression.",
+  "root_modified": false,
+  "root_current_file_sha256": {
+    "src/local_ai_hub/http_server.py": "8946AD143EE96841AE692E6FA48DBAD21F241E42BB28FBCA9737EE155EF78319",
+    "tests/test_mcp_contract_dispatch.py": "AB81768F86AD19735D5E7CEBFD72CC5A05E4A341D867ED6750EA7BE6F272C400",
+    "tests/test_t03_stdio_http_proxy.py": "absent"
+  },
+  "root_current_status": "target file absent; no root writes",
+  "apply_check": {
+    "result": "passed",
+    "command": "git apply --check",
+    "fallback": "native read-only after broker terminal=true/retryable=false"
+  },
+  "root_current_sources_tested_sha256": {
+    "src/local_ai_hub/mcp_server.py": "16E4767CF1715241211144793ADD799CDD87F55523F6F1C9C0D54F6C5BEF8E1E"
+  },
+  "root_current_repository_revision_latest_test": "317b54151db08dc4c03934721826d53b611226313283aa39691ed1f28c4028ff",
+  "root_current_hashes_latest": {
+    "src/local_ai_hub/http_server.py": "0E0228574B952E1186B8F459BC0668835CB911DACD1E5A5C8313F335BE256E7F",
+    "src/local_ai_hub/mcp_server.py": "16E4767CF1715241211144793ADD799CDD87F55523F6F1C9C0D54F6C5BEF8E1E"
+  },
+  "related_acceptance": {
+    "command": "tests/test_sse_events_stream.py tests/test_api_search_path_hints.py tests/test_mcp_contract_dispatch.py::test_stdio_tools_list_hides_feature_disabled_tools",
+    "result": "7 passed",
+    "execution_id": "65e96aac0d50454c9286e29873c436c6",
+    "request_id": "req_ead417145985"
+  }
+}

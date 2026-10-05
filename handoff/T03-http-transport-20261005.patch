@@ -1,0 +1,48 @@
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+index 6f9110f..bc32cba 100644
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import hmac
++import inspect
+ import json
+ import os
+ import queue
+@@ -3986,12 +3987,33 @@ class Handler(BaseHTTPRequestHandler):
+                     int(payload.get("max_dependents", APP.config.get("workflow", {}).get("impact_max_dependents", 30))),
+                 )); return
+             if path == "/api/search":
++                search_kwargs: dict[str, Any] = {
++                    "context_lines": int(payload["context_lines"]) if payload.get("context_lines") is not None else None,
++                    "enrich": bool(payload.get("enrich", False)),
++                }
++                if "path_hints" in payload:
++                    try:
++                        parameters = inspect.signature(APP.services.repo_search).parameters
++                    except (TypeError, ValueError):
++                        parameters = {}
++                    hint_parameter = parameters.get("path_hints")
++                    supports_hints = (
++                        hint_parameter.kind is not inspect.Parameter.POSITIONAL_ONLY
++                        if hint_parameter is not None
++                        else any(item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values())
++                    )
++                    if not supports_hints:
++                        self._send(501, {
++                            "success": False,
++                            "unsupported": True,
++                            "error": "path_hints are not supported by this repository search service",
++                        }); return
++                    search_kwargs["path_hints"] = payload["path_hints"]
+                 self._send(200, APP.services.repo_search(
+                     str(payload.get("root", ".")),
+                     str(payload.get("query", "")),
+                     int(payload.get("top_k", 12)),
+-                    context_lines=int(payload["context_lines"]) if payload.get("context_lines") is not None else None,
+-                    enrich=bool(payload.get("enrich", False)),
++                    **search_kwargs,
+                 )); return
+             if path == "/api/context/pack":
+                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))

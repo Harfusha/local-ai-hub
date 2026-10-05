@@ -1,0 +1,67 @@
+diff --git a/src/local_ai_hub/operation_contracts.py b/src/local_ai_hub/operation_contracts.py
+--- a/src/local_ai_hub/operation_contracts.py
++++ b/src/local_ai_hub/operation_contracts.py
+@@ -175,3 +175,6 @@ _ACTION_SCOPED_FIELDS = {
+ _ACTION_SCOPED_FIELDS = {
+-    "local_ai_repo": {"path_hints": frozenset({"search"})},
++    "local_ai_repo": {
++        "path_hints": frozenset({"search"}),
++        "receipt": frozenset({"verify_receipt"}),
++    },
+ }
+@@ -486,6 +486,7 @@ def operation_input_schema(tool: str, action: str) -> dict[str, Any]:
+     selector = str(contract.get("selector_field", "action"))
+     properties = schema.setdefault("properties", {})
+     properties[selector] = {**properties.get(selector, {}), "enum": [action]}
+-    if action not in _ACTION_SCOPED_FIELDS.get(tool, {}).get("path_hints", ()):
+-        properties.pop("path_hints", None)
++    for field, scoped_actions in _ACTION_SCOPED_FIELDS.get(tool, {}).items():
++        if action not in scoped_actions:
++            properties.pop(field, None)
+     allowed = contract["actions"][action].get("allowed")
+@@ -525,6 +525,7 @@ def operation_tool_input_schema(tool: str) -> dict[str, Any]:
+             - {"extra_fields", selector}
+             if allowed is not None else set()
+         )
+-        if action not in _ACTION_SCOPED_FIELDS.get(tool, {}).get("path_hints", ()):
+-            disallowed.add("path_hints")
++        for field, scoped_actions in _ACTION_SCOPED_FIELDS.get(tool, {}).items():
++            if action not in scoped_actions:
++                disallowed.add(field)
+         then: dict[str, Any] = {}
+@@ -1042,5 +1042,8 @@ def validate_operation_arguments(
+             return f"{unexpected[0]} is not valid for action='{action}'"
+     for field, scoped_actions in _ACTION_SCOPED_FIELDS.get(tool, {}).items():
+         if field in arguments and action not in scoped_actions:
+-            return f"{field} is only valid for action='search'"
++            scoped_names = sorted(scoped_actions)
++            if len(scoped_names) == 1:
++                return f"{field} is only valid for action='{scoped_names[0]}'"
++            return f"{field} is only valid for actions {scoped_names}"
+     for field in action_contract["required"]:
+diff --git a/tests/test_operation_contracts.py b/tests/test_operation_contracts.py
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -440,4 +440,22 @@ def test_repo_search_path_hints_schema_is_bounded_and_search_only():
+     assert validate_operation_arguments("local_ai_repo", "search", {"path_hints": [{}] * 65}) is not None
+ 
+ 
++def test_repo_verify_receipt_is_action_scoped():
++    from local_ai_hub.operation_contracts import (
++        operation_input_schema,
++        validate_operation_arguments,
++    )
++
++    assert "receipt" not in operation_input_schema("local_ai_repo", "search")["properties"]
++    assert "receipt" not in operation_input_schema("local_ai_repo", "context")["properties"]
++    assert "receipt" in operation_input_schema("local_ai_repo", "verify_receipt")["properties"]
++
++    valid_receipt = {
++        "task_id": "task-1", "criterion": "focused test", "passed": False,
++    }
++    assert validate_operation_arguments(
++        "local_ai_repo", "search", {"receipt": valid_receipt}
++    ) == "receipt is only valid for action='verify_receipt'"
++
++
+ def test_local_ai_repo_path_hints_normalize_and_reject_root_escape(monkeypatch, tmp_path):

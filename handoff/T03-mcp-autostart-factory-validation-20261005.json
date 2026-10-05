@@ -1,0 +1,29 @@
+{
+  "artifact_type": "T03 isolated MCP factory source patch validation",
+  "patch_file": "T03-mcp-autostart-factory-20261005.patch",
+  "patch_sha256": "71BB23A8C6DEC3A9474F42E19C0BADF764E6AA725757B15382C19A376FE67B38",
+  "base_commit": "d68ee694c6d3f75db5c1ab2f63497226880e5010",
+  "source_file": "src/local_ai_hub/mcp_server.py",
+  "source_sha256": {
+    "base": "986B1EB79ABF753F43D84C108E17E7BE3B24CBDE549BC258DED32F778F57B84C",
+    "pre": "24CB51FC19931D5E27508E48A3AAE59CDFA06914E7B8FD11A717C3A7EF8244E2",
+    "post": "3F42F304BCB557B0C55D9032BC9A86B6B95E2BC39DF3B071864CF7A517AB6CCC"
+  },
+  "patch_check": {
+    "command": "git apply --check --cached handoff/T03-mcp-autostart-factory-20261005.patch",
+    "result": "PASS",
+    "execution": "read-only native fallback after broker required registered task-owned worktree"
+  },
+  "focused_test": {
+    "command": "python -m pytest -q tests/test_mcp_autostart.py::test_mcp_main_uses_hubclient_autostart_before_serving_tools",
+    "result": "1 passed in 3.26s",
+    "execution_id": "3884bb7c956c41a68fb1bfb7f5f8822c"
+  },
+  "scope": {
+    "T03_owned": "_build_mcp_client forwarding configured tenant and config path with auto_start=True, plus CLIENT construction through factory",
+    "T04_dependency": "HubClient constructor and ensure_server lifecycle API; excluded from patch",
+    "current_mcp_server_diff": "711 insertions and 116 deletions; isolated patch contains 5 insertions and 1 deletion; all other hunks excluded",
+    "root": "untouched; root acceptance remains T20-owned",
+    "live_30_client_test": "not rerun"
+  }
+}

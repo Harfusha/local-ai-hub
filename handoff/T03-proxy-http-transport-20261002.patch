@@ -1,0 +1,180 @@
+--- a/src/local_ai_hub/mcp_server.py
++++ b/src/local_ai_hub/mcp_server.py
+@@ -91,6 +91,11 @@
+     def run(self) -> None:
+         raise SystemExit("Missing MCP dependency. Re-run setup or install requirements-core.txt")
+ 
++def _build_mcp_client() -> HubClient:
++    """Build the stdio MCP HTTP proxy without an in-process app stack."""
++    return HubClient(tenant="", auto_start=True)
++
++
+ # Module-level initialisation: FastMCP requires tool decorators at import
+ # time, so HubClient, config and projectors must be created here. Any failure
+ # produces a clear SystemExit instead of a confusing AttributeError later.
+@@ -100,7 +105,7 @@
+ TENANT = os.environ.get("LOCAL_AI_TENANT") or f"{AGENT_NAME}:{_workspace_hash}"
+ 
+ try:
+-    CLIENT = HubClient(tenant=TENANT)
++    CLIENT = _build_mcp_client()
+     CFG = load_config(os.environ.get("LOCAL_AI_CONFIG"))
+     FEATURES = FeatureSet.from_config(CFG)
+     MCP_CFG = CFG.get("mcp", {})
+--- a/tests/test_mcp_compact_transport.py
++++ b/tests/test_mcp_compact_transport.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import asyncio
++import ast
+ import json
+ from pathlib import Path
+ import pytest
+@@ -40,6 +41,146 @@
+     parsed = json.loads(content.text)
+     assert isinstance(parsed, dict)
+     assert parsed["success"] is True
++
++
++def test_mcp_client_builder_uses_http_proxy_without_client_tenant(monkeypatch) -> None:
++    built = []
++
++    class HubClientProbe:
++        def __init__(self, *, tenant, auto_start):
++            built.append((tenant, auto_start))
++            self.inprocess_transport = None
++
++    monkeypatch.setattr(local_ai_mcp, "HubClient", HubClientProbe)
++    client = local_ai_mcp._build_mcp_client()
++
++    assert built == [("", True)]
++    assert client.inprocess_transport is None
++
++
++def test_mcp_stdio_main_starts_proxy_then_runs_without_local_app_stack(monkeypatch) -> None:
++    from types import SimpleNamespace
++
++    calls = []
++
++    class ProxyClient:
++        auto_start = True
++        startup_wait = 3.0
++
++        def ensure_server(self, *, timeout):
++            calls.append(("ensure_server", timeout))
++            return True
++
++    monkeypatch.setattr(local_ai_mcp, "CLIENT", ProxyClient())
++    monkeypatch.setattr(
++        local_ai_mcp, "bounded_startup_wait", lambda timeout: calls.append(("bounded_wait", timeout)) or 2.0
++    )
++    monkeypatch.setattr(local_ai_mcp, "mcp", SimpleNamespace(run=lambda: calls.append(("stdio_run",))))
++
++    source = Path(local_ai_mcp.__file__).read_text(encoding="utf-8")
++    tree = ast.parse(source)
++    import_modules = {
++        node.module for node in tree.body
++        if isinstance(node, ast.ImportFrom) and node.module
++    }
++    forbidden_modules = {
++        "local_ai_hub.app", "local_ai_hub.services", "local_ai_hub.indexes",
++        "local_ai_hub.embeddings",
++    }
++    assert forbidden_modules.isdisjoint(import_modules)
++    forbidden_names = {
++        "LocalAIApp", "HubServices", "LocalAIServices", "RAGStore",
++        "EmbeddingIndex", "ProcessPoolExecutor",
++    }
++    source_names = {
++        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
++    }
++    assert forbidden_names.isdisjoint(source_names)
++    client_assignment = next(
++        node for node in ast.walk(tree)
++        if isinstance(node, ast.Assign)
++        and any(isinstance(target, ast.Name) and target.id == "CLIENT" for target in node.targets)
++    )
++    assert isinstance(client_assignment.value, ast.Call)
++    assert isinstance(client_assignment.value.func, ast.Name)
++    assert client_assignment.value.func.id == "_build_mcp_client"
++    builder = next(
++        node for node in tree.body
++        if isinstance(node, ast.FunctionDef) and node.name == "_build_mcp_client"
++    )
++    hub_client_call = next(
++        node for node in ast.walk(builder)
++        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "HubClient"
++    )
++    assert {keyword.arg: ast.literal_eval(keyword.value) for keyword in hub_client_call.keywords} == {
++        "tenant": "", "auto_start": True,
++    }
++    main_node = next(
++        node for node in tree.body
++        if isinstance(node, ast.FunctionDef) and node.name == "main"
++    )
++    parents = {
++        child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
++    }
++    pool_calls = [
++        node for node in ast.walk(tree)
++        if isinstance(node, ast.Call)
++        and isinstance(node.func, ast.Name)
++        and node.func.id == "ThreadPoolExecutor"
++    ]
++    assert pool_calls
++    for call in pool_calls:
++        parent = parents.get(call)
++        while parent is not None and not isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
++            parent = parents.get(parent)
++        assert isinstance(parent, ast.FunctionDef)
++        assert parent.name == "_local_ai_repo_impl"
++    called_names = {
++        node.func.id if isinstance(node.func, ast.Name)
++        else node.func.attr if isinstance(node.func, ast.Attribute)
++        else ""
++        for node in ast.walk(main_node) if isinstance(node, ast.Call)
++    }
++    assert "ThreadPoolExecutor" not in called_names
++
++    local_ai_mcp.main()
++
++    assert calls == [("bounded_wait", 3.0), ("ensure_server", 2.0), ("stdio_run",)]
++
++
++def test_mcp_stdio_initialize_tools_list_and_call_use_http_proxy(monkeypatch) -> None:
++    from mcp.shared.memory import create_connected_server_and_client_session
++
++    http_calls = []
++
++    class HttpHubClientProbe:
++        auto_start = True
++        startup_wait = 2.0
++
++        def get(self, path, **kwargs):
++            http_calls.append((path, dict(kwargs)))
++            return {"hub_online": True, "scheduler": {}, "observability": {}}
++
++    monkeypatch.setattr(local_ai_mcp, "CLIENT", HttpHubClientProbe())
++    monkeypatch.setattr(local_ai_mcp, "_mcp_operational_mode_block", lambda *args, **kwargs: None)
++
++    async def protocol_round_trip():
++        async with create_connected_server_and_client_session(local_ai_mcp.mcp) as session:
++            # The helper performs MCP initialize before yielding the session.
++            listed = await session.list_tools()
++            calls_after_list = list(http_calls)
++            called = await session.call_tool("local_ai_status", {"detail": "brief"})
++            return listed, called, calls_after_list
++
++    listed, called, calls_after_list = asyncio.run(protocol_round_trip())
++    tool_names = {tool.name for tool in listed.tools}
++    assert len(tool_names) == 8
++    assert tool_names == set(local_ai_mcp.FEATURES.enabled_tools)
++    assert calls_after_list == []
++    assert called.content
++    assert http_calls == [
++        ("/api/live/status?light=1&scope=process", {})
++    ]
+ 
+ 
+ def test_lowlevel_request_handler_returns_compact_minified_json(monkeypatch) -> None:

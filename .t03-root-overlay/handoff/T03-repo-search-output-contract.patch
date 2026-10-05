@@ -1,0 +1,269 @@
+--- a/src/local_ai_hub/operation_contracts.py
++++ b/src/local_ai_hub/operation_contracts.py
+@@ -649,6 +649,34 @@
+         "properties": properties,
+         "additionalProperties": True,
+     }
++    if tool == "local_ai_repo" and action == "search":
++        properties.update({
++            "root": {"type": "string"},
++            "scanned_files": {"type": "integer", "minimum": 0},
++            "terms": {"type": "array", "items": {"type": "string"}},
++            "results": {
++                "type": "array",
++                "items": {
++                    "type": "object",
++                    "required": ["path", "start_line", "end_line", "score", "text"],
++                    "properties": {
++                        "path": {"type": "string"},
++                        "start_line": {"type": "integer"},
++                        "end_line": {"type": "integer"},
++                        "score": {"type": "number"},
++                        "text": {"type": "string"},
++                        "file_sha256": {"type": "string"},
++                        "evidence_id": {"type": "string"},
++                        "enclosing_symbol": {"type": "object"},
++                    },
++                    "additionalProperties": True,
++                },
++            },
++            "engine": {"type": "string"},
++            "candidate_context_tokens_est": {"type": "integer", "minimum": 0},
++            "preprocessed_hit": {"type": "boolean"},
++            "progressive_disclosure": {"type": "boolean"},
++        })
+     if tool == "local_ai_artifact":
+         schema["anyOf"] = _artifact_output_variants(action)
+     elif tool == "local_ai_status":
+@@ -849,14 +877,67 @@
+     "request_id": {"type": "string"},
+     "unsupported": {"type": "boolean"},
+ }
++_OUTPUT_ENVELOPE_FIELDS = frozenset(_OUTPUT_ENVELOPE_PROPERTIES)
++
++
++def _output_payload_delta(schema: dict[str, Any]) -> dict[str, Any]:
++    """Project action payload fields without repeating the shared MCP envelope."""
++    def strip_envelope(value: Any) -> Any:
++        if isinstance(value, list):
++            return [strip_envelope(item) for item in value]
++        if not isinstance(value, dict):
++            return value
++        projected: dict[str, Any] = {}
++        for key, item in value.items():
++            if key in {"title", "description"}:
++                continue
++            if key == "properties" and isinstance(item, dict):
++                payload_properties = {
++                    name: strip_envelope(prop)
++                    for name, prop in item.items()
++                    if name not in _OUTPUT_ENVELOPE_FIELDS
++                }
++                if payload_properties:
++                    projected[key] = payload_properties
++                continue
++            if key == "required" and isinstance(item, list):
++                payload_required = [name for name in item if name not in _OUTPUT_ENVELOPE_FIELDS]
++                if payload_required:
++                    projected[key] = payload_required
++                continue
++            if key in {"anyOf", "oneOf", "allOf"} and isinstance(item, list):
++                branches = [strip_envelope(branch) for branch in item]
++                branches = [
++                    branch for branch in branches
++                    if isinstance(branch, dict)
++                    and ("properties" in branch or "required" in branch or "anyOf" in branch or "oneOf" in branch)
++                ]
++                if branches:
++                    projected[key] = branches
++                continue
++            projected[key] = strip_envelope(item)
++        return projected
++
++    delta = strip_envelope(schema)
++    if not isinstance(delta, dict):
++        return {}
++    if not any(key in delta for key in ("properties", "required", "anyOf", "oneOf", "allOf")):
++        return {}
++    return delta
+ 
+ 
+ def operation_tool_output_schema(tool: str, features: Any = None) -> dict[str, Any]:
+-    """Return the shared open MCP response envelope; action schemas remain available internally."""
++    """Return shared envelope plus compact action-keyed payload schema extensions."""
++    enabled_actions = operation_actions(tool, features) if operation_enabled(features, tool) else ()
++    action_schemas = {
++        action: _output_payload_delta(operation_output_schema(tool, action))
++        for action in enabled_actions
++    }
+     return {
+         "type": "object",
+         "properties": json.loads(json.dumps(_OUTPUT_ENVELOPE_PROPERTIES)),
+         "additionalProperties": True,
++        "x-action-output-contracts": action_schemas,
+     }
+ 
+ 
+@@ -899,7 +980,9 @@
+             return f"{field} must be boolean for action='{action}'"
+     if "error" in result and not isinstance(result["error"], str):
+         return f"error must be string for action='{action}'"
+-    if tool in {"local_ai_artifact", "local_ai_status"}:
++    if tool in {"local_ai_artifact", "local_ai_status"} or (
++        tool == "local_ai_repo" and action == "search"
++    ):
+         error = _validate_output_schema(result, operation_output_schema(tool, action))
+         if error:
+             return f"{error} for action='{action}'"
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -513,6 +513,88 @@
+     assert validate_operation_arguments(
+         "local_ai_repo", "context", {"receipt": valid_receipt}, features=disabled_features
+     ) == "receipt is only valid for action='verify_receipt'"
++
++
++def test_repo_search_output_contract_types_hits_and_keeps_diagnostics_optional():
++    from local_ai_hub.operation_contracts import (
++        operation_tool_output_schema,
++        validate_operation_output,
++    )
++
++    hit = {
++        "path": "src/main.py",
++        "start_line": 2,
++        "end_line": 3,
++        "score": 4.5,
++        "text": "2: needle()\n3: return True",
++        "file_sha256": "a" * 64,
++    }
++    result = {
++        "success": True,
++        "root": "C:/repo",
++        "results": [hit],
++        "scanned_files": 1,
++        "terms": ["needle"],
++        "engine": "ripgrep",
++        "candidate_context_tokens_est": 17,
++    }
++    assert validate_operation_output("local_ai_repo", "search", result) is None
++    assert validate_operation_output(
++        "local_ai_repo", "search", {**result, "preprocessed_hit": True, "progressive_disclosure": True}
++    ) is None
++    for field, invalid in (
++        ("path", 17),
++        ("start_line", "line one"),
++        ("end_line", "3"),
++        ("score", "high"),
++        ("text", None),
++    ):
++        invalid_result = {**result, "results": [{**hit, field: invalid}]}
++        assert validate_operation_output("local_ai_repo", "search", invalid_result) is not None, field
++    for field in ("preprocessed_hit", "progressive_disclosure"):
++        assert validate_operation_output("local_ai_repo", "search", result) is None
++        assert validate_operation_output(
++            "local_ai_repo", "search", {**result, field: "yes"}
++        ) is not None
++
++    output_schema = operation_tool_output_schema("local_ai_repo")
++    assert output_schema["additionalProperties"] is True
++    assert "anyOf" not in output_schema
++    search_delta = output_schema["x-action-output-contracts"]["search"]
++    result_item = search_delta["properties"]["results"]["items"]
++    assert result_item["properties"]["start_line"] == {"type": "integer"}
++    assert "preprocessed_hit" not in search_delta.get("required", [])
++    assert "progressive_disclosure" not in search_delta.get("required", [])
++
++
++def test_output_action_catalog_omits_disabled_artifact_actions():
++    from local_ai_hub.operation_contracts import operation_tool_output_schema
++
++    enabled_config = _config()
++    enabled_config["features"]["artifacts"] = True
++    disabled_config = _config()
++    disabled_config["features"]["artifacts"] = False
++    enabled = FeatureSet.from_config(enabled_config)
++    disabled = FeatureSet.from_config(disabled_config)
++
++    enabled_actions = operation_tool_output_schema("local_ai_artifact", enabled)["x-action-output-contracts"]
++    disabled_actions = operation_tool_output_schema("local_ai_artifact", disabled)["x-action-output-contracts"]
++    assert {"list", "get"} <= set(enabled_actions)
++    assert "list" not in disabled_actions
++    assert "get" not in disabled_actions
++
++    enabled_repo_config = _config()
++    enabled_repo_config["features"].update({"repo": True, "batch_replacement": True})
++    disabled_repo_config = _config()
++    disabled_repo_config["features"].update({"repo": True, "batch_replacement": False})
++    enabled_repo = FeatureSet.from_config(enabled_repo_config)
++    disabled_repo = FeatureSet.from_config(disabled_repo_config)
++    assert "batch_replace" in operation_tool_output_schema(
++        "local_ai_repo", enabled_repo
++    )["x-action-output-contracts"]
++    assert "batch_replace" not in operation_tool_output_schema(
++        "local_ai_repo", disabled_repo
++    )["x-action-output-contracts"]
+ 
+ 
+ def test_local_ai_repo_path_hints_normalize_and_reject_root_escape(monkeypatch, tmp_path):
+--- a/tests/test_mcp_contract_dispatch.py
++++ b/tests/test_mcp_contract_dispatch.py
+@@ -70,6 +70,35 @@
+     assert "output contract" in payload["error"]
+ 
+ 
++def test_mcp_dispatch_rejects_malformed_repo_search_hit(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    async def fake_call_tool(_name, _arguments, *, convert_result=False):
++        return {
++            "success": True,
++            "root": "C:/repo",
++            "results": [{
++                "path": 17,
++                "start_line": "line one",
++                "end_line": 3,
++                "score": 4.5,
++                "text": "needle",
++            }],
++        }
++
++    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
++    _content, payload = asyncio.run(
++        mcp_server._compact_mcp_call_tool(
++            "local_ai_repo",
++            {"action": "search", "root": "C:/repo", "query": "needle"},
++        )
++    )
++
++    assert payload["success"] is False
++    assert payload["status_code"] == 500
++    assert "output contract" in payload["error"]
++
++
+ def test_mcp_dispatch_rejects_invalid_artifact_list_item_shape(monkeypatch) -> None:
+     from local_ai_hub import mcp_server
+ 
+@@ -108,6 +137,22 @@
+     assert output_schema["properties"]["status"]["type"] == "string"
+ 
+ 
++def test_registered_status_output_catalog_uses_brief_contract_not_aliases() -> None:
++    from local_ai_hub import mcp_server
++    from local_ai_hub.operation_contracts import operation_tool_output_schema
++
++    registered = mcp_server.mcp._tool_manager._tools["local_ai_status"]
++    output_schema = registered.output_schema
++    expected = operation_tool_output_schema("local_ai_status", mcp_server.FEATURES)
++
++    assert output_schema == expected
++    assert "brief" in output_schema["x-action-output-contracts"]
++    assert not {"status", "health", "check", "info"} & set(
++        output_schema["x-action-output-contracts"]
++    )
++    assert "brief" in registered.parameters["properties"]["detail"]["enum"]
++
++
+ def test_live_mcp_schemas_match_registry_for_every_public_tool() -> None:
+     from local_ai_hub import mcp_server
+     from local_ai_hub.operation_contracts import (

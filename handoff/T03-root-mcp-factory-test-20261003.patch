@@ -1,0 +1,30 @@
+diff --git a/tests/test_mcp_compact_transport.py b/tests/test_mcp_compact_transport.py
+--- a/tests/test_mcp_compact_transport.py
++++ b/tests/test_mcp_compact_transport.py
+@@ -14,8 +14,26 @@
+ def test_python_direct_invocation_returns_dict() -> None:
+     res = local_ai_mcp.local_ai_status()
+     assert isinstance(res, dict)
+     assert "success" in res
++
++
++def test_mcp_client_factory_forwards_tenant_and_config(monkeypatch) -> None:
++    captured: dict[str, object] = {}
++
++    def fake_client(**kwargs):
++        captured.update(kwargs)
++        return object()
++
++    monkeypatch.setattr(local_ai_mcp, "HubClient", fake_client)
++    client = local_ai_mcp._build_mcp_client("agent:workspace", "hub.toml")
++
++    assert client is not None
++    assert captured == {
++        "tenant": "agent:workspace",
++        "config_path": "hub.toml",
++        "auto_start": True,
++    }
+ 
+ 
+ def test_mcp_call_tool_returns_compact_minified_json(monkeypatch) -> None:
+     monkeypatch.setattr(local_ai_mcp, "CLIENT", local_ai_mcp.HubClient(tenant="test", auto_start=False))

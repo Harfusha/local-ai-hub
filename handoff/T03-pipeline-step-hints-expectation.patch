@@ -1,0 +1,9 @@
+diff --git a/tests/test_operation_contracts.py b/tests/test_operation_contracts.py
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -190,5 +190,5 @@ def test_repo_pipeline_schema_exposes_runtime_step_contract():
+     step_properties = generated_steps["properties"]
+     assert set(step_properties["action"]["enum"]) == set(generated_properties["action"]["enum"]) - {"pipeline"}
+-    assert set(step_properties) == set(generated_properties) - {"steps"} | {"id"}
++    assert set(step_properties) == set(generated_properties) - {"steps", "path_hints"} | {"id"}
+     assert runtime_steps["additionalProperties"] is False

@@ -1,0 +1,18 @@
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -658,9 +658,12 @@
+                     popen_kwargs = {}
+                 if sys.platform != "win32":
+                     popen_kwargs["start_new_session"] = True
+-                process = subprocess.Popen(
+-                    cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **popen_kwargs
+-                )
++                try:
++                    process = subprocess.Popen(
++                        cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **popen_kwargs
++                    )
++                except OSError:
++                    return False
+                 _retain_detached_child(process)
+             while remaining() > 0:
+                 if self._online(remaining()):

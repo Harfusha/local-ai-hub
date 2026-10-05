@@ -1,0 +1,11 @@
+diff --git a/tests/test_operation_contracts.py b/tests/test_operation_contracts.py
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -1,5 +1,7 @@
+ import importlib.util
+ import sys
++
++import pytest
+ from pathlib import Path
+ from types import SimpleNamespace
+ from typing import Any, get_args

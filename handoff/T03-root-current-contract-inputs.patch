@@ -1,0 +1,134 @@
+--- a/src/local_ai_hub/operation_contracts.py
++++ b/src/local_ai_hub/operation_contracts.py
+@@ -173,7 +173,23 @@
+     "cross_repo_impact": ("agent_os",),
+ }
+ _ACTION_SCOPED_FIELDS = {
++    "local_ai_task": {
++        **{
++            name: frozenset({"delegate", "explore", "reason", "review", "second_opinion", "compress"})
++            for name in ("phase", "focus", "preload_profile", "repository_revision", "changed_paths")
++        },
++    },
+     "local_ai_repo": {
++        **{
++            name: frozenset({"context_compile"})
++            for name in (
++                "include_diagnostics", "clone_id", "worktree_id", "branch",
++                "repository_id", "session_id", "repository_revision",
++            )
++        },
++        "steps": frozenset({"pipeline"}),
++        "is_worktree": frozenset({"preprocess"}),
++        "parent_root": frozenset({"preprocess"}),
+         "path_hints": frozenset({"search"}),
+         "receipt": frozenset({"verify_receipt"}),
+     },
+@@ -187,6 +203,9 @@
+             "action": {"type": "string", "enum": ["status", "health", "check", "info"], "default": ""},
+             "detail": {"type": "string", "default": "brief"},
+             "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
++            "adoption_signal": {"type": "string", "enum": ["", "bypassed"], "default": ""},
++            "target_tool": {"type": "string", "default": ""},
++            "target_action": {"type": "string", "default": ""},
+             "extra_fields": {"type": "array", "items": {"type": "string"}},
+         },
+     ),
+@@ -204,6 +223,13 @@
+             "task": {"type": "string", "default": ""},
+             "task_id": {"type": "string", "default": ""},
+             "include_code": {"type": "boolean", "default": False},
++            "include_diagnostics": {"type": "boolean", "default": False},
++            **{name: {"type": "string", "default": ""} for name in (
++                "clone_id", "worktree_id", "branch", "repository_id", "session_id", "repository_revision",
++            )},
++            "steps": {"type": "array", "items": {"type": "object"}},
++            "is_worktree": {"type": "boolean", "default": False},
++            "parent_root": {"type": "string", "default": ""},
+             "path_hints": {
+                 "type": "array",
+                 "maxItems": 64,
+@@ -291,6 +317,11 @@
+         properties={
+             "action": {"type": "string"},
+             "delivery": {"type": "string", "enum": ["sync", "async", "auto"], "default": "sync"},
++            "phase": {"type": "string", "default": ""},
++            "focus": {"type": "array", "items": {"type": "string"}},
++            "preload_profile": {"type": "string", "default": ""},
++            "repository_revision": {"type": "string", "default": ""},
++            "changed_paths": {"type": "array", "items": {"type": "string"}},
+             **{name: {"type": "string", "default": ""} for name in (
+                 "task", "context", "root", "profile", "conversation_id", "prompt", "model", "candidate",
+                 "image_artifact_id", "screenshot_artifact_id", "bundle_artifact_id", "dom_artifact_id",
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -910,6 +910,20 @@
+         ("local_ai_rag", {"action": "ingest_document", "content": "body", "title": "doc", "metadata": {}}),
+         ("local_ai_rag", {"action": "ingest_diagram", "image_path": "diagram.svg", "caption": "diagram"}),
+         ("local_ai_task", {"action": "cancel", "job_id": "job-1"}),
++        ("local_ai_task", {
++            "action": "reason", "task": "review", "phase": "review", "focus": ["src"],
++            "preload_profile": "balanced", "repository_revision": "abc123", "changed_paths": ["src/a.py"],
++        }),
++        ("local_ai_repo", {
++            "action": "context_compile", "include_diagnostics": True, "clone_id": "clone",
++            "worktree_id": "worktree", "branch": "main", "repository_id": "repo",
++            "session_id": "session", "repository_revision": "abc123",
++        }),
++        ("local_ai_repo", {"action": "pipeline", "steps": [{"action": "profile"}]}),
++        ("local_ai_repo", {"action": "preprocess", "is_worktree": True, "parent_root": "."}),
++        ("local_ai_status", {
++            "adoption_signal": "bypassed", "target_tool": "local_ai_repo", "target_action": "search",
++        }),
+         ("local_ai_task", {"action": "eval_suite", "task_id": "task-1", "cases": [], "language": "python"}),
+         ("local_ai_command", {"action": "patch_and_verify", "execution_id": "exec-1", "paths": ["src/a.py"], "patch": "diff"}),
+         ("local_ai_coord", {"action": "task_complete", "task_id": "task-1", "criterion": "c1", "board_id": "board-1"}),
+@@ -929,6 +943,48 @@
+     assert all(calls[0][key] == value for key, value in arguments.items())
+ 
+ 
++@pytest.mark.parametrize(
++    ("tool_name", "arguments", "field"),
++    [
++        ("local_ai_task", {"action": "cancel", "phase": "review"}, "phase"),
++        ("local_ai_repo", {"action": "search", "clone_id": "clone"}, "clone_id"),
++        ("local_ai_repo", {"action": "preprocess", "include_diagnostics": True}, "include_diagnostics"),
++        ("local_ai_repo", {"action": "context_compile", "is_worktree": True}, "is_worktree"),
++    ],
++)
++def test_registered_mcp_dispatch_rejects_context_fields_for_wrong_action(
++    tool_name: str, arguments: dict[str, Any], field: str, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    import asyncio
++
++    import local_ai_hub.mcp_server as mcp_server
++
++    calls = _stub_registered_mcp_tool(monkeypatch, tool_name, {"success": True})
++    response = asyncio.run(mcp_server.mcp.call_tool(tool_name, arguments))
++
++    assert response[1]["status_code"] == 400
++    assert field in response[1]["error"]
++    assert calls == []
++
++
++def test_registered_status_dispatch_rejects_incomplete_adoption_pair(monkeypatch: pytest.MonkeyPatch) -> None:
++    import asyncio
++
++    import local_ai_hub.mcp_server as mcp_server
++
++    class NeverCallClient:
++        def get(self, *_args, **_kwargs):
++            raise AssertionError("incomplete adoption report reached backend")
++
++    monkeypatch.setattr(mcp_server, "CLIENT", NeverCallClient())
++    response = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_status", {"adoption_signal": "bypassed"}
++    ))
++
++    assert response[1]["success"] is False
++    assert "supported target_tool and safe target_action" in response[1]["error"]
++
++
+ def test_registered_mcp_dispatch_accepts_feature_enabled_batch_replace(monkeypatch: pytest.MonkeyPatch) -> None:
+     import asyncio
+     from typing import Any, Literal

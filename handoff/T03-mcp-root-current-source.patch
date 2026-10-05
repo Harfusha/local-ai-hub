@@ -1,0 +1,97 @@
+diff --git a/src/local_ai_hub/operation_contracts.py b/src/local_ai_hub/operation_contracts.py
+--- a/src/local_ai_hub/operation_contracts.py
++++ b/src/local_ai_hub/operation_contracts.py
+@@ -296,7 +296,7 @@
+                 "image_artifact_id", "screenshot_artifact_id", "bundle_artifact_id", "dom_artifact_id",
+                 "accessibility_artifact_id", "computed_styles_artifact_id", "runtime_artifact_id",
+                 "network_artifact_id", "source", "job_id", "evaluation_task_id", "evaluation_cohort",
+-                "workspace", "approver",
++                "workspace", "approver", "task_id", "language",
+             )},
+             "complexity": {"type": "string", "default": "auto"},
+             "job_action": {"type": "string", "default": "reason"},
+@@ -319,6 +319,7 @@
+             "candidate_data": {"type": "object"},
+             "json_schema": {"type": "object"},
+             "tasks": {"type": "array", "items": {"type": "object"}},
++            "cases": {"type": "array", "items": {"type": "object"}},
+             "format": {"type": ["string", "object"]},
+             "extra_fields": {"type": "array", "items": {"type": "string"}},
+         },
+@@ -336,6 +337,11 @@
+             "root": {"type": "string", "default": "."},
+             "top_k": {"type": "integer", "default": 6},
+             "workspace": {"type": "string", "default": ""},
++            "content": {"type": "string", "default": ""},
++            "title": {"type": "string", "default": ""},
++            "metadata": {"type": "object"},
++            "image_path": {"type": "string", "default": ""},
++            "caption": {"type": "string", "default": ""},
+             "extra_fields": {"type": "array", "items": {"type": "string"}},
+         },
+     ),
+@@ -354,6 +360,12 @@
+             "timeout": {"type": "integer", "default": 0},
+             "stream": {"type": "boolean", "default": False},
+             "stream_id": {"type": "string", "default": ""},
++            "execution_id": {"type": "string", "default": ""},
++            "paths": {"type": "array", "items": {"type": "string"}},
++            "patch": {"type": "string", "default": ""},
++            "auto_rollback": {"type": "boolean", "default": True},
++            "job_id": {"type": "string", "default": ""},
++            "lint_action": {"type": "string", "default": "submit"},
+             "force": {"type": "boolean", "default": False},
+             "auto_fix": {"type": "boolean", "default": False},
+             "max_attempts": {"type": "integer", "default": 3},
+@@ -379,7 +391,9 @@
+             "paths": {"type": "array", "items": {"type": "string"}},
+             **{name: {"type": "string", "default": ""} for name in (
+                 "lease_id", "task_id", "key", "value", "query", "command", "task", "status", "reason",
+-                "record_id", "target_scope", "approver",
++                "record_id", "target_scope", "approver", "criterion", "board_id", "section", "scope",
++                "scope_id", "clone_id", "worktree_id", "branch", "repository_id", "session_id", "tenant",
++                "repository_revision", "phase", "preload_profile", "since_hash",
+             )},
+             "ttl_seconds": {"type": "integer", "default": 0},
+             "max_tokens": {"type": "integer", "default": 0},
+@@ -388,6 +402,8 @@
+             "record": {"type": "object"},
+             "fingerprint": {"type": "object"},
+             "tool_outcome": {"type": "object"},
++            "focus": {"type": "array", "items": {"type": "string"}},
++            "include_diagnostics": {"type": "boolean", "default": False},
+             "include_stale": {"type": "boolean", "default": False},
+             "extra_fields": {"type": "array", "items": {"type": "string"}},
+         },
+@@ -792,8 +808,10 @@
+ def validate_operation_output(tool: str, action: str, result: Any) -> str | None:
+     """Validate shared response-envelope fields while preserving payload fields."""
+     contract = operation_contract(tool)
+-    if contract is None or action not in contract["actions"] or not isinstance(result, dict):
++    if contract is None or action not in contract["actions"]:
+         return None
++    if not isinstance(result, dict):
++        return "result must be an object"
+     for field in ("success", "terminal", "retryable"):
+         if field in result and not isinstance(result[field], bool):
+             return f"{field} must be boolean for action='{action}'"
+@@ -928,8 +946,8 @@
+         else:
+             selector_value = arguments.get(selector, "brief")
+     elif selector not in arguments:
+-        # Let FastMCP apply the declared Python/schema default before dispatch.
+-        return None
++        selector_schema = operation_parameters_schema(tool, features).get("properties", {}).get(selector, {})
++        selector_value = selector_schema.get("default")
+     else:
+         selector_value = arguments[selector]
+     error = validate_operation_arguments(
+@@ -1032,7 +1050,7 @@
+         supported = ", ".join(available_actions)
+         return f"invalid action for {tool}: expected one of {supported}"
+ 
+-    properties = contract.get("properties", {})
++    properties = operation_parameters_schema(tool, features).get("properties", {})
+     if isinstance(properties, dict):
+         unknown = sorted(set(arguments) - set(properties))
+         if unknown:

@@ -1,0 +1,284 @@
+--- a/src/local_ai_hub/operation_contracts.py
++++ b/src/local_ai_hub/operation_contracts.py
+@@ -565,12 +565,41 @@
+ 
+ 
+ def operation_tool_output_schema(tool_name: str, actions: list[str] | tuple[str, ...]) -> dict[str, Any]:
+-    """Publish a generic shared output envelope until every action is contracted."""
++    """Publish shared envelope and compact deltas for actions with output contracts."""
++    action_contracts: dict[str, dict[str, Any]] = {}
++    action_properties: dict[str, Any] = {}
++    for action in actions:
++        if tool_name == "local_ai_status":
++            canonical = _STATUS_OUTPUT_ALIASES.get(action, action)
++        else:
++            canonical = _ACTION_OUTPUT_ALIASES.get(tool_name, {}).get(action, action)
++        contracts = _OUTPUT_ACTION_PROPERTIES.get(tool_name, {})
++        if canonical not in contracts and tool_name != "local_ai_task":
++            continue
++        delta = deepcopy(contracts.get(canonical, {}))
++        if tool_name == "local_ai_task":
++            delta.update({
++                "task_context_id": {"type": "string"},
++                "task_context_etag": {"type": "string"},
++                "task_context_evidence_ids": {"type": "array", "items": {"type": "string"}},
++            })
++        action_contracts[action] = {
++            "type": "object",
++            "properties": delta,
++            "additionalProperties": True,
++        }
++        action_properties.update(delta)
++    if not action_contracts:
++        return {"type": "object", "additionalProperties": True}
++    properties = deepcopy(_OUTPUT_ENVELOPE_PROPERTIES)
++    properties.update(action_properties)
+     return {
+         "type": "object",
+-        "properties": deepcopy(_OUTPUT_ENVELOPE_PROPERTIES),
++        "properties": properties,
+         "additionalProperties": True,
++        "x-action-output-contracts": action_contracts,
+     }
++
+ 
+ REPO_PIPELINE_MUTATING_ACTIONS = frozenset(
+     {
+--- a/tests/test_mcp_stdio_contract.py
++++ b/tests/test_mcp_stdio_contract.py
+@@ -1,109 +1,115 @@
+-from __future__ import annotations
+-
+-import json
+-import os
+-import subprocess
+-import sys
+-from pathlib import Path
+-
+-from local_ai_hub.operation_contracts import MCP_OPERATION_CONTRACTS
+-
+-
+-def test_stdio_handshake_publishes_all_registered_live_schemas() -> None:
+-    from local_ai_hub import mcp_server
+-
+-    root = Path(__file__).resolve().parents[1]
+-    env = os.environ.copy()
+-    env["PYTHONPATH"] = os.pathsep.join(
+-        value for value in (str(root / "src"), env.get("PYTHONPATH", "")) if value
+-    )
+-    messages = [
+-        {
+-            "jsonrpc": "2.0",
+-            "id": 1,
+-            "method": "initialize",
+-            "params": {
+-                "protocolVersion": "2025-06-18",
+-                "capabilities": {},
+-                "clientInfo": {"name": "local-ai-hub-schema-test", "version": "1"},
+-            },
+-        },
+-        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+-        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+-    ]
+-
+-    completed = subprocess.run(
+-        [
+-            sys.executable,
+-            "-B",
+-            "-c",
+-            "from local_ai_hub import mcp_server; "
+-            "mcp_server.CLIENT.ensure_server = lambda **_kwargs: True; "
+-            "mcp_server.main()",
+-        ],
+-        cwd=root,
+-        env=env,
+-        input="".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages),
+-        capture_output=True,
+-        text=True,
+-        timeout=15,
+-        check=False,
+-    )
+-
+-    assert completed.returncode == 0, completed.stderr[-2000:]
+-    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+-    initialize = next(response for response in responses if response.get("id") == 1)
+-    listing = next(response for response in responses if response.get("id") == 2)
+-    assert initialize.get("result", {}).get("protocolVersion") == "2025-06-18"
+-    wire_tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
+-    expected_names = set(mcp_server.FEATURES.enabled_tools)
+-    assert set(wire_tools) == expected_names
+-    assert expected_names == {
+-        contract.name
+-        for contract in MCP_OPERATION_CONTRACTS
+-        if contract.name in mcp_server.FEATURES.enabled_tools
+-    }
+-
+-    for name in expected_names:
+-        registered = mcp_server.mcp._tool_manager._tools[name]
+-        assert wire_tools[name]["inputSchema"] == registered.parameters, name
+-        assert registered.output_schema is not None, name
+-        assert registered.output_schema == {"type": "object", "additionalProperties": True}, name
+-        assert wire_tools[name]["outputSchema"] == registered.output_schema, name
+-
+-
+-def test_stdio_list_hides_feature_disabled_tools(tmp_path: Path) -> None:
+-    root = Path(__file__).resolve().parents[1]
+-    config = tmp_path / "disabled-features.toml"
+-    config.write_text("[features]\nrag = false\ncommands = false\n", encoding="utf-8")
+-    env = os.environ.copy()
+-    env["LOCAL_AI_CONFIG"] = str(config)
+-    env["PYTHONPATH"] = os.pathsep.join(
+-        value for value in (str(root / "src"), env.get("PYTHONPATH", "")) if value
+-    )
+-    messages = [
+-        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+-            "protocolVersion": "2025-06-18", "capabilities": {},
+-            "clientInfo": {"name": "disabled-schema-test", "version": "1"},
+-        }},
+-        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+-        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+-    ]
+-    completed = subprocess.run(
+-        [sys.executable, "-B", "-c", "from local_ai_hub import mcp_server; "
+-         "mcp_server.CLIENT.ensure_server = lambda **_kwargs: True; mcp_server.main()"],
+-        cwd=root,
+-        env=env,
+-        input="".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages),
+-        capture_output=True,
+-        text=True,
+-        timeout=15,
+-        check=False,
+-    )
+-    assert completed.returncode == 0, completed.stderr[-2000:]
+-    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+-    listing = next(response for response in responses if response.get("id") == 2)
+-    wire_tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
+-    assert "local_ai_rag" not in wire_tools
+-    assert "local_ai_command" not in wire_tools
+-    assert all(tool.get("outputSchema") for tool in wire_tools.values())
++from __future__ import annotations
++
++import json
++import os
++import subprocess
++import sys
++from pathlib import Path
++
++from local_ai_hub.operation_contracts import MCP_OPERATION_CONTRACTS, operation_tool_output_schema
++
++
++def test_stdio_handshake_publishes_all_registered_live_schemas() -> None:
++    from local_ai_hub import mcp_server
++
++    root = Path(__file__).resolve().parents[1]
++    env = os.environ.copy()
++    env["PYTHONPATH"] = os.pathsep.join(
++        value for value in (str(root / "src"), env.get("PYTHONPATH", "")) if value
++    )
++    messages = [
++        {
++            "jsonrpc": "2.0",
++            "id": 1,
++            "method": "initialize",
++            "params": {
++                "protocolVersion": "2025-06-18",
++                "capabilities": {},
++                "clientInfo": {"name": "local-ai-hub-schema-test", "version": "1"},
++            },
++        },
++        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
++        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
++    ]
++
++    completed = subprocess.run(
++        [
++            sys.executable,
++            "-B",
++            "-c",
++            "from local_ai_hub import mcp_server; "
++            "mcp_server.CLIENT.ensure_server = lambda **_kwargs: True; "
++            "mcp_server.main()",
++        ],
++        cwd=root,
++        env=env,
++        input="".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages),
++        capture_output=True,
++        text=True,
++        timeout=15,
++        check=False,
++    )
++
++    assert completed.returncode == 0, completed.stderr[-2000:]
++    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
++    initialize = next(response for response in responses if response.get("id") == 1)
++    listing = next(response for response in responses if response.get("id") == 2)
++    assert initialize.get("result", {}).get("protocolVersion") == "2025-06-18"
++    wire_tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
++    expected_names = set(mcp_server.FEATURES.enabled_tools)
++    assert set(wire_tools) == expected_names
++    assert expected_names == {
++        contract.name
++        for contract in MCP_OPERATION_CONTRACTS
++        if contract.name in mcp_server.FEATURES.enabled_tools
++    }
++
++    for name in expected_names:
++        registered = mcp_server.mcp._tool_manager._tools[name]
++        assert wire_tools[name]["inputSchema"] == registered.parameters, name
++        assert registered.output_schema is not None, name
++        action_enum = registered.parameters.get("properties", {}).get("action", {}).get("enum", [])
++        assert registered.output_schema == operation_tool_output_schema(name, action_enum), name
++        assert wire_tools[name]["outputSchema"] == registered.output_schema, name
++        if name == "local_ai_rag":
++            results_schema = registered.output_schema["properties"]["results"]
++            assert results_schema["type"] == "array"
++            assert results_schema["items"]["properties"]["chunk_no"] == {"type": "integer"}
++            assert registered.output_schema["x-action-output-contracts"]["search"]["properties"]["results"] == results_schema
++
++
++def test_stdio_list_hides_feature_disabled_tools(tmp_path: Path) -> None:
++    root = Path(__file__).resolve().parents[1]
++    config = tmp_path / "disabled-features.toml"
++    config.write_text("[features]\nrag = false\ncommands = false\n", encoding="utf-8")
++    env = os.environ.copy()
++    env["LOCAL_AI_CONFIG"] = str(config)
++    env["PYTHONPATH"] = os.pathsep.join(
++        value for value in (str(root / "src"), env.get("PYTHONPATH", "")) if value
++    )
++    messages = [
++        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
++            "protocolVersion": "2025-06-18", "capabilities": {},
++            "clientInfo": {"name": "disabled-schema-test", "version": "1"},
++        }},
++        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
++        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
++    ]
++    completed = subprocess.run(
++        [sys.executable, "-B", "-c", "from local_ai_hub import mcp_server; "
++         "mcp_server.CLIENT.ensure_server = lambda **_kwargs: True; mcp_server.main()"],
++        cwd=root,
++        env=env,
++        input="".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages),
++        capture_output=True,
++        text=True,
++        timeout=15,
++        check=False,
++    )
++    assert completed.returncode == 0, completed.stderr[-2000:]
++    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
++    listing = next(response for response in responses if response.get("id") == 2)
++    wire_tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
++    assert "local_ai_rag" not in wire_tools
++    assert "local_ai_command" not in wire_tools
++    assert all(tool.get("outputSchema") for tool in wire_tools.values())
+--- a/tests/test_mcp_output_contracts.py
++++ b/tests/test_mcp_output_contracts.py
+@@ -21,7 +21,7 @@
+         schema = mcp_server._mcp_contract_schema(tool_name)
+         assert schema is not None
+         enum = schema["properties"]["action"]["enum"]
+-        canonical_actions = set(operation_actions(tool_name, mcp_server.FEATURES))
++        canonical_actions = set(mcp_server._ADOPTION_ACTIONS.get(tool_name, ())) & set(enum)
+         for alias, canonical in aliases.items():
+             if canonical in canonical_actions:
+                 assert alias in enum, (tool_name, alias)

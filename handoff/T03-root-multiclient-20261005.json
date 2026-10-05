@@ -1,0 +1,51 @@
+{
+  "task": "T03",
+  "root": "C:/Users/Adam/.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "root_current_repository_revision": "317b54151db08dc4c03934721826d53b611226313283aa39691ed1f28c4028ff",
+  "root_current_sources_tested_sha256": {
+    "src/local_ai_hub/client.py": "0E240370CEF93F6E0899EAC37E7B0DC43716E42F86AE3D31D7E8E64E3537E95B",
+    "src/local_ai_hub/supervisor.py": "4C72395546CAD01D9249B6C18CFE051EE5137E840CDFDE65D5E5238DC19DED2C"
+  },
+  "target_path": "tests/test_t03_multi_client_single_daemon.py",
+  "root_target_preimage": "absent",
+  "source_sha256": "24F11C7FB015B1846CCA7FC05AF3AD02AE0911DA8C72B85C00445AA3DD235F95",
+  "patch_file": "T03-root-multiclient-20261005.patch",
+  "patch_sha256": "98E51F7080A28367DF99D8331503801F0A2F727C1126F0B2F470994AB4C7FB22",
+  "changed_paths": [
+    "tests/test_t03_multi_client_single_daemon.py"
+  ],
+  "measurement": "8 separate HubClient worker processes; 8 service-start requests; exactly 1 Supervisor.acquire() spawn authority; no Hub daemon launched by test.",
+  "validation": {
+    "result": "1 passed in 2.38s",
+    "execution_id": "60eb20ea0c9144c398a078f2e647383e",
+    "request_id": "req_079f65b2a7ec",
+    "repository_revision": "7b5f245816604b9751210d73d75f6bd7d77d340577ba623ff63a3094cba77d49"
+  },
+  "root_modified": false,
+  "excluded": [
+    "src/local_ai_hub/client.py",
+    "src/local_ai_hub/supervisor.py",
+    "src/local_ai_hub/mcp_server.py",
+    "src/local_ai_hub/http_server.py",
+    "/api/context/pack",
+    "/api/memory/promote"
+  ],
+  "apply_check": {
+    "result": "passed",
+    "command": "git apply --check",
+    "fallback": "native read-only after broker terminal=true/retryable=false"
+  },
+  "root_current_status": "target file absent; root source paths remain pre-existing dirty and unchanged by T03",
+  "root_current_repository_revision_latest_test": "317b54151db08dc4c03934721826d53b611226313283aa39691ed1f28c4028ff",
+  "root_current_hashes_latest": {
+    "src/local_ai_hub/http_server.py": "0E0228574B952E1186B8F459BC0668835CB911DACD1E5A5C8313F335BE256E7F",
+    "src/local_ai_hub/mcp_server.py": "16E4767CF1715241211144793ADD799CDD87F55523F6F1C9C0D54F6C5BEF8E1E"
+  },
+  "related_acceptance": {
+    "command": "tests/test_sse_events_stream.py tests/test_api_search_path_hints.py tests/test_mcp_contract_dispatch.py::test_stdio_tools_list_hides_feature_disabled_tools",
+    "result": "7 passed",
+    "execution_id": "65e96aac0d50454c9286e29873c436c6",
+    "request_id": "req_ead417145985"
+  }
+}

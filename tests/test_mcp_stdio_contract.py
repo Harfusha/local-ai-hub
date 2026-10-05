@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from local_ai_hub.operation_contracts import MCP_OPERATION_CONTRACTS
+from local_ai_hub.operation_contracts import MCP_OPERATION_CONTRACTS, operation_tool_output_schema
 
 
 def test_stdio_handshake_publishes_all_registered_live_schemas() -> None:
@@ -68,8 +68,14 @@ def test_stdio_handshake_publishes_all_registered_live_schemas() -> None:
         registered = mcp_server.mcp._tool_manager._tools[name]
         assert wire_tools[name]["inputSchema"] == registered.parameters, name
         assert registered.output_schema is not None, name
-        assert registered.output_schema == {"type": "object", "additionalProperties": True}, name
+        action_enum = registered.parameters.get("properties", {}).get("action", {}).get("enum", [])
+        assert registered.output_schema == operation_tool_output_schema(name, action_enum), name
         assert wire_tools[name]["outputSchema"] == registered.output_schema, name
+        if name == "local_ai_rag":
+            results_schema = registered.output_schema["properties"]["results"]
+            assert results_schema["type"] == "array"
+            assert results_schema["items"]["properties"]["chunk_no"] == {"type": "integer"}
+            assert registered.output_schema["x-action-output-contracts"]["search"]["properties"]["results"] == results_schema
 
 
 def test_stdio_list_hides_feature_disabled_tools(tmp_path: Path) -> None:
