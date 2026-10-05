@@ -180,8 +180,8 @@ def test_operation_contract_metadata(row):
 
     assert row["owner"]
     expected_owner_task = (
-        "T01"
-        if row["surface"] == "HTTP GET" and row["name"] == "/api/context/pack"
+        "T14"
+        if row["surface"] == "HTTP POST" and row["name"] == "/api/context/pack"
         else ROOT_TASK_ID
     )
     assert row["owner_task"] == expected_owner_task
@@ -297,7 +297,7 @@ def test_inventory_extracts_surfaces_and_resolves_dynamic_route_registry(tmp_pat
     }
     assert any(route["path"] == "/api/jobs/" and route["match"] == "prefix"
                for route in inventory["http_routes"])
-    assert inventory["http_routes_by_target"]["GET /api/context/pack"]["classification"] == (
+    assert inventory["http_routes_by_target"]["POST /api/context/pack"]["classification"] == (
         "registered_dynamic"
     )
     assert "GET /health" in inventory["http_routes_by_target"]
@@ -971,7 +971,7 @@ def test_inventory_contract_rows_include_required_machine_readable_fields(tmp_pa
     assert all(row.get("task_id") == task_id for row in rows)
     assert all(
         row["owner_task"]
-        == ("T01" if row["surface"] == "HTTP GET" and row["name"] == "/api/context/pack" else task_id)
+        == ("T14" if row["surface"] == "HTTP POST" and row["name"] == "/api/context/pack" else task_id)
         for row in rows
     )
     assert all(row["operation_id"] and row["handler"] and row["test_ids"] for row in rows)
@@ -1111,7 +1111,7 @@ def test_status_route_is_only_documented():
     assert "/api/status" in "documented route: /api/status"
 
 def test_context_pack_http_request():
-    result = request("GET", "http://127.0.0.1/api/context/pack", {})
+    result = request("POST", "http://127.0.0.1/api/context/pack", {})
     assert result["success"] is True
 ''',
     )
@@ -1167,7 +1167,7 @@ def test_local_ai_repo_context_forwards_guarded_pack_fields():
         "tests/test_operation_behavior.py::test_cli_status_operation"
     ]
     assert "HTTP GET::/api/status" not in links
-    assert "HTTP GET::/api/context/pack" not in links
+    assert "HTTP POST::/api/context/pack" not in links
     rows = MODULE.coverage_rows(MODULE._findings(MODULE.collect_inventory(tmp_path)))
     for key, expected_selector in (
         (("MCP action local_ai_repo", "search"), "test_repo_search_dispatch"),
@@ -1564,11 +1564,11 @@ def test_generation_task_preserves_explicit_dynamic_route_owner():
     rows = MODULE.coverage_rows(MODULE._findings(inventory), task_id="T19")
     matches = [
         row for row in rows
-        if row["surface"] == "HTTP GET" and row["name"] == "/api/context/pack"
+        if row["surface"] == "HTTP POST" and row["name"] == "/api/context/pack"
     ]
 
     assert len(matches) == 1
-    assert matches[0]["owner_task"] == "T01"
+    assert matches[0]["owner_task"] == "T14"
     assert matches[0]["task_id"] == "T19"
 
 def test_behavioral_disposition_excludes_metadata_only_selectors():
