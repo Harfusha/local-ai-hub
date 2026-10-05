@@ -2155,15 +2155,26 @@ class LocalAIServices:
                 ]
                 if language:
                     cmd.extend(["--language", language])
-                proc = run_hidden(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    check=False,
-                    cancel_event=cancel_event,
-                    cancel_grace_seconds=1.0,
-                )
+                try:
+                    proc = run_hidden(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        check=False,
+                        cancel_event=cancel_event,
+                        cancel_grace_seconds=1.0,
+                    )
+                except FileNotFoundError:
+                    return {
+                        "success": False,
+                        "audio_path": str(p),
+                        "model": model,
+                        "engine": "whisper_cli",
+                        "reason": "cli_missing",
+                        "degraded": True,
+                        "error": "Whisper CLI became unavailable before it could run.",
+                    }
                 if proc.returncode != 0:
                     return {
                         "success": False,
@@ -2243,16 +2254,6 @@ class LocalAIServices:
                 "engine": "whisper_cli",
                 "reason": "timeout",
                 "error": "Whisper CLI timed out before transcription completed.",
-            }
-        except FileNotFoundError:
-            return {
-                "success": False,
-                "audio_path": str(p),
-                "model": model,
-                "engine": "whisper_cli",
-                "reason": "cli_missing",
-                "degraded": True,
-                "error": "Whisper CLI became unavailable before it could run.",
             }
         except Exception:
             return {
