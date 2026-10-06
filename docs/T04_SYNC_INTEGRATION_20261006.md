@@ -16,8 +16,8 @@ authorized after terminal Hub failure. No Hub retries, installs, push or root ed
   Final executable source/tests match master; original variants remain committed
   in checkpoint ancestry, not discarded.
 - Handoff Markdown retained and committed as historical documentation.
-  Other handoff overlay source, patches and pytest configuration remain preserved
-  as untracked artifacts. No runtime state/caches staged.
+  Other original handoff overlay source, patches and pytest configuration are
+  committed in the final preservation commit. No runtime state/caches staged.
 - Preprocessing/Gemini integration, CodeGraph removal and T14 context-pack route
   inherited unchanged from master.
 - No duplicate test execution: T04 source/tests match master; companion
@@ -32,4 +32,20 @@ CodeGraph lexical absence assertion also disagrees with master ignore-directory
 string. Committed synchronization does not claim full acceptance.
 
 Latest master merged at handoff; original and dirty checkpoint refs pinned.
-Final HEAD: `git rev-parse HEAD`. Changes versus master: handoff documentation.
+Final HEAD: `git rev-parse HEAD`. Changes versus master include original handoff
+patches/overlay source/tests, historical documentation and raw preservation data.
+
+Master start pinned at `fbc965f568105e1a8d3dc03ae4c9da5531a9617e`;
+already synchronized through `f8ba97fe9eafa38810dbbbc3c4184800da7bafcd`.
+Later moving-head integration belongs to the orchestrator.
+
+`handoff/t04-preservation-lock-recovery-20261006-v2/manifest.json` lists 11 raw
+snapshot entries with SHA-256 and all 339 excluded paths. Matching
+`original-bytes.zip` verified entry-by-entry before Git staging; exact remaining
+original handoff bytes remain recoverable despite Git EOL normalization.
+Earlier raw archive/manifest also retained. Pre-merge source checkpoint is a
+Git tree; original mixed EOL bytes for already-normalized source are unverified.
+Excluded, preserved on disk: `.serena/` generated backend state/local config,
+source/tests/tools `__pycache__/`, overlay generated cache files.
+Exact excluded paths are enumerated in the manifest.
+Final raw ref: `checkpoint/t04-lock-recovery-preservation-20261006`.
