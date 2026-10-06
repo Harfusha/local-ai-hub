@@ -1317,7 +1317,7 @@ class HubClient:
         act = action.strip().lower().replace("-", "_")
         if act.startswith("task_"):
             task_action = act.replace("task_", "")
-            payload = {"action": task_action, **kwargs}
+            payload = {**kwargs, "action": task_action}
             return self.post("/api/agent-state/tasks", payload)
         if act in ("memo_put", "memo_get", "memo_search", "memo_delete"):
             if act == "memo_put":
@@ -1338,10 +1338,10 @@ class HubClient:
                 return self.post("/api/memory/delete", {"root": kwargs.get("root", "."), "key": kwargs.get("key", "")})
         if act.startswith("memory_"):
             mem_action = act.replace("memory_", "")
-            payload = {"action": mem_action, **kwargs}
+            payload = {**kwargs, "action": mem_action}
             return self.post("/api/agent-state/memory", payload)
         if act.startswith("relation_"):
-            payload = {"action": act, **kwargs}
+            payload = {**kwargs, "action": act}
             return self.post("/api/agent-state/memory", payload)
         if act == "incident_decision":
 
@@ -1385,8 +1385,8 @@ class HubClient:
         if act in {"negative_knowledge_record", "negative_knowledge_find"}:
             sub_act = "record" if act == "negative_knowledge_record" else "find"
             return self.post("/api/agent-state/incidents", {
-                "action": sub_act,
                 **kwargs,
+                "action": sub_act,
             })
         if act in ("claim", "claim_batch"):
             return self.post("/api/leases/claim_batch", {
@@ -1493,12 +1493,12 @@ class HubClient:
         **kwargs: Any,
     ) -> dict[str, Any]:
         payload = {
+            **kwargs,
             "action": "create",
             "goal": goal,
             "acceptance_criteria": acceptance_criteria or [],
             "task_id": task_id,
             "scope": scope,
-            **kwargs,
         }
         if root is not None:
             payload["root"] = root
@@ -1548,12 +1548,12 @@ class HubClient:
         **kwargs: Any,
     ) -> dict[str, Any]:
         payload = {
+            **kwargs,
             "action": "checkpoint",
             "task_id": task_id,
             "phase": phase,
             "next_action": next_action,
             "affected_paths": affected_paths or [],
-            **kwargs,
         }
         if root is not None:
             payload["root"] = root
@@ -1561,12 +1561,12 @@ class HubClient:
 
     def record_memory(self, key: str, value: Any, scope: str = "task", kind: str = "fact", **kwargs: Any) -> dict[str, Any]:
         payload = {
+            **kwargs,
             "action": "record",
             "key": key,
             "value": value,
             "scope": scope,
             "kind": kind,
-            **kwargs,
         }
         return self.post("/api/agent-state/memory", payload)
 

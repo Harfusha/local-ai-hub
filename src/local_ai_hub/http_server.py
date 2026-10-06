@@ -2638,7 +2638,9 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
-                    tenant_val = self._tenant()
+                    query_tenant = (query.get("tenant") or [None])[0]
+                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                    tenant_val = str(query_tenant).strip() if query_tenant else (str(explicit_tenant).strip() if explicit_tenant else None)
                     task_id_val = (query.get("task_id") or [None])[0]
                     session_id_val = (query.get("session_id") or [None])[0]
                     clone_id_val = (query.get("clone_id") or [None])[0]
@@ -2696,7 +2698,9 @@ class Handler(BaseHTTPRequestHandler):
                 if requested_root and project_identity is None:
                     self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                 root_val, repository_id_val = project_identity or (None, None)
-                tenant_val = self._tenant()
+                query_tenant = (query.get("tenant") or [None])[0]
+                explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                tenant_val = str(query_tenant).strip() if query_tenant else (str(explicit_tenant).strip() if explicit_tenant else None)
                 task_id_val = (query.get("task_id") or [None])[0]
                 session_id_val = (query.get("session_id") or [None])[0]
                 clone_id_val = (query.get("clone_id") or [None])[0]
@@ -4236,7 +4240,9 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
-                    tenant_val = self._tenant()
+                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                    raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
+                    tenant_val = str(raw_tenant).strip() if raw_tenant else None
                     task_id_val = payload.get("task_id")
                     session_id_val = payload.get("session_id")
                     clone_id_val = payload.get("clone_id")
@@ -4284,7 +4290,9 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
                     requested_scope = _parse_memory_scope(payload.get("scope"))
-                    tenant_val = None if requested_scope is AgentScope.GLOBAL else self._tenant()
+                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                    raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
+                    tenant_val = None if requested_scope is AgentScope.GLOBAL else (str(raw_tenant).strip() if raw_tenant else None)
                     scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
                         requested_scope,
                         scope_id=payload.get("scope_id"),
@@ -4300,7 +4308,9 @@ class Handler(BaseHTTPRequestHandler):
                     if ambiguous_scope:
                         self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
                     if scope_val is None:
-                        self._send(400, {"success": False, "error": "memory delete requires an explicit scope identity", "terminal": True, "retryable": False}); return
+                        scope_val = AgentScope.GLOBAL
+                    if scope_val is AgentScope.WORKTREE:
+                        self._send(403, {"success": False, "error": "worktree-scoped memory delete requires verified worktree scope", "terminal": True, "retryable": False}); return
                     deleted = APP.agent_memory.delete(
                         record_id_val,
                         scope=scope_val,
@@ -4333,7 +4343,9 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
-                    tenant_val = self._tenant()
+                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                    raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
+                    tenant_val = str(raw_tenant).strip() if raw_tenant else None
                     task_id_val = payload.get("task_id")
                     session_id_val = payload.get("session_id")
                     clone_id_val = payload.get("clone_id")
@@ -4400,7 +4412,9 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         return None, "memory project identity could not be resolved"
                     root_val, repository_id_val = project_identity or (None, None)
-                    tenant_val = self._tenant()
+                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                    raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
+                    tenant_val = str(raw_tenant).strip() if raw_tenant else None
                     task_id_val = payload.get("task_id")
                     session_id_val = payload.get("session_id")
                     clone_id_val = payload.get("clone_id")
