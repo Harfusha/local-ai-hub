@@ -1,4 +1,5 @@
 Compared against pinned synchronized master f8ba97fe9eafa38810dbbbc3c4184800da7bafcd.
+Integration checkout:
 artifacts/t03-start-lock-only-to-t04.patch
 artifacts/t04-api-client-acceptance-closeout-2026-10-01-v1.md
 artifacts/t04-api-conversation-current-candidate-receipt-2026-10-02-v1.md
@@ -161,3 +162,19 @@ tests/test_t04_http_sse_integration.py
 tests/test_t04_mcp_stdio_daemon_independent.py
 tests/test_t04_public_api_contracts.py
 tests/test_t04_request_id_preflight.py
+Lock-recovery checkout:
+docs/T04_SYNC_CHANGED_FILES_20261006.txt
+docs/T04_SYNC_INTEGRATION_20261006.md
+handoff/client-suite-overlay/pytest.ini
+handoff/client-suite-overlay/src/local_ai_hub/__init__.py
+handoff/client-suite-overlay/src/local_ai_hub/client.py
+handoff/client-suite-overlay/tests/test_client_operational_mode_autostart.py
+handoff/client-suite-overlay/tests/test_client_startup_resilience.py
+handoff/client-suite-overlay/tests/test_client_startup_transport_fallback.py
+handoff/client-suite-overlay/tools/service.py
+handoff/t04-preservation-lock-recovery-20261006-v2/manifest.json
+handoff/t04-preservation-lock-recovery-20261006-v2/original-bytes.zip
+handoff/t04-preservation-lock-recovery-20261006/manifest.json
+handoff/t04-preservation-lock-recovery-20261006/original-bytes.zip
+handoff/t04-startup-lock-os-acceptance-2026-10-03.md
+handoff/t04-startup-resilience-root-current.patch
