@@ -338,6 +338,55 @@ def _resolve_action(tool_kind: str, action: str) -> str:
     return tool_aliases.get(cleaned, cleaned)
 
 
+def _action_kind_for_tool(tool_name: str) -> str:
+    return {
+        "local_ai_coord": "coord",
+        "local_ai_command": "command",
+        "local_ai_repo": "repo",
+        "local_ai_task": "task",
+    }.get(tool_name, "")
+
+
+def _action_values_with_aliases(tool_name: str, features: Any = None) -> tuple[str, ...]:
+    tool_kind = _action_kind_for_tool(tool_name)
+    actions = operation_actions(tool_name, features)
+    aliases = _ACTION_ALIASES.get(tool_kind, {})
+    return tuple(dict.fromkeys((
+        *actions,
+        *(alias for alias, canonical in aliases.items() if canonical in actions),
+    )))
+
+
+def _input_schema_with_action_aliases(tool_name: str, schema: dict[str, Any]) -> dict[str, Any]:
+    """Publish short actions with the same conditional schema as their canonical action."""
+    tool_kind = _action_kind_for_tool(tool_name)
+    aliases = _ACTION_ALIASES.get(tool_kind, {})
+    if not aliases:
+        return schema
+
+    result = copy.deepcopy(schema)
+    actions = set(operation_actions(tool_name, FEATURES))
+    selector_schema = result.get("properties", {}).get("action")
+    if not isinstance(selector_schema, dict):
+        return result
+    selector_schema["enum"] = list(_action_values_with_aliases(tool_name, FEATURES))
+
+    conditions = result.setdefault("allOf", [])
+    by_action = {
+        row.get("if", {}).get("properties", {}).get("action", {}).get("const"): row
+        for row in conditions
+        if isinstance(row, dict)
+    }
+    for alias, canonical in aliases.items():
+        canonical_rule = by_action.get(canonical)
+        if canonical not in actions or canonical_rule is None:
+            continue
+        alias_rule = copy.deepcopy(canonical_rule)
+        alias_rule["if"]["properties"]["action"]["const"] = alias
+        conditions.append(alias_rule)
+    return result
+
+
 def _normalize_deterministic(val: Any) -> Any:
     """Sort dictionary keys and normalize microsecond timestamps to maintain stable prompt caches."""
     if isinstance(val, dict):
@@ -594,7 +643,7 @@ def _desc_artifact() -> str:
     )
 
 
-TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task"))
+TaskAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_task", FEATURES))
 
 
 _REPO_ACTIONS = (
@@ -621,13 +670,13 @@ _REPO_ACTIONS = (
 
 
 def _repo_action_type(features: Any) -> Any:
-    return Literal.__getitem__(operation_actions("local_ai_repo", features))
+    return Literal.__getitem__(_action_values_with_aliases("local_ai_repo", features))
 
 
 RepoAction: TypeAlias = _repo_action_type(FEATURES)
 RagAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_rag"))
-CommandAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_command"))
-CoordAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_coord"))
+CommandAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_command", FEATURES))
+CoordAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_coord", FEATURES))
 StatusDetail: TypeAlias = Literal.__getitem__(operation_actions("local_ai_status"))
 _STATUS_ACTION_ALIASES = ("status", "health", "check", "info")
 StatusAction: TypeAlias = Literal.__getitem__(
@@ -3211,7 +3260,9 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         if _registered_tool is None or not _actions:
             continue
         if hasattr(_registered_tool, "parameters"):
-            _registered_tool.parameters = operation_tool_input_schema(_tool_name, FEATURES)
+            _registered_tool.parameters = _input_schema_with_action_aliases(
+                _tool_name, operation_tool_input_schema(_tool_name, FEATURES)
+            )
         _output_schema = operation_tool_output_schema(_tool_name, FEATURES)
         _fn_metadata = getattr(_registered_tool, "fn_metadata", None)
         if hasattr(_fn_metadata, "output_schema"):
@@ -3508,7 +3559,18 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             return result
 
         try:
-            validation = validate_operation_call(name, arguments, features=FEATURES)
+            selector = "detail" if name == "local_ai_status" else "action"
+            validation_arguments = dict(arguments)
+            requested_action = validation_arguments.get(selector)
+            action_kind = _action_kind_for_tool(name)
+            canonical_action = (
+                _resolve_action(action_kind, requested_action)
+                if action_kind and isinstance(requested_action, str)
+                else requested_action
+            )
+            if isinstance(canonical_action, str):
+                validation_arguments[selector] = canonical_action
+            validation = validate_operation_call(name, validation_arguments, features=FEATURES)
             if validation is not None:
                 status_code, error = validation
                 payload = {
@@ -3529,6 +3591,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 return finalize(_mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
             selector = "detail" if name == "local_ai_status" else "action"
             action = arguments.get(selector)
+            if action_kind and isinstance(action, str):
+                action = _resolve_action(action_kind, action)
             if name == "local_ai_status":
                 alias = arguments.get("action")
                 if isinstance(alias, str) and alias in {"status", "health", "check", "info"}:

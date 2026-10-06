@@ -24,6 +24,7 @@ class _FakeTaskStore:
         if task_id != "daemon-test":
             return None
         return SimpleNamespace(
+            task_id=task_id,
             checkpoint=SimpleNamespace(
                 state_data={"worktree": {"success": True, "worktree_path": self.worktree_path}}
             )
@@ -317,6 +318,37 @@ def test_spawn_daemon_requires_auxiliary_policy_before_process_launch(
     assert result["success"] is False
     assert result["policy"]["allowed"] is False
     assert not launches
+
+
+def test_spawn_daemon_policy_enforces_task_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    broker = _broker(tmp_path)
+    exhausted_budget = SimpleNamespace(
+        is_exhausted=lambda: True,
+        used_tokens=12,
+        max_tokens=12,
+        used_compute_seconds=5.0,
+        max_compute_seconds=5.0,
+    )
+    monkeypatch.setattr(broker.policy_engine, "get_budget", lambda task_id: exhausted_budget)
+
+    result = broker.authorize_auxiliary_action(
+        "spawn_daemon", endpoint="commands.spawn_daemon", task_id="daemon-test"
+    )
+
+    assert result["allowed"] is False
+    assert "task budget exhausted (daemon-test)" in result["reason"]
+
+
+def test_spawn_daemon_policy_fails_closed_for_missing_task(tmp_path: Path) -> None:
+    broker = _broker(tmp_path)
+
+    result = broker.authorize_auxiliary_action(
+        "spawn_daemon", endpoint="commands.spawn_daemon", task_id="missing-task"
+    )
+
+    assert result["allowed"] is False
+    assert result["terminal"] is True
+    assert "task" in result["reason"].lower()
 
 
 def test_spawn_daemon_reauthorizes_immediately_before_launch(

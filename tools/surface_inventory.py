@@ -491,6 +491,45 @@ def _walk_handler_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef):
         stack.extend(reversed(list(ast.iter_child_nodes(node))))
 
 
+def _route_availability_gates(nodes: list[ast.AST]) -> list[str]:
+    gates: list[str] = []
+    for node in nodes:
+        if not isinstance(node, ast.If) or _route_literals(node.test)[0]:
+            continue
+        descendants = list(ast.walk(node.test))
+        if not any(isinstance(item, ast.Name) and item.id == "APP" for item in descendants):
+            continue
+        has_optional_lookup = any(
+            isinstance(item, ast.Call)
+            and _call_name(item.func) == "getattr"
+            and item.args
+            and isinstance(item.args[0], ast.Name)
+            and item.args[0].id == "APP"
+            for item in descendants
+        )
+        has_enabled_check = any(
+            (isinstance(item, ast.Attribute) and item.attr in {"enabled", "available"})
+            or (isinstance(item, ast.Constant) and item.value in {"enabled", "available"})
+            for item in descendants
+        )
+        has_feature_check = any(
+            (isinstance(item, ast.Attribute) and item.attr == "features")
+            or (isinstance(item, ast.Constant) and item.value in {"features", "dashboard_enabled"})
+            for item in descendants
+        )
+        has_optional_compare = any(
+            isinstance(item, ast.Compare)
+            and any(isinstance(operator, (ast.Is, ast.IsNot)) for operator in item.ops)
+            and any(isinstance(value, ast.Constant) and value.value is None for value in item.comparators)
+            for item in descendants
+        )
+        if has_optional_lookup or has_enabled_check or has_feature_check or has_optional_compare:
+            condition = ast.unparse(node.test)
+            if condition not in gates:
+                gates.append(condition)
+    return gates
+
+
 def _extract_http(tree: ast.Module, path: str) -> list[dict[str, Any]]:
     routes: dict[tuple[str, str], dict[str, Any]] = {}
     handlers = []
@@ -523,6 +562,7 @@ def _extract_http(tree: ast.Module, path: str) -> list[dict[str, Any]]:
                     route_nodes.append(current)
                     pending.extend(reversed(list(ast.iter_child_nodes(current))))
 
+                conditional_gates = _route_availability_gates(route_nodes)
                 query_fields: set[str] = set()
                 body_fields: set[str] = set()
                 status_codes: set[int] = set()
@@ -589,13 +629,20 @@ def _extract_http(tree: ast.Module, path: str) -> list[dict[str, Any]]:
                         "body_fields": sorted(body_fields),
                         "response_contract": response_contract,
                         "status_codes": sorted(status_codes),
+                        "conditional_gates": conditional_gates,
                         "timeout": "no route-local timeout declaration; effective request budget unverified",
                         "operation_side_effects": {
                             "direct_calls": sorted(direct_calls),
                             "classification": "transitive effects unverified",
                         },
-                        "backend_availability": "handler route is registered; downstream runtime health unverified",
+                        "backend_availability": (
+                            "route availability depends on the listed source gates; downstream runtime health unverified"
+                            if conditional_gates
+                            else "handler route is registered; downstream runtime health unverified"
+                        ),
                     },
+                    "conditional_gates": conditional_gates,
+                    "evidence_status": "conditional" if conditional_gates else "confirmed",
                     "evidence": f"{path}:{branch.lineno}",
                 }
                 routes[(method, route)] = item
@@ -2255,6 +2302,130 @@ _FIELD_GAP_TASK = {
     "return_code_scope": "T03", "dependency_scope": "T03", "scope": "T03", "changed_files": "T07",
     "classification": "T07",
 }
+
+_OPERATION_OWNER_TASKS = frozenset(f"T{number:02d}" for number in range(1, 22))
+_MCP_TOOL_OWNER_TASK = {
+    "local_ai_status": "T18",
+    "local_ai_repo": "T10",
+    "local_ai_task": "T12",
+    "local_ai_command": "T15",
+    "local_ai_coord": "T08",
+    "local_ai_rag": "T11",
+    "local_ai_artifact": "T14",
+    "local_ai_work": "T16",
+}
+
+
+def _http_operation_owner_task(path: str) -> str:
+    normalized = path.split(" ", 1)[-1].lower()
+    if normalized == "/api/context/pack":
+        return "T14"
+    if normalized == "/api/search":
+        return "T21"
+    if "/benchmark" in normalized or normalized.endswith("/benchmark"):
+        return "T02"
+    if "/release" in normalized or "/selftest" in normalized:
+        return "T20"
+    if normalized.startswith("/api/agent-state/memory") or normalized.startswith(("/api/memory", "/api/leases")):
+        return "T05"
+    if normalized.startswith(("/api/agent-state/verification", "/api/evidence", "/api/worktrees")):
+        return "T09"
+    if normalized.startswith("/api/agent-state") or normalized.startswith("/api/coord"):
+        return "T08"
+    if normalized.startswith(("/api/project-config", "/api/project/", "/api/path-hints")):
+        return "T21"
+    if normalized.startswith(("/api/repo", "/api/code", "/api/git", "/api/ast", "/api/preprocess", "/api/affected_tests", "/api/topology")):
+        return "T10"
+    if normalized.startswith(("/api/rag", "/api/embed", "/api/rerank", "/api/ingest")):
+        return "T11"
+    if normalized.startswith(("/api/models", "/api/model", "/api/router", "/api/inference", "/api/ollama", "/api/llama", "/api/hardware", "/api/scheduler")):
+        return "T12"
+    if normalized.startswith(("/api/jobs", "/api/conversation", "/api/async", "/api/task")):
+        return "T13"
+    if normalized.startswith(("/api/artifact", "/api/context", "/api/cache", "/api/token", "/api/ledger")):
+        return "T14"
+    if normalized.startswith(("/api/command", "/api/stream", "/api/speculative")):
+        return "T15"
+    if normalized.startswith(("/api/work", "/api/orchestrator")):
+        return "T16"
+    if normalized.startswith(("/api/browser", "/api/vision", "/api/audio", "/api/transcri", "/api/generate")):
+        return "T17"
+    if normalized.startswith(("/api/status", "/api/health", "/api/queue", "/api/telemetry", "/api/debug", "/api/live", "/api/adoption", "/api/mode", "/api/maintenance", "/api/capabilities", "/api/metrics", "/api/db", "/dashboard")):
+        return "T18"
+    if normalized.startswith(("/api/install", "/api/setup", "/api/doctor", "/api/config", "/api/bundle", "/api/cli")):
+        return "T19"
+    return "T04"
+
+
+def _mcp_action_owner_task(tool_name: str, action: str) -> str:
+    canonical = re.sub(r"\s+\(alias for .+\)$", "", action).lower()
+    if tool_name == "local_ai_status":
+        return "T08" if canonical == "agent_state" else "T18"
+    if tool_name == "local_ai_repo":
+        if canonical == "search":
+            return "T21"
+        if canonical in {"context_budget", "artifact", "artifacts", "cache"}:
+            return "T14"
+        if canonical in {"project_config", "path_hints"}:
+            return "T21"
+        return "T10"
+    if tool_name == "local_ai_task":
+        if any(word in canonical for word in ("conversation", "async", "wait", "continue", "cancel", "resume")):
+            return "T13"
+        if any(word in canonical for word in ("vision", "transcribe", "audio", "image")):
+            return "T17"
+        if any(word in canonical for word in ("benchmark", "evaluation", "candidate")):
+            return "T02"
+        return "T12"
+    if tool_name == "local_ai_command":
+        if canonical in {"run", "repair", "auto_fix", "format", "stage", "stash", "daemon", "network", "bundle"}:
+            return "T06"
+        if canonical in {"cancel", "retry", "replay"}:
+            return "T07"
+        return "T15"
+    if tool_name == "local_ai_coord":
+        if any(word in canonical for word in ("verify", "receipt", "evidence", "worktree", "completion")):
+            return "T09"
+        return "T08"
+    return _MCP_TOOL_OWNER_TASK.get(tool_name, "T03")
+
+
+def _operation_owner_task(finding: dict[str, Any]) -> str | None:
+    explicit = finding.get("owner_task")
+    if explicit in _OPERATION_OWNER_TASKS:
+        return explicit
+    surface = str(finding.get("surface", ""))
+    name = str(finding.get("name", ""))
+    if surface == "MCP tool" or surface.startswith("MCP action schema gap "):
+        return "T03"
+    if surface.startswith("MCP detail "):
+        return "T08" if name.lower() == "agent_state" else "T18"
+    if surface.startswith("MCP action "):
+        family = surface.removeprefix("MCP action ").removeprefix("alias ")
+        return _mcp_action_owner_task(family, name)
+    if surface.startswith("HTTP ") or surface == "HubClient target":
+        return _http_operation_owner_task(name)
+    if surface == "HubClient method":
+        return "T04"
+    if surface == "CLI operation":
+        action = name.lower().replace("_", "-")
+        if "benchmark" in action:
+            return "T02"
+        if any(word in action for word in ("release", "selftest", "self-test")):
+            return "T20"
+        if action in {"status", "dashboard", "logs", "service-status", "watch"}:
+            return "T18"
+        if action == "memory":
+            return "T05"
+        if action in {"agent-state", "tasks"}:
+            return "T08"
+        if action in {"clean", "cleanup", "start", "stop", "restart", "pause", "resume"}:
+            return "T06"
+        return "T19"
+    if surface == "Generated manifest":
+        return "T19"
+    return None
+
 _UNVERIFIED_MARKERS = (
     "not statically", "not measured", "not declared", "not inventoried",
     "unclassified", "unverified", "unmeasured", "absent", "unavailable",
@@ -2400,7 +2571,7 @@ def coverage_rows(findings: list[dict[str, Any]], task_id: str | None = None) ->
             "status": evidence_status,
             "evidence_status": evidence_status,
             "owner": owner,
-            "owner_task": finding.get("owner_task") or task_id,
+            "owner_task": _operation_owner_task(finding) or task_id,
             "handler": _normalize_unverified(finding.get("handler") or finding["name"], "handler"),
             "fixtures": (
                 behavioral_test_ids
