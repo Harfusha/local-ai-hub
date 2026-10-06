@@ -34,16 +34,33 @@ def test_memory_record_find_delete_and_restart_round_trip(tmp_path: Path) -> Non
     saved = first.record(MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope=AgentScope.REPOSITORY,
+        scope_id="repo-restart",
         key="restart-fact",
         value="persisted",
-        provenance={"root": str(tmp_path)},
+        provenance={"root": str(tmp_path), "repository_id": "repo-restart"},
     ))
-    assert first.find(scope=AgentScope.REPOSITORY, key="restart-fact", root=str(tmp_path), semantic=False)
+    assert first.find(
+        scope=AgentScope.REPOSITORY,
+        scope_id="repo-restart",
+        key="restart-fact",
+        root=str(tmp_path),
+        semantic=False,
+    )
 
     reopened = MemoryStore(AgentStateStore(db_path, enabled=True))
-    loaded = reopened.get(saved.record_id, root=str(tmp_path))
+    loaded = reopened.get(
+        saved.record_id,
+        scope=AgentScope.REPOSITORY,
+        scope_id="repo-restart",
+        root=str(tmp_path),
+        repository_id="repo-restart",
+    )
     assert loaded is not None and loaded.value == "persisted"
-    assert reopened.delete(saved.record_id) is True
+    assert reopened.delete(
+        saved.record_id,
+        scope=AgentScope.REPOSITORY,
+        scope_id="repo-restart",
+    ) is True
     assert reopened.get(saved.record_id) is None
 
 

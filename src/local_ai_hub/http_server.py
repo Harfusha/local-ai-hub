@@ -423,7 +423,7 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
 class Handler(BaseHTTPRequestHandler):
     DEBUG_TRACE_REQUEST_CAPTURE_BYTES = 8 * 1024
     _DEBUG_TRACE_SENSITIVE_KEY = re.compile(
-        r"^(?:token|api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|bearer[_-]?token|authorization|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)$",
+        r"(?:^|[_\-.])(?:token|api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|bearer[_-]?token|authorization|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)(?:$|[_\-.])",
         re.IGNORECASE,
     )
     protocol_version = "HTTP/1.1"
@@ -684,7 +684,8 @@ class Handler(BaseHTTPRequestHandler):
             return {"capture_status": "omitted", "reason": "unsupported request body"}
 
         def redact(value: Any, key: str = "") -> Any:
-            if cls._DEBUG_TRACE_SENSITIVE_KEY.search(key):
+            normalized_key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).lower()
+            if cls._DEBUG_TRACE_SENSITIVE_KEY.search(normalized_key):
                 return "[redacted]"
             if isinstance(value, dict):
                 return {str(child_key): redact(child_value, str(child_key)) for child_key, child_value in value.items()}
@@ -794,6 +795,25 @@ class Handler(BaseHTTPRequestHandler):
         if APP is not None and (path.startswith("/api/browser/") or path == "/api/vision/review") and security.get("api_token"):
             return str(APP.config.get("browser_bridge", {}).get("tenant", "http-default") or "http-default")
         return requested
+
+    def _memory_project_identity(self, requested_root: Any) -> tuple[str, str] | None:
+        """Resolve memory project identity from server project configuration."""
+        if not requested_root:
+            return ("", "")
+        if APP is None:
+            return None
+        try:
+            from .project_config import resolve_project_context
+            from .state_paths import configured_state_dir
+
+            context = resolve_project_context(requested_root, configured_state_dir(APP.config))
+            root = str(Path(context.root).resolve(strict=True))
+            repository_id = str(context.coordination_id or "").strip()
+            if not repository_id:
+                return None
+            return root, repository_id
+        except Exception:
+            return None
 
     def _tenant_binding_allowed(self) -> bool:
         if APP is None:
@@ -1057,6 +1077,10 @@ class Handler(BaseHTTPRequestHandler):
             required_text("key", maximum=160)
             if "root" in payload:
                 text(payload["root"], "root", 4096)
+            if path == "/api/memory/delete" and "scope" in payload:
+                scope = text(payload["scope"], "scope", 16).strip().lower()
+                if scope not in {"global", "tenant"}:
+                    raise RequestBodyError("scope must be 'global' or 'tenant'")
         elif path == "/api/memory/search":
             if "root" in payload:
                 text(payload["root"], "root", 4096)
@@ -1501,9 +1525,12 @@ class Handler(BaseHTTPRequestHandler):
                     scope_raw = (query.get("scope") or [None])[0]
                     scope_val = _parse_memory_scope(scope_raw)
                     scope_id_val = (query.get("scope_id") or [None])[0]
-                    root_val = (query.get("root") or [None])[0]
-                    repository_id_val = (query.get("repository_id") or [None])[0]
-                    tenant_val = (query.get("tenant") or [None])[0]
+                    requested_root = (query.get("root") or [None])[0]
+                    project_identity = self._memory_project_identity(requested_root)
+                    if requested_root and project_identity is None:
+                        self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                    root_val, repository_id_val = project_identity or (None, None)
+                    tenant_val = self._tenant()
                     task_id_val = (query.get("task_id") or [None])[0]
                     session_id_val = (query.get("session_id") or [None])[0]
                     clone_id_val = (query.get("clone_id") or [None])[0]
@@ -1556,9 +1583,12 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 limit_val = _memory_query_limit((query.get("limit") or [100])[0])
                 scope_id_val = (query.get("scope_id") or [None])[0]
-                root_val = (query.get("root") or [None])[0]
-                repository_id_val = (query.get("repository_id") or [None])[0]
-                tenant_val = (query.get("tenant") or [None])[0]
+                requested_root = (query.get("root") or [None])[0]
+                project_identity = self._memory_project_identity(requested_root)
+                if requested_root and project_identity is None:
+                    self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                root_val, repository_id_val = project_identity or (None, None)
+                tenant_val = self._tenant()
                 task_id_val = (query.get("task_id") or [None])[0]
                 session_id_val = (query.get("session_id") or [None])[0]
                 clone_id_val = (query.get("clone_id") or [None])[0]
@@ -2446,12 +2476,19 @@ class Handler(BaseHTTPRequestHandler):
                             kind_val = MemoryKind.FACT
                         raw_scope = str(rec_data.get("scope") or "").lower()
                         requested_scope = _parse_memory_scope(raw_scope)
+                        provenance = dict(rec_data.get("provenance") or {})
+                        requested_root = payload.get("root") or rec_data.get("root") or provenance.get("root")
+                        project_identity = self._memory_project_identity(requested_root)
+                        if requested_root and project_identity is None:
+                            self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                        root_val, repository_id_val = project_identity or (None, None)
+                        tenant_val = self._tenant()
                         scope_val, resolved_scope_id, ambiguous_scope = _resolve_memory_scope(
                             requested_scope,
                             scope_id=rec_data.get("scope_id") or payload.get("scope_id"),
-                            root=payload.get("root") or rec_data.get("root"),
-                            repository_id=payload.get("repository_id") or rec_data.get("repository_id"),
-                            tenant=payload.get("tenant") or rec_data.get("tenant"),
+                            root=root_val,
+                            repository_id=repository_id_val,
+                            tenant=tenant_val,
                             task_id=payload.get("task_id") or rec_data.get("task_id"),
                             session_id=payload.get("session_id") or rec_data.get("session_id"),
                             clone_id=payload.get("clone_id") or rec_data.get("clone_id"),
@@ -2472,10 +2509,26 @@ class Handler(BaseHTTPRequestHandler):
                         record_ttl = rec_data.get("ttl_seconds", payload.get("ttl_seconds"))
                         if record_expiry is None and record_ttl is not None and float(record_ttl) > 0:
                             record_expiry = time.time() + float(record_ttl)
-                        provenance = dict(rec_data.get("provenance") or {})
+                        reserved_identity = {"root", "repository_id", "tenant"}
+                        discarded_identity_fields = sorted(
+                            identity_key
+                            for identity_key in reserved_identity
+                            if identity_key in payload
+                            or identity_key in rec_data
+                            or identity_key in provenance
+                        )
+                        for identity_key in reserved_identity:
+                            provenance.pop(identity_key, None)
+                        provenance.pop("discarded_identity_fields", None)
+                        if root_val:
+                            provenance["root"] = root_val
+                        if repository_id_val:
+                            provenance["repository_id"] = repository_id_val
+                        provenance["tenant"] = tenant_val
+                        if discarded_identity_fields:
+                            provenance["discarded_identity_fields"] = discarded_identity_fields
                         for identity_key in (
-                            "root", "repository_id", "tenant", "task_id", "session_id",
-                            "clone_id", "worktree_id", "branch",
+                            "task_id", "session_id", "clone_id", "worktree_id", "branch",
                         ):
                             identity_value = payload.get(identity_key) or rec_data.get(identity_key)
                             if identity_value not in (None, ""):
@@ -2502,9 +2555,12 @@ class Handler(BaseHTTPRequestHandler):
                     scope_raw = payload.get("scope")
                     scope_val = _parse_memory_scope(scope_raw)
                     scope_id_val = payload.get("scope_id")
-                    root_val = payload.get("root")
-                    repository_id_val = payload.get("repository_id")
-                    tenant_val = payload.get("tenant")
+                    requested_root = payload.get("root")
+                    project_identity = self._memory_project_identity(requested_root)
+                    if requested_root and project_identity is None:
+                        self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                    root_val, repository_id_val = project_identity or (None, None)
+                    tenant_val = self._tenant()
                     task_id_val = payload.get("task_id")
                     session_id_val = payload.get("session_id")
                     clone_id_val = payload.get("clone_id")
@@ -2546,7 +2602,52 @@ class Handler(BaseHTTPRequestHandler):
                     record_id_val = str(payload.get("record_id", "")).strip()
                     if not record_id_val:
                         self._send(400, {"success": False, "error": "memory delete requires record_id", "terminal": True, "retryable": False}); return
-                    deleted = APP.agent_memory.delete(record_id_val)
+                    scope_val = _parse_memory_scope(payload.get("scope"))
+                    scope_id_val = payload.get("scope_id")
+                    requested_root = payload.get("root")
+                    project_identity = self._memory_project_identity(requested_root)
+                    if requested_root and project_identity is None:
+                        self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                    root_val, repository_id_val = project_identity or (None, None)
+                    tenant_val = self._tenant()
+                    task_id_val = payload.get("task_id")
+                    session_id_val = payload.get("session_id")
+                    clone_id_val = payload.get("clone_id")
+                    worktree_id_val = payload.get("worktree_id")
+                    branch_val = payload.get("branch")
+                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                        scope_val,
+                        scope_id=scope_id_val,
+                        root=root_val,
+                        repository_id=repository_id_val,
+                        tenant=tenant_val,
+                        task_id=task_id_val,
+                        session_id=session_id_val,
+                        clone_id=clone_id_val,
+                        worktree_id=worktree_id_val,
+                        branch=branch_val,
+                    )
+                    if ambiguous_scope:
+                        self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                    if scope_val is None:
+                        scope_val = AgentScope.GLOBAL
+                    if scope_val is not AgentScope.GLOBAL:
+                        # The shared API token authenticates the local operator, not a project worktree.
+                        self._send(403, {
+                            "success": False,
+                            "error": "scoped memory delete requires server-verified project/worktree context",
+                            "error_code": "memory_scope_unverified",
+                            "terminal": True,
+                            "retryable": False,
+                        }); return
+                    deleted = APP.agent_memory.delete(
+                        record_id_val,
+                        scope=scope_val,
+                        scope_id=str(scope_id_val) if scope_id_val is not None else "",
+                        root=str(root_val) if root_val else None,
+                        repository_id=str(repository_id_val) if repository_id_val else None,
+                        tenant=str(tenant_val) if tenant_val else None,
+                    )
                     self._send(200 if deleted else 404, {
                         "success": bool(deleted),
                         "deleted": bool(deleted),
@@ -2560,9 +2661,12 @@ class Handler(BaseHTTPRequestHandler):
                     status_val = MemoryStatus(str(payload["status"])) if payload.get("status") else None
                     limit_val = _memory_query_limit(payload.get("limit", 100))
                     scope_id_val = payload.get("scope_id")
-                    root_val = payload.get("root")
-                    repository_id_val = payload.get("repository_id")
-                    tenant_val = payload.get("tenant")
+                    requested_root = payload.get("root")
+                    project_identity = self._memory_project_identity(requested_root)
+                    if requested_root and project_identity is None:
+                        self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                    root_val, repository_id_val = project_identity or (None, None)
+                    tenant_val = self._tenant()
                     task_id_val = payload.get("task_id")
                     session_id_val = payload.get("session_id")
                     clone_id_val = payload.get("clone_id")
@@ -2621,7 +2725,63 @@ class Handler(BaseHTTPRequestHandler):
                                 limit=limit_val,
                         )
                     self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
+                def _memory_mutation_identity() -> tuple[dict[str, Any] | None, str | None]:
+                    scope_val = _parse_memory_scope(payload.get("scope"))
+                    scope_id_val = payload.get("scope_id")
+                    requested_root = payload.get("root")
+                    project_identity = self._memory_project_identity(requested_root)
+                    if requested_root and project_identity is None:
+                        return None, "memory project identity could not be resolved"
+                    root_val, repository_id_val = project_identity or (None, None)
+                    tenant_val = self._tenant()
+                    task_id_val = payload.get("task_id")
+                    session_id_val = payload.get("session_id")
+                    clone_id_val = payload.get("clone_id")
+                    worktree_id_val = payload.get("worktree_id")
+                    branch_val = payload.get("branch")
+                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                        scope_val,
+                        scope_id=scope_id_val,
+                        root=root_val,
+                        repository_id=repository_id_val,
+                        tenant=tenant_val,
+                        task_id=task_id_val,
+                        session_id=session_id_val,
+                        clone_id=clone_id_val,
+                        worktree_id=worktree_id_val,
+                        branch=branch_val,
+                    )
+                    if ambiguous_scope:
+                        return None, "ambiguous memory scope identity"
+                    if not _memory_lookup_has_identity(
+                        scope_id_val,
+                        root_val,
+                        repository_id_val,
+                        tenant_val,
+                        task_id_val,
+                        session_id_val,
+                        clone_id_val,
+                        worktree_id_val,
+                        branch_val,
+                    ) or scope_val is None:
+                        return None, "memory mutation requires explicit scope identity"
+                    return {
+                        "scope": scope_val,
+                        "scope_id": str(scope_id_val) if scope_id_val is not None else None,
+                        "root": str(root_val) if root_val else None,
+                        "repository_id": str(repository_id_val) if repository_id_val else None,
+                        "tenant": str(tenant_val) if tenant_val else None,
+                        "task_id": str(task_id_val) if task_id_val else None,
+                        "session_id": str(session_id_val) if session_id_val else None,
+                        "clone_id": str(clone_id_val) if clone_id_val else None,
+                        "worktree_id": str(worktree_id_val) if worktree_id_val else None,
+                        "branch": str(branch_val) if branch_val else None,
+                    }, None
+
                 if action == "promote":
+                    identity, identity_error = _memory_mutation_identity()
+                    if identity_error:
+                        self._send(400, {"success": False, "error": identity_error, "terminal": True, "retryable": False}); return
                     target_scope_str = str(payload.get("target_scope", "")).strip().lower()
                     target_scope = AgentScope.parse(target_scope_str, default=None)
                     if not target_scope:
@@ -2632,6 +2792,7 @@ class Handler(BaseHTTPRequestHandler):
                             str(payload.get("record_id", "")),
                             target_scope,
                             approver=approver,
+                            **(identity or {}),
                         )
                         self._send(200, {"success": True, "record": promoted.to_dict()}); return
                     except ApprovalRequiredError as exc:
@@ -2639,15 +2800,20 @@ class Handler(BaseHTTPRequestHandler):
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "quarantine":
+                    identity, identity_error = _memory_mutation_identity()
+                    if identity_error:
+                        self._send(400, {"success": False, "error": identity_error, "terminal": True, "retryable": False}); return
                     reason = str(payload.get("reason", "manual quarantine"))
                     try:
-                        APP.agent_memory.quarantine(
+                        quarantined = APP.agent_memory.quarantine(
                             str(payload.get("record_id", "")),
                             reason=reason,
                             actor=actor,
+                            **(identity or {}),
                         )
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                    self._send(200, {"success": True, "record": quarantined.to_dict()}); return
                 if action == "compact":
                     scope_val = payload.get("scope")
                     older_than = float(payload.get("older_than_seconds", 0.0))
@@ -3636,7 +3802,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/memory/search":
                 self._send(200, APP.memory.search(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 12)))); return
             if path == "/api/memory/delete":
-                self._send(200, APP.memory.delete(str(payload.get("root", ".")), str(payload.get("key", "")), tenant)); return
+                self._send(200, APP.memory.delete(
+                    str(payload.get("root", ".")), str(payload.get("key", "")), tenant,
+                    scope=payload.get("scope"),
+                )); return
             if path == "/api/command":
                 self._send(200, APP.services.command(payload, tenant)); return
             if path == "/api/embed":
