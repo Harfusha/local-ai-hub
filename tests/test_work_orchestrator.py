@@ -36,7 +36,8 @@ class FakeArtifacts:
 
 
 class FakeLeases:
-    def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose="", coordination_id=None):
+    def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose="", *, coordination_id=None):
+        self.coordination_id = coordination_id
         return {"success": True, "lease_id": "lease1", "paths": paths}
     def release(self, tenant, lease_id=""):
         return {"success": True}
@@ -82,6 +83,8 @@ class FakeServices:
         if args.get("action") == "discover":
             return {"success": True, "validation_commands": ["git diff --check"]}
         return {"success": self.validation_ok, "exit_code": 0 if self.validation_ok else 1, "error": "" if self.validation_ok else "failed"}
+
+
 
 
 def config(state: Path):
@@ -293,6 +296,10 @@ def test_work_order_executes_patch_validates_and_handoffs(tmp_path):
         assert not list((tmp_path / "state" / "work_journals").glob("*.json"))
     finally:
         wo.close()
+
+
+
+
 
 
 def test_work_order_rolls_back_when_validation_fails(tmp_path):

@@ -45,6 +45,13 @@ elif mode == "successor":
     proof = {"attempt_scope": attempt.scope_id, "lease_scope": lease.scope_id, "attempt_token": attempt.fencing_token, "path_token": lease.fencing_token, "outside_rejected": outside_rejected}
     (state / "successor.json").write_text(json.dumps(proof), encoding="utf-8")
     print(json.dumps(proof))
+elif mode == "independent":
+    store = FencingLeaseStore(db, clock=lambda: 106.0)
+    other_namespace = "team-isolated"
+    attempt = store.claim_attempt(root, "write-set-work", "isolated", ttl_seconds=30, coordination_id=other_namespace)
+    lease = store.acquire(root, "isolated", ["src/owned.txt"], ttl_seconds=30, attempt=attempt, coordination_id=other_namespace)
+    proof = {"attempt_scope": attempt.scope_id, "lease_scope": lease.scope_id, "attempt_token": attempt.fencing_token, "path_token": lease.fencing_token}
+    print(json.dumps(proof))
 elif mode == "stale":
     store = FencingLeaseStore(db, clock=lambda: 106.0)
     old = json.loads(receipt.read_text(encoding="utf-8"))
@@ -72,9 +79,12 @@ else:
         return json.loads(result.stdout) if result.stdout.strip() else {}
     run("old")
     successor = run("successor")
+    independent = run("independent")
     stale = run("stale")
     assert successor["attempt_scope"] == successor["lease_scope"] == "project:team-shared"
     assert successor["outside_rejected"] is True
+    assert independent["attempt_scope"] == independent["lease_scope"] == "project:team-isolated"
+    assert independent["attempt_token"] > successor["attempt_token"]
     assert stale["attempt_scope"] == stale["lease_scope"] == "project:team-shared"
     assert successor["attempt_token"] > stale["attempt_token"]
     assert successor["path_token"] > stale["path_token"]

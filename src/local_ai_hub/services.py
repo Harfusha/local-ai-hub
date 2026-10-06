@@ -3552,6 +3552,7 @@ class LocalAIServices:
 
     def _repository_test_impact_service(self):
         from .repository_test_impact import RepositoryTestImpactService
+
         return RepositoryTestImpactService(
             self.deterministic,
             self.deterministic_operation,
