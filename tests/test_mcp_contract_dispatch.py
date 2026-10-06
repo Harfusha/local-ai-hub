@@ -538,3 +538,41 @@ def test_stdio_tools_list_hides_feature_disabled_tools(tmp_path) -> None:
     assert "local_ai_command" not in wire_tools
     assert all(tool.get("outputSchema") for tool in wire_tools.values())
 
+
+def test_mcp_repo_search_passes_path_hints_to_client_keyword(monkeypatch) -> None:
+    from local_ai_hub import mcp_server
+
+    calls = []
+    hints = [{"path": "src/local_ai_hub", "purpose": "repository_search", "scope": "repo_search"}]
+    expected_hints = [
+        {"path": "src/target.py", "purpose": "repository_search", "scope": "repo_search"},
+        *hints,
+    ]
+
+    class CapturingClient:
+        def post(self, path, payload=None, *, timeout=30.0, path_hints=None):
+            calls.append((path, payload, path_hints))
+            return {"success": True, "results": []}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", CapturingClient())
+    monkeypatch.setattr(mcp_server, "_client_root", lambda root: root)
+
+    result = mcp_server.local_ai_repo(
+        action="search", root="C:/repo", query="auth", path="src/target.py", path_hints=hints
+    )
+
+    assert result["success"] is True
+    search_calls = [call for call in calls if call[0] == "/api/search"]
+    assert search_calls == [
+        (
+            "/api/search",
+            {
+                "root": "C:/repo",
+                "query": "auth",
+                "top_k": 12,
+                "enrich": False,
+            },
+            expected_hints,
+        )
+    ]
+
