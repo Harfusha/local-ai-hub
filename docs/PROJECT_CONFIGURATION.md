@@ -1,11 +1,14 @@
 # Project configuration
 
-Local AI Hub reads optional project settings from four layers, low to high:
+Local AI Hub reads optional project settings from five layers, low to high:
 
 1. Built-in defaults.
-2. Repository root `.local-ai.toml`.
-3. Git common directory `info/local-ai.toml`, shared by linked worktrees.
-4. Repository root `.local-ai.worktree.toml`, local to that worktree.
+2. Primary repository root `.local-ai.toml`, inherited by linked worktrees.
+3. Current worktree root `.local-ai.toml`, when distinct from primary root.
+4. Git common directory `info/local-ai.toml`, shared by linked worktrees.
+5. Current worktree root `.local-ai.worktree.toml`.
+
+The resolver finds the primary worktree through Git's common directory and bounded `git worktree list --porcelain` fallback. The current worktree's project file can override inherited keys; its worktree file remains the highest local layer.
 
 Single-developer deployments may keep settings durably in local config sources. These files are never required for Hub startup. Config files must resolve within their project or Git common source root; escaping links are rejected. Invalid configuration rejects the complete overlay and returns built-in defaults with a safe error code.
 
@@ -19,7 +22,7 @@ Maps merge by key. A higher layer replaces values for keys it names while unrela
 - `[custom_extensions].text`, `[custom_extensions].binary`, and `[file_limits].max_file_size_bytes` configure file classification and size policy. `custom_extension_kind(path, settings, language=...)` returns `text`, `binary`, or `None`; matching is case-insensitive and supports compound extensions such as `.tar.gz`. `path_is_allowed(...)` rejects configured binary extensions. Readers and indexers must call `custom_extension_kind(...)` before interpreting content; adapter adoption remains owner-gated. A configured size cap rejects missing or malformed size evidence and files larger than the cap.
 - `skip_phases` accepts `rag`, `call_graph`, and `modules`. `phase_is_allowed(settings, phase)` denies unknown phase names before an optional phase starts; `path_is_allowed(...)` and `may_descend(...)` deny unknown path phases and candidates in skipped optional phases. Known path phases include `search`, `repository_search`, `preprocess`, and `test`; optional phases use the names above. Task-facing settings also include `commands`, `affected_tests_mapping`, `env`, and additive `verification_rules`. Verification rule values accept only `true` or a non-empty array of non-blank strings; `false`, empty arrays, and malformed entries reject the overlay. Names and list items remain data for the owning evaluator; resolver does not execute commands, enforce evaluator semantics, or cross-validate rule strings against command aliases. Command aliases are a separate `commands` mapping from `_KEY` names to shell strings or typed `argv` definitions.
 - Literal repo-relative `pinned_context` files (no glob syntax), literal `entry_points` (files or directories; no glob syntax), and `[retrieval_weights]` provide retrieval inputs. `resolve_pinned_context(...)` returns existing repo-contained pinned candidates after `path_is_allowed`; `resolve_entry_points(...)` does the same for files and directories, using `may_descend(...)` for directories. These are candidates, not read authorization: consumers must reapply policy with actual soft-ignore/hard-deny state before reading pinned files and during every directory traversal. `project_type`, `solution_path`, and `[language_overrides]` provide project and language context; `model_profile` selects the project model context. `system_prompt_prefix` supplies task-prompt context; T21 does not define a separate `task_profile` key.
-- `shared_namespace` shares hints across linked worktrees under the same Git common directory and partitions them by namespace; different common directories remain isolated. Top-level `[env]` keys must use portable environment identifier syntax (`[A-Za-z_][A-Za-z0-9_]*`). It accepts literal project values such as `PYTHONPATH = "."` and `NODE_ENV = "test"`; values written as `${NAME}` remain host-environment references in `env_references`. Keep secrets in host variables, not literal config values.
+- `shared_namespace` shares hints across linked worktrees under the same Git common directory and partitions them by namespace; different common directories remain isolated. It is a local single-developer partition key, not multi-user synchronization. Top-level `[env]` keys must use portable environment identifier syntax (`[A-Za-z_][A-Za-z0-9_]*`). It accepts literal project values such as `PYTHONPATH = "."` and `NODE_ENV = "test"`; values written as `${NAME}` remain host-environment references in `env_references`. Keep secrets in host variables, not literal config values.
 
 Example project or worktree file:
 
@@ -51,8 +54,7 @@ NODE_ENV = "test"
 API_TOKEN = "${HOST_API_TOKEN}"
 
 [verification_rules]
-require_receipt = true
-required_commands = ["check"]
+task_complete = ["check"]
 
 [retrieval_weights]
 lexical = 0.6
@@ -62,7 +64,7 @@ text_extensions = [".py"]
 
 ```
 
-Command values are data; resolver does not execute them. Host variable names resolve only in the owning command adapter.
+Command values are data; resolver does not execute them. Host variable names resolve only in the owning command adapter. The `verification_rules` table maps exact task acceptance-criterion names to receipt requirements; each array names configured command aliases required for that criterion.
 
 ## Path patterns and overrides
 
@@ -98,10 +100,14 @@ Hub-wide configuration is separate: `config.py::load_config` merges installation
 
 Call `ProjectContext.prioritize_paths(candidates, purpose, scope, repository_revision, path_hints=())` to rank the complete candidate list in this order: configured literal `entry_points`, per-call `path_hints`, then saved hints matching current scope, revision, and config digest. The optional `path_hints` argument is a tuple of `PathHint` records; it is request-scoped and is not persisted. Ranking preserves every candidate and returns `PathHintUsage`. `hint_helped` remains unknown until a consumer measures usefulness; `telemetry_metadata()` exposes only `hint_used`, `fallback_used`, and `hint_helped`, without candidate paths. Consumers use the normal broader fallback when no hint helps. Save only verified hints through `ProjectContext.save_path_hint(...)`.
 
-Use one optional wire field, `path_hints`, for search-oriented repo, command, or MCP requests that rank repository candidates. Its JSON shape is an array of objects with required string fields `path`, `purpose`, and `scope`, plus optional string fields `evidence_id`, `provenance`, `repository_revision`, `config_digest`, and `expires_at`. Cap it at 64 records at ingress; core also caps direct calls. There is no `paths` alias. Keep this separate from command argument paths, changed paths, focus text, and durable `entry_points`. Request hints may omit evidence metadata; learned/persisted hints require evidence ID, provenance, matching repository revision and config digest.
+The internal adapter contract uses one optional `path_hints` field for search-oriented requests that rank repository candidates. The approved HTTP wire path is `/api/search`; `HubClient.post` accepts typed hints only for `/api/search` and strips them on `/api/command`. T21 owns these search-specific MCP/client/route hint fields and normalization; T03 keeps generic transport, request-ID, and unrelated client-contract symbols. Contract: closed hint objects, at most 64 records, required string fields `path` (1–1024 characters), `purpose`, and `scope`, optional string fields `evidence_id`, `provenance`, `repository_revision`, `config_digest`, and `expires_at`; wrapper normalizes slash variants and rejects escapes. Do not add a `paths` alias. Keep hints separate from command argument paths, changed paths, focus text, and durable `entry_points`. Request hints may omit evidence metadata; learned/persisted hints require evidence ID, provenance, matching repository revision and config digest. `/api/context/pack` does not accept or consume hints.
 
-Resolve hints beneath the trusted project root and reject absolute, drive/UNC, traversal, glob, missing, and symlink/junction escape paths. A hint can reorder candidates only: it cannot choose the root, authorize a path, narrow recall, bypass exclusions or trust checks, or change security scope. Consumers still apply `path_is_allowed(...)` to each file and `may_descend(...)` to each directory. Never write raw paths or hint contents to telemetry.
+Resolve hints beneath the trusted project root and reject absolute, drive/UNC, traversal, glob, missing, and symlink/junction escape paths. Core trims hint paths, converts backslashes to `/`, limits them to 1024 characters, rejects `.`/`..` segments, then resolves containment. A hint can reorder candidates only: it cannot choose the root, authorize a path, narrow recall, bypass exclusions or trust checks, or change security scope. Consumers still apply `path_is_allowed(...)` to each file and `may_descend(...)` to each directory. Never write raw paths or hint contents to telemetry.
+
+### Search completeness and bounded Python fallback
+
+`/api/search` returns a bounded ranked result set, not a complete inventory: `top_k` limits returned matches, and path hints only reorder candidates. When `engine == "python"`, response includes `python_fallback_limit`, `python_fallback_scanned_files`, and `python_fallback_truncated`. `python_fallback_truncated == true` means the configured `search.python_fallback_max_files` cap was reached before candidate iteration finished; results are partial, and absence of a match is inconclusive. `false` means this Python fallback did not stop at that cap; it does not assert global completeness for other search engines, top-k output, or response projection. Other engines omit these Python-specific fields. The file cap is enforced for cost bounds; it is not an advisory threshold. Consumers must preserve and inspect `python_fallback_truncated` before treating a zero-hit fallback as a negative result.
 
 Retrieval adapters must call this API at their owned integration seam. The core API does not change HTTP, MCP, search, preprocessing, RAG, or command behavior by itself.
 
-`path_matches_pattern(path, pattern)` exposes the same validated repo-relative glob matching for owned adapters. T21 currently wires project mapping, entry points, request hints, saved hints, and post-ranking path policy into T06's released `LocalAIServices.affected_tests` seam. Other adapters remain owner-gated.
+`path_matches_pattern(path, pattern)` exposes the same validated repo-relative glob matching for owned adapters. T21 has wired project mapping/path policy into `LocalAIServices.affected_tests` and project policy/path hints into `LocalAIServices.repo_search` and `RepositoryTools.search_paths`. Search transport is wired through the search-specific MCP `local_ai_repo` path-hint input, `HubClient.post`, and HTTP `/api/search`. Verification rules use the T09 evaluator through the separately approved completion adapter. Other consumer surfaces remain owner-gated.

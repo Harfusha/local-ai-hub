@@ -21,6 +21,13 @@ from .normalizer import normalize_query
 from .scheduler import QueueFullError
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy, quick_sanity_check
 from .process_utils import canonical_root
+from .project_policy_adapter import (
+    custom_extension_kind,
+    may_descend,
+    path_allowed,
+    phase_allowed,
+    resolve_project_context,
+)
 
 
 import re
@@ -272,14 +279,28 @@ class RAGStore:
         digest = hashlib.sha1(resolved.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
         return f"{Path(resolved).name}-{digest}"
 
-    def _iter_files(self, root: Path) -> Iterable[Path]:
+    def project_context(self, root: str | Path) -> Any | None:
+        state_dir = self.config.get("server", {}).get("state_dir", "state")
+        return resolve_project_context(root, state_dir)
+
+    def _iter_files(
+        self, root: Path, project_context: Any | None = None
+    ) -> Iterable[Path]:
         cfg = self.config.get("rag", {})
         extensions = {x.lower() for x in cfg.get("extensions", [])}
         ignored = {str(name).lower() for name in cfg.get("ignore_dirs", [])}
         max_bytes = int(cfg.get("max_file_bytes", 2_000_000))
+        settings = project_context.settings if project_context is not None else None
+        if settings is not None and settings.max_file_size_bytes is not None:
+            max_bytes = min(max_bytes, int(settings.max_file_size_bytes))
         pending = [Path(root)]
         while pending:
             current = pending.pop()
+            if not may_descend(
+                root, current, project_context, phase="rag",
+                hard_denied=current != root and current.name.lower() in ignored,
+            ):
+                continue
             try:
                 entries = sorted(os.scandir(current), key=lambda entry: entry.name)
             except OSError:
@@ -297,8 +318,16 @@ class RAGStore:
                         continue
                     path = Path(entry.path)
                     if extensions and path.suffix.lower() not in extensions:
+                        kind = custom_extension_kind(project_context, path)
+                        if kind != "text":
+                            continue
+                    size_bytes = int(entry.stat(follow_symlinks=True).st_size)
+                    if size_bytes > max_bytes:
                         continue
-                    if entry.stat(follow_symlinks=True).st_size <= max_bytes:
+                    allowed, kind = path_allowed(
+                        root, path, project_context, phase="rag", size_bytes=size_bytes,
+                    )
+                    if allowed and kind != "binary":
                         yield path
                 except OSError:
                     continue
@@ -508,6 +537,121 @@ class RAGStore:
     def _scope_key(self, tenant: str) -> str:
         return tenant if self.scope == "tenant" else "*"
 
+
+    @staticmethod
+    def _workspace_index_generation_key(scope_key: str, workspace: str) -> str:
+        return "workspace_index_generation:" + stable_hash({"tenant": scope_key, "workspace": workspace})
+
+    @staticmethod
+    def _workspace_project_config_key(scope_key: str, workspace: str) -> str:
+        return "workspace_project_config:" + stable_hash({"tenant": scope_key, "workspace": workspace})
+
+    def _sync_workspace_project_policy_identity(
+        self,
+        root: str | Path,
+        scope_key: str,
+        workspace: str,
+        project_context: Any | None,
+    ) -> int:
+        """Invalidate cached search identity and prune policy-rejected indexed files."""
+        digest = getattr(project_context, "config_digest", None)
+        if not isinstance(digest, str) or not digest:
+            return 0
+        key = self._workspace_project_config_key(scope_key, workspace)
+        with closing(self._connect()) as con:
+            previous = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
+            if previous is not None and str(previous[0]) == digest:
+                return 0
+            rows = con.execute(
+                "SELECT path FROM files WHERE tenant=? AND workspace=?",
+                (scope_key, workspace),
+            ).fetchall()
+
+        root_path = Path(root).resolve(strict=False)
+        cfg = self.config.get("rag", {})
+        extensions = {str(ext).lower() for ext in cfg.get("extensions", [])}
+        ignored = {str(name).lower() for name in cfg.get("ignore_dirs", [])}
+        max_bytes = int(cfg.get("max_file_bytes", 2_000_000))
+        settings = project_context.settings
+        if settings.max_file_size_bytes is not None:
+            max_bytes = min(max_bytes, int(settings.max_file_size_bytes))
+        rag_enabled = phase_allowed(project_context, "rag")
+        rejected: list[str] = []
+        for row in rows:
+            rel = str(row[0]).replace("\\", "/")
+            candidate = (root_path / rel).resolve(strict=False)
+            try:
+                candidate.relative_to(root_path)
+                stat = candidate.stat()
+                if not candidate.is_file():
+                    raise OSError("indexed path is not a file")
+            except (OSError, ValueError, RuntimeError):
+                rejected.append(rel)
+                continue
+            kind = custom_extension_kind(project_context, candidate)
+            if (
+                not rag_enabled
+                or any(part.lower() in ignored for part in Path(rel).parts[:-1])
+                or (extensions and candidate.suffix.lower() not in extensions and kind != "text")
+                or int(stat.st_size) > max_bytes
+            ):
+                rejected.append(rel)
+                continue
+            allowed, kind = path_allowed(
+                root_path, candidate, project_context, phase="rag",
+                size_bytes=int(stat.st_size),
+            )
+            if not allowed or kind == "binary":
+                rejected.append(rel)
+
+        def persist_policy_identity() -> int:
+            with closing(self._connect()) as con:
+                def commit_policy() -> int:
+                    try:
+                        con.execute("BEGIN")
+                        current = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
+                        if current is not None and str(current[0]) == digest:
+                            con.rollback()
+                            return 0
+                        if rejected:
+                            pairs = [(scope_key, workspace, rel) for rel in sorted(set(rejected))]
+                            con.executemany(
+                                "DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", pairs
+                            )
+                            con.executemany(
+                                "DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", pairs
+                            )
+                            fts_exists = con.execute(
+                                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
+                            ).fetchone() is not None
+                            if fts_exists:
+                                con.executemany(
+                                    "DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", pairs
+                                )
+                        con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (key, digest))
+                        self._bump_workspace_index_generation(con, scope_key, workspace)
+                        con.commit()
+                        return len(set(rejected))
+                    except Exception:
+                        con.rollback()
+                        raise
+                return retry_busy(commit_policy, retries=5, base_delay_seconds=0.02)
+        return persist_policy_identity()
+
+    def _workspace_index_generation(self, con: sqlite3.Connection, scope_key: str, workspace: str) -> int:
+        key = self._workspace_index_generation_key(scope_key, workspace)
+        row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
+        try:
+            return max(0, int(row[0])) if row and row[0] is not None else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def _bump_workspace_index_generation(self, con: sqlite3.Connection, scope_key: str, workspace: str) -> int:
+        key = self._workspace_index_generation_key(scope_key, workspace)
+        generation = self._workspace_index_generation(con, scope_key, workspace) + 1
+        con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (key, str(generation)))
+        return generation
+
     def _embedding_space_id(self, result: dict[str, Any] | None = None) -> str:
         if isinstance(result, dict) and result.get("embedding_space_id"):
             return str(result["embedding_space_id"])
@@ -592,7 +736,14 @@ class RAGStore:
         if not root_path.exists() or not root_path.is_dir():
             return {"success": False, "error": f"root directory does not exist: {root_path}"}
         workspace = workspace or self.workspace_id(str(root_path))
+        project_context = self.project_context(root_path)
+        if not phase_allowed(project_context, "rag"):
+            removed = self.prune_missing(root, tenant, workspace, [])
+            return {"success": True, "workspace": workspace, "skipped": True, "removed_paths": removed}
         scope_key = self._scope_key(tenant)
+        self._sync_workspace_project_policy_identity(
+            root_path, scope_key, workspace, project_context
+        )
         embedding_space = self._embedding_space_id()
 
         with closing(self._connect()) as con:
@@ -612,7 +763,7 @@ class RAGStore:
 
         current_meta: dict[str, tuple[Path, int, int]] = {}
         metadata_scanned = 0
-        for path in self._iter_files(root_path):
+        for path in self._iter_files(root_path, project_context):
             metadata_scanned += 1
             try:
                 stat = path.stat()
@@ -810,6 +961,12 @@ class RAGStore:
         scope_key = self._scope_key(tenant)
         current = set(current_paths)
         with self._get_workspace_lock(workspace), closing(self._connect()) as con:
+            policy_removed = 0
+            if Path(root).is_dir():
+                policy_context = self.project_context(root)
+                policy_removed = self._sync_workspace_project_policy_identity(
+                    root, scope_key, workspace, policy_context
+                )
             existing = {str(r[0]) for r in con.execute(
                 "SELECT path FROM files WHERE tenant=? AND workspace=?", (scope_key, workspace)
             ).fetchall()}
@@ -821,8 +978,10 @@ class RAGStore:
                     con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
                 except Exception:
                     pass
+            if deleted:
+                self._bump_workspace_index_generation(con, scope_key, workspace)
             con.commit()
-        return len(deleted)
+        return policy_removed + len(deleted)
 
     def remove_paths(self, tenant: str, workspace: str, paths: list[str]) -> int:
         """Remove explicitly known paths from a semantic workspace.
@@ -868,14 +1027,25 @@ class RAGStore:
         root_path = Path(root).resolve()
         if not root_path.is_dir():
             return {"success": False, "error": f"root directory does not exist: {root_path}"}
+        project_context = self.project_context(root_path)
+        if not phase_allowed(project_context, "rag"):
+            removed = self.prune_missing(root, tenant, workspace, [])
+            return {
+                "success": True, "workspace": workspace, "skipped": True,
+                "removed_paths": removed, "processed_paths": [],
+            }
         scope_key = self._scope_key(tenant)
         embedding_space = self._embedding_space_id()
         processed_paths: list[str] = []
         embedded_chunks = 0
         reused_chunks = 0
         with self._get_workspace_lock(workspace):
+            self._sync_workspace_project_policy_identity(
+                root_path, scope_key, workspace, project_context
+            )
             # 1. Read files and chunk
             file_data: list[dict[str, Any]] = []
+            policy_deleted: set[str] = set()
             for rel in paths:
                 if callable(should_yield) and should_yield():
                     return {
@@ -893,6 +1063,26 @@ class RAGStore:
                     continue
                 try:
                     stat = path.stat()
+                    cfg = self.config.get("rag", {})
+                    max_bytes = int(cfg.get("max_file_bytes", 2_000_000))
+                    settings = project_context.settings if project_context is not None else None
+                    if settings is not None and settings.max_file_size_bytes is not None:
+                        max_bytes = min(max_bytes, int(settings.max_file_size_bytes))
+                    if int(stat.st_size) > max_bytes:
+                        policy_deleted.add(rel)
+                        continue
+                    extensions = {str(ext).lower() for ext in cfg.get("extensions", [])}
+                    kind = custom_extension_kind(project_context, path)
+                    if extensions and path.suffix.lower() not in extensions and kind != "text":
+                        policy_deleted.add(rel)
+                        continue
+                    allowed, kind = path_allowed(
+                        root_path, path, project_context, phase="rag",
+                        size_bytes=int(stat.st_size),
+                    )
+                    if not allowed or kind == "binary":
+                        policy_deleted.add(rel)
+                        continue
                     override = (content_overrides or {}).get(rel)
                     if override is None:
                         raw = path.read_bytes()
@@ -906,7 +1096,10 @@ class RAGStore:
                 except Exception:
                     continue
 
-            deleted_unique = sorted({str(p).replace("\\", "/") for p in (deleted_paths or []) if str(p).strip()})
+            deleted_unique = sorted(
+                {str(p).replace("\\", "/") for p in (deleted_paths or []) if str(p).strip()}
+                | policy_deleted
+            )
             if not file_data and not deleted_unique:
                 return {
                     "success": True, "workspace": workspace, "preempted": False,
@@ -1080,8 +1273,18 @@ class RAGStore:
         if not root_path.exists() or not root_path.is_dir():
             return {"success": False, "error": f"root directory does not exist: {root_path}"}
         workspace = workspace or self.workspace_id(str(root_path))
+        project_context = self.project_context(root_path)
+        if not phase_allowed(project_context, "rag"):
+            removed = self.prune_missing(root, tenant, workspace, [])
+            return {
+                "success": True, "workspace": workspace, "skipped": True,
+                "removed_paths": removed, "processed_files": 0, "done": True,
+            }
         with self._get_workspace_lock(workspace):
             scope_key = self._scope_key(tenant)
+            self._sync_workspace_project_policy_identity(
+                root_path, scope_key, workspace, project_context
+            )
             embedding_space = self._embedding_space_id()
             if callable(should_yield) and should_yield():
                 return {"success": True, "workspace": workspace, "preempted": True, "done": False, "processed_files": 0}
@@ -1102,7 +1305,7 @@ class RAGStore:
             }
 
             current_meta: dict[str, tuple[Path, int, int]] = {}
-            for path in self._iter_files(root_path):
+            for path in self._iter_files(root_path, project_context):
                 try:
                     st = path.stat()
                     rel = str(path.relative_to(root_path)).replace("\\", "/")
@@ -1306,24 +1509,26 @@ class RAGStore:
         scope_key = self._scope_key(tenant)
         now = time.monotonic()
         if not hasattr(self, "_rev_cache"):
-            self._rev_cache: dict[tuple[str, str], tuple[float, str]] = {}
+            self._rev_cache: dict[tuple[str, str], tuple[float, str, int]] = {}
             self._rev_lock = threading.Lock()
+        with closing(self._connect()) as con:
+            generation = self._workspace_index_generation(con, scope_key, workspace)
         with self._rev_lock:
             cached = self._rev_cache.get((scope_key, workspace))
-            if cached and now - cached[0] < 3.0:
+            if cached and now - cached[0] < 3.0 and cached[2] == generation:
                 return cached[1]
         with closing(self._connect()) as con:
             rows = con.execute(
                 "SELECT path,content_hash,mtime_ns,size FROM files WHERE tenant=? AND workspace=? ORDER BY path",
                 (scope_key, workspace),
             ).fetchall()
-        rev = stable_hash({"index": self.index_fingerprint, "files": rows})
+        rev = stable_hash({"index": self.index_fingerprint, "generation": generation, "files": rows})
         with self._rev_lock:
             if len(self._rev_cache) > 256:
                 oldest_keys = sorted(self._rev_cache.keys(), key=lambda k: self._rev_cache[k][0])[:128]
                 for k in oldest_keys:
                     self._rev_cache.pop(k, None)
-            self._rev_cache[(scope_key, workspace)] = (now, rev)
+            self._rev_cache[(scope_key, workspace)] = (now, rev, generation)
         return rev
 
     @staticmethod

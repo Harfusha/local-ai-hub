@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -197,6 +198,7 @@ def test_client_replays_explicitly_safe_post_with_stable_request_id(tmp_path, mo
     assert result["success"] is True
     assert len(request_ids) == 2
     assert len(set(request_ids)) == 1
+    assert request_ids[0].startswith("req_")
 
 
 def test_post_does_not_replay_unclassified_mutation(tmp_path, monkeypatch):
@@ -249,6 +251,49 @@ def test_post_replays_allowlisted_read_only_route(tmp_path, monkeypatch):
     assert result["success"] is True
     assert len(request_ids) == 2
     assert len(set(request_ids)) == 1
+
+
+def test_post_uses_explicit_request_id_across_safe_retry(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    request_ids = []
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_ids.append(headers["X-LocalAI-Request-ID"])
+        if len(request_ids) == 1:
+            raise URLError("connection lost")
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    result = client.post(
+        "/api/repo/complexity",
+        {"root": "repo"},
+        timeout=1,
+        request_id="stable-client-id",
+    )
+
+    assert result["success"] is True
+    assert request_ids == ["stable-client-id", "stable-client-id"]
+
+
+def test_post_rejects_malformed_request_ids_before_network(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def pooled_open(*_args, **_kwargs):
+        calls.append(True)
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    for request_id in ("", "bad request", "bad\nid", "café", "x" * 129, 123):
+        result = client.post("/api/tasks/checkpoint", {}, request_id=request_id)
+
+        assert result["success"] is False
+        assert result["terminal"] is True
+        assert result["retryable"] is False
+
+    assert calls == []
 
 
 def test_post_malformed_response_returns_explicit_unknown_outcome(tmp_path, monkeypatch):

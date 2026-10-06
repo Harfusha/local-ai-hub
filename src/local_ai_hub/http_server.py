@@ -2299,12 +2299,52 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "complete":
                     try:
-                        task = APP.agent_tasks.complete(
-                            str(payload.get("task_id", "")),
-                            reason=str(payload.get("reason", payload.get("value", "completed by agent"))),
-                            actor=actor,
-                            idempotency_key=idempotency_key,
-                        )
+                        task_id = str(payload.get("task_id", ""))
+                        task_state = APP.agent_tasks.get(task_id)
+                        if task_state is None:
+                            raise KeyError(f"Task {task_id} not found")
+                        task_context = getattr(task_state, "context", None)
+                        root = str(
+                            payload.get("root")
+                            or getattr(task_context, "repository_id", "")
+                            or ""
+                        ).strip()
+                        verification_store = getattr(APP, "agent_verification", None)
+                        if verification_store is not None:
+                            if not root:
+                                self._send(400, {
+                                    "success": False,
+                                    "error": "project root is required for task completion verification",
+                                    "terminal": True,
+                                    "retryable": False,
+                                }); return
+                            current_revision, revision_stop = _completion_revision_or_stop(
+                                root,
+                                getattr(APP, "repo_tools", None),
+                                getattr(APP, "repo_state", None),
+                            )
+                            if revision_stop:
+                                self._send(409, revision_stop); return
+                            from .verification_rules import complete_task_with_project_rules
+
+                            task = complete_task_with_project_rules(
+                                APP.agent_tasks,
+                                verification_store,
+                                task_id,
+                                root=root,
+                                state_dir=verification_store.state_store.db_path.parent,
+                                current_revision=current_revision,
+                                reason=str(payload.get("reason", payload.get("value", "completed by agent"))),
+                                actor=actor,
+                                idempotency_key=idempotency_key,
+                            )
+                        else:
+                            task = APP.agent_tasks.complete(
+                                task_id,
+                                reason=str(payload.get("reason", payload.get("value", "completed by agent"))),
+                                actor=actor,
+                                idempotency_key=idempotency_key,
+                            )
                         self._send(200, {"success": True, "task": task.to_dict()}); return
                     except (KeyError, InvalidTransitionError, CompletionGateError) as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
@@ -3467,6 +3507,7 @@ class Handler(BaseHTTPRequestHandler):
                     int(payload.get("top_k", 12)),
                     context_lines=int(payload["context_lines"]) if payload.get("context_lines") is not None else None,
                     enrich=bool(payload.get("enrich", False)),
+                    path_hints=payload.get("path_hints"),
                 )); return
             if path == "/api/context/pack":
                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))

@@ -123,6 +123,30 @@ def test_config_file_resolving_outside_its_source_root_is_rejected(
     assert result.error_codes == ("unsafe_config_path",)
 
 
+def test_config_overlay_accepts_256_kib_and_rejects_one_byte_more(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    config = root / ".local-ai.toml"
+    prefix = b'project_type = "python"\n'
+    limit = 256 * 1024
+    at_limit = prefix + b"#" * (limit - len(prefix))
+    assert len(at_limit) == limit
+    config.write_bytes(at_limit)
+
+    accepted = resolve_project_config(root)
+
+    assert accepted.error_codes == ()
+    assert accepted.settings.project_type == "python"
+
+    config.write_bytes(at_limit + b"\n")
+    rejected = resolve_project_config(root)
+
+    assert rejected.settings == ProjectSettings()
+    assert rejected.error_codes == ("config_too_large",)
+
+
 def test_invalid_project_configuration_falls_back_atomically(tmp_path: Path) -> None:
     (tmp_path / ".local-ai.toml").write_text(
         'exclude_paths = ["should-not-leak/**"]\n'
@@ -135,6 +159,209 @@ def test_invalid_project_configuration_falls_back_atomically(tmp_path: Path) -> 
     assert result.settings == ProjectSettings()
     assert result.active_sources == ("defaults",)
     assert result.error_codes == ("invalid_config",)
+
+
+def test_invalid_lower_layer_cannot_be_hidden_by_valid_worktree_override(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        'skip_phases = "rag"\n', encoding="utf-8"
+    )
+    (tmp_path / ".local-ai.worktree.toml").write_text(
+        "skip_phases = []\n", encoding="utf-8"
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.settings == ProjectSettings()
+    assert result.active_sources == ("defaults",)
+    assert result.error_codes == ("invalid_config",)
+
+
+def test_verification_alias_can_be_defined_in_lower_config_layer(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        '[commands]\ntest = "python -m pytest"\n', encoding="utf-8"
+    )
+    (tmp_path / ".local-ai.worktree.toml").write_text(
+        '[verification_rules]\ntask_complete = ["test"]\n', encoding="utf-8"
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.error_codes == ()
+    assert result.settings.commands == {"test": "python -m pytest"}
+    assert result.settings.verification_rules == {"task_complete": ("test",)}
+
+
+def test_verification_rule_rejects_unknown_command_alias(tmp_path: Path) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        '[verification_rules]\ntask_complete = ["missing"]\n', encoding="utf-8"
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.settings == ProjectSettings()
+    assert result.active_sources == ("defaults",)
+    assert result.error_codes == ("invalid_config",)
+
+
+def test_config_loader_opens_resolved_path_that_passed_containment_check(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import os
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    config = root / ".local-ai.toml"
+    config.write_text('project_type = "python"\n', encoding="utf-8")
+    verified_path = root / "verified.toml"
+    verified_path.write_text('project_type = "python"\n', encoding="utf-8")
+    original_resolve = Path.resolve
+    original_open = os.open
+    opened_paths: list[Path] = []
+
+    def resolve_config(self: Path, strict: bool = False) -> Path:
+        if self == config:
+            return verified_path
+        return original_resolve(self, strict=strict)
+
+    def record_open(path, flags: int, *args, **kwargs):
+        if Path(path) == verified_path:
+            opened_paths.append(Path(path))
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve_config)
+    monkeypatch.setattr(os, "open", record_open)
+
+    result = resolve_project_config(root)
+
+    assert result.settings.project_type == "python"
+    assert result.error_codes == ()
+    assert opened_paths == [verified_path]
+
+
+def test_config_loader_rejects_file_replaced_after_containment_check(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import os
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    config = root / ".local-ai.toml"
+    config.write_text('project_type = "python"\n', encoding="utf-8")
+    verified_path = root / "verified.toml"
+    verified_path.write_text('project_type = "python"\n', encoding="utf-8")
+    outside = tmp_path / "outside.toml"
+    outside.write_text('project_type = "outside"\n', encoding="utf-8")
+    original_resolve = Path.resolve
+    original_open = os.open
+
+    def resolve_config(self: Path, strict: bool = False) -> Path:
+        if self == config:
+            return verified_path
+        return original_resolve(self, strict=strict)
+
+    def replace_after_validation(path, flags: int, *args, **kwargs):
+        if Path(path) == verified_path:
+            path = outside
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve_config)
+    monkeypatch.setattr(os, "open", replace_after_validation)
+
+    result = resolve_project_config(root)
+
+    assert result.settings == ProjectSettings()
+    assert result.active_sources == ("defaults",)
+    assert result.error_codes == ("unsafe_config_path",)
+
+
+def test_config_loader_rejects_unavailable_file_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import stat
+    from types import SimpleNamespace
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    config = root / ".local-ai.toml"
+    config.write_text('project_type = "python"\n', encoding="utf-8")
+    original_stat = Path.stat
+    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
+
+    def stat_without_file_id(path: Path, *args, **kwargs):
+        if path == config:
+            return SimpleNamespace(st_dev=7, st_ino=0, st_mode=stat.S_IFREG)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_without_file_id)
+
+    result = resolve_project_config(root)
+
+    assert result.settings == ProjectSettings()
+    assert result.active_sources == ("defaults",)
+    assert result.error_codes == ("unsafe_config_path",)
+
+
+def test_config_loader_rejects_unavailable_open_file_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import os
+    import stat
+    from types import SimpleNamespace
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".local-ai.toml").write_text(
+        'project_type = "python"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
+    monkeypatch.setattr(
+        os,
+        "fstat",
+        lambda _descriptor: SimpleNamespace(
+            st_dev=7, st_ino=0, st_mode=stat.S_IFREG, st_size=20
+        ),
+    )
+
+    result = resolve_project_config(root)
+
+    assert result.settings == ProjectSettings()
+    assert result.active_sources == ("defaults",)
+    assert result.error_codes == ("unsafe_config_path",)
+
+
+def test_config_loader_survives_descriptor_cleanup_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import os
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".local-ai.toml").write_text(
+        'project_type = "python"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
+    monkeypatch.setattr(os, "open", lambda *_args, **_kwargs: 941)
+
+    def fail_fdopen(*_args, **_kwargs):
+        raise OSError("fdopen failed")
+
+    monkeypatch.setattr(os, "fdopen", fail_fdopen)
+
+    def fail_close(descriptor: int) -> None:
+        assert descriptor == 941
+        raise PermissionError("close denied")
+
+    monkeypatch.setattr(os, "close", fail_close)
+
+    result = resolve_project_config(root)
+
+    assert result.settings == ProjectSettings()
+    assert result.active_sources == ("defaults",)
+    assert result.error_codes == ("invalid_toml",)
 
 
 def test_malformed_toml_falls_back_atomically_and_digest_tracks_effective_config(
@@ -866,6 +1093,40 @@ def test_file_size_limit_rejects_invalid_size_evidence(tmp_path: Path) -> None:
     )
 
 
+def test_path_override_specificity_is_shared_across_symlink_alias_and_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    alias_dir = tmp_path / "alias" / "module"
+    alias_dir.mkdir(parents=True)
+    alias_file = alias_dir / "keep.py"
+    alias_file.write_text("x", encoding="utf-8")
+    target_dir = tmp_path / "generated" / "src" / "module"
+    target_dir.mkdir(parents=True)
+    target_file = target_dir / "keep.py"
+    target_file.write_text("x", encoding="utf-8")
+    _mock_resolutions(
+        monkeypatch,
+        {
+            alias_dir: target_dir,
+            alias_file: target_file,
+        },
+    )
+    settings = ProjectSettings(
+        path_overrides={
+            "alias/module": "include",
+            "alias/module/keep.py": "include",
+            "generated/**": "exclude",
+        }
+    )
+
+    assert may_descend(
+        tmp_path, "alias/module", settings, phase="search", soft_ignored=True
+    )
+    assert path_is_allowed(
+        tmp_path, "alias/module/keep.py", settings, phase="search"
+    )
+
+
 def test_specific_default_override_falls_through_to_force_include(
     tmp_path: Path,
 ) -> None:
@@ -1211,3 +1472,156 @@ def test_ignored_parent_stays_traversable_for_forced_descendant(tmp_path: Path) 
         phase="search",
         soft_ignored=True,
     )
+
+
+def test_project_context_never_reads_hub_state_as_configuration(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    state_dir = tmp_path / "hub-state"
+    root.mkdir()
+    state_dir.mkdir()
+    (root / ".local-ai.toml").write_text(
+        'shared_namespace = "project-local"\n', encoding="utf-8"
+    )
+    (state_dir / ".local-ai.toml").write_text(
+        'shared_namespace = "runtime-override"\n', encoding="utf-8"
+    )
+
+    context = project_config.resolve_project_context(root, state_dir)
+
+    assert context.settings.shared_namespace == "project-local"
+    assert context.resolution.active_sources == ("defaults", "project")
+    assert (state_dir / ".local-ai.toml").read_text(encoding="utf-8") == (
+        'shared_namespace = "runtime-override"\n'
+    )
+
+
+def test_model_profile_and_prompt_prefix_defaults_and_validation(
+    tmp_path: Path,
+) -> None:
+    defaults = project_config.resolve_project_config(tmp_path)
+
+    assert defaults.settings.model_profile == "balanced"
+    assert defaults.settings.system_prompt_prefix is None
+    assert defaults.error_codes == ()
+
+    (tmp_path / ".local-ai.toml").write_text(
+        'model_profile = "unknown"\n', encoding="utf-8"
+    )
+    rejected = project_config.resolve_project_config(tmp_path)
+
+    assert rejected.settings == project_config.ProjectSettings()
+    assert rejected.error_codes == ("invalid_config",)
+
+
+def test_linked_worktree_inherits_primary_repository_project_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    primary = tmp_path / "primary"
+    common = primary / ".git"
+    linked = tmp_path / "worktrees" / "feature"
+    (common / "info").mkdir(parents=True)
+    linked.mkdir(parents=True)
+    (primary / ".local-ai.toml").write_text(
+        'exclude_paths = ["shared-generated/**"]\n'
+        '[commands]\nlint = "python -m ruff check"\n',
+        encoding="utf-8",
+    )
+    (linked / ".local-ai.toml").write_text(
+        '[commands]\ntest = "python -m pytest"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: common)
+
+    result = project_config.resolve_project_config(linked)
+
+    assert result.error_codes == ()
+    assert result.settings.exclude_paths == ("shared-generated/**",)
+    assert result.settings.commands == {
+        "lint": "python -m ruff check",
+        "test": "python -m pytest",
+    }
+    assert result.active_sources == ("defaults", "primary_project", "project")
+
+
+def test_primary_worktree_discovery_uses_git_worktree_list(
+    tmp_path: Path, monkeypatch
+) -> None:
+    common = tmp_path / "custom-git-dir"
+    primary = tmp_path / "primary"
+    linked = tmp_path / "linked"
+    common.mkdir()
+    primary.mkdir()
+    linked.mkdir()
+    (primary / ".git").write_text(f"gitdir: {common}\n", encoding="utf-8")
+    (linked / ".git").write_text(
+        f"gitdir: {common / 'worktrees' / 'linked'}\n", encoding="utf-8"
+    )
+    output = (
+        f"worktree {primary}\nHEAD {('a' * 40)}\nbranch refs/heads/main\n\n"
+        f"worktree {linked}\nHEAD {('b' * 40)}\nbranch refs/heads/feature\n"
+    )
+    result = type("CommandResult", (), {"returncode": 0, "stdout": output})()
+    monkeypatch.setattr(
+        project_config.subprocess, "run", lambda *_args, **_kwargs: result
+    )
+
+    assert project_config._git_primary_worktree_root(linked, common) == primary
+
+
+def test_project_config_precedence_covers_primary_linked_common_and_worktree_layers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    primary = tmp_path / "primary"
+    linked = tmp_path / "linked"
+    common = tmp_path / "common.git"
+    primary.mkdir()
+    linked.mkdir()
+    (common / "info").mkdir(parents=True)
+    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: common)
+    monkeypatch.setattr(
+        project_config, "_git_primary_worktree_root", lambda _root, _common: primary
+    )
+
+    (primary / ".local-ai.toml").write_text(
+        'exclude_paths = ["primary/**"]\n'
+        'pinned_context = ["PRIMARY.md"]\n'
+        '[commands]\nbuild = "cargo build"\ntest = "primary-test"\n',
+        encoding="utf-8",
+    )
+    (linked / ".local-ai.toml").write_text(
+        'exclude_paths = ["repo/**"]\n'
+        'pinned_context = ["REPO.md"]\n'
+        '[commands]\ntest = "repo-test"\n',
+        encoding="utf-8",
+    )
+    (common / "info" / "local-ai.toml").write_text(
+        'exclude_paths = ["common/**"]\n'
+        'pinned_context = ["COMMON.md"]\n'
+        '[commands]\nlint = "ruff check ."\n',
+        encoding="utf-8",
+    )
+    (linked / ".local-ai.worktree.toml").write_text(
+        'exclude_paths = ["worktree/**"]\n'
+        'pinned_context = ["WORKTREE.md"]\n'
+        '[commands]\ntest = "worktree-test"\n',
+        encoding="utf-8",
+    )
+
+    result = project_config.resolve_project_config(linked)
+
+    assert result.error_codes == ()
+    assert result.active_sources == (
+        "defaults",
+        "primary_project",
+        "project",
+        "git_common",
+        "worktree",
+    )
+    assert result.settings.exclude_paths == ("worktree/**",)
+    assert result.settings.pinned_context == ("WORKTREE.md",)
+    assert result.settings.commands == {
+        "build": "cargo build",
+        "lint": "ruff check .",
+        "test": "worktree-test",
+    }

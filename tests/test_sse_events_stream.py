@@ -151,6 +151,8 @@ def test_client_stream_events_parsing(monkeypatch):
     client = HubClient.__new__(HubClient)
     client.base_url = "http://127.0.0.1:11435"
     client.api_token = "tok"
+    client.tenant = "test-tenant"
+    client.agent = "test-agent"
 
     sse_payload = (
         b": keep-alive\n\n"

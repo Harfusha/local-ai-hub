@@ -16,11 +16,34 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 from .process_utils import find_listening_pid, pid_alive
-from typing import Any
+from typing import Any, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import load_config
+
+
+class PathHint(Protocol):
+    """Typed request-scoped path hint, compatible with project_config.PathHint."""
+
+    path: str
+    purpose: str
+    scope: str
+
+
+_PATH_HINT_FIELDS = frozenset(
+    {
+        "path",
+        "purpose",
+        "scope",
+        "evidence_id",
+        "provenance",
+        "repository_revision",
+        "config_digest",
+        "expires_at",
+    }
+)
+_PATH_HINT_REQUIRED_FIELDS = ("path", "purpose", "scope")
 
 
 _DETACHED_CHILDREN_LOCK = threading.Lock()
@@ -334,14 +357,39 @@ class HubClient:
                     pass
         return None
 
-    def request(self, path: str, payload: dict[str, Any] | None = None, *, timeout: float = 30.0, replay_safe: bool = False) -> dict[str, Any]:
+    @staticmethod
+    def _valid_request_id(request_id: Any) -> bool:
+        return (
+            isinstance(request_id, str)
+            and 1 <= len(request_id) <= 128
+            and request_id.isascii()
+            and all(0x21 <= ord(char) <= 0x7E for char in request_id)
+        )
+
+    def request(
+        self,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float = 30.0,
+        replay_safe: bool = False,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        if request_id is not None and not self._valid_request_id(request_id):
+            return {
+                "success": False,
+                "error": "request_id must be 1-128 visible ASCII characters without whitespace",
+                "terminal": True,
+                "retryable": False,
+                "preflight": True,
+            }
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
         clean_payload = payload or {}
         preflight = self._terminal_preflight(path, clean_payload)
         if preflight is not None:
             return preflight
         body = json_dumps(clean_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
-        request_id = f"req_{uuid.uuid4().hex[:12]}"
+        request_id = request_id if request_id is not None else f"req_{uuid.uuid4().hex[:12]}"
 
         def once(attempt_timeout: float) -> dict[str, Any]:
             headers = {
@@ -501,9 +549,57 @@ class HubClient:
         }
         return action in read_actions.get(path, set())
 
-    def post(self, path: str, payload: dict[str, Any] | None = None, timeout: float = 360.0) -> dict[str, Any]:
-        replay_safe = self._post_replay_safe(path, payload)
-        return self.request(path, payload, timeout=timeout, replay_safe=replay_safe)
+    def post(
+        self,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        timeout: float = 360.0,
+        *,
+        request_id: str | None = None,
+        path_hints: Sequence[PathHint | Mapping[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        clean_payload = dict(payload or {})
+        route = path.lower().split("?", 1)[0]
+        raw_path_hints = (
+            path_hints if path_hints is not None else clean_payload.get("path_hints")
+        )
+        clean_payload.pop("path_hints", None)
+        if route == "/api/search":
+            explicit_path = isinstance(clean_payload.get("path"), str) and bool(clean_payload["path"].strip())
+            if not explicit_path and isinstance(raw_path_hints, Sequence) and not isinstance(
+                raw_path_hints, (str, bytes, bytearray)
+            ):
+                records = []
+                for hint in raw_path_hints[:64]:
+                    if isinstance(hint, Mapping):
+                        record = dict(hint)
+                    else:
+                        record = {
+                            key: getattr(hint, key)
+                            for key in _PATH_HINT_FIELDS
+                            if hasattr(hint, key) and getattr(hint, key) is not None
+                        }
+                    if any(
+                        not isinstance(record.get(key), str)
+                        for key in _PATH_HINT_REQUIRED_FIELDS
+                    ):
+                        continue
+                    if any(
+                        key in record and not isinstance(record[key], str)
+                        for key in _PATH_HINT_FIELDS
+                    ):
+                        continue
+                    records.append(
+                        {
+                            key: value
+                            for key, value in record.items()
+                            if key in _PATH_HINT_FIELDS
+                        }
+                    )
+                if records:
+                    clean_payload["path_hints"] = records
+        replay_safe = self._post_replay_safe(path, clean_payload)
+        return self.request(path, clean_payload, timeout=timeout, replay_safe=replay_safe, request_id=request_id)
 
     def status(self, detail: str = "brief", scope: str = "process") -> dict[str, Any]:
         if detail == "agent_state":
@@ -776,9 +872,10 @@ class HubClient:
         """Yield parsed SSE events (event_type, data_dict) from /api/agent-state/events/stream."""
         import urllib.parse
         requested_timeout = max(0.0, float(timeout))
-        stream_timeout = min(self.max_request_timeout, requested_timeout)
+        max_request_timeout = float(getattr(self, "max_request_timeout", 1800.0))
+        stream_timeout = min(max_request_timeout, requested_timeout)
         transport_timeout = min(
-            self.max_request_timeout,
+            max_request_timeout,
             max(0.2, stream_timeout + 5.0 if stream_timeout > 0 else 60.0),
         )
         params = []
