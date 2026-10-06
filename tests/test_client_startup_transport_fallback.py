@@ -58,6 +58,31 @@ def test_mutating_post_never_retries_when_write_may_have_started(tmp_path, monke
     assert len(attempts) == 1
     assert starts == []
     assert result["outcome_unknown"] is True
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+
+
+def test_pre_send_failure_without_startup_is_terminal_non_retryable(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+
+    def pooled_open(*_args, **_kwargs):
+        raise client_module._TransportFailure(
+            ConnectionRefusedError("offline"), request_not_sent=True
+        )
+
+    monkeypatch.setattr(
+        client,
+        "_pooled_open",
+        pooled_open,
+    )
+    monkeypatch.setattr(client, "ensure_server", lambda timeout=None: False)
+
+    result = client.post("/api/tasks/checkpoint", {"task_id": "t1"}, request_id="stable-id")
+
+    assert result["request_not_sent"] is True
+    assert result["outcome_unknown"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
 
 
 def test_failed_retry_after_startup_is_reported_as_uncertain(tmp_path, monkeypatch):

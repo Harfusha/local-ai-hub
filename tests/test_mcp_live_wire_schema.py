@@ -267,17 +267,66 @@ def test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up(tmp_path: Path
     assert not (state_dir / "hub.pid").exists()
     with socket.socket() as probe:
         assert probe.connect_ex(("127.0.0.1", port)) != 0
+    import threading
+
     completed = None
+    process = None
+    stdout_reader = None
+    stderr_reader = None
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [sys.executable, "-B", "-m", "local_ai_hub.mcp_server"],
             cwd=root,
             env=env,
-            input="".join(json.dumps(item, separators=(",", ":")) + "\n" for item in messages),
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=45,
-            check=False,
+            bufsize=1,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        stdout_lines = []
+        stderr_lines = []
+        stdout_reader = threading.Thread(
+            target=lambda: stdout_lines.extend(process.stdout), daemon=True
+        )
+        stderr_reader = threading.Thread(
+            target=lambda: stderr_lines.extend(process.stderr), daemon=True
+        )
+        stdout_reader.start()
+        stderr_reader.start()
+        process.stdin.write(
+            "".join(json.dumps(item, separators=(",", ":")) + "\n" for item in messages)
+        )
+        process.stdin.flush()
+        deadline = time.monotonic() + 45
+        response_received = False
+        consumed_lines = 0
+        while time.monotonic() < deadline:
+            while consumed_lines < len(stdout_lines):
+                line = stdout_lines[consumed_lines]
+                consumed_lines += 1
+                if line.strip() and json.loads(line).get("id") == 2:
+                    response_received = True
+                    break
+            if response_received or process.poll() is not None:
+                break
+            time.sleep(0.05)
+        process.stdin.close()
+        try:
+            process.wait(timeout=45)
+        except subprocess.TimeoutExpired:
+            terminate_tree(process.pid, grace_seconds=2.0)
+            process.wait(timeout=5)
+        stdout_reader.join(timeout=5)
+        stderr_reader.join(timeout=5)
+        completed = subprocess.CompletedProcess(
+            process.args,
+            process.returncode,
+            "".join(stdout_lines),
+            "".join(stderr_lines),
         )
         assert completed.returncode == 0, completed.stderr[-2000:]
         responses = [
@@ -285,7 +334,11 @@ def test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up(tmp_path: Path
         ]
         initialize = next(item for item in responses if item.get("id") == 1)
         assert initialize.get("result", {}).get("protocolVersion") == "2025-06-18"
-        response = next(item for item in responses if item.get("id") == 2)
+        response = next((item for item in responses if item.get("id") == 2), None)
+        assert response is not None, (
+            f"missing JSON-RPC response id=2; stdout_tail={completed.stdout[-1400:]!r}; "
+            f"stderr_tail={completed.stderr[-1400:]!r}"
+        )
         result = response.get("result", {})
         payload = result.get("structuredContent")
         if not isinstance(payload, dict):
@@ -312,6 +365,13 @@ def test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up(tmp_path: Path
         while time.monotonic() < deadline and any(pid_alive(pid) for pid in pids):
             time.sleep(0.1)
         alive = sorted(pid for pid in pids if pid_alive(pid))
+        if process is not None:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+        for reader in (stdout_reader, stderr_reader):
+            if reader is not None:
+                reader.join(timeout=5)
         assert not alive, f"orphan Hub processes remain: {alive}; stderr={getattr(completed, 'stderr', '')[-1000:]}"
 
 

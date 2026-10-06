@@ -222,3 +222,31 @@ def test_legacy_incident_schema_is_allowlisted_and_preserved_on_migration(tmp_pa
                 ("legacy-incident-migration",),
             ).fetchone() == ("legacy-incident-migration", "redacted failure")
     assert migrated.enabled is True
+
+
+def test_schema_preflight_accepts_concurrent_agent_state_writes(tmp_path, monkeypatch):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _seed_durable_state(db_path)
+    store = AgentStateStore(db_path)
+    classify = AgentStateStore._classify_schema
+    wrote = False
+
+    def classify_with_concurrent_write(connection):
+        nonlocal wrote
+        result = classify(connection)
+        if not wrote:
+            wrote = True
+            with closing(sqlite3.connect(db_path)) as writer:
+                writer.execute(
+                    "INSERT INTO agent_event_cursors(stream_id, last_seq, first_retained_seq) "
+                    "VALUES (?, 0, 1)",
+                    ("concurrent-preflight-writer",),
+                )
+                writer.commit()
+        return result
+
+    monkeypatch.setattr(store, "_classify_schema", classify_with_concurrent_write)
+
+    store._ensure_schema()
+
+    assert wrote

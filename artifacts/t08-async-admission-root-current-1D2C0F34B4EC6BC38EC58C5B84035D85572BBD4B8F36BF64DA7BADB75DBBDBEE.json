@@ -1,0 +1,18 @@
+{
+  "patch": "t08-async-admission-root-current-1D2C0F34B4EC6BC38EC58C5B84035D85572BBD4B8F36BF64DA7BADB75DBBDBEE.patch",
+  "sha256": "1D2C0F34B4EC6BC38EC58C5B84035D85572BBD4B8F36BF64DA7BADB75DBBDBEE",
+  "root_target": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "root_preimage_sha256": "91427354EB34A763F7A66BC9F3E281BA6F450DEED23A997235E43976F7F15F20",
+  "paths": [
+    "src/local_ai_hub/async_jobs.py",
+    "tests/test_t08_async_admission_lifecycle.py",
+    "tests/test_t08_t13_t12_consumer_overlay.py"
+  ],
+  "scope": "T08 async inference admission/drain and resource-release producer API; trusted serializable cwd preservation; T08 consumer receipt tests",
+  "candidate_receipt": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t08_async_admission_lifecycle.py tests/test_t08_t13_t12_consumer_overlay.py -> 3 passed in 2.08s",
+  "root_modified": false,
+  "apply_check": "pending"
+}

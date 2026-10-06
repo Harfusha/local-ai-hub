@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStore, TaskStatus
+from local_ai_hub import trace_context
 from local_ai_hub.deterministic import DeterministicEngine
 
 

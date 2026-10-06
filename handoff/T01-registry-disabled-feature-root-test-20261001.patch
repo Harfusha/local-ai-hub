@@ -1,0 +1,29 @@
+diff --git a/tests/test_operation_contracts.py b/tests/test_operation_contracts.py
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -1073,3 +1073,22 @@ def test_registered_mcp_dispatch_rejects_non_object_output_without_replaying_handler(
+     assert response[1]["status_code"] == 500
+     assert "output contract" in response[1]["error"]
+     assert len(calls) == 1
++
++
++def test_registered_mcp_dispatch_gates_valid_coord_parameters_when_feature_disabled(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    import asyncio
++
++    import local_ai_hub.mcp_server as mcp_server
++
++    monkeypatch.setattr(mcp_server, "FEATURES", FeatureSet.from_config(_config(enabled=False)))
++
++    class NeverDispatchClient:
++        def __getattr__(self, name: str) -> Any:
++            raise AssertionError(f"disabled coordination reached CLIENT.{name}")
++
++    monkeypatch.setattr(mcp_server, "CLIENT", NeverDispatchClient())
++    response = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "task_rollback", "task_id": "disabled-task"}
++    ))
++
++    assert response[1]["status_code"] == 403
++    assert "local_ai_coord is disabled in configuration" in response[1]["error"]

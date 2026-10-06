@@ -1,0 +1,14 @@
+--- a/docs/MODEL_CAPABILITIES.md
++++ b/docs/MODEL_CAPABILITIES.md
+@@ -22,8 +22,9 @@
+ | `high` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` |
+ | `max` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` |
+ 
+-The integrated profile never selects `qwen3.5:9b`; the 9B model is reserved for
+-the balanced profile's extreme reasoning and vision routes.
++The integrated profile never selects `qwen3.5:9b`. Balanced uses it for extreme
++reasoning and vision; high uses it for ordinary tasks, extreme reasoning, and
++vision; max uses it for ordinary, hard, and extreme reasoning and vision.
+ 
+ ## Static operation contracts
+ 

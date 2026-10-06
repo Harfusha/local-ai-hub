@@ -46,12 +46,37 @@ class VRAMBalancer:
                 if not force and self._last_status and (now - self._last_check_time < 2.0):
                     return dict(self._last_status)
 
-            self._sampling = True
+            if not self._sampling:
+                if time.monotonic() >= wait_deadline:
+                    return self._sampling_timeout_fallback_locked()
+                self._sampling = True
+                threading.Thread(target=self._sample_gpu_telemetry, daemon=True).start()
 
+            while self._sampling:
+                remaining = wait_deadline - time.monotonic()
+                if remaining <= 0:
+                    return self._sampling_timeout_fallback_locked()
+                self._condition.wait(timeout=remaining)
+                if self._status_generation > request_generation and self._last_status:
+                    return dict(self._last_status)
+            if self._status_generation > request_generation and self._last_status:
+                return dict(self._last_status)
+            if not force and self._last_status and (time.monotonic() - self._last_check_time < 2.0):
+                return dict(self._last_status)
+            return self._sampling_timeout_fallback_locked()
+
+    def _sample_gpu_telemetry(self) -> None:
         try:
             # GPU telemetry can invoke bounded subprocess probes. Keep those waits
-            # out of the state lock so pin/cache operations stay responsive.
-            return self._status_from_telemetry(get_gpu_telemetry())
+            # out of the state lock and status caller so both stay responsive.
+            self._status_from_telemetry(get_gpu_telemetry())
+        except Exception:
+            with self._condition:
+                fallback = self._sampling_timeout_fallback_locked()
+                fallback["telemetry_error"] = "sample_failed"
+                self._last_status = fallback
+                self._last_check_time = time.monotonic()
+                self._status_generation += 1
         finally:
             with self._condition:
                 self._sampling = False

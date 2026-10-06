@@ -33,6 +33,10 @@ JS_METHOD = re.compile(r"^\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)
 _CONTROL_NAMES = {"if","for","while","switch","catch","return","new","throw","using","lock","foreach","typeof","sizeof","default"}
 
 
+def _escape_like_literal(value: str) -> str:
+    return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+
+
 class CodeIndex:
     def __init__(self, config: dict[str, Any], repo_tools: Any):
         self.config = config
@@ -305,7 +309,7 @@ class CodeIndex:
     @staticmethod
     def _call_owners_by_line(symbols: list[dict[str, Any]], line_count: int) -> list[str]:
         """Map source lines to the narrowest enclosing fallback function symbol."""
-        function_kinds = {"function", "method", "func", "fn"}
+        function_kinds = {"function", "method", "constructor", "func", "fn"}
         starts: dict[int, list[dict[str, Any]]] = {}
         for symbol in symbols:
             start = int(symbol.get("line", 0))
@@ -1358,7 +1362,7 @@ class CodeIndex:
                     (resolved_root,),
                 ).fetchall()]
         except sqlite3.DatabaseError as exc:
-            return {"success": False, "root": resolved_root, "error": str(exc), "busy": is_busy_error(exc), "confidence": 0.0}
+            return {"success": False, "root": resolved_root, "error": str(exc), "busy": is_busy_error(exc), "confidence": 0.0, "graph_complete": False}
 
         changed_stems = {Path(p).stem.lower().replace("test_", "").replace("_test", "").replace(".test", "").replace("_spec", "").replace(".spec", "") for p in changed}
         symbol_names_l = [str(x["name"]).lower() for x in changed_symbols]
@@ -1386,6 +1390,7 @@ class CodeIndex:
             "confidence": confidence,
             "indexed_changed_files": indexed_count,
             "changed_files_count": len(changed),
+            "graph_complete": False,
             "dependency_graph_complete": not graph_truncated and len(dependent_scores) <= max_dependents,
         }
 
@@ -1482,14 +1487,14 @@ class CodeIndex:
         if not symbol or not symbol.strip():
             return {"success": False, "error": "symbol cannot be empty"}
         sym = symbol.strip()
-        escaped_sym = sym.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        like_sym = _escape_like_literal(sym)
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT src, dst, kind, path, line FROM edges
-                   WHERE root=? AND kind='calls'
-                     AND (dst=? OR dst LIKE ? ESCAPE '!' OR dst LIKE ? ESCAPE '!')
+                   WHERE root=? AND kind='calls' AND
+                         (dst=? OR dst LIKE ? ESCAPE '!' OR dst LIKE ? ESCAPE '!')
                    ORDER BY path, line LIMIT ?""",
-                (resolved, sym, f"%/{escaped_sym}", f"%::{escaped_sym}", limit),
+                (resolved, sym, f"%/{like_sym}", f"%::{like_sym}", limit),
             ).fetchall()
         callers = [
             {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}
@@ -1503,14 +1508,14 @@ class CodeIndex:
         if not symbol or not symbol.strip():
             return {"success": False, "error": "symbol cannot be empty"}
         sym = symbol.strip()
-        escaped_sym = sym.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        like_sym = _escape_like_literal(sym)
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT src, dst, kind, path, line FROM edges
-                   WHERE root=? AND kind='calls'
-                     AND (src=? OR src LIKE ? ESCAPE '!' OR src LIKE ? ESCAPE '!')
+                   WHERE root=? AND kind='calls' AND
+                         (src=? OR src LIKE ? ESCAPE '!' OR src LIKE ? ESCAPE '!')
                    ORDER BY path, line LIMIT ?""",
-                (resolved, sym, f"%/{escaped_sym}", f"%::{escaped_sym}", limit),
+                (resolved, sym, f"%/{like_sym}", f"%::{like_sym}", limit),
             ).fetchall()
         callees = [
             {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}

@@ -1,0 +1,57 @@
+{
+  "packet_version": 1,
+  "task": "T03 path_hints dispatch and MCP cold-start acceptance handoff",
+  "status": "blocked_on_telemetry_contract_evidence",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\t03-contracts-resume\\.local-ai-hub",
+    "head": "ad622f8a90a81e349e94d3402f297f2995e733b2",
+    "master": "744727887bb1027b1bc464534a1ab0280ddbc9fe",
+    "dirty_baseline": "Existing modified/untracked files preserved; no source edits made in this continuation."
+  },
+  "ownership": {
+    "path_hints_dispatch": "T03 owns src/local_ai_hub/mcp_server.py and tests/test_mcp_contract_dispatch.py::test_mcp_repo_search_forwards_path_hints_to_http_payload.",
+    "downstream_search_consumer": "T21-owned; not run or edited.",
+    "cold_start_test": "T03-owned baseline-untracked tests/test_mcp_live_wire_schema.py::test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up."
+  },
+  "test_receipts": [
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_mcp_live_wire_schema.py tests/test_recovery_journal_contract.py tests/test_mcp_contract_dispatch.py",
+      "result": "35 passed, 2 failed in 27.10s",
+      "request_id": "req_6d6afc89367d",
+      "repository_revision": "8ba4922536666c4e1dde90f72cf7cc305b38cb602bc7a4e38669d17ec53c3eb4",
+      "failed_nodes": [
+        "tests/test_mcp_live_wire_schema.py::test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up",
+        "tests/test_mcp_contract_dispatch.py::test_mcp_repo_search_forwards_path_hints_to_http_payload"
+      ]
+    },
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_mcp_live_wire_schema.py::test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up",
+      "result": "1 passed in 11.31s",
+      "request_id": "req_159b7cd9c6fb",
+      "execution_id": "325487db08174c8e8d2bfa50a8c8bfdf",
+      "repository_revision": "8ba4922536666c4e1dde90f72cf7cc305b38cb602bc7a4e38669d17ec53c3eb4"
+    },
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_mcp_contract_dispatch.py::test_mcp_repo_search_forwards_path_hints_to_http_payload",
+      "result": "1 failed in 2.90s",
+      "request_id": "req_7fe8c202098d",
+      "execution_id": "356b4aefe06b4cb68e0cb9d887783f51",
+      "repository_revision": "8ba4922536666c4e1dde90f72cf7cc305b38cb602bc7a4e38669d17ec53c3eb4",
+      "failure": "Assertion expected only /api/search. Actual list contains additional /api/telemetry/tool-accounting call with batch_id and empty events. The /api/search call itself is present; full payload diff is broker-truncated."
+    }
+  ],
+  "diff_provenance": {
+    "source_changed_this_continuation": [],
+    "test_file_was_preexisting_dirty": true,
+    "review_diff_attempt": "Rejected unsupported paths argument; terminal=true, retryable=false.",
+    "telemetry_intent": "Not confirmed from an owned source slice or existing telemetry contract. No assertion or source edit made."
+  },
+  "hub_evidence": {
+    "context_id": "f582dcc9a15e38f07d839d9e",
+    "repo_revision": "8ba4922536666c4e1dde90f72cf7cc305b38cb602bc7a4e38669d17ec53c3eb4",
+    "search_request_id": "req_4eb7e597603a",
+    "solve_request_id": "req_677f167f2581",
+    "solve_error": "qwen2.5-coder:7b: circuit open; qwen2.5-coder:3b: circuit open"
+  },
+  "next_safe_step": "T03 owner must provide/locate the instrumentation contract or source slice. If telemetry is intentional, adjust only the T03 test to assert exactly one /api/search call with the full path_hints payload and separately assert the telemetry call contract. Otherwise keep the failure."
+}

@@ -1,0 +1,81 @@
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -1484,6 +1484,8 @@
+             self._finish_stream_request(False, error="client disconnected before headers")
+             return
+ 
++        stream_success = True
++        stream_error = ""
+         q = APP.agent_state.subscribe(maxsize=200)
+         try:
+             # Subscribe before fetching history. An event appended in the replay
+@@ -1502,6 +1504,8 @@
+                         self.wfile.write(msg)
+                         self.wfile.flush()
+                     except OSError:
++                        stream_success = False
++                        stream_error = "client disconnected"
+                         return
+ 
+             start_time = time.monotonic()
+@@ -1513,7 +1517,8 @@
+                         self.wfile.write(timeout_msg)
+                         self.wfile.flush()
+                     except OSError:
+-                        pass
++                        stream_success = False
++                        stream_error = "client disconnected"
+                     break
+                 try:
+                     ev = q.get(timeout=min(1.0, remaining))
+@@ -1534,13 +1539,19 @@
+                         self.wfile.write(b": keep-alive\n\n")
+                         self.wfile.flush()
+                     except OSError:
++                        stream_success = False
++                        stream_error = "client disconnected"
+                         break
++        except OSError:
++            stream_success = False
++            stream_error = "client disconnected"
+         except Exception:
+-            pass
++            stream_success = False
++            stream_error = "stream failed"
+         finally:
+             self.close_connection = True
+             APP.agent_state.unsubscribe(q)
+-            self._finish_stream_request(True)
++            self._finish_stream_request(stream_success, error=stream_error)
+ 
+     def do_OPTIONS(self) -> None:
+         if APP is None:
+diff --git a/tests/test_sse_events_stream.py b/tests/test_sse_events_stream.py
+--- a/tests/test_sse_events_stream.py
++++ b/tests/test_sse_events_stream.py
+@@ -40,6 +40,7 @@
+         self._telemetry_finished = False
+         self._debug_trace_finished = False
+         self._journal_finished = False
++        self.finished_stream_request = None
+         self._app = app
+ 
+     def _tenant(self):
+@@ -61,7 +62,7 @@
+         pass
+ 
+     def _finish_stream_request(self, success, error=""):
+-        pass
++        self.finished_stream_request = (success, error)
+ 
+     def _stream_agent_events(self, stream_id="", kind="", after_seq=0, timeout=0.0):
+         http_server.Handler._stream_agent_events(
+@@ -101,6 +102,7 @@
+         assert "event: task.updated" in output
+         assert '"step":1' in output
+         assert '"step":2' in output
++        assert handler.finished_stream_request == (False, "client disconnected")
+     finally:
+         http_server.APP = orig_app
+ 

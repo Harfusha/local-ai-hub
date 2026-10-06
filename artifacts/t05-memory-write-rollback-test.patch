@@ -1,0 +1,68 @@
+diff --git a/tests/test_agent_memory.py b/tests/test_agent_memory.py
+index 9c1b323..a28afc9 100644
+--- a/tests/test_agent_memory.py
++++ b/tests/test_agent_memory.py
+@@ -965,3 +965,63 @@ def test_mark_stale_batch_rolls_back_and_repeats_idempotently(store: MemoryStore
+     count = store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/batch-0.py", "src/batch-1.py"])
+     assert count == 2
+     assert store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/batch-0.py", "src/batch-1.py"]) == 0
++
++
++def test_memory_write_failure_rolls_back_record_event_and_cursor(store: MemoryStore, monkeypatch):
++    idempotency_key = "memory-write-rollback"
++    stream_ids: list[str] = []
++    append_in_transaction = store.state_store.append_in_transaction
++    save_record_row = store._save_record_row
++
++    def capture_append(con, event, **kwargs):
++        stream_ids.append(event.stream_id)
++        result = append_in_transaction(con, event, **kwargs)
++        assert con.execute(
++            "SELECT COUNT(*) FROM agent_events WHERE stream_id = ? AND idempotency_key = ?",
++            (event.stream_id, idempotency_key),
++        ).fetchone()[0] == 1
++        assert con.execute(
++            "SELECT last_seq FROM agent_event_cursors WHERE stream_id = ?",
++            (event.stream_id,),
++        ).fetchone() == (1,)
++        return result
++
++    def fail_after_record_insert(con, record):
++        save_record_row(con, record)
++        assert con.execute(
++            "SELECT COUNT(*) FROM agent_memory_records WHERE record_id = ?",
++            (record.record_id,),
++        ).fetchone()[0] == 1
++        raise RuntimeError("injected failure after memory and event writes")
++
++    monkeypatch.setattr(store.state_store, "append_in_transaction", capture_append)
++    monkeypatch.setattr(store, "_save_record_row", fail_after_record_insert)
++    with pytest.raises(RuntimeError, match="injected failure"):
++        store.record(
++            MemoryRecord.create(
++                kind=MemoryKind.FINDING,
++                scope=AgentScope.TASK,
++                scope_id="task-rollback",
++                key="rollback-memory",
++                value={"safe": "transactional"},
++            ),
++            idempotency_key=idempotency_key,
++        )
++
++    assert len(stream_ids) == 1
++    with closing(connect_sqlite(store.state_store.db_path)) as con:
++        record_count = con.execute(
++            "SELECT COUNT(*) FROM agent_memory_records WHERE key = ?",
++            ("rollback-memory",),
++        ).fetchone()[0]
++        event_count = con.execute(
++            "SELECT COUNT(*) FROM agent_events WHERE idempotency_key = ?",
++            (idempotency_key,),
++        ).fetchone()[0]
++        cursor_count = con.execute(
++            "SELECT COUNT(*) FROM agent_event_cursors WHERE stream_id = ?",
++            (stream_ids[0],),
++        ).fetchone()[0]
++    assert record_count == 0
++    assert event_count == 0
++    assert cursor_count == 0

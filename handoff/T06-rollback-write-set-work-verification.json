@@ -1,0 +1,52 @@
+{
+  "work_source_review": {
+    "criteria": [
+      "rollback-write-set-outcome-unknown"
+    ],
+    "diff": {
+      "candidate_command_transactions_sha256": "CFFC36198FD402754E9F4B2BAC4472351FC9313AB5EC65BB1D6A6FCC95CE86FA",
+      "candidate_source_sha256": "3A7F35E4EE417C37AE4C2D891DF906D5232E97D50E569E0C465C4200B105AD24",
+      "root_apply_check": "not applied; root untouched",
+      "root_source_preimage_sha256": "845348F2E362852561AE2EBB1B3F5458C8915E0134B1EC884F47356132B9FECB",
+      "files": [
+        "src/local_ai_hub/commands.py",
+        "src/local_ai_hub/command_transactions.py",
+        "tests/test_command_rollback.py"
+      ],
+      "root_command_transactions_preimage_sha256": "247E49200044B4ACF2A1B261412F187C4688DE3CF0C9672AE582FD14EA1F029D"
+    },
+    "passed": true,
+    "verification": "Focused rollback review: source snapshots only declared relative paths; private transaction output validation rejects undeclared changes; source conflicts and rollback errors invalidate caches and report outcome_unknown. Docker runtime acceptance remains blocked.",
+    "mutation_generation": null,
+    "owner": "C:\\Users\\Adam\\.codex\\worktrees\\t06-safe-commands\\.local-ai-hub",
+    "kind": "work_source_review",
+    "task_id": "T06",
+    "repository_revision": "94337de7309b66c63ff427cce8cd3a49e6414d73"
+  },
+  "receipt_status": "local_handoff_only_hub_offline",
+  "work_command_verification": {
+    "evidence_source": "single native run in T06-owned worktree while Hub offline",
+    "cached": false,
+    "hub_persisted": false,
+    "repository_revision": "94337de7309b66c63ff427cce8cd3a49e6414d73",
+    "command_sha256": "bc0f17a0550d8fea32ec5db35bd4b406b0b7d5b7f59d144f2b11ecef60d4bbc6",
+    "owner": "C:\\Users\\Adam\\.codex\\worktrees\\t06-safe-commands\\.local-ai-hub",
+    "criterion": "rollback-write-set-outcome-unknown",
+    "exit_code": 0,
+    "command_id": null,
+    "passed": true,
+    "result": {
+      "success": true,
+      "exit_code": 0,
+      "failed": 0,
+      "passed": 5
+    },
+    "command_classification": "test",
+    "kind": "work_command_verification",
+    "duration_ms": 14490,
+    "mutation_generation": null,
+    "command": "python -B -m pytest -q --tb=short tests/test_command_rollback.py::test_command_rollback_restores_only_declared_write_set tests/test_command_rollback.py::test_command_rollback_on_failure_preserves_unowned_changes tests/test_command_rollback.py::test_command_rollback_preserves_concurrent_edit_to_declared_path tests/test_command_rollback.py::test_private_transaction_source_conflict_marks_outcome_unknown_and_invalidates_caches tests/test_command_rollback.py::test_rollback_oserror_marks_outcome_unknown_invalidates_caches_and_records_incident",
+    "task_id": "T06"
+  },
+  "schema": "T09 work_command_verification + work_source_review shape"
+}

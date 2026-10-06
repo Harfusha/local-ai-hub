@@ -1,0 +1,41 @@
+--- a/tests/test_mcp_contract_dispatch.py
++++ b/tests/test_mcp_contract_dispatch.py
+@@ -347,25 +347,19 @@
+     assert _classify_mcp_operation("local_ai_command", {"action": "run"}) == ("run", True)
+     assert _classify_mcp_operation("local_ai_repo", {"action": "search"}) == ("search", True)
+ 
+-def test_mcp_transport_selection_injects_lazy_transport_with_same_config_and_tenant(monkeypatch) -> None:
++def test_mcp_transport_selection_uses_http_autostart_with_same_config_and_tenant(monkeypatch) -> None:
+     from local_ai_hub import mcp_server
+ 
+     calls = {}
+ 
+-    class FakeTransport:
+-        def __init__(self, *, config_path):
+-            calls["transport_config"] = config_path
+-
+     class FakeHubClient:
+-        def __init__(self, *, tenant, config_path, inprocess_transport):
+-            self.inprocess_transport = inprocess_transport
++        def __init__(self, *, tenant, config_path, auto_start):
+             calls.update(
+                 tenant=tenant,
+                 client_config=config_path,
+-                transport=inprocess_transport,
++                auto_start=auto_start,
+             )
+ 
+-    monkeypatch.setattr(mcp_server, "InProcessTransport", FakeTransport, raising=False)
+     monkeypatch.setattr(mcp_server, "HubClient", FakeHubClient)
+ 
+     client = mcp_server._build_mcp_client("agent:workspace", "C:/config/hub.toml")
+@@ -374,8 +368,7 @@
+     assert calls == {
+         "tenant": "agent:workspace",
+         "client_config": "C:/config/hub.toml",
+-        "transport_config": "C:/config/hub.toml",
+-        "transport": client._client.inprocess_transport,
++        "auto_start": True,
+     }
+ 
+ 

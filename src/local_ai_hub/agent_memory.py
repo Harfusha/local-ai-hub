@@ -58,11 +58,13 @@ def _memory_event_stream_id(scope: AgentScope, scope_id: str | None, key: str) -
     return "memory:" + "".join(f"{len(part)}:{part}" for part in parts)
 
 
-def _memory_deletion_event(
-    con: Any,
-    *,
-    record_id: str,
-) -> AgentEvent | None:
+
+
+def _normalise_scope_root(value: str) -> str:
+    return os.path.normcase(os.path.abspath(os.path.normpath(str(value).replace("\\", "/")))).replace("\\", "/")
+
+
+def _memory_deletion_event(con: Any, *, record_id: str) -> AgentEvent | None:
     rows = con.execute(
         """
         SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
@@ -78,10 +80,6 @@ def _memory_deletion_event(
             raise ValueError("memory deletion idempotency key collision")
         return event
     return None
-
-
-def _normalise_scope_root(value: str) -> str:
-    return os.path.normcase(os.path.abspath(os.path.normpath(str(value).replace("\\", "/")))).replace("\\", "/")
 
 
 def _memory_matches_request_scope(
@@ -197,10 +195,11 @@ def _context_scope_sql(
     root: str,
     task_id: str,
     tenant: str,
-    session_id: str,
+    session_id: str = "",
     clone_id: str,
     worktree_id: str,
     branch: str,
+    coordination_id: str = "",
 ) -> tuple[str, list[Any]]:
     root = str(root or "").strip()
     tenant = str(tenant or "").strip()
@@ -253,6 +252,18 @@ def _context_scope_sql(
         params.extend(identity_params)
 
     add_scoped_identity(AgentScope.REPOSITORY.value)
+    coordination_id = str(coordination_id or "").strip()
+    # Keep the physical-root branch above for legacy records. Cross-worktree
+    # access is a separate repository-only branch requiring trusted identity
+    # and an exact tenant match.
+    if root and tenant and coordination_id:
+        shared_repository = [
+            "scope = ?",
+            f"{provenance_tenant} = ?",
+            "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.repository_id') = ?",
+        ]
+        clauses.append("(" + " AND ".join(shared_repository) + ")")
+        params.extend([AgentScope.REPOSITORY.value, tenant, coordination_id])
     add_scoped_identity(AgentScope.TASK.value, task_id)
     add_scoped_identity(AgentScope.SESSION.value, session_id)
     add_scoped_identity(AgentScope.CLONE.value, clone_id)
@@ -447,25 +458,26 @@ class MemoryRecord:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        safe = _sanitise_memory_record(self, reject_sensitive=False)
         return {
-            "record_id": self.record_id,
-            "kind": self.kind.value,
-            "scope": self.scope.value,
-            "scope_id": self.scope_id,
-            "key": self.key,
-            "value": self.value,
-            "confidence": self.confidence,
-            "status": self.status.value,
-            "source": self.source,
-            "evidence_ids": list(self.evidence_ids),
-            "sensitivity": self.sensitivity,
-            "contradicts_record_id": self.contradicts_record_id,
-            "supersedes_record_id": self.supersedes_record_id,
-            "quarantine_reason": self.quarantine_reason,
-            "provenance": dict(self.provenance),
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "expires_at": self.expires_at,
+            "record_id": safe.record_id,
+            "kind": safe.kind.value,
+            "scope": safe.scope.value,
+            "scope_id": safe.scope_id,
+            "key": safe.key,
+            "value": safe.value,
+            "confidence": safe.confidence,
+            "status": safe.status.value,
+            "source": safe.source,
+            "evidence_ids": list(safe.evidence_ids),
+            "sensitivity": safe.sensitivity,
+            "contradicts_record_id": safe.contradicts_record_id,
+            "supersedes_record_id": safe.supersedes_record_id,
+            "quarantine_reason": safe.quarantine_reason,
+            "provenance": dict(safe.provenance),
+            "created_at": safe.created_at,
+            "updated_at": safe.updated_at,
+            "expires_at": safe.expires_at,
         }
 
     @classmethod
@@ -614,6 +626,38 @@ class MemoryStore:
             def _setup() -> None:
                 con = connect_sqlite(self.state_store.db_path)
                 try:
+                    from .sqlite_support import validate_durable_schema
+
+                    validate_durable_schema(
+                        con,
+                        self.state_store.db_path,
+                        {
+                            "agent_memory_records": [
+                                ("record_id", "TEXT", 0, 1), ("kind", "TEXT", 1, 0),
+                                ("scope", "TEXT", 1, 0), ("scope_id", "TEXT", 1, 0),
+                                ("key", "TEXT", 1, 0), ("value", "TEXT", 1, 0),
+                                ("status", "TEXT", 1, 0), ("confidence", "REAL", 1, 0),
+                                ("source", "TEXT", 1, 0), ("evidence_ids", "TEXT", 1, 0),
+                                ("sensitivity", "TEXT", 1, 0),
+                                ("contradicts_record_id", "TEXT", 0, 0),
+                                ("supersedes_record_id", "TEXT", 0, 0),
+                                ("quarantine_reason", "TEXT", 0, 0),
+                                ("provenance", "TEXT", 1, 0), ("created_at", "REAL", 1, 0),
+                                ("updated_at", "REAL", 1, 0), ("expires_at", "REAL", 0, 0),
+                            ],
+                            "agent_entity_relations": [
+                                ("relation_id", "TEXT", 0, 1), ("source_entity", "TEXT", 1, 0),
+                                ("relation", "TEXT", 1, 0), ("target_entity", "TEXT", 1, 0),
+                                ("weight", "REAL", 1, 0), ("metadata", "TEXT", 1, 0),
+                                ("created_at", "REAL", 1, 0), ("updated_at", "REAL", 1, 0),
+                            ],
+                        },
+                        complete_groups=(("agent_memory_records", "agent_entity_relations"),),
+                        required_if_event_kinds={"agent_memory_records": ("memory.%",)},
+                    )
+                    # SQLite DDL may autocommit statement by statement. Keep the
+                    # durable table group invisible until both tables exist.
+                    con.execute("BEGIN IMMEDIATE")
                     with con:
                         con.execute(
                             """
@@ -905,7 +949,12 @@ class MemoryStore:
             ),
         ).fetchall()
         for row in rows:
-            existing = self._row_to_record(row)
+            try:
+                existing = self._row_to_record(row)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not isinstance(existing.provenance, Mapping):
+                continue
             if not _memory_conflict_context_matches(existing, record):
                 continue
             if existing.confidence >= 0.8 and record.confidence >= 0.8 and existing.value != record.value:
@@ -918,47 +967,69 @@ class MemoryStore:
     def _auto_link_record(self, record: MemoryRecord, actor: str = "agent") -> None:
         """Automatically create entity relations for recorded memory items."""
         try:
-            if record.key:
+            for source, relation, target, weight in self._auto_link_specs(record):
                 self.record_relation(
-                    source=record.record_id,
-                    relation="defines",
-                    target=record.key,
-                    weight=record.confidence,
+                    source=source,
+                    relation=relation,
+                    target=target,
+                    weight=weight,
                     actor=actor,
                 )
-            if record.scope_id:
-                self.record_relation(
-                    source=record.record_id,
-                    relation="scoped_in",
-                    target=record.scope_id,
-                    weight=1.0,
-                    actor=actor,
-                )
-            text_corpus = f"{record.key or ''} {record.value or ''}"
-            matches = set(re.findall(r"\b[\w\-./\\]+\.(?:py|js|ts|tsx|jsx|go|rs|cs|java|cpp|h|json|toml|yaml|md)\b", text_corpus))
-            source_ent = record.key or record.record_id
-            for target_path in list(matches)[:10]:
-                norm_path = target_path.replace("\\", "/").strip("./")
-                if norm_path and norm_path != source_ent:
-                    self.record_relation(
-                        source=source_ent,
-                        relation="targets",
-                        target=norm_path,
-                        weight=0.8,
-                        actor=actor,
-                    )
-            if isinstance(record.provenance, dict) and "relations" in record.provenance:
-                for rel in record.provenance["relations"]:
-                    if isinstance(rel, dict) and "target" in rel and "relation" in rel:
-                        self.record_relation(
-                            source=rel.get("source", source_ent),
-                            relation=rel["relation"],
-                            target=rel["target"],
-                            weight=float(rel.get("weight", 1.0)),
-                            actor=actor,
-                        )
         except Exception:
             pass
+
+    def _save_record_mutation(self, record: MemoryRecord, event: AgentEvent) -> MemoryRecord:
+        """Persist a memory mutation and its event in the durable transaction."""
+        if not self.state_store.enabled:
+            self._save_record(record)
+            return record
+
+        self._init_table()
+        con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        try:
+            # T08 contract: enter publication before BEGIN; projection, cursor, and
+            # outbox event commit together; publish only the committed row.
+            with self.state_store.ordered_event_publication(con) as publish:
+                con.execute("BEGIN IMMEDIATE")
+                appended = self.state_store.append_in_transaction(
+                    con,
+                    event,
+                    strict_idempotency=False,
+                )
+                self._save_record_row(con, record)
+                con.execute("COMMIT")
+                publish([appended.event])
+            return record
+        except Exception:
+            if con.in_transaction:
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    @staticmethod
+    def _auto_link_specs(record: MemoryRecord) -> list[tuple[str, str, str, float]]:
+        specs: list[tuple[str, str, str, float]] = []
+        if record.key:
+            specs.append((record.record_id, "defines", record.key, record.confidence))
+        if record.scope_id:
+            specs.append((record.record_id, "scoped_in", record.scope_id, 1.0))
+        text_corpus = f"{record.key or ''} {record.value or ''}"
+        matches = set(re.findall(r"\b[\w\-./\\]+\.(?:py|js|ts|tsx|jsx|go|rs|cs|java|cpp|h|json|toml|yaml|md)\b", text_corpus))
+        source_ent = record.key or record.record_id
+        for target_path in list(matches)[:10]:
+            norm_path = target_path.replace("\\", "/").strip("./")
+            if norm_path and norm_path != source_ent:
+                specs.append((source_ent, "targets", norm_path, 0.8))
+        if isinstance(record.provenance, dict) and "relations" in record.provenance:
+            for rel in record.provenance["relations"]:
+                if isinstance(rel, dict) and "target" in rel and "relation" in rel:
+                    specs.append((
+                        str(rel.get("source", source_ent)),
+                        str(rel["relation"]),
+                        str(rel["target"]),
+                        float(rel.get("weight", 1.0)),
+                    ))
+        return specs
 
     def promote(
         self,
@@ -1003,9 +1074,7 @@ class MemoryStore:
             idempotency_key=f"promote_{record_id}_{target_scope.value}",
             actor=approver,
         )
-        self.state_store.append(event)
-        self._save_record(promoted)
-        return promoted
+        return self._save_record_mutation(promoted, event)
 
     def quarantine(
         self,
@@ -1013,6 +1082,8 @@ class MemoryStore:
         reason: str,
         *,
         actor: str,
+        scope: AgentScope | str | None = None,
+        scope_id: str | None = None,
         root: str | None = None,
         repository_id: str | None = None,
         tenant: str | None = None,
@@ -1023,6 +1094,8 @@ class MemoryStore:
         branch: str | None = None,
     ) -> MemoryRecord:
         identity = {
+            "scope": scope,
+            "scope_id": scope_id,
             "root": root,
             "repository_id": repository_id,
             "tenant": tenant,
@@ -1295,8 +1368,8 @@ class MemoryStore:
         id_limit: int = 8,
         root: str | None = None,
         task_id: str | None = None,
-        tenant: str | None = None,
         session_id: str | None = None,
+        tenant: str | None = None,
         clone_id: str | None = None,
         worktree_id: str | None = None,
         branch: str | None = None,
@@ -1439,9 +1512,23 @@ class MemoryStore:
                 "SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source, "
                 "evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id, "
                 "quarantine_reason, provenance, created_at, updated_at, expires_at "
-                "FROM agent_memory_records WHERE record_id = ?"
+                "FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = '' "
+                "AND sensitivity = 'normal' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.root'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.tenant'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.repository_id'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.task_id'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.session_id'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.clone_id'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.worktree_id'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.branch'), '') = '' "
+                "AND (value IS NULL OR value = '' OR json_valid(value)) "
+                "AND (evidence_ids IS NULL OR evidence_ids = '' OR "
+                "json_type(CASE WHEN json_valid(evidence_ids) THEN evidence_ids ELSE 'null' END) = 'array') "
+                "AND (provenance IS NULL OR provenance = '' OR "
+                "json_type(CASE WHEN json_valid(provenance) THEN provenance ELSE 'null' END) = 'object')"
             )
-            params: list[Any] = [record_id]
+            params: list[Any] = [record_id, AgentScope.GLOBAL.value]
             if not include_expired:
                 sql += " AND (expires_at IS NULL OR expires_at > ?)"
                 params.append(time.time())
@@ -1457,7 +1544,11 @@ class MemoryStore:
             row = con.execute(sql, tuple(params)).fetchone()
             if not row:
                 return None
-            return self._row_to_record(row)
+            try:
+                record = self._row_to_record(row)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return _sanitise_memory_record(record, reject_sensitive=False)
         finally:
             con.close()
 
@@ -1471,10 +1562,11 @@ class MemoryStore:
         clone_id: str = "",
         worktree_id: str = "",
         branch: str = "",
+        coordination_id: str | None = None,
         include_kinds: Collection[str] = (),
         limit: int = 20,
     ) -> list[MemoryRecord]:
-        """Find bounded authoritative memory with status and scope filtering in SQL."""
+        """Find bounded memory for exact context identity; GLOBAL remains cross-project, never cross-tenant."""
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
         self._init_table()
@@ -1486,15 +1578,33 @@ class MemoryStore:
             clone_id=clone_id,
             worktree_id=worktree_id,
             branch=branch,
+            coordination_id=str(coordination_id or "").strip(),
         )
         sql = (
             "SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source, "
             "evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id, "
             "quarantine_reason, provenance, created_at, updated_at, expires_at "
-            "FROM agent_memory_records WHERE sensitivity = 'normal' AND status IN (?, ?) AND (expires_at IS NULL OR expires_at > ?) "
-            f"AND {scope_sql}"
+                "FROM agent_memory_records WHERE sensitivity = 'normal' "
+                "AND status IN (?, ?) AND (expires_at IS NULL OR expires_at > ?) "
+            f"AND {scope_sql} "
+            "AND (value IS NULL OR value = '' OR json_valid(value)) "
+            "AND (evidence_ids IS NULL OR evidence_ids = '' OR "
+            "json_type(CASE WHEN json_valid(evidence_ids) THEN evidence_ids ELSE 'null' END) = 'array') "
+            "AND (provenance IS NULL OR provenance = '' OR "
+            "json_type(CASE WHEN json_valid(provenance) THEN provenance ELSE 'null' END) = 'object') "
+            "AND typeof(confidence) IN ('integer', 'real') "
+            "AND typeof(created_at) IN ('integer', 'real') "
+            "AND typeof(updated_at) IN ('integer', 'real') "
+            "AND (expires_at IS NULL OR typeof(expires_at) IN ('integer', 'real')) "
+            f"AND kind IN ({', '.join('?' for _ in MemoryKind)})"
         )
-        params: list[Any] = [MemoryStatus.ACTIVE.value, MemoryStatus.CONFIRMED.value, time.time(), *scope_params]
+        params: list[Any] = [
+            MemoryStatus.ACTIVE.value,
+            MemoryStatus.CONFIRMED.value,
+            time.time(),
+            *scope_params,
+            *(kind.value for kind in MemoryKind),
+        ]
         kinds = tuple(
             kind.value if hasattr(kind, "value") else str(kind).strip().lower()
             for kind in include_kinds
@@ -1513,7 +1623,18 @@ class MemoryStore:
                 1,
                 lambda value: _normalise_scope_root(str(value)) if value else "",
             )
-            return [self._row_to_record(row) for row in con.execute(sql, tuple(params)).fetchall()]
+            records: list[MemoryRecord] = []
+            for row in con.execute(sql, tuple(params)).fetchall():
+                try:
+                    record = self._row_to_record(row)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if not isinstance(record.provenance, Mapping):
+                    continue
+                if any(not isinstance(evidence_id, str) for evidence_id in record.evidence_ids):
+                    continue
+                records.append(_sanitise_memory_record(record, reject_sensitive=False))
+            return records
         finally:
             con.close()
 
@@ -1549,7 +1670,12 @@ class MemoryStore:
             "SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source, "
             "evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id, "
             "quarantine_reason, provenance, created_at, updated_at, expires_at "
-            "FROM agent_memory_records WHERE 1=1"
+            "FROM agent_memory_records WHERE sensitivity = 'normal' "
+            "AND (value IS NULL OR value = '' OR json_valid(value)) "
+            "AND (evidence_ids IS NULL OR evidence_ids = '' OR "
+            "json_type(CASE WHEN json_valid(evidence_ids) THEN evidence_ids ELSE 'null' END) = 'array') "
+            "AND (provenance IS NULL OR provenance = '' OR "
+            "json_type(CASE WHEN json_valid(provenance) THEN provenance ELSE 'null' END) = 'object')"
         )
         params: list[Any] = []
         scope_val: str | None = None
@@ -1986,6 +2112,72 @@ class MemoryStore:
 
         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
 
+    def _save_record_and_event(self, record: MemoryRecord, event: AgentEvent) -> MemoryRecord:
+        if not self.state_store.enabled:
+            return record
+        self._init_table()
+        published: list[AgentEvent] = []
+
+        def _do_save() -> MemoryRecord:
+            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                existing_event = con.execute(
+                    "SELECT stream_id, seq, event_id, kind, payload, idempotency_key, "
+                    "correlation_id, actor, created_at FROM agent_events "
+                    "WHERE stream_id = ? AND idempotency_key = ?",
+                    (event.stream_id, event.idempotency_key),
+                ).fetchone()
+                if existing_event:
+                    checked = self.state_store.append_in_transaction(
+                        con, event, strict_idempotency=True
+                    )
+                    if checked.error or checked.event is None:
+                        raise RuntimeError(checked.error or "memory duplicate event append returned no persisted event")
+                    if not checked.duplicate:
+                        raise RuntimeError("memory event disappeared during duplicate reconciliation")
+                    row = con.execute(
+                        """
+                        SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source,
+                               evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id,
+                               quarantine_reason, provenance, created_at, updated_at, expires_at
+                        FROM agent_memory_records WHERE record_id = ?
+                        """,
+                        (record.record_id,),
+                    ).fetchone()
+                    saved = self._row_to_record(row) if row else record
+                    if row is None:
+                        self._save_record_row(con, record)
+                    con.execute("COMMIT")
+                    return saved
+
+                self._save_record_row(con, record)
+                appended = self.state_store.append_in_transaction(
+                    con, event, strict_idempotency=True
+                )
+                if appended.error or appended.event is None:
+                    raise RuntimeError(appended.error or "memory event append returned no persisted event")
+                if appended.duplicate:
+                    raise RuntimeError("memory projection/event idempotency mismatch")
+                if appended.event:
+                    published.append(appended.event)
+                con.execute("COMMIT")
+                return record
+            except Exception:
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                con.close()
+
+        with self.state_store._append_publish_lock:
+            saved = retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+            for persisted in published:
+                self.state_store._publish(persisted)
+        return saved
+
     def _save_record_row(self, con: Any, record: MemoryRecord) -> None:
         record = _sanitise_memory_record(record)
         con.execute(
@@ -2171,6 +2363,8 @@ class MemoryStore:
                         provenance = json.loads(row[2]) if row[2] else {}
                     except (TypeError, ValueError):
                         provenance = {}
+                    if not isinstance(provenance, dict):
+                        provenance = {}
                     record_tenant = str(provenance.get("tenant", "") or "").strip()
                     if record_tenant and parsed_scope is not AgentScope.GLOBAL and record_tenant != identity_values["tenant"]:
                         con.execute("COMMIT")
@@ -2182,7 +2376,7 @@ class MemoryStore:
                             continue
                         actual = str(provenance.get(identity_key, "") or "").strip()
                         if identity_key == "root":
-                            if _normalise_scope_root(actual) != _normalise_scope_root(expected):
+                            if not actual or _normalise_scope_root(actual) != _normalise_scope_root(expected):
                                 con.execute("COMMIT")
                                 return False, None
                         elif actual != expected:
@@ -2238,7 +2432,7 @@ class MemoryStore:
             except Exception:
                 try:
                     con.execute("ROLLBACK")
-                except sqlite3.Error:
+                except Exception:
                     pass
                 raise
             finally:
@@ -2352,81 +2546,126 @@ class MemoryStore:
                 evidence_ids=tuple(sorted(all_ev)),
             )
 
-            pending_events: list[AgentEvent] = []
-            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+            superseded_records = [
+                source.with_superseded_by(digest_record.record_id)
+                for source in grp_records
+            ]
+            relation_specs = [
+                (source.record_id, "compacted_into", digest_record.record_id, 1.0)
+                for source in grp_records
+            ]
             try:
-                with self.state_store.ordered_event_publication(con) as publish:
-                    con.execute("BEGIN IMMEDIATE")
-                    try:
-                        self._save_record_row(con, digest_record)
-                        for src_rec in grp_records:
-                            superseded_rec = src_rec.with_superseded_by(digest_record.record_id)
-                            self._save_record_row(con, superseded_rec)
-                            relation_id = f"rel_{uuid.uuid4().hex[:12]}"
-                            relation_now = time.time()
-                            con.execute(
-                                """
-                                INSERT INTO agent_entity_relations (
-                                    relation_id, source_entity, relation, target_entity,
-                                    weight, metadata, created_at, updated_at
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    relation_id,
-                                    src_rec.record_id,
-                                    "compacted_into",
-                                    digest_record.record_id,
-                                    1.0,
-                                    json_dumps({}),
-                                    relation_now,
-                                    relation_now,
-                                ),
-                            )
-                            relation_event = AgentEvent.create(
-                                stream_id=f"relation:{src_rec.record_id}:{digest_record.record_id}",
-                                kind="relation.recorded",
-                                payload={
-                                    "relation_id": relation_id,
-                                    "source": src_rec.record_id,
-                                    "relation": "compacted_into",
-                                    "target": digest_record.record_id,
-                                    "weight": 1.0,
-                                },
-                                actor=actor,
-                            )
-                            appended_relation = self.state_store.append_in_transaction(
-                                con, relation_event, strict_idempotency=False
-                            )
-                            pending_events.append(appended_relation.event)
-                            total_compacted += 1
+                relation_specs.extend(self._auto_link_specs(digest_record))
+            except Exception:
+                pass
+            relation_rows = [
+                (
+                    f"rel_{uuid.uuid4().hex[:12]}",
+                    source,
+                    relation,
+                    target,
+                    weight,
+                )
+                for source, relation, target, weight in relation_specs
+            ]
+            compaction_event = AgentEvent.create(
+                stream_id=_memory_event_stream_id(out_scope, digest_record.scope_id, digest_key),
+                kind="memory.compacted",
+                payload={
+                    "digest_record_id": digest_record.record_id,
+                    "compacted_count": len(grp_records),
+                    "source_record_ids": [r.record_id for r in grp_records],
+                },
+                idempotency_key=f"compact_{digest_record.record_id}",
+                actor=actor,
+            )
 
-                        compact_event = AgentEvent.create(
-                            stream_id=_memory_event_stream_id(
-                                out_scope, digest_record.scope_id, digest_key
-                            ),
-                            kind="memory.compacted",
-                            payload={
-                                "digest_record_id": digest_record.record_id,
-                                "compacted_count": len(grp_records),
-                                "source_record_ids": [r.record_id for r in grp_records],
-                            },
-                            idempotency_key=f"compact_{digest_record.record_id}",
+            def _commit_group(con: Any) -> list[AgentEvent]:
+                published: list[AgentEvent] = []
+                try:
+                    con.execute("BEGIN IMMEDIATE")
+                    records_to_event = [digest_record, *superseded_records]
+                    for record in records_to_event:
+                        record_event = AgentEvent.create(
+                            stream_id=_memory_event_stream_id(record.scope, record.scope_id, record.key or record.record_id),
+                            kind="memory.recorded",
+                            payload=record.to_dict(),
+                            idempotency_key=f"compact-record:{digest_record.record_id}:{record.record_id}",
                             actor=actor,
                         )
-                        appended_compact = self.state_store.append_in_transaction(
-                            con, compact_event, strict_idempotency=False
+                        appended = self.state_store.append_in_transaction(
+                            con, record_event, strict_idempotency=True
                         )
-                        pending_events.append(appended_compact.event)
-                        con.execute("COMMIT")
-                    except BaseException:
-                        if bool(getattr(con, "in_transaction", False)):
-                            con.execute("ROLLBACK")
-                        raise
-                    publish(pending_events)
+                        if appended.error or appended.event is None:
+                            raise RuntimeError(appended.error or "compaction record append returned no persisted event")
+                        if appended.duplicate:
+                            raise RuntimeError("compaction record event already exists without its projection commit")
+                        if appended.event:
+                            published.append(appended.event)
+                        self._save_record_row(con, record)
+
+                    for relation_index, (relation_id, source_id, relation, target_id, weight) in enumerate(relation_rows):
+                        relation_meta = "{}"
+                        con.execute(
+                            """
+                            INSERT INTO agent_entity_relations (
+                                relation_id, source_entity, relation, target_entity, weight,
+                                metadata, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (relation_id, source_id, relation, target_id, weight,
+                             relation_meta, now, now),
+                        )
+                        relation_event = AgentEvent.create(
+                            stream_id=f"relation:{source_id}:{target_id}",
+                            kind="relation.recorded",
+                            payload={
+                                "relation_id": relation_id,
+                                "source": source_id,
+                                "relation": relation,
+                                "target": target_id,
+                                "weight": weight,
+                            },
+                            idempotency_key=f"compact-relation:{digest_record.record_id}:{relation_index}",
+                            actor=actor,
+                        )
+                        appended = self.state_store.append_in_transaction(
+                            con, relation_event, strict_idempotency=True
+                        )
+                        if appended.error or appended.event is None:
+                            raise RuntimeError(appended.error or "compaction relation append returned no persisted event")
+                        if appended.duplicate:
+                            raise RuntimeError("compaction relation event already exists without its projection commit")
+                        if appended.event:
+                            published.append(appended.event)
+
+                    appended = self.state_store.append_in_transaction(
+                        con, compaction_event, strict_idempotency=True
+                    )
+                    if appended.error or appended.event is None:
+                        raise RuntimeError(appended.error or "memory compaction append returned no persisted event")
+                    if appended.duplicate:
+                        raise RuntimeError("compaction event already exists without its projection commit")
+                    if appended.event:
+                        published.append(appended.event)
+                    con.execute("COMMIT")
+                    return published
+                except Exception:
+                    try:
+                        con.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    raise
+            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+            try:
+                with self.state_store.ordered_event_publication(con) as publish_committed:
+                    persisted_events = retry_busy(
+                        lambda: _commit_group(con), retries=5, base_delay_seconds=0.02
+                    )
+                    publish_committed(persisted_events)
             finally:
                 con.close()
-
-            self._auto_link_record(digest_record, actor=actor)
+            total_compacted += len(grp_records)
             created_records.append(digest_record.to_dict())
 
         return {
@@ -2450,28 +2689,46 @@ class MemoryStore:
         rel_id = f"rel_{uuid.uuid4().hex[:12]}"
         now = time.time()
         meta_json = json_dumps(metadata or {}, ensure_ascii=False)
-        def _insert():
-            con = connect_sqlite(self.state_store.db_path)
-            try:
-                with con:
-                    con.execute(
-                        """
-                        INSERT INTO agent_entity_relations (
-                            relation_id, source_entity, relation, target_entity, weight, metadata, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (rel_id, source.strip(), relation.strip(), target.strip(), float(weight), meta_json, now, now),
-                    )
-            finally:
-                con.close()
-        retry_busy(_insert, retries=5, base_delay_seconds=0.02)
         event = AgentEvent.create(
             stream_id=f"relation:{source}:{target}",
             kind="relation.recorded",
             payload={"relation_id": rel_id, "source": source, "relation": relation, "target": target, "weight": weight},
             actor=actor,
         )
-        self.state_store.append(event)
+
+        def _insert() -> AgentEvent | None:
+            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                con.execute(
+                    """
+                    INSERT INTO agent_entity_relations (
+                        relation_id, source_entity, relation, target_entity, weight, metadata, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (rel_id, source.strip(), relation.strip(), target.strip(), float(weight), meta_json, now, now),
+                )
+                appended = self.state_store.append_in_transaction(
+                    con, event, strict_idempotency=True
+                )
+                if appended.error or appended.event is None:
+                    raise RuntimeError(appended.error or "relation event append returned no persisted event")
+                if appended.duplicate:
+                    raise RuntimeError("relation projection/event idempotency mismatch")
+                con.execute("COMMIT")
+                return appended.event
+            except Exception:
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                con.close()
+        with self.state_store._append_publish_lock:
+            persisted = retry_busy(_insert, retries=5, base_delay_seconds=0.02)
+            if persisted is not None:
+                self.state_store._publish(persisted)
         return {
             "success": True,
             "relation_id": rel_id,

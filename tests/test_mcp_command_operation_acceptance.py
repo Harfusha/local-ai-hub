@@ -315,6 +315,30 @@ def test_mcp_command_mock_server_start_uses_dedicated_endpoint_and_port(monkeypa
     assert result["success"] is True
 
 
+def test_mcp_command_stop_daemon_forwards_daemon_identity(monkeypatch: Any, tmp_path: Any) -> None:
+    response = {"success": True, "status": "stopped", "daemon_id": "daemon-17"}
+    backend = _CommandBackend(response)
+    _enable_command(monkeypatch, backend)
+    root = str(tmp_path)
+
+    result = mcp_server.local_ai_command(
+        action="stop_daemon",
+        command="daemon-17",
+        cwd=root,
+        timeout=25,
+    )
+
+    assert backend.calls == [
+        (
+            "/api/command",
+            _expected_payload("stop_daemon", root, "daemon-17"),
+            {"timeout": 77.0},
+        )
+    ]
+    _assert_response_fields(result, response)
+    assert result["success"] is True
+
+
 def test_mcp_command_speculative_lint_submits_bounded_paths_and_job_identity(
     monkeypatch: Any, tmp_path: Any
 ) -> None:

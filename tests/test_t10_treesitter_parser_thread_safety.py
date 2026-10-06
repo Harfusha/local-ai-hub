@@ -10,6 +10,50 @@ from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.repo_tools import RepositoryTools
 
 
+def test_parser_initialization_is_serialized(monkeypatch) -> None:
+    initializer_entered = threading.Event()
+    second_initializer_entered = threading.Event()
+    second_call_started = threading.Event()
+    release_initializer = threading.Event()
+    active_initializers = 0
+    max_active_initializers = 0
+    state_lock = threading.Lock()
+
+    def initialize_once() -> bool:
+        nonlocal active_initializers, max_active_initializers
+        with state_lock:
+            active_initializers += 1
+            max_active_initializers = max(max_active_initializers, active_initializers)
+            if active_initializers > 1:
+                second_initializer_entered.set()
+        initializer_entered.set()
+        assert release_initializer.wait(timeout=2)
+        with state_lock:
+            active_initializers -= 1
+        return True
+
+    monkeypatch.setattr(treesitter_parser, "_init_treesitter_once", initialize_once)
+
+    def first_call() -> bool:
+        return treesitter_parser._init_treesitter()
+
+    def second_call() -> bool:
+        second_call_started.set()
+        return treesitter_parser._init_treesitter()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(first_call)
+        assert initializer_entered.wait(timeout=2)
+        second = pool.submit(second_call)
+        assert second_call_started.wait(timeout=2)
+        assert not second_initializer_entered.wait(timeout=0.1)
+        release_initializer.set()
+        assert first.result(timeout=2) is True
+        assert second.result(timeout=2) is True
+
+    assert max_active_initializers == 1
+
+
 def test_parser_lock_covers_native_tree_walk_when_parser_is_reused(monkeypatch) -> None:
     class Parser:
         def parse(self, _source: bytes) -> SimpleNamespace:

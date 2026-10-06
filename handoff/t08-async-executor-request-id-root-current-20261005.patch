@@ -1,0 +1,11 @@
+--- a/src/local_ai_hub/async_jobs.py
++++ b/src/local_ai_hub/async_jobs.py
+@@ -884,7 +884,7 @@
+             tenant, action, stored_payload, trace_id = str(row["tenant"]), str(row["action"]), json.loads(str(row["payload_json"])), str(row["trace_id"] or "")
+             if not isinstance(stored_payload, dict):
+                 stored_payload = {}
+-            request_id = self._request_id(stored_payload)
++            request_id = self._replay_request_id(stored_payload)
+             payload = {
+                 key: value
+                 for key, value in stored_payload.items()

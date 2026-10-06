@@ -463,6 +463,17 @@ def test_coder_packet_keeps_referenced_dom_ancestors_and_bounded_runtime() -> No
     assert packet["repo"] == {"files": ["src/Checkout.tsx"]}
 
 
+def test_coder_packet_bounds_finding_payloads() -> None:
+    packet = build_coder_packet(
+        prompt="Review",
+        findings=[{"element_ids": ["cta"], "problem": "x" * 100_000}],
+        dom={"elements": [{"element_id": "cta"}]},
+    )
+
+    assert packet["terminal"] is True
+    assert packet["error"]["code"] == "frontend_context_too_large"
+
+
 def test_coder_packet_rejects_findings_that_reference_missing_dom_elements() -> None:
     packet = build_coder_packet(
         prompt="Review checkout",

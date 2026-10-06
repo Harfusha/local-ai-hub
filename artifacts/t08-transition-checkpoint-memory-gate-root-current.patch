@@ -1,0 +1,214 @@
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -1416,7 +1416,6 @@
+                     raise CompletionGateError(
+                         f"Cannot transition to COMPLETED: could not validate receipt '{rcpt_id}' for criterion '{criterion}': {exc}"
+                     ) from exc
+-            self._verify_completion(current)
+ 
+         now = time.time()
+         heartbeat = (
+@@ -1438,6 +1437,9 @@
+             checkpoint=checkpoint or current.checkpoint,
+             verification_receipts=current.verification_receipts,
+         )
++
++        if target == TaskStatus.COMPLETED:
++            self._verify_completion(updated)
+ 
+         event = AgentEvent.create(
+             stream_id=f"task:{task_id}",
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -3224,6 +3224,10 @@
+                         target_status = TaskStatus(target_status_str)
+                     except ValueError:
+                         self._send(400, {"success": False, "error": f"invalid status {target_status_str}", "terminal": True, "retryable": False}); return
++                    checkpoint_data = payload.get("checkpoint")
++                    if checkpoint_data is not None and not isinstance(checkpoint_data, dict):
++                        self._send(400, {"success": False, "error": "checkpoint must be an object", "terminal": True, "retryable": False}); return
++                    checkpoint = TaskCheckpoint.from_dict(checkpoint_data) if checkpoint_data is not None else None
+                     try:
+                         task = APP.agent_tasks.transition(
+                             str(payload.get("task_id", "")),
+@@ -3231,6 +3235,7 @@
+                             reason=str(payload.get("reason", "")),
+                             actor=actor,
+                             idempotency_key=idempotency_key,
++                            checkpoint=checkpoint,
+                         )
+                         self._send(200, {"success": True, "task": task.to_dict()}); return
+                     except (KeyError, InvalidTransitionError, CompletionGateError) as exc:
+--- a/tests/test_agent_task_memory_adoption.py
++++ b/tests/test_agent_task_memory_adoption.py
+@@ -633,5 +633,42 @@
+         assert unchanged.status is TaskStatus.VERIFYING
+         assert unchanged.checkpoint.to_dict() == before_completion.checkpoint.to_dict()
+         assert tasks.state_store.events(f"task:{task_id}") == before_completion_events
+-    finally:
+-        trace_context.reset_context(token)
++        with pytest.raises(CompletionGateError, match="memory_audit references unavailable memory IDs"):
++            tasks.transition(
++                task_id,
++                TaskStatus.COMPLETED,
++                reason="terminal gate must inspect supplied transition checkpoint",
++                actor="test",
++                idempotency_key="transition-memory-invalid-terminal-audit",
++                checkpoint=TaskCheckpoint(
++                    phase="verify",
++                    state_data={"memory_audit": {"used_ids": ["forged-memory-id"]}},
++                ),
++            )
++        unchanged = tasks.get(task_id)
++        assert unchanged is not None
++        assert unchanged.status is TaskStatus.VERIFYING
++        assert unchanged.checkpoint.to_dict() == before_completion.checkpoint.to_dict()
++        assert tasks.state_store.events(f"task:{task_id}") == before_completion_events
++
++        completed = tasks.transition(
++            task_id,
++            TaskStatus.COMPLETED,
++            reason="terminal gate accepts supplied valid checkpoint",
++            actor="test",
++            idempotency_key="transition-memory-valid-terminal-audit",
++            checkpoint=TaskCheckpoint(
++                phase="verify",
++                state_data={
++                    "memory_audit": {
++                        "used_ids": [],
++                        "not_used_reason": "The task did not rely on advisory memory.",
++                    }
++                },
++            ),
++        )
++        assert completed.status is TaskStatus.COMPLETED
++        assert completed.checkpoint.state_data["memory_context"] == authoritative
++        assert completed.checkpoint.state_data["memory_audit"]["used_ids"] == []
++    finally:
++        trace_context.reset_context(token)
+--- a/tests/test_t08_http_memory_context_immutable.py
++++ b/tests/test_t08_http_memory_context_immutable.py
+@@ -341,6 +341,123 @@
+         app.close()
+ 
+ 
++def test_public_transition_checkpoint_is_guarded_and_completion_uses_supplied_checkpoint(
++    tmp_path: Path, monkeypatch
++):
++    app, root, post = _public_task_client(tmp_path, monkeypatch)
++    try:
++        record = MemoryRecord.create(
++            kind=MemoryKind.FACT,
++            scope=AgentScope.REPOSITORY,
++            scope_id=str(root),
++            key="public transition memory fact",
++            value="public transition memory fact",
++            status=MemoryStatus.CONFIRMED,
++            source="user",
++            provenance={"root": str(root), "tenant": "tenant-a"},
++        )
++        app.agent_memory.record(record, actor="user", idempotency_key="seed-public-transition-fact")
++        status, created = post(
++            {
++                "action": "create",
++                "task_id": "public-transition-memory",
++                "repo_root": str(root),
++                "contract": {"goal": "Guard transition checkpoints"},
++                "context": {"repository_id": str(root), "task_id": "public-transition-memory"},
++            },
++            "public-transition-memory-create",
++        )
++        assert status == 200 and created["success"] is True, created
++        authoritative = created["task"]["checkpoint"]["state_data"]["memory_context"]
++        assert [item["id"] for item in authoritative["items"]] == [record.record_id]
++
++        status, started = post(
++            {"action": "transition", "task_id": "public-transition-memory", "status": "active"},
++            "public-transition-memory-start",
++        )
++        assert status == 200 and started["success"] is True, started
++        status, audited = post(
++            {
++                "action": "checkpoint",
++                "task_id": "public-transition-memory",
++                "checkpoint": {"state_data": {"memory_audit": {"used_ids": [record.record_id]}}},
++            },
++            "public-transition-memory-audit",
++        )
++        assert status == 200 and audited["success"] is True, audited
++
++        forged_context = dict(authoritative)
++        forged_context["items"] = []
++        for index, memory_context in enumerate((forged_context, None)):
++            status, rejected = post(
++                {
++                    "action": "transition",
++                    "task_id": "public-transition-memory",
++                    "status": "verifying",
++                    "checkpoint": {"phase": "verify", "state_data": {"memory_context": memory_context}},
++                },
++                f"public-transition-memory-forged-context-{index}",
++            )
++            assert status == 400 and "memory_context is server-managed" in rejected["error"], rejected
++            status, current = post(
++                {"action": "get", "task_id": "public-transition-memory"},
++                f"public-transition-memory-state-{index}",
++            )
++            assert status == 200 and current["task"]["status"] == "active", current
++            assert current["task"]["checkpoint"]["state_data"]["memory_context"] == authoritative
++
++        status, verifying = post(
++            {
++                "action": "transition",
++                "task_id": "public-transition-memory",
++                "status": "verifying",
++                "checkpoint": {"phase": "verify", "state_data": {"verification_note": "ready"}},
++            },
++            "public-transition-memory-verify",
++        )
++        assert status == 200 and verifying["success"] is True, verifying
++        verifying_state = verifying["task"]["checkpoint"]["state_data"]
++        assert verifying_state["memory_context"] == authoritative
++        assert verifying_state["memory_audit"] == {"used_ids": [record.record_id]}
++
++        status, rejected_audit = post(
++            {
++                "action": "transition",
++                "task_id": "public-transition-memory",
++                "status": "completed",
++                "checkpoint": {"phase": "verify", "state_data": {"memory_audit": {"used_ids": ["forged"]}}},
++            },
++            "public-transition-memory-invalid-completion-audit",
++        )
++        assert status == 400 and "memory_audit references unavailable memory IDs" in rejected_audit["error"], rejected_audit
++        status, current = post(
++            {"action": "get", "task_id": "public-transition-memory"},
++            "public-transition-memory-after-rejection",
++        )
++        assert status == 200 and current["task"]["status"] == "verifying", current
++        assert current["task"]["checkpoint"] == verifying["task"]["checkpoint"]
++
++        reason = "The task did not rely on advisory memory."
++        status, completed = post(
++            {
++                "action": "transition",
++                "task_id": "public-transition-memory",
++                "status": "completed",
++                "checkpoint": {
++                    "phase": "verify",
++                    "state_data": {"memory_audit": {"used_ids": [], "not_used_reason": reason}},
++                },
++            },
++            "public-transition-memory-valid-completion-audit",
++        )
++        assert status == 200 and completed["success"] is True, completed
++        final_state = completed["task"]["checkpoint"]["state_data"]
++        assert final_state["memory_context"] == authoritative
++        assert final_state["memory_audit"] == {"used_ids": [], "not_used_reason": reason}
++    finally:
++        app.close()
++
++
+ def test_public_task_memory_unavailable_is_bounded_and_redacted(
+     tmp_path: Path, monkeypatch, caplog
+ ):

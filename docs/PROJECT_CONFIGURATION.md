@@ -1,6 +1,6 @@
 # Project configuration
 
-Local AI Hub reads optional project settings from four layers, low to high:
+Local AI Hub reads optional project settings from five layers, low to high:
 
 1. Built-in defaults.
 2. Primary repository root `.local-ai.toml`, inherited by linked worktrees.
@@ -64,7 +64,7 @@ text_extensions = [".py"]
 
 ```
 
-Command values are data; resolver does not execute them. Host variable names resolve only in the owning command adapter.
+Command values are data; resolver does not execute them. Host variable names resolve only in the owning command adapter. The `verification_rules` table maps exact task acceptance-criterion names to receipt requirements; each array names configured command aliases required for that criterion.
 
 The `verification_rules` table maps exact task acceptance-criterion names to receipt requirements. In the example, the task criterion must be `tests`; the array names configured command aliases. `required_commands` is not a built-in global switch: that key only applies to a task criterion with that exact name. To require both configured aliases for a criterion named `test`, use `test = ["test", "lint"]` in this table.
 
@@ -104,7 +104,7 @@ Hub-wide configuration is separate: `config.py::load_config` merges installation
 
 Call `ProjectContext.prioritize_paths(candidates, purpose, scope, repository_revision, path_hints=())` to rank the complete candidate list in this order: configured literal `entry_points`, per-call `path_hints`, then saved hints matching current scope, revision, and config digest. The optional `path_hints` argument is a tuple of `PathHint` records; it is request-scoped and is not persisted. Ranking preserves every candidate and returns `PathHintUsage`. `hint_helped` remains unknown until a consumer measures usefulness; `telemetry_metadata()` exposes only `hint_used`, `fallback_used`, and `hint_helped`, without candidate paths. Consumers use the normal broader fallback when no hint helps. Save only verified hints through `ProjectContext.save_path_hint(...)`.
 
-Use one optional wire field, `path_hints`, for search-oriented repo, command, or MCP requests that rank repository candidates. Its JSON shape is an array of objects with required string fields `path`, `purpose`, and `scope`, plus optional string fields `evidence_id`, `provenance`, `repository_revision`, `config_digest`, and `expires_at`. Cap it at 64 records at ingress; core also caps direct calls. There is no `paths` alias. Keep this separate from command argument paths, changed paths, focus text, and durable `entry_points`. Request hints may omit evidence metadata; learned/persisted hints require evidence ID, provenance, matching repository revision and config digest.
+The internal adapter contract uses one optional `path_hints` field for search-oriented requests that rank repository candidates. The approved HTTP wire path is `/api/search`; `HubClient.post` accepts typed hints only for `/api/search` and strips them on `/api/command`. T21 owns these search-specific MCP/client/route hint fields and normalization; T03 keeps generic transport, request-ID, and unrelated client-contract symbols. Contract: closed hint objects, at most 64 records, required string fields `path` (1–1024 characters), `purpose`, and `scope`, optional string fields `evidence_id`, `provenance`, `repository_revision`, `config_digest`, and `expires_at`; wrapper normalizes slash variants and rejects escapes. Do not add a `paths` alias. Keep hints separate from command argument paths, changed paths, focus text, and durable `entry_points`. Request hints may omit evidence metadata; learned/persisted hints require evidence ID, provenance, matching repository revision and config digest. `/api/context/pack` does not accept or consume hints.
 
 Resolve hints beneath the trusted project root and reject absolute, drive/UNC, traversal, glob, missing, and symlink/junction escape paths. Saved hints are reused only for exact project identity, purpose, scope, repository revision, and config digest; expired rows are excluded and paths are revalidated on every read. Rows for older contexts may remain for linked worktrees and revision rollback, but never match a different current context; normal cap pruning may evict them. Storage caps retention at 256 hints per project/purpose/scope/revision/digest and 4096 per project. A hint can reorder candidates only: it cannot choose the root, authorize a path, narrow recall, bypass exclusions or trust checks, or change security scope. Consumers still apply `path_is_allowed(...)` to each file and `may_descend(...)` to each directory. Never write raw paths or hint contents to telemetry.
 

@@ -1,0 +1,26 @@
+{
+  "task": "T15 bounded subprocess pipe drain retry",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "candidate_worktree": "C:\\Users\\Adam\\.codex\\worktrees\\fefe\\.local-ai-hub",
+  "root_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+  "root_process_utils_blob": "d0488b75c3fb5c589d6d79afe362c228c7a69ee5",
+  "candidate_process_utils_blob": "6709c0940566fc414ca6f4080cd308280c272ec3",
+  "scope": [
+    "src/local_ai_hub/process_utils.py"
+  ],
+  "change": "After first communicate timeout, retry bounded tree cleanup and communicate before closing pipes; if second drain fails, close/reap boundedly and preserve best available output.",
+  "validation": {
+    "red": "Full T15 concurrency contract first exposed partial output instead of the second communicate drain.",
+    "green_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_command_concurrency_contract.py::test_timeout_drain_escalates_group_before_rejoining_pipe_readers tests/test_command_concurrency_contract.py::test_explicit_process_group_reports_unknown_liveness_without_pid_fallback tests/test_command_concurrency_contract.py::test_posix_cleanup_does_not_report_success_when_signals_are_denied",
+    "green_result": "3 passed in 0.48s",
+    "test_blob": "7f936c987ee85a9e492d01e86c49255507058f80",
+    "full_contract_after_fix": "72 passed, 6 skipped, 3 failed in 21.65s; remaining failures are T10 selector and T06 rollback/root guard."
+  },
+  "patch": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\fefe\\.local-ai-hub\\handoff\\t15-pipe-drain.patch",
+    "sha256": "7116af2a701dc2a78a3a5657ba93a370583437128556a3c3350156a3a75f26c7",
+    "git_apply_check_exit_code": 0
+  },
+  "root_modified": false,
+  "limitation": "Only process_utils code hunk is exported. Candidate tests are not root-integrated; root concurrency test file is untracked and differs. Unix runtime acceptance remains blocked."
+}

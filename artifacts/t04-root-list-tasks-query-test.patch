@@ -1,0 +1,34 @@
+diff --git a/tests/test_client_transport.py b/tests/test_client_transport.py
+--- a/tests/test_client_transport.py
++++ b/tests/test_client_transport.py
+@@ -16,6 +16,28 @@ def _client(tmp_path):
+     )
+     return HubClient(config_path=str(config), auto_start=False)
+ 
+ 
++def test_client_list_tasks_serializes_query_and_preserves_positional_args(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    calls = []
++
++    def capture_post(path, payload, **_kwargs):
++        calls.append((path, dict(payload)))
++        return {"success": True}
++
++    monkeypatch.setattr(client, "post", capture_post)
++
++    client.list_tasks("active", 12)
++    client.list_tasks("active", 12, query="needle")
++
++    assert calls == [
++        (
++            "/api/agent-state/tasks",
++            {"action": "list", "limit": 12, "status": "active"},
++        ),
++        (
++            "/api/agent-state/tasks",
++            {"action": "list", "limit": 12, "status": "active", "query": "needle"},
++        ),
++    ]
++
++
+ def test_client_get_non_object_json_uses_complete_invalid_response(tmp_path, monkeypatch):

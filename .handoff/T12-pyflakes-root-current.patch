@@ -1,0 +1,30 @@
+--- a/src/local_ai_hub/ollama.py
++++ b/src/local_ai_hub/ollama.py
+@@ -18,7 +18,7 @@
+ 
+ from . import model_quality
+ from .llama_cpp import LlamaCppRouter, _cancel_response_on_stop, _open_interruptible_response, _read_response_body, _set_response_timeout, _stop_requested
+-from .llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_backend_selection, llama_cpp_managed_selected
++from .llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_managed_selected
+ from .json_utils import dumps as json_dumps
+ 
+ 
+@@ -819,7 +819,6 @@
+             inject_failure: bool = False,
+             token_budget: int | None = None,
+         ) -> dict[str, Any]:
+-            nonlocal running_count, maximum_running
+             request_started = threading.Event()
+             execute_finished = threading.Event()
+             execution_finished_at: list[float] = []
+--- a/src/local_ai_hub/services.py
++++ b/src/local_ai_hub/services.py
+@@ -929,7 +929,7 @@
+         requested_model = model
+ 
+         def compute_inner() -> dict[str, Any]:
+-            nonlocal semantic_score, mode_pause_result
++            nonlocal semantic_score
+             if use_cache and semantic_query:
+                 semantic, semantic_score = self.semantic_cache.get(semantic_scope, semantic_query)
+                 if isinstance(semantic, dict):

@@ -7,6 +7,7 @@ import os
 import statistics
 import sqlite3
 import struct
+import subprocess
 import sys
 import time
 from contextlib import closing
@@ -14,9 +15,30 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 from local_ai_hub import mcp_server
+from local_ai_hub.operational_mode import OperationalModeSnapshot
 from local_ai_hub.rag import RAGStore
 from local_ai_hub import reranker as reranker_module
 from local_ai_hub.reranker import Reranker
+
+
+def test_rag_import_does_not_require_unowned_policy_adapter():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.path.join(root, "src")
+    code = (
+        "import sys; "
+        "sys.modules['local_ai_hub.project_policy_adapter'] = None; "
+        "from local_ai_hub.rag import RAGStore"
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", code],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _store(tmp_path):
@@ -782,6 +804,11 @@ def test_svg_diagram_reports_extracted_text_provenance(tmp_path):
 
 
 def test_mcp_rag_ingest_accepts_explicit_document_and_diagram_fields(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        mcp_server,
+        "load_operational_mode",
+        lambda _state_dir: OperationalModeSnapshot("active", 0, None),
+    )
     parameters = inspect.signature(mcp_server.local_ai_rag).parameters
     assert {"content", "title", "metadata", "image_path", "caption"} <= set(parameters)
 
@@ -1170,6 +1197,11 @@ def test_mcp_rag_ingest_requires_explicit_input(
 
 
 def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "load_operational_mode",
+        lambda _state_dir: OperationalModeSnapshot("active", 0, None),
+    )
     monkeypatch.setattr(
         mcp_server,
         "FEATURES",

@@ -21,6 +21,7 @@ import tempfile
 import time
 import tomllib
 import unittest
+from unittest import mock
 import zipfile
 
 
@@ -235,6 +236,32 @@ print(json.dumps({"version": local_ai_hub.__version__, "distribution_version": i
 '''
 
 
+def _isolated_toolchain() -> dict[str, str | None]:
+    probe = """
+import importlib.metadata
+import json
+
+versions = {}
+for name in ("setuptools", "wheel", "pip"):
+    try:
+        versions[name] = importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        versions[name] = None
+print(json.dumps(versions))
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    if result.returncode != 0:
+        return {name: None for name in ("setuptools", "wheel", "pip")}
+    versions = json.loads(result.stdout)
+    return {name: versions.get(name) for name in ("setuptools", "wheel", "pip")}
+
+
 def _verify_package(source: Path, scratch: Path) -> dict:
     receipt = {"status": "running", "source_root": str(source), "scratch": str(scratch),
                "proof_scope": "current_source_snapshot_capability", "production_release_approved": False,
@@ -242,13 +269,14 @@ def _verify_package(source: Path, scratch: Path) -> dict:
                "commands": [], "toolchain": {}}
     receipt_path = scratch / "receipt.json"
     try:
-        # Metadata diagnosis before importing any build backend or SDK code.
+        # Probe the same isolated interpreter used by the offline build workers.
+        receipt["toolchain"] = _isolated_toolchain()
         for name in ("setuptools", "wheel", "pip"):
-            try:
-                receipt["toolchain"][name] = importlib.metadata.version(name)
-            except importlib.metadata.PackageNotFoundError:
+            if receipt["toolchain"][name] is None:
                 receipt["status"] = "skipped"
-                raise unittest.SkipTest(f"local {name} unavailable; no network/global install; {receipt_path}")
+                raise unittest.SkipTest(
+                    f"isolated local {name} unavailable; no network/global install; {receipt_path}"
+                )
         setuptools_major = int(receipt["toolchain"]["setuptools"].split(".")[0])
         if setuptools_major < 75:
             receipt["status"] = "skipped"
@@ -329,6 +357,40 @@ def _verify_package(source: Path, scratch: Path) -> dict:
 
 
 class PackagedSDKSmoke(unittest.TestCase):
+    def test_builder_toolchain_probe_uses_isolated_interpreter(self) -> None:
+        commands: list[list[str]] = []
+
+        def completed(command, **_kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"setuptools": None, "wheel": None, "pip": "25.2"}),
+            )
+
+        with mock.patch.object(subprocess, "run", side_effect=completed):
+            toolchain = _isolated_toolchain()
+
+        self.assertEqual(toolchain, {"setuptools": None, "wheel": None, "pip": "25.2"})
+        self.assertEqual(commands, [[sys.executable, "-I", "-B", "-c", mock.ANY]])
+
+    def test_missing_isolated_build_dependency_skips_without_installing(self) -> None:
+        command = [sys.executable, "-I", "-B", "-c", "probe"]
+        result = subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"setuptools": None, "wheel": None, "pip": "25.2"}),
+        )
+        with tempfile.TemporaryDirectory(prefix="t19-toolchain-preflight-") as directory:
+            scratch = Path(directory)
+            with mock.patch.object(subprocess, "run", return_value=result):
+                with self.assertRaisesRegex(unittest.SkipTest, "isolated local setuptools unavailable"):
+                    _verify_package(ROOT, scratch)
+            receipt = json.loads((scratch / "receipt.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(receipt["status"], "skipped")
+        self.assertIsNone(receipt["toolchain"]["setuptools"])
+
     def test_schema_wire_retains_metadata_and_rejects_invalid_values(self) -> None:
         namespace = {"json": json}
         exec(SCHEMA_WIRE_GUARD, namespace)

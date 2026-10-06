@@ -766,6 +766,28 @@ class LlamaCppRouter:
     def is_online(self) -> bool:
         return bool(self.available_models())
 
+    def loaded_model_details(
+        self,
+        *,
+        should_stop: Any | None = None,
+        deadline: float | None = None,
+        force_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
+        if not force_refresh:
+            now = time.monotonic()
+            if now - self._models.get("__loaded_details__", (0.0, {}))[0] < 1.0:
+                cached = self._models.get("__loaded_details__", (0.0, {}))[1]
+                if isinstance(cached, list):
+                    return list(cached)
+        inventory = self.loaded_model_inventory(
+            should_stop=should_stop, deadline=deadline, force_refresh=force_refresh,
+        )
+        if inventory["complete"] is not True:
+            raise RuntimeError("llama.cpp loaded-model inventory is incomplete")
+        rows = inventory["models"]
+        self._models["__loaded_details__"] = (time.monotonic(), rows)
+        return list(rows)
+
     def loaded_model_inventory(
         self,
         *,
@@ -776,13 +798,14 @@ class LlamaCppRouter:
         models = self.settings.get("models", {})
         mode = str(self.settings.get("mode", "auto")).strip().lower()
         if mode == "off" or not models:
-            return {"complete": True, "models": [], "errors": {}, "endpoint_status": {}}
+            return {"complete": True, "models": [], "errors": {}, "endpoint_status": {}, "endpoints": {}}
         if not isinstance(models, dict):
-            return {"complete": False, "models": [], "errors": {"configuration": "invalid model map"}, "endpoint_status": {}}
+            return {"complete": False, "models": [], "errors": {"configuration": "invalid model map"}, "endpoint_status": {}, "endpoints": {}}
 
         by_endpoint: dict[str, list[str]] = {}
         errors: dict[str, str] = {}
         endpoint_status: dict[str, str] = {}
+        endpoint_status_by_url: dict[str, str] = {}
         for model, entry in models.items():
             selected = self._entry(str(model))
             if selected is None:
@@ -790,6 +813,7 @@ class LlamaCppRouter:
                 endpoint_status[str(model)] = "unknown"
                 continue
             by_endpoint.setdefault(selected[1], []).append(str(model))
+            endpoint_status_by_url[selected[1]] = "unknown"
 
         rows: list[dict[str, Any]] = []
         for url, configured_names in by_endpoint.items():
@@ -826,6 +850,7 @@ class LlamaCppRouter:
                             "endpoint_url": url,
                         })
                 rows.extend(active_rows)
+                endpoint_status_by_url[url] = "complete"
                 for name in configured_names:
                     endpoint_status[name] = "complete"
             except Exception as exc:
@@ -835,34 +860,14 @@ class LlamaCppRouter:
                 for name in configured_names:
                     errors[name] = reason
                     endpoint_status[name] = "unknown"
+                endpoint_status_by_url[url] = "unknown"
         return {
             "complete": not errors and len(endpoint_status) == len(models),
             "models": rows,
             "errors": errors,
             "endpoint_status": endpoint_status,
+            "endpoints": endpoint_status_by_url,
         }
-
-    def loaded_model_details(
-        self,
-        *,
-        should_stop: Any | None = None,
-        deadline: float | None = None,
-        force_refresh: bool = False,
-    ) -> list[dict[str, Any]]:
-        if not force_refresh:
-            now = time.monotonic()
-            if now - self._models.get("__loaded_details__", (0.0, {}))[0] < 1.0:
-                cached = self._models.get("__loaded_details__", (0.0, {}))[1]
-                if isinstance(cached, list):
-                    return list(cached)
-        inventory = self.loaded_model_inventory(
-            should_stop=should_stop, deadline=deadline, force_refresh=force_refresh,
-        )
-        if inventory["complete"] is not True:
-            raise RuntimeError("llama.cpp loaded-model inventory is incomplete")
-        rows = inventory["models"]
-        self._models["__loaded_details__"] = (time.monotonic(), rows)
-        return list(rows)
 
     def model_capabilities(self, model: str) -> dict[str, Any] | None:
         """Expose Ollama-shaped capability metadata for a mapped model.

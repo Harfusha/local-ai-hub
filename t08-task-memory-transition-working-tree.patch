@@ -1,0 +1,32 @@
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -632,12 +632,20 @@
+         reason: str,
+         actor: str,
+         idempotency_key: str,
++        checkpoint: TaskCheckpoint | None = None,
+     ) -> TaskState:
+         current = self.get(task_id)
+         if not current:
+             raise KeyError(f"Task {task_id} not found")
+ 
+         if target == current.status:
++            if checkpoint is not None:
++                return self.checkpoint(
++                    task_id,
++                    checkpoint,
++                    actor=actor,
++                    idempotency_key=idempotency_key,
++                )
+             if idempotency_key and self._db_path_available():
+                 with closing(connect_sqlite(self.state_store.db_path)) as con:
+                     row = con.execute(
+@@ -746,7 +754,7 @@
+             created_at=current.created_at,
+             updated_at=now,
+             heartbeat_expires_at=heartbeat,
+-            checkpoint=current.checkpoint,
++            checkpoint=checkpoint or current.checkpoint,
+             verification_receipts=current.verification_receipts,
+         )
+ 

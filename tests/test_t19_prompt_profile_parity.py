@@ -6,24 +6,36 @@ from local_ai_hub.hardware import profile_overrides
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_install_prompt_balanced_routes_match_profile_and_update_prompt() -> None:
+def test_prompt_role_matrix_matches_hardware_profiles() -> None:
     install = (ROOT / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8")
     update = (ROOT / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
-    install_routing = next(
-        line for line in install.splitlines()
-        if line.startswith("Local model routing starts from")
-    )
-    update_routing = next(
-        line for line in update.splitlines()
-        if line.startswith("Local model routing starts from")
-    )
+    model_doc = (ROOT / "docs" / "MODEL_CAPABILITIES.md").read_text(encoding="utf-8")
+    install_routing = next(line for line in install.splitlines() if line.startswith("Local model routing starts"))
+    update_routing = next(line for line in update.splitlines() if line.startswith("Local model routing starts"))
+
     assert install_routing == update_routing
-    role_order = ("background_code", "fast_code", "heavy_code", "reasoning", "general", "vision")
-    for profile in ("integrated", "balanced", "high", "max"):
-        models = profile_overrides(profile)["models"]
-        expected_route = "/".join(models[role] for role in role_order)
-        assert f"{profile}=`{expected_route}`" in install_routing
-    assert "Ordinary reasoning uses `heavy_code`; only heavy reasoning uses `reasoning`." in install_routing
+    assert '[hardware].profile="auto"' in install_routing
+    assert any(line.startswith("Keep generated contracts aligned:") for line in install.splitlines())
+    routes = {
+        "integrated": ("qwen2.5-coder:0.5b", "qwen2.5-coder:1.5b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen2.5-coder:1.5b", "qwen3-vl:4b"),
+        "balanced": ("qwen2.5-coder:1.5b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen3.5:9b", "qwen2.5-coder:7b", "qwen3.5:9b"),
+        "high": ("qwen2.5-coder:1.5b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen3.5:9b", "qwen3.5:9b", "qwen3.5:9b"),
+        "max": ("qwen2.5-coder:1.5b", "qwen2.5-coder:3b", "qwen3.5:9b", "qwen3.5:9b", "qwen3.5:9b", "qwen3.5:9b"),
+    }
+    for profile, models in routes.items():
+        role_order = ("background_code", "fast_code", "heavy_code", "reasoning", "general", "vision")
+        configured = profile_overrides(profile)["models"]
+        assert models == tuple(configured[role] for role in role_order), profile
+        route = "/".join(models)
+        assert f"{profile}=`{route}`" in install_routing
+        expected_row = "| " + " | ".join(f"`{value}`" for value in (profile, *models)) + " |"
+        assert expected_row in model_doc
+
+    for prompt in (install, update):
+        assert "Ordinary reasoning uses `heavy_code`; only heavy reasoning uses `reasoning`." in prompt
+        assert "Semantic delegation is optional and on-demand" in prompt
+        assert "Delegation is the default" not in prompt
+        assert "In balanced," not in prompt
 
     stale_routes = (
         "`qwen2.5-coder:1.5b` for quick/simple tasks, `qwen2.5-coder:3b` for ordinary and more involved work",
@@ -45,3 +57,21 @@ def test_install_prompt_balanced_routes_match_profile_and_update_prompt() -> Non
     for sentence in response_budget_contract:
         assert sentence in install
         assert sentence in update
+
+
+def test_agents_profile_routes_match_hardware() -> None:
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    routing = next(line for line in agents.splitlines() if "Model routing is profile-aware" in line)
+    high_models = profile_overrides("high")["models"]
+    max_models = profile_overrides("max")["models"]
+
+    assert (
+        f"high uses {high_models['background_code']} preprocessing, {high_models['fast_code']} quick, "
+        f"{high_models['heavy_code']} involved, {high_models['general']} ordinary and hardest reasoning, "
+        f"and {high_models['vision']} vision"
+    ) in routing
+    assert (
+        f"max uses {max_models['background_code']} preprocessing, {max_models['fast_code']} quick, "
+        f"and {max_models['heavy_code']} for involved, ordinary and hardest reasoning, "
+        f"and {max_models['vision']} vision"
+    ) in routing

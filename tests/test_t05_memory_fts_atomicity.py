@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import replace
 import json
+from contextlib import closing
 
 import pytest
 
@@ -13,7 +14,7 @@ from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
 from local_ai_hub.sqlite_support import connect_sqlite
 
 
-def test_record_update_fts_write_failure_rolls_back_durable_record_and_event(tmp_path, monkeypatch):
+def test_record_update_fts_write_failure_rolls_back_durable_record_and_preserves_events(tmp_path, monkeypatch):
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     store = MemoryStore(state_store)
     original = store.record(
@@ -27,6 +28,12 @@ def test_record_update_fts_write_failure_rolls_back_durable_record_and_event(tmp
         actor="user",
         idempotency_key="before-update",
     )
+    with closing(connect_sqlite(state_store.db_path)) as con:
+        stream_id = con.execute(
+            "SELECT stream_id FROM agent_events WHERE idempotency_key = ?",
+            ("before-update",),
+        ).fetchone()[0]
+    events_before = state_store.events(stream_id)
     updated = replace(original, value="after")
     real_connect = agent_memory_module.connect_sqlite
 
@@ -73,7 +80,7 @@ def test_record_update_fts_write_failure_rolls_back_durable_record_and_event(tmp
     assert json.loads(row[0]) == "before"
     assert fts == ("before",)
     assert failed_event == 0
-    assert cursor == (1,)
+    assert state_store.events(stream_id) == events_before
 
 
 def test_record_write_succeeds_when_optional_fts_table_is_absent(tmp_path):

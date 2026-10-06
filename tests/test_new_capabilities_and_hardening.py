@@ -20,7 +20,7 @@ from local_ai_hub.agent_policy import PolicyEngine
 from local_ai_hub.commands import CommandBroker, _is_interactive_prompt, _BoundedStreamBuffer
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.doctor_support import install_git_precommit_hook, uninstall_git_precommit_hook
-from local_ai_hub.process_utils import list_git_worktrees, prune_git_worktrees, simulate_git_merge
+from local_ai_hub.process_utils import hidden_run_kwargs, list_git_worktrees, prune_git_worktrees, simulate_git_merge
 from local_ai_hub.rag import _python_ast_chunks
 from local_ai_hub.services import LocalAIServices, vram_priority
 
@@ -339,13 +339,15 @@ def helper(v: int) -> int:
     assert "long body here" not in outline
 
 
-def test_8_stash_save_and_restore(tmp_path: Path):
+def test_8_stash_save_and_restore_requires_task_worktree(tmp_path: Path):
     broker = CommandBroker(config={"server": {"state_dir": str(tmp_path)}})
     res_save = broker.stash_save(str(tmp_path), "test_stash")
-    assert "success" in res_save
+    assert res_save["success"] is False
+    assert res_save["mutation_worktree_required"] is True
 
     res_restore = broker.stash_restore(str(tmp_path))
-    assert "success" in res_restore
+    assert res_restore["success"] is False
+    assert res_restore["mutation_worktree_required"] is True
 
 
 def test_9_secret_scanner(tmp_path: Path):

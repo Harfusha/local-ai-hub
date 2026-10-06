@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.app import LocalAIApp, BundleValidationError
-from local_ai_hub.agent_context import ContextRequest
 from local_ai_hub.agent_tasks import GoalContract, TaskStatus
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_memory import MemoryRecord, MemoryKind, MemoryStatus
@@ -122,6 +121,8 @@ def test_selective_export_rejects_record_with_disallowed_scope(tmp_path: Path):
 
 
 def test_selective_export_and_import_valid_records(tmp_path: Path):
+    repository_root = tmp_path / "repo1"
+    repository_root.mkdir()
     with app_with_agent_state(tmp_path / "app1") as app1:
         rec = MemoryRecord.create(
             kind=MemoryKind.FACT,
@@ -157,6 +158,8 @@ def test_selective_export_and_import_valid_records(tmp_path: Path):
 
 def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
     expiry = time.time() + 3600
+    repository_root = tmp_path / "repo"
+    repository_root.mkdir()
     provenance = {
         "root": str(tmp_path / "repo"),
         "tenant": "tenant-a",
@@ -199,7 +202,10 @@ def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
             root=str(tmp_path / "repo"), tenant="tenant-a",
         )
         assert restored is not None
-        assert restored.provenance == provenance
+        expected_provenance = dict(provenance)
+        expected_provenance["root"] = repository_root.as_posix()
+        expected_provenance["source_root"] = str(repository_root)
+        assert restored.provenance == expected_provenance
         assert restored.confidence == 0.63
         assert restored.evidence_ids == ("evidence-1", "evidence-2")
         assert restored.source == "reviewer"
