@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import threading
 import time
@@ -9,6 +10,7 @@ from .cache import SQLiteCache, SingleFlightGroup, TieredCache, stable_hash
 from .priority_gate import CooperativePriorityGate
 from .accelerators import openvino_cache_dir, openvino_device_candidates
 from .state_paths import configured_state_dir
+from .model_lifecycle import acquire_locks, load_model, release_model, uses_torch_cuda
 
 
 class Reranker:
@@ -27,7 +29,7 @@ class Reranker:
         self.max_length = max(128, int(cpu_cfg.get("reranker_max_length", 1024)))
         self._model = None
         self._load_lock = threading.Lock()
-        self._predict_lock = threading.RLock()
+        self._predict_lock = threading.Lock()
         self._cpu_gate = CooperativePriorityGate(int(cpu_cfg.get("foreground_priority", 3)))
         self._load_error: str | None = None
         self._load_error_time: float = 0.0
@@ -62,7 +64,13 @@ class Reranker:
         backend = self.active_backend or self.backend
         device = str(self.active_device or self.device or "cpu").strip().lower()
         revision = self._loaded_model_revision() or ""
-        return f"{backend}:{device}:{self.model_name}:{revision}"
+        return stable_hash({
+            "backend": backend,
+            "device": device,
+            "model": self.model_name,
+            "revision": revision,
+            "max_length": self.max_length,
+        })
 
     def _cache_identity(self) -> str | None:
         if self._loaded_model_revision() is None:
@@ -116,7 +124,11 @@ class Reranker:
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
                 kwargs["model_kwargs"] = ov_model_kwargs
-            self._model = CrossEncoder(self.model_name, **kwargs)
+            self._model = load_model(
+                self,
+                uses_cuda=uses_torch_cuda(backend, device),
+                factory=lambda: CrossEncoder(self.model_name, **kwargs),
+            )
             self.active_backend = backend
             self.active_device = str(device)
             self._load_error = None
@@ -146,72 +158,73 @@ class Reranker:
                     return True
             return False
 
-    def _predict(self, pairs: list[tuple[str, str]], *, priority: int) -> Any | None:
-        while True:
-            with self._predict_lock:
-                if not self._ensure_model() or self._model is None:
-                    return None
-                model = self._model
-                try:
-                    with self._cpu_gate.slot(priority):
-                        return model.predict(pairs, batch_size=self.batch_size, show_progress_bar=False)
-                except Exception as exc:
-                    if self.backend == "openvino" and self.active_backend == "openvino":
-                        failed = self.active_device or "openvino"
-                        self._load_error = f"openvino/{failed} inference failed: {exc}"
-                        self._load_error_time = time.time()
-                        self._model = None
-                        self.active_backend = None
-                        self.active_device = None
-                        if self._ensure_model():
-                            continue
-                    return None
-
-    def release_accelerator(self, *, timeout_seconds: float = 1.0) -> dict[str, Any]:
-        """Drop a resident non-CPU model after bounded exclusion of predict calls."""
-        budget = min(1.5, max(0.0, float(timeout_seconds)))
-        started = time.monotonic()
-        if not self._predict_lock.acquire(timeout=budget):
-            return {"success": False, "state": "busy", "verified": False, "timeout_seconds": budget}
-        load_lock_acquired = False
-        try:
-            remaining = max(0.0, budget - (time.monotonic() - started))
-            load_lock_acquired = self._load_lock.acquire(timeout=remaining)
-            if not load_lock_acquired:
-                return {"success": False, "state": "busy", "verified": False, "timeout_seconds": budget}
+    def release(self, timeout_seconds: float = 3.0) -> bool:
+        """Detach the reranker model; CUDA allocator cleanup remains best-effort."""
+        with acquire_locks((self._predict_lock, self._load_lock), timeout_seconds) as acquired:
+            if not acquired:
+                return False
             model = self._model
-            backend = str(self.active_backend or "")
-            device = str(self.active_device or "").strip()
-            if model is None or not device or device.lower() == "cpu":
-                return {"success": True, "state": "not_applicable", "verified": False, "backend": backend, "device": device}
+            if model is None:
+                return False
+            used_cuda = uses_torch_cuda(self.active_backend, self.active_device)
             self._model = None
             self.active_backend = None
             self.active_device = None
+            self._candidates = None
             self._candidate_index = -1
-            self._load_error = None
             del model
-            return {
-                "success": True,
-                "state": "unloaded",
-                "verified": False,
-                "backend": backend,
-                "device": device,
-                "cuda_memory_possible": backend == "torch" and device.lower().startswith("cuda"),
-            }
-        finally:
-            if load_lock_acquired:
-                self._load_lock.release()
-            self._predict_lock.release()
+            release_model(self, used_cuda=used_cuda)
+            return True
+
+    def _predict(self, pairs: list[tuple[str, str]], *, priority: int) -> Any | None:
+        while True:
+            if not self._ensure_model():
+                return None
+            if self._model is None:
+                continue
+            try:
+                with self._cpu_gate.slot(priority):
+                    with self._predict_lock:
+                        model = self._model
+                        if model is None:
+                            continue
+                        return model.predict(pairs, batch_size=self.batch_size, show_progress_bar=False)
+            except Exception as exc:
+                if self.backend == "openvino" and self.active_backend == "openvino":
+                    failed = self.active_device or "openvino"
+                    self._load_error = f"openvino/{failed} inference failed: {exc}"
+                    self._load_error_time = time.time()
+                    self._model = None
+                    self.active_backend = None
+                    self.active_device = None
+                    if self._ensure_model():
+                        continue
+                return None
 
     def rerank(self, query: str, documents: list[str], top_k: int | None = None, priority: int = 3) -> dict[str, Any]:
-        with self._predict_lock:
-            return self._rerank_locked(query, documents, top_k=top_k, priority=priority)
-
-    def _rerank_locked(self, query: str, documents: list[str], top_k: int | None = None, priority: int = 3) -> dict[str, Any]:
         if not documents:
             return {"success": True, "model": self.model_name, "results": []}
         if not self._ensure_model():
             return {"success": False, "error": self._load_error or "reranker disabled", "results": []}
+
+        request_key = stable_hash({
+            "execution": self._execution_identity(),
+            "query": query,
+            "documents": documents,
+            "top_k": top_k,
+        })
+        result, _coalesced = self.flight_group.do(
+            request_key,
+            lambda: self._rerank_uncached(query, documents, top_k=top_k, priority=priority),
+        )
+        output = dict(result)
+        if isinstance(output.get("results"), list):
+            output["results"] = [dict(item) if isinstance(item, dict) else item for item in output["results"]]
+        return output
+
+    def _rerank_uncached(
+        self, query: str, documents: list[str], top_k: int | None = None, priority: int = 3
+    ) -> dict[str, Any]:
 
         # OpenVINO may compile successfully for NPU and then reject a real input
         # shape at predict time.  Keep each logical ranking on exactly one
@@ -232,8 +245,12 @@ class Reranker:
             for i, doc in enumerate(documents):
                 key = stable_hash({"identity": cache_identity, "q": query, "d": doc}) if use_cache else ""
                 cached = self.cache.get(key) if use_cache else None
-                if isinstance(cached, (int, float)):
-                    scores[i] = float(cached)
+                try:
+                    cached_score = float(cached)
+                except (TypeError, ValueError, OverflowError):
+                    cached_score = float("nan")
+                if isinstance(cached, (int, float)) and not isinstance(cached, bool) and math.isfinite(cached_score):
+                    scores[i] = cached_score
                     local_cache_hits += 1
                 else:
                     missing_pairs.append((query, doc))
@@ -248,11 +265,24 @@ class Reranker:
                     predicted = self._predict(missing_pairs[start:stop], priority=priority)
                     if predicted is None:
                         return {"success": False, "error": self._load_error or "reranker backend unavailable", "results": []}
+                    try:
+                        predicted_count = len(predicted)
+                    except TypeError:
+                        predicted_count = -1
+                    if predicted_count != stop - start:
+                        return {"success": False, "error": "reranker returned invalid score count", "results": []}
                     if self._execution_identity() != execution_identity:
                         switched = True
                         break
                     for idx, key, score in zip(missing_indices[start:stop], missing_keys[start:stop], predicted):
-                        value = float(score)
+                        if isinstance(score, bool):
+                            return {"success": False, "error": "reranker returned invalid score", "results": []}
+                        try:
+                            value = float(score)
+                        except (TypeError, ValueError, OverflowError):
+                            return {"success": False, "error": "reranker returned invalid score", "results": []}
+                        if not math.isfinite(value):
+                            return {"success": False, "error": "reranker returned invalid score", "results": []}
                         scores[idx] = value
                         pending_writes.append((key, value))
 

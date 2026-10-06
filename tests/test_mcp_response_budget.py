@@ -31,10 +31,10 @@ def test_existing_tools_expose_response_budget_options() -> None:
 
 
 def test_command_rollback_scope_reaches_api_payload(monkeypatch, tmp_path) -> None:
-    captured: dict[str, object] = {}
+    captured_posts: list[tuple[str, dict[str, object], float]] = []
 
     def fake_post(path: str, payload: dict[str, object], timeout: float):
-        captured.update(path=path, payload=payload, timeout=timeout)
+        captured_posts.append((path, payload, timeout))
         return {"success": True}
 
     monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
@@ -52,8 +52,9 @@ def test_command_rollback_scope_reaches_api_payload(monkeypatch, tmp_path) -> No
     )
 
     assert result == {"success": True}
-    assert captured["path"] == "/api/command"
-    assert captured["payload"]["paths"] == ["owned.py", "new-output.txt"]
+    command_posts = [(payload, timeout) for path, payload, timeout in captured_posts if path == "/api/command"]
+    assert len(command_posts) == 1
+    assert command_posts[0][0]["paths"] == ["owned.py", "new-output.txt"]
 
 
 def test_command_rollback_rejects_non_run_action_before_dispatch(monkeypatch) -> None:
@@ -114,6 +115,44 @@ def test_context_projection_keeps_actual_context_text_after_budget() -> None:
     assert result["evidence_ids"] == ["E1"]
     assert json_tokens(result) <= 220
 
+
+def test_context_projection_preserves_incomplete_degraded_task_context() -> None:
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(
+        {"max_response_tokens": 512, "response_profile": "compact", "reuse_key": "ctx-partial", "tool": "local_ai_repo"}
+    )
+    try:
+        result = mcp_server._context_pack_projection({
+            "success": False,
+            "guarded": True,
+            "status_code": 503,
+            "terminal": False,
+            "retryable": True,
+            "stop_code": "context_task_context_incomplete",
+            "degraded": True,
+            "degraded_reason": "repository_context_unavailable",
+            "task_context": {
+                "success": False,
+                "complete": False,
+                "partial": True,
+                "text": "Agent OS checkpoint remains available",
+                "repository": {
+                    "success": False,
+                    "degraded": True,
+                    "degraded_reason": "repository_context_unavailable",
+                },
+            },
+        })
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert result["success"] is False
+    assert result["status_code"] == 503
+    assert result["retryable"] is True
+    assert result["stop_code"] == "context_task_context_incomplete"
+    assert result["task_context"]["complete"] is False
+    assert "Agent OS checkpoint remains available" in result["task_context"]["text"]
+    assert result["task_context"]["repository"]["degraded"] is True
+    assert json_tokens(result) <= 512
 
 def test_mcp_compact_applies_aggregate_budget(monkeypatch) -> None:
     monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())

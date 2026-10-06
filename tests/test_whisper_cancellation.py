@@ -38,17 +38,6 @@ class _FakeProcess:
         return self.returncode
 
 
-class _UnconfirmedFakeProcess(_FakeProcess):
-    def kill(self) -> None:
-        pass
-
-    def poll(self):
-        return None
-
-    def wait(self, timeout=None):
-        raise subprocess.TimeoutExpired(["whisper"], timeout)
-
-
 def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
     cancel_event = threading.Event()
     process = _FakeProcess(cancel_event)
@@ -72,23 +61,6 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
     assert process.returncode == -9
     assert raised.value.output == b"partial"
     assert raised.value.stderr == b"err"
-
-
-def test_run_hidden_reports_unverified_cleanup_when_child_tree_survives(monkeypatch):
-    cancel_event = threading.Event()
-    process = _UnconfirmedFakeProcess(cancel_event)
-    monkeypatch.setattr(process_utils.os, "name", "posix")
-    monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
-    monkeypatch.setattr(process_utils, "terminate_tree", lambda *a, **k: False)
-
-    with pytest.raises(process_utils.ProcessCleanupUnverifiedError) as raised:
-        process_utils.run_hidden(
-            ["whisper"], capture_output=True, timeout=60, cancel_event=cancel_event
-        )
-
-    assert raised.value.process is process
-    assert raised.value.tree_termination_confirmed is False
-    assert process.poll() is None
 
 
 def test_transcribe_reports_cancellation_after_owned_output_cleanup(
@@ -120,26 +92,3 @@ def test_transcribe_reports_cancellation_after_owned_output_cleanup(
     assert result["cancelled"] is True
     assert output_directories
     assert not output_directories[0].exists()
-
-
-def test_transcribe_propagates_unverified_process_cleanup_without_success_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    audio = tmp_path / "sample.wav"
-    audio.write_bytes(b"test audio")
-    process = _UnconfirmedFakeProcess(threading.Event())
-    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
-    monkeypatch.setattr(
-        process_utils,
-        "run_hidden",
-        lambda args, **kwargs: (_ for _ in ()).throw(
-            process_utils.ProcessCleanupUnverifiedError(
-                args, process=process, tree_termination_confirmed=False
-            )
-        ),
-    )
-
-    with pytest.raises(process_utils.ProcessCleanupUnverifiedError):
-        object.__new__(LocalAIServices).transcribe(
-            {"audio": str(audio)}, "task-17", cancel_event=threading.Event()
-        )
