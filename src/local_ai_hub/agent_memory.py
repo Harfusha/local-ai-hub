@@ -225,7 +225,9 @@ def _context_scope_sql(
         identity_value = str(identity_value or "").strip()
         if scope_value != AgentScope.REPOSITORY.value and not identity_value:
             return
-        if scope_value == AgentScope.REPOSITORY.value and not root:
+        if scope_value == AgentScope.REPOSITORY.value and not (root and tenant):
+            return
+        if scope_value == AgentScope.SESSION.value and not tenant:
             return
         if scope_value == AgentScope.TASK.value and not (root and tenant):
             return
@@ -1506,7 +1508,22 @@ class MemoryStore:
                 semantic=False,
                 limit=1,
             )
-            return records[0] if records else None
+            record = records[0] if records else None
+            if requested_scope == AgentScope.GLOBAL.value and record is not None:
+                # Direct lookup must provide every stored owner identity. This
+                # does not constrain intentional cross-project GLOBAL context
+                # sharing; tenant opt-in above bypasses only the tenant filter.
+                if str(record.scope_id or "").strip():
+                    return None
+                for identity_key, requested_identity in (
+                    ("root", root), ("repository_id", repository_id),
+                    ("task_id", task_id), ("session_id", session_id),
+                    ("clone_id", clone_id), ("worktree_id", worktree_id),
+                    ("branch", branch),
+                ):
+                    if str(record.provenance.get(identity_key) or "").strip() and not str(requested_identity or "").strip():
+                        return None
+            return record
         self._init_table()
         con = connect_sqlite(self.state_store.db_path)
         try:
