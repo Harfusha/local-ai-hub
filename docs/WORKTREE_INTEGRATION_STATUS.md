@@ -878,3 +878,37 @@ raise SystemExit(pytest.main(['-q', '-p', 'no:cacheprovider', '--tb=short', '--b
   six were reproduced against the earlier source pin. Not a release gate pass.
   Historical 382-version, 70,873,144-byte archive commit `386b64d5` remains on
   the owner branch; original stash refs are preserved and unchanged.
+
+#### Current master progress after status check
+
+Master now includes three more verified packets:
+
+| Scope | Master commit | Verification / disposition |
+| --- | --- | --- |
+| T18 safe public diagnostics | `6f86ad54` | Owner's test-only change distinguishes internal schema mismatch details from sanitized public event-page errors and verifies DB bytes remain unchanged. Root test passes. |
+| T08 scoped expiry fixture | `da76d1d0` | Ported only the 47-line fixture test adaptation, not the owner's unrelated 1,300-line candidate test-file expansion. It supplies matching root/tenant/task provenance and preserves rollback/delete assertions. Root test passes. |
+| T05 memory append atomicity | `a0852c22` | Reject `AppendResult.error` before projection commit for both new writes and replay; retry remains valid. Owner RED/GREEN: 4 failed before, 4 passed after; root regression test included. |
+
+Root verification after these integrations:
+
+```powershell
+python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t05_memory_append_result_atomicity.py tests/test_agent_t08_durable_contract.py tests/test_t18_backup_reservation_acl.py tests/test_t18_lease_migration_fingerprint.py tests/test_t05_agent_state_migrations.py::test_verified_backup_reserves_destination_and_only_cleans_its_file tests/test_t05_agent_state_migrations.py::test_unknown_legacy_layout_fails_closed_without_changing_database_bytes
+```
+
+Result: **45 passed, 1 skipped in 10.45s**; skip is POSIX permission-bit coverage on Windows. The two scoped T08/T18 regressions also passed together (**2 passed in 1.55s**). No broader release gate was run.
+
+Integration-boundary snapshot (before this status-note commit): master
+`a0852c22`; 60 registered worktrees, 11 dirty
+including root; 4 branches with 38 branch-only commit objects, of which
+`git cherry` reports 10 not patch-equivalent to master; 45 stashes unchanged.
+Root still has user-owned dirty `src/local_ai_hub/async_jobs.py`,
+`src/local_ai_hub/http_server.py`, and untracked `agent_state.sqlite`; none was
+staged or modified here. This live root state differs from earlier 182 tracked /
+192 untracked estimates, which are not treated as attribution evidence.
+
+Open: reconcile the four divergent branches and every relevant stash hunk;
+review each dirty worktree without discarding overlays; synchronize all
+checkouts after integration; finish T01-T21 and audit acceptance; run full
+release checks and installed-instance validation. The 10 non-equivalent
+branch commits are a triage queue, not automatically 10 required code changes.
+No stash was applied or dropped, and no release-complete claim is made.
