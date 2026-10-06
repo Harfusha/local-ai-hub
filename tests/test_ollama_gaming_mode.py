@@ -61,6 +61,90 @@ def _assert_pause_result(
     assert result["physical_vram_reclaimed"] is False
 
 
+def test_strict_inventory_keeps_failed_ollama_endpoint_incomplete(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    runtime.config["llama_cpp"] = {"mode": "on", "models": {"configured": {}}}
+    runtime.request = lambda *_args, **_kwargs: {"error": "offline"}
+    runtime.llama_cpp.loaded_model_inventory = lambda **_kwargs: {
+        "complete": True, "models": [], "errors": {}, "endpoint_status": {}, "endpoints": {},
+    }
+
+    inventory = runtime.loaded_model_inventory(force_refresh=True)
+
+    assert inventory["complete"] is False
+    assert inventory["backends"]["ollama"]["complete"] is False
+    assert inventory["models"] == []
+    assert inventory["errors"]
+
+
+def test_strict_inventory_preserves_backend_and_endpoint_identity(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    runtime.config["llama_cpp"] = {"mode": "on", "models": {"configured": {}}}
+    runtime.request = lambda *_args, **_kwargs: {"models": [{"name": "loaded-model"}]}
+    runtime.llama_cpp.loaded_model_inventory = lambda **_kwargs: {
+        "complete": True,
+        "models": [{"name": "served-model", "endpoint_url": "http://llama-a", "backend": "llama.cpp-sycl"}],
+        "errors": {},
+        "endpoint_status": {"configured": "complete"},
+        "endpoints": {"http://llama-a": "complete"},
+    }
+
+    inventory = runtime.loaded_model_inventory(force_refresh=True)
+
+    assert inventory["complete"] is True
+    assert {(row["backend"], row["endpoint_id"], row["name"]) for row in inventory["models"]} == {
+        ("ollama", "http://127.0.0.1:11434", "loaded-model"),
+        ("llama.cpp-sycl", "http://llama-a", "served-model"),
+    }
+
+
+def test_strict_inventory_marks_malformed_ollama_rows_incomplete(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    runtime.request = lambda *_args, **_kwargs: {"models": [{"size": 123}]}
+
+    inventory = runtime.loaded_model_inventory(force_refresh=True)
+
+    assert inventory["complete"] is False
+    assert inventory["backends"]["ollama"]["endpoints"]["http://127.0.0.1:11434"] == "unknown"
+    assert inventory["errors"]
+
+
+def test_gaming_unload_routes_duplicate_llama_ids_to_each_endpoint(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    runtime.config["ollama"]["enabled"] = False
+    runtime.config["llama_cpp"] = {"mode": "on", "models": {"configured": {}}}
+    urls = ("http://llama-a", "http://llama-b")
+    snapshots = [
+        {
+            "complete": True,
+            "models": [
+                {"name": "shared-id", "endpoint_url": urls[0]},
+                {"name": "shared-id", "endpoint_url": urls[1]},
+            ],
+            "errors": {},
+            "endpoint_status": {"configured": "complete"},
+            "endpoints": {url: "complete" for url in urls},
+        },
+        {
+            "complete": True, "models": [], "errors": {},
+            "endpoint_status": {"configured": "complete"},
+            "endpoints": {url: "complete" for url in urls},
+        },
+    ]
+    runtime.llama_cpp.loaded_model_inventory = lambda **_kwargs: snapshots.pop(0)
+    unloaded: list[tuple[str, str]] = []
+    runtime.llama_cpp.unload_model = lambda model, *, endpoint_url=None, **_kwargs: unloaded.append((model, endpoint_url)) or True
+
+    result = runtime.unload_configured_models(timeout_seconds=0.5)
+
+    assert result["complete"] is True
+    assert unloaded == [("shared-id", urls[0]), ("shared-id", urls[1])]
+    assert result["endpoint_receipts"][f"llama_cpp:{urls[0]}"]["requested"] == ["shared-id"]
+    assert result["endpoint_receipts"][f"llama_cpp:{urls[1]}"]["requested"] == ["shared-id"]
+    assert result["endpoint_receipts"][f"llama_cpp:{urls[0]}"]["remaining"] == []
+    assert result["endpoint_receipts"][f"llama_cpp:{urls[1]}"]["remaining"] == []
+
+
 def test_pause_unloads_every_loaded_model_without_loading_models(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -254,7 +338,7 @@ def test_pause_reports_partial_failure_and_continues_after_active_model_rejects_
             "model_row_2": "loaded model row has no usable name or model",
             "model_row_3": "loaded model row is not an object",
         },
-        verified=False, complete=False, unverified=False,
+        verified=False, complete=False, unverified=True, inventory_status="unknown",
     )
     unloads = [(payload, timeout, deadline) for endpoint, payload, timeout, deadline in requests if endpoint == "/api/generate"]
     assert [payload["model"] for payload, _timeout, _deadline in unloads] == [

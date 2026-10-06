@@ -14,6 +14,10 @@ import pytest
 
 from tools.benchmark_surfaces import _plan_grade_reasons, compare_records, main, run_benchmark, run_benchmark_matrix, summarize_samples
 from tools.benchmark_surfaces import (
+    _summarize_t12_metric,
+    _t12_hardware_identity,
+    _run_t12_matrix,
+    _t12_scenario_report,
     _code_generation_matches_golden,
     _benchmark_inference_config,
     _benchmark_inference_server_url,
@@ -47,6 +51,20 @@ _FIXTURE_SAMPLE_BLOCKS = ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot
 _FIXTURE_SAMPLE_BLOCK_IDS = tuple(
     f"{case}:{block}" for case in _FIXTURE_SAMPLE_CASES for block in _FIXTURE_SAMPLE_BLOCKS
 )
+
+
+def test_t12_hardware_identity_includes_detected_profile_and_devices():
+    hardware, fingerprint = _t12_hardware_identity({
+        "profile": "balanced",
+        "gpus": [{"vendor": "nvidia", "gpu_name": "Example GPU", "vram_total_mb": 8192, "serial": "omit-me"}],
+        "npus": [{"name": "Example NPU", "backend": "test"}],
+    })
+
+    assert hardware["profile"] == "balanced"
+    assert hardware["gpus"] == [{"gpu_name": "Example GPU", "vendor": "nvidia", "vram_total_mb": 8192}]
+    assert hardware["npus"] == [{"name": "Example NPU", "backend": "test"}]
+    assert "serial" not in json.dumps(hardware)
+    assert len(fingerprint) == 64
 
 
 def test_synthetic_query_symbol_is_exact_single_term() -> None:
@@ -415,6 +433,19 @@ def test_summarize_samples_reports_percentiles_and_throughput() -> None:
     assert summary["p99_ms"] == 39.7
     assert summary["throughput_per_second"] == 40.0
 
+
+def test_t12_metric_summary_preserves_measurement_units() -> None:
+    latency = _summarize_t12_metric("ttft_ms", [10.0, 20.0, 30.0, 40.0])
+    memory = _summarize_t12_metric("peak_vram_bytes", [100.0, 200.0, 300.0, 400.0])
+    throughput = _summarize_t12_metric("tokens_per_second", [10.0, 20.0, 30.0, 40.0])
+
+    assert latency["unit"] == "ms"
+    assert latency["p50"] == 25.0
+    assert memory["unit"] == "bytes"
+    assert memory["p50"] == 250.0
+    assert "p50_ms" not in memory
+    assert throughput["unit"] == "tokens/second"
+    assert throughput["p50"] == 25.0
 
 def test_code_generation_golden_checks_function_behavior_shape() -> None:
     passing = {
@@ -2642,6 +2673,279 @@ def test_optional_inference_uses_runtime_load_metric_without_real_model(
     assert result["resource_usage"]["peak_vram_bytes"] == 250 * 1024 * 1024
     assert result["resource_usage"]["availability"]["peak_vram_bytes"] == "measured_at_inference_boundaries"
 
+
+def test_t12_matrix_reports_profile_corpus_metrics_and_scenario_receipts() -> None:
+    class FakeRunner:
+        config = {
+            "models": {
+                "reason": "reason-model",
+                "review": "review-model",
+                "compress": "compress-model",
+                "complete": "complete-model",
+                "scaffold": "scaffold-model",
+                "reasoning": "reason-model",
+                "fast_code": "compress-model",
+                "heavy_code": "review-model",
+            },
+            "profile_configs": {profile: {"temperature": 0.0} for profile in (
+                "reason", "review", "compress", "complete", "scaffold",
+            )},
+        }
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def run(self, *, model: str, prompt: str, num_tokens: int) -> dict[str, object]:
+            profile = next(name for name, model_name in self.config["models"].items() if model_name == model)
+            repetition = sum(1 for call in self.calls if call["profile"] == profile)
+            self.calls.append({"profile": profile, "prompt": prompt, "num_tokens": num_tokens})
+            return {
+                "success": True,
+                "model": model,
+                "routed_profile": profile,
+                "model_digest": ("a" if profile == "reason" else "b") * 64,
+                "quality_score_pct": 90.0,
+                "quality_evaluator_id": "t12-rubric-v1",
+                "ttft_ms": 4.0,
+                "tokens_per_second": 20.0,
+                "load_duration_ms": 12.0 if repetition == 0 else 0.0,
+                "model_load_event": repetition == 0,
+                "model_reuse_event": repetition > 0,
+                "queue_age_ms": 10.0 + repetition,
+                "queue_wait_ms": 8.0 + repetition,
+                "fairness_wait_ms": 3.0 + repetition,
+                "batch_size": 2,
+                "batch_bucket": "short-prefill",
+                "prefill_tokens": 64,
+                "vram_admitted": True,
+                "vram_budget_bytes": 512 * 1024 * 1024,
+                "vram_required_bytes": 256 * 1024 * 1024,
+                "deadline_ms": 500.0,
+                "deadline_stage": "generation",
+                "deadline_exceeded": False,
+                "deadline_queue_ms": 4.0,
+                "deadline_model_load_ms": 12.0,
+                "deadline_generation_ms": 20.0,
+                "deadline_stages_ms": {"queue": 4.0, "model_load": 12.0, "generation": 20.0},
+                "peak_vram_bytes": 256 * 1024 * 1024,
+                "switch_event_id": 7 if repetition == 0 else None,
+                "model_switch_ms": 8.0 if repetition == 0 else None,
+                "model_switch_success": True if repetition == 0 else None,
+                "evicted_models": ["old-model"] if repetition == 0 else None,
+                "eviction_count": 1 if repetition == 0 else None,
+                "vram_before_bytes": 256 * 1024 * 1024 if repetition == 0 else None,
+                "vram_after_bytes": 192 * 1024 * 1024 if repetition == 0 else None,
+            }
+
+        def run_benchmark_scenario(self, *, name: str, contract: dict[str, object]) -> dict[str, object]:
+            inputs = contract["scenario_inputs"]
+            scenarios: dict[str, dict[str, object]] = {
+                "scheduler": {
+                    "queue_age_ms": 25.0, "fairness_wait_ms": 10.0, "batch_size": 4,
+                    "batch_item_count": 4, "bucket_id": "short-prefill",
+                    "prefill_tokens": 128, "vram_admission": "admitted",
+                    "vram_budget_bytes": 512 * 1024 * 1024,
+                    "vram_available_bytes": 256 * 1024 * 1024,
+                    "vram_required_bytes": 256 * 1024 * 1024,
+                    "vram_admission_budget_bytes": 256 * 1024 * 1024,
+                    "vram_incremental_required_bytes": 192 * 1024 * 1024,
+                    "vram_estimate_source": "measured",
+                },
+                "batch": {
+                    "input_item_ids": ["a", "b", "c"], "result_item_ids": ["a", "b", "c"],
+                    "item_statuses": ["success", "failed", "success"], "partial_failure_count": 1,
+                    "max_concurrency": 2, "concurrency_limit": 2,
+                    "failure_probe_item_id": "c", "failure_probe_observed": True,
+                },
+                "deadline": {
+                    "deadline_ms": 100.0, "stages": ["queue", "model_load", "generation"],
+                    "stage_timings_ms": {"queue": 5.0, "model_load": 20.0, "generation": 40.0},
+                    "deadline_stage": "generation", "completed_within_deadline": True,
+                    "request_succeeded": True,
+                },
+                "overload": {
+                    "overloaded": True, "queue_depth": 4, "queue_admission": "rejected",
+                    "queued_count": 1, "rejected_count": 1, "resource_rejected_count": 0,
+                },
+                "cancel": {
+                    "cancel_requested": True, "cancelled": True, "cleanup_complete": True,
+                    "cancel_to_stop_ms": 15.0,
+                },
+                "fallback": {
+                    "fallback_used": True, "fallback_visible": True, "source_profile": "reason",
+                    "fallback_profile": inputs["fallback_profile"], "quality_floor_pct": 80.0,
+                    "source_model": inputs["model"], "fallback_model": inputs["fallback_model"],
+                    "source_backend": "ollama", "fallback_backend": "ollama",
+                    "source_quality_pct": 0.0, "source_quality_status": "scored",
+                    "fallback_quality_pct": 85.0,
+                    "source_max_tokens": inputs["source_max_tokens"],
+                    "fallback_max_tokens": inputs["fallback_max_tokens"],
+                    "quality_floor_met": True,
+                },
+            }
+            measurements = dict(scenarios[name])
+            if name == "batch":
+                item_ids = [item["id"] for item in inputs["items"]]
+                probe_id = inputs["failure_probe_item_id"]
+                statuses = ["success"] * len(item_ids)
+                statuses[item_ids.index(probe_id)] = "failed"
+                measurements.update({
+                    "input_item_ids": item_ids,
+                    "result_item_ids": list(item_ids),
+                    "item_statuses": statuses,
+                    "partial_failure_count": 1,
+                    "max_concurrency": 2,
+                    "concurrency_limit": inputs["max_concurrency"],
+                    "failure_probe_item_id": probe_id,
+                    "failure_probe_observed": True,
+                })
+            return {**measurements, "receipt_id": f"receipt-{name}"}
+
+    runner = FakeRunner()
+    report = _run_t12_matrix(runner, repetitions=2, concurrency_limit=4, quality_floor_pct=80.0)
+
+    assert report["accepted"] is False
+    assert report["contract_passed"] is True, {
+        "task_roles": {
+            name: role.get("missing_acceptance")
+            for name, role in report["task_roles"].items()
+            if role.get("contract_passed") is not True
+        },
+        "scenarios": {
+            name: (scenario.get("contract_passed"), scenario.get("missing_fields"))
+            for name, scenario in report["scenarios"].items()
+            if scenario.get("contract_passed") is not True
+        },
+    }
+    assert report["live_hardware"] is False
+    assert report["run_id"].startswith("t12-")
+    assert "receipt_id" not in report
+    assert len(runner.calls) == 10
+    assert report["corpus"]["corpus_id"] == "t12-live-quality-v1"
+    assert len(report["corpus"]["fingerprint"]) == 64
+    assert set(report["task_roles"]) == {"reason", "review", "compress", "complete", "scaffold"}
+    assert report["hardware_profile"] is None
+    reason = report["task_roles"]["reason"]
+    assert reason["status"] == "measured"
+    assert reason["identity"]["model"] == "reason-model"
+    assert reason["identity"]["task_role"] == "reason"
+    assert len(reason["identity"]["config_fingerprint"]) == 64
+    assert len(reason["identity"]["hardware_fingerprint"]) == 64
+    assert reason["quality"]["score_pct"] == 90.0
+    assert reason["quality"]["evaluator_id"] == "t12-rubric-v1"
+    assert all(sample["model"] == "reason-model" for sample in reason["samples"])
+    assert reason["metrics"]["ttft_ms"]["p50"] == 4.0
+    assert reason["metrics"]["end_to_end_latency_ms"]["count"] == 2
+    assert reason["metrics"]["peak_vram_bytes"]["unit"] == "bytes"
+    assert reason["metrics"]["peak_vram_bytes"]["p50"] == 256 * 1024 * 1024
+    assert reason["events"]["model_load_count"] == 1
+    assert reason["events"]["model_reuse_count"] == 1
+    assert reason["events"]["model_switch_count"] == 1
+    assert reason["events"]["model_switch_success_count"] == 1
+    assert reason["events"]["eviction_count_total"] == 1
+    assert reason["lifecycle_metrics"]["model_switch_ms"]["p50"] == 8.0
+    assert reason["lifecycle_metrics"]["switch_vram_delta_bytes"]["p50"] == -64 * 1024 * 1024
+    assert reason["samples"][0]["evicted_models"] == ["old-model"]
+    assert reason["samples"][0]["vram_before_bytes"] == 256 * 1024 * 1024
+    assert reason["samples"][0]["vram_after_bytes"] == 192 * 1024 * 1024
+    assert reason["deadline_stage_counts"] == {"generation": 2}
+    assert all(scenario["contract_passed"] is True for scenario in report["scenarios"].values())
+    assert report["scenarios"]["fallback"]["runner_receipt_id"] == "receipt-fallback"
+    serialized = json.dumps(report)
+    assert "Given queue" not in serialized
+    assert '"prompt"' not in serialized
+    assert '"output"' not in serialized
+
+    runner.config["_hardware"] = {"profile": "balanced"}
+    live_spoof_attempt = _run_t12_matrix(
+        runner, repetitions=1, concurrency_limit=4, quality_floor_pct=80.0, live_hardware=True,
+    )
+    assert live_spoof_attempt["accepted"] is False
+    assert live_spoof_attempt["task_roles"]["reason"]["quality"]["sample_count"] == 0
+    assert "trusted_structured_evaluator_required" in live_spoof_attempt["task_roles"]["reason"]["missing_acceptance"]
+
+
+def test_t12_matrix_preserves_sanitized_vram_admission_on_failed_samples() -> None:
+    class AdmissionFailureRunner:
+        config = {
+            "models": {
+                "reasoning": "reason-model", "review": "review-model",
+                "compress": "compress-model", "complete": "complete-model",
+                "scaffold": "scaffold-model",
+            },
+        }
+
+        def run_t12_case(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "success": False,
+                "failure_code": "resource_exhausted",
+                "vram_admitted": "rejected",
+                "vram_budget_bytes": 8_000_000_000,
+                "vram_available_bytes": 1_000_000_000,
+                "vram_admission_budget_bytes": 6_500_000_000,
+                "vram_incremental_required_bytes": 6_800_000_000,
+                "vram_estimate_source": "measured",
+                "prompt": "PRIVATE PROMPT",
+                "response": "PRIVATE OUTPUT",
+            }
+
+    report = _run_t12_matrix(AdmissionFailureRunner(), repetitions=1, concurrency_limit=1)
+    sample = report["task_roles"]["reason"]["samples"][0]
+
+    assert sample["error_type"] == "resource_exhausted"
+    assert report["task_roles"]["reason"]["events"]["vram_admission_counts"] == {
+        "admitted": 0, "rejected": 1, "unknown": 0,
+    }
+    assert sample["diagnostics"] == {
+        "vram_admitted": "rejected",
+        "vram_budget_bytes": 8_000_000_000,
+        "vram_available_bytes": 1_000_000_000,
+        "vram_admission_budget_bytes": 6_500_000_000,
+        "vram_incremental_required_bytes": 6_800_000_000,
+        "vram_estimate_source": "measured",
+    }
+    serialized = json.dumps(report)
+    assert "PRIVATE PROMPT" not in serialized
+    assert "PRIVATE OUTPUT" not in serialized
+
+
+def test_t12_scenario_does_not_accept_resource_rejections_as_queue_overload() -> None:
+    class ResourceRejectedRunner:
+        config = {"models": {"reasoning": "reason-model"}}
+
+        def run_benchmark_scenario(self, *, name: str, contract: dict[str, object]) -> dict[str, object]:
+            del name, contract
+            return {
+                "overloaded": False, "queue_depth": 0,
+                "queue_admission": "resource_rejected", "queued_count": 0,
+                "rejected_count": 0, "resource_rejected_count": 8,
+                "receipt_id": "receipt-resource-rejection",
+            }
+
+    report = _t12_scenario_report(
+        ResourceRejectedRunner(), "overload", concurrency_limit=4,
+        quality_floor_pct=80.0, live_hardware=True,
+    )
+
+    assert report["status"] == "measured"
+    assert report["contract_passed"] is False
+    assert report["accepted"] is False
+    assert report["measurements"]["resource_rejected_count"] == 8
+
+
+def test_t12_matrix_keeps_missing_live_quality_and_scenarios_incomplete() -> None:
+    class UnscoredRunner:
+        config = {"models": {"reason": "reason-model"}}
+
+        def run(self, **_kwargs: object) -> dict[str, object]:
+            return {"success": True, "ttft_ms": 4.0}
+
+    report = _run_t12_matrix(UnscoredRunner(), repetitions=1, concurrency_limit=1, quality_floor_pct=80.0)
+
+    assert report["accepted"] is False
+    assert report["task_roles"]["reason"]["quality"]["status"] == "not_measured"
+    assert report["task_roles"]["review"]["status"] == "not_configured"
+    assert report["scenarios"]["fallback"]["status"] == "not_measured"
 
 def test_cli_wall_timeout_returns_incomplete_receipt_without_state_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],

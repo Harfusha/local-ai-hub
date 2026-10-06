@@ -110,12 +110,13 @@ Verify `hubctl.py service-status` and exactly one platform user-service entry: W
 ### PHASE 4: REFRESH INSTRUCTIONS IN CURRENT REPOSITORY
 
 Locate active agent instruction files in this repository (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.windsurfrules`, `GEMINI.md`, etc.):
-- Replace or sync the `<!-- BEGIN LOCAL AI HUB TOOL POLICY -->` block with the latest policy from `~/.local-ai-hub/generated/agent-policy.md`.
-- Replace or sync the `<!-- BEGIN TOKEN ECONOMY POLICY -->` block with the latest policy from `~/.local-ai-hub/generated/token-economy-policy.md`.
+- Replace or sync the Local AI Hub tool policy block with the latest policy from `~/.local-ai-hub/generated/agent-policy.md`.
+- Replace or sync the token economy policy block with the latest policy from `~/.local-ai-hub/generated/token-economy-policy.md`.
 - If no instruction file exists, ensure `AGENTS.md` is created with both policy blocks.
 - Verify the default setup deploys the `token-economizer` skill and registers the token-tool CLI directory on the user's persistent PATH. Keep the generated policy trigger that requires agents to load this skill before every repository task.
 - Ensure the refreshed policy retains this trigger verbatim:
   - Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.
+- Keep the `TOKEN ECONOMY POLICY` block identical in `AGENTS.md` and both canonical prompts; use only tooling and setup commands that the installed skill and repository actually provide.
 - Use `local_ai_rag` for semantic retrieval only after deterministic and indexed repository evidence is insufficient.
 - Preserve the `trim-run` safety boundary: only its bundled token tools and read-only search CLIs may be launched; use `local_ai_command` for tests/builds and arbitrary validation commands.
 - For durable work, require one `local_ai_coord(action="task_create")` contract, phase changes through `local_ai_coord(action="task_checkpoint")`, and one bounded wait instead of status polling loops.
@@ -155,6 +156,8 @@ Confirm:
 4. Preprocessing status for current repository.
 ```
 ### MCP response economy
+
+After updating, verify the generated schemas under the installation's `generated/` directory expose `max_response_tokens`, `response_profile`, and `reuse_key` on the existing Hub tools. These are installation artifacts, not checked-in source files. Treat generator output and configuration as trusted repository inputs; never copy tool fields from untrusted model output. Keep aggregate response budgeting enabled, preserve artifact-backed exact detail, and verify telemetry reports raw/projected/saved response estimates without prompt or source retention.
 
 After updating, verify the generated schemas under the installation's `generated/` directory expose `max_response_tokens`, `response_profile` (default `"compact"`), and `reuse_key` on the existing Hub tools. These are installation artifacts, not checked-in source files. Treat generator output and configuration as trusted repository inputs; never copy tool fields from untrusted model output. Keep aggregate response budgeting enabled, preserve artifact-backed exact detail, and verify telemetry reports raw/projected/saved response estimates without prompt or source retention.
 - `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
