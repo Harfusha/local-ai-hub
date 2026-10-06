@@ -40,6 +40,7 @@ class DummyHandler:
         self._telemetry_finished = False
         self._debug_trace_finished = False
         self._journal_finished = False
+        self.finished_stream_request = None
         self._app = app
 
     def _tenant(self):
@@ -61,7 +62,7 @@ class DummyHandler:
         pass
 
     def _finish_stream_request(self, success, error=""):
-        pass
+        self.finished_stream_request = (success, error)
 
     def _stream_agent_events(self, stream_id="", kind="", after_seq=0, timeout=0.0):
         http_server.Handler._stream_agent_events(
@@ -101,6 +102,7 @@ def test_sse_stream_replays_and_receives_live_events(tmp_path: Path):
         assert "event: task.updated" in output
         assert '"step":1' in output
         assert '"step":2' in output
+        assert handler.finished_stream_request == (False, "client disconnected")
     finally:
         http_server.APP = orig_app
 
@@ -151,6 +153,8 @@ def test_client_stream_events_parsing(monkeypatch):
     client = HubClient.__new__(HubClient)
     client.base_url = "http://127.0.0.1:11435"
     client.api_token = "tok"
+    client.tenant = "test-tenant"
+    client.agent = "test-agent"
 
     sse_payload = (
         b": keep-alive\n\n"

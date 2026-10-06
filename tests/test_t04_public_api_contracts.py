@@ -16,7 +16,11 @@ def live_api(tmp_path, monkeypatch):
     config = tmp_path / "config.toml"
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
-        f'state_dir = "{state_dir.as_posix()}"\n',
+        f'state_dir = "{state_dir.as_posix()}"\n'
+        f'\n[security]\napi_token = "test-api-token"\n'
+        f'api_token_tenant = "test-principal"\n'
+        f'tenant_derivation_key = "test-derivation-key"\n'
+        f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
@@ -90,21 +94,21 @@ def test_unsupported_chat_completions_returns_404_for_non_object_messages(live_a
     assert result["status_code"] == 404
 
 
-def test_task_list_query_filters_contract_and_checkpoint_before_limit(live_api):
-    from local_ai_hub.agent_identity import ScopeContext
-    from local_ai_hub.agent_tasks import GoalContract
-
+def test_task_list_query_filters_contract_and_checkpoint_before_limit(live_api, tmp_path):
     app, client = live_api
+    root = str(tmp_path)
 
     matching = client.create_task(
         "goal-needle",
         acceptance_criteria=["criterion-needle"],
         task_id="query-match",
+        root=root,
     )
     assert matching["success"] is True
     checkpoint = client.post("/api/agent-state/tasks", {
         "action": "checkpoint",
         "task_id": "query-match",
+        "root": root,
         "checkpoint": {
             "phase": "phase-needle",
             "next_action": "action-needle",
@@ -113,15 +117,16 @@ def test_task_list_query_filters_contract_and_checkpoint_before_limit(live_api):
         },
     })
     assert checkpoint["success"] is True
-    unrelated = client.create_task("Newest unrelated task", task_id="query-other")
+    unrelated = client.create_task("Newest unrelated task", task_id="query-other", root=root)
     assert unrelated["success"] is True
 
-    app.agent_tasks.create(
-        GoalContract(goal="Owner-only task"),
-        ScopeContext(),
-        task_id="query-owner",
-        actor="distinct-owner",
-    )
+    owner_client = type(client)(tenant="", config_path=str(tmp_path / "config.toml"), auto_start=False)
+    owner_client.agent = "distinct-owner"
+    try:
+        owner_task = owner_client.create_task("Owner-only task", task_id="query-owner", root=root)
+        assert owner_task["success"] is True
+    finally:
+        owner_client.close()
     store_result = app.agent_tasks.list_tasks(query="BLOCKER-NEEDLE", limit=1)
     assert [task.task_id for task in store_result] == ["query-match"]
 
@@ -135,16 +140,18 @@ def test_task_list_query_filters_contract_and_checkpoint_before_limit(live_api):
         "blocker-needle",
     ]
     for query in queries:
-        post_result = client.list_tasks(query=query.upper(), limit=1)
+        post_result = client.list_tasks(query=query.upper(), limit=1, root=root)
         assert [item["task_id"] for item in post_result["tasks"]] == ["query-match"], query
 
-    owner_result = client.list_tasks(query="DISTINCT-OWNER", limit=1)
+    owner_result = client.list_tasks(query="DISTINCT-OWNER", limit=1, root=root)
     assert [item["task_id"] for item in owner_result["tasks"]] == ["query-owner"]
 
-    get_result = client.get("/api/agent-state/tasks?query=BLOCKER-NEEDLE&limit=1")
+    from urllib.parse import urlencode
+
+    get_result = client.get("/api/agent-state/tasks?" + urlencode({"root": root, "query": "BLOCKER-NEEDLE", "limit": 1}))
     assert [task["task_id"] for task in get_result["tasks"]] == ["query-match"]
 
-    unfiltered = client.list_tasks(query="  ", limit=10)
+    unfiltered = client.list_tasks(query="  ", limit=10, root=root)
     assert {task["task_id"] for task in unfiltered["tasks"]} == {"query-match", "query-other", "query-owner"}
 
 
@@ -175,7 +182,7 @@ def test_task_list_query_skips_stale_matches_before_limit(live_api):
     assert [task.task_id for task in tasks] == ["fresh-match"]
 
 
-def test_task_list_surfaces_query_scan_truncation(live_api, monkeypatch):
+def test_task_list_surfaces_query_scan_truncation(live_api, monkeypatch, tmp_path):
     from local_ai_hub.agent_tasks import TaskList
 
     app, client = live_api
@@ -185,17 +192,18 @@ def test_task_list_surfaces_query_scan_truncation(live_api, monkeypatch):
         lambda **_kwargs: TaskList([], query_truncated=True),
     )
 
-    result = client.list_tasks(query="needle")
+    result = client.list_tasks(query="needle", root=str(tmp_path))
 
     assert result["success"] is True
     assert result["tasks"] == []
     assert result["query_truncated"] is True
 
 
-def test_task_list_post_rejects_non_string_query(live_api):
+def test_task_list_post_rejects_non_string_query(live_api, tmp_path):
     _app, client = live_api
+    root = str(tmp_path)
 
-    response = client.post("/api/agent-state/tasks", {"action": "list", "query": ["needle"]})
+    response = client.post("/api/agent-state/tasks", {"action": "list", "query": ["needle"], "root": root})
 
     assert response["success"] is False
     assert response["terminal"] is True
@@ -290,7 +298,7 @@ def test_artifact_list_is_bounded_metadata_and_needs_no_id(live_api, monkeypatch
     from local_ai_hub import mcp_server
 
     app, client = live_api
-    with app.artifacts.batch(client.tenant) as batch:
+    with app.artifacts.batch(client.tenant or "http-default") as batch:
         for index in range(105):
             batch.put(f"artifact-{index}", "test")
 

@@ -1252,6 +1252,7 @@ def local_ai_task(
     latency_budget_ms: float = 0.0,
     job_action: str = "reason",
     job_id: str = "",
+    request_id: str = "",
     timeout_seconds: float = 90,
     evaluation_task_id: str = "",
     evaluation_cohort: str = "",
@@ -1352,7 +1353,7 @@ def local_ai_task(
             "action": action, "job_action": job_action, "job_id": job_id, "timeout_seconds": timeout_seconds,
             "task": task, "context": context, "candidate": candidate, "complexity": complexity,
             "max_tokens": max_tokens, "tasks": tasks or [], "profile": profile, "root": root, "workspace": workspace,
-        }, timeout=_timeout("quick")), "status")
+        }, timeout=_timeout("quick"), request_id=request_id or None), "status")
     budgeted_actions = {"continue", "delegate", "explore", "reason", "review", "second_opinion", "compress"}
     if task_id.strip() and action in budgeted_actions and ROOT_FAMILY_BUDGET.default_limit:
         family_key = hashlib.sha1(_client_root(root).encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
@@ -1741,6 +1742,7 @@ def _local_ai_repo_impl(
     is_worktree: bool = False,
     parent_root: str = "",
     steps: list[dict[str, Any]] | None = None,
+    path_hints: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -1770,7 +1772,7 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/repo/profile", {"root": root}, timeout=_timeout("quick")), "profile")
     if action == "investigate":
         return _compact(CLIENT.post("/api/repo/investigate", {
-            "root": root, "query": query or task, "path": path, "include_code": include_code or True, "limit": 10,
+            "root": root, "query": query or task, "path": path, "include_code": include_code, "limit": 10,
         }, timeout=_timeout("quick")), "architecture")
     if action == "diagnose":
         return _compact(CLIENT.post("/api/repo/diagnose", {
@@ -1807,7 +1809,7 @@ def _local_ai_repo_impl(
             extra.extend(["text", "raw"])
         return _compact(CLIENT.post("/api/search", {
             "root": root, "query": query or task, "top_k": 12, "enrich": enrich,
-        }, timeout=_timeout("quick")), "search", extra_fields=extra if extra else None)
+        }, timeout=_timeout("quick"), path_hints=path_hints), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
@@ -2203,6 +2205,7 @@ def local_ai_repo(
     is_worktree: bool = False,
     parent_root: str = "",
     steps: list[dict[str, Any]] | None = None,
+    path_hints: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     return _local_ai_repo_impl(
@@ -2211,7 +2214,7 @@ def local_ai_repo(
         include_code, include_tests, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
-        token_budget, is_worktree, parent_root, steps,
+        token_budget, is_worktree, parent_root, steps, path_hints,
     )
 
 

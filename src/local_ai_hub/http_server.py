@@ -24,6 +24,7 @@ from .trace_context import reset_context, reset_observer, set_context, set_obser
 from .dashboard import DASHBOARD_HTML
 from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
 from .delivery import decide_delivery
+from .resilience import RecoveryJournal
 from .agent_identity import AgentScope, ScopeContext
 from .agent_tasks import CompletionGateError, GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus
 from .agent_memory import ApprovalRequiredError, MAX_MEMORY_QUERY_LIMIT, MemoryKind, MemoryRecord, MemoryStatus
@@ -1331,6 +1332,8 @@ class Handler(BaseHTTPRequestHandler):
             self._finish_stream_request(False, error="client disconnected before headers")
             return
 
+        stream_success = True
+        stream_error = ""
         q = APP.agent_state.subscribe(maxsize=200)
         try:
             # Subscribe before fetching history. An event appended in the replay
@@ -1349,6 +1352,8 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(msg)
                         self.wfile.flush()
                     except OSError:
+                        stream_success = False
+                        stream_error = "client disconnected"
                         return
 
             start_time = time.monotonic()
@@ -1360,7 +1365,8 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(timeout_msg)
                         self.wfile.flush()
                     except OSError:
-                        pass
+                        stream_success = False
+                        stream_error = "client disconnected"
                     break
                 try:
                     ev = q.get(timeout=min(1.0, remaining))
@@ -1381,13 +1387,19 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(b": keep-alive\n\n")
                         self.wfile.flush()
                     except OSError:
+                        stream_success = False
+                        stream_error = "client disconnected"
                         break
+        except OSError:
+            stream_success = False
+            stream_error = "client disconnected"
         except Exception:
-            pass
+            stream_success = False
+            stream_error = "stream failed"
         finally:
             self.close_connection = True
             APP.agent_state.unsubscribe(q)
-            self._finish_stream_request(True)
+            self._finish_stream_request(stream_success, error=stream_error)
 
     def do_OPTIONS(self) -> None:
         if APP is None:
@@ -1959,6 +1971,14 @@ class Handler(BaseHTTPRequestHandler):
         self._begin_trace(path)
         if not self._require_authorized():
             return
+        if getattr(APP, "recovery", None) is not None:
+            try:
+                request_id = RecoveryJournal.validate_request_id(getattr(self, "_trace_request_id", ""))
+            except (TypeError, ValueError) as exc:
+                self._journal_finished = True
+                self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+                return
+            self._trace_request_id = request_id
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if path == "/api/bundle/import":
             if content_type not in {"application/zip", "application/octet-stream"}:

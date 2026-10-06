@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import errno
+import http.client
+import json
+import sys
 import threading
 import time
+import types
 from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
 from io import BytesIO
@@ -103,6 +108,112 @@ def test_client_coalesces_simultaneous_identical_requests(tmp_path, monkeypatch)
     assert sorted(bool(item.get("coalesced")) for item in results) == [False, True]
 
 
+def test_coalesced_get_returns_server_visible_owner_request_id(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    owner_opened = threading.Event()
+    waiter_joined = threading.Event()
+    release_owner = threading.Event()
+    sent_ids = []
+    caller_ids = []
+    original_singleflight = client._singleflight
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_id = headers["X-LocalAI-Request-ID"]
+        sent_ids.append(request_id)
+        owner_opened.set()
+        assert release_owner.wait(2)
+        return json.dumps({"success": True, "request_id": request_id}).encode("utf-8")
+
+    def observed_singleflight(key, timeout, execute, *, request_id=None, cancel_event=None):
+        caller_ids.append(request_id)
+        with client._flight_lock:
+            is_waiter = key in client._flights
+        if is_waiter:
+            waiter_joined.set()
+        return original_singleflight(
+            key,
+            timeout,
+            execute,
+            request_id=request_id,
+            cancel_event=cancel_event,
+        )
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+    monkeypatch.setattr(client, "_singleflight", observed_singleflight)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        owner = pool.submit(client.get, "/health")
+        assert owner_opened.wait(1)
+        waiter = pool.submit(client.get, "/health")
+        assert waiter_joined.wait(1)
+        release_owner.set()
+        owner_result = owner.result(timeout=1)
+        waiter_result = waiter.result(timeout=1)
+
+    assert len(sent_ids) == 1
+    assert len(caller_ids) == 2 and caller_ids[0] != caller_ids[1]
+    assert owner_result["request_id"] == waiter_result["request_id"] == sent_ids[0]
+    assert waiter_result["coalesced"] is True
+
+
+def test_get_reuses_request_id_after_autostart_retry(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    client.auto_start = True
+    start_timeouts = []
+    sent_ids = []
+
+    def ensure_server(*, timeout):
+        start_timeouts.append(timeout)
+        return True
+
+    def open_request(_method, _path, _body, headers, _timeout, **_kwargs):
+        request_id = headers["X-LocalAI-Request-ID"]
+        sent_ids.append(request_id)
+        if len(sent_ids) == 1:
+            raise URLError("connection refused")
+        return json.dumps({"success": True, "request_id": request_id}).encode("utf-8")
+
+    monkeypatch.setattr(client, "ensure_server", ensure_server)
+    monkeypatch.setattr(client, "_open", open_request)
+
+    result = client.get("/health", timeout=1)
+
+    assert result["success"] is True
+    assert len(start_timeouts) == 1 and start_timeouts[0] > 0
+    assert len(sent_ids) == 2 and sent_ids[0] == sent_ids[1]
+    assert result["request_id"] == sent_ids[0]
+
+
+def test_coalesced_replay_safe_post_timeout_returns_owner_request_id(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    request_started = threading.Event()
+    release_request = threading.Event()
+    sent_ids = []
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_id = headers["X-LocalAI-Request-ID"]
+        sent_ids.append(request_id)
+        request_started.set()
+        assert release_request.wait(1)
+        return json.dumps({"success": True, "request_id": request_id}).encode("utf-8")
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        owner = pool.submit(client.post, "/api/repo/complexity", {}, timeout=1)
+        assert request_started.wait(1)
+        try:
+            waiter = client.post("/api/repo/complexity", {}, timeout=0.2)
+        finally:
+            release_request.set()
+        owner_result = owner.result(timeout=1)
+
+    assert owner_result["success"] is True
+    assert waiter["success"] is False
+    assert waiter["retry_timeout"] is True
+    assert waiter["request_id"] == sent_ids[0]
+    assert len(sent_ids) == 1
+
+
 def test_client_reconnects_on_idle_disconnect(tmp_path, monkeypatch):
     class Response:
         status = 200
@@ -154,12 +265,29 @@ def test_client_replays_duplicate_request_until_owner_finishes(tmp_path, monkeyp
         return b'{"success":true,"value":"owner-result"}'
 
     monkeypatch.setattr(client, "_pooled_open", pooled_open)
-    result = client.request("/api/search", {"root": "repo"}, timeout=1)
+    result = client.post("/api/search", {"root": "repo"}, timeout=1)
 
     assert result == {"success": True, "value": "owner-result"}
     assert calls == 2
     assert len(set(request_ids)) == 1
     assert attempt_timeouts[1] < attempt_timeouts[0] - 0.05
+
+
+def test_get_passes_request_id_through_singleflight(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    observed_ids = []
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        observed_ids.append(headers["X-LocalAI-Request-ID"])
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    result = client.get("/health")
+
+    assert result["success"] is True
+    assert len(observed_ids) == 1
+    assert observed_ids[0].startswith("req_")
 
 
 def test_client_does_not_replay_ambiguous_default_post(tmp_path, monkeypatch):
@@ -222,6 +350,7 @@ def test_client_replays_explicitly_safe_post_with_stable_request_id(tmp_path, mo
     assert result["success"] is True
     assert len(request_ids) == 2
     assert len(set(request_ids)) == 1
+    assert request_ids[0].startswith("req_")
 
 
 def test_post_does_not_replay_unclassified_mutation(tmp_path, monkeypatch):
@@ -274,6 +403,197 @@ def test_post_replays_allowlisted_read_only_route(tmp_path, monkeypatch):
     assert result["success"] is True
     assert len(request_ids) == 2
     assert len(set(request_ids)) == 1
+
+
+def test_post_uses_explicit_request_id_across_safe_retry(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    request_ids = []
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_ids.append(headers["X-LocalAI-Request-ID"])
+        if len(request_ids) == 1:
+            raise URLError("connection lost")
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    result = client.post(
+        "/api/repo/complexity",
+        {"root": "repo"},
+        timeout=1,
+        request_id="stable-client-id",
+    )
+
+    assert result["success"] is True
+    assert request_ids == ["stable-client-id", "stable-client-id"]
+
+
+def test_post_rejects_malformed_request_ids_before_network(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def pooled_open(*_args, **_kwargs):
+        calls.append(True)
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    for request_id in ("", "bad request", "bad\nid", "café", "x" * 129, 123):
+        result = client.post("/api/tasks/checkpoint", {}, request_id=request_id)
+
+        assert result["success"] is False
+        assert result["terminal"] is True
+        assert result["retryable"] is False
+
+    assert calls == []
+
+
+def test_transport_connection_refusal_marks_request_not_sent(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    connection = http.client.HTTPConnection("127.0.0.1", 1)
+    connection_calls = []
+    connect_calls = []
+
+    def refuse_connection():
+        connect_calls.append(True)
+        raise ConnectionRefusedError(errno.ECONNREFUSED, "connection refused")
+
+    connection.connect = refuse_connection
+    def get_connection(_timeout):
+        connection_calls.append(True)
+        return connection
+
+    monkeypatch.setattr(client, "_connection", get_connection)
+
+    result = client.post("/api/command", {"command": "echo safe"}, request_id="stable-refused-id")
+
+    assert connection_calls == [True]
+    assert connect_calls == [True]
+    assert result == {
+        "success": False,
+        "error": "request was not sent because transport failed before write",
+        "request_not_sent": True,
+        "outcome_unknown": False,
+        "request_id": "stable-refused-id",
+    }
+
+
+def test_transport_other_connect_failure_is_classified_as_request_not_sent(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    connection = http.client.HTTPConnection("127.0.0.1", 1)
+    connect_calls = []
+
+    def timeout_connection():
+        connect_calls.append(True)
+        raise TimeoutError("connect timed out")
+
+    connection.connect = timeout_connection
+    monkeypatch.setattr(client, "_connection", lambda _timeout: connection)
+
+    result = client.request("/api/command", {"command": "echo safe"}, request_id="stable-timeout-id")
+
+    assert connect_calls == [True]
+    assert result["request_not_sent"] is True
+    assert result["outcome_unknown"] is False
+    assert result["request_id"] == "stable-timeout-id"
+
+
+def test_transport_write_failure_marks_outcome_unknown(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    connection = http.client.HTTPConnection("127.0.0.1", 1)
+    connection_calls = []
+
+    class BrokenSocket:
+        def __init__(self):
+            self.send_calls = 0
+
+        def sendall(self, _data):
+            self.send_calls += 1
+            raise ConnectionResetError("connection reset during write")
+
+        def close(self):
+            pass
+
+    sock = BrokenSocket()
+
+    def connect_with_socket():
+        connection.sock = sock
+
+    connection.connect = connect_with_socket
+    def get_connection(_timeout):
+        connection_calls.append(True)
+        return connection
+
+    monkeypatch.setattr(client, "_connection", get_connection)
+
+    result = client.post("/api/command", {"command": "echo safe"}, request_id="stable-write-id")
+
+    assert connection_calls == [True]
+    assert sock.send_calls == 1
+    assert result == {
+        "success": False,
+        "error": "request outcome is unknown after a transport failure",
+        "outcome_unknown": True,
+        "request_id": "stable-write-id",
+    }
+
+
+def test_safe_posts_with_distinct_explicit_request_ids_do_not_coalesce(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    first_started = threading.Event()
+    second_started = threading.Event()
+    release = threading.Event()
+    request_ids = []
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_id = headers["X-LocalAI-Request-ID"]
+        request_ids.append(request_id)
+        (first_started if request_id == "explicit-one" else second_started).set()
+        release.wait(2)
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    def send(request_id):
+        return client.request(
+            "/api/repo/complexity",
+            {"root": "repo"},
+            timeout=1,
+            replay_safe=True,
+            request_id=request_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(send, "explicit-one")
+        assert first_started.wait(1)
+        second = pool.submit(send, "explicit-two")
+        try:
+            assert second_started.wait(1)
+        finally:
+            release.set()
+        assert first.result(timeout=1)["success"] is True
+        assert second.result(timeout=1)["success"] is True
+
+    assert sorted(request_ids) == ["explicit-one", "explicit-two"]
+
+
+def test_ensure_server_mode_load_failure_blocks_autostart(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    state_dir = client.config["server"]["state_dir"]
+    starts = []
+    mode_module = types.ModuleType("local_ai_hub.operational_mode")
+
+    def fail_mode_load(_state_dir):
+        raise OSError("mode state unavailable")
+
+    mode_module.load_operational_mode = fail_mode_load
+    monkeypatch.setitem(sys.modules, mode_module.__name__, mode_module)
+    monkeypatch.setattr(client, "_online", lambda *_args: False)
+    monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_a, **_k: starts.append(True))
+
+    assert client.ensure_server(timeout=1) is False
+    assert starts == []
+    assert not client_module.Path(state_dir).exists()
 
 
 def test_post_malformed_response_returns_explicit_unknown_outcome(tmp_path, monkeypatch):
@@ -442,6 +762,7 @@ def test_stream_events_reports_uncertain_partial_disconnect(tmp_path, monkeypatc
 
 def test_stream_events_cancel_event_closes_blocked_response(tmp_path, monkeypatch):
     client = _client(tmp_path)
+    del client.max_request_timeout
     cancel = threading.Event()
 
     class Response:
