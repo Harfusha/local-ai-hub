@@ -665,5 +665,12 @@ benchmark criteria trigger final validation without file changes; handoff
 artifacts and cancelled terminal payloads include collected verification
 receipts. Regression suite `tests/test_work_orchestrator.py` passed **24/24**
 in 22.43 s, and `git diff --check` passed. The other six queues remain pending
-scoped owners/implementation and acceptance; this handoff alone does not close
-them. All original checkpoint refs/stash objects remain preserved.
+scoped implementation and acceptance. Ownership is now assigned in existing
+worker checkouts: Russell (`hub-audit-repairs`) owns `agent_tasks.py` queues
+TTL/list/revalidation/generation; Helmholtz (`t13-lifecycle-8429`) owns strict
+`agent_verification.py` receipt parsing; Tesla (`t17-multimodal-resume`) owns
+the `agent_memory.py` task-provenance guard. They must first reconcile/sync
+their preserved work to master `f140b96c4d3a451651436136405de7a931faf533`;
+no worker may edit the concurrently dirty root `http_server.py` or
+`async_jobs.py`. The T05 scope note is not proof of an observed live leak.
+All original checkpoint refs/stash objects remain preserved.
