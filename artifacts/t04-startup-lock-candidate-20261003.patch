@@ -1,0 +1,94 @@
+diff --git a/src/local_ai_hub/client.py b/src/local_ai_hub/client.py
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -110,53 +110,65 @@
+     try:
+         parts = path.read_text(encoding="utf-8").strip().split()
+     except OSError:
+-        # Windows may briefly deny a read while the owner publishes the PID.
+         return age <= 1.0
+     if not parts:
+-        # Keep a newly-created lock during the short create-then-write window.
+         return age <= 1.0
+     try:
+         pid = int(parts[0])
+     except ValueError:
+         return age <= 1.0
++
++    def launcher_identity_matches() -> bool | None:
++        if len(parts) < 5:
++            return None
++        identity = process_identity(pid)
++        if identity is None:
++            return None
++        return bool(
++            identity.get("creation_identity_type") == parts[3]
++            and str(identity.get("creation_identity")) == parts[4]
++        )
++
++    def incomplete_metadata_is_live() -> bool:
++        if age <= 1.0:
++            return True
++        matches = launcher_identity_matches()
++        if matches is not None:
++            return matches
++        return age <= max(1.0, stale_seconds) and pid_alive(pid)
++
+     if len(parts) >= 3:
+         pid_path = path.with_name(f"{path.name}.{parts[2]}.pid")
+         try:
+             sidecar = pid_path.read_text(encoding="ascii").strip().split()
+-            pid = int(sidecar[0])
+         except (OSError, ValueError, IndexError):
+-            # The sidecar may be briefly incomplete while it is published.
+-            # Keep the lock until a later check can verify its owner.
+             try:
+                 if pid_path.exists():
+-                    return True
++                    return incomplete_metadata_is_live()
+             except OSError:
+-                return age <= max(1.0, stale_seconds)
++                return incomplete_metadata_is_live()
+         else:
+             if len(sidecar) >= 3:
+-                # Include process creation identity so PID reuse cannot keep a
+-                # dead daemon's lock alive indefinitely.
+-                identity = process_identity(pid)
++                try:
++                    sidecar_pid = int(sidecar[0])
++                except ValueError:
++                    return incomplete_metadata_is_live()
++                identity = process_identity(sidecar_pid)
+                 if identity is None:
+-                    # Identity lookup can fail transiently for a live process.
+-                    # Keep a recent lock only while its recorded PID is alive.
+-                    return age <= max(1.0, stale_seconds) and pid_alive(pid)
++                    return age <= max(1.0, stale_seconds) and pid_alive(sidecar_pid)
+                 return bool(
+                     identity.get("creation_identity_type") == sidecar[1]
+                     and str(identity.get("creation_identity")) == sidecar[2]
+                 )
+-            # A legacy PID-only marker is live only within the normal stale
+-            # window; new markers carry a process creation identity.
+-            return age <= max(1.0, stale_seconds) and pid_alive(pid)
+-    if len(parts) >= 5:
+-        owner_identity = process_identity(pid)
+-        if (
+-            owner_identity
+-            and owner_identity.get("creation_identity_type") == parts[3]
+-            and str(owner_identity.get("creation_identity")) == parts[4]
+-        ):
+-            # Before daemon metadata is published, the launcher owns the lock.
+-            return True
++            try:
++                if pid_path.exists():
++                    return incomplete_metadata_is_live()
++            except OSError:
++                return incomplete_metadata_is_live()
++
++    matches = launcher_identity_matches()
++    if matches is not None:
++        return matches
+     return age <= max(1.0, stale_seconds) and pid_alive(pid)
+ 
+ 

@@ -1,0 +1,53 @@
+diff --git a/src/local_ai_hub/client.py b/src/local_ai_hub/client.py
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -824,7 +824,9 @@ class HubClient:
+         if cancel_event is not None:
+             key += f"|cancel-event|{id(cancel_event)}"
+         try:
+-            return self._singleflight(key, timeout, execute, cancel_event=cancel_event)
++            return self._singleflight(
++                key, timeout, execute, request_id=request_id, cancel_event=cancel_event
++            )
+         except _SingleflightCancelled:
+             return self._cancelled_response(request_id, request_not_sent=False)
+         except TimeoutError as exc:
+diff --git a/tests/test_client_transport.py b/tests/test_client_transport.py
+--- a/tests/test_client_transport.py
++++ b/tests/test_client_transport.py
+@@ -164,5 +164,35 @@ def test_get_reuses_request_id_after_autostart_retry(tmp_path, monkeypatch):
+     assert len(sent_ids) == 2 and sent_ids[0] == sent_ids[1]
+     assert result["request_id"] == sent_ids[0]
+ 
+ 
++def test_coalesced_replay_safe_post_timeout_returns_owner_request_id(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    request_started = threading.Event()
++    release_request = threading.Event()
++    sent_ids = []
++
++    def pooled_open(_method, _path, _body, headers, _timeout):
++        request_id = headers["X-LocalAI-Request-ID"]
++        sent_ids.append(request_id)
++        request_started.set()
++        assert release_request.wait(1)
++        return json.dumps({"success": True, "request_id": request_id}).encode("utf-8")
++
++    monkeypatch.setattr(client, "_pooled_open", pooled_open)
++    with ThreadPoolExecutor(max_workers=1) as pool:
++        owner = pool.submit(client.post, "/api/repo/complexity", {}, timeout=1)
++        assert request_started.wait(1)
++        try:
++            waiter = client.post("/api/repo/complexity", {}, timeout=0.2)
++        finally:
++            release_request.set()
++        owner_result = owner.result(timeout=1)
++
++    assert owner_result["success"] is True
++    assert waiter["success"] is False
++    assert waiter["retry_timeout"] is True
++    assert waiter["request_id"] == sent_ids[0]
++    assert len(sent_ids) == 1
++
++
+ def test_get_passes_request_id_through_singleflight(tmp_path, monkeypatch):

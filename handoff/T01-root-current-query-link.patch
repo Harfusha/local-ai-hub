@@ -1,0 +1,10 @@
+diff --git a/tests/test_surface_inventory.py b/tests/test_surface_inventory.py
+--- a/tests/test_surface_inventory.py
++++ b/tests/test_surface_inventory.py
+@@ -1394,1 +1394,6 @@
+     assert "MCP action local_ai_task::not_a_real_action" not in links
++    task_list_selector = (
++        "tests/test_mcp_coord_operation_acceptance.py::"
++        "test_local_ai_coord_task_list_forwards_status_and_stale_filter"
++    )
++    assert task_list_selector in links["MCP action local_ai_coord::task_list"]

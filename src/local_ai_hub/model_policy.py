@@ -117,13 +117,15 @@ class ModelExecutionPolicy:
             # Callers may ask for more context, but cannot exceed the safe tier cap.
             target = max(target, min(int(requested_ctx), max_ctx))
 
-        if vram_free_mb is not None and vram_free_mb > 0:
+        if vram_free_mb is not None and vram_free_mb >= 0:
             if vram_free_mb < 2048:
                 target = min(target, 8192)
             elif vram_free_mb < 4096:
                 target = min(target, 16384)
             elif vram_free_mb < 8192:
                 target = min(target, 32768)
+            if vram_free_mb < 8192 and not self._is_small_model(model):
+                target = min(target, 8192)
 
         target = min(max_ctx, max(4096, target))
 
@@ -177,6 +179,13 @@ class ModelExecutionPolicy:
             force_think=(explicit_think if preserve_explicit_think and isinstance(explicit_think, bool) else None),
             vram_free_mb=vram_free_mb,
         )
+        if vram_free_mb is not None and vram_free_mb >= 0:
+            if vram_free_mb < 2048 or (vram_free_mb < 8192 and not self._is_small_model(model)):
+                # Release model weights after this request when desktop VRAM is
+                # tight for a large model; a long keep-alive otherwise pins them idle.
+                clean["keep_alive"] = "0s"
+            elif vram_free_mb < 4096:
+                clean["keep_alive"] = "1m"
         options["num_ctx"] = profile.num_ctx
         if self._is_small_model(model):
             if "repeat_penalty" not in options:

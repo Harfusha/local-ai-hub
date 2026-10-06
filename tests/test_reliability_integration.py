@@ -382,7 +382,9 @@ def test_singleflight_waiter_returns_retryable_in_progress_quickly():
 
 def test_recovery_journal_waiter_replays_completed_owner_response(tmp_path: Path):
     journal = RecoveryJournal(tmp_path / "state")
-    journal.begin("request-1", "tenant", "/api/search")
+    payload = {"query": "needle"}
+    identity = "agent-a"
+    journal.begin("request-1", "tenant", "/api/search", identity=identity, payload=payload)
 
     def finish() -> None:
         time.sleep(0.02)
@@ -390,7 +392,14 @@ def test_recovery_journal_waiter_replays_completed_owner_response(tmp_path: Path
 
     worker = threading.Thread(target=finish)
     worker.start()
-    result = journal.wait_for("request-1", "tenant", "/api/search", timeout_seconds=0.5)
+    result = journal.wait_for(
+        "request-1",
+        "tenant",
+        "/api/search",
+        timeout_seconds=0.5,
+        identity=identity,
+        payload_fingerprint=journal.fingerprint_payload(payload),
+    )
     worker.join(1)
 
     assert result == {"state": "done", "status_code": 200, "response": {"success": True, "value": "reused"}}
@@ -716,17 +725,27 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
         assert phrase in skill
 
 
-def test_mcp_tools_have_use_when_and_skip_when_cues():
-    source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
+def test_mcp_tools_have_use_when_and_skip_when_cues(monkeypatch):
+    from local_ai_hub import mcp_server
+
+    tool_manager = getattr(mcp_server.mcp, "_tool_manager", None)
+    assert tool_manager is not None, "FastMCP tool manager is unavailable"
+    registered_tools = getattr(tool_manager, "_tools", {})
     for tool in (
         "local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag",
         "local_ai_command", "local_ai_coord", "local_ai_artifact",
     ):
-        start = source.index(f"def {tool}(")
-        end = source.find("\n\n@mcp.tool()", start)
-        block = source[start:] if end < 0 else source[start:end]
-        assert "Use when:" in block, f"{tool}: missing 'Use when:' in docstring"
-        assert "Skip when:" in block, f"{tool}: missing 'Skip when:' in docstring"
+        registered = registered_tools.get(tool)
+        assert registered is not None, f"{tool}: missing from registered MCP tools"
+        description = registered.description or ""
+        assert "Use when:" in description, f"{tool}: missing 'Use when:' in MCP description"
+        assert "Skip when:" in description, f"{tool}: missing 'Skip when:' in MCP description"
+
+    for lean_schemas in (True, False):
+        monkeypatch.setattr(mcp_server, "LEAN_SCHEMAS", lean_schemas)
+        description = mcp_server._desc_artifact()
+        assert "Use when:" in description
+        assert "Skip when:" in description
 
 
 def test_agent_policy_has_default_delegation_triggers():

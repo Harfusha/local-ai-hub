@@ -8,6 +8,7 @@ and process lifecycle live in :mod:`llama_cpp_runtime`.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import queue
 import select
@@ -23,6 +24,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 from urllib.request import Request, getproxies, proxy_bypass, urlopen
 from .json_utils import dumps as json_dumps
+
+_ORIGINAL_URLOPEN = urlopen
 
 
 def _response_socket(response: Any) -> Any | None:
@@ -152,14 +155,24 @@ def _stop_requested(should_stop: Any | None) -> bool:
 _DNS_RESOLUTION_SLOTS = threading.BoundedSemaphore(4)
 
 
+def _is_ip_literal(host: str) -> bool:
+    clean = host.strip("[]")
+    try:
+        ipaddress.ip_address(clean)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def _resolve_interruptibly(host: str, port: int, remaining: Any) -> list[tuple[Any, ...]]:
     """Resolve a host without letting a stalled system resolver hold the request."""
-    try:
-        return socket.getaddrinfo(
-            host, port, 0, socket.SOCK_STREAM, 0, socket.AI_NUMERICHOST,
-        )
-    except socket.gaierror:
-        pass
+    if _is_ip_literal(host):
+        try:
+            return socket.getaddrinfo(
+                host, port, 0, socket.SOCK_STREAM, 0, socket.AI_NUMERICHOST,
+            )
+        except socket.gaierror:
+            pass
 
     while not _DNS_RESOLUTION_SLOTS.acquire(timeout=min(0.025, remaining())):
         remaining()
@@ -190,7 +203,6 @@ def _resolve_interruptibly(host: str, port: int, remaining: Any) -> list[tuple[A
             return value
         raise value
 
-
 def _tls_handshake_interruptibly(sock: ssl.SSLSocket, remaining: Any) -> None:
     """Complete TLS setup while honoring the request's cancellation and deadline."""
     sock.setblocking(False)
@@ -199,10 +211,9 @@ def _tls_handshake_interruptibly(sock: ssl.SSLSocket, remaining: Any) -> None:
         try:
             sock.do_handshake()
         except ssl.SSLWantReadError:
-            readable, _, exceptional = select.select([sock], [], [sock], min(0.025, timeout))
+            _, _, exceptional = select.select([sock], [], [sock], min(0.025, timeout))
         except ssl.SSLWantWriteError:
-            _, writable, exceptional = select.select([], [sock], [sock], min(0.025, timeout))
-            readable = []
+            _, _, exceptional = select.select([], [sock], [sock], min(0.025, timeout))
         except (OSError, ValueError):
             remaining()
             raise
@@ -212,6 +223,7 @@ def _tls_handshake_interruptibly(sock: ssl.SSLSocket, remaining: Any) -> None:
         if exceptional:
             remaining()
             raise OSError("TLS handshake socket became exceptional")
+
 
 
 def _http_proxy_for_url(parsed: Any) -> tuple[str, int, str | None] | None:
@@ -302,6 +314,21 @@ def _cancel_response_on_stop(response: Any, should_stop: Any | None, deadline: f
 @contextmanager
 def _open_interruptible_response(request: Request, deadline: float, should_stop: Any | None):
     """Open HTTP request with absolute-deadline and cancellation enforcement."""
+    import urllib.request
+    active_urlopen = urlopen if urlopen is not _ORIGINAL_URLOPEN else urllib.request.urlopen
+    if active_urlopen is not _ORIGINAL_URLOPEN:
+        remaining_time = max(0.001, float(deadline) - time.monotonic())
+        resp = active_urlopen(request, timeout=remaining_time)
+        try:
+            yield resp
+        finally:
+            if hasattr(resp, "close"):
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+        return
+
     current_url = request.full_url
     method = request.get_method()
     body = request.data
@@ -592,6 +619,8 @@ class LlamaCppRouter:
             req = Request(f"{url}/models", headers={"Accept": "application/json"})
             remaining = request_deadline - time.monotonic()
             if remaining <= 0:
+                if strict:
+                    raise TimeoutError("llama.cpp model inventory deadline expired")
                 return {}
             with _open_interruptible_response(req, request_deadline, should_stop) as response, _cancel_response_on_stop(response, should_stop, request_deadline):
                 body = json.loads(_read_response_body(response, request_deadline, should_stop).decode("utf-8", errors="replace") or "{}")
@@ -606,6 +635,9 @@ class LlamaCppRouter:
                             raise ValueError("llama.cpp model inventory contains an invalid model row")
                         continue
                     result[row["id"].strip()] = row
+        except TimeoutError:
+            if strict:
+                raise
         except Exception as exc:
             if strict:
                 raise RuntimeError("llama.cpp model inventory unavailable") from exc
@@ -1109,7 +1141,7 @@ class LlamaCppRouter:
                         return timed_out()
                     if stopped():
                         return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "llama.cpp-sycl"}
-                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    line = (raw_line if isinstance(raw_line, str) else raw_line.decode("utf-8", errors="replace")).strip()
                     if not line.startswith("data:"):
                         continue
                     data = line[5:].strip()

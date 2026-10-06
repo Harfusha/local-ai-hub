@@ -1,0 +1,57 @@
+{
+  "task_id": "task_2d1d72257ea5",
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\t02-quality-baseline-resume\\.local-ai-hub",
+  "code_commit": "f8024d8",
+  "acceptance": {
+    "queue_admission_p95_ms_max": 150,
+    "light_repetitions_min": 1000,
+    "paired_repetitions_min": 30,
+    "concurrency": [1, 4, 16, 32],
+    "matrix_cases": [
+      [100, 10000], [100, 100000], [10000, 10000],
+      [10000, 100000], [100000, 10000], [100000, 100000]
+    ],
+    "inference": false
+  },
+  "previous_minimal_smoke": {
+    "command": "python -B -c \"import json; from tools.benchmark_surfaces import run_benchmark; r=run_benchmark(state_dir=r'C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-checkpoint-smoke-20261003\\state', scratch_dir=r'C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-checkpoint-smoke-20261003\\scratch', file_count=1, rag_chunks=1, repetitions=1, light_repetitions=1, paired_repetitions=1, concurrency=(1,), checkpoint_path=r'C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-checkpoint-smoke-20261003\\run.checkpoint.json', checkpoint_batch_size=1); print(json.dumps({'success':r['success'],'record_path':r['record_path'],'failed_stages':r['failed_stages'],'queue_samples':len(r['stages']['hub_queue_admission']['samples_ms']),'readiness_reasons':r['metadata']['baseline_readiness_reasons']},separators=(',',':')))\"",
+    "result": "CLI JSON reported success=true, failed_stages=[], queue_samples=1; baseline_readiness_reasons included low repetitions, missing concurrency levels/matrix, and incomplete golden operations.",
+    "record_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-checkpoint-smoke-20261003\\state\\surface-benchmark-1791029803490561200.json",
+    "record_sha256": "E41DEB577EFB0580643E123467BE40E95DC6CFF5115E0702F267E834560E8A0D",
+    "checkpoint_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-checkpoint-smoke-20261003\\run.checkpoint.json",
+    "checkpoint_sha256": "A5BB7AA47B15D32FB38D22A08AD7FCB790145725303BB8EA40438E9E97C4A56A"
+  },
+  "external_suite_report": {
+    "source": "T20 message; exact receipt not supplied",
+    "reported": "82 passed, 8 failed; queue p95 above target; 2 of 6 metrics recorded",
+    "command": null,
+    "artifact_path": null,
+    "artifact_sha256": null,
+    "failure_names_or_tracebacks": null,
+    "queue_p95_value_ms": null,
+    "verified": false,
+    "attribution": "unknown; no cause inferred from green or partial runs"
+  },
+  "measurement_command_not_started": {
+    "command": "python -B tools/benchmark_queue_admission.py --state-dir <external>\\t02-queue\\state --scratch-dir <external>\\t02-queue\\scratch --checkpoint <external>\\t02-queue\\run.checkpoint.json --run-id t02-20261003-f8024d8 --light-repetitions 1000 --concurrency 1 4 16 32 --checkpoint-batch-size 25",
+    "reason": "waiting for T20 serial test slot; no benchmark/test run queued",
+    "status": "not_run"
+  },
+  "queue_only_harness": {
+    "path": "tools/benchmark_queue_admission.py",
+    "sha256": "BB75D679E88F9F3BA910B86313D0FC6F3E4675EC172476144BC61B1088D1C483",
+    "status": "staged_unverified",
+    "diff_check_command": "git diff --cached --check -- tools/benchmark_queue_admission.py",
+    "diff_check_result": "exit 0",
+    "syntax_check": "not run",
+    "execution": "not run"
+  },
+  "slot": {
+    "active_process": false,
+    "last_matrix_case": "100 files / 10000 RAG chunks",
+    "last_matrix_case_status": "not_started; command rejected before execution",
+    "lease_id": "lease_fc36c8e2e311",
+    "release_status": "unverified; T20 reported fallback release_rows=0, no proof",
+    "next_action": "wait for serial slot and exact failure receipt"
+  }
+}
