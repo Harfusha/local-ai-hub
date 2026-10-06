@@ -150,6 +150,8 @@ T03 je závislost transportních změn T04/T05/T19. T06 předchází mutujícím
 
 **Hotovo:** baseline lze zopakovat; změna skóre/latency je přiřaditelná konkrétní operaci.
 
+**Stav T02 k 2026-10-01:** Kandidátní 25běhový replay skončil v běhu 20 na queue-admission podmínce testu scratch retention; samotné scratch assertions neběžely. Běhy 21–25 nemají platný výsledek. Trace potvrzuje jeden delayed probe ponechaný `queued` do `manager.close`; osm explicitních cancel odpovědí bylo `cancelled`. Přesný důvod chybějící cancel odpovědi není uložen. T20 aplikoval metadata-only diagnostiku a single selector prošel 1/1 bez reprodukce. Causal fix není doložen; acceptance kritéria, kvalita i nezaškrtnuté položky zůstávají beze změny. Trace, diagnostika a capture protokol: `handoff/T02-run20-queue-snapshot.json`, `handoff/T02-admission-diagnostic-protocol.md`. T02 zůstává nedokončené.
+
 ### T03 — Jednotné kontrakty, feature gates a transport
 
 **Soubory:** `src/local_ai_hub/mcp_server.py`, `http_server.py`, `features.py`, `generator.py`, `client.py`; **nový** `src/local_ai_hub/operation_contracts.py`, **nový** `tests/test_operation_contracts.py`.

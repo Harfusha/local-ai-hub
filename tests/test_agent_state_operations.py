@@ -439,8 +439,10 @@ def test_bundle_requires_exact_current_application_version(tmp_path: Path):
         assert result["success"] is False
         assert "must match Local AI Hub" in result["error"]
 
-def test_app_status_includes_agent_state_summary(tmp_path: Path):
+def test_app_status_includes_agent_state_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     with app_with_agent_state(tmp_path) as app:
+        monkeypatch.setattr(app.runtime, "is_online", lambda: False)
+        monkeypatch.setattr(app.runtime, "managed_profile_status", lambda: {})
         status = app.status()
         assert status["success"] is True
         assert status["agent_state"]["enabled"] is True
