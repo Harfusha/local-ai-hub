@@ -63,41 +63,42 @@ class FrontendModelContext:
 
     @property
     def observation_sources(self) -> dict[str, dict[str, dict[str, Any]]]:
-        """Return primitive field values keyed by trusted source and stable element ID."""
-        sources: dict[str, dict[str, dict[str, Any]]] = {}
-
-        def add_element(source: str, element_id: Any, values: Any) -> None:
-            if not isinstance(element_id, str) or not element_id or not isinstance(values, dict):
-                return
-            fields = {
-                str(name): value
-                for name, value in values.items()
-                if isinstance(name, str)
-                and name
-                and isinstance(value, (str, int, float, bool))
-                and (not isinstance(value, float) or math.isfinite(value))
-            }
-            fields = {
-                name: value
-                for name, value in fields.items()
-                if not isinstance(value, str) or value.strip()
-            }
-            if fields:
-                sources.setdefault(source, {})[element_id] = fields
-
-        for element in self.dom.get("elements", []):
-            if isinstance(element, dict):
-                element_id = element.get("element_id")
-                add_element(
-                    "dom",
-                    str(element_id) if element_id is not None else "",
-                    {key: value for key, value in element.items() if key != "element_id"},
-                )
-        for source in ("accessibility", "computed_styles", "runtime"):
-            context = getattr(self, source)
-            for element_id, values in context.items():
-                add_element(source, str(element_id), values)
-        return sources
+        """Project only stable, scalar facts that can be independently checked."""
+        result: dict[str, dict[str, dict[str, Any]]] = {}
+        for source_name in ("dom", "accessibility", "computed_styles", "runtime"):
+            source = getattr(self, source_name)
+            if not isinstance(source, dict):
+                continue
+            elements = source.get("elements", source.get("nodes"))
+            indexed: dict[str, dict[str, Any]] = {}
+            entries = (
+                ((None, element) for element in elements)
+                if isinstance(elements, list)
+                else source.items()
+            )
+            for source_id, element in entries:
+                if not isinstance(element, dict):
+                    continue
+                element_id = element.get("element_id", element.get("id", source_id))
+                if isinstance(element_id, (int, float)) and not isinstance(element_id, bool):
+                    element_id = str(element_id)
+                if not isinstance(element_id, str) or not element_id:
+                    continue
+                fields: dict[str, Any] = {}
+                for key, value in element.items():
+                    if not isinstance(key, str) or not key or key == "element_id":
+                        continue
+                    if isinstance(value, str) and not value.strip():
+                        continue
+                    if isinstance(value, (str, bool, int)):
+                        fields[key] = value
+                    elif isinstance(value, float) and math.isfinite(value):
+                        fields[key] = value
+                if fields:
+                    indexed[element_id] = fields
+            if indexed:
+                result[source_name] = indexed
+        return result
 
     def prompt_payload(self) -> dict[str, Any]:
         """Return model context without duplicating image transport data."""

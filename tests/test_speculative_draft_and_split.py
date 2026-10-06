@@ -134,7 +134,8 @@ def test_speculative_draft_service(tmp_path: Path) -> None:
         {
             "task": "write calculate function",
             "file": "calc.py",
-            "root": str(tmp_path),
+            "root": "",
+            "cwd": str(tmp_path),
             "verify_tests": True,
         },
         tenant="test-tenant",
