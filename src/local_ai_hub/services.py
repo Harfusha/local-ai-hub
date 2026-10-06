@@ -43,6 +43,8 @@ from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
 from .vision_contracts import (
+    UNTRUSTED_CONTEXT_INSTRUCTION,
+    VISION_MAX_PROMPT_CHARS,
     VISION_MAX_RUNTIME_OUTPUT_CHARS,
     bound_vision_result,
     image_dimensions,
@@ -2012,11 +2014,230 @@ class LocalAIServices:
             "tokens_generated": gen_result.get("tokens", 0),
         }
 
-    def vision(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    @staticmethod
+    def _vision_cancelled_result(model_name: str = "") -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "success": False,
+            "reason": "cancelled",
+            "cancelled": True,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "cancelled",
+            "error": "Vision request was cancelled.",
+        }
+        if model_name:
+            result["model"] = model_name
+        return result
+
+    @staticmethod
+    def _vision_prompt_context(
+        prompt: str,
+        model_context: Any,
+        bundle_context: str,
+        prompt_suffix: str,
+    ) -> str | None:
+        prompt_context = prompt
+        if model_context is not None:
+            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + json_dumps(
+                model_context.prompt_payload(), ensure_ascii=False
+            )
+        elif bundle_context:
+            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + bundle_context
+        prompt_budget = max(0, VISION_MAX_PROMPT_CHARS - len(prompt_suffix))
+        if len(prompt_context) > prompt_budget:
+            return None
+        return prompt_context + prompt_suffix
+
+    @staticmethod
+    def _vision_capability_error(model: str, response: Any) -> dict[str, Any] | None:
+        if not isinstance(response, dict):
+            return {
+                "success": False,
+                "model": model,
+                "terminal": True,
+                "retryable": False,
+                "error": "Vision model capability preflight returned an invalid response.",
+            }
+        if response.get("error"):
+            capability_error = str(response.get("error", "")).lower()
+            missing_model = (
+                "model not found" in capability_error
+                or "no such model" in capability_error
+                or ("not found" in capability_error and "model" in capability_error)
+            )
+            transient = any(
+                marker in capability_error
+                for marker in (
+                    "timeout", "timed out", "connection", "network", "handoff",
+                    "temporarily", "unavailable", "try again", "http 429", "http 502", "http 503",
+                )
+            )
+            if missing_model:
+                return {
+                    "success": False,
+                    "model": model,
+                    "unsupported": True,
+                    "degraded": True,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
+                    "error_code": "vision_model_missing",
+                }
+            return {
+                "success": False,
+                "model": model,
+                "terminal": not transient,
+                "retryable": transient,
+                "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision model capability preflight failed; inspect the configured local backend and vision model.",
+                "error_code": "vision_preflight_failed",
+            }
+        capability_values: list[str] = []
+        for value in response.get("capabilities", []):
+            capability_values.append(str(value).lower())
+        details = response.get("details")
+        if isinstance(details, dict):
+            for key in ("family", "families"):
+                values = details.get(key, [])
+                if isinstance(values, list):
+                    capability_values.extend(str(value).lower() for value in values)
+                elif values:
+                    capability_values.append(str(values).lower())
+        supports_vision = any(
+            marker in value
+            for value in capability_values
+            for marker in ("vision", "image", "multimodal", "clip", "vl")
+        )
+        if not supports_vision:
+            return {
+                "success": False,
+                "model": model,
+                "unsupported": True,
+                "degraded": True,
+                "terminal": True,
+                "retryable": False,
+                "error": f"Vision model '{model}' does not advertise image or multimodal capability; choose a configured vision-capable local model.",
+                "error_code": "vision_model_unsupported",
+            }
+        return None
+
+    @staticmethod
+    def _vision_default_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "required": ["summary", "findings", "unknowns", "recommended_checks"],
+            "properties": {
+                "summary": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "id", "severity", "category", "problem", "observed",
+                            "hypothesized", "uncertainty", "confidence", "element_ids",
+                            "bbox", "evidence", "likely_cause", "fix_hint",
+                            "needs_runtime_check", "observation_facts",
+                        ],
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                            "severity": {
+                                "type": "string",
+                                "enum": ["blocker", "high", "medium", "low", "info"],
+                            },
+                            "category": {
+                                "type": "string",
+                                "enum": [
+                                    "layout", "responsive", "accessibility",
+                                    "interaction", "visual-regression", "runtime",
+                                ],
+                            },
+                            "problem": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                            "observed": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                            "hypothesized": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                            "uncertainty": {"type": "array", "items": {"type": "string"}},
+                            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                            "element_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": r"\S"}},
+                            "bbox": {
+                                "anyOf": [
+                                    {
+                                        "type": "array",
+                                        "items": {"type": "number"},
+                                        "minItems": 4,
+                                        "maxItems": 4,
+                                    },
+                                    {"type": "null"},
+                                ],
+                            },
+                            "evidence": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": r"\S"}, "minItems": 1},
+                            "likely_cause": {"type": "string"},
+                            "fix_hint": {"type": "string"},
+                            "needs_runtime_check": {"type": "boolean"},
+                            "observation_facts": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["source", "element_id", "field", "value"],
+                                    "properties": {
+                                        "source": {
+                                            "type": "string",
+                                            "enum": [
+                                                "dom", "accessibility",
+                                                "computed_styles", "runtime",
+                                            ],
+                                        },
+                                        "element_id": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                                        "field": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                                        "value": {
+                                            "anyOf": [
+                                                {"type": "string"},
+                                                {"type": "number"},
+                                                {"type": "boolean"},
+                                            ],
+                                        },
+                                    },
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "unknowns": {"type": "array", "items": {"type": "string"}},
+                "recommended_checks": {"type": "array", "items": {"type": "string"}},
+            },
+            "additionalProperties": False,
+        }
+
+    def vision(
+        self,
+        args: dict[str, Any],
+        tenant: str,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         """Multimodal image understanding via local vision model."""
-        feature_error = vision_feature_error(self.config)
-        if feature_error:
-            return feature_error
+        features = self.config.get("features", {})
+        if isinstance(features, dict) and not bool(features.get("vision", True)):
+            return {
+                "success": False,
+                "unsupported": True,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "vision_disabled",
+                "error": "Vision capability is disabled. Enable features.vision explicitly.",
+            }
+        def is_cancelled() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
+
+        if is_cancelled():
+            return self._vision_cancelled_result()
+        if not isinstance(args, dict):
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "invalid_request",
+                "error": "Vision request must be an object.",
+            }
         image_path = str(args.get("image", args.get("image_path", "")))
         prompt = str(args.get("prompt", args.get("task", "Describe this image in detail.")))
         model, model_error = select_vision_model(args, self.config)
@@ -2038,6 +2259,7 @@ class LocalAIServices:
         bundle_context = prepared_inputs.bundle_context
         frontend_bundle = prepared_inputs.frontend_bundle
         model_context = prepared_inputs.model_context
+        image_size = prepared_inputs.image_size
 
         request_plan = build_vision_request(
             args=args,
@@ -2048,6 +2270,8 @@ class LocalAIServices:
             model_context=model_context,
             model_policy=self.model_policy,
             max_output_tokens=self._VISION_MAX_OUTPUT_TOKENS,
+            default_schema=(self._vision_default_schema() if bool(self.config.get("ollama", {}).get("enabled", False)) else None),
+            image_size=image_size,
         )
         if isinstance(request_plan, dict):
             return request_plan
@@ -2056,15 +2280,21 @@ class LocalAIServices:
         schema = request_plan.schema
         timeout = vision_request_timeout(self.config)
         try:
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
             capability_response = self.runtime.request(
                 "/api/show",
                 {"name": model},
                 timeout=min(timeout, 1.0),
             )
             capability_error = vision_capability_error(capability_response, model)
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
             if capability_error:
                 return capability_error
             res = self.runtime.request("/api/generate", payload, timeout=timeout)
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
             generation_error = vision_generation_error(res, model)
             if generation_error:
                 return generation_error
@@ -2088,20 +2318,16 @@ class LocalAIServices:
                 raw_artifact_id = str(self.artifacts.put(raw_output, tenant, "vision-output"))
             except Exception:
                 pass
-            valid_element_ids = None
-            if model_context is not None:
-                dom_elements = model_context.dom.get("elements", [])
-                valid_element_ids = {
-                    element_id
-                    for element in dom_elements
-                    if isinstance(element, dict)
-                    and isinstance((element_id := element.get("element_id")), str)
-                    and element_id
-                } if isinstance(dom_elements, list) else set()
-            try:
-                image_size = image_dimensions(base64.b64decode(images[0], validate=True))
-            except (ValueError, TypeError):
-                image_size = None
+            dom_context = model_context.dom if model_context is not None else {}
+            dom_elements = dom_context.get("elements", []) if isinstance(dom_context, dict) else []
+            valid_element_ids = {
+                str(element["element_id"])
+                for element in dom_elements
+                if isinstance(element, dict)
+                and isinstance(element.get("element_id"), (str, int, float))
+                and not isinstance(element.get("element_id"), bool)
+                and str(element["element_id"])
+            } if isinstance(dom_elements, list) else set()
             parsed = parse_vision_result(
                 raw_output,
                 strict_output_shape=bool(
@@ -2110,14 +2336,16 @@ class LocalAIServices:
                 ),
                 require_observation_fields=model_context is not None,
                 valid_element_ids=valid_element_ids,
-                observation_sources=(model_context.observation_sources if model_context is not None else None),
+                observation_sources=(
+                    model_context.observation_sources if model_context is not None else None
+                ),
                 image_size=image_size,
             )
             if parsed.terminal:
                 return {
                     "success": False,
-                    "model": model,
                     "degraded": True,
+                    "model": model,
                     "terminal": True,
                     "retryable": False,
                     "error": parsed.error or {"code": "malformed_vision_output", "message": "Vision output is invalid."},
@@ -2172,6 +2400,8 @@ class LocalAIServices:
                 result["coder_context"] = coder_context
             return result
         except Exception as exc:
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
             detail = str(exc).lower()
             transient = isinstance(exc, (TimeoutError, ConnectionError, OSError)) or any(
                 marker in detail for marker in ("timeout", "timed out", "connection", "network", "handoff", "temporarily", "unavailable")
@@ -2390,6 +2620,7 @@ class LocalAIServices:
                 "reason": "timeout",
                 "error": "Whisper CLI timed out before transcription completed.",
             }
+
         except Exception:
             return {
                 "success": False,
@@ -3321,6 +3552,7 @@ class LocalAIServices:
 
     def _repository_test_impact_service(self):
         from .repository_test_impact import RepositoryTestImpactService
+
         return RepositoryTestImpactService(
             self.deterministic,
             self.deterministic_operation,

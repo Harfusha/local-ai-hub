@@ -9,6 +9,7 @@ import sys
 import threading
 from pathlib import Path, PureWindowsPath
 import signal
+import select
 import shutil
 import subprocess
 import tempfile
@@ -68,6 +69,33 @@ class _FILETIME(ctypes.Structure):
     _fields_ = [("dwLowDateTime", ctypes.c_uint32), ("dwHighDateTime", ctypes.c_uint32)]
 
 
+class _DARWIN_BSDINFO(ctypes.Structure):
+    _fields_ = [
+        ("pbi_flags", ctypes.c_uint32),
+        ("pbi_status", ctypes.c_uint32),
+        ("pbi_xstatus", ctypes.c_uint32),
+        ("pbi_pid", ctypes.c_uint32),
+        ("pbi_ppid", ctypes.c_uint32),
+        ("pbi_uid", ctypes.c_uint32),
+        ("pbi_gid", ctypes.c_uint32),
+        ("pbi_ruid", ctypes.c_uint32),
+        ("pbi_rgid", ctypes.c_uint32),
+        ("pbi_svuid", ctypes.c_uint32),
+        ("pbi_svgid", ctypes.c_uint32),
+        ("rfu_1", ctypes.c_uint32),
+        ("pbi_comm", ctypes.c_char * 16),
+        ("pbi_name", ctypes.c_char * 32),
+        ("pbi_nfiles", ctypes.c_uint32),
+        ("pbi_pgid", ctypes.c_uint32),
+        ("pbi_pjobc", ctypes.c_uint32),
+        ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32),
+        ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64),
+        ("pbi_start_tvusec", ctypes.c_uint64),
+    ]
+
+
 def _linux_process_starttime(pid: int) -> int:
     stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
     # comm is parenthesized but may itself contain spaces or closing parens.
@@ -80,12 +108,9 @@ def _linux_process_starttime(pid: int) -> int:
     return int(fields[19])  # field 22: starttime, in clock ticks after boot
 
 
-def _windows_process_identity(pid: int) -> dict[str, Any] | None:
+def _windows_process_identity_from_handle(pid: int, handle: Any, kernel32: Any) -> dict[str, Any] | None:
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.QueryFullProcessImageNameW.argtypes = [
         wintypes.HANDLE,
         wintypes.DWORD,
@@ -101,41 +126,89 @@ def _windows_process_identity(pid: int) -> dict[str, Any] | None:
         ctypes.POINTER(_FILETIME),
     ]
     kernel32.GetProcessTimes.restype = wintypes.BOOL
+    creation = _FILETIME()
+    exit_time = _FILETIME()
+    kernel = _FILETIME()
+    user = _FILETIME()
+    if not kernel32.GetProcessTimes(
+        handle,
+        ctypes.byref(creation),
+        ctypes.byref(exit_time),
+        ctypes.byref(kernel),
+        ctypes.byref(user),
+    ):
+        return None
+    buffer = ctypes.create_unicode_buffer(32768)
+    size = wintypes.DWORD(len(buffer))
+    if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+        return None
+    executable = ntpath.normcase(ntpath.normpath(buffer.value))
+    if not executable:
+        return None
+    creation_identity = (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
+    return {
+        "pid": pid,
+        "executable": executable,
+        "creation_identity": creation_identity,
+        "creation_identity_type": "windows_creation_filetime_100ns",
+    }
+
+
+def _windows_process_identity(pid: int) -> dict[str, Any] | None:
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
-
     handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
     if not handle:
         return None
     try:
-        creation = _FILETIME()
-        exit_time = _FILETIME()
-        kernel = _FILETIME()
-        user = _FILETIME()
-        if not kernel32.GetProcessTimes(
-            handle,
-            ctypes.byref(creation),
-            ctypes.byref(exit_time),
-            ctypes.byref(kernel),
-            ctypes.byref(user),
-        ):
-            return None
-        buffer = ctypes.create_unicode_buffer(32768)
-        size = wintypes.DWORD(len(buffer))
-        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
-            return None
-        executable = ntpath.normcase(ntpath.normpath(buffer.value))
-        if not executable:
-            return None
-        creation_identity = (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
-        return {
-            "pid": pid,
-            "executable": executable,
-            "creation_identity": creation_identity,
-            "creation_identity_type": "windows_creation_filetime_100ns",
-        }
+        return _windows_process_identity_from_handle(pid, handle, kernel32)
     finally:
         kernel32.CloseHandle(handle)
+
+
+def _darwin_process_identity(pid: int) -> dict[str, Any] | None:
+    """Read Darwin start time and executable through bounded libproc calls."""
+    try:
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        proc_pidinfo = libproc.proc_pidinfo
+        proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        proc_pidinfo.restype = ctypes.c_int
+        proc_pidpath = libproc.proc_pidpath
+        proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        proc_pidpath.restype = ctypes.c_int
+
+        def snapshot() -> dict[str, Any] | None:
+            info = _DARWIN_BSDINFO()
+            size = ctypes.sizeof(info)
+            read = proc_pidinfo(pid, 3, 0, ctypes.byref(info), size)  # PROC_PIDTBSDINFO
+            if read != size or int(info.pbi_pid) != pid:
+                return None
+            path_buffer = ctypes.create_string_buffer(4096)  # PROC_PIDPATHINFO_MAXSIZE
+            path_length = proc_pidpath(pid, path_buffer, len(path_buffer))
+            if path_length <= 0 or path_length >= len(path_buffer):
+                return None
+            executable = os.fsdecode(path_buffer.value)
+            command = bytes(info.pbi_comm).split(b"\0", 1)[0].decode("utf-8", "replace")
+            if not executable.startswith("/") or not command:
+                return None
+            return {
+                "pid": pid,
+                "executable": posixpath.normpath(executable),
+                "command": command,
+                "creation_identity": int(info.pbi_start_tvsec) * 1_000_000 + int(info.pbi_start_tvusec),
+                "creation_identity_type": "darwin_proc_bsdinfo_start_time_usec",
+            }
+
+        before = snapshot()
+        after = snapshot()
+        return before if before is not None and before == after else None
+    except Exception:
+        return None
 
 
 def process_identity(pid: int) -> dict[str, Any] | None:
@@ -145,6 +218,8 @@ def process_identity(pid: int) -> dict[str, Any] | None:
     try:
         if os.name == "nt":
             return _windows_process_identity(pid)
+        if sys.platform == "darwin":
+            return _darwin_process_identity(pid)
         if sys.platform != "linux":
             return None
 
@@ -161,6 +236,245 @@ def process_identity(pid: int) -> dict[str, Any] | None:
         }
     except (OSError, ValueError, TypeError, OverflowError, AttributeError):
         return None
+
+
+def process_owner_record(pid: int, state_dir: str | Path, role: str) -> dict[str, Any] | None:
+    """Bind process identity to one Local AI Hub state directory and role."""
+    identity = process_identity(pid)
+    if not isinstance(identity, dict):
+        return None
+    try:
+        resolved_state = str(Path(state_dir).expanduser().resolve())
+        owner_role = str(role).strip().lower()
+        executable = str(identity.get("executable", ""))
+        command = identity.get("command")
+        creation_identity = identity.get("creation_identity")
+        identity_type = str(identity.get("creation_identity_type", ""))
+        if (
+            int(identity.get("pid", 0)) != int(pid)
+            or not executable
+            or creation_identity is None
+            or not identity_type
+            or not owner_role
+            or (command is not None and not str(command))
+        ):
+            return None
+        record = {
+            "pid": int(pid),
+            "executable": executable,
+            "creation_identity": creation_identity,
+            "creation_identity_type": identity_type,
+            "state_dir": resolved_state,
+            "role": owner_role,
+        }
+        if command is not None:
+            record["command"] = str(command)
+        return record
+    except (OSError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def process_owner_state(
+    owner: Any, state_dir: str | Path, role: str
+) -> str:
+    """Return owned, stale, or unknown; only owned identity may be terminated."""
+    if not isinstance(owner, dict):
+        return "unknown"
+    try:
+        pid = int(owner.get("pid", 0))
+        expected_state = os.path.normcase(
+            os.path.normpath(str(Path(state_dir).expanduser().resolve()))
+        )
+        recorded_state = os.path.normcase(
+            os.path.normpath(str(owner.get("state_dir", "")))
+        )
+        if (
+            pid <= 0
+            or expected_state != recorded_state
+            or str(owner.get("role", "")).strip().lower() != str(role).strip().lower()
+        ):
+            return "unknown"
+        current = process_identity(pid)
+        if current is None:
+            return "stale" if not pid_alive(pid) else "unknown"
+        if int(current.get("pid", 0)) != pid:
+            return "unknown"
+        if str(current.get("creation_identity_type", "")) != str(
+            owner.get("creation_identity_type", "")
+        ):
+            return "unknown"
+        if str(current.get("creation_identity")) != str(owner.get("creation_identity")):
+            return "stale"
+        actual_executable = os.path.normcase(
+            os.path.normpath(str(current.get("executable", "")))
+        )
+        recorded_executable = os.path.normcase(
+            os.path.normpath(str(owner.get("executable", "")))
+        )
+        if not actual_executable or actual_executable != recorded_executable:
+            return "unknown"
+        if "command" in owner and str(current.get("command", "")) != str(owner["command"]):
+            return "unknown"
+        return "owned"
+    except (OSError, TypeError, ValueError, OverflowError):
+        return "unknown"
+
+
+def open_pidfd(pid: int) -> int | None:
+    """Open Linux process handle; return None when kernel support is unavailable."""
+    if sys.platform != "linux" or not callable(getattr(os, "pidfd_open", None)):
+        return None
+    try:
+        return os.pidfd_open(int(pid), 0)
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def close_pidfd(pidfd: int | None) -> None:
+    if pidfd is None:
+        return
+    try:
+        os.close(pidfd)
+    except OSError:
+        pass
+
+
+def _owner_identity_matches(owner: dict[str, Any], identity: dict[str, Any]) -> bool:
+    try:
+        actual_path = str(identity.get("executable", ""))
+        recorded_path = str(owner.get("executable", ""))
+        path_module = ntpath if os.name == "nt" else posixpath
+        if (
+            int(identity.get("pid", 0)) != int(owner.get("pid", 0))
+            or str(identity.get("creation_identity_type", "")) != str(owner.get("creation_identity_type", ""))
+            or str(identity.get("creation_identity")) != str(owner.get("creation_identity"))
+            or path_module.normcase(path_module.normpath(actual_path))
+            != path_module.normcase(path_module.normpath(recorded_path))
+        ):
+            return False
+        return "command" not in owner or str(identity.get("command", "")) == str(owner["command"])
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _wait_pidfd(pidfd: int, timeout: float) -> bool:
+    try:
+        poller = select.poll()
+        poller.register(pidfd, select.POLLIN)
+        return bool(poller.poll(max(0, int(float(timeout) * 1000))))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def terminate_process_handle(
+    process: subprocess.Popen[Any], pidfd: int | None, *, grace_seconds: float = 5.0
+) -> bool:
+    """Terminate a child only through its retained platform process handle."""
+    if process.poll() is not None:
+        return True
+    if os.name == "nt":
+        try:
+            process.terminate()  # Popen uses its retained Windows process HANDLE.
+            process.wait(timeout=max(0.1, grace_seconds))
+            return True
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()  # Same retained HANDLE; never resolves PID again.
+                process.wait(timeout=1.0)
+                return True
+            except (OSError, subprocess.TimeoutExpired):
+                return False
+        except OSError:
+            return process.poll() is not None
+    if sys.platform == "linux" and pidfd is not None and callable(
+        getattr(signal, "pidfd_send_signal", None)
+    ):
+        try:
+            signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        try:
+            process.wait(timeout=max(0.1, grace_seconds))
+            return True
+        except subprocess.TimeoutExpired:
+            try:
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                process.wait(timeout=1.0)
+                return True
+            except (OSError, subprocess.TimeoutExpired):
+                return process.poll() is not None
+    # Darwin has no public pidfd-equivalent signal handle; numeric PID kill is unsafe.
+    return False
+
+
+def terminate_owned_process(
+    owner: Any,
+    state_dir: str | Path,
+    role: str,
+    *,
+    grace_seconds: float = 5.0,
+) -> bool:
+    """Terminate verified external owner using a retained OS handle, never a PID signal."""
+    if not isinstance(owner, dict):
+        return False
+    state = process_owner_state(owner, state_dir, role)
+    if state == "stale":
+        return True
+    if state != "owned":
+        return False
+    pid = int(owner["pid"])
+
+    if os.name == "nt":
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateProcess.restype = wintypes.BOOL
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        rights = 0x0001 | 0x1000 | 0x00100000  # terminate, query limited, synchronize
+        handle = kernel32.OpenProcess(rights, False, pid)
+        if not handle:
+            return False
+        try:
+            identity = _windows_process_identity_from_handle(pid, handle, kernel32)
+            if not identity or not _owner_identity_matches(owner, identity):
+                return False
+            if not kernel32.TerminateProcess(handle, 1):
+                return False
+            wait_ms = max(100, min(30000, int(grace_seconds * 1000)))
+            return kernel32.WaitForSingleObject(handle, wait_ms) == 0
+        finally:
+            kernel32.CloseHandle(handle)
+
+    if sys.platform != "linux" or not callable(getattr(signal, "pidfd_send_signal", None)):
+        return False
+    pidfd = open_pidfd(pid)
+    if pidfd is None:
+        return False
+    try:
+        # Check identity again after opening pidfd. Signals then target this handle,
+        # so PID reuse after the check cannot redirect termination.
+        current = process_identity(pid)
+        if not current or not _owner_identity_matches(owner, current):
+            return False
+        signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+        if _wait_pidfd(pidfd, grace_seconds):
+            return True
+        signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+        return _wait_pidfd(pidfd, 1.0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    finally:
+        close_pidfd(pidfd)
 
 
 def _normalise_priority(priority: str | None) -> str | None:

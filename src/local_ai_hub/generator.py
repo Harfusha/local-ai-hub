@@ -1001,9 +1001,11 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "x-operation-contract": operation_metadata("local_ai_artifact"),
         }
 
-    for name, schema in schemas.items():
-        schema["parameters"] = operation_parameters_schema(name, fs)
-        schema["x-operation-contract"] = operation_metadata(name)
+    for tool_name, schema in schemas.items():
+        if operation_contract(tool_name) is not None:
+            # Tool properties, selectors, requirements, and shared response fields live in one registry.
+            schema["parameters"] = operation_parameters_schema(tool_name, fs)
+            schema["x-operation-contract"] = operation_metadata(tool_name)
 
     _apply_response_budget_schema(schemas, cfg)
     return schemas
