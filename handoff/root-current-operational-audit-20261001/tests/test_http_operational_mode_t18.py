@@ -1,0 +1,622 @@
+from __future__ import annotations
+
+from contextlib import contextmanager
+from pathlib import Path
+import threading
+from types import SimpleNamespace
+
+import pytest
+
+from local_ai_hub import http_server
+
+
+def _handler(path: str, peer: str = "127.0.0.1") -> http_server.Handler:
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = path
+    handler.client_address = (peer, 12345)
+    handler.headers = {"Content-Type": "application/json"}
+    handler._begin_trace = lambda _path: None
+    handler._validate_host_and_origin = lambda: True
+    handler._require_authorized = lambda: True
+    handler._read_json = lambda: {"mode": "gaming"}
+    handler._validate_payload = lambda _path, _payload: None
+    handler.responses = []
+    handler._send = lambda status, data: handler.responses.append((status, data))
+    return handler
+
+
+def _install_mode_api(monkeypatch, mode: str):
+    snapshot = SimpleNamespace(mode=mode, revision=21, degraded=False)
+    calls = []
+
+    def gate(value, action, *, requires_heavy_work=True):
+        calls.append((value.mode, action, requires_heavy_work))
+        if not requires_heavy_work or (value.mode == "gaming" and action == "speculative_lint"):
+            return None
+        return {
+            "success": False,
+            "error": f"blocked in {value.mode}",
+            "error_code": "operational_mode_blocked",
+            "operational_mode": value.mode,
+            "action": action,
+            "retryable": True,
+            "terminal": False,
+            "retry_after_seconds": 5,
+        }
+
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+        operational_mode_gate_error=gate,
+    ))
+    return snapshot, calls
+
+
+def test_mode_get_is_loopback_only_auth_exception_and_returns_snapshot(monkeypatch) -> None:
+    snapshot = SimpleNamespace(mode="active", revision=4, degraded=False)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+    ))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"security": {"api_token": ""}},
+        async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
+    ))
+
+    local = _handler("/api/mode")
+    local._require_authorized = lambda: pytest.fail("loopback mode snapshot is read-only and needs no auth")
+    local.do_GET()
+    assert local.responses == [(200, {"success": True, "mode": "active", "revision": 4, "degraded": False})]
+
+    remote = _handler("/api/mode", "203.0.113.7")
+    del remote._require_authorized
+    remote.do_GET()
+    assert remote.responses == [(401, {"success": False, "error": "unauthorized"})]
+
+
+def test_mode_get_without_api_token_does_not_open_admin_post(monkeypatch) -> None:
+    snapshot = SimpleNamespace(mode="active", revision=4, degraded=False)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+    ))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"security": {"api_token": "configured-secret"}},
+        async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
+    ))
+
+    local_get = _handler("/api/mode")
+    local_get.headers = {"Host": "127.0.0.1"}
+    local_get._validate_host_and_origin = lambda: True
+    del local_get._require_authorized
+    assert local_get._authorized() is False
+    local_get.do_GET()
+    assert local_get.responses == [(200, {"success": True, "mode": "active", "revision": 4, "degraded": False})]
+
+    admin_post = _handler("/api/admin/mode")
+    admin_post.headers = {"Host": "127.0.0.1", "Content-Type": "application/json"}
+    admin_post._validate_host_and_origin = lambda: True
+    del admin_post._require_authorized
+    assert admin_post._authorized() is False
+    admin_post.do_POST()
+    assert admin_post.responses == [(401, {"success": False, "error": "unauthorized"})]
+
+
+def test_dashboard_shell_stays_online_in_maintenance_without_token(monkeypatch) -> None:
+    app = SimpleNamespace(config={"monitoring": {"dashboard_enabled": True}, "features": {"dashboard": True}})
+    monkeypatch.setattr(http_server, "APP", app)
+    handler = _handler("/dashboard")
+    handler._require_authorized = lambda: pytest.fail("dashboard shell must not require API token")
+    handler._send_html = lambda status, html: handler.responses.append((status, html))
+
+    handler.do_GET()
+
+    assert handler.responses[0][0] == 200
+    assert "activityModeBadge" in handler.responses[0][1]
+
+
+def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch) -> None:
+    class AgentTasks:
+        state_store = SimpleNamespace(enabled=True)
+
+        def list_tasks(self, **_kwargs):
+            return []
+
+    _install_mode_api(monkeypatch, "gaming")
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")), agent_tasks=AgentTasks(),
+    ))
+    handler = _handler("/api/agent-state/tasks")
+
+    handler.do_GET()
+
+    assert handler.responses == [(200, {"success": True, "tasks": []})]
+
+
+def test_gaming_mode_keeps_agent_event_export_available(monkeypatch) -> None:
+    _install_mode_api(monkeypatch, "gaming")
+    state_store = SimpleNamespace(export_delta=lambda stream, after, limit: {
+        "success": True, "events": [], "stream_id": stream, "after_seq": after, "limit": limit,
+    })
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
+        debug_traces=None,
+        recovery=SimpleNamespace(lookup=lambda *_args: None),
+        agent_state_store=state_store,
+    ))
+    handler = _handler("/api/agent-state/events/delta")
+    handler._read_json = lambda: {"action": "export", "stream_id": "agent-1", "after_seq": 0, "limit": 50}
+    handler._tenant = lambda: "tenant-test"
+    handler._async_delivery = lambda *_args: None
+
+    handler.do_POST()
+
+    assert handler.responses == [(200, {
+        "success": True, "events": [], "stream_id": "agent-1", "after_seq": 0, "limit": 50,
+    })]
+
+
+def test_gaming_mode_allows_memory_and_artifact_reads(monkeypatch) -> None:
+    _install_mode_api(monkeypatch, "gaming")
+    app = SimpleNamespace(
+        async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
+        debug_traces=None,
+        recovery=SimpleNamespace(lookup=lambda *_args: None),
+        memory=SimpleNamespace(get=lambda _root, key: {"success": True, "key": key}),
+        artifacts=SimpleNamespace(get=lambda artifact_id, *_args, **_kwargs: {"success": True, "artifact_id": artifact_id}),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+
+    for path, payload in (
+        ("/api/memory/get", {"root": ".", "key": "note-1"}),
+        ("/api/artifact/get", {"artifact_id": "artifact-1"}),
+    ):
+        handler = _handler(path)
+        handler._read_json = lambda body=payload: body
+        handler._tenant = lambda: "tenant-test"
+        handler._async_delivery = lambda *_args: None
+        handler.do_POST()
+        assert handler.responses[0][0] == 200
+
+
+def test_maintenance_mode_blocks_same_agent_read_but_keeps_operator_reads(monkeypatch) -> None:
+    _install_mode_api(monkeypatch, "maintenance")
+    class AgentTasks:
+        state_store = SimpleNamespace(enabled=True)
+
+        def list_tasks(self, **_kwargs):
+            return []
+
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")), agent_tasks=AgentTasks(),
+    ))
+    tasks = _handler("/api/agent-state/tasks")
+    tasks.do_GET()
+    assert tasks.responses[0][0] == 503
+    assert tasks.responses[0][1]["retryable"] is True
+    assert tasks.responses[0][1]["terminal"] is False
+
+    mode = _handler("/api/mode")
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: SimpleNamespace(mode="maintenance", revision=21, degraded=False),
+    ))
+    mode.do_GET()
+    assert mode.responses[0][0] == 200
+
+
+@pytest.mark.parametrize("mode", ["gaming", "maintenance"])
+def test_context_pack_is_gated_in_both_paused_modes(monkeypatch, mode: str) -> None:
+    _snapshot, calls = _install_mode_api(monkeypatch, mode)
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
+        config={},
+        debug_traces=None,
+        recovery=SimpleNamespace(lookup=lambda *_args: None),
+    ))
+    handler = _handler("/api/context/pack")
+    handler._read_json = lambda: {"root": "C:/work", "query": "lookup"}
+    handler._tenant = lambda: "tenant-test"
+    handler._async_delivery = lambda *_args: None
+
+    handler.do_POST()
+
+    assert calls == [(mode, "context_pack", True)]
+    assert handler.responses[0][0] == 503
+    assert handler.responses[0][1]["retryable"] is True
+    assert handler.responses[0][1]["terminal"] is False
+
+
+@pytest.mark.parametrize(("path", "payload"), [
+    ("/api/async-jobs", {"job_action": "status", "job_id": "job-1"}),
+    ("/api/async-jobs", {"job_action": "result", "job_id": "job-1"}),
+    ("/api/async-jobs", {"job_action": "cancel", "job_id": "job-1"}),
+    ("/api/work-orders", {"action": "status", "id": "work-1"}),
+    ("/api/work-orders", {"action": "get", "id": "work-1"}),
+    ("/api/work-orders", {"action": "cancel", "id": "work-1"}),
+])
+def test_maintenance_policy_allows_safe_existing_job_actions(path: str, payload: dict[str, str]) -> None:
+    assert http_server._http_mode_policy("POST", path, payload) == "existing_job"
+
+
+def test_gaming_policy_rejects_agent_state_mutation_and_unknown_method() -> None:
+    assert http_server._http_mode_policy("POST", "/api/agent-state/events/delta", {"action": "import"}) == "blocked"
+    assert http_server._http_mode_policy("DELETE", "/api/agent-state/tasks") == "blocked"
+
+
+def test_gaming_mode_blocks_heavy_preprocess_get_with_retryable_envelope(monkeypatch) -> None:
+    snapshot = SimpleNamespace(mode="gaming", revision=13, degraded=False)
+    calls = []
+    error = {
+        "success": False, "error": "blocked", "error_code": "operational_mode_blocked",
+        "operational_mode": "gaming", "action": "preprocess", "retryable": True,
+        "terminal": False, "retry_after_seconds": 5,
+    }
+
+    def gate(value, action, *, requires_heavy_work=True):
+        calls.append((value.mode, action, requires_heavy_work))
+        return error
+
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+        operational_mode_gate_error=gate,
+    ))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3"))))
+    handler = _handler("/api/preprocess")
+
+    handler.do_GET()
+
+    assert calls == [("gaming", "preprocess", True)]
+    assert handler.responses == [(503, error)]
+
+
+@pytest.mark.parametrize("mode", ["gaming", "maintenance"])
+@pytest.mark.parametrize(("path", "payload", "expected_action"), [
+    ("/api/delegate", {"prompt": "bounded test"}, "delegate"),
+    ("/api/agent-state/events/delta", {"action": "import", "events": []}, "agent_state_events_delta"),
+])
+def test_heavy_or_mutating_http_route_returns_retryable_mode_envelope(
+    monkeypatch, mode: str, path: str, payload: dict, expected_action: str,
+) -> None:
+    dispatched = []
+    gate_calls = []
+    state_path = Path("state/jobs.sqlite3")
+    snapshot = SimpleNamespace(mode=mode, revision=12, degraded=False)
+    gate_error = {
+        "success": False,
+        "error": f"operation blocked by operational mode ({mode})",
+        "error_code": "operational_mode_blocked",
+        "operational_mode": mode,
+        "action": expected_action,
+        "retryable": True,
+        "terminal": False,
+        "retry_after_seconds": 5,
+    }
+
+    def check_mode(value, action, *, requires_heavy_work=True):
+        gate_calls.append((value.mode, action, requires_heavy_work))
+        assert requires_heavy_work is True
+        return gate_error
+
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+        operational_mode_gate_error=check_mode,
+    ))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        async_jobs=SimpleNamespace(path=state_path),
+        config={},
+        debug_traces=None,
+        recovery=SimpleNamespace(lookup=lambda *_args: None),
+        services=SimpleNamespace(delegate=lambda *_args: dispatched.append("delegate")),
+        agent_state_store=SimpleNamespace(import_delta=lambda _events: dispatched.append("import_delta")),
+    ))
+    handler = _handler(path)
+    handler._read_json = lambda: payload
+    handler._tenant = lambda: "tenant-test"
+    handler._async_delivery = lambda *_args: None
+
+    handler.do_POST()
+
+    assert gate_calls == [(mode, expected_action, True)]
+    assert dispatched == []
+    assert handler.responses == [(503, gate_error)]
+
+
+def test_mode_get_returns_current_unload_status(monkeypatch) -> None:
+    snapshot = SimpleNamespace(mode="gaming", revision=7, degraded=False)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+    ))
+    monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", {
+        7: {"success": False, "state": "partial", "reason": "unload_incomplete", "unloaded": ["model-a"], "remaining": ["model-b"]},
+    })
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3"))))
+
+    handler = _handler("/api/mode")
+    handler.do_GET()
+
+    assert handler.responses[0][1]["runtime_unload"]["state"] == "partial"
+
+
+def test_mode_get_returns_completed_background_unload(monkeypatch) -> None:
+    complete_status_stored = threading.Event()
+
+    class StatusMap(dict):
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            if value.get("state") == "complete":
+                complete_status_stored.set()
+
+    monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", StatusMap())
+    result = {"success": True, "state": "complete", "reason": "all_models_unloaded", "unloaded": ["model-a"], "remaining": []}
+    http_server._start_gaming_model_unload(8, object(), lambda *_args, **_kwargs: result, SimpleNamespace())
+    assert complete_status_stored.wait(1)
+
+    snapshot = SimpleNamespace(mode="gaming", revision=8, degraded=False)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+    ))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3"))))
+
+    handler = _handler("/api/mode")
+    handler.do_GET()
+
+    assert handler.responses[0][1]["runtime_unload"] == result
+
+
+def test_admin_mode_post_starts_unload_after_releasing_guard_and_returns_pending_then_partial(monkeypatch) -> None:
+    events = []
+    unload_started = threading.Event()
+    allow_unload_finish = threading.Event()
+    unload_finished = threading.Event()
+    partial_status_stored = threading.Event()
+
+    class Jobs:
+        path = Path("state/jobs.sqlite3")
+
+        @contextmanager
+        def operational_mode_change_guard(self):
+            events.append("guard_enter")
+            try:
+                yield
+            finally:
+                events.append("guard_exit")
+
+        def on_operational_mode_changed(self, snapshot):
+            events.append(("changed", snapshot.mode))
+            return {"inference_active": False}
+
+    snapshot = SimpleNamespace(mode="gaming", revision=5, degraded=False)
+
+    def set_mode(mode, state_dir):
+        assert mode == "gaming"
+        assert state_dir == Jobs.path.parent
+        events.append("persist")
+        return snapshot
+
+    def unload_models(_runtime, *, inference_active):
+        assert inference_active is False
+        assert events[-1] == "guard_exit"
+        unload_started.set()
+        allow_unload_finish.wait(2)
+        unload_finished.set()
+        return {
+            "success": False,
+            "state": "partial",
+            "reason": "unload_incomplete",
+            "unloaded": ["model-a"],
+            "remaining": ["model-b"],
+        }
+
+    class StatusMap(dict):
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            if value.get("state") == "partial":
+                partial_status_stored.set()
+
+    monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", StatusMap())
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        set_operational_mode=set_mode,
+        unload_ollama_models_for_gaming=unload_models,
+    ))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        async_jobs=Jobs(), scheduler=SimpleNamespace(foreground_busy=lambda: False), runtime=object(),
+    ))
+
+    handler = _handler("/api/admin/mode")
+    handler.do_POST()
+
+    assert unload_started.wait(1)
+    assert events == ["guard_enter", "persist", ("changed", "gaming"), "guard_exit"]
+    assert handler.responses == [(200, {
+        "success": True,
+        "mode": "gaming",
+        "revision": 5,
+        "degraded": False,
+        "runtime_unload": {
+            "success": False,
+            "state": "pending",
+            "reason": "unload_in_progress",
+            "unloaded": [],
+            "remaining": None,
+        },
+    })]
+    allow_unload_finish.set()
+    assert unload_finished.wait(1)
+    assert partial_status_stored.wait(1)
+    assert http_server._MODE_UNLOAD_STATUS[5]["state"] == "partial"
+
+
+def test_background_unload_deadline_replaces_pending_status(monkeypatch) -> None:
+    deadline_status_stored = threading.Event()
+    release_unload = threading.Event()
+    unload_finished = threading.Event()
+
+    class StatusMap(dict):
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            if value.get("reason") == "unload_deadline_exceeded":
+                deadline_status_stored.set()
+
+    def unload(_runtime, *, inference_active):
+        assert inference_active is False
+        release_unload.wait(1)
+        unload_finished.set()
+        return {"success": True, "state": "complete", "unloaded": ["model-a"], "remaining": []}
+
+    monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", StatusMap())
+    monkeypatch.setattr(http_server, "_MODE_UNLOAD_DEADLINE_SECONDS", 0.02)
+
+    initial = http_server._start_gaming_model_unload(9, object(), unload, SimpleNamespace())
+    assert initial["state"] == "pending"
+    assert deadline_status_stored.wait(1)
+    assert http_server._MODE_UNLOAD_STATUS[9] == {
+        "success": False,
+        "state": "failed",
+        "reason": "unload_deadline_exceeded",
+        "unloaded": [],
+        "remaining": None,
+    }
+    release_unload.set()
+    assert unload_finished.wait(1)
+    assert http_server._MODE_UNLOAD_STATUS[9]["state"] == "failed"
+
+
+def test_in_process_cuda_keeps_runtime_unload_incomplete(monkeypatch) -> None:
+    partial_status_stored = threading.Event()
+
+    class StatusMap(dict):
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            if value.get("reason") == "in_process_cuda_unload_unsupported":
+                partial_status_stored.set()
+
+    app = SimpleNamespace(
+        embeddings=SimpleNamespace(_model=object(), active_backend="torch", active_device="cuda"),
+        reranker=SimpleNamespace(_model=None, active_backend="torch", active_device="cpu"),
+    )
+    monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", StatusMap())
+
+    initial = http_server._start_gaming_model_unload(
+        10,
+        object(),
+        lambda _runtime, **_kwargs: {
+            "success": True,
+            "state": "complete",
+            "reason": "all_models_unloaded",
+            "unloaded": ["ollama:model-a"],
+            "remaining": [],
+        },
+        app,
+    )
+
+    assert initial["state"] == "pending"
+    assert partial_status_stored.wait(1)
+    stored = http_server._MODE_UNLOAD_STATUS[10]
+    assert stored["success"] is False
+    assert stored["state"] == "partial"
+    assert stored["unsupported_in_process_cuda"] == ["embeddings"]
+    assert "in_process_cuda:embeddings" in stored["remaining"]
+
+
+def test_activity_mode_ui_distinguishes_pending_unload() -> None:
+    html = http_server.DASHBOARD_HTML
+    assert "VRAM unload in progress." in html
+    assert "VRAM unload incomplete." in html
+
+
+def test_admin_mode_post_defers_unload_if_inference_active(monkeypatch) -> None:
+    unload_calls = []
+
+    class Jobs:
+        path = Path("state/jobs.sqlite3")
+
+        @contextmanager
+        def operational_mode_change_guard(self):
+            yield
+
+        def on_operational_mode_changed(self, _snapshot):
+            return {"inference_active": True}
+
+    snapshot = SimpleNamespace(mode="gaming", revision=6, degraded=False)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        set_operational_mode=lambda _mode, _state_dir: snapshot,
+        unload_ollama_models_for_gaming=lambda *_args, **_kwargs: unload_calls.append("called"),
+    ))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        async_jobs=Jobs(), scheduler=SimpleNamespace(foreground_busy=lambda: False), runtime=object(),
+    ))
+
+    handler = _handler("/api/admin/mode")
+    handler.do_POST()
+
+    assert unload_calls == []
+    assert handler.responses[0][1]["runtime_unload"] == {
+        "success": False,
+        "state": "deferred",
+        "reason": "inference_active",
+        "unloaded": [],
+        "remaining": None,
+    }
+
+
+def test_admin_mode_post_requires_authorization(monkeypatch) -> None:
+    mode_writes = []
+    telemetry = SimpleNamespace(record_system=lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"security": {"api_token": ""}, "server": {"state_dir": "unused"}},
+        telemetry=telemetry,
+    ))
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        set_operational_mode=lambda mode, state_dir: mode_writes.append((mode, state_dir)),
+    ))
+    handler = _handler("/api/admin/mode", peer="203.0.113.7")
+    del handler._require_authorized
+    handler.headers = {
+        "Content-Type": "application/json",
+        "Host": "localhost",
+        "Origin": "http://localhost",
+        "X-LocalAI-Agent": "administrator",
+    }
+    handler._validate_host_and_origin = lambda: True
+    handler._read_json = lambda: pytest.fail("unauthenticated remote admin request must not read body")
+
+    handler.do_POST()
+
+    assert handler.responses == [(401, {"success": False, "error": "unauthorized"})]
+    assert mode_writes == []
+
+
+def test_authorized_mutation_fails_closed_when_mode_dependency_is_unavailable(monkeypatch, tmp_path: Path) -> None:
+    import json
+    import urllib.error
+    import urllib.request
+
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"security": {"api_token": "test-secret"}},
+        async_jobs=SimpleNamespace(path=tmp_path / "jobs.sqlite3"),
+    ))
+
+    def unavailable_mode_api():
+        raise ModuleNotFoundError("mode dependency unavailable")
+
+    monkeypatch.setattr(http_server, "_operational_mode_api", unavailable_mode_api)
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/command",
+            data=b'{"action":"classify","command":"pytest -q"}',
+            headers={"X-LocalAI-Token": "test-secret", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as response:
+            urllib.request.urlopen(request, timeout=3)
+        body = response.value.read().decode("utf-8")
+        payload = json.loads(body)
+        assert response.value.code == 503
+        assert payload["error_code"] == "operational_mode_unavailable"
+        assert payload["retryable"] is True
+        assert payload["terminal"] is False
+        assert "mode dependency unavailable" not in body
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)

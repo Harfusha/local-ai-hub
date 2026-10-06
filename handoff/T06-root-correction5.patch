@@ -1,0 +1,20 @@
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -5031,7 +5031,7 @@
+             if scope_error:
+                 key = "rollback_scope_required" if scope_error == "rollback paths are required" else "rollback_scope_invalid"
+                 return {"success": False, "error": scope_error, key: True, "terminal": True, "retryable": False}
+-            if rollback_on_failure and _transaction_context:
++            if rollback_on_failure and (_transaction_context or not is_mutating):
+                 rollback_state = scope_snapshot
+             elif scope_snapshot is not None:
+                 _close_rollback_root(scope_snapshot.root_guard)
+@@ -5077,7 +5077,7 @@
+             except Exception:
+                 pass
+         try:
+-            if (is_mutating or auto_fix or rollback_on_failure) and not _transaction_context:
++            if (is_mutating or auto_fix) and not _transaction_context:
+                 result = self._run_private_transaction(
+                     command, cwd, tenant, task_id=task_id, paths=list(declared_paths or []),
+                     timeout=int(timeout or self.timeout), docker_image=docker_image,

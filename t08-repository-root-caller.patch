@@ -1,0 +1,11 @@
+diff --git a/src/local_ai_hub/commands.py b/src/local_ai_hub/commands.py
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -2942,6 +2942,7 @@
+                         exit_code=int(result.get("exit_code", 1)),
+                         state_revision=str(state.get("fingerprint", "")),
++                        repository_root=cwd,
+                         timed_out=bool(result.get("timed_out")),
+                         cancelled=bool(result.get("cancelled")),
+                         affected_paths=tuple(set(diag_paths)),
+                     ))

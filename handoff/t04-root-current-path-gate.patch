@@ -1,0 +1,25 @@
+--- a/tests/test_inprocess_transport.py
++++ b/tests/test_inprocess_transport.py
+@@ -285,7 +285,7 @@
+     assert result["retryable"] is True
+ 
+ 
+-def test_inprocess_transport_keeps_deterministic_read_allowed_in_restricted_mode(inprocess_client):
++def test_inprocess_transport_respects_http_path_gate_for_deterministic_read_in_restricted_mode(inprocess_client):
+     client, _transport, app, state_dir = inprocess_client
+     from local_ai_hub.operational_mode import set_operational_mode
+ 
+@@ -296,8 +296,11 @@
+         requires_heavy_work=False,
+     )
+ 
+-    assert result == {"success": True, "root": "fixture-root", "source": "service"}
+-    assert app.topology_calls == ["fixture-root"]
++    assert result["status_code"] == 503
++    assert result["error_code"] == "operational_mode_blocked"
++    assert result["mode"] == "gaming"
++    assert result["action"] == "repo_topology"
++    assert app.topology_calls == []
+ 
+ 
+ def test_inprocess_timeout_reports_uncertain_result_but_does_not_cancel_service(inprocess_client):

@@ -1,0 +1,199 @@
+{
+  "candidate_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t09-root-current\\.local-ai-hub",
+  "lease_assessment": {
+    "hub_coordination_lease": "not_checked per user instruction to ignore Local AI Hub",
+    "candidate_integration": "not authorized here; orchestrator owns integration",
+    "codex_app_worktree_attachment": "none for t09-root-current; current task artifact list contains t09-t08-receipt-fixture only",
+    "edit_authority": "existing T09 candidate assignment",
+    "native_subagents_active": 0
+  },
+  "schema": "t09.candidate_dirty_baseline.v1",
+  "source_preimage": {
+    "candidate_head_blob": "e5d3b2d17bb4eb525f43e1785f13e6ec9c7837d0",
+    "candidate_current_sha256": "A1EF1BBB5BCAEC37CB7AFB9B3088C7C5EB116DE5166A0C7B4E9806DAD8C6F71D",
+    "root_preimage_sha256": "FB477438FF110AB80FE6F2D486FFA5D87AAB1A855735FCD94592F8080EAF0017",
+    "path": "src/local_ai_hub/agent_verification.py"
+  },
+  "files": [
+    {
+      "path": "src/local_ai_hub/agent_events.py",
+      "raw_sha256": "1B8E63A5FF329090801CD7F19E7DF7A95E42AC0034465AC5FA06D566B279CCF4",
+      "working_git_blob": "8f7af66b350b7f57fb9d44b6497281ea240b1bce",
+      "status": ".M",
+      "bytes": 81100,
+      "head_blob": "a828a898759b0d3a2a13c6ca7306e9c4f00764b6"
+    },
+    {
+      "path": "src/local_ai_hub/agent_tasks.py",
+      "raw_sha256": "73A5BDBB25205B1F789A6E452D3B28AC24A278D781D071AC6FABE347992BDCBB",
+      "working_git_blob": "9085577ca0c4b9622ef68f084a5fd42608c8898d",
+      "status": ".M",
+      "bytes": 118369,
+      "head_blob": "fbc602e20158d5f852498f3ce77c2e6b6a4565c5"
+    },
+    {
+      "path": "src/local_ai_hub/agent_verification.py",
+      "raw_sha256": "A1EF1BBB5BCAEC37CB7AFB9B3088C7C5EB116DE5166A0C7B4E9806DAD8C6F71D",
+      "working_git_blob": "3c7b354c375b0928b7f64f2f272df27b70b5d739",
+      "status": ".M",
+      "bytes": 66913,
+      "head_blob": "e5d3b2d17bb4eb525f43e1785f13e6ec9c7837d0"
+    },
+    {
+      "path": "src/local_ai_hub/project_config.py",
+      "raw_sha256": "00E80B1342E5E70A66FA8955D95553127E913F56EC693CF527B6AC96053BDBDE",
+      "working_git_blob": "769d2bfd609be5c1cf9039e1cf5ff88cde1338c7",
+      "status": ".M",
+      "bytes": 58617,
+      "head_blob": "ff7bf849ce6948d7f54876fe4ea779dfd45b0f6c"
+    },
+    {
+      "path": "handoff/t09-receipt-e2e-root-current.md",
+      "raw_sha256": "19B3FA29A580571C5FF82C6E65AD44CD024B12300FAAF5D1A49F677A1798B0B2",
+      "working_git_blob": "db85c30a6367adfc899de15f6a7384b05d714497",
+      "status": "untracked",
+      "bytes": 1385,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-e2e-root-current.patch",
+      "raw_sha256": "9F2DC77227A2A5DBA37A5936CB779B75D8F09CFCD840C26D75164951AF85E5B1",
+      "working_git_blob": "770dc6d227577f5fcae4814598ae3a84e6ad5276",
+      "status": "untracked",
+      "bytes": 7091,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-e2e-run-20261003-r2.json",
+      "raw_sha256": "F9518F72E6799D87A28AFD77811746A02491E4FA20469705485200410A9BECDA",
+      "working_git_blob": "29aa1c715ce9bbce3fa65241607f0e4bca0d0511",
+      "status": "untracked",
+      "bytes": 2916,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-e2e-run-20261003.json",
+      "raw_sha256": "5F52D2FF5D6317C98372F168BFDA9E59AE823143D2D851F107C5E232E35A89AD",
+      "working_git_blob": "f922be841d6bea40e5a0f93da669d53f992b296a",
+      "status": "untracked",
+      "bytes": 2821,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-metadata-search-root-current-20261003-r3.md",
+      "raw_sha256": "97F9E206674E8B67AF1AA68A1B4638D570CE16912FD9B3AF12C4DA43AB3B1935",
+      "working_git_blob": "9964d162b9d1f55b8dd05f7ab259ee2da370f16e",
+      "status": "untracked",
+      "bytes": 1858,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-metadata-search-root-current-20261003-r3.patch",
+      "raw_sha256": "D3E3C9C23CEC9FA7B0A3B8A9C0D07C02434F385FF39FDCF0B8CF61F991E6BE93",
+      "working_git_blob": "7be9b8c5c7ba6e0d822e798cf08490a63b2a3a8a",
+      "status": "untracked",
+      "bytes": 10682,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-metadata-search-run-20261003-r3.json",
+      "raw_sha256": "560777CC1421640E78BBA2F31AEF346F6D4F986183F1DDCAB722D7F53814564C",
+      "working_git_blob": "bebc411a258f562ddd489d17e273a10abad83ea3",
+      "status": "untracked",
+      "bytes": 1815,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-owner-provenance-preimage-20261004.json",
+      "raw_sha256": "68C93F7E023AC45AF0BDFC9FA15DA753BB4D07CAB897E9A9802E4BE08C4B9981",
+      "working_git_blob": "79fedb51ab5ff33e782455735790da39c243b1b5",
+      "status": "untracked",
+      "bytes": 1985,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-owner-provenance-root-current-20261003-r4.md",
+      "raw_sha256": "F24658FD20A10577AF38038DE1E7B62F88DB6FF077DD237E741EC15E53038E0E",
+      "working_git_blob": "f95c3786c06894ae8685e1d11b014c11982cfbba",
+      "status": "untracked",
+      "bytes": 2169,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-owner-provenance-root-current-20261003-r4.patch",
+      "raw_sha256": "0E5FDC52A3116448CEE57DFF6E77732D4349F05318309A43D466EC91FF8BF733",
+      "working_git_blob": "a423c1434b5b5df2f4d14f1fcd184a506448841f",
+      "status": "untracked",
+      "bytes": 14724,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-owner-provenance-root-current-20261003-r5.md",
+      "raw_sha256": "C1087F33304094DB4EFABCD506ADAAA6BD8A85C03C7245FDC59E7F06E29074DB",
+      "working_git_blob": "bd4dbf874b61838afcd4abac634adbf7dbb1a343",
+      "status": "untracked",
+      "bytes": 2065,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-owner-provenance-root-current-20261003-r5.patch",
+      "raw_sha256": "F5791E6D7E7B66DCB2804ED67ED918AA7541FF76DBD10AB1567A6D001AABB5FD",
+      "working_git_blob": "2e94e9b4c575a5648ef13983f278f16cd7b20198",
+      "status": "untracked",
+      "bytes": 15740,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-owner-provenance-root-current-20261004-r6.patch",
+      "raw_sha256": "F5791E6D7E7B66DCB2804ED67ED918AA7541FF76DBD10AB1567A6D001AABB5FD",
+      "working_git_blob": "2e94e9b4c575a5648ef13983f278f16cd7b20198",
+      "status": "untracked",
+      "bytes": 15740,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-owner-provenance-run-20261003-r4.json",
+      "raw_sha256": "3A8EA8181AAE16852D8649D64BB4E24A12DAA08996280611589641BD06020D3C",
+      "working_git_blob": "7f58eb05eff457a9341ffe0f5780b18e0f06390b",
+      "status": "untracked",
+      "bytes": 1771,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-receipt-owner-provenance-run-20261003-r5.json",
+      "raw_sha256": "342A700C94C51B420AEFFC1CF1F59ED44B6117FBCAD61C0328D3E050BACCAFD0",
+      "working_git_blob": "77052440e731d258f59585eb1f1702a9146c96a1",
+      "status": "untracked",
+      "bytes": 1839,
+      "head_blob": null
+    },
+    {
+      "path": "handoff/t09-root-integration-receipt-20261004-r6.json",
+      "raw_sha256": "290F2F97D982B12CDA5A80EFE34A1AD6FD8B00C1F706C2EDEE267EF6B46405CF",
+      "working_git_blob": "3dd767d1c21ca852d74d2890495d33a1e530591b",
+      "status": "untracked",
+      "bytes": 3076,
+      "head_blob": null
+    },
+    {
+      "path": "src/local_ai_hub/verification_rules.py",
+      "raw_sha256": "2811AA0146938FAEDE80537E84D3216C0702BC43C6EAF16A73C0BFF46083896E",
+      "working_git_blob": "015fa80ef4441ae2d3f8b86f48f47e47e02fe784",
+      "status": "untracked",
+      "bytes": 13856,
+      "head_blob": null
+    },
+    {
+      "path": "tests/test_agent_receipt_completion_t09.py",
+      "raw_sha256": "907C744B657376D7FB797A97F8ECCD5493740AF11449BAA9F220C674B9D9AA48",
+      "working_git_blob": "8f5f0438233553e998cc9fa4225fb55f41537d6e",
+      "status": "untracked",
+      "bytes": 15324,
+      "head_blob": null
+    }
+  ],
+  "captured_at": "2026-10-04",
+  "branch": null,
+  "scope_note": "Captured before adding this baseline manifest; includes every pre-existing modified or untracked file. Does not include this manifest."
+}

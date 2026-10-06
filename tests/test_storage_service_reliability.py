@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub import trace_context
 from local_ai_hub.agent_learning import (
     CandidateStatus,
     ImprovementCandidate,
@@ -37,6 +38,8 @@ from local_ai_hub.commands import CommandBroker
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.process_utils import canonical_root
 
+
+from local_ai_hub import trace_context
 
 def test_service_hubctl_timeout_alignment():
     """Verify service.py run() timeout is 12s and hubctl _service timeout is 35s."""
@@ -126,13 +129,17 @@ def test_verification_store_indexes_and_retry(tmp_path: Path):
         criterion="test_pass",
         passed=True,
         evidence_id="ev_test",
+        command_id="cmd-verification-test",
     )
     vstore.record(rcpt)
 
     comp = vstore.completion("t-123")
     assert comp.task_id == "t-123"
-    assert comp.complete is True
-    assert "test_pass" in comp.satisfied_criteria
+    # The store has no task owner or artifact-backed proof in this fixture, so
+    # the persisted receipt is not sufficient to authorize task completion.
+    assert comp.complete is False
+    assert "test_pass" in comp.unsatisfied_criteria
+    assert len(comp.receipts) == 1
 
 
 def test_incident_store_compound_index_and_repeated_event(tmp_path: Path):
@@ -204,10 +211,15 @@ def test_task_store_lock_and_retry(tmp_path: Path):
     assert hasattr(tstore, "_lock")
     assert isinstance(tstore._lock, type(threading.RLock()))
 
-    task = tstore.create(
-        contract=GoalContract(goal="test goal", acceptance_criteria=("crit1",)),
-        context=ScopeContext(repository_id="repo1"),
-    )
+    tenant_token = trace_context.set_context(tenant="tenant-a")
+    try:
+        task = tstore.create(
+            contract=GoalContract(goal="test goal", acceptance_criteria=("crit1",)),
+            context=ScopeContext(repository_id="repo1"),
+            repo_root=str(tmp_path),
+        )
+    finally:
+        trace_context.reset_context(tenant_token)
 
     assert tstore.count() == 1
     assert tstore.count(TaskStatus.PLANNED) == 1
@@ -225,7 +237,7 @@ def test_task_store_lock_and_retry(tmp_path: Path):
     tstore.heartbeat(task.task_id, ttl_seconds=10.0)
 
     # Advance time to expire heartbeat
-    reaped = tstore.reap_expired_heartbeats(now=time.time() + 100.0)
+    reaped = tstore.reap_expired_heartbeats(now=time.time() + 100.0, repo_root=tmp_path, tenant="tenant-a")
     assert task.task_id in reaped
 
     after_reap = tstore.get(task.task_id)
@@ -275,9 +287,10 @@ def test_blackboard_store_retry(tmp_path: Path):
     assert "plan" in all_secs["sections"]
 
 
-def test_repair_loop_drive_letter_casing(tmp_path: Path):
+def test_repair_loop_drive_letter_casing(tmp_path: Path, monkeypatch):
     """Verify repair_loop handles path normalization without raising relative_to ValueError."""
     broker = CommandBroker(config={"server": {"state_dir": str(tmp_path / "broker_state")}, "commands": {"enabled": True}})
+    monkeypatch.setattr(broker, "_require_task_worktree", lambda *_args, **_kwargs: None)
 
     project_dir = tmp_path / "project"
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -297,6 +310,8 @@ def test_repair_loop_drive_letter_casing(tmp_path: Path):
         tenant="test",
         fix_generator=mock_generator,
         max_attempts=1,
+        task_id="task-1",
+        paths=["target.py"],
     )
     assert res["success"] is True
     assert res["repaired"] is True

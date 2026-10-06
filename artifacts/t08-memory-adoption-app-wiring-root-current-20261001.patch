@@ -1,0 +1,80 @@
+--- a/tests/test_agent_state_e2e.py
++++ b/tests/test_agent_state_e2e.py
+@@ -208,3 +208,77 @@
+     assert dec2.action == "retry"
+ 
+     app.close()
++
++
++def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: Path):
++    from local_ai_hub import trace_context
++    from local_ai_hub.agent_memory import AgentScope, MemoryKind, MemoryRecord, MemoryStatus
++
++    app = app_with_agent_state(tmp_path)
++    root = tmp_path / "repo"
++    root.mkdir()
++
++    def record_memory(key: str, idempotency_key: str) -> MemoryRecord:
++        record = MemoryRecord.create(
++            kind=MemoryKind.FACT,
++            scope=AgentScope.REPOSITORY,
++            scope_id=str(root),
++            key=key,
++            value=key,
++            status=MemoryStatus.CONFIRMED,
++            source="user",
++            provenance={"root": str(root), "tenant": "tenant-a"},
++        )
++        return app.agent_memory.record(record, actor="user", idempotency_key=idempotency_key)
++
++    first = record_memory("matching parser fact", "app-memory-first")
++    token = trace_context.set_context(tenant="tenant-a")
++    try:
++        task = app.agent_tasks.create(
++            GoalContract(goal="matching parser fact"),
++            ScopeContext(repository_id=str(root), branch="main", task_id="app-memory-task"),
++            task_id="app-memory-task",
++        )
++        initial_ids = {
++            item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]
++        }
++        assert initial_ids == {first.record_id}
++
++        app.agent_tasks.transition(
++            task.task_id,
++            TaskStatus.ACTIVE,
++            reason="start",
++            actor="test",
++            idempotency_key="app-memory-start",
++        )
++        app.agent_tasks.transition(
++            task.task_id,
++            TaskStatus.BLOCKED,
++            reason="wait",
++            actor="test",
++            idempotency_key="app-memory-block",
++        )
++        later = record_memory("matching parser follow-up", "app-memory-later")
++        resumed = app.agent_tasks.resume(
++            task.task_id, actor="test", idempotency_key="app-memory-resume"
++        )
++        resumed_ids = {
++            item["id"] for item in resumed.checkpoint.state_data["memory_context"]["items"]
++        }
++        assert resumed_ids == {first.record_id, later.record_id}
++
++        app.agent_tasks.checkpoint(
++            task.task_id,
++            TaskCheckpoint(state_data={"memory_audit": {"used_ids": sorted(resumed_ids)}}),
++            actor="test",
++            idempotency_key="app-memory-audit",
++        )
++        stored = app.agent_tasks.get(task.task_id)
++        assert stored is not None
++        assert stored.checkpoint.state_data["memory_audit"]["used_ids"] == sorted(resumed_ids)
++        assert {
++            item["id"] for item in stored.checkpoint.state_data["memory_context"]["items"]
++        } == resumed_ids
++    finally:
++        trace_context.reset_context(token)
++        app.close()

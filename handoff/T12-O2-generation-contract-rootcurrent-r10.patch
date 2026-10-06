@@ -1,0 +1,238 @@
+diff --git a/src/local_ai_hub/services.py b/src/local_ai_hub/services.py
+index 5115212..86616b6 100644
+--- a/src/local_ai_hub/services.py
++++ b/src/local_ai_hub/services.py
+@@ -850,6 +850,7 @@ class LocalAIServices:
+         cancel_event: threading.Event | None = None,
+     ) -> dict[str, Any]:
+         trace_system = system if trace_system_override is None else str(trace_system_override)
++        mode_pause_result: dict[str, Any] | None = None
+         if project_settings is not None:
+             model, project_payload = self.model_policy.apply_project_settings(
+                 model,
+@@ -928,7 +929,7 @@ class LocalAIServices:
+         requested_model = model
+ 
+         def compute_inner() -> dict[str, Any]:
+-            nonlocal semantic_score
++            nonlocal semantic_score, mode_pause_result
+             if use_cache and semantic_query:
+                 semantic, semantic_score = self.semantic_cache.get(semantic_scope, semantic_query)
+                 if isinstance(semantic, dict):
+@@ -959,6 +960,15 @@ class LocalAIServices:
+             errors: list[str] = []
+             retryable_error = False
+             timeout_error = False
++            admission_action = source.split(":", 1)[0].strip().replace("-", "_")
++            known_actions = {
++                "delegate", "reason", "review", "review_diff", "second_opinion",
++                "compress", "route", "batch", "embed", "rerank", "transcribe",
++                "vision", "benchmark", "complete_code", "scaffold", "speculative_draft",
++                "generate_tests", "solve", "eval_suite", "prompt_eval", "eval_drift",
++            }
++            if admission_action not in known_actions:
++                admission_action = "delegate"
+             for index, candidate in enumerate(candidates):
+                 breaker_key = f"model:{candidate}"
+                 if not self.breakers.allow(breaker_key):
+@@ -967,6 +977,7 @@ class LocalAIServices:
+                     continue
+ 
+                 def run(candidate_model: str = candidate) -> dict[str, Any]:
++                    nonlocal mode_pause_result
+                     def cancelled_result() -> dict[str, Any]:
+                         return {
+                             "success": False, "cancelled": True, "preempted": True,
+@@ -999,13 +1010,29 @@ class LocalAIServices:
+                         trace_payload["system"] = trace_system
+                     # A scheduler may defer this closure until after a mode change.
+                     try:
+-                        from .operational_mode import load_operational_mode
+-
+-                        mode = load_operational_mode(configured_state_dir(self.config, create=False))
+-                        if mode.degraded or mode.mode != "active":
+-                            return {"success": False, "error": "inference start blocked by operational mode", "error_code": "operational_mode_paused", "mode": mode.mode, "terminal": True, "retryable": False}
++                        from .operational_mode import (
++                            OperationalModeSnapshot,
++                            load_operational_mode,
++                            operational_mode_gate_error,
++                        )
+                     except Exception:
+-                        return {"success": False, "error": "inference start blocked because operational mode is unavailable", "error_code": "operational_mode_unavailable", "terminal": True, "retryable": False}
++                        mode_rejection = {
++                            "success": False,
++                            "mode": "maintenance",
++                            "error": "hub paused: maintenance mode active",
++                            "terminal": False,
++                            "retryable": True,
++                            "retry_after_seconds": 5,
++                        }
++                    else:
++                        try:
++                            mode = load_operational_mode(configured_state_dir(self.config, create=False))
++                        except Exception:
++                            mode = None
++                        mode_rejection = operational_mode_gate_error(mode, admission_action)
++                    if mode_rejection is not None:
++                        mode_pause_result = mode_rejection
++                        return mode_rejection
+                     def request_candidate() -> dict[str, Any]:
+                         interruptible = getattr(self.runtime, "request_interruptible", None)
+                         if cancel_event is not None and callable(interruptible):
+@@ -1027,17 +1054,22 @@ class LocalAIServices:
+                     if callable(admission):
+                         # Recheck at backend handoff; scheduler delay can stale the
+                         # earlier mode snapshot. Do not hold the mode lock over I/O.
+-                        admission_action = source.split(":", 1)[0].strip().replace("-", "_")
+-                        known_actions = {
+-                            "delegate", "reason", "review", "review_diff", "second_opinion",
+-                            "compress", "route", "batch", "embed", "rerank", "transcribe",
+-                            "vision", "benchmark", "complete_code", "scaffold", "speculative_draft",
+-                            "generate_tests", "solve", "eval_suite", "prompt_eval", "eval_drift",
+-                        }
+-                        if admission_action not in known_actions:
+-                            admission_action = "delegate"
+                         with admission(admission_action) as rejection:
+                             if rejection is not None:
++                                if rejection.get("code") == "operational_mode_blocked":
++                                    rejection_mode = OperationalModeSnapshot(
++                                        str(rejection.get("operational_mode") or "maintenance"),
++                                        int(rejection.get("operational_mode_revision", 0) or 0),
++                                        None,
++                                        bool(rejection.get("operational_mode_degraded", False)),
++                                    )
++                                    mode_rejection = operational_mode_gate_error(
++                                        rejection_mode, admission_action,
++                                    )
++                                    if mode_rejection is not None:
++                                        mode_pause_result = mode_rejection
++                                        return mode_rejection
++                                mode_pause_result = rejection
+                                 return rejection
+                             response = request_candidate()
+                     else:
+@@ -1110,6 +1142,8 @@ class LocalAIServices:
+                         "retryable": retryable, "terminal": not retryable,
+                         "error_code": "local_backend_transport" if retryable else "local_model_error",
+                     }
++                if mode_pause_result is not None:
++                    return mode_pause_result
+                 retryable_error = retryable_error or bool(result.get("retryable", False))
+                 if result.get("success"):
+                     self.breakers.success(breaker_key)
+@@ -1169,6 +1203,8 @@ class LocalAIServices:
+             raw, cache_hit, coalesced = self.generation_cache.get_or_compute(cache_key, compute)
+         else:
+             raw, cache_hit, coalesced = compute_inner(), False, False
++        if mode_pause_result is not None:
++            return mode_pause_result
+         origin = str(raw.get("_lah_cache_origin", "")) if isinstance(raw, dict) else ""
+         if not use_cache:
+             cache_layer = "disabled"
+diff --git a/tests/test_t12_generation_boundary.py b/tests/test_t12_generation_boundary.py
+index cedfa72..8ed2164 100644
+--- a/tests/test_t12_generation_boundary.py
++++ b/tests/test_t12_generation_boundary.py
+@@ -142,16 +142,100 @@ def test_generate_rechecks_admission_after_stale_active_mode_snapshot(
+         with manager.operational_mode_change_guard():
+             snapshot = operational_mode.set_operational_mode(tmp_path, "gaming")
+             manager.on_operational_mode_changed(snapshot)
++        expected = operational_mode.operational_mode_gate_error(snapshot, "delegate")
+         continue_service.set()
+         thread.join(2)
+         assert not thread.is_alive(), "service worker did not complete"
+ 
+         assert actions == ["delegate", "delegate"]
+-        assert results and results[0].get("success") is False
+-        assert "gaming mode" in results[0].get("error", "")
++        assert expected is not None
++        assert results and results[0] == expected
+         assert runtime.payloads == []
+         assert trace_observer.requests == []
+     finally:
+         continue_service.set()
+         thread.join(2)
+         manager.close()
++
++
++def test_generate_pause_before_start_uses_central_retryable_gate_contract(
++    tmp_path: Path,
++) -> None:
++    config = {
++        "server": {"state_dir": str(tmp_path), "request_timeout_seconds": 5},
++        "models": {"general": "local-model", "fast_code": "local-model", "heavy_code": "local-model"},
++        "hardware": {"profile": "balanced"},
++        "_hardware": {"profile": "balanced", "ram": {"total_gb": 32}, "gpus": []},
++        "cache": {"generation": False, "embeddings": False},
++        "resilience": {"model_fallback_enabled": False, "serve_stale_on_error": False},
++        "token_saving": {"compact_responses": False},
++    }
++    runtime = _Runtime()
++    service = LocalAIServices(
++        config=config,
++        runtime=runtime,
++        scheduler=_InlineScheduler(),
++        embeddings=MagicMock(),
++        artifacts=MagicMock(),
++        telemetry=MagicMock(),
++        repo_tools=RepositoryTools(config),
++    )
++    service.semantic_cache = _NoopSemanticCache()
++    manager = AsyncJobManager(config=config, scheduler=object(), artifacts=MagicMock(), executor=lambda *_args: {"success": True})
++    service.inference_admission = manager.inference_admission
++    observer = _Observer()
++    token = set_observer(observer)
++    try:
++        snapshot = operational_mode.set_operational_mode(tmp_path, "gaming")
++        expected = operational_mode.operational_mode_gate_error(snapshot, "delegate")
++        assert expected is not None
++        result = service._generate(
++            "local-model", "task prompt", "system", 64, 0.0, "default",
++            "delegate:general", 5, internal=True, use_cache=False,
++        )
++        assert result == expected
++        assert runtime.payloads == []
++        assert observer.requests == []
++    finally:
++        reset_observer(token)
++        manager.close()
++
++
++def test_generate_operational_mode_load_failure_fails_closed_with_central_contract(
++    tmp_path: Path,
++    monkeypatch,
++) -> None:
++    config = {
++        "server": {"state_dir": str(tmp_path), "request_timeout_seconds": 5},
++        "models": {"general": "local-model", "fast_code": "local-model", "heavy_code": "local-model"},
++        "hardware": {"profile": "balanced"},
++        "_hardware": {"profile": "balanced", "ram": {"total_gb": 32}, "gpus": []},
++        "cache": {"generation": False, "embeddings": False},
++        "resilience": {"model_fallback_enabled": False, "serve_stale_on_error": False},
++        "token_saving": {"compact_responses": False},
++    }
++    runtime = _Runtime()
++    service = LocalAIServices(
++        config=config,
++        runtime=runtime,
++        scheduler=_InlineScheduler(),
++        embeddings=MagicMock(),
++        artifacts=MagicMock(),
++        telemetry=MagicMock(),
++        repo_tools=RepositoryTools(config),
++    )
++    service.semantic_cache = _NoopSemanticCache()
++
++    def unavailable(_state_dir=None):
++        raise OSError("mode state unavailable")
++
++    monkeypatch.setattr(operational_mode, "load_operational_mode", unavailable)
++    expected = operational_mode.operational_mode_gate_error(None, "delegate")
++    result = service._generate(
++        "local-model", "task prompt", "system", 64, 0.0, "default",
++        "delegate:general", 5, internal=True, use_cache=False,
++    )
++
++    assert expected is not None
++    assert result == expected
++    assert runtime.payloads == []

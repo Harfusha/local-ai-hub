@@ -390,6 +390,17 @@ def vram_priority(is_generation: bool = True):
         yield
 
 
+def _active_sqlite_databases(state_dir: Path) -> list[Path]:
+    legacy_names = {"agent_state.sqlite3", "cache.sqlite3", "leases.sqlite3", "agent_blackboard.sqlite3"}
+    recovery_markers = (".path-migration-", ".schema-mismatch-", ".corrupt-")
+    return sorted(
+        db
+        for pattern in ("*.sqlite", "*.sqlite3")
+        for db in state_dir.glob(pattern)
+        if db.name not in legacy_names and not any(marker in db.name for marker in recovery_markers)
+    )
+
+
 class LocalAIServices:
     commands: Any = None
     task_store: Any = None
@@ -461,7 +472,7 @@ class LocalAIServices:
 
         cache_cfg = config.get("cache", {})
         persistent = SQLiteCache(
-            Path(config["server"]["state_dir"]) / "cache.sqlite3",
+            Path(config["server"]["state_dir"]) / "cache.sqlite",
             namespace="generation",
             ttl_seconds=int(cache_cfg.get("generation_ttl_seconds", 7 * 86400)),
             max_entries=int(cache_cfg.get("generation_max_entries", 5000)),
@@ -473,7 +484,7 @@ class LocalAIServices:
         )
         self.generation_cache = SingleFlightCache(generation_tier, enabled=bool(cache_cfg.get("generation", True)), wait_timeout_seconds=float(config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 45)))
         embedding_cache = SQLiteCache(
-            Path(config["server"]["state_dir"]) / "cache.sqlite3",
+            Path(config["server"]["state_dir"]) / "cache.sqlite",
             namespace="embeddings",
             ttl_seconds=int(cache_cfg.get("embedding_ttl_seconds", 30 * 86400)),
             max_entries=int(cache_cfg.get("embedding_max_entries", 100000)),
@@ -487,7 +498,7 @@ class LocalAIServices:
         workspace_cfg = config.get("workspace_cache", {})
         self.repo_cache = TieredCache(
             SQLiteCache(
-                Path(config["server"]["state_dir"]) / "cache.sqlite3",
+                Path(config["server"]["state_dir"]) / "cache.sqlite",
                 namespace="repo-results",
                 ttl_seconds=int(workspace_cfg.get("repo_result_ttl_seconds", 7 * 86400)),
                 max_entries=int(workspace_cfg.get("repo_result_max_entries", 20000)),
@@ -503,7 +514,7 @@ class LocalAIServices:
             cooldown_seconds=float(resilience.get("circuit_cooldown_seconds", 20)),
         )
         self.stale_generation_cache = SQLiteCache(
-            Path(config["server"]["state_dir"]) / "cache.sqlite3",
+            Path(config["server"]["state_dir"]) / "cache.sqlite",
             namespace="generation-stale",
             ttl_seconds=int(resilience.get("stale_generation_ttl_seconds", 30 * 86400)),
             max_entries=int(resilience.get("stale_generation_max_entries", 10000)),
@@ -568,6 +579,8 @@ class LocalAIServices:
 
     def set_agent_state(self, store: Any) -> None:
         self.agent_state = store
+        from .agent_events import SwarmPubSub
+        SwarmPubSub.get_default(state_store=store)
 
     def set_consistency_guard(self, guard: Any) -> None:
         self.consistency_guard = guard
@@ -846,6 +859,8 @@ class LocalAIServices:
     ) -> dict[str, Any]:
         trace_system = system if trace_system_override is None else str(trace_system_override)
         mode_pause_result: dict[str, Any] | None = None
+        if cancel_event is None:
+            cancel_event = threading.Event()
         if project_settings is not None:
             model, project_payload = self.model_policy.apply_project_settings(
                 model,
@@ -856,6 +871,9 @@ class LocalAIServices:
             system = str(project_payload.get("system", system))
         saving = self.config.get("token_saving", {})
         resilience = self.config.get("resilience", {})
+        default_request_timeout = float(self.config.get("server", {}).get("request_timeout_seconds", 300)) + 30.0
+        request_timeout = max(0.05, float(resilience.get("scheduler_wait_timeout_seconds", default_request_timeout)))
+        request_deadline = time.monotonic() + request_timeout
         max_tokens = max(64, min(int(max_tokens), int(saving.get("max_local_output_tokens", 8192))))
         role = source.rsplit(":", 1)[-1].lower()
         if source == "second-opinion":
@@ -863,7 +881,9 @@ class LocalAIServices:
         vram_free = None
         if getattr(self, "vram_balancer", None):
             try:
-                vram_free = self.vram_balancer.status().get("vram_available_mb")
+                vram_status = self.vram_balancer.status()
+                if vram_status.get("available", "vram_available_mb" in vram_status):
+                    vram_free = vram_status.get("vram_available_mb")
             except Exception:
                 pass
         initial_profile = self.model_policy.profile(
@@ -951,10 +971,38 @@ class LocalAIServices:
                         "model": requested_model,
                     }
 
-            candidates = [requested_model] + self._fallback_models(requested_model)
+            tier_ranks = {"fast_code": 0, "general": 0, "heavy_code": 1, "reasoning": 2}
+
+            def model_tier_rank(candidate_model: str) -> int:
+                return max(
+                    (rank for role_name, rank in tier_ranks.items()
+                     if str(self.config.get("models", {}).get(role_name, "")) == str(candidate_model or "")),
+                    default=0,
+                )
+
+            requested_rank = model_tier_rank(requested_model)
+            # Runtime failover must keep the router's quality floor for this request.
+            candidates = [requested_model] + [
+                candidate
+                for candidate in self._fallback_models(requested_model)
+                if model_tier_rank(candidate) >= requested_rank
+            ]
             errors: list[str] = []
+            attempt_failures: list[dict[str, Any]] = []
             retryable_error = False
             timeout_error = False
+            preempted_error = False
+            cancel_requested = False
+            scheduler_state = ""
+
+            def record_attempt_failures(*, recovered: bool) -> None:
+                for failed in attempt_failures:
+                    self.telemetry.record_error(
+                        "ollama", f"{source}:model_attempt", failed["error"], tenant=tenant,
+                        error_type_override=failed["error_type"],
+                        error_code_override=failed["error_code"],
+                        retryable=failed["retryable"], recovered=recovered,
+                    )
             admission_action = source.split(":", 1)[0].strip().replace("-", "_")
             known_actions = {
                 "delegate", "reason", "review", "review_diff", "second_opinion",
@@ -989,6 +1037,7 @@ class LocalAIServices:
                     candidate_hint = self.model_policy.profile(
                         candidate_model, role=role, input_tokens=prepared.estimated_tokens, output_tokens=max_tokens,
                         background=source.startswith("preprocess:"),
+                        vram_free_mb=vram_free,
                     )
                     candidate_prepared = fit_text(prepared.text, min(int(saving.get("max_local_input_tokens", 56000)), candidate_hint.prompt_budget_tokens))
                     payload, candidate_profile = self.model_policy.apply_payload(
@@ -998,6 +1047,7 @@ class LocalAIServices:
                          "options": {"num_predict": max_tokens, "temperature": float(temperature)}},
                         role=role, input_tokens=candidate_prepared.estimated_tokens, output_tokens=max_tokens,
                         background=source.startswith("preprocess:"), preserve_explicit_think=False,
+                        vram_free_mb=vram_free,
                     )
                     trace_observer = observer()
                     trace_payload = dict(payload)
@@ -1029,11 +1079,27 @@ class LocalAIServices:
                         mode_pause_result = mode_rejection
                         return mode_rejection
                     def request_candidate() -> dict[str, Any]:
+                        stream = getattr(self.runtime, "request_stream", None)
+                        if callable(stream):
+                            if trace_observer is not None:
+                                trace_observer.model_request(trace_payload)
+                            return stream(
+                                "/api/generate", payload,
+                                trace_observer.output_delta if trace_observer is not None else (lambda _chunk: None),
+                                on_thinking=getattr(trace_observer, "thinking_delta", None) if trace_observer is not None else None,
+                                timeout=max(0.05, request_deadline - time.monotonic()),
+                                deadline=request_deadline,
+                                should_stop=cancel_event.is_set,
+                            )
                         interruptible = getattr(self.runtime, "request_interruptible", None)
                         if cancel_event is not None and callable(interruptible):
                             if trace_observer is not None:
                                 trace_observer.model_request(trace_payload)
-                            result = interruptible("/api/generate", payload, should_stop=cancel_event.is_set)
+                            result = interruptible(
+                                "/api/generate", payload, should_stop=cancel_event.is_set,
+                                timeout=max(0.05, request_deadline - time.monotonic()),
+                                deadline=request_deadline,
+                            )
                             if trace_observer is not None and result.get("response"):
                                 trace_observer.output_delta(str(result["response"]))
                             return result
@@ -1042,6 +1108,9 @@ class LocalAIServices:
                             return self.runtime.request_stream(
                                 "/api/generate", payload, trace_observer.output_delta,
                                 on_thinking=getattr(trace_observer, "thinking_delta", None),
+                                timeout=max(0.05, request_deadline - time.monotonic()),
+                                deadline=request_deadline,
+                                should_stop=cancel_event.is_set,
                             )
                         return self.runtime.request("/api/generate", payload)
 
@@ -1082,6 +1151,26 @@ class LocalAIServices:
                             "_lah_repetition_loop_detected": True,
                             "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
                         }
+                    if response.get("preempted"):
+                        return {
+                            "success": False,
+                            "error": str(response.get("error") or "model request cancelled"),
+                            "model": candidate_model,
+                            "preempted": True,
+                            "terminal": True,
+                            "retryable": False,
+                            "error_code": "model_request_cancelled",
+                        }
+                    if response.get("timed_out"):
+                        return {
+                            "success": False,
+                            "error": str(response.get("error") or "model request deadline exceeded"),
+                            "model": candidate_model,
+                            "timed_out": True,
+                            "terminal": False,
+                            "retryable": True,
+                            "error_code": "model_request_timeout",
+                        }
                     if "error" in response:
                         retryable = is_retryable_local_backend_error(response["error"])
                         return {
@@ -1111,14 +1200,17 @@ class LocalAIServices:
                 try:
                     result = self.scheduler.submit(
                         candidate, tenant, source if index == 0 else f"{source}:fallback", run, priority=priority,
-                        wait_timeout=float(resilience.get("scheduler_wait_timeout_seconds", self.config.get("server", {}).get("request_timeout_seconds", 300) + 30)),
+                        wait_timeout=max(0.05, request_deadline - time.monotonic()),
+                        cancel_event=cancel_event,
                     )
                 except TimeoutError as exc:
                     timeout_error = True
                     retryable_error = True
+                    cancel_event.set()
                     result = {
                         "success": False,
                         "error": str(exc),
+                        "error_type": type(exc).__name__,
                         "model": candidate,
                         "terminal": False,
                         "retryable": True,
@@ -1130,10 +1222,12 @@ class LocalAIServices:
                     state = getattr(exc, "state", "")
                     if state:
                         result["scheduler_state"] = str(state)
+                        scheduler_state = str(state)
+                    cancel_requested = True
                 except Exception as exc:
                     retryable = is_retryable_local_backend_error(exc)
                     result = {
-                        "success": False, "error": str(exc), "model": candidate,
+                        "success": False, "error": str(exc), "error_type": type(exc).__name__, "model": candidate,
                         "retryable": retryable, "terminal": not retryable,
                         "error_code": "local_backend_transport" if retryable else "local_model_error",
                     }
@@ -1144,13 +1238,27 @@ class LocalAIServices:
                     self.breakers.success(breaker_key)
                     if candidate != requested_model:
                         self.fallback_count += 1
+                    record_attempt_failures(recovered=True)
                     return result
+                if result.get("preempted"):
+                    preempted_error = True
+                    errors.append(f"{candidate}: {result.get('error') or 'model request cancelled'}")
+                    break
+                if result.get("timed_out"):
+                    timeout_error = True
                 self.breakers.failure(breaker_key)
                 attempt_error = str(result.get("error", "failed"))
                 attempt_retries = int(result.get("_lah_retry_count", 0) or 0)
                 self.telemetry.record_stage(tenant=tenant, action=source, stage="model_attempt", model=candidate, success=False, degraded=index > 0, retry_count=attempt_retries, error_type="model_attempt_failed")
-                self.telemetry.record_error("ollama", f"{source}:model_attempt", attempt_error, tenant=tenant, retryable=True)
+                attempt_failures.append({
+                    "error": attempt_error,
+                    "error_type": str(result.get("error_type", "")),
+                    "error_code": str(result.get("error_code", "")),
+                    "retryable": bool(result.get("retryable", True)),
+                })
                 errors.append(f"{candidate}: {attempt_error}")
+                if timeout_error:
+                    break
 
             # Same exact prompt may be served stale only as a resilience fallback.
             if use_cache and bool(resilience.get("serve_stale_on_error", True)):
@@ -1160,16 +1268,27 @@ class LocalAIServices:
                     reused["_lah_cache_origin"] = "stale"
                     reused["stale_fallback"] = True
                     reused["runtime_errors"] = errors[-3:]
+                    record_attempt_failures(recovered=True)
                     return reused
+            record_attempt_failures(recovered=False)
             failure = {
                 "success": False,
                 "error": "; ".join(errors) or "all local model attempts failed",
                 "model": requested_model,
             }
+            if attempt_failures:
+                failure["error_type"] = attempt_failures[-1]["error_type"]
+                failure["error_code"] = attempt_failures[-1]["error_code"]
             if retryable_error:
                 failure.update({"terminal": False, "retryable": True})
             if timeout_error:
                 failure["error_code"] = "model_request_timeout"
+            if preempted_error:
+                failure.update({"terminal": True, "retryable": False, "preempted": True, "error_code": "model_request_cancelled"})
+            if cancel_requested:
+                failure["cancel_requested"] = True
+            if scheduler_state:
+                failure["scheduler_state"] = scheduler_state
             return failure
 
         def compute() -> dict[str, Any]:
@@ -1298,7 +1417,12 @@ class LocalAIServices:
             degraded=bool(result.get("stale_fallback", False) or result.get("fallback_used", False)), error_type=error_type,
         )
         if not success:
-            self.telemetry.record_error("ollama", source, result.get("error", "model request failed"), tenant=tenant, retryable=True)
+            self.telemetry.record_error(
+                "ollama", source, result.get("error", "model request failed"), tenant=tenant,
+                error_type_override=str(result.get("error_type", "")),
+                error_code_override=str(result.get("error_code", "")),
+                retryable=True,
+            )
         return result
 
     @staticmethod
@@ -2156,15 +2280,26 @@ class LocalAIServices:
                 ]
                 if language:
                     cmd.extend(["--language", language])
-                proc = run_hidden(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    check=False,
-                    cancel_event=cancel_event,
-                    cancel_grace_seconds=1.0,
-                )
+                try:
+                    proc = run_hidden(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        check=False,
+                        cancel_event=cancel_event,
+                        cancel_grace_seconds=1.0,
+                    )
+                except FileNotFoundError:
+                    return {
+                        "success": False,
+                        "audio_path": str(p),
+                        "model": model,
+                        "engine": "whisper_cli",
+                        "reason": "cli_missing",
+                        "degraded": True,
+                        "error": "Whisper CLI became unavailable before it could run.",
+                    }
                 if proc.returncode != 0:
                     return {
                         "success": False,
@@ -2244,16 +2379,6 @@ class LocalAIServices:
                 "engine": "whisper_cli",
                 "reason": "timeout",
                 "error": "Whisper CLI timed out before transcription completed.",
-            }
-        except FileNotFoundError:
-            return {
-                "success": False,
-                "audio_path": str(p),
-                "model": model,
-                "engine": "whisper_cli",
-                "reason": "cli_missing",
-                "degraded": True,
-                "error": "Whisper CLI became unavailable before it could run.",
             }
         except Exception:
             return {
@@ -3494,10 +3619,25 @@ class LocalAIServices:
             return {"success": False, "error": "command broker unavailable"}
         return self.commands.spawn_daemon(command, cwd, name=name, env=env, task_id=task_id)
 
-    def daemon_status(self, daemon_id: str | None = None) -> dict[str, Any]:
+    def daemon_status(
+        self, daemon_id: str | None = None, *, task_id: str = ""
+    ) -> dict[str, Any]:
         if not self.commands:
             return {"success": False, "error": "command broker unavailable"}
-        return self.commands.daemon_status(daemon_id)
+        if not task_id:
+            return {
+                "success": False,
+                "error": "daemon status requires a registered task id",
+                "policy_blocked": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        denied = self._authorize_command_action(
+            "daemon_status", endpoint="services.daemon_status", task_id=task_id
+        )
+        if denied is not None:
+            return denied
+        return self.commands.daemon_status(daemon_id, task_id=task_id)
 
     def stop_daemon(self, daemon_id: str, *, task_id: str = "") -> dict[str, Any]:
         if not self.commands:
@@ -3630,10 +3770,11 @@ class LocalAIServices:
             return {"success": False, "error": "command broker unavailable"}
         return self.commands.diff_hunk_stage(root, patch)
 
-    def test_flaky_detect(self, root: str, command: str, runs: int = 5, timeout: int = 30) -> dict[str, Any]:
+    def test_flaky_detect(self, root: str, command: str, runs: int = 5, timeout: int = 30, timeout_per_run: int | None = None) -> dict[str, Any]:
         if not self.commands:
             return {"success": False, "error": "command broker unavailable"}
-        return self.commands.test_flaky_detect(root, command, runs=runs, timeout_per_run=timeout)
+        effective_timeout = timeout_per_run if timeout_per_run is not None else timeout
+        return self.commands.test_flaky_detect(root, command, runs=runs, timeout_per_run=effective_timeout)
 
     def webhook_replay(self, url: str, payload: dict[str, Any] | str, secret: str = "", signature_header: str = "X-Hub-Signature-256", timeout: float = 10.0) -> dict[str, Any]:
         if not self.commands:
@@ -3666,11 +3807,19 @@ class LocalAIServices:
 
     def pubsub_publish(self, topic: str, message: dict[str, Any] | str, sender: str = "agent") -> dict[str, Any]:
         from .agent_events import SwarmPubSub
-        return SwarmPubSub.get_default().publish(topic, message, sender=sender)
+        return SwarmPubSub.get_default(state_store=self.agent_state).publish(topic, message, sender=sender)
 
-    def pubsub_poll(self, topic: str, since_timestamp: float = 0.0, limit: int = 50) -> dict[str, Any]:
+    def pubsub_poll(
+        self,
+        topic: str,
+        since_timestamp: float = 0.0,
+        limit: int = 50,
+        after_seq: int = 0,
+    ) -> dict[str, Any]:
         from .agent_events import SwarmPubSub
-        return SwarmPubSub.get_default().poll(topic, since_timestamp=since_timestamp, limit=limit)
+        return SwarmPubSub.get_default(state_store=self.agent_state).poll(
+            topic, since_timestamp=since_timestamp, limit=limit, after_seq=after_seq
+        )
 
     def synthesize_commit(self, root: str, hint: str = "", task_id: str = "") -> dict[str, Any]:
         tasks_data: list[dict[str, Any]] = []
@@ -3844,7 +3993,7 @@ class LocalAIServices:
         try:
             compiler = ContextCompiler(
                 AgentStateStore(
-                    configured_state_dir(getattr(self, "config", {}), create=False) / "agent_state.sqlite3",
+                    configured_state_dir(getattr(self, "config", {}), create=False) / "agent_state.sqlite",
                     enabled=False,
                 ),
                 config=getattr(self, "config", {}),
@@ -4787,9 +4936,15 @@ class LocalAIServices:
             retrieval_warnings.extend(external_warnings)
         else:
             backend_states.update({"serena": "skipped", "rag": "skipped"})
-        hinted_paths = [str(item.get("path", "")) for item in path_hints if isinstance(item, dict) and item.get("path")]
+        hinted_paths = [
+            str(item.get("path", "")) if isinstance(item, dict) else item
+            for item in path_hints
+            if (isinstance(item, dict) and item.get("path")) or isinstance(item, str)
+        ]
         if hinted_paths:
             path_groups["project_hints"] = hinted_paths
+        if directory_hints:
+            path_groups["directory_hints"] = list(directory_hints)
         if force_include_paths:
             path_groups["force_include"] = list(force_include_paths)
 
@@ -4816,7 +4971,16 @@ class LocalAIServices:
                 return None
             try:
                 candidate = Path(value)
-                resolved = candidate.resolve(strict=False) if candidate.is_absolute() else (base_path / candidate).resolve(strict=False)
+                candidate = candidate if candidate.is_absolute() else base_path / candidate
+                lexical_relative = candidate.relative_to(base_path)
+                if ".." in lexical_relative.parts:
+                    return None
+                current = base_path
+                for part in lexical_relative.parts:
+                    current = current / part
+                    if current.is_symlink():
+                        return None
+                resolved = candidate.resolve(strict=False)
                 relative = resolved.relative_to(base_path)
             except (OSError, RuntimeError, ValueError):
                 return None
@@ -4825,13 +4989,17 @@ class LocalAIServices:
 
         inventory_candidate_limit = 512
         inventory_scan_limit = 4096
+        try:
+            fallback_scan_limit = max(1, min(512, int(search_cfg.get("context_fallback_scan_limit", 512))))
+        except (TypeError, ValueError, OverflowError):
+            fallback_scan_limit = 512
         path_inventory_state = "skipped"
         recall_paths: tuple[str, ...] = ()
         path_controls_active = bool(
             path_hints or directory_hints or exclude_paths or force_include_paths or focus or changed_paths
         )
         forced_candidate_paths: tuple[str, ...] = ()
-        if quality_first and path_controls_active:
+        if path_controls_active:
             base_path = Path(root).expanduser().resolve(strict=False)
             forced_candidate_paths = tuple(dict.fromkeys(
                 path for raw_path in force_include_paths
@@ -4862,7 +5030,7 @@ class LocalAIServices:
                 path_inventory_state = "degraded"
                 retrieval_warnings.append("path inventory unavailable; bounded filesystem fallback")
 
-            scan_limit = 512 if inventory_source == "filesystem_fallback" else inventory_scan_limit
+            scan_limit = fallback_scan_limit if inventory_source == "filesystem_fallback" else inventory_scan_limit
             scope_patterns = tuple(dict.fromkeys((
                 *hinted_paths, *directory_hints, *force_include_paths, *changed_paths,
             )))
@@ -4933,13 +5101,13 @@ class LocalAIServices:
         }
         if exclude_paths:
             path_groups = {
-                backend: [path for path in paths if path in forced_candidate_paths or not excluded_path(path)]
+                backend: [path for path in paths if not excluded_path(path)]
                 for backend, paths in path_groups.items()
             }
         changed_candidate_paths = tuple(dict.fromkeys(
             path for raw_path in changed_paths
             if (path := safe_relative_candidate(raw_path, Path(root).expanduser().resolve(strict=False)))
-            and (path in forced_candidate_paths or not excluded_path(path))
+            and not excluded_path(path)
         ))
         all_candidate_paths = tuple(dict.fromkeys((
             *(path for paths in path_groups.values() for path in paths), *recall_paths,
@@ -4953,7 +5121,7 @@ class LocalAIServices:
         focus_candidate_paths = tuple(
             path for path in all_candidate_paths
             if any(term in path.casefold() for term in focus_terms)
-            and (path in forced_candidate_paths or not excluded_path(path))
+            and not excluded_path(path)
         )
         if changed_candidate_paths:
             path_groups["changed_paths"] = list(changed_candidate_paths)
@@ -4980,9 +5148,41 @@ class LocalAIServices:
         candidate_paths = [
             path for raw_path in candidate_paths
             if (path := safe_relative_candidate(raw_path, base_path))
-            and (path in forced_candidate_paths or not excluded_path(path))
+            and not excluded_path(path)
+            and not ((base_path / path).is_dir() and any(
+                candidate.startswith(path.rstrip("/") + "/") for candidate in recall_paths
+            ))
         ]
         candidate_paths = candidate_paths[:inventory_candidate_limit]
+        try:
+            lexical_candidate_limit = max(1, min(64, int(search_cfg.get("context_top_k", 14))))
+        except (TypeError, ValueError, OverflowError):
+            lexical_candidate_limit = 14
+        if path_controls_active and path_inventory_state != "used" and len(candidate_paths) < lexical_candidate_limit:
+            # Hints bias candidate ordering; they must not turn a bounded adaptive
+            # lookup into a search restricted to hinted paths. Fill sparse indexed
+            # candidates with a bounded lexical pass, then apply explicit excludes.
+            try:
+                completion = self.repo_tools.search(
+                    root,
+                    query,
+                    top_k=lexical_candidate_limit,
+                )
+                if isinstance(completion, dict) and completion.get("success"):
+                    candidate_paths.extend(
+                        path
+                        for item in completion.get("results", [])
+                        if isinstance(item, dict)
+                        and isinstance(item.get("path"), str)
+                        and item.get("path")
+                        and (path := safe_relative_candidate(item["path"], base_path))
+                        and not excluded_path(path)
+                    )
+                    candidate_paths = list(dict.fromkeys(candidate_paths))
+                else:
+                    retrieval_warnings.append("lexical completeness pass unavailable")
+            except Exception as exc:
+                retrieval_warnings.append(f"lexical completeness pass degraded: {type(exc).__name__}")
         try:
             if candidate_paths:
                 candidate_paths = list(dict.fromkeys(candidate_paths))
@@ -4990,6 +5190,16 @@ class LocalAIServices:
                     "max_tokens": lexical_tokens,
                     "top_k": int(search_cfg.get("context_top_k", 14)),
                 }
+                if path_hints or directory_hints or exclude_paths or force_include_paths:
+                    hinted_directories = tuple(dict.fromkeys((
+                        *directory_hints,
+                        *hinted_paths,
+                    )))
+                    pack_kwargs.update({
+                        "directory_hints": hinted_directories,
+                        "exclude_paths": exclude_paths,
+                        "force_include_paths": force_include_paths,
+                    })
                 lexical = self.repo_tools.context_pack_paths(
                     root, query, candidate_paths, **pack_kwargs,
                 )
@@ -5086,6 +5296,33 @@ class LocalAIServices:
                 traceable.append(traced)
             evidence = traceable
         context = str(lexical.get("context", ""))
+        # Keep the already budgeted, exact lexical rendering intact; only move
+        # its complete snippet blocks into the same order as their evidence.
+        rendered_positions: list[tuple[int, int]] = []
+        used_positions: set[int] = set()
+        for evidence_index, item in enumerate(evidence):
+            if not isinstance(item, dict) or not item.get("path"):
+                rendered_positions = []
+                break
+            header = (
+                f"--- {item['path']}:{item.get('start_line')}-{item.get('end_line')} "
+                f"score={item.get('score')} ---\n"
+            )
+            position = context.find(header)
+            while position in used_positions and position >= 0:
+                position = context.find(header, position + 1)
+            if position < 0:
+                rendered_positions = []
+                break
+            rendered_positions.append((evidence_index, position))
+            used_positions.add(position)
+        source_order = sorted(rendered_positions, key=lambda item: item[1])
+        if rendered_positions and len(rendered_positions) == len(evidence) and source_order[0][1] == 0:
+            blocks: dict[int, str] = {}
+            for offset, (evidence_index, start) in enumerate(source_order):
+                end = source_order[offset + 1][1] if offset + 1 < len(source_order) else len(context)
+                blocks[evidence_index] = context[start:end]
+            context = "".join(blocks[index] for index in range(len(evidence)))
         semantic_used = False
         per_path: dict[str, int] = {}
         for item in evidence:
@@ -5202,6 +5439,8 @@ class LocalAIServices:
             "success": True, "root": lexical["root"], "query": query, "context": context,
             "evidence": evidence, "estimated_tokens": estimate_tokens(context),
             "scanned_files": lexical.get("scanned_files", 0), "semantic_used": semantic_used,
+            **({"degraded": True, "degraded_reason": "bounded_path_candidate_fallback"}
+               if path_inventory_state == "degraded" else {}),
             "context_budget_tokens": max_tokens,
             "retrieval": {
                 "quality_first": bool(quality_first),
@@ -5346,7 +5585,9 @@ class LocalAIServices:
         vram_free_mb = None
         try:
             if getattr(self, "vram_balancer", None):
-                vram_free_mb = self.vram_balancer.status().get("vram_available_mb")
+                vram_status = self.vram_balancer.status()
+                if vram_status.get("available", "vram_available_mb" in vram_status):
+                    vram_free_mb = vram_status.get("vram_available_mb")
         except Exception:
             vram_free_mb = None
         profile = self.model_policy.profile(
@@ -5971,6 +6212,43 @@ class LocalAIServices:
             return self.preprocessor.lookup(root, str(args.get("query", "")), int(args.get("limit", 5)))
         return {"success": False, "error": f"unknown preprocess action: {action}"}
 
+    def _authorize_command_action(
+        self, action: str, *, endpoint: str, task_id: str = ""
+    ) -> dict[str, Any] | None:
+        broker = self.commands
+        authorize = getattr(broker, "authorize_auxiliary_action", None) if broker is not None else None
+        if not callable(authorize):
+            policy = {
+                "success": False,
+                "allowed": False,
+                "requires_approval": True,
+                "reason": "auxiliary action policy boundary unavailable",
+                "owner": "agent_policy",
+                "side_effect_class": "unknown",
+                "terminal": True,
+                "retryable": False,
+            }
+        else:
+            aliases = {
+                "auto_fix": "repair_loop",
+                "repair": "repair_loop",
+                "mock_server": "mock_server_start",
+                "test_flaky_detect": "flaky_detect",
+            }
+            policy = authorize(
+                aliases.get(action, action), endpoint=endpoint, task_id=task_id
+            )
+        if policy.get("allowed", False):
+            return None
+        return {
+            "success": False,
+            "error": policy.get("reason", "command action denied by policy"),
+            "policy": policy,
+            "policy_blocked": True,
+            "terminal": True,
+            "retryable": False,
+        }
+
     def command(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         if self.commands is None:
             return {"success": False, "error": "command broker unavailable"}
@@ -5983,6 +6261,13 @@ class LocalAIServices:
                 "terminal": True,
                 "retryable": False,
             }
+        denied = self._authorize_command_action(
+            action,
+            endpoint="services.command",
+            task_id=str(args.get("task_id", "")),
+        )
+        if denied is not None:
+            return denied
 
         stream_id = str(args.get("stream_id") or (f"cmd:{args.get('task_id')}" if args.get("task_id") else "") or (f"cmd:{tenant}" if args.get("stream") else ""))
         log_callback = None
@@ -6122,7 +6407,17 @@ class LocalAIServices:
                 task_id=str(args.get("task_id", "")),
             )
         if action == "daemon_status":
-            return self.daemon_status(args.get("daemon_id", args.get("task_id", args.get("command"))))
+            task_id = str(args.get("task_id", ""))
+            if not task_id:
+                return {
+                    "success": False,
+                    "error": "daemon status requires a registered task id",
+                    "policy_blocked": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+            daemon_id = args.get("daemon_id", args.get("command"))
+            return self.commands.daemon_status(daemon_id, task_id=task_id)
         if action == "stop_daemon":
             return self.stop_daemon(
                 str(args.get("daemon_id", args.get("task_id", args.get("command", "")))),
@@ -6376,7 +6671,7 @@ class LocalAIServices:
     def optimize_databases(self) -> dict[str, Any]:
         """Perform WAL checkpointing, page pruning and VACUUM/optimize across all SQLite stores."""
         state_dir = Path(self.config["server"]["state_dir"])
-        db_files = list(state_dir.glob("*.sqlite3"))
+        db_files = _active_sqlite_databases(state_dir)
         optimized = []
         bytes_freed = 0
         for db in db_files:
@@ -6402,7 +6697,7 @@ class LocalAIServices:
         """Purge cache entries older than N days to free disk space."""
         state_dir = Path(self.config["server"]["state_dir"])
         cutoff = time.time() - (days * 86400)
-        cache_db = state_dir / "cache.sqlite3"
+        cache_db = state_dir / "cache.sqlite"
         deleted_entries = 0
         if cache_db.is_file():
             try:
@@ -6483,7 +6778,7 @@ class LocalAIServices:
         })
         
         state_dir = Path(self.config["server"]["state_dir"])
-        dbs = list(state_dir.glob("*.sqlite3"))
+        dbs = _active_sqlite_databases(state_dir)
         checks.append({"component": "SQLite Databases", "status": "OK", "detail": f"{len(dbs)} active databases in {state_dir.name}"})
         
         prep_status = self.preprocessor.status() if self.preprocessor else {}

@@ -1,0 +1,19 @@
+{
+  "task": "T08 public task memory provenance decoys",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "integration_root": "C:\\Users\\Adam\\.local-ai-hub",
+  "status": "verified_candidate_patch_unapplied",
+  "changed_paths": [
+    "tests/test_t08_http_memory_context_immutable.py"
+  ],
+  "root_preimage_sha256": "32DB4E7F2091962C0EB409C8FD0FC817F7E834B15BF9C4542DD60D31B5BF9A28",
+  "candidate_postimage_sha256": "16D868F545E083E96615FCC38E9F39D4ABD94420D34130A29596AEA2E3F78429",
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub\\artifacts\\t08-public-task-memory-provenance-decoys-root-current.patch",
+  "patch_sha256": "DD80CA5B420AE7F1F268328E6D89528458CA833B371A0A8BCACFF202761B3A7C",
+  "validation": {
+    "command": "python -m pytest -q --tb=short tests/test_agent_task_memory_adoption.py tests/test_t08_http_memory_context_immutable.py",
+    "result": "14 passed in 11.81s",
+    "scope": "candidate worktree only"
+  },
+  "integration": "not applied to root; T20 owns integration"
+}

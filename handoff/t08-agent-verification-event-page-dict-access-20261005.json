@@ -1,0 +1,34 @@
+{
+  "candidate_base_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "changed_root_paths": [
+    "tests/test_agent_verification.py"
+  ],
+  "diagnosis": {
+    "event_page_contract": "event_page()['events'] serializes AgentEvent.to_dict(), so durable rows are mappings.",
+    "fix": "Use mapping access for event_page rows and compare queued AgentEvent.to_dict() values with persisted row mappings; retain durability and order assertions.",
+    "subscriber_contract": "AgentStateStore.subscribe() returns Queue[AgentEvent]; _publish sends AgentEvent objects."
+  },
+  "five_selector_group": {
+    "command": "python -B -c \"import sys; sys.path.insert(0, r'C:\\Users\\Adam\\.local-ai-hub'); import local_ai_hub; import pytest; t=r'C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub\\handoff\\overlay-event-page\\test_agent_verification.py::'; raise SystemExit(pytest.main(['-q','-p','no:cacheprovider','--tb=short',t+'test_completion_fails_closed_when_sqlite_receipt_store_cannot_open',t+'test_receipt_and_task_projection_publish_after_atomic_commit',t+'test_task_completion_forwards_project_rules_and_durable_generation',t+'test_recorded_change_advances_generation_and_invalidates_existing_receipt',t+'test_model_review_receipt_cannot_satisfy_test_criterion']))\"",
+    "execution": "Root code imported from root; patched test copy under candidate handoff; root unchanged.",
+    "result": "5 passed in 6.25s"
+  },
+  "patch_path": "handoff/t08-agent-verification-event-page-dict-access-20261005.patch",
+  "patch_sha256": "dddbc3d7fa3b686560ad399267113c12f319c9016cb9c7da5c6508f30f044b3b",
+  "root_expected_postimage_sha256": {
+    "src/local_ai_hub/agent_events.py": "35423195a298391bd23c8342f9358119af85f71c5a314262d75654a4a303b34f",
+    "src/local_ai_hub/agent_verification.py": "26776888f4a6887a1a1bd56650cb636fcae92b208ecb9335d9cea8a03c770295",
+    "tests/test_agent_verification.py": "06265890a1ad377daedd0feb7d5d600bad5ea3f703aca1befb494a9e13188635"
+  },
+  "root_preimage_sha256": {
+    "src/local_ai_hub/agent_events.py": "35423195a298391bd23c8342f9358119af85f71c5a314262d75654a4a303b34f",
+    "src/local_ai_hub/agent_verification.py": "26776888f4a6887a1a1bd56650cb636fcae92b208ecb9335d9cea8a03c770295",
+    "tests/test_agent_verification.py": "e4e1087c5122646d182d29366ce3c4e2e6788d1bb906df92786351d9d4cd8bed"
+  },
+  "root_test_copy_sha256": "06265890a1ad377daedd0feb7d5d600bad5ea3f703aca1befb494a9e13188635",
+  "single_selector": {
+    "command": "python -B -c \"import sys; sys.path.insert(0, r'C:\\Users\\Adam\\.local-ai-hub'); import local_ai_hub; import pytest; raise SystemExit(pytest.main(['-q','-p','no:cacheprovider','--tb=short',r'C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub\\handoff\\overlay-event-page\\test_agent_verification.py::test_receipt_and_task_projection_publish_after_atomic_commit']))\"",
+    "execution": "Root code imported from root; patched test copy under candidate handoff; root unchanged.",
+    "result": "1 passed in 4.50s"
+  }
+}

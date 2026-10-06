@@ -1,0 +1,15 @@
+Preserved in place, excluded from commits. Root is assigned T08 worktree only.
+Ignored caches, pycache, generated egg-info and pytest runtime beneath handoff/.sync-runtime-tests also remain.
+Original untracked runtime plus supplemental local-index path:
+handoff/.sync-runtime-tests/original-log-index
+handoff/t08-root-atomicity-replay-20261005/test-temp/test_committed_task_completion0/trusted-repo/
+handoff/t08-root-atomicity-replay-20261005/test-temp/test_rag_embedder_queue_except0/proj/code.py
+handoff/t08-root-atomicity-replay-20261005/test-temp/test_task_completion_forwards_0/repo/.local-ai.toml
+handoff/t08-root-end-to-end-20261005/test-temp/test_committed_task_completion0/trusted-repo/
+handoff/t08-root-end-to-end-20261005/test-temp/test_disposable_cache_rebuild_0/agent_state.sqlite
+handoff/t08-root-end-to-end-20261005/test-temp/test_disposable_cache_rebuild_0/cache.sqlite
+handoff/t08-root-end-to-end-20261005/test-temp/test_disposable_cache_rebuild_0/cache.sqlite.corrupt-1791207667-4304
+handoff/t08-root-end-to-end-20261005/test-temp/test_failed_disposable_cache_s0/agent_state.sqlite
+handoff/t08-root-end-to-end-20261005/test-temp/test_failed_disposable_cache_s0/cache.sqlite
+handoff/t08-root-end-to-end-20261005/test-temp/test_failed_disposable_cache_s0/cache.sqlite.corrupt-1791207667-4304
+handoff/t08-root-end-to-end-20261005/test-temp/test_project_completion_reject0/repo/.local-ai.toml

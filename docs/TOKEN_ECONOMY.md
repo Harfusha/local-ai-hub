@@ -41,7 +41,8 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
 5. **Configures Optional Local Model Runtime & Models**:
    - Uses an already configured llama.cpp endpoint when the active Intel hardware/profile requires it; the Hub never installs or starts a runtime automatically.
    - Ollama is disabled by default and is never installed, started, or pulled unless all explicit Ollama opt-ins are enabled.
-   - Uses profile-aware model tiers only when a healthy local backend is available: integrated uses 0.5B preprocessing, 1.5B quick, 3B involved, 7B hard and Qwen3-VL vision; balanced uses 1.5B preprocessing, 3B fast, 7B ordinary/hard and 9B extreme/vision; high uses 1.5B/3B/7B/9B; max uses 1.5B/3B/9B for heavy routes. Otherwise deterministic/indexed Hub paths remain active.
+- Uses profile-aware model tiers only when a healthy local backend is available. In role order `background_code/fast_code/heavy_code/reasoning/general/vision`, integrated uses `0.5B/1.5B/3B/7B/1.5B/Qwen3-VL 4B`; balanced uses `1.5B/3B/7B/Qwen3.5 9B/7B/Qwen3.5 9B`; high uses `1.5B/3B/7B/9B/9B/9B`; max uses `1.5B/3B/9B/9B/9B/9B`. Ordinary reasoning routes to `heavy_code`; heavy reasoning routes to `reasoning`. Otherwise deterministic/indexed Hub paths remain active.
+- `cpu` and `low` reuse the integrated model role map while keeping profile-specific scheduler settings. Explicit model overrides and runtime fallbacks preserve the routed request's minimum tier; do not lower its quality floor for latency.
 6. **Auto-Wires MCP Hosts & Skills**:
    - Configures MCP endpoints into **Codex**, **Claude Desktop**, **Gemini**, **Cursor**, **Windsurf**, and **VS Code / GitHub Copilot**.
    - Installs companion skills: `token-economizer`, `caveman`, `tool-orchestration`, `ollama-quality-routing`.
@@ -65,7 +66,7 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
 | **`repomix`** | npm (`repomix`) | Packs repos with comment stripping, empty line removal, and token counts | 40–60% vs raw directory |
 | **`files-to-prompt`** | PyPI (`files-to-prompt`) | Formats files into clean XML prompt structures without shell overhead | Clean prompt format |
 | **`local_ai_artifact`** | Local AI Hub MCP | Fetches exact line slices (`slice`) or evidence fragments | Zero whole-file reads |
-| **`local_ai_task`** | Local AI Hub MCP | Profile-aware local inference: integrated 0.5B/1.5B/3B/7B/Qwen3-VL; balanced 1.5B/3B/7B/9B | 100% free (0 cloud tokens) |
+| **`local_ai_task`** | Local AI Hub MCP | Profile-aware role routing; see the model map above | 100% free (0 cloud tokens) |
 | **`local_ai_command`** | Local AI Hub MCP | Single-flight cached command broker with automated ANSI stripping | Prevents rerun token waste |
 
 ---

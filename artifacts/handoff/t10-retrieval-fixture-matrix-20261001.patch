@@ -1,0 +1,144 @@
+diff --git a/tests/test_t10_fallback_callgraph_parity.py b/tests/test_t10_fallback_callgraph_parity.py
+--- a/tests/test_t10_fallback_callgraph_parity.py
++++ b/tests/test_t10_fallback_callgraph_parity.py
+@@ -53,6 +53,20 @@
+             "rust",
+             "runner.rs",
+             "fn caller() {\n target();\n}\nfn target() {}\n",
++            "caller",
++            "target",
++        ),
++        (
++            "java",
++            "Runner.java",
++            "class Runner {\n void caller() {\n  target();\n }\n void target() {}\n}\n",
++            "caller",
++            "target",
++        ),
++        (
++            "php",
++            "Runner.php",
++            "<?php\nclass Runner {\n public function caller() {\n  target();\n }\n public function target() {}\n}\n",
+             "caller",
+             "target",
+         ),
+diff --git a/tests/test_t10_retrieval_fixture_matrix.py b/tests/test_t10_retrieval_fixture_matrix.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_t10_retrieval_fixture_matrix.py
+@@ -0,0 +1,115 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++from local_ai_hub.code_index import CodeIndex
++from local_ai_hub.deterministic import DeterministicEngine
++from local_ai_hub.repo_tools import RepositoryTools
++
++
++def _index(tmp_path: Path) -> tuple[Path, CodeIndex]:
++    root = tmp_path / "repo"
++    root.mkdir()
++    config = {"server": {"state_dir": str(tmp_path / "state")}}
++    return root, CodeIndex(config, RepositoryTools(config))
++
++
++def test_impact_reaches_callers_and_affected_test_fixture(tmp_path: Path) -> None:
++    root, index = _index(tmp_path)
++    fixtures = {
++        "src/payment_service.py": "def submit_payment():\n    validate_payment()\n\ndef validate_payment():\n    return True\n",
++        "src/api.py": "def post_payment():\n    submit_payment()\n",
++        "tests/test_payment_api.py": "def test_payment_route():\n    submit_payment()\n",
++        "tests/test_profile.py": "def test_profile_route():\n    load_profile()\n",
++    }
++    for relative, source in fixtures.items():
++        path = root / relative
++        path.parent.mkdir(parents=True, exist_ok=True)
++        path.write_text(source, encoding="utf-8")
++    assert index.update_files_batch(str(root), list(fixtures))["success"] is True
++
++    result = index.impact(str(root), ["src/payment_service.py"])
++
++    dependents = {item["path"] for item in result["likely_dependents"]}
++    tests = {item["path"] for item in result["suggested_tests"]}
++    assert "src/api.py" in dependents
++    assert "tests/test_payment_api.py" in dependents
++    assert "tests/test_payment_api.py" in tests
++    assert "tests/test_profile.py" not in tests
++
++
++def test_dead_code_fixture_excludes_entrypoint_tests_and_called_helper(tmp_path: Path) -> None:
++    root, index = _index(tmp_path)
++    source = root / "src/worker.py"
++    source.parent.mkdir(parents=True)
++    source.write_text(
++        "def main():\n    used_helper()\n\ndef used_helper():\n    return True\n\ndef orphan_validator():\n    return False\n",
++        encoding="utf-8",
++    )
++    test_source = root / "tests/test_worker.py"
++    test_source.parent.mkdir(parents=True)
++    test_source.write_text("def test_orphan_validator():\n    pass\n", encoding="utf-8")
++    assert index.update_files_batch(str(root), ["src/worker.py", "tests/test_worker.py"])["success"] is True
++
++    candidates = index.find_dead_code(str(root))["dead_code"]
++    names = {item["name"] for item in candidates}
++
++    assert "orphan_validator" in names
++    assert "main" not in names
++    assert "used_helper" not in names
++    assert "test_orphan_validator" not in names
++
++
++def test_text_retrieval_covers_openapi_and_invariant_fixtures(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    (root / "spec").mkdir(parents=True)
++    (root / "contracts").mkdir()
++    (root / "spec/openapi.yaml").write_text(
++        "paths:\n  /payments:\n    post:\n      operationId: submitPayment\n", encoding="utf-8"
++    )
++    (root / "contracts/invariants.json").write_text(
++        '{"id":"INV-042","statement":"ledger_total_matches_entries"}\n', encoding="utf-8"
++    )
++    tools = RepositoryTools(
++        {
++            "rag": {"extensions": [".yaml", ".json"]},
++            "search": {
++                "prefer_git_files": False,
++                "use_git_grep_fallback": False,
++                "use_ripgrep_if_available": False,
++                "python_fallback_max_files": 20,
++            },
++        }
++    )
++
++    api = tools.search(str(root), "submitPayment")
++    invariant = tools.search(str(root), "ledger_total_matches_entries")
++
++    assert [item["path"] for item in api["results"]] == ["spec/openapi.yaml"]
++    assert [item["path"] for item in invariant["results"]] == ["contracts/invariants.json"]
++
++
++def test_affected_test_fixture_matrix_covers_declared_frameworks(tmp_path: Path) -> None:
++    cases = [
++        ("pytest", "pyproject.toml", "[project]\nname='demo'\n", "src/payment.py", "tests/test_payment.py", "pytest tests/test_payment.py"),
++        ("dotnet", "Demo.csproj", "<Project />\n", "src/Payment.cs", "tests/PaymentTests.cs", 'dotnet test --filter "FullyQualifiedName~PaymentTests"'),
++        ("npm", "package.json", '{"scripts":{"test":"vitest run"}}\n', "src/payment.ts", "tests/payment.spec.ts", "npm test -- tests/payment.spec.ts"),
++        ("cargo", "Cargo.toml", "[package]\nname='demo'\nversion='0.1.0'\n", "src/payment.rs", "tests/payment_test.rs", "cargo test payment_test"),
++        ("go", "go.mod", "module example.test/demo\n", "internal/payment/payment.go", "internal/payment/payment_test.go", "go test internal/payment/payment_test.go"),
++    ]
++
++    for framework, manifest, manifest_text, source, test_path, expected_command in cases:
++        root = tmp_path / framework
++        root.mkdir()
++        (root / manifest).write_text(manifest_text, encoding="utf-8")
++        for relative, text in ((source, "package payment\n"), (test_path, "package payment\n")):
++            path = root / relative
++            path.parent.mkdir(parents=True, exist_ok=True)
++            path.write_text(text, encoding="utf-8")
++        engine = DeterministicEngine({}, repo_tools=RepositoryTools({}))
++
++        result = engine.affected_tests(str(root), changed_paths=[source])
++
++        assert result["framework"] == framework
++        assert result["test_files"] == [test_path]
++        assert result["suggested_command"] == expected_command

@@ -1,0 +1,19 @@
+{
+  "task": "T05 FTS cleanup rollback masking focused selector",
+  "date": "2026-10-02",
+  "selector": "tests/test_agent_memory_t08_rollback_masking.py::test_delete_preserves_primary_fts_error_when_rollback_also_fails",
+  "command": "$env:PYTHONPATH='C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-fts-rollback-overlay-applypatch-20261002-v2\\src'; python -m pytest -q 'tests/test_agent_memory_t08_rollback_masking.py::test_delete_preserves_primary_fts_error_when_rollback_also_fails'",
+  "cwd": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "source_overlay": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-fts-rollback-overlay-applypatch-20261002-v2\\src",
+  "source_import_verified": false,
+  "runner": "native pytest fallback after local_ai_command request_not_sent=true and one local_ai_status health attempt success=false",
+  "local_ai_command_request_id": "req_047b3b9d3f29",
+  "exit_code": 1,
+  "wall_duration_seconds": 0.941,
+  "pytest_duration_seconds": 0.31,
+  "summary": "1 failed",
+  "failure": "Failed: DID NOT RAISE sqlite3.OperationalError; tests/test_agent_memory_t08_rollback_masking.py:57",
+  "slot": "released to T20 immediately after run; only this selector executed",
+  "worktree_changes": [],
+  "messages_sent": ["T08", "T20"]
+}
