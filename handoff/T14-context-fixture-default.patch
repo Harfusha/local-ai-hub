@@ -1,0 +1,9 @@
+diff --git a/tests/test_context_delivery.py b/tests/test_context_delivery.py
+--- a/tests/test_context_delivery.py
++++ b/tests/test_context_delivery.py
+@@ -813,3 +813,4 @@
+-            settings=SimpleNamespace(pinned_context=(), retrieval_weights={"lexical": weight}),
++            settings=project_config.ProjectSettings(retrieval_weights={"lexical": weight}),
+             config_digest=digest,
++            path_hints=lambda **_kwargs: (),
+         )

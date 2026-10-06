@@ -1,0 +1,18 @@
+--- a/src/local_ai_hub/agent_memory.py
++++ b/src/local_ai_hub/agent_memory.py
+@@ -1971,6 +1971,15 @@
+                         "DELETE FROM agent_entity_relations WHERE source_entity = ? OR target_entity = ?",
+                         (record_id, record_id),
+                     )
++                    con.execute("DELETE FROM agent_memory_embeddings WHERE record_id = ?", (record_id,))
++                    fts_table = con.execute(
++                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_memory_fts'"
++                    ).fetchone()
++                    if fts_table is not None:
++                        con.execute(
++                            "DELETE FROM agent_memory_fts WHERE record_id = ?",
++                            (record_id,),
++                        )
+                     con.execute("COMMIT")
+                     publish([appended.event])
+                     return True, appended.event

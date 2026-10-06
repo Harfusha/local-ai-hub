@@ -1,0 +1,80 @@
+{
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "overlay": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay",
+  "captured_utc": "2026-10-01T16:00:30.0919210Z",
+  "command": "& 'C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\capture-current.ps1'",
+  "copy_method": "PowerShell Copy-Item, exact bytes; hashes before/copy/after equal",
+  "baseline": "User-provided genuine full-root Pyflakes exit 1, 31 diagnostics; not rerun",
+  "files": [
+    {
+      "path": "src/local_ai_hub/agent_incidents.py",
+      "pre_sha256": "565720558ebc1cbd38929f477408d7ee49d49352a32b5fec177789cc31d8dca2",
+      "bytes": 45570
+    },
+    {
+      "path": "src/local_ai_hub/benchmark.py",
+      "pre_sha256": "81a117e8878cab21e09ab821f1e89b738eced83eb1265eceee3d9e5f70daf5e3",
+      "bytes": 41594
+    },
+    {
+      "path": "src/local_ai_hub/browser_bridge.py",
+      "pre_sha256": "ad38e8efbce8d9a3bf63b38c4508e64d57f8bb2761013d8ff93746aca616e9b9",
+      "bytes": 34779
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "pre_sha256": "252f1781be55dd2545dd7e3b21915f7a8ae20814dd2db351e823124c6bfa1a19",
+      "bytes": 55683
+    },
+    {
+      "path": "src/local_ai_hub/deterministic.py",
+      "pre_sha256": "277c43abe38a6785788747553e5d8690a9c868b3f314d0fa041ae8910be9ed04",
+      "bytes": 380664
+    },
+    {
+      "path": "src/local_ai_hub/generator.py",
+      "pre_sha256": "5267ec9c0589acdb70d1595f71c14a0d2de61927377b4f10dea5e44750dbc984",
+      "bytes": 63149
+    },
+    {
+      "path": "src/local_ai_hub/pipeline.py",
+      "pre_sha256": "1472fccd500072230a29ad372501780aa6a4f93f942fc3a5760747349af93c48",
+      "bytes": 32092
+    },
+    {
+      "path": "src/local_ai_hub/response_protocol.py",
+      "pre_sha256": "2a82e2cf2e9a620c2cdda7b8febff4915e246a97bf86d7917d65444907cf8acd",
+      "bytes": 5469
+    },
+    {
+      "path": "src/local_ai_hub/scheduler.py",
+      "pre_sha256": "6f45f079f45997823ec81a854685b6cb42b6a83adb2567270c00716847868b09",
+      "bytes": 72409
+    },
+    {
+      "path": "src/local_ai_hub/supervisor.py",
+      "pre_sha256": "6e5a78dc766f5db9afce0e07a7bd5cfd86526bee89e958ee1de0c1b692a933d2",
+      "bytes": 16205
+    },
+    {
+      "path": "src/local_ai_hub/token_economy.py",
+      "pre_sha256": "74cd20b808b1a236ac43c0751769289e0f572b515c1c329f9b365792850b9e7d",
+      "bytes": 17495
+    },
+    {
+      "path": "src/local_ai_hub/repo_tools.py",
+      "pre_sha256": "8da38ecbe3daa4c975ec8f14fedbc74d91d04ceeaf4cbb2c7155a3e554b6da65",
+      "bytes": 115105
+    },
+    {
+      "path": "tools/benchmark_command_broker.py",
+      "pre_sha256": "ad99e187f625eeebac64ff7d71be34ca63e850959e7ea4879ab62eb65b55aff0",
+      "bytes": 28200
+    },
+    {
+      "path": "tools/benchmark_surfaces.py",
+      "pre_sha256": "363ffaf81bfd2be8567a4ec6ee76461e05756620ec924d5c48f71a4a6a520c96",
+      "bytes": 291900
+    }
+  ]
+}

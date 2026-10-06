@@ -1,0 +1,25 @@
+{
+  "task": "T05 memory evidence_ids shape",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub",
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "changed_paths": [
+    "src/local_ai_hub/agent_memory.py",
+    "tests/test_agent_memory.py"
+  ],
+  "source_sha256": "784116FF1ADA548979126F9639C4B795016540AF5ED85D1897C6963DFA6AC73E",
+  "test_sha256": "3526F259422F89C35F3FC7C03F911F6BEF2DCC6915F1007E13DB82BB63966C00",
+  "patch": "artifacts/t05-evidence-ids-shape-v2.patch",
+  "patch_sha256": "0242B1241F5F83E15FA387B3CE5C9425B8912D66416C8D4F6CF2D55C23B73B51",
+  "patch_reverse_check": "PASS",
+  "planned_selectors": [
+    "tests/test_agent_memory.py::test_find_skips_corrupt_rows_without_aborting_scoped_read",
+    "tests/test_agent_memory.py::test_memory_record_from_dict_rejects_scalar_evidence_ids"
+  ],
+  "test_status": "NOT RUN: T20 assigned next root slot to T06 corrected selector, then T07 assertions; await explicit T05 assignment",
+  "root_modified": false,
+  "notes": [
+    "Reject scalar JSON evidence_ids; corrupt persisted row is skipped by existing scoped decoder.",
+    "Ensure MemoryRecord.from_dict and write sanitization reject malformed evidence_ids shapes.",
+    "Candidate contains inherited dirty changes; hashes pin whole files, patch isolates this change."
+  ]
+}

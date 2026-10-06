@@ -1,0 +1,306 @@
+{
+  "kind": "native AST indexed test inventory; source scope comparison",
+  "test_inventory": {
+    "tests/test_agent_events.py": [
+      {
+        "selector": "tests/test_agent_events.py::test_schema_drift_fails_closed_without_deleting_durable_database",
+        "line": 10
+      },
+      {
+        "selector": "tests/test_agent_events.py::test_append_returns_existing_sequence_for_same_idempotency_key",
+        "line": 44
+      },
+      {
+        "selector": "tests/test_agent_events.py::test_subscribe_and_publish_events",
+        "line": 101
+      }
+    ],
+    "tests/test_agent_tasks.py": [
+      {
+        "selector": "tests/test_agent_tasks.py::test_completed_requires_all_criteria_to_have_fresh_receipts",
+        "line": 85
+      },
+      {
+        "selector": "tests/test_agent_tasks.py::test_transition_idempotency_reuse_by_different_actor_is_rejected",
+        "line": 132
+      },
+      {
+        "selector": "tests/test_agent_tasks.py::test_same_status_transition_rejects_idempotency_key_owned_by_another_actor",
+        "line": 156
+      },
+      {
+        "selector": "tests/test_agent_tasks.py::test_resume_replay_with_same_idempotency_key_does_not_append_event",
+        "line": 209
+      },
+      {
+        "selector": "tests/test_agent_tasks.py::test_add_verification_receipt_emits_event",
+        "line": 420
+      },
+      {
+        "selector": "tests/test_agent_tasks.py::test_checkpoint_idempotency_replay_requires_same_actor",
+        "line": 716
+      }
+    ],
+    "tests/test_agent_verification.py": [
+      {
+        "selector": "tests/test_agent_verification.py::test_stale_receipt_cannot_satisfy_completion",
+        "line": 92
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_generic_benchmark_receipt_without_project_binding_satisfies_completion",
+        "line": 110
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_verification_receipts_require_task_and_criterion",
+        "line": 157
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_passed_verification_receipt_requires_evidence_id",
+        "line": 162
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_verifier_exception_cannot_become_a_passing_receipt",
+        "line": 167
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_explicit_verifier_failure_cannot_satisfy_completion",
+        "line": 196
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_completion_rejects_receipt_missing_from_store",
+        "line": 217
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_completion_rejects_receipt_with_mismatched_identity",
+        "line": 234
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_completion_fails_closed_and_preserves_receipt_lookup_error",
+        "line": 253
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_failed_receipt_storage_cannot_satisfy_completion",
+        "line": 292
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_valid_receipt_allows_task_completion",
+        "line": 314
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_verification_store_prunes_legacy_invalid_receipts",
+        "line": 330
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_current_revision_rejects_fresh_receipt_from_other_revision",
+        "line": 356
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_newer_failed_receipt_supersedes_older_pass",
+        "line": 391
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_completion_rejects_receipt_from_previous_mutation_generation",
+        "line": 417
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_completion_audit_maps_criteria_to_evidence_and_receipts",
+        "line": 443
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_verifier_projection_rolls_back_when_event_projection_write_fails",
+        "line": 522
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_separate_task_receipt_projection_recovers_from_durable_outbox",
+        "line": 554
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_record_in_transaction_updates_same_database_task_projection",
+        "line": 598
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_record_uses_public_t08_transaction_api_contracts",
+        "line": 660
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_record_in_transaction_skips_missing_task_projection",
+        "line": 722
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_caller_owned_transaction_rolls_back_event_when_receipt_insert_fails",
+        "line": 751
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_caller_transaction_api_rolls_back_receipt_event_and_projection",
+        "line": 801
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_receipt_id_reuse_cannot_upgrade_failed_receipt_to_pass",
+        "line": 860
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_startup_replays_pending_task_projection_outbox",
+        "line": 921
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_positive_receipt_rejects_non_boolean_pass_and_nonzero_exit",
+        "line": 967
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_positive_receipt_artifact_must_be_visible_to_receipt_tenant",
+        "line": 1010
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_completion_fails_closed_when_artifact_resolver_is_missing",
+        "line": 1071
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_completion_selects_latest_receipt_when_input_is_oldest_first",
+        "line": 1092
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_completion_fails_closed_when_sqlite_receipt_store_cannot_open",
+        "line": 1144
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_project_lint_command_receipt_binds_runner_to_configured_alias",
+        "line": 1226
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_receipt_and_task_projection_publish_after_atomic_commit",
+        "line": 1326
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_receipt_writer_waits_for_shared_publication_lock",
+        "line": 1400
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_receipt_rollback_never_publishes_or_changes_projection",
+        "line": 1481
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_task_completion_rejects_receipt_from_wrong_owner",
+        "line": 1580
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_task_completion_rejects_receipt_from_old_mutation_generation",
+        "line": 1597
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_recorded_change_advances_generation_and_invalidates_existing_receipt",
+        "line": 1619
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_task_completion_rejects_receipt_from_old_repository_revision",
+        "line": 1646
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_model_review_receipt_cannot_satisfy_test_criterion",
+        "line": 1670
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_documentation_source_review_rejects_test_receipt",
+        "line": 1717
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_cancelled_task_cannot_complete_from_receipt",
+        "line": 1748
+      },
+      {
+        "selector": "tests/test_agent_verification.py::test_structured_project_receipt_recomputes_argv_env_and_arguments",
+        "line": 1775
+      }
+    ],
+    "tests/test_agent_crash_recovery.py": [
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_event_append_survives_restart_before_publish",
+        "line": 66
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_task_creation_survives_restart_before_publish",
+        "line": 87
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_task_transition_survives_restart_before_publish",
+        "line": 113
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_crash_after_task_event_append_before_commit_rolls_back_projection_and_event",
+        "line": 143
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_task_checkpoint_survives_restart_before_publish",
+        "line": 235
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_task_completion_survives_restart_before_publish",
+        "line": 271
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_task_failure_survives_restart_before_publish",
+        "line": 373
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_memory_record_survives_restart_before_publish",
+        "line": 397
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_receipt_and_task_projection_survive_restart_before_publish",
+        "line": 429
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_swarm_step_and_blackboard_survive_restart_before_publish",
+        "line": 471
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_blackboard_update_survives_restart_before_publish",
+        "line": 514
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_blackboard_delete_survives_restart_before_publish",
+        "line": 539
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_blackboard_merge_survives_restart_before_publish",
+        "line": 558
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_swarm_cancel_survives_restart_before_publish",
+        "line": 590
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_swarm_dispatch_phases_recover_lease_after_restart",
+        "line": 620
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_compaction_group_survives_restart_before_publish",
+        "line": 713
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_memory_relation_survives_restart_before_publish",
+        "line": 832
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_memory_expiration_survives_restart_before_publish",
+        "line": 853
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_memory_revision_staleness_survives_restart_before_publish",
+        "line": 883
+      },
+      {
+        "selector": "tests/test_agent_crash_recovery.py::test_committed_memory_quarantine_survives_restart_before_publish",
+        "line": 924
+      }
+    ],
+    "tests/test_agent_state_reliability.py": [
+      {
+        "selector": "tests/test_agent_state_reliability.py::test_event_store_schema_and_publish_overflow",
+        "line": 187
+      }
+    ]
+  },
+  "source_changes": [],
+  "completion_boundary": "Task/receipt fault tests do not establish live Agent OS task identity, live receipt attachment or verify_completion.",
+  "receipt_scope": "T08 isolated root-byte snapshot; not root-owned execution."
+}

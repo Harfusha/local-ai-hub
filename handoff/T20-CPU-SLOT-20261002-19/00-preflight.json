@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-19",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_client_operation_acceptance.py",
+  "route": "native_fallback_user_authorized",
+  "input_sha256_before": {
+    "tests/test_client_operation_acceptance.py": "530590EF5F3032CDC1321EB226F85A9CF3012FE631CBC902124A9DD1362132EC",
+    "src/local_ai_hub/client.py": "0C3690E24499DEC22A4EC1295BAEA06FF52E54880021E7A432A4BD733D15BC1D"
+  },
+  "owner_manifest_sha256": "57610EC4E0B5BFA5BF1B5A36F44A28EB713144A0881C5CBBECB4F64B590BAE70",
+  "acceptance_scope": "T01 bounded HubClient operation acceptance module only; not full 530-operation surface acceptance"
+}

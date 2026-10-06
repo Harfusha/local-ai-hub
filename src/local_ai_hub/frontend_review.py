@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -59,6 +60,39 @@ class FrontendModelContext:
     computed_styles: dict[str, Any]
     viewport: dict[str, Any]
     runtime: dict[str, Any]
+
+    @property
+    def observation_sources(self) -> dict[str, dict[str, dict[str, Any]]]:
+        """Project only stable, scalar facts that can be independently checked."""
+        result: dict[str, dict[str, dict[str, Any]]] = {}
+        for source_name in ("dom", "accessibility", "computed_styles", "runtime"):
+            source = getattr(self, source_name)
+            if not isinstance(source, dict):
+                continue
+            elements = source.get("elements", source.get("nodes", []))
+            indexed: dict[str, dict[str, Any]] = {}
+            entries = (
+                ((None, element) for element in elements)
+                if isinstance(elements, list)
+                else source.items()
+            )
+            for source_id, element in entries:
+                if not isinstance(element, dict):
+                    continue
+                element_id = element.get("element_id", element.get("id", source_id))
+                if not isinstance(element_id, str) or not element_id:
+                    continue
+                fields: dict[str, Any] = {}
+                for key, value in element.items():
+                    if isinstance(value, (str, bool, int)):
+                        fields[key] = value
+                    elif isinstance(value, float) and math.isfinite(value):
+                        fields[key] = value
+                if fields:
+                    indexed[element_id] = fields
+            if indexed:
+                result[source_name] = indexed
+        return result
 
     def prompt_payload(self) -> dict[str, Any]:
         """Return model context without duplicating image transport data."""

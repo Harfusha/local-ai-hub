@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "task": "T08 root-current static integration inventory",
+  "date": "2026-10-02",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "source_files": {
+    "src/local_ai_hub/agent_events.py": {
+      "exists": true,
+      "sha256": "09B31135FF2493F2B8E236074DBF7FB2C9CC274BC2DD5841ECDDD07F974ADA5A"
+    },
+    "src/local_ai_hub/agent_tasks.py": {
+      "exists": true,
+      "sha256": "79487FCE9F8A477A9DE888A6C7FEF77C3526F9B63151EF69FF0CE2019502BA45"
+    },
+    "src/local_ai_hub/agent_verification.py": {
+      "exists": true,
+      "sha256": "FB477438FF110AB80FE6F2D486FFA5D87AAB1A855735FCD94592F8080EAF0017"
+    },
+    "src/local_ai_hub/agent_context.py": {
+      "exists": true,
+      "sha256": "C4E050715A090633BD7F7AADF426FD16952878C6FE03CF4468F33EB5E14988A2"
+    }
+  },
+  "provider_methods": {
+    "append_in_transaction": {
+      "signature": "self, con: Any, event: AgentEvent, *, strict_idempotency: bool=False",
+      "returns": "AppendResult",
+      "sha256": "CA552009CBC04958058706DFCB2FE5430EFCF1443082B6120387647FCE9DA843"
+    },
+    "ordered_event_publication": {
+      "signature": "self, con: Any",
+      "returns": "Iterator[Callable[[Sequence[AgentEvent]], None]]",
+      "sha256": "9987EDEC4159FA0AB86F037727CFBF29A1138BF4A64EE5BEF209AB005F51B290"
+    },
+    "event_page": {
+      "signature": "self, stream_id: str, after_seq: int=0, limit: int=1000, through_seq: int | None=None",
+      "returns": "dict[str, Any]",
+      "sha256": "3FB5427C151E55EA7DB6766A646CCF9A183F3DC1AD24F8DEAD3D2A74D398EE8E"
+    },
+    "add_verification_receipt_in_transaction": {
+      "signature": "self, con: sqlite3.Connection, task_id: str, criterion: str, receipt_id: str",
+      "returns": "tuple[TaskState | None, AgentEvent | None]",
+      "sha256": "8B345B229CFAEBE79F10F394CA63CDB60AC08CAABDD52FE190B697EBBAE2B8FA"
+    }
+  },
+  "acceptance_tests": {
+    "tests/test_agent_t08_durable_contract.py": {
+      "exists": true,
+      "sha256": "2B75E1FBB4EF0DCBC7B82BDFA811DE688E54B90A9D23D74F0D4A29BC1A9B2725",
+      "selectors_checked": {}
+    },
+    "tests/test_agent_t08_cache_isolation.py": {
+      "exists": true,
+      "sha256": "C132EF4F7CA3EBD6FD072B10C4AC5835501EC6660D23D62F95690697561E8E75",
+      "selectors_checked": {
+        "test_disposable_cache_rebuild_preserves_live_agent_state": true
+      }
+    },
+    "tests/test_agent_t08_receipt_transaction.py": {
+      "exists": true,
+      "sha256": "D27745D7407DD7596F8ED1C1F7DFFE65660DD3C29D7787657D9478A3DA940699",
+      "selectors_checked": {
+        "test_receipt_projection_helper_is_caller_transaction_atomic": true
+      }
+    },
+    "tests/test_agent_t08_event_page_snapshot.py": {
+      "exists": true,
+      "sha256": "32A481ED12F35D309A53E6A2203FFB278837FF6E71E432CFF5AC5D582B74ED66",
+      "selectors_checked": {
+        "test_event_page_through_seq_excludes_events_appended_between_pages": true
+      }
+    },
+    "tests/test_agent_t08_migration_recovery.py": {
+      "exists": true,
+      "sha256": "7218D318223FCEC6705B1514EB0820A4B88FB635CAB21C1BF35AFBE259022E73",
+      "selectors_checked": {
+        "test_legacy_incident_schema_is_allowlisted_and_preserved_on_migration": true,
+        "test_migration_backup_timeout_preserves_durable_state_bytes": true,
+        "test_versioned_migration_backup_restart_preserves_agent_state": true
+      }
+    },
+    "tests/test_agent_tasks.py": {
+      "exists": true,
+      "sha256": "20E3203F037185F1C6CF1C2165088F485FB6AB70DBC158229AF18353FD2DF1A1",
+      "selectors_checked": {
+        "test_transition_idempotency_reuse_by_different_actor_is_rejected": true,
+        "test_checkpoint_idempotency_replay_requires_same_actor": true,
+        "test_same_status_transition_rejects_idempotency_key_owned_by_another_actor": true,
+        "test_completed_uses_task_context_repo_root_without_worktree_checkpoint": true
+      }
+    },
+    "tests/test_agent_verification.py": {
+      "exists": true,
+      "sha256": "0BBD285D18251355A54A9652A0BE16B6BD2DA98658DBDF267DFB9CC888193E96",
+      "selectors_checked": {}
+    },
+    "tests/test_lease_atomic_deadlock.py": {
+      "exists": true,
+      "sha256": "083EA21B0DAB45BC590207ACAC54097DCAA47A1A013E35D1B709C08195E328F5",
+      "selectors_checked": {}
+    },
+    "tests/test_agent_t08_live_order.py": {
+      "exists": true,
+      "sha256": "23472C0021DD415622882E2942F6DC99C153632D93CCA5728808AAC402F17BF9",
+      "selectors_checked": {}
+    },
+    "tests/test_agent_state_e2e.py": {
+      "exists": true,
+      "sha256": "152E7FA69B3CEBD42F01539FBB71D88F776FFD6C479D8742756A2A34695A6390",
+      "selectors_checked": {}
+    },
+    "tests/test_agent_state_reliability.py": {
+      "exists": true,
+      "sha256": "3FFF9085D5D7261E5863144391080C75CAAB068155DC10D6C02146BF690A3ECF",
+      "selectors_checked": {}
+    },
+    "tests/test_swarm_orchestrator.py": {
+      "exists": true,
+      "sha256": "7240C7ECF7BDCDE44DE90E0BDE0D7DD15DFAAA5880DE195E63F480FFB12A70F5",
+      "selectors_checked": {}
+    },
+    "tests/test_sse_events_stream.py": {
+      "exists": true,
+      "sha256": "BCEE7A41E7A561DE6E1F4C5F7C663CCFE518CAC9616F48064A5CD86CB67EEECC",
+      "selectors_checked": {}
+    },
+    "tests/test_agent_crash_recovery.py": {
+      "exists": true,
+      "sha256": "210B0C5B3BA41D836DFFF5D30CBB5CEA2639B4935C1613D294DBDB6EAD371D9C",
+      "selectors_checked": {
+        "test_crash_after_task_event_append_before_commit_rolls_back_projection_and_event": true,
+        "test_os_exit_after_task_event_insert_rolls_back_projection_and_event": true,
+        "test_committed_receipt_and_task_projection_survive_restart_before_publish": true
+      }
+    },
+    "tests/test_agent_t08_crash_after_commit.py": {
+      "exists": true,
+      "sha256": "9C949A0CB2D9FC5F58FA7264EF1E8F5DEF13BB657328998591D0A97918849E8F",
+      "selectors_checked": {
+        "test_process_exit_during_receipt_write_recovers_atomically": true
+      }
+    },
+    "tests/test_agent_task_memory_adoption.py": {
+      "exists": true,
+      "sha256": "FFE89E25A765C2727A3DA7B4BD5ABD369B1F05936DC8F711D5521B95A31CD467",
+      "selectors_checked": {
+        "test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope": true
+      }
+    },
+    "tests/test_t09_command_execution_completion.py": {
+      "exists": true,
+      "sha256": "E90EA9C7EDAEE6DC64203FE30FAE2706269C4028135B68E5D023492EDCF5F91F",
+      "selectors_checked": {
+        "test_actual_broker_receipt_completes_agent_task": true
+      }
+    }
+  },
+  "static_result": "All listed files exist and AST-parse. All named T08 selectors above exist. Root includes blackboard trust selector and T09 broker receipt completion selector.",
+  "validation": {
+    "tests_run_this_turn": false,
+    "reason": "T02 benchmark slot remains active; current root hashes still need runtime test receipts.",
+    "root_written_by_T08": false
+  }
+}

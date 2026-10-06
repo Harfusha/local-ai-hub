@@ -1,0 +1,165 @@
+diff --git a/src/local_ai_hub/process_utils.py b/src/local_ai_hub/process_utils.py
+index d0488b75c3fb5c589d6d79afe362c228c7a69ee5..4f1a5332f3cd5e60df9d7aa85af7b1d1cfb7ce8c 100644
+--- a/src/local_ai_hub/process_utils.py
++++ b/src/local_ai_hub/process_utils.py
+@@ -307,41 +307,10 @@
+             return cp.returncode in {0, 128}
+         except Exception:
+             return not pid_alive(pid)
+-    group_id = pid if process_group in (None, 0) else int(process_group)
+-
+-    def group_alive() -> bool:
+-        try:
+-            os.killpg(group_id, 0)
+-            return True
+-        except ProcessLookupError:
+-            return False
+-        except PermissionError:
+-            return True
+-        except OSError:
+-            return pid_alive(pid)
+-
+-    try:
+-        # Runtime children are started in their own sessions. Prefer the group, then
+-        # fall back to the process itself for older/recovered installations.
+-        try:
+-            os.killpg(group_id, signal.SIGTERM)
+-        except OSError:
+-            os.kill(pid, signal.SIGTERM)
+-        deadline = time.monotonic() + max(0.1, grace_seconds)
+-        while time.monotonic() < deadline:
+-            if not group_alive():
+-                return True
+-            time.sleep(0.05)
+-        try:
+-            os.killpg(group_id, signal.SIGKILL)
+-        except OSError:
+-            try:
+-                os.kill(pid, signal.SIGKILL)
+-            except OSError:
+-                pass
+-        return not group_alive()
+-    except OSError:
+-        return True
++    # POSIX process groups have no stable signal handle here. A numeric PGID (or
++    # PID fallback) can be reused after an ownership check and before killpg/kill.
++    # Fail closed until cleanup is passed a continuously held owner capability.
++    return False
+ 
+ 
+ def _resume_suspended_process(process: subprocess.Popen[Any]) -> bool:
+diff --git a/tests/test_command_concurrency_contract.py b/tests/test_command_concurrency_contract.py
+index c1913c1e2ef9648e8602ca1a32f91b70fc22f8b5..282bd7ee64432c94c484f8a9efd2c7545f61ca80 100644
+--- a/tests/test_command_concurrency_contract.py
++++ b/tests/test_command_concurrency_contract.py
+@@ -12,6 +12,8 @@
+ from collections import deque
+ 
+ import pytest
++
++import local_ai_hub.process_utils as process_utils_module
+ 
+ from local_ai_hub.commands import CommandBroker
+ from local_ai_hub.process_utils import pid_alive
+@@ -1407,3 +1409,101 @@
+     assert result["preflight"] is True
+     assert broker._active_commands == {}
+     assert broker._inflight == {}
++
++
++def test_posix_numeric_process_group_cleanup_fails_closed_without_signals(monkeypatch) -> None:
++    calls: list[tuple[object, ...]] = []
++
++    class PosixOsProxy:
++        name = "posix"
++
++        @staticmethod
++        def killpg(group_id, _sig):
++            calls.append(("killpg", group_id))
++            raise ProcessLookupError
++
++        @staticmethod
++        def kill(pid, _sig):
++            calls.append(("kill", pid))
++            raise ProcessLookupError
++
++    monkeypatch.setattr(process_utils_module, "os", PosixOsProxy())
++
++    result = process_utils_module.terminate_tree(24569, process_group=24569, grace_seconds=0.1)
++
++    assert result is False
++    assert calls == []
++
++def test_posix_terminate_tree_refuses_unowned_numeric_pid_and_group(monkeypatch) -> None:
++    calls: list[tuple[object, ...]] = []
++
++    class PosixOsProxy:
++        name = "posix"
++
++        @staticmethod
++        def killpg(group_id, sig):
++            calls.append(("killpg", group_id, sig))
++
++        @staticmethod
++        def kill(pid, sig):
++            calls.append(("kill", pid, sig))
++
++    monkeypatch.setattr(process_utils_module, "os", PosixOsProxy())
++    monkeypatch.setattr(process_utils_module.signal, "SIGKILL", 9, raising=False)
++
++    assert process_utils_module.terminate_tree(24569, grace_seconds=0.1) is False
++    assert process_utils_module.terminate_tree(
++        24569, process_group=24569, grace_seconds=0.1
++    ) is False
++    assert calls == []
++
++def test_explicit_process_group_reports_unknown_liveness_without_pid_fallback(monkeypatch) -> None:
++    calls: list[tuple[object, ...]] = []
++
++    class PosixOsProxy:
++        name = "posix"
++
++        @staticmethod
++        def killpg(group_id, sig):
++            calls.append(("killpg", group_id, sig))
++            raise OSError(22, "group state unavailable")
++
++        @staticmethod
++        def kill(pid, _sig):
++            calls.append(("kill", pid))
++            raise ProcessLookupError
++
++    monkeypatch.setattr(process_utils_module, "os", PosixOsProxy())
++    monkeypatch.setattr(process_utils_module.signal, "SIGKILL", 9, raising=False)
++
++    result = process_utils_module.terminate_tree(24569, process_group=24569, grace_seconds=0.1)
++
++    assert result is False
++    assert calls == []
++
++def test_posix_cleanup_does_not_report_success_when_signals_are_denied(monkeypatch) -> None:
++    calls: list[tuple[object, ...]] = []
++
++    class PosixOsProxy:
++        name = "posix"
++
++        @staticmethod
++        def killpg(group_id, sig):
++            calls.append(("killpg", group_id, sig))
++            raise PermissionError("group signal denied")
++
++        @staticmethod
++        def kill(pid, sig):
++            calls.append(("kill", pid, sig))
++            raise PermissionError("leader signal denied")
++
++    monkeypatch.setattr(process_utils_module, "os", PosixOsProxy())
++    monkeypatch.setattr(process_utils_module.signal, "SIGKILL", 9, raising=False)
++    monkeypatch.setattr(process_utils_module, "pid_alive", lambda _pid: True)
++
++    result = process_utils_module.terminate_tree(
++        24569, process_group=24569, grace_seconds=0.1
++    )
++
++    assert result is False
++    assert calls == []
