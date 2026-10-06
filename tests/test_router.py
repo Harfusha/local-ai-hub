@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 
 def _router():
     from local_ai_hub.router import ModelRouter
@@ -115,3 +117,17 @@ def test_repository_context_does_not_fake_a_semantic_user_intent():
     route = _router().classify("Find the exact symbol", context="comment: explain alternatives")
 
     assert route["semantic_required"] is False
+
+
+@pytest.mark.parametrize("profile", ["cpu", "low", "integrated", "balanced", "high", "max"])
+def test_fast_route_rejects_background_model_override(profile):
+    from local_ai_hub.hardware import PROFILE_OVERRIDES
+    from local_ai_hub.router import ModelRouter
+
+    models = PROFILE_OVERRIDES[profile]["models"]
+    router = ModelRouter({"models": models})
+    route = router.classify("write a small helper", task_type="code", complexity="fast")
+
+    assert route["model"] == models["fast_code"]
+    with pytest.raises(ValueError, match="quality floor"):
+        router.apply_model_override(route, models["background_code"])

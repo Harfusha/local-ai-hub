@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import ntpath
 import os
 import posixpath
@@ -10,6 +11,7 @@ from pathlib import Path, PureWindowsPath
 import signal
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -18,6 +20,39 @@ from typing import Any, Sequence
 
 _LOW_PRIORITY_VALUES = {"idle", "below_normal", "normal"}
 _POST_TERMINATION_DRAIN_SECONDS = 0.5
+_WORKTREE_OWNERSHIP_FILE = "local-ai-hub-worktree-ownership.json"
+_CANCEL_POLL_SECONDS = 0.1
+_CANCEL_GRACE_SECONDS = 1.0
+
+
+class ProcessCancelledError(subprocess.SubprocessError):
+    """Raised after a cancelled child process tree is terminated and drained."""
+
+    def __init__(self, cmd: Sequence[str], output: Any = None, stderr: Any = None):
+        super().__init__("process cancelled")
+        self.cmd = list(cmd)
+        self.output = output
+        self.stderr = stderr
+
+
+class ProcessCleanupUnverifiedError(subprocess.SubprocessError):
+    """Raised when cancellation cannot prove child-tree termination."""
+
+    def __init__(
+        self,
+        cmd: Sequence[str],
+        *,
+        process: subprocess.Popen[Any],
+        tree_termination_confirmed: bool,
+        output: Any = None,
+        stderr: Any = None,
+    ):
+        super().__init__("process cleanup could not be verified")
+        self.cmd = list(cmd)
+        self.process = process
+        self.tree_termination_confirmed = bool(tree_termination_confirmed)
+        self.output = output
+        self.stderr = stderr
 
 
 @dataclass(frozen=True)
@@ -406,6 +441,8 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
     for key, value in hidden_run_kwargs(text=text, new_group=True).items():
         opts.setdefault(key, value)
     timeout = opts.pop("timeout", 60.0)
+    cancel_event = opts.pop("cancel_event", None)
+    cancel_grace_seconds = float(opts.pop("cancel_grace_seconds", _CANCEL_GRACE_SECONDS))
     check = bool(opts.pop("check", False))
     input_data = opts.pop("input", None)
     capture_output = bool(opts.pop("capture_output", False))
@@ -437,6 +474,8 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
             opts["process_group"] = 0
 
     command = [str(x) for x in argv]
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelledError(command)
     process: subprocess.Popen[Any] | None = None
     try:
         process = subprocess.Popen(command, **opts)
@@ -461,7 +500,46 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
             close_job_object(job_handle)
         raise
     try:
-        stdout, stderr = process.communicate(input=input_data, timeout=timeout)
+        if cancel_event is None:
+            stdout, stderr = process.communicate(input=input_data, timeout=timeout)
+        else:
+            deadline = None if timeout is None else time.monotonic() + float(timeout)
+            first_communicate = True
+            while True:
+                if cancel_event.is_set():
+                    process_group = None
+                    if os.name != "nt":
+                        requested_group = opts.get("process_group")
+                        if requested_group is not None:
+                            process_group = process.pid if int(requested_group) == 0 else int(requested_group)
+                        elif opts.get("start_new_session"):
+                            process_group = process.pid
+                    cleanup = _terminate_and_drain(
+                        process,
+                        process_group=process_group,
+                        grace_seconds=cancel_grace_seconds,
+                        require_tree_termination=True,
+                    )
+                    error = ProcessCancelledError(command, cleanup.stdout, cleanup.stderr)
+                    _attach_cleanup_outcome(error, cleanup)
+                    raise error
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                wait_for = _CANCEL_POLL_SECONDS if remaining is None else min(_CANCEL_POLL_SECONDS, remaining)
+                try:
+                    stdout, stderr = process.communicate(
+                        input=input_data if first_communicate else None,
+                        timeout=wait_for,
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    first_communicate = False
+                    continue
+    except ProcessCancelledError:
+        raise
+    except ProcessCleanupUnverifiedError:
+        raise
     except subprocess.TimeoutExpired as timeout_error:
         process_group = None
         if os.name != "nt":
@@ -498,9 +576,32 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
 
 
 def _terminate_and_drain(
-    process: subprocess.Popen[Any], *, process_group: int | None = None
+    process: subprocess.Popen[Any], *, process_group: int | None = None,
+    grace_seconds: float | None = None,
+    require_tree_termination: bool = False,
 ) -> _CleanupOutcome:
+    def outcome(stdout: Any, stderr: Any) -> _CleanupOutcome:
+        result = _CleanupOutcome(stdout, stderr, cleanup_confirmed, process, process_group)
+        if require_tree_termination:
+            try:
+                leader_exited = process.poll() is not None
+            except Exception:
+                leader_exited = False
+            if not cleanup_confirmed or not leader_exited:
+                error = ProcessCleanupUnverifiedError(
+                    getattr(process, "args", ()),
+                    process=process,
+                    tree_termination_confirmed=cleanup_confirmed,
+                    output=stdout,
+                    stderr=stderr,
+                )
+                _attach_cleanup_outcome(error, result)
+                raise error
+        return result
+
     cleanup_kwargs = {"process_group": process_group} if process_group is not None else {}
+    if grace_seconds is not None:
+        cleanup_kwargs["grace_seconds"] = grace_seconds
     job_handle = getattr(process, "_local_ai_job_handle", None)
     cleanup_confirmed = False
     if job_handle:
@@ -522,7 +623,7 @@ def _terminate_and_drain(
 
     try:
         stdout, stderr = process.communicate(timeout=_POST_TERMINATION_DRAIN_SECONDS)
-        return _CleanupOutcome(stdout, stderr, cleanup_confirmed, process, process_group)
+        return outcome(stdout, stderr)
     except subprocess.TimeoutExpired as drain_error:
         retry_confirmed = _request_tree_cleanup(process, cleanup_kwargs)
         cleanup_confirmed = cleanup_confirmed or retry_confirmed
@@ -530,13 +631,7 @@ def _terminate_and_drain(
         final_stderr = drain_error.stderr
         try:
             stdout, stderr = process.communicate(timeout=_POST_TERMINATION_DRAIN_SECONDS)
-            return _CleanupOutcome(
-                stdout,
-                stderr,
-                cleanup_confirmed,
-                process,
-                process_group,
-            )
+            return outcome(stdout, stderr)
         except subprocess.TimeoutExpired as final_drain_error:
             if final_drain_error.output is not None:
                 final_output = final_drain_error.output
@@ -560,7 +655,9 @@ def _terminate_and_drain(
                 process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-        return _CleanupOutcome(final_output, final_stderr, cleanup_confirmed, process, process_group)
+        return outcome(final_output, final_stderr)
+    except ProcessCleanupUnverifiedError:
+        raise
     except Exception:
         if cleanup_confirmed:
             if os.name == "nt":
@@ -572,12 +669,18 @@ def _terminate_and_drain(
                 process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-        return _CleanupOutcome(None, None, cleanup_confirmed, process, process_group)
+        return outcome(None, None)
 
 
 def _request_tree_cleanup(
-    process: subprocess.Popen[Any], cleanup_kwargs: dict[str, int]
+    process: subprocess.Popen[Any], cleanup_kwargs: dict[str, Any]
 ) -> bool:
+    if os.name == "nt":
+        # Keep cleanup on the continuously owned Job Object. Closing it never
+        # authorizes a later taskkill against a potentially recycled numeric PID.
+        if getattr(process, "_local_ai_job_handle", None):
+            return _release_process_job(process)
+        return False
     try:
         return bool(terminate_tree(process.pid, **cleanup_kwargs))
     except Exception:
@@ -860,11 +963,68 @@ def create_sandboxed_job_object(
 
 
 
+def _git_worktree_admin_dir(repo: Path, target: Path) -> Path | None:
+    common_proc = run_hidden(
+        ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        **hidden_run_kwargs(),
+    )
+    admin_proc = run_hidden(
+        ["git", "-C", str(target), "rev-parse", "--git-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        **hidden_run_kwargs(),
+    )
+    if common_proc.returncode != 0 or admin_proc.returncode != 0:
+        return None
+    common = Path(common_proc.stdout.strip())
+    admin = Path(admin_proc.stdout.strip())
+    if not common.is_absolute():
+        common = repo / common
+    if not admin.is_absolute():
+        admin = target / admin
+    common = common.resolve(strict=False)
+    admin = admin.resolve(strict=False)
+    try:
+        admin.relative_to(common / "worktrees")
+    except ValueError:
+        return None
+    return admin
+
+
+def get_git_worktree_ownership(repo_root: str | Path, worktree_path: str | Path) -> dict[str, Any] | None:
+    """Read ownership metadata stored outside a linked worktree's working files."""
+    repo = Path(repo_root).expanduser().resolve(strict=False)
+    target = Path(worktree_path).expanduser().resolve(strict=False)
+    admin = _git_worktree_admin_dir(repo, target)
+    if admin is None:
+        return None
+    marker = admin / "local_ai_hub_worktree.json"
+    try:
+        import json
+
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def create_git_worktree(
     repo_root: str | Path,
     branch_name: str | None = None,
     worktree_path: str | Path | None = None,
     base_commit: str = "HEAD",
+    *,
+    task_id: str = "",
+    owner: str = "",
+    created_at: float | None = None,
+    ttl_seconds: float = 86400.0,
+    expires_at: float | None = None,
 ) -> dict[str, Any]:
     """Create an isolated temporary Git worktree for safe agent modifications."""
     repo = Path(repo_root).expanduser().resolve(strict=False)
@@ -873,34 +1033,116 @@ def create_git_worktree(
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found in PATH"}
 
+    import math
+    import tempfile
     import uuid
-    lease_id = f"wt_{uuid.uuid4().hex[:8]}"
+    try:
+        created_at_value = float(created_at) if created_at is not None else time.time()
+        ttl_value = float(ttl_seconds)
+        expires_at_value = float(expires_at) if expires_at is not None else None
+        task_id_value = str(task_id)
+        owner_value = str(owner)
+    except Exception as exc:
+        return {"success": False, "error": f"invalid worktree metadata: {exc}"}
+    if (
+        not math.isfinite(created_at_value)
+        or not math.isfinite(ttl_value)
+        or (expires_at_value is not None and not math.isfinite(expires_at_value))
+    ):
+        return {"success": False, "error": "invalid worktree metadata: values must be finite"}
+    ttl_value = max(60.0, min(ttl_value, 30 * 24 * 60 * 60.0))
+    lease_id = f"lease_{uuid.uuid4().hex[:12]}"
+    worktree_id = f"worktree_{uuid.uuid4().hex[:12]}"
     branch = branch_name or f"lease/{lease_id}"
+    temp_root = Path(tempfile.gettempdir()).resolve(strict=False)
     if not worktree_path:
-        import tempfile
-        target_dir = Path(tempfile.gettempdir()) / f"lah_wt_{lease_id}"
+        target_dir = temp_root / f"lah_wt_{worktree_id}"
     else:
-        target_dir = Path(worktree_path).resolve(strict=False)
+        raw_target = Path(worktree_path).expanduser()
+        if ".." in raw_target.parts:
+            return {"success": False, "error": "worktree path traversal is not allowed"}
+        target_dir = raw_target.resolve(strict=False)
+    try:
+        target_dir.relative_to(temp_root)
+    except ValueError:
+        return {"success": False, "error": "worktree path escapes the temporary root"}
 
     cmd = ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(target_dir), base_commit]
+    created_checkout = False
     try:
-        completed = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
+        completed = run_hidden(cmd, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
         if completed.returncode != 0:
             return {
                 "success": False,
                 "error": completed.stderr.strip() or "failed to create git worktree",
                 "exit_code": completed.returncode,
             }
+        created_checkout = True
+        metadata_path = _worktree_ownership_path(target_dir)
+        if metadata_path is None:
+            raise RuntimeError("could not locate worktree administrative directory")
+        metadata = {
+            "schema_version": 1,
+            "worktree_id": worktree_id,
+            "task_id": task_id_value,
+            "owner": owner_value,
+            "repo_root": str(repo),
+            "worktree_path": str(target_dir),
+            "branch": branch,
+            "created_at": created_at_value,
+            "ttl_seconds": ttl_value,
+            "expires_at": expires_at_value,
+        }
+        metadata_tmp = metadata_path.with_name(f".{metadata_path.name}.{uuid.uuid4().hex}.tmp")
+        metadata_tmp.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
+        os.replace(metadata_tmp, metadata_path)
         return {
             "success": True,
             "lease_id": lease_id,
+            "worktree_id": worktree_id,
             "worktree_path": str(target_dir),
             "branch": branch,
             "base_commit": base_commit,
             "repo_root": str(repo),
+            "task_id": task_id_value,
+            "owner": owner_value,
+            "created_at": created_at_value,
+            "ttl_seconds": ttl_value,
+            "expires_at": expires_at_value,
         }
     except Exception as exc:
+        if created_checkout:
+            subprocess.run(
+                ["git", "-C", str(repo), "worktree", "remove", str(target_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+                **hidden_run_kwargs(),
+            )
         return {"success": False, "error": str(exc)}
+
+
+def _git_value(root: Path, *arguments: str, timeout: float = 15.0) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+            **hidden_run_kwargs(),
+        )
+    except Exception:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _worktree_ownership_path(worktree_path: str | Path) -> Path | None:
+    git_dir = _git_value(Path(worktree_path), "rev-parse", "--absolute-git-dir")
+    if not git_dir:
+        return None
+    return Path(git_dir).expanduser().resolve(strict=False) / _WORKTREE_OWNERSHIP_FILE
 
 
 def remove_git_worktree(
@@ -908,42 +1150,141 @@ def remove_git_worktree(
     worktree_path: str | Path,
     delete_branch: bool = True,
     branch_name: str | None = None,
+    *,
+    worktree_id: str = "",
+    expected_task_id: str = "",
+    expected_owner: str = "",
+    expected_created_at: float | None = None,
+    expected_ttl_seconds: float | None = None,
+    expected_expires_at: float | None = None,
 ) -> dict[str, Any]:
-    """Remove a previously leased Git worktree and optionally prune its branch."""
+    """Remove only clean worktree whose persisted owner metadata matches caller."""
     repo = Path(repo_root).expanduser().resolve(strict=False)
-    target = Path(worktree_path).resolve(strict=False)
+    raw_target = Path(worktree_path).expanduser()
+    if raw_target.is_symlink():
+        return {"success": False, "error": "worktree path must not be a symlink"}
+    target = raw_target.resolve(strict=False)
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
-
+    if not worktree_id.strip():
+        return {"success": False, "error": "worktree ownership identifier is required"}
     try:
-        cmd_rm = ["git", "-C", str(repo), "worktree", "remove", "--force", str(target)]
-        subprocess.run(cmd_rm, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
+        temp_root = Path(tempfile.gettempdir()).resolve(strict=False)
+        try:
+            target.relative_to(temp_root)
+        except ValueError:
+            return {"success": False, "error": "worktree path escapes the temporary root"}
+        if not target.is_dir() or not (repo / ".git").exists():
+            return {"success": False, "error": "repository or worktree path is unavailable"}
 
-        cmd_prune = ["git", "-C", str(repo), "worktree", "prune"]
-        subprocess.run(cmd_prune, capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs())
+        repo_common_raw = _git_value(repo, "rev-parse", "--git-common-dir")
+        target_common_raw = _git_value(target, "rev-parse", "--git-common-dir")
+        if not repo_common_raw or not target_common_raw:
+            return {"success": False, "error": "repository worktree identity is unavailable"}
+        repo_common = Path(repo_common_raw)
+        target_common = Path(target_common_raw)
+        if not repo_common.is_absolute():
+            repo_common = repo / repo_common
+        if not target_common.is_absolute():
+            target_common = target / target_common
+        if repo_common.resolve(strict=False) != target_common.resolve(strict=False):
+            return {"success": False, "error": "worktree belongs to another repository"}
 
-        if target.exists():
-            try:
-                shutil.rmtree(target, ignore_errors=True)
-            except Exception:
-                pass
+        top_level = _git_value(target, "rev-parse", "--show-toplevel")
+        if not top_level or Path(top_level).resolve(strict=False) != target:
+            return {"success": False, "error": "worktree path does not match checkout root"}
+        listed = _git_value(repo, "worktree", "list", "--porcelain", timeout=20)
+        listed_paths = {
+            Path(line.removeprefix("worktree ")).resolve(strict=False)
+            for line in listed.splitlines()
+            if line.startswith("worktree ")
+        }
+        if target not in listed_paths:
+            return {"success": False, "error": "checkout is not registered to this repository"}
 
+        metadata_path = _worktree_ownership_path(target)
+        if metadata_path is None or not metadata_path.is_file():
+            return {"success": False, "error": "worktree ownership metadata is unavailable"}
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict):
+            return {"success": False, "error": "worktree ownership metadata is invalid"}
+        recorded_branch = str(metadata.get("branch", ""))
+        current_branch = _git_value(target, "symbolic-ref", "--short", "HEAD")
+        if (
+            metadata.get("schema_version") != 1
+            or str(metadata.get("worktree_id", "")) != worktree_id
+            or Path(str(metadata.get("repo_root", ""))).resolve(strict=False) != repo
+            or Path(str(metadata.get("worktree_path", ""))).resolve(strict=False) != target
+            or not recorded_branch
+            or recorded_branch != (branch_name or recorded_branch)
+            or current_branch != recorded_branch
+        ):
+            return {"success": False, "error": "worktree ownership or branch metadata does not match"}
+        if expected_task_id and str(metadata.get("task_id", "")) != expected_task_id:
+            return {"success": False, "error": "worktree task ownership does not match"}
+        if expected_owner and str(metadata.get("owner", "")) != expected_owner:
+            return {"success": False, "error": "worktree owner metadata does not match"}
+
+        try:
+            created_at = float(metadata.get("created_at"))
+            ttl_seconds = float(metadata.get("ttl_seconds"))
+            expires_at_raw = metadata.get("expires_at")
+            expires_at = float(expires_at_raw) if expires_at_raw is not None else None
+        except (TypeError, ValueError):
+            return {"success": False, "error": "worktree time metadata is invalid"}
+        import math
+        if (
+            not math.isfinite(created_at)
+            or not math.isfinite(ttl_seconds)
+            or ttl_seconds < 60
+            or ttl_seconds > 30 * 24 * 60 * 60
+            or (expires_at is not None and (not math.isfinite(expires_at) or abs(expires_at - (created_at + ttl_seconds)) > max(1e-6, ttl_seconds * 1e-9)))
+        ):
+            return {"success": False, "error": "worktree time metadata is inconsistent"}
+        for expected, actual in (
+            (expected_created_at, created_at),
+            (expected_ttl_seconds, ttl_seconds),
+            (expected_expires_at, expires_at),
+        ):
+            if expected is not None and (actual is None or abs(float(expected) - float(actual)) > max(1e-6, ttl_seconds * 1e-9)):
+                return {"success": False, "error": "worktree time metadata does not match task ownership"}
+
+        status = subprocess.run(
+            ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all", "--ignored"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            **hidden_run_kwargs(),
+        )
+        if status.returncode != 0 or status.stdout.strip():
+            return {"success": False, "error": "worktree contains uncommitted or ignored changes"}
+
+        removed = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "remove", str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            **hidden_run_kwargs(),
+        )
+        if removed.returncode != 0:
+            return {"success": False, "error": removed.stderr.strip() or "Git refused to remove worktree"}
         branch_deleted = False
-        if delete_branch and branch_name:
-            cmd_branch = ["git", "-C", str(repo), "branch", "-D", branch_name]
+        if delete_branch:
+            cmd_branch = ["git", "-C", str(repo), "branch", "-d", recorded_branch]
             proc_b = subprocess.run(cmd_branch, capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs())
             branch_deleted = (proc_b.returncode == 0)
-
         return {
             "success": True,
-            "worktree_removed": True,
+            "worktree_removed": not target.exists(),
             "branch_deleted": branch_deleted,
             "repo_root": str(repo),
             "worktree_path": str(target),
+            "worktree_id": worktree_id,
         }
     except Exception as exc:
         return {"success": False, "error": str(exc)}
-
 
 def list_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
     """Enumerate active Git worktrees and metadata."""
@@ -951,7 +1292,7 @@ def list_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
     try:
-        proc = subprocess.run(
+        proc = run_hidden(
             ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
             capture_output=True, text=True, check=False, timeout=15, **hidden_run_kwargs()
         )
@@ -994,7 +1335,7 @@ def prune_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
     try:
-        proc = subprocess.run(
+        proc = run_hidden(
             ["git", "-C", str(repo), "worktree", "prune", "-v"],
             capture_output=True, text=True, check=False, timeout=15, **hidden_run_kwargs()
         )

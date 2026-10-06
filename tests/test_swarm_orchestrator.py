@@ -14,7 +14,7 @@ from local_ai_hub.swarm import SwarmCoordinator, SwarmState
 def test_swarm_lifecycle_success(tmp_path: Path) -> None:
     db_path = tmp_path / "agent_state.sqlite3"
     agent_state = AgentStateStore(db_path)
-    blackboard = BlackboardStore(db_path)
+    blackboard = BlackboardStore(db_path, state_store=agent_state)
     leases = ScopeLeaseStore(tmp_path)
     verifications = VerificationStore(agent_state)
     coordinator = SwarmCoordinator(db_path, leases=leases, blackboard=blackboard, verifications=verifications)
@@ -84,7 +84,7 @@ def test_swarm_lifecycle_success(tmp_path: Path) -> None:
 def test_swarm_lifecycle_test_failure_triggers_rejection(tmp_path: Path) -> None:
     db_path = tmp_path / "agent_state.sqlite3"
     agent_state = AgentStateStore(db_path)
-    blackboard = BlackboardStore(db_path)
+    blackboard = BlackboardStore(db_path, state_store=agent_state)
     leases = ScopeLeaseStore(tmp_path)
     verifications = VerificationStore(agent_state)
     coordinator = SwarmCoordinator(db_path, leases=leases, blackboard=blackboard, verifications=verifications)
