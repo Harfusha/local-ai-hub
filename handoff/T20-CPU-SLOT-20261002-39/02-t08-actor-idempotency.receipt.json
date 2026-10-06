@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-39",
+  "owner": "T20",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "selector": "tests/test_agent_tasks.py::test_transition_idempotency_reuse_by_different_actor_is_rejected",
+  "status": "PASS",
+  "summary": "1 passed in 0.30s",
+  "input_sha256_before": {
+    "src/local_ai_hub/agent_tasks.py": "79487FCE9F8A477A9DE888A6C7FEF77C3526F9B63151EF69FF0CE2019502BA45",
+    "src/local_ai_hub/agent_events.py": "09B31135FF2493F2B8E236074DBF7FB2C9CC274BC2DD5841ECDDD07F974ADA5A",
+    "tests/test_agent_tasks.py": "20E3203F037185F1C6CF1C2165088F485FB6AB70DBC158229AF18353FD2DF1A1"
+  },
+  "input_sha256_after": {
+    "src/local_ai_hub/agent_tasks.py": "79487FCE9F8A477A9DE888A6C7FEF77C3526F9B63151EF69FF0CE2019502BA45",
+    "src/local_ai_hub/agent_events.py": "09B31135FF2493F2B8E236074DBF7FB2C9CC274BC2DD5841ECDDD07F974ADA5A",
+    "tests/test_agent_tasks.py": "20E3203F037185F1C6CF1C2165088F485FB6AB70DBC158229AF18353FD2DF1A1"
+  },
+  "input_hashes_unchanged": true,
+  "log_path": "handoff/T20-CPU-SLOT-20261002-39/01-t08-actor-idempotency.log",
+  "log_sha256": "188C7D2C78E3347BD0649F49B266C0CD289FD68F9CFE0221F5EA1989C86953FF",
+  "preflight_sha256": "11E830D36F91B75949D011CAA979C7C2C3FB1F6E74DB15C5F917A08C86C88244",
+  "acceptance_scope": "Single root-present selector only."
+}
