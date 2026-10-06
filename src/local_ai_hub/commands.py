@@ -3411,6 +3411,25 @@ class CommandBroker:
                 "message": "command passed without repair",
             }
 
+        classification = self.classify(command)
+        replay_safe = bool(
+            classification.get(
+                "replay_safe", classification.get("class") == "validation"
+            )
+        )
+        uncertain = bool(initial.get("outcome_unknown") or initial.get("timed_out") or initial.get("in_progress"))
+        unsafe_class = classification.get("class") in {"mutating", "dangerous"}
+        if uncertain or unsafe_class or not replay_safe:
+            return {
+                "success": False,
+                "repaired": False,
+                "repair_skipped": True,
+                "outcome_unknown": bool(uncertain or unsafe_class or not replay_safe),
+                "attempts": 0,
+                "result": initial,
+                "message": "repair skipped because command outcome or side effects are unsafe to replay",
+            }
+
         original_files: dict[Path, str | None] = {}
         attempt_history: list[dict[str, Any]] = []
         last_result = initial
