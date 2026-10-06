@@ -711,11 +711,131 @@ def test_guard_records_unknown_and_validation_receipt(repository: Path):
     request = _request(repository)
 
     unknown = guard.record_unknown(request, claim="PaymentGateway exists", evidence_ids=("synthetic-claim-1",))
-    validation = guard.record_validation(request, criterion="tests", passed=True, evidence_ids=("ev-tests",))
+    validation = guard.record_validation(
+        request, criterion="tests", passed=True, evidence_ids=("ev-tests",), command_id="cmd-tests"
+    )
 
     assert unknown is not None and unknown.kind is MemoryKind.UNKNOWN
     assert validation is not None and validation.kind is MemoryKind.VALIDATION
-    assert verification.completion(request.task_id).receipts[0].evidence_id == "ev-tests"
+    receipt = verification.completion(request.task_id).receipts[0]
+    assert receipt.evidence_id == "ev-tests"
+    assert receipt.command_id == "cmd-tests"
+
+
+def test_record_validation_verifier_exception_records_failure_without_passed_receipt(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-verifier-exception.sqlite3")
+    memory = MemoryStore(state)
+    verification = VerificationStore(state)
+    guard = AgentConsistencyGuard(memory_store=memory, verification_store=verification)
+    request = _request(repository)
+
+    def verifier() -> bool:
+        raise RuntimeError("verifier crashed")
+
+    validation = guard.record_validation(
+        request, criterion="tests", verifier=verifier, evidence_ids=("ev-tests",)
+    )
+
+    assert validation is not None and validation.value["passed"] is False
+    assert not any(receipt.passed for receipt in verification.completion(request.task_id).receipts)
+
+
+def test_record_validation_verifier_false_records_failure_without_passed_receipt(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-verifier-fail.sqlite3")
+    memory = MemoryStore(state)
+    verification = VerificationStore(state)
+    guard = AgentConsistencyGuard(memory_store=memory, verification_store=verification)
+    request = _request(repository)
+
+    validation = guard.record_validation(
+        request, criterion="tests", verifier=lambda: False, evidence_ids=("ev-tests",)
+    )
+
+    assert validation is not None and validation.value["passed"] is False
+    assert not any(receipt.passed for receipt in verification.completion(request.task_id).receipts)
+
+
+def test_record_validation_verifier_true_records_matching_passed_receipt(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-verifier-pass.sqlite3")
+    memory = MemoryStore(state)
+    verification = VerificationStore(state)
+    guard = AgentConsistencyGuard(memory_store=memory, verification_store=verification)
+    request = _request(repository)
+
+    validation = guard.record_validation(
+        request, criterion="tests", verifier=lambda: True, evidence_ids=("ev-tests",), command_id="cmd-tests"
+    )
+
+    assert validation is not None and validation.value["passed"] is True
+    receipts = verification.completion(request.task_id).receipts
+    assert len(receipts) == 1
+    assert receipts[0].passed is True
+    assert receipts[0].task_id == request.task_id
+    assert receipts[0].criterion == "tests"
+    assert receipts[0].evidence_id == "ev-tests"
+    assert receipts[0].command_id == "cmd-tests"
+
+
+def test_record_validation_requires_command_id_for_passed_receipt(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-verifier-missing-command.sqlite3")
+    memory = MemoryStore(state)
+    verification = VerificationStore(state)
+    guard = AgentConsistencyGuard(memory_store=memory, verification_store=verification)
+    request = _request(repository)
+
+    with pytest.raises(ValueError, match="requires command_id"):
+        guard.record_validation(
+            request, criterion="tests", verifier=lambda: True, evidence_ids=("ev-tests",)
+        )
+
+    assert verification.completion(request.task_id).receipts == ()
+
+
+def test_record_validation_allows_passed_source_review_without_command_id(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-source-review.sqlite3")
+    memory = MemoryStore(state)
+    verification = VerificationStore(state)
+    guard = AgentConsistencyGuard(memory_store=memory, verification_store=verification)
+    request = _request(repository)
+
+    result = guard.record_validation(
+        request, criterion="source review", passed=True, evidence_ids=("ev-review",)
+    )
+
+    assert result is not None and result.value["passed"] is True
+    receipts = verification.completion(request.task_id).receipts
+    assert len(receipts) == 1
+    assert receipts[0].evidence_type == "source_review"
+    assert receipts[0].command_id == ""
+
+
+def test_record_validation_persistence_failure_does_not_write_memory(repository: Path, monkeypatch):
+    state = AgentStateStore(repository.parent / "guard-receipt-persistence.sqlite3")
+    memory = MemoryStore(state)
+    verification = VerificationStore(state)
+    guard = AgentConsistencyGuard(memory_store=memory, verification_store=verification)
+    request = _request(repository)
+    recorded_memories = []
+    original_record = memory.record
+
+    def track_memory_record(*args, **kwargs):
+        result = original_record(*args, **kwargs)
+        recorded_memories.append(result)
+        return result
+
+    def fail_receipt_record(_receipt):
+        raise OSError("receipt storage unavailable")
+
+    monkeypatch.setattr(memory, "record", track_memory_record)
+    monkeypatch.setattr(verification, "record", fail_receipt_record)
+
+    with pytest.raises(OSError, match="receipt storage unavailable"):
+        guard.record_validation(
+            request, criterion="tests", passed=True,
+            evidence_ids=("ev-tests",), command_id="cmd-tests",
+        )
+
+    assert recorded_memories == []
 
 
 def test_guard_metrics_store_categories_without_raw_prompt_or_source(repository: Path):
@@ -807,3 +927,23 @@ def test_telemetry_savings_labels_use_fixed_allowlist():
     assert clean["input_savings_source"] == ""
     assert clean["output_savings_source"] == ""
     assert clean["savings_breakdown_json"] == '{"response_compaction":3}'
+
+
+def test_consistency_request_preserves_project_config_digest_identity() -> None:
+    first_digest = "a" * 64
+    second_digest = "b" * 64
+
+    first = ConsistencyRequest(root="/repo", project_config_digest=first_digest)
+    second = ConsistencyRequest(root="/repo", project_config_digest=second_digest)
+
+    assert first.project_config_digest == first_digest
+    assert first.to_dict()["project_config_digest"] == first_digest
+    assert second.to_dict()["project_config_digest"] == second_digest
+    assert first.to_dict() != second.to_dict()
+
+
+def test_consistency_request_drops_malformed_project_config_digest() -> None:
+    request = ConsistencyRequest(root="/repo", project_config_digest="../private")
+
+    assert request.project_config_digest == ""
+    assert request.to_dict()["project_config_digest"] == ""

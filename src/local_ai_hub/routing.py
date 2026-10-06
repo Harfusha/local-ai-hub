@@ -3,6 +3,7 @@ from typing import NotRequired, TypedDict
 
 class SemanticHandoffHint(TypedDict):
     required: bool
+    advisory: NotRequired[bool]
     tool: str
     actions: list[str]
     bypass_tool: NotRequired[str]
@@ -54,7 +55,8 @@ def semantic_handoff_hint(
     ):
         return None
     hint: SemanticHandoffHint = {
-        "required": True,
+        "required": False,
+        "advisory": True,
         "tool": "local_ai_task",
         "actions": list(_SEMANTIC_ACTIONS),
     }

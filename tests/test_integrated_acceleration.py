@@ -262,6 +262,8 @@ def test_reranker_uses_only_current_device_qualified_cache_key(tmp_path: Path, m
     })
 
     class Model:
+        config = type("Config", (), {"_commit_hash": "c" * 40})()
+
         def predict(self, pairs, **_kwargs):
             return [0.42 for _ in pairs]
 
@@ -278,7 +280,7 @@ def test_reranker_uses_only_current_device_qualified_cache_key(tmp_path: Path, m
     assert result["computed"] == 1
     assert result["results"][0]["score"] == pytest.approx(0.42)
     current_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash(
-        {"identity": "torch:cpu:cache-test", "q": "q", "d": "doc"}
+        {"identity": "torch:cpu:cache-test:" + "c" * 40, "q": "q", "d": "doc"}
     )
     assert reranker.cache.get(current_key) == pytest.approx(0.42)
 
@@ -397,6 +399,8 @@ def test_embedding_openvino_npu_accepts_mapping_preprocess_features() -> None:
 
 def test_reranker_device_switch_restarts_before_cache_write(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     class SwitchingModel:
+        config = type("Config", (), {"_commit_hash": "d" * 40})()
+
         def __init__(self, device: str):
             self.device = device
 
@@ -435,10 +439,10 @@ def test_reranker_device_switch_restarts_before_cache_write(monkeypatch: pytest.
     assert result["device"] == "GPU.0"
     assert result["computed"] == 1
     npu_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash(
-        {"identity": "openvino:npu:switch-test", "q": "q", "d": "doc"}
+        {"identity": "openvino:npu:switch-test:" + "d" * 40, "q": "q", "d": "doc"}
     )
     gpu_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash(
-        {"identity": "openvino:gpu.0:switch-test", "q": "q", "d": "doc"}
+        {"identity": "openvino:gpu.0:switch-test:" + "d" * 40, "q": "q", "d": "doc"}
     )
     assert reranker.cache.get(npu_key) is None
     assert reranker.cache.get(gpu_key) == pytest.approx(2.0)

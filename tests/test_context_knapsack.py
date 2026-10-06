@@ -61,6 +61,7 @@ def test_context_knapsack_pins_goal_and_packs_by_value_density(tmp_path: Path):
             task_id="rover-1",
             criterion="lidar_ok",
             passed=True,
+            evidence_id="ev_lidar",
             details={"samples": 100},
         )
     )

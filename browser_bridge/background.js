@@ -31,7 +31,26 @@ function isTimeout(error) {
   return Boolean(error && (error.code === "timeout" || error.message === "timeout"));
 }
 
-async function post(path, payload) {
+function isAmbiguousCommitResult(result) {
+  return Boolean(
+    result && ["capture_in_progress", "commit_outcome_unknown", "timeout"].includes(result.error_code),
+  );
+}
+
+function isValidCommitResponse(result, expectedRequestId) {
+  if (!result || typeof result !== "object" || Array.isArray(result) || typeof result.success !== "boolean") {
+    return false;
+  }
+  if (result.request_id !== undefined && result.request_id !== expectedRequestId) return false;
+  if (result.success) {
+    return result.request_id === expectedRequestId
+      && typeof result.bundle_artifact_id === "string"
+      && Boolean(result.bundle_artifact_id.trim());
+  }
+  return typeof result.error_code === "string" && Boolean(result.error_code.trim());
+}
+
+async function post(path, payload, {retryServerErrors = false} = {}) {
   if (typeof globalThis.AbortController !== "function") {
     const error = new Error("AbortController unavailable");
     error.code = "unsupported";
@@ -51,6 +70,11 @@ async function post(path, payload) {
       signal: controller.signal,
     }), HUB_REQUEST_TIMEOUT_MS, () => controller.abort());
     const value = await timed(response.json(), HUB_REQUEST_TIMEOUT_MS, () => controller.abort());
+    if (!response.ok && retryServerErrors && response.status >= 500) {
+      const error = new Error("server_error");
+      error.code = "server_error";
+      throw error;
+    }
     if (!response.ok && !value.error_code) {
       value.error_code = response.status === 403 ? "permission_denied" : "unsupported";
     }
@@ -106,6 +130,7 @@ async function currentTabState(tab) {
     if (active.id !== tab.id || active.windowId !== tab.windowId) return {status: "tab_mismatch"};
     try {
       const current = await timed(Promise.resolve().then(() => chrome.tabs.get(tab.id)), CAPTURE_TIMEOUT_MS);
+      if (!current || typeof current.url !== "string" || !current.url) return {status: "permission_denied"};
       return {status: "ok", tab: current};
     } catch (error) {
       if (isTimeout(error)) return {status: "timeout"};
@@ -214,14 +239,64 @@ async function captureCurrentTab(tab) {
   try {
     const staged = await post("/api/browser/capture/stage", stagedPayload);
     if (!staged.success) return staged;
-    const committed = await post("/api/browser/capture/commit", {
+    const beforeCommit = await currentTabState(tab);
+    if (beforeCommit.status !== "ok" || !tabUrlMatches(beforeCommit.tab, finalIdentity)) {
+      await abandonCapture(capability, tab, origin, requestId);
+      return {success: false, error_code: beforeCommit.status === "ok" ? "target_changed" : beforeCommit.status, fallback: false};
+    }
+    let commitIdentity;
+    try {
+      commitIdentity = await timed(
+        chrome.tabs.sendMessage(tab.id, {type: "LOCAL_AI_VERIFY_CURRENT_TAB"}),
+        CAPTURE_TIMEOUT_MS,
+      );
+    } catch (error) {
+      await abandonCapture(capability, tab, origin, requestId);
+      return {success: false, error_code: isTimeout(error) ? "timeout" : "target_changed", fallback: false};
+    }
+    const currentIdentity = boundedIdentity(commitIdentity);
+    if (!commitIdentity || commitIdentity.success !== true || !sameIdentity(finalIdentity, currentIdentity)) {
+      await abandonCapture(capability, tab, origin, requestId);
+      return {success: false, error_code: commitIdentity && commitIdentity.error_code || "target_changed", fallback: false};
+    }
+    const commitPayload = {
       capability,
       origin,
       tab_id: tab.id,
       window_id: tab.windowId,
       request_id: requestId,
-    });
+    };
+    let committed;
+    try {
+      committed = await post("/api/browser/capture/commit", commitPayload, {retryServerErrors: true});
+    } catch (_) {
+      // Commit is idempotent by request_id. Replay once to recover a terminal
+      // result when the server committed but the response was lost.
+      try {
+        committed = await post("/api/browser/capture/commit", commitPayload, {retryServerErrors: true});
+      } catch (_) {
+        return {success: false, error_code: "commit_outcome_unknown", request_id: requestId, fallback: false};
+      }
+      if (!isValidCommitResponse(committed, requestId) || isAmbiguousCommitResult(committed)) {
+        return {success: false, error_code: "commit_outcome_unknown", request_id: requestId, fallback: false};
+      }
+    }
+    if (!isValidCommitResponse(committed, requestId)) {
+      // A malformed 2xx response cannot prove whether the server committed.
+      // Replay once with the same idempotency key, then preserve ambiguity.
+      try {
+        committed = await post("/api/browser/capture/commit", commitPayload, {retryServerErrors: true});
+      } catch (_) {
+        return {success: false, error_code: "commit_outcome_unknown", request_id: requestId, fallback: false};
+      }
+      if (!isValidCommitResponse(committed, requestId) || isAmbiguousCommitResult(committed)) {
+        return {success: false, error_code: "commit_outcome_unknown", request_id: requestId, fallback: false};
+      }
+    }
     if (!committed.success) {
+      if (isAmbiguousCommitResult(committed)) {
+        return {success: false, error_code: "commit_outcome_unknown", request_id: requestId, fallback: false};
+      }
       await abandonCapture(capability, tab, origin, requestId);
     }
     return committed;

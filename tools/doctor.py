@@ -108,19 +108,173 @@ vision_status_known = bool(installed) if inference_backend == "ollama" else bool
 
 mcp_file = root / "src" / "local_ai_hub" / "mcp_server.py"
 state_dir = Path(cfg.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
-install_dir = Path(cfg.get("setup", {}).get("install_dir", "~/.local-ai-hub")).expanduser()
-codegraph_candidates = [
-    install_dir / "tool-envs" / "codegraph" / "Scripts" / "codegraphcontext.exe",
-    install_dir / "tool-envs" / "codegraph" / "Scripts" / "cgc.exe",
-    install_dir / "tool-envs" / "codegraph" / "bin" / "codegraphcontext",
-    install_dir / "tool-envs" / "codegraph" / "bin" / "cgc",
-]
+
+def _supported_code_intelligence(status):
+    backends = status.get("code_intelligence") if isinstance(status, dict) else None
+    serena = backends.get("serena") if isinstance(backends, dict) else None
+    if isinstance(serena, dict):
+        return {"serena": serena}
+    return {"serena": {
+        "state": "unavailable",
+        "unavailable_reason": "Hub did not report Serena diagnostics.",
+    }}
+
+
+def _openvino_fallback_reason(
+    requested_components, cpu_fallback_enabled,
+    sentence_transformers_installed=True, torch_installed=True,
+):
+    components = list(requested_components)
+    if not components:
+        return ""
+    if not cpu_fallback_enabled:
+        return f"CPU fallback is disabled for {' and '.join(components)}; missing OpenVINO causes an error."
+    outcomes = []
+    for component in components:
+        missing = []
+        if not sentence_transformers_installed:
+            missing.append("sentence-transformers")
+        if component == "reranking" and not torch_installed:
+            missing.append("torch")
+        if missing:
+            outcomes.append(
+                f"CPU fallback for {component} is unavailable (missing {', '.join(missing)})."
+            )
+        else:
+            verb = "uses" if component == "reranking" else "use"
+            outcomes.append(f"{component} {verb} CPU fallback.")
+    return " ".join(outcomes)
+
+
+def _optional_component_status(
+    tree_sitter_installed, whisper_command, openvino_requested_components,
+    openvino_installed, openvino_cpu_fallback_enabled, serena_details,
+    sentence_transformers_installed=True, torch_installed=True,
+):
+    if isinstance(serena_details, dict):
+        serena = dict(serena_details)
+        serena.setdefault("enabled", None)
+        serena.setdefault("state", "available" if serena.get("installed") else "missing")
+        serena["reason"] = str(
+            serena.get("repair_error") or serena.get("repair_blocked") or serena.get("last_failure")
+            or serena.get("unavailable_reason") or ""
+        )
+    else:
+        serena = {
+            "enabled": None,
+            "state": "unavailable",
+            "reason": "Hub did not report Serena diagnostics.",
+        }
+    fallback_dependencies = {}
+    fallback_required = bool(openvino_requested_components) and not openvino_installed
+    cpu_fallback_available = None
+    if fallback_required:
+        if openvino_cpu_fallback_enabled:
+            fallback_dependencies["sentence-transformers"] = bool(sentence_transformers_installed)
+            if "reranking" in openvino_requested_components:
+                fallback_dependencies["torch"] = bool(torch_installed)
+            cpu_fallback_available = all(fallback_dependencies.values())
+        else:
+            cpu_fallback_available = False
+    return {
+        "tree_sitter": {
+            "installed": bool(tree_sitter_installed),
+            "state": "available" if tree_sitter_installed else "missing",
+        },
+        "whisper": {
+            "installed": bool(whisper_command),
+            "state": "available" if whisper_command else "missing",
+            "command": str(whisper_command) if whisper_command else None,
+            "reason": "" if whisper_command else "transcription returns audio metadata without a transcript.",
+        },
+        "openvino": {
+            "installed": bool(openvino_installed),
+            "requested": bool(openvino_requested_components),
+            "requested_components": list(openvino_requested_components),
+            "cpu_fallback_enabled": bool(openvino_cpu_fallback_enabled),
+            "cpu_fallback_available": cpu_fallback_available,
+            "fallback_dependencies": fallback_dependencies,
+            "state": "available" if openvino_installed else "missing",
+            "reason": (
+                "" if openvino_installed else
+                _openvino_fallback_reason(
+                    openvino_requested_components, openvino_cpu_fallback_enabled,
+                    sentence_transformers_installed, torch_installed,
+                )
+            ),
+        },
+        "serena": serena,
+    }
+
+
+def _optional_component_lines(components):
+    tree_sitter = components.get("tree_sitter", {})
+    whisper = components.get("whisper", {})
+    openvino = components.get("openvino", {})
+    serena = components.get("serena", {})
+
+    tree_installed = bool(tree_sitter.get("installed"))
+    whisper_installed = bool(whisper.get("installed"))
+    openvino_installed = bool(openvino.get("installed"))
+    lines = [
+        f"  {'[OK]' if tree_installed else '[ERR]'} Tree-sitter:     {'Installed' if tree_installed else 'Missing'}",
+        f"  {'[OK]' if whisper_installed else '[ERR]'} Whisper CLI:     {'Installed' if whisper_installed else 'Missing'}"
+        + (f" ({whisper.get('command')})" if whisper_installed and whisper.get("command") else "")
+        + (f"; {whisper.get('reason')}" if whisper.get("reason") else ""),
+        f"  {'[OK]' if openvino_installed else '[ERR]' if openvino.get('requested') else '[--]'} OpenVINO:        "
+        + (
+            "Installed" if openvino_installed else
+            "Requested but missing" if openvino.get("requested") else
+            "Optional accelerator not installed"
+        )
+        + (f"; {openvino.get('reason')}" if openvino.get("reason") else ""),
+    ]
+    serena_state = str(serena.get("state") or "unavailable")
+    serena_reason = str(serena.get("reason") or serena.get("unavailable_reason") or "")
+    if serena_state == "unavailable":
+        lines.append(
+            "  [??] Serena:          Status unavailable"
+            + (f"; {serena_reason}" if serena_reason else "")
+        )
+    else:
+        serena_enabled = serena.get("enabled") is not False
+        serena_symbol = "[--]" if not serena_enabled else "[OK]" if serena_state in {"healthy", "available", "recovering", "repair_pending_probe"} else "[ERR]"
+        serena_line = f"  {serena_symbol} Serena:          {serena_state}"
+        if "repair_attempts" in serena:
+            serena_line += f"; repair attempts: {serena.get('repair_attempts', 0)}"
+        if serena.get("last_successful_probe"):
+            serena_line += f"; last probe: {serena.get('last_successful_probe')}"
+        if serena_reason:
+            serena_line += f"; {serena_reason[:140]}"
+        lines.append(serena_line)
+    return lines
 
 warnings: list[str] = []
-openvino_requested = str(models.get("embedding_backend", "")).lower() == "openvino" or str(models.get("reranker_backend", "")).lower() == "openvino"
+openvino_requested_components = [
+    component
+    for config_key, component in (("embedding_backend", "embeddings"), ("reranker_backend", "reranking"))
+    if str(models.get(config_key, "")).lower() == "openvino"
+]
+openvino_requested = bool(openvino_requested_components)
+openvino_config = cfg.get("openvino") if isinstance(cfg.get("openvino"), dict) else {}
+openvino_cpu_fallback_enabled = bool(openvino_config.get("cpu_fallback", True))
 openvino_installed = runtime_module_available("openvino")
+sentence_transformers_installed = runtime_module_available("sentence_transformers")
+torch_installed = (
+    runtime_module_available("torch")
+    if "reranking" in openvino_requested_components
+    and not openvino_installed
+    and openvino_cpu_fallback_enabled
+    else None
+)
+tree_sitter_installed = runtime_module_available("tree_sitter")
+whisper_command = shutil.which("whisper")
 if openvino_requested and not openvino_installed:
-    warnings.append("OpenVINO acceleration is configured but runtime is not installed in hub environment; embeddings/reranking will fall back to CPU. Run: pip install -r requirements-openvino.txt")
+    warnings.append(
+        "OpenVINO acceleration is configured but runtime is not installed in hub environment; "
+        f"{_openvino_fallback_reason(openvino_requested_components, openvino_cpu_fallback_enabled, sentence_transformers_installed, torch_installed)} "
+        "Run: pip install -r requirements-openvino.txt"
+    )
 
 hw_detected = status.get("hardware") or cfg.get("_hardware") or {}
 gpus = hw_detected.get("gpus", []) if isinstance(hw_detected, dict) else []
@@ -128,8 +282,12 @@ npus = hw_detected.get("npus", []) if isinstance(hw_detected, dict) else []
 has_nvidia = any(str(g.get("vendor", "")).lower() == "nvidia" for g in gpus if isinstance(g, dict))
 has_igpu = any(bool(g.get("integrated")) or "intel" in str(g.get("name", "")).lower() or "radeon" in str(g.get("name", "")).lower() for g in gpus if isinstance(g, dict))
 
-if npus and not openvino_installed:
-    warnings.append("NPU hardware detected, but openvino is not installed in hub environment. Embeddings and reranker will burn CPU. Run: pip install -r requirements-openvino.txt && python tools/prefetch_openvino.py")
+if npus and openvino_requested and not openvino_installed:
+    warnings.append(
+        "NPU hardware detected and OpenVINO is requested, but runtime is missing; "
+        f"{_openvino_fallback_reason(openvino_requested_components, openvino_cpu_fallback_enabled, sentence_transformers_installed, torch_installed)} "
+        "Run: pip install -r requirements-openvino.txt && python tools/prefetch_openvino.py"
+    )
 
 if ollama_enabled and os.name == "nt" and (has_igpu or cfg.get("hardware", {}).get("profile") == "integrated") and not has_nvidia:
     if not os.environ.get("OLLAMA_VULKAN"):
@@ -272,11 +430,16 @@ report = {
         "ollama_profile": ollama_profile,
         "llama_cpp": ollama_profile.get("llama_cpp", {}) if isinstance(ollama_profile, dict) else {},
         "background_gpu": background_gpu,
-        "sentence_transformers": runtime_module_available("sentence_transformers"),
+        "sentence_transformers": sentence_transformers_installed,
         "openvino": {"requested": openvino_requested, "installed": openvino_installed, "status": status.get("accelerators") if isinstance(status, dict) else None},
-        "codegraph_executable": next((str(p) for p in codegraph_candidates if p.exists()), None),
+        "optional_components": _optional_component_status(
+            tree_sitter_installed, whisper_command, openvino_requested_components, openvino_installed,
+            openvino_cpu_fallback_enabled,
+            (_supported_code_intelligence(status) or {}).get("serena"),
+            sentence_transformers_installed, torch_installed,
+        ),
         "hardware": cfg.get("_hardware", {}),
-        "code_intelligence": status.get("code_intelligence") if isinstance(status, dict) else None,
+        "code_intelligence": _supported_code_intelligence(status),
         "preprocessing": status.get("preprocessing") if isinstance(status, dict) else None,
         "tool_agent": status.get("tool_agent") if isinstance(status, dict) else None,
         "code_index": status.get("code_index") if isinstance(status, dict) else None,
@@ -360,11 +523,12 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
                 lines.append(f"  - GPU:                {name} ({vram // 1024} GB)")
     else:
         lines.append("  - GPU:                No dedicated GPU detected")
-    ov = rt.get("openvino", {}) if isinstance(rt, dict) else {}
-    ov_status = "Installed" if ov.get("installed") else "Not installed"
-    lines.append(f"  - OpenVINO:           {ov_status}")
     st_status = "Installed" if rt.get("sentence_transformers") else "Not installed"
     lines.append(f"  - SentenceTransf:     {st_status}")
+    lines.append("")
+
+    lines.append("Optional Dependencies & Integrations:")
+    lines.extend(_optional_component_lines(rt.get("optional_components", {})))
     lines.append("")
 
     lines.append("Models:")

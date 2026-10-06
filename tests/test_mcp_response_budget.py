@@ -30,6 +30,45 @@ def test_existing_tools_expose_response_budget_options() -> None:
         assert {"max_response_tokens", "response_profile", "reuse_key"} <= names
 
 
+def test_command_rollback_scope_reaches_api_payload(monkeypatch, tmp_path) -> None:
+    captured_posts: list[tuple[str, dict[str, object], float]] = []
+
+    def fake_post(path: str, payload: dict[str, object], timeout: float):
+        captured_posts.append((path, payload, timeout))
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
+    monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
+    monkeypatch.setattr(mcp_server, "_timeout", lambda _kind: 60)
+    monkeypatch.setattr(mcp_server.CLIENT, "post", fake_post)
+    monkeypatch.setattr(mcp_server, "_compact", lambda value, _tool: value)
+
+    result = mcp_server.local_ai_command(
+        action="run",
+        command="pytest -q",
+        cwd=str(tmp_path),
+        rollback_on_failure=True,
+        paths=["owned.py", "new-output.txt"],
+    )
+
+    assert result == {"success": True}
+    command_posts = [(payload, timeout) for path, payload, timeout in captured_posts if path == "/api/command"]
+    assert len(command_posts) == 1
+    assert command_posts[0][0]["paths"] == ["owned.py", "new-output.txt"]
+
+
+def test_command_rollback_rejects_non_run_action_before_dispatch(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
+
+    result = mcp_server.local_ai_command(
+        action="speculative_lint",
+        rollback_on_failure=True,
+        paths=["owned.py"],
+    )
+
+    assert result["rollback_unsupported_action"] is True
+
+
 def test_telemetry_status_projection_keeps_slow_paths_and_omits_bulk_report() -> None:
     report = {
         "success": True,
@@ -74,6 +113,7 @@ def test_context_projection_keeps_actual_context_text_after_budget() -> None:
     assert result["context"] == "deterministic facts about logs"
     assert result["contract"]["goal"] == "inspect logs"
     assert result["evidence_ids"] == ["E1"]
+    assert json_tokens(result) <= 220
 
 
 def test_context_projection_budget_rejection_keeps_bounded_identity_and_citation() -> None:
@@ -127,6 +167,44 @@ def test_context_projection_budget_rejection_keeps_bounded_identity_and_citation
     assert "content" not in repr(result["adaptive_context_pack"])
 
 
+def test_context_projection_preserves_incomplete_degraded_task_context() -> None:
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(
+        {"max_response_tokens": 512, "response_profile": "compact", "reuse_key": "ctx-partial", "tool": "local_ai_repo"}
+    )
+    try:
+        result = mcp_server._context_pack_projection({
+            "success": False,
+            "guarded": True,
+            "status_code": 503,
+            "terminal": False,
+            "retryable": True,
+            "stop_code": "context_task_context_incomplete",
+            "degraded": True,
+            "degraded_reason": "repository_context_unavailable",
+            "task_context": {
+                "success": False,
+                "complete": False,
+                "partial": True,
+                "text": "Agent OS checkpoint remains available",
+                "repository": {
+                    "success": False,
+                    "degraded": True,
+                    "degraded_reason": "repository_context_unavailable",
+                },
+            },
+        })
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert result["success"] is False
+    assert result["status_code"] == 503
+    assert result["retryable"] is True
+    assert result["stop_code"] == "context_task_context_incomplete"
+    assert result["task_context"]["complete"] is False
+    assert "Agent OS checkpoint remains available" in result["task_context"]["text"]
+    assert result["task_context"]["repository"]["degraded"] is True
+    assert json_tokens(result) <= 512
+
 def test_mcp_compact_applies_aggregate_budget(monkeypatch) -> None:
     monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())
     value = {
@@ -144,6 +222,32 @@ def test_mcp_compact_applies_aggregate_budget(monkeypatch) -> None:
     assert json_tokens(result) <= 300
     assert result["artifact_id"] == "artifact-1"
     assert result["response_budget"]["truncated"] is True
+
+
+def test_async_job_status_compaction_preserves_lifecycle_fields(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())
+    value = {
+        "success": True,
+        "job_id": "job-123",
+        "state": "completed",
+        "artifact_id": "artifact-123",
+        "cancel_requested": False,
+        "wait_timeout_seconds": 0.0,
+        "results": [{"text": "x" * 2000} for _ in range(20)],
+    }
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(_options(
+        max_response_tokens=180, tool="local_ai_task", reuse_key="async-status-budget",
+    ))
+    try:
+        result = mcp_server._compact(value, "status")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert result["job_id"] == "job-123"
+    assert result["state"] == "completed"
+    assert result["artifact_id"] == "artifact-123"
+    assert result["cancel_requested"] is False
+    assert result["wait_timeout_seconds"] == 0.0
 
 
 def test_mcp_compact_reuses_unchanged_payload(monkeypatch) -> None:

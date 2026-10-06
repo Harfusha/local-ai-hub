@@ -16,7 +16,7 @@ For Intel integrated graphics, `[openvino]` controls optional retrieval accelera
 
 ## Code intelligence
 
-`[code_intelligence]` controls Serena/CodeGraph enablement, commands, query/index deadlines, failure threshold, maximum persistent sessions and session idle TTL. `direct_agent_mcp=false` is recommended because the hub exposes both capabilities through the compact MCP surface.
+`[code_intelligence]` controls Serena enablement, command, query/index deadlines, failure threshold, maximum persistent sessions and session idle TTL. `direct_agent_mcp=false` is recommended because the hub exposes Serena through the compact MCP surface.
 
 ## Server/security
 
@@ -109,7 +109,7 @@ rag = true                # local_ai_rag semantic retrieval tool
 commands = true           # local_ai_command safe CLI broker
 coord = true              # local_ai_coord coordination/leases tool
 artifacts = true          # local_ai_artifact evidence slice tool
-code_intelligence = true  # Serena & CodeGraphContext backends
+code_intelligence = true  # Serena backend
 preprocessing = true      # Background idle project warmup
 subagents = true          # Named advisory subagent profiles
 agent_os = true           # Durable execution: task contracts, receipts, memory

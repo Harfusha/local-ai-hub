@@ -91,6 +91,8 @@ def test_benchmark_runner_supports_non_streaming_runtime(tmp_path: Path) -> None
 
     assert result["success"] is True
     assert result["tokens_generated"] == 1
+    assert result["whitespace_token_estimate"] == 1
+    assert result["token_count_method"] == "whitespace_token_estimate_not_model_tokenization"
 
 
 def test_benchmark_runner_does_not_treat_error_response_as_success(tmp_path: Path) -> None:
@@ -145,3 +147,50 @@ def test_benchmark_runner_rejects_thinking_only_stream(tmp_path: Path) -> None:
     assert result["success"] is False
     assert result["measurement_warning"] == "thinking_only_output"
     assert not (tmp_path / "benchmarks.json").exists()
+
+
+def test_benchmark_runner_reports_model_load_duration_from_runtime(tmp_path: Path) -> None:
+    class RuntimeWithLoadMetric:
+        def generate(self, model, prompt, options=None):
+            return {"response": "loaded and ready", "eval_count": 2, "load_duration": 250_000_000}
+
+    runner = HardwareBenchmarkRunner(benchmarks_path=tmp_path / "benchmarks.json", runtime=RuntimeWithLoadMetric())
+
+    result = runner.run(model="qwen2.5-coder:7b", prompt="return OK", num_tokens=2)
+
+    assert result["success"] is True
+    assert result["load_duration_ms"] == 250.0
+
+
+def test_benchmark_runner_reports_model_load_duration_from_stream_metadata(tmp_path: Path) -> None:
+    class StreamingRuntimeWithLoadMetric:
+        def generate_stream(self, model, prompt, options=None):
+            yield {"response": "ready"}
+            yield {"done": True, "load_duration": 75_000_000}
+
+    runner = HardwareBenchmarkRunner(benchmarks_path=tmp_path / "benchmarks.json", runtime=StreamingRuntimeWithLoadMetric())
+
+    result = runner.run(model="qwen2.5-coder:7b", prompt="return OK", num_tokens=2)
+
+    assert result["success"] is True
+    assert result["load_duration_ms"] == 75.0
+
+
+def test_stream_ttft_uses_first_visible_chunk_and_backend_token_metrics(tmp_path: Path) -> None:
+    class RuntimeWithThinkingAndMetrics:
+        def generate_stream(self, model, prompt, options=None):
+            yield {"thinking": "hidden warm-up"}
+            time.sleep(0.04)
+            yield {"response": "visible answer", "eval_count": 5, "eval_duration": 500_000_000}
+
+    runner = HardwareBenchmarkRunner(benchmarks_path=tmp_path / "benchmarks.json", runtime=RuntimeWithThinkingAndMetrics())
+
+    result = runner.run(model="qwen3.5:9b", prompt="return OK", num_tokens=8)
+
+    assert result["success"] is True
+    assert result["ttft_ms"] >= 30.0
+    assert result["tokens_generated"] == 5
+    assert result["token_count_estimated"] is False
+    assert result["whitespace_token_estimate"] is None
+    assert result["token_count_method"] == "backend_eval_count"
+    assert result["tokens_per_second"] == 10.0
