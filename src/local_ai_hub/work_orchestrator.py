@@ -24,8 +24,13 @@ from .process_utils import hidden_run_kwargs, is_rooted_path
 from .response_protocol import project_response
 from .sqlite_support import connect_sqlite, retry_busy
 from .work_fencing import (
-    FencingLease, FencingLeaseStore, LeaseLostError, LeaseUnavailableError, WorkAttemptFence,
-    canonical_resource, normalize_paths,
+    FencingLease,
+    FencingLeaseStore,
+    LeaseLostError,
+    LeaseUnavailableError,
+    WorkAttemptFence,
+    canonical_resource,
+    normalize_paths,
 )
 
 
