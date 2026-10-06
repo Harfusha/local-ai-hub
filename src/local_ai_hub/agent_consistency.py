@@ -275,6 +275,7 @@ class ConsistencyRequest:
     tenant: str = ""
     memory_revision: str = ""
     session_id: str = ""
+    project_config_digest: str = ""
     override_reason: str = ""
     approval: str | bool = ""
 
@@ -293,6 +294,14 @@ class ConsistencyRequest:
         object.__setattr__(self, "tenant", _text(self.tenant, 160))
         object.__setattr__(self, "memory_revision", _text(self.memory_revision, 200))
         object.__setattr__(self, "session_id", _text(self.session_id, 160))
+        digest = self.project_config_digest if isinstance(self.project_config_digest, str) else ""
+        digest = digest.strip().lower()
+        if digest and (
+            len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            digest = ""
+        object.__setattr__(self, "project_config_digest", digest)
         object.__setattr__(self, "override_reason", _text(self.override_reason, 500))
         if not isinstance(self.approval, bool):
             object.__setattr__(self, "approval", _text(self.approval, 240))
@@ -304,6 +313,7 @@ class ConsistencyRequest:
             "preload_profile": self.preload_profile, "token_budget": self.token_budget,
             "changed_paths": list(self.changed_paths), "base": self.base, "staged": self.staged,
             "tenant": self.tenant, "memory_revision": self.memory_revision, "session_id": self.session_id,
+            "project_config_digest": self.project_config_digest,
             "override_reason": self.override_reason, "approval": self.approval,
         }
 

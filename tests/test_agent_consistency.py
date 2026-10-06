@@ -56,6 +56,26 @@ def _request(repo: Path, **changes) -> ConsistencyRequest:
     return ConsistencyRequest(**values)
 
 
+def test_consistency_request_preserves_project_config_digest_identity() -> None:
+    first_digest = "a" * 64
+    second_digest = "b" * 64
+
+    first = ConsistencyRequest(root="/repo", project_config_digest=first_digest)
+    second = ConsistencyRequest(root="/repo", project_config_digest=second_digest)
+
+    assert first.project_config_digest == first_digest
+    assert first.to_dict()["project_config_digest"] == first_digest
+    assert second.to_dict()["project_config_digest"] == second_digest
+    assert first.to_dict() != second.to_dict()
+
+
+def test_consistency_request_drops_malformed_project_config_digest() -> None:
+    request = ConsistencyRequest(root="/repo", project_config_digest="../private")
+
+    assert request.project_config_digest == ""
+    assert request.to_dict()["project_config_digest"] == ""
+
+
 def test_build_contract_handles_phase_only_guarded_context(repository: Path):
     guard = AgentConsistencyGuard()
     request = ConsistencyRequest(root=str(repository), phase="discover", focus=("logs", "timeouts"))

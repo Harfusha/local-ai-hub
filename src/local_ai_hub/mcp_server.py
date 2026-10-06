@@ -12,6 +12,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 import time
 from collections import OrderedDict
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
 from urllib.parse import quote
@@ -123,6 +124,65 @@ def _client_root(r: str = "") -> str:
         return canonical_root(p)
     except Exception:
         return _workspace
+
+
+_REPO_SEARCH_PATH_HINT_FIELDS = {
+    "path",
+    "purpose",
+    "scope",
+    "evidence_id",
+    "provenance",
+    "repository_revision",
+    "config_digest",
+    "expires_at",
+}
+
+
+def _normalize_repo_search_path_hints(
+    root: str, path_hints: list[dict[str, Any]]
+) -> tuple[list[dict[str, str]] | None, str | None]:
+    if not isinstance(path_hints, list):
+        return None, "path_hints must be an array"
+    if len(path_hints) > 64:
+        return None, "path_hints exceeds 64 items"
+
+    try:
+        root_path = Path(root).expanduser().resolve(strict=True)
+        if not root_path.is_dir():
+            raise ValueError("invalid repository root")
+    except (OSError, RuntimeError, ValueError):
+        return None, "root must be an existing directory"
+
+    normalized: list[dict[str, str]] = []
+    for index, hint in enumerate(path_hints):
+        if not isinstance(hint, Mapping):
+            return None, f"path_hints[{index}] must be an object"
+        if set(hint) - _REPO_SEARCH_PATH_HINT_FIELDS:
+            return None, f"path_hints[{index}] contains unsupported fields"
+        if any(
+            not isinstance(hint.get(field), str) or not hint[field].strip()
+            for field in ("path", "purpose", "scope")
+        ):
+            return None, f"path_hints[{index}] requires non-empty path, purpose, and scope"
+        if any(
+            field in hint and not isinstance(hint[field], str)
+            for field in _REPO_SEARCH_PATH_HINT_FIELDS - {"path", "purpose", "scope"}
+        ):
+            return None, f"path_hints[{index}] metadata fields must be strings"
+        try:
+            candidate = Path(hint["path"].strip()).expanduser()
+            if not candidate.is_absolute():
+                candidate = root_path / candidate
+            relative = candidate.resolve(strict=False).relative_to(root_path)
+        except (OSError, RuntimeError, ValueError):
+            return None, f"path_hints[{index}].path must resolve within root"
+        normalized.append(
+            {
+                **{key: value for key, value in hint.items() if key != "path"},
+                "path": relative.as_posix() or ".",
+            }
+        )
+    return normalized, None
 
 
 _ACTION_ALIASES: dict[str, dict[str, str]] = {
@@ -1740,6 +1800,7 @@ def _local_ai_repo_impl(
     is_worktree: bool = False,
     parent_root: str = "",
     steps: list[dict[str, Any]] | None = None,
+    path_hints: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -1804,9 +1865,26 @@ def _local_ai_repo_impl(
         extra = list(extra_fields or [])
         if enrich:
             extra.extend(["text", "raw"])
+        search_path_hints = ([{
+            "path": path,
+            "purpose": "repository_search",
+            "scope": "repo_search",
+        }] if path else [])
+        search_path_hints.extend((path_hints or [])[:64])
+        normalized_hints, hint_error = _normalize_repo_search_path_hints(
+            root, search_path_hints
+        )
+        if hint_error is not None:
+            return {
+                "success": False,
+                "error": hint_error,
+                "status_code": 400,
+                "terminal": True,
+                "retryable": False,
+            }
         return _compact(CLIENT.post("/api/search", {
             "root": root, "query": query or task, "top_k": 12, "enrich": enrich,
-        }, timeout=_timeout("quick")), "search", extra_fields=extra if extra else None)
+        }, timeout=_timeout("quick"), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
@@ -2202,6 +2280,7 @@ def local_ai_repo(
     is_worktree: bool = False,
     parent_root: str = "",
     steps: list[dict[str, Any]] | None = None,
+    path_hints: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     return _local_ai_repo_impl(
@@ -2210,7 +2289,7 @@ def local_ai_repo(
         include_code, include_tests, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
-        token_budget, is_worktree, parent_root, steps,
+        token_budget, is_worktree, parent_root, steps, path_hints,
     )
 
 

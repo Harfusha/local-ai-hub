@@ -16,6 +16,12 @@ from typing import Any
 
 from . import __version__
 from .cache import stable_hash
+from .project_config import (
+    path_is_allowed,
+    phase_is_allowed,
+    resolve_project_config,
+    resolve_project_context,
+)
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
 from .worktrees import discover_worktree_roots
 from .process_utils import canonical_root, set_current_thread_priority
@@ -1141,6 +1147,82 @@ class ProjectPreprocessor:
         with self._db_lock, closing(self._connect()) as con:
             return con.execute("SELECT * FROM projects WHERE root=?", (self._root(root),)).fetchone()
 
+    def _project_settings(self, root: str) -> Any:
+        return resolve_project_config(root).settings
+
+    def _project_path_allowed(
+        self,
+        root: str,
+        relative: str,
+        settings: Any,
+        *,
+        phase: str,
+        size_bytes: int,
+    ) -> bool:
+        parts = Path(relative).parts
+        ignored_dirs = getattr(self.repo_tools, "ignore_dirs", set())
+        hard_dirs = {".git", ".svn", ".hg", ".serena", ".local-ai-hub", ".codegraphcontext"}
+        hard_denied = any(part.lower() in hard_dirs for part in parts[:-1])
+        ignore_extensions = getattr(self.repo_tools, "ignore_extensions", set())
+        hard_denied = hard_denied or Path(relative).suffix.lower() in ignore_extensions
+        extensions = getattr(self.repo_tools, "extensions", set())
+        special_filenames = getattr(self.repo_tools, "special_filenames", set())
+        if extensions and Path(relative).suffix.lower() not in extensions and Path(relative).name.lower() not in special_filenames:
+            hard_denied = True
+        return path_is_allowed(
+            root,
+            relative,
+            settings,
+            phase=phase,
+            soft_ignored=any(part.lower() in ignored_dirs for part in parts[:-1]),
+            hard_denied=hard_denied,
+            size_bytes=size_bytes,
+        )
+
+    def _forced_preprocess_files(self, root: str, settings: Any) -> dict[str, dict[str, Any]]:
+        base = Path(root).resolve(strict=True)
+        patterns = list(settings.force_include_paths)
+        patterns.extend(
+            pattern
+            for pattern, action in settings.path_overrides.items()
+            if action == "include"
+        )
+        maximum = max(1, int(getattr(self.repo_tools, "max_files", 8000)))
+        files: dict[str, dict[str, Any]] = {}
+        visited = 0
+        for pattern in patterns:
+            try:
+                candidates = base.glob(pattern)
+                for candidate in candidates:
+                    visited += 1
+                    if visited > maximum * 4:
+                        return files
+                    if not candidate.is_file():
+                        continue
+                    resolved = candidate.resolve(strict=True)
+                    if not resolved.is_relative_to(base):
+                        continue
+                    relative = resolved.relative_to(base).as_posix()
+                    stat = resolved.stat()
+                    size = int(stat.st_size)
+                    if size > int(getattr(self.repo_tools, "max_file_bytes", size)):
+                        continue
+                    if not self._project_path_allowed(
+                        str(base), relative, settings, phase="preprocess", size_bytes=size
+                    ):
+                        continue
+                    files[relative] = {
+                        "path": relative,
+                        "size": size,
+                        "mtime_ns": int(stat.st_mtime_ns),
+                        "extension": resolved.suffix.lower(),
+                    }
+                    if len(files) >= maximum:
+                        return files
+            except (OSError, RuntimeError, ValueError):
+                continue
+        return files
+
     def _record_progress(self, root: str, count: int = 1) -> None:
         now = time.time()
         with self._stats_lock:
@@ -1737,6 +1819,16 @@ class ProjectPreprocessor:
             return False
         phase = str(row.get("phase") or "inventory")
         self._set_project(root, status="running")
+        optional_phase = {
+            "code_index": ("call_graph", "deterministic"),
+            "rag": ("rag", "files"),
+            "modules": ("modules", "project"),
+        }.get(phase)
+        if optional_phase is not None:
+            project_phase, next_phase = optional_phase
+            if not phase_is_allowed(self._project_settings(root), project_phase):
+                self._set_project(root, phase=next_phase)
+                return True
         if phase == "inventory":
             return self._step_inventory(row)
         if phase == "hash":
@@ -1767,6 +1859,7 @@ class ProjectPreprocessor:
         """Apply watcher-confirmed path changes without rescanning the repository."""
         root = str(row["root"])
         base = Path(root)
+        settings = self._project_settings(root)
         now = time.time()
         paths = sorted(set(str(x).replace("\\", "/") for x in dirty_paths if x))[:1024]
         if not paths:
@@ -1800,6 +1893,13 @@ class ProjectPreprocessor:
                 except OSError:
                     continue
                 size, mtime_ns = int(stat.st_size), int(stat.st_mtime_ns)
+                if size > int(getattr(self.repo_tools, "max_file_bytes", size)) or not self._project_path_allowed(
+                    root, rel, settings, phase="preprocess", size_bytes=size
+                ):
+                    if rel in old:
+                        deleted.add(rel)
+                        topology_changed = True
+                    continue
                 present[rel] = (size, mtime_ns)
                 topology_changed = topology_changed or rel not in old
             elif rel in old:
@@ -1887,6 +1987,7 @@ class ProjectPreprocessor:
                 "structure": [(path, Path(path).suffix.lower()) for path in all_paths],
                 "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
                 "analyzer": __version__,
+                "project_config": resolve_project_config(root).config_digest,
             })
         inventory_hash = stable_hash({"previous": row.get("inventory_hash"), "dirty": sorted(content_changed)})
         if not content_changed:
@@ -1924,6 +2025,8 @@ class ProjectPreprocessor:
 
     def _step_inventory(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
+        resolution = resolve_project_config(root)
+        settings = resolution.settings
         if not Path(root).exists():
             self.unregister(root, purge_data=True)
             return True
@@ -1941,7 +2044,20 @@ class ProjectPreprocessor:
             raise RuntimeError(str(inventory.get("error", "inventory failed")))
         if self._yield():
             return False
-        new_files = {x["path"]: x for x in inventory.get("files", [])}
+        new_files: dict[str, dict[str, Any]] = {}
+        for item in inventory.get("files", []):
+            relative = str(item.get("path") or "")
+            if not relative:
+                continue
+            try:
+                size = int(item.get("size", 0))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if self._project_path_allowed(
+                root, relative, settings, phase="preprocess", size_bytes=size
+            ):
+                new_files[relative] = item
+        new_files.update(self._forced_preprocess_files(root, settings))
         with self._db_lock, closing(self._connect()) as con:
             old_rows = con.execute(
                 "SELECT path,content_hash,size,mtime_ns,card_key,rag_hash FROM file_refs WHERE root=?", (root,)
@@ -1969,13 +2085,23 @@ class ProjectPreprocessor:
             "structure": structure,
             "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
             "analyzer": __version__,
+            "project_config": resolution.config_digest,
         })
         force = bool(row.get("force_refresh"))
         now = time.time()
-        if not changed and not force and row.get("last_complete_at"):
+        if (
+            not changed
+            and not force
+            and row.get("last_complete_at")
+            and row.get("structural_hash") == structural_hash
+        ):
             with self._db_lock, closing(self._connect()) as con:
                 uncarded = con.execute("SELECT COUNT(*) FROM file_refs WHERE root=? AND card_key IS NULL", (root,)).fetchone()[0]
-                unragged = con.execute("SELECT COUNT(*) FROM file_refs WHERE root=? AND (rag_hash IS NULL OR rag_hash<>content_hash)", (root,)).fetchone()[0]
+                unragged = (
+                    con.execute("SELECT COUNT(*) FROM file_refs WHERE root=? AND (rag_hash IS NULL OR rag_hash<>content_hash)", (root,)).fetchone()[0]
+                    if phase_is_allowed(settings, "rag")
+                    else 0
+                )
             if uncarded == 0 and unragged == 0:
                 self._set_project(root, phase="complete", status="complete", force_refresh=0, next_check_at=now + float(self.cfg.get("auto_recheck_seconds", 1800)), updated_at=now)
                 return True
@@ -2660,6 +2786,10 @@ class ProjectPreprocessor:
     def candidate_paths(self, root: str, query: str, limit: int = 32) -> list[str]:
         """Fast deterministic candidate selection; exact source verification happens later."""
         resolved = self._root(root)
+        limit = max(0, min(int(limit), 64))
+        if not limit:
+            return []
+        settings = self._project_settings(resolved)
         terms = self.repo_tools._terms(query)
         paths: list[str] = []
         if terms:
@@ -2682,11 +2812,35 @@ class ProjectPreprocessor:
         out: list[str] = []
         seen: set[str] = set()
         for path in paths:
-            if path not in seen:
-                seen.add(path); out.append(path)
+            relative = str(path).replace("\\", "/")
+            try:
+                candidate = (Path(resolved) / relative).resolve(strict=True)
+                candidate.relative_to(Path(resolved))
+                if not candidate.is_file():
+                    continue
+                size = int(candidate.stat().st_size)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            relative = candidate.relative_to(Path(resolved)).as_posix()
+            if relative not in seen and self._project_path_allowed(
+                resolved, relative, settings, phase="search", size_bytes=size
+            ):
+                seen.add(relative)
+                out.append(relative)
             if len(out) >= limit:
                 break
-        return out
+        try:
+            context = resolve_project_context(resolved, self.state_dir)
+            usage = context.prioritize_paths(
+                out,
+                purpose="preprocess_search",
+                scope="candidate_paths",
+                repository_revision=self._external_revision(resolved),
+            )
+            out = list(usage.paths)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+        return out[:limit]
 
     def _content_card_key(self, content_hash: str) -> str:
         return stable_hash({

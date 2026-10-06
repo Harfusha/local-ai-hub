@@ -460,6 +460,8 @@ prefer_git_files = true
 use_ripgrep_if_available = true
 use_git_grep_fallback = true # fast tracked-file search when rg is unavailable
 ripgrep_timeout_seconds = 8.0
+# Independent file-count budget for the portable Python fallback.
+python_fallback_max_files = 8000
 # Keep foreground Git helpers strictly bounded; slow repositories fall back to cached/Python paths.
 git_grep_timeout_seconds = 4.0
 git_files_timeout_seconds = 3.0

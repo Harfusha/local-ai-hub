@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import base64
 import copy
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -2556,7 +2557,15 @@ class LocalAIServices:
     def repo_profile(self, root: str) -> dict[str, Any]:
         return self._repo_cached("profile", root, {}, lambda: self.repo_tools.project_profile(root))
 
-    def repo_search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None, enrich: bool = False) -> dict[str, Any]:
+    def repo_search(
+        self,
+        root: str,
+        query: str,
+        top_k: int = 12,
+        context_lines: int | None = None,
+        enrich: bool = False,
+        path_hints: list[Any] | tuple[Any, ...] | None = None,
+    ) -> dict[str, Any]:
         if enrich and not rollout_feature_enabled(self.config, "enriched_search"):
             return {
                 "success": False,
@@ -2591,7 +2600,226 @@ class LocalAIServices:
                         paths.append(p)
             except Exception:
                 pass
+        from .project_config import (
+            PathHint,
+            path_is_allowed,
+            resolve_project_context,
+            validate_path_hint,
+        )
+
+        path_hint_usage = None
+        search_paths_expanded = False
+        project_config_digest = ""
+        project_settings = None
+        search_file_inventory: list[Path] | None = None
+        project_policy_unavailable = False
+        try:
+            project_context = resolve_project_context(
+                root, configured_state_dir(getattr(self, "config", {}))
+            )
+            project_policy_unavailable = bool(project_context.resolution.error_codes)
+            if not project_policy_unavailable:
+                project_settings = project_context.settings
+                project_config_digest = project_context.config_digest
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            project_policy_unavailable = True
+        try:
+            if project_policy_unavailable:
+                raise ValueError("project_policy_unavailable")
+            cache_state = self._repo_cache_state(root) or {}
+            revision = (
+                str(cache_state.get("fingerprint", ""))
+                if not cache_state.get("stale") and not cache_state.get("degraded")
+                else ""
+            )
+            hint_records = list(
+                project_context.path_hints(
+                    purpose="repository_search",
+                    scope="repo_search",
+                    repository_revision=revision,
+                )
+            )
+            request_hints = (
+                tuple(
+                    hint
+                    for hint in path_hints[:64]
+                    if isinstance(hint, PathHint)
+                )
+                if isinstance(path_hints, (list, tuple))
+                else ()
+            )
+            if isinstance(path_hints, (list, tuple)):
+                allowed_hint_fields = {
+                    "path",
+                    "purpose",
+                    "scope",
+                    "evidence_id",
+                    "provenance",
+                    "repository_revision",
+                    "config_digest",
+                    "expires_at",
+                }
+                parsed_hints = list(request_hints)
+                for item in path_hints[:64]:
+                    if not isinstance(item, dict) or set(item) - allowed_hint_fields:
+                        continue
+                    try:
+                        parsed_hints.append(
+                            PathHint(
+                                **{
+                                    key: value
+                                    for key, value in item.items()
+                                    if key in allowed_hint_fields
+                                }
+                            )
+                        )
+                    except TypeError:
+                        continue
+                request_hints = tuple(parsed_hints)
+            hint_records.extend(request_hints)
+            hint_records.extend(
+                PathHint(path=path, purpose="repository_search", scope="repo_search")
+                for path in project_context.settings.entry_points
+            )
+            hinted_candidates: list[str] = []
+            root_path = Path(root).expanduser().resolve(strict=True)
+            inventory_loader = getattr(self.repo_tools, "_git_files", None)
+            file_inventory = inventory_loader(root_path) if callable(inventory_loader) else None
+            if isinstance(file_inventory, list):
+                search_file_inventory = file_inventory
+            inventory_paths: list[tuple[str, Path]] = []
+            if file_inventory is not None:
+                for candidate in file_inventory:
+                    try:
+                        resolved_candidate = Path(candidate).resolve(strict=False)
+                        relative = resolved_candidate.relative_to(root_path).as_posix()
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                    inventory_paths.append((relative, resolved_candidate))
+            hinted_files: list[Path] = []
+            hinted_roots: list[Path] = []
+            for hint in hint_records:
+                target = validate_path_hint(
+                    root_path,
+                    hint,
+                    purpose="repository_search",
+                    scope="repo_search",
+                    repository_revision=revision,
+                    config_digest=project_context.config_digest,
+                    learned=bool(hint.evidence_id),
+                )
+                if target is None:
+                    continue
+                if target.is_file():
+                    hinted_files.append(target)
+                    continue
+                if not target.is_dir():
+                    continue
+                hinted_roots.append(target)
+            force_path_expander = getattr(
+                self.repo_tools, "_expand_project_force_paths", None
+            )
+            if hinted_roots and callable(force_path_expander):
+                for candidate in force_path_expander(
+                    root_path, project_context.settings, 64
+                ):
+                    if any(
+                        candidate == target or target in candidate.parents
+                        for target in hinted_roots
+                    ):
+                        hinted_files.append(candidate)
+            # Use Git's bounded, cached `ls-files --exclude-standard` inventory
+            # for tracked directory-hint candidates. Configured force-includes
+            # are added through the separate bounded, symlink-free expander above.
+            # If inventory is unavailable, retain normal indexed candidates.
+            if file_inventory is not None:
+                collapsed_roots: list[Path] = []
+                for target in sorted(set(hinted_roots), key=lambda item: (len(item.parts), item.as_posix())):
+                    if any(target == parent or parent in target.parents for parent in collapsed_roots):
+                        continue
+                    collapsed_roots.append(target)
+                hinted_root_paths = set(collapsed_roots)
+                hinted_files.extend(
+                    candidate
+                    for relative, candidate in inventory_paths
+                    if any(
+                        candidate == target or target in candidate.parents
+                        for target in hinted_root_paths
+                    )
+                )
+                seen_hint_files: set[str] = set()
+                ignored_dirs = getattr(self.repo_tools, "ignore_dirs", set())
+                ignored_extensions = getattr(self.repo_tools, "ignore_extensions", set())
+                allowed_extensions = getattr(self.repo_tools, "extensions", set())
+                special_filenames = getattr(self.repo_tools, "special_filenames", set())
+                max_file_bytes = (
+                    project_settings.max_file_size_bytes
+                    if project_settings.max_file_size_bytes is not None
+                    else getattr(self.repo_tools, "max_file_bytes", 2_000_000)
+                )
+                for candidate in hinted_files:
+                    try:
+                        relative_path = candidate.relative_to(root_path)
+                        relative = relative_path.as_posix()
+                        size_bytes = candidate.stat().st_size
+                        ignored_directory = any(
+                            part.lower() in ignored_dirs
+                            for part in relative_path.parts[:-1]
+                        )
+                        if (
+                            candidate.suffix.lower() in ignored_extensions
+                            or (
+                                allowed_extensions
+                                and candidate.suffix.lower() not in allowed_extensions
+                                and candidate.name.lower() not in special_filenames
+                            )
+                            or size_bytes > max_file_bytes
+                        ):
+                            continue
+                    except (AttributeError, OSError, RuntimeError, ValueError):
+                        continue
+                    if ignored_directory and not path_is_allowed(
+                        root_path,
+                        relative,
+                        project_settings,
+                        phase="search",
+                        soft_ignored=True,
+                        size_bytes=size_bytes,
+                    ):
+                        continue
+                    if relative not in seen_hint_files:
+                        hinted_candidates.append(relative)
+                        seen_hint_files.add(relative)
+                    if len(hinted_candidates) >= 64:
+                        break
+            # Preserve the original indexed search window while allowing a
+            # separate bounded window for verified/configured path hints.
+            original_paths = list(dict.fromkeys(paths[:64]))
+            original_path_set = set(original_paths)
+            search_paths_expanded = any(
+                path not in original_path_set for path in hinted_candidates[:64]
+            )
+            paths = list(dict.fromkeys([*hinted_candidates[:64], *original_paths]))
+            path_hint_usage = project_context.prioritize_paths(
+                paths,
+                purpose="repository_search",
+                scope="repo_search",
+                repository_revision=revision,
+                path_hints=request_hints,
+            )
+            paths = list(path_hint_usage.paths)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            # Optional path-hint enrichment must not block established candidates.
+            pass
         def compute() -> dict[str, Any]:
+            if project_policy_unavailable:
+                return {
+                    "success": False,
+                    "root": str(root),
+                    "error": "project_policy_unavailable",
+                    "results": [],
+                    "scanned_files": 0,
+                }
             if paths:
                 targeted = (
                     self.repo_tools.search_paths(root, query, paths, top_k, context_lines=eff_ctx_lines)
@@ -2601,12 +2829,118 @@ class LocalAIServices:
             else:
                 targeted = {"results": []}
             used_preprocessed = bool(paths and targeted.get("results"))
-            result = targeted if targeted.get("results") else (
-                self.repo_tools.search(root, query, top_k, context_lines=eff_ctx_lines)
-                if eff_ctx_lines is not None
-                else self.repo_tools.search(root, query, top_k)
-            )
+            fail_closed_error = targeted.get("error") in {
+                "project_policy_unavailable",
+                "git_inventory_unavailable",
+            }
+            if fail_closed_error or (
+                targeted.get("results")
+                and not search_paths_expanded
+            ):
+                result = targeted
+            else:
+                fallback_top_k = max(1, min(int(top_k), 256)) * 8
+                search_method = self.repo_tools.search
+                search_options: dict[str, Any] = {}
+                if eff_ctx_lines is not None:
+                    search_options["context_lines"] = eff_ctx_lines
+                try:
+                    search_parameters = inspect.signature(search_method).parameters
+                except (TypeError, ValueError):
+                    search_parameters = {}
+                if "project_settings" in search_parameters:
+                    search_options["project_settings"] = project_settings
+                if "git_inventory" in search_parameters:
+                    search_options["git_inventory"] = search_file_inventory
+                result = search_method(root, query, fallback_top_k, **search_options)
+                if project_settings is not None:
+                    base = Path(root).expanduser().resolve(strict=True)
+                    filtered_results = []
+                    extension_is_searchable = getattr(
+                        self.repo_tools, "_path_extension_is_searchable", None
+                    )
+                    for hit in result.get("results", []):
+                        relative = str(hit.get("path") or "")
+                        try:
+                            candidate = (base / relative).resolve(strict=True)
+                            size_bytes = candidate.stat().st_size
+                        except (OSError, RuntimeError, ValueError):
+                            continue
+                        if callable(extension_is_searchable) and not extension_is_searchable(
+                            candidate, project_settings=project_settings
+                        ):
+                            continue
+                        if path_is_allowed(
+                            base,
+                            relative,
+                            project_settings,
+                            phase="search",
+                            size_bytes=size_bytes,
+                        ):
+                            filtered_results.append(hit)
+                            if len(filtered_results) >= max(1, int(top_k)):
+                                break
+                    result = dict(result)
+                    result["results"] = filtered_results
+                if targeted.get("results"):
+                    candidate_order = {
+                        str(path): index
+                        for index, path in enumerate(
+                            path_hint_usage.paths if path_hint_usage is not None else ()
+                        )
+                    }
+                    merged_by_location: dict[tuple[str, int], dict[str, Any]] = {}
+                    for hit in [
+                        *targeted.get("results", []),
+                        *result.get("results", []),
+                    ]:
+                        if not isinstance(hit, dict):
+                            continue
+                        hit_path = str(hit.get("path") or "")
+                        try:
+                            start_line = int(hit.get("start_line", 0) or 0)
+                        except (TypeError, ValueError):
+                            continue
+                        if hit_path:
+                            merged_by_location.setdefault(
+                                (hit_path, start_line), hit
+                            )
+                    merged = sorted(
+                        merged_by_location.values(),
+                        key=lambda hit: (
+                            -float(hit.get("score", 0) or 0),
+                            candidate_order.get(
+                                str(hit.get("path") or ""), len(candidate_order)
+                            ),
+                            str(hit.get("path") or ""),
+                            int(hit.get("start_line", 0) or 0),
+                        ),
+                    )
+                    max_per_file = max(
+                        1,
+                        int(
+                            getattr(
+                                self.repo_tools,
+                                "max_snippets_per_file",
+                                max(1, int(top_k)),
+                            )
+                        ),
+                    )
+                    selected: list[dict[str, Any]] = []
+                    per_file: dict[str, int] = {}
+                    for hit in merged:
+                        hit_path = str(hit.get("path") or "")
+                        if per_file.get(hit_path, 0) >= max_per_file:
+                            continue
+                        per_file[hit_path] = per_file.get(hit_path, 0) + 1
+                        selected.append(hit)
+                        if len(selected) >= max(1, int(top_k)):
+                            break
+                    result = dict(result)
+                    result["results"] = selected
             result["preprocessed_hit"] = used_preprocessed
+            if path_hint_usage is not None:
+                result["path_hint_usage"] = path_hint_usage.telemetry_metadata()
             if enrich:
                 result["enriched"] = True
                 base = Path(root).expanduser().resolve()
@@ -2634,7 +2968,23 @@ class LocalAIServices:
                 except Exception:
                     pass
             return result
-        return self._repo_cached("search", root, {"query": query, "top_k": top_k, "ci": paths[:24], "ctx": eff_ctx_lines}, compute)
+        return self._repo_cached(
+            "search",
+            root,
+            {
+                "query": query,
+                "top_k": top_k,
+                "ci": paths[:64],
+                "ctx": eff_ctx_lines,
+                "project_config_digest": project_config_digest,
+                "path_hint_usage": (
+                    path_hint_usage.telemetry_metadata()
+                    if path_hint_usage is not None
+                    else None
+                ),
+            },
+            compute,
+        )
 
     def _refresh_changed_intelligence(self, root: str) -> None:
         """Synchronize only Git-changed files before serving a cache-miss intelligence query.
