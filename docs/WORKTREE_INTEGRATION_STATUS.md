@@ -593,3 +593,22 @@ normalized bytes, with both exact original trees retained in merge ancestry.
 The resulting staged tree was unchanged before this note. This is proven
 newline-only archival reconciliation, not a claim that each historical patch's
 behavior satisfies release acceptance.
+
+#### Stashes must be integrated, not merely preserved
+
+The user reaffirmed that stash retention must not conceal unintegrated work.
+The following existing workers own disjoint reconciliation queues. A checkpoint
+match or archived copy alone cannot close any functional integration criterion.
+
+| Queue | Existing owner/worktree | Current status | Required handoff |
+| --- | --- | --- | --- |
+| 22 unmatched direct active-path untracked versions | Russell; hub-audit-repairs | active | Reconcile relevant source/tests, actual checks, exact original SHAs and missing caller blockers; commit unfinished changes |
+| 32 unmatched tracked/index versions | Confucius; existing context-render temporary checkout | active | Original-hunk/current-symbol dispositions and concrete missing integration list; no source writes during overlapping owner work |
+| 382 unmatched archive/overlay/handoff versions | Tesla; t17-multimodal-resume | active | Preserve authored originals and map executable patch/overlay intent to current code; identify missing functional hunks, not just archived bytes |
+| Exact-witness tracked/index versions | Helmholtz; t13-lifecycle-8429 | active | Prove actual current integration or reviewed reconciliation; checkpoint ancestry alone is insufficient |
+
+T18 status/dashboard synchronization remains active under Sartre in its existing
+checkout. Root source integration is sequential. All 45 stash objects remain
+unchanged; no stash is declared disposable based on blob equality or ancestry
+alone. Missing functional hunks found by these queues must receive explicit
+source ownership, implementation, and validation before release acceptance.
