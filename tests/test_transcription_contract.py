@@ -53,8 +53,10 @@ def test_missing_whisper_cli_does_not_report_metadata_as_transcription(
     result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
 
     assert result["success"] is False
+    assert result["reason"] == "cli_missing"
+    assert result["engine"] == "whisper_cli"
+    assert result["degraded"] is True
     assert not result.get("text")
-    assert result.get("degraded") is True or result.get("error")
 
 
 def test_whisper_binary_removed_after_lookup_reports_cli_missing(
@@ -90,18 +92,28 @@ def test_whisper_process_failure_never_returns_successful_transcript(
     audio.write_bytes(b"invalid audio")
 
     def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_directories.append(Path(args[args.index("--output_dir") + 1]))
         if outcome == "timeout":
             raise subprocess.TimeoutExpired(args, timeout=60)
         return subprocess.CompletedProcess(args, 2, stdout="", stderr="decoder failed")
 
+    output_directories: list[Path] = []
     monkeypatch.setattr(services_module.shutil, "which", lambda _name: "whisper-cli")
     monkeypatch.setattr(services_module.subprocess, "run", fake_run)
 
     result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
 
     assert result["success"] is False
+    assert result["reason"] == ("timeout" if outcome == "timeout" else "process_failed")
     assert not result.get("text")
-    assert result.get("error") or result.get("reason")
+    assert result["error"]
+    if outcome == "timeout":
+        assert result["retryable"] is True
+    else:
+        assert result["returncode"] == 2
+        assert result["error"] == "decoder failed"
+    assert output_directories
+    assert not output_directories[0].exists()
 
 
 def test_empty_whisper_output_is_not_a_successful_transcription(
@@ -119,6 +131,9 @@ def test_empty_whisper_output_is_not_a_successful_transcription(
     result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
 
     assert result["success"] is False
+    assert result["reason"] == "empty_transcript"
+    assert result["engine"] == "whisper_cli"
+    assert result["error"]
     assert not result.get("text")
 
 
