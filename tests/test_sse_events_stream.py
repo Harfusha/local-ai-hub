@@ -171,7 +171,7 @@ def test_sse_stream_replays_and_receives_live_events(tmp_path: Path):
         t.start()
 
         # Stream with sufficient timeout headroom (disconnects immediately on live event)
-        handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=3.0)
+        handler._stream_agent_events(stream_id="task-1", after_seq=99, timeout=3.0)
         t.join()
 
         output = handler.wfile.getvalue().decode("utf-8")
@@ -275,6 +275,7 @@ def test_sse_stream_replays_all_bounded_pages(tmp_path: Path, monkeypatch):
     assert output.count("event: task.updated") == 1001
     assert output.count("event: replay_page") == 11
     assert "id: 1001\n" in output
+
 
 def test_sse_stream_timeout_bounds_queue_wait(tmp_path: Path, monkeypatch):
     store = AgentStateStore(tmp_path / "agent_state.sqlite3")
@@ -457,15 +458,19 @@ def test_client_stream_events_parsing(monkeypatch):
     client.api_token = "tok"
     client.tenant = "test-tenant"
     client.agent = "test-agent"
+    client.max_request_timeout = 30.0
 
     sse_payload = (
         b": keep-alive\n\n"
         b"id: 1\n"
+        b"event: replay_page\n"
+        b"data: {\"success\":true,\"events\":[],\"next_seq\":1,\"first_retained_seq\":1,\"last_seq\":2,\"has_more\":true,\"gap_ranges\":[],\"cursor_reset\":false}\n\n"
+        b"id: 1\n"
         b"event: task.created\n"
-        b"data: {\"title\": \"build\", \"step\": 1}\n\n"
+        b"data: {\"event_id\":\"evt-1\",\"stream_id\":\"stream-1\",\"kind\":\"task.created\",\"payload\":{\"step\":1},\"idempotency_key\":\"key-1\",\"correlation_id\":\"corr-1\",\"actor\":\"agent\",\"created_at\":1.0,\"seq\":1}\n\n"
         b"id: 2\n"
         b"event: task.completed\n"
-        b"data: {\"title\": \"build\", \"ok\": true}\n\n"
+        b"data: {\"event_id\":\"evt-2\",\"stream_id\":\"stream-1\",\"kind\":\"task.completed\",\"payload\":{\"ok\":true},\"idempotency_key\":\"key-2\",\"correlation_id\":\"corr-2\",\"actor\":\"agent\",\"created_at\":2.0,\"seq\":2}\n\n"
     )
 
     mock_resp = io.BytesIO(sse_payload)
@@ -475,11 +480,15 @@ def test_client_stream_events_parsing(monkeypatch):
     monkeypatch.setattr("local_ai_hub.client.urlopen", lambda req, timeout=60.0: mock_resp)
 
     events = list(client.stream_events(stream_id="stream-1", timeout=5.0))
-    assert len(events) == 2
-    assert events[0][0] == "task.created"
-    assert events[0][1]["step"] == 1
-    assert events[1][0] == "task.completed"
-    assert events[1][1]["ok"] is True
+    assert len(events) == 3
+    assert events[0][0] == "replay_page"
+    assert events[0][1]["next_seq"] == 1
+    assert events[1][0] == "task.created"
+    assert events[1][1]["payload"]["step"] == 1
+    assert events[1][1]["seq"] == 1
+    assert events[2][0] == "task.completed"
+    assert events[2][1]["payload"]["ok"] is True
+    assert events[2][1]["seq"] == 2
 
 
 def test_client_stream_events_closes_response_on_cancellation(monkeypatch):

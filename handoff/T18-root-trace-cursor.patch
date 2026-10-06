@@ -1,0 +1,55 @@
+diff --git a/src/local_ai_hub/debug_traces.py b/src/local_ai_hub/debug_traces.py
+index d61ee84..bb1e373 100644
+--- a/src/local_ai_hub/debug_traces.py
++++ b/src/local_ai_hub/debug_traces.py
+@@ -359,7 +359,11 @@ class DebugTraceStore:
+                 row = con.execute("SELECT * FROM traces WHERE trace_id=?", (trace_id,)).fetchone()
+                 if not row:
+                     return {"success": False, "error": "trace not found", "trace_id": trace_id, "terminal": True}
+-                events = [dict(event) for event in con.execute("SELECT seq,created_at,event_type,payload_json FROM trace_events WHERE trace_id=? AND seq>? ORDER BY seq ASC", (trace_id, max(0, int(since_seq))))]
++                try:
++                    cursor = min(2**63 - 1, max(0, int(since_seq)))
++                except (TypeError, ValueError, OverflowError):
++                    cursor = 0
++                events = [dict(event) for event in con.execute("SELECT seq,created_at,event_type,payload_json FROM trace_events WHERE trace_id=? AND seq>? ORDER BY seq ASC", (trace_id, cursor))]
+                 for event in events:
+                     event["payload"] = self._decode(event.pop("payload_json"), {})
+                 thinking_rows = con.execute("SELECT payload_json FROM trace_events WHERE trace_id=? AND event_type=? ORDER BY seq ASC", (trace_id, "thinking")).fetchall()
+@@ -370,7 +374,7 @@ class DebugTraceStore:
+                         thinking_parts.append(str(payload.get("text") or ""))
+                 session = self._session(row)
+                 session["thinking"] = "".join(thinking_parts)[: self.max_session_text_bytes]
+-                return {"success": True, "session": session, "events": events, "next_seq": events[-1]["seq"] if events else max(0, int(since_seq)), "terminal": session["state"] in self.TERMINAL_STATES}
++                return {"success": True, "session": session, "events": events, "next_seq": events[-1]["seq"] if events else cursor, "terminal": session["state"] in self.TERMINAL_STATES}
+         except sqlite3.Error:
+             return {"success": False, "error": "trace store unavailable", "trace_id": trace_id, "retryable": True}
+ 
+diff --git a/tests/test_debug_traces.py b/tests/test_debug_traces.py
+index 1fb9f50..312a803 100644
+--- a/tests/test_debug_traces.py
++++ b/tests/test_debug_traces.py
+@@ -3,6 +3,8 @@ from __future__ import annotations
+ import json
+ import time
+ 
++import pytest
++
+ from local_ai_hub import http_server
+ from local_ai_hub.debug_traces import DebugTraceStore
+ 
+@@ -195,3 +197,15 @@ def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
+     handler.do_GET()
+ 
+     assert responses == [(404, {"success": False, "error": "trace not found"})]
++
++
++@pytest.mark.parametrize("since_seq", [2**63 - 1, 2**63, 2**100])
++def test_trace_detail_clamps_forward_cursor_to_sqlite_integer_range(tmp_path, since_seq):
++    store = DebugTraceStore(_config(tmp_path))
++    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
++    store.event(trace_id, "progress", {"index": 1})
++
++    detail = store.detail(trace_id, since_seq=since_seq)
++
++    assert detail["success"] is True
++    assert detail["events"] == []

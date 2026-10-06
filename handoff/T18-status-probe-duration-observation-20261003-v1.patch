@@ -1,0 +1,55 @@
+diff --git a/src/local_ai_hub/app.py b/src/local_ai_hub/app.py
+index 58cf404..3e96745 100644
+--- a/src/local_ai_hub/app.py
++++ b/src/local_ai_hub/app.py
+@@ -792,20 +792,24 @@ class LocalAIApp:
+             def read(key, callback, fallback):
+                 nonlocal degraded
+                 diagnostic: dict[str, Any] = {}
++                probe_started = time.monotonic()
+                 value, healthy = dependency(key, callback, fallback, diagnostic)
+                 degraded = degraded or not healthy
+                 dependency_status[key] = {
+                     "degraded": not healthy,
+                     "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
++                    "duration_ms": max(0, int((time.monotonic() - probe_started) * 1000)),
+                     **diagnostic,
+                 }
+                 return value
+ 
+             runtime_diagnostic: dict[str, Any] = {}
++            runtime_probe_started = time.monotonic()
+             online, runtime_healthy = dependency("runtime.online", self.runtime.is_online, False, runtime_diagnostic)
+             dependency_status["runtime.online"] = {
+                 "degraded": not runtime_healthy,
+                 "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
++                "duration_ms": max(0, int((time.monotonic() - runtime_probe_started) * 1000)),
+                 **runtime_diagnostic,
+             }
+             degraded = degraded or not runtime_healthy
+diff --git a/tests/test_status_snapshot_quality.py b/tests/test_status_snapshot_quality.py
+index db0a921..8c0031c 100644
+--- a/tests/test_status_snapshot_quality.py
++++ b/tests/test_status_snapshot_quality.py
+@@ -308,6 +308,21 @@ def test_status_distinguishes_offline_from_successful_runtime_probe():
+     assert result["ollama_status"] == "offline"
+ 
+ 
++def test_status_records_successful_probe_duration(monkeypatch):
++    def slow_online():
++        time.sleep(0.02)
++        return True
++
++    app = make_app(runtime=RuntimeProbe())
++    app.runtime.is_online = slow_online
++    monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.15)
++
++    result = app.status()
++
++    probe = result["dependency_status"]["runtime.online"]
++    assert probe["degraded"] is False
++    assert 10 <= probe["duration_ms"] < 100
++
+ 
+ def test_status_uses_one_deadline_across_slow_dependencies(monkeypatch):
+     def slow(*_args, **_kwargs):

@@ -376,7 +376,14 @@ class AgentProjector:
             data.pop("workspace_cache", None)
 
         if self.strip_empty:
-            data = self._clean_empty(data)
+            preserve_keys = None
+            telemetry_fields = {
+                "success", "window", "summary", "queue", "hotspots", "by_operation",
+                "error_fingerprints", "detail", "decision_grade",
+            }
+            if task_kind == "status" and telemetry_fields.issubset(data):
+                preserve_keys = {"results", "files", "symbols", *telemetry_fields}
+            data = self._clean_empty(data, preserve_keys=preserve_keys)
         return data
 
     @staticmethod

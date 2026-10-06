@@ -1,0 +1,9 @@
+# T18 resume checkpoint — 2026-10-02 v12
+
+Reviewed v11 and current dirty state in original T18 worktree at HEAD `a1b04bb3bf88dc26a4d17409baf4ae6e2845018f`; preserve all inherited/other-owner paths. No root source files changed.
+
+Concrete progress: candidate gained regression test `tests/test_telemetry_report_bounds_t18.py::test_report_budget_truncation_advances_cursor_after_retained_rows` (file SHA `69C915E4A668F45C6C19353C35134E6F937F850A74A819489DA74F9394A543D0`); Python AST parse succeeded, test not run. Root-current source patch `T18-root-telemetry-report-cursor-budget-20261002-v1.patch` SHA `5C68B2319A407836CF97AFD81B575EC2BB829EB304B458F548B6A2A065E2DF3E` changes only `src/local_ai_hub/telemetry.py` (+15/-1). Test-only patch `T18-root-telemetry-report-cursor-budget-test-only-20261002-v1.patch` SHA `026139F0D498F5EEC8CA282A95419DAF90D18071629B5F70842D2F5F6A403129` changes only `tests/test_telemetry_report_bounds_t18.py` (+51). Combined current-root dry apply-check exited 0. Neither patch applied.
+
+Review finding: root already has T18 telemetry pages and privacy helpers. Its `_bound_telemetry_report` fails to advance `next_cursor` to the last retained cursor row when byte-budget trimming occurs. The patch changes only that helper and preserves root's additional safe OSError errno classifications. Exact test selector is recorded in `T18-acceptance-review-20261002-v1.md`.
+
+No tests/benchmarks ran. Do not run until G is no longer UNKNOWN and T20 assigns the slot/integrates the change. Dashboard bounded patches and prior receipts remain as documented in v11. `/api/context/pack` untouched.

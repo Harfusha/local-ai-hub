@@ -1,0 +1,13 @@
+diff --git a/tests/test_telemetry_error_diagnostics_t18.py b/tests/test_telemetry_error_diagnostics_t18.py
+--- a/tests/test_telemetry_error_diagnostics_t18.py
++++ b/tests/test_telemetry_error_diagnostics_t18.py
+@@ -16,6 +16,8 @@
+         (OSError('read /private/project/source.py token=SECRET-TOKEN'), "OSError: operating system failure"),
+         (FileNotFoundError(errno.ENOENT, "secret path /private/project/missing.json"), "FileNotFoundError: file not found"),
+         (PermissionError(errno.EACCES, "denied for /private/project/secret.db"), "PermissionError: permission denied"),
++        (FileNotFoundError("missing PROMPT-PRIVATE source=SOURCE-PRIVATE token=SECRET-TOKEN /private/project/missing.json"), "FileNotFoundError: file not found"),
++        (PermissionError("denied PROMPT-PRIVATE source=SOURCE-PRIVATE token=SECRET-TOKEN /private/project/secret.db"), "PermissionError: permission denied"),
+         (TimeoutError('MODEL-OUTPUT-PRIVATE timed out at /private/project/model.bin'), "TimeoutError: operation timed out"),
+     ],
+ )
+
