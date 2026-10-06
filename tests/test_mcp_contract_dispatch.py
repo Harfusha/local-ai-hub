@@ -153,7 +153,9 @@ def test_live_mcp_schemas_match_registry_for_every_public_tool() -> None:
     assert set(wire_tools) == set(OPERATION_CONTRACTS)
 
     for name in OPERATION_CONTRACTS:
-        expected_input = operation_tool_input_schema(name, mcp_server.FEATURES)
+        expected_input = mcp_server._input_schema_with_action_aliases(
+            name, operation_tool_input_schema(name, mcp_server.FEATURES)
+        )
         expected_output = operation_tool_output_schema(name, mcp_server.FEATURES)
         assert registered[name].parameters == expected_input, name
         assert wire_tools[name].inputSchema == expected_input, name
