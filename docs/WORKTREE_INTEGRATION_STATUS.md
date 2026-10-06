@@ -247,6 +247,21 @@ remain preserved. Generated runtime/cache data is not committed.
 
 ### Preservation rule
 
+Live-context benchmark reconciliation is integrated as `6a57d65d`.
+The historical live/offline benchmark and current benchmark were different
+implementations sharing one filename. Both are retained, with the historical
+implementation in `tools/benchmark_context_pack_live_quality.py`; its tests
+import that module. `python -B -m pytest -q -p no:cacheprovider
+tests/test_context_pack_live_benchmark.py --tb=short --maxfail=3`: 15 passed in
+1.55 seconds. This is helper validation, not live model/release acceptance.
+Details: `handoff/LIVE-CONTEXT-BENCHMARK-SYNC-20261006.md`.
+
+T14 path-scan returned committed merge `13713fc4`, checkpoint `3b35d5d4`,
+pinned master `896fbedb`. Its checkout is clean; root integration is pending
+review of the scoped-candidate safety and bounded retrieval changes. Worker
+reports 83 passing targeted checks, with two unchanged affected-test failures
+and an obsolete CodeGraph-string audit remaining. This result is not done.
+
 Commit relevant tracked dirty changes and ordinary untracked source, tests,
 documentation and handoffs even when unfinished. Record outstanding behavior
 and exact check results here or in the checkout's committed integration note.
