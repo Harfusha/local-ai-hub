@@ -47,6 +47,7 @@ def test_implementation_fingerprint_includes_retrieval_dependency(monkeypatch, t
     after = surface_benchmarks._implementation_fingerprint()
     assert after != before, "fingerprint must include imported runtime dependencies"
 from local_ai_hub.async_jobs import AsyncJobManager
+from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.normalizer import tokenize_query_terms
 
 _REQUIRED_GOLDEN_OPERATIONS = (
@@ -537,6 +538,33 @@ def test_queue_admission_failure_retains_phase_and_reason(tmp_path: Path, monkey
     assert diagnostic["submit"]["state"] == "rejected"
     assert diagnostic["submit"]["admission_reason"] == "resource_pressure"
     assert "SENTINEL_PAYLOAD_SECRET" not in repr(result)
+
+
+def test_benchmark_seed_accepts_null_code_index_cached_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original_update = CodeIndex.update_files_batch
+    processed_counts: list[int] = []
+
+    def update_with_null_cached(self: CodeIndex, root: str, items: list[str] | list[tuple[str, str]]) -> dict[str, Any]:
+        result = original_update(self, root, items)
+        processed_counts.append(int(result.get("files_processed", 0)))
+        result["cached"] = None
+        return result
+
+    monkeypatch.setattr(CodeIndex, "update_files_batch", update_with_null_cached)
+    result = run_benchmark(
+        state_dir=tmp_path / "state",
+        scratch_dir=tmp_path / "scratch",
+        file_count=4,
+        rag_chunks=2,
+        repetitions=1,
+        light_repetitions=1,
+        comparison_repetitions=1,
+        concurrency=(1,),
+    )
+
+    seeded_files = result["stages"]["hub_sqlite_index"]["main_repo_seeded_files"]
+    assert processed_counts
+    assert isinstance(seeded_files, int)
 
 
 def test_queue_admission_exception_redacts_exception_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
