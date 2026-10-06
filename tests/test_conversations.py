@@ -272,6 +272,20 @@ def test_conversation_store_refuses_capacity_when_all_conversations_are_active()
     assert active.active is True
 
 
+def test_conversation_store_start_reserved_is_protected_from_competing_start() -> None:
+    from local_ai_hub.conversations import ConversationStore
+
+    store = ConversationStore(idle_ttl_seconds=1000, max_conversations=1)
+    reserved = store.start_reserved("tenant-a", {"model": "m"})
+
+    competing = store.start("tenant-b", {"model": "m"})
+
+    assert reserved is not None
+    assert reserved.active is True
+    assert competing is None
+    assert store._items[reserved.conversation_id] is reserved
+
+
 def test_service_rejects_conversation_start_at_capacity_without_generating() -> None:
     from local_ai_hub.conversations import ConversationStore
     from local_ai_hub.services import LocalAIServices
@@ -304,6 +318,39 @@ def test_service_rejects_conversation_start_at_capacity_without_generating() -> 
     assert generated == []
     assert services.conversations._items[active.conversation_id] is active
     assert active.active is True
+
+
+def test_service_reserves_new_conversation_before_competing_start_can_evict_it() -> None:
+    from local_ai_hub.conversations import ConversationStore
+    from local_ai_hub.services import LocalAIServices
+
+    class InterleavingConversationStore(ConversationStore):
+        competing_start = "not attempted"
+
+        def start(self, tenant, settings):
+            conversation = super().start(tenant, settings)
+            if conversation is not None:
+                self.competing_start = super().start(tenant, settings)
+            return conversation
+
+        def start_reserved(self, tenant, settings):
+            conversation = super().start_reserved(tenant, settings)
+            self.competing_start = super().start(tenant, settings)
+            return conversation
+
+    services = object.__new__(LocalAIServices)
+    services.config = {"token_saving": {"max_local_input_tokens": 4000}}
+    services.conversations = InterleavingConversationStore(idle_ttl_seconds=1000, max_conversations=1)
+    services._generate = lambda *args, **kwargs: {"success": True, "text": "answer"}
+
+    result = services._start_conversation(
+        tenant="tenant-a", prompt="question", route={"model": "m"}, system="system",
+        max_tokens=32, temperature=0.0, source="delegate:general", priority=0,
+    )
+
+    assert result["success"] is True
+    assert result["conversation_id"] in services.conversations._items
+    assert services.conversations.competing_start is None
 
 
 def test_service_does_not_report_success_when_conversation_is_lost_during_generation() -> None:

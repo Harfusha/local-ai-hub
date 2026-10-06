@@ -673,7 +673,7 @@ def test_async_job_controls_bypass_model_execution_gate(monkeypatch):
 
     monkeypatch.setattr(local_ai_mcp, "CLIENT", Client())
     monkeypatch.setattr(
-        local_ai_mcp, "FEATURES", SimpleNamespace(tasks=False, status=True, has_any_model=lambda: False)
+        local_ai_mcp, "FEATURES", SimpleNamespace(tasks=False, status=True, async_jobs=True, has_any_model=lambda: False)
     )
     monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
 
@@ -682,6 +682,38 @@ def test_async_job_controls_bypass_model_execution_gate(monkeypatch):
     assert result["success"] is True
     assert captured["path"] == "/api/async-jobs"
     assert captured["payload"] == {"action": "status", "job_id": "job-123"}
+
+
+@pytest.mark.parametrize("action", ["submit", "status", "wait", "result", "cancel"])
+def test_async_job_actions_are_rejected_when_async_jobs_are_disabled(monkeypatch, action):
+    from types import SimpleNamespace
+
+    calls = []
+
+    class Client:
+        max_request_timeout = 90
+
+        def post(self, path, payload, timeout):
+            calls.append((path, payload, timeout))
+            return {"success": True}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", Client())
+    monkeypatch.setattr(
+        local_ai_mcp,
+        "FEATURES",
+        SimpleNamespace(tasks=True, async_jobs=False, has_any_model=lambda: True),
+    )
+
+    result = local_ai_mcp.local_ai_task(
+        action=action, job_action="review", job_id="job-123", task="review this",
+    )
+
+    assert result == {
+        "success": False,
+        "unsupported": True,
+        "error": "Async job lifecycle is disabled (async_jobs.enabled=false)",
+    }
+    assert calls == []
 
 
 def test_async_job_wait_transport_deadline_covers_capped_wait(monkeypatch):
@@ -697,7 +729,7 @@ def test_async_job_wait_transport_deadline_covers_capped_wait(monkeypatch):
             return {"success": True, "job_id": payload["job_id"], "state": "running"}
 
     monkeypatch.setattr(local_ai_mcp, "CLIENT", Client())
-    monkeypatch.setattr(local_ai_mcp, "FEATURES", SimpleNamespace(tasks=False, status=True, has_any_model=lambda: False))
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", SimpleNamespace(tasks=False, status=True, async_jobs=True, has_any_model=lambda: False))
     monkeypatch.setattr(local_ai_mcp, "CFG", {"async_jobs": {"wait_max_seconds": 300}})
     monkeypatch.setattr(local_ai_mcp, "_timeout", lambda _kind: 20)
     monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
