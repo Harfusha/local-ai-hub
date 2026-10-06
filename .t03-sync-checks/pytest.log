@@ -1,0 +1,169 @@
+...................................FF....F..F...F............F.......... [ 35%]
+..........................F............................................. [ 70%]
+...........................F..............F.FFF.FFF.FF.......            [100%]
+================================== FAILURES ===================================
+_ test_registered_mcp_dispatch_accepts_handler_inputs[local_ai_task-arguments2] _
+tests\test_operation_contracts.py:1053: in test_registered_mcp_dispatch_accepts_handler_inputs
+    calls = _stub_registered_mcp_tool(monkeypatch, tool_name, result)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_operation_contracts.py:998: in _stub_registered_mcp_tool
+    registered_tool = mcp_server.mcp._tool_manager._tools[tool_name]
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'local_ai_task'
+_ test_registered_mcp_dispatch_accepts_handler_inputs[local_ai_task-arguments3] _
+tests\test_operation_contracts.py:1053: in test_registered_mcp_dispatch_accepts_handler_inputs
+    calls = _stub_registered_mcp_tool(monkeypatch, tool_name, result)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_operation_contracts.py:998: in _stub_registered_mcp_tool
+    registered_tool = mcp_server.mcp._tool_manager._tools[tool_name]
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'local_ai_task'
+_ test_registered_mcp_dispatch_accepts_handler_inputs[local_ai_task-arguments8] _
+tests\test_operation_contracts.py:1053: in test_registered_mcp_dispatch_accepts_handler_inputs
+    calls = _stub_registered_mcp_tool(monkeypatch, tool_name, result)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_operation_contracts.py:998: in _stub_registered_mcp_tool
+    registered_tool = mcp_server.mcp._tool_manager._tools[tool_name]
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'local_ai_task'
+_ test_registered_mcp_dispatch_rejects_context_fields_for_wrong_action[local_ai_task-arguments0-phase] _
+tests\test_operation_contracts.py:1077: in test_registered_mcp_dispatch_rejects_context_fields_for_wrong_action
+    calls = _stub_registered_mcp_tool(monkeypatch, tool_name, {"success": True})
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_operation_contracts.py:998: in _stub_registered_mcp_tool
+    registered_tool = mcp_server.mcp._tool_manager._tools[tool_name]
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'local_ai_task'
+______ test_registered_status_dispatch_rejects_incomplete_adoption_pair _______
+tests\test_operation_contracts.py:1100: in test_registered_status_dispatch_rejects_incomplete_adoption_pair
+    assert "supported target_tool and safe target_action" in response[1]["error"]
+E   AssertionError: assert 'supported target_tool and safe target_action' in 'bypass report requires target_tool and target_action'
+_________ test_live_mcp_schemas_match_registry_for_every_public_tool __________
+tests\test_mcp_contract_dispatch.py:153: in test_live_mcp_schemas_match_registry_for_every_public_tool
+    assert set(wire_tools) == set(OPERATION_CONTRACTS)
+E   AssertionError: assert {'local_ai_ar...al_ai_status'} == {'local_ai_ar..._status', ...}
+E     
+E     Extra items in the right set:
+E     'local_ai_work'
+E     'local_ai_task'
+E     Use -v to get more diff
+___________ test_wait_for_requires_identity_and_payload_fingerprint ___________
+tests\test_mutation_replay.py:324: in test_wait_for_requires_identity_and_payload_fingerprint
+    assert identity_mismatch == {"state": "conflict"}
+E   AssertionError: assert {'error': 're...': 'conflict'} == {'state': 'conflict'}
+E     
+E     Omitting 1 identical items, use -vv to show
+E     Left contains 1 more item:
+E     {'error': 'request id already belongs to a different identity, operation, or '
+E               'payload'}
+E     Use -v to get more diff
+_______________ test_http_memory_get_is_scope_and_root_isolated _______________
+tests\test_agent_state_transport.py:467: in test_http_memory_get_is_scope_and_root_isolated
+    global_for_codex = post({
+tests\test_agent_state_transport.py:446: in post
+    with urllib.request.urlopen(request) as response:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Python313\Lib\urllib\request.py:189: in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Python313\Lib\urllib\request.py:495: in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+C:\Python313\Lib\urllib\request.py:604: in http_response
+    response = self.parent.error(
+C:\Python313\Lib\urllib\request.py:533: in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+C:\Python313\Lib\urllib\request.py:466: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+C:\Python313\Lib\urllib\request.py:613: in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+E   urllib.error.HTTPError: HTTP Error 404: Not Found
+______ test_inprocess_transport_routes_to_services_without_http_or_spawn ______
+tests\test_inprocess_transport.py:153: in test_inprocess_transport_routes_to_services_without_http_or_spawn
+    assert result == {"success": True, "root": "fixture-root", "source": "service"}
+E   AssertionError: assert {'error': 'ro...t': True, ...} == {'root': 'fix...uccess': True}
+E     
+E     Differing items:
+E     {'success': False} != {'success': True}
+E     Left contains 4 more items:
+E     {'error': 'root directory does not exist: '
+E               'C:\\Users\\Adam\\.codex\\worktrees\\t03-contracts-resume\\.local-ai-hub\\fixture-root',
+E      'error_type': 'ValueError',...
+E     
+E     ...Full output truncated (5 lines hidden), use '-vv' to show
+____ test_inprocess_transport_preserves_request_identity_and_cancel_route _____
+tests\test_inprocess_transport.py:219: in test_inprocess_transport_preserves_request_identity_and_cancel_route
+    assert result == {
+E   AssertionError: assert {'error': 'wo...d': 'work-17'} == {'cancelled':...uccess': True}
+E     
+E     Omitting 1 identical items, use -vv to show
+E     Differing items:
+E     {'success': False} != {'success': True}
+E     Left contains 2 more items:
+E     {'error': 'work order not found', 'work_id': 'work-17'}
+E     Right contains 1 more item:
+E     {'cancelled': 'work-17'}
+E     Use -v to get more diff
+_______ test_inprocess_transport_keeps_http_rate_limit_across_requests ________
+tests\test_inprocess_transport.py:243: in test_inprocess_transport_keeps_http_rate_limit_across_requests
+    assert first["success"] is True
+E   assert False is True
+_______ test_inprocess_transport_preserves_auth_and_payload_validation ________
+tests\test_inprocess_transport.py:259: in test_inprocess_transport_preserves_auth_and_payload_validation
+    assert unauthorized["status_code"] == 401
+E   assert 503 == 401
+_ test_inprocess_transport_keeps_deterministic_read_allowed_in_restricted_mode _
+tests\test_inprocess_transport.py:304: in test_inprocess_transport_keeps_deterministic_read_allowed_in_restricted_mode
+    assert result == {"success": True, "root": "fixture-root", "source": "service"}
+E   AssertionError: assert {'error': 'ro...t': True, ...} == {'root': 'fix...uccess': True}
+E     
+E     Differing items:
+E     {'success': False} != {'success': True}
+E     Left contains 4 more items:
+E     {'error': 'root directory does not exist: '
+E               'C:\\Users\\Adam\\.codex\\worktrees\\t03-contracts-resume\\.local-ai-hub\\fixture-root',
+E      'error_type': 'ValueError',...
+E     
+E     ...Full output truncated (5 lines hidden), use '-vv' to show
+_ test_inprocess_timeout_reports_uncertain_result_but_does_not_cancel_service _
+tests\test_inprocess_transport.py:329: in test_inprocess_timeout_reports_uncertain_result_but_does_not_cancel_service
+    assert started.is_set()
+E   assert False
+E    +  where False = is_set()
+E    +    where is_set = <threading.Event at 0x162204b34d0: unset>.is_set
+___ test_inprocess_cancel_after_dispatch_reports_unknown_and_stops_waiting ____
+tests\test_inprocess_transport.py:366: in test_inprocess_cancel_after_dispatch_reports_unknown_and_stops_waiting
+    assert started.wait(1.0)
+E   assert False
+E    +  where False = wait(1.0)
+E    +    where wait = <threading.Event at 0x162204b3d70: unset>.wait
+____________ test_gaming_mcp_dispatch_allows_only_speculative_lint ____________
+tests\test_mcp_operational_mode_dispatch.py:62: in test_gaming_mcp_dispatch_allows_only_speculative_lint
+    assert lint["success"] is True
+E   assert False is True
+_________ test_maintenance_mcp_dispatch_still_blocks_speculative_lint _________
+tests\test_mcp_operational_mode_dispatch.py:82: in test_maintenance_mcp_dispatch_still_blocks_speculative_lint
+    assert result["mode"] == "maintenance"
+           ^^^^^^^^^^^^^^
+E   KeyError: 'mode'
+=========================== short test summary info ===========================
+FAILED tests/test_operation_contracts.py::test_registered_mcp_dispatch_accepts_handler_inputs[local_ai_task-arguments2]
+FAILED tests/test_operation_contracts.py::test_registered_mcp_dispatch_accepts_handler_inputs[local_ai_task-arguments3]
+FAILED tests/test_operation_contracts.py::test_registered_mcp_dispatch_accepts_handler_inputs[local_ai_task-arguments8]
+FAILED tests/test_operation_contracts.py::test_registered_mcp_dispatch_rejects_context_fields_for_wrong_action[local_ai_task-arguments0-phase]
+FAILED tests/test_operation_contracts.py::test_registered_status_dispatch_rejects_incomplete_adoption_pair
+FAILED tests/test_mcp_contract_dispatch.py::test_live_mcp_schemas_match_registry_for_every_public_tool
+FAILED tests/test_mutation_replay.py::test_wait_for_requires_identity_and_payload_fingerprint
+FAILED tests/test_agent_state_transport.py::test_http_memory_get_is_scope_and_root_isolated
+FAILED tests/test_inprocess_transport.py::test_inprocess_transport_routes_to_services_without_http_or_spawn
+FAILED tests/test_inprocess_transport.py::test_inprocess_transport_preserves_request_identity_and_cancel_route
+FAILED tests/test_inprocess_transport.py::test_inprocess_transport_keeps_http_rate_limit_across_requests
+FAILED tests/test_inprocess_transport.py::test_inprocess_transport_preserves_auth_and_payload_validation
+FAILED tests/test_inprocess_transport.py::test_inprocess_transport_keeps_deterministic_read_allowed_in_restricted_mode
+FAILED tests/test_inprocess_transport.py::test_inprocess_timeout_reports_uncertain_result_but_does_not_cancel_service
+FAILED tests/test_inprocess_transport.py::test_inprocess_cancel_after_dispatch_reports_unknown_and_stops_waiting
+FAILED tests/test_mcp_operational_mode_dispatch.py::test_gaming_mcp_dispatch_allows_only_speculative_lint
+FAILED tests/test_mcp_operational_mode_dispatch.py::test_maintenance_mcp_dispatch_still_blocks_speculative_lint
+17 failed, 188 passed in 70.78s (0:01:10)

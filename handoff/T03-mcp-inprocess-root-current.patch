@@ -1,0 +1,337 @@
+--- a/src/local_ai_hub/mcp_server.py
++++ b/src/local_ai_hub/mcp_server.py
+@@ -19,6 +19,12 @@
+ from urllib.parse import quote
+ 
+ from local_ai_hub.client import HubClient
++try:
++    from local_ai_hub.inprocess_transport import InProcessTransport
++except ModuleNotFoundError as exc:
++    if exc.name != "local_ai_hub.inprocess_transport":
++        raise
++    InProcessTransport = None  # type: ignore[assignment,misc]
+ from local_ai_hub.compact import compact_result
+ from local_ai_hub.response_budget import (
+     _CONTEXT_PROTECTED_KEYS,
+@@ -91,10 +97,92 @@
+ _workspace = canonical_root(Path.cwd())
+ _workspace_hash = hashlib.sha1(_workspace.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
+ TENANT = os.environ.get("LOCAL_AI_TENANT") or f"{AGENT_NAME}:{_workspace_hash}"
++CONFIG_PATH = os.environ.get("LOCAL_AI_CONFIG")
++_CURRENT_OPERATIONAL_CONTEXT: contextvars.ContextVar[tuple[str, bool]] = contextvars.ContextVar(
++    "mcp_operational_context", default=("", True)
++)
++
++
++class _MCPHubClientAdapter:
++    """Pass MCP action policy metadata through HubClient without changing wire payloads."""
++
++    def __init__(self, client: HubClient) -> None:
++        self._client = client
++        try:
++            parameters = inspect.signature(client.request).parameters
++        except (AttributeError, TypeError, ValueError):
++            parameters = {}
++        self._supports_operational_metadata = {
++            "operational_action", "requires_heavy_work"
++        } <= set(parameters)
++        if self._supports_operational_metadata:
++            original_request = client.request
++
++            def request_with_policy(
++                path: str, payload: dict[str, Any] | None = None, **kwargs: Any
++            ) -> Any:
++                action, requires_heavy_work = _CURRENT_OPERATIONAL_CONTEXT.get()
++                kwargs.setdefault("operational_action", action or None)
++                kwargs.setdefault("requires_heavy_work", requires_heavy_work)
++                return original_request(path, payload, **kwargs)
++
++            # HubClient.post() calls self.request(), so metadata reaches in-process
++            # transport without bypassing post's replay-safety and payload handling.
++            client.request = request_with_policy  # type: ignore[method-assign]
++
++    def get(self, path: str, **kwargs: Any) -> Any:
++        if self._supports_operational_metadata:
++            action, requires_heavy_work = _CURRENT_OPERATIONAL_CONTEXT.get()
++            kwargs.setdefault("operational_action", action or None)
++            kwargs.setdefault("requires_heavy_work", requires_heavy_work)
++        return self._client.get(path, **kwargs)
++
++    def status(self, detail: str = "brief", scope: str = "process") -> Any:
++        if detail == "agent_state":
++            return self.get("/api/status?detail=agent_state")
++        return self.get(f"/api/live/status?light=1&scope={scope}&detail={detail}")
++
++    def close(self) -> None:
++        close = getattr(self._client, "close", None)
++        if callable(close):
++            close()
++
++    def __getattr__(self, name: str) -> Any:
++        return getattr(self._client, name)
++
++
++def _build_mcp_client(tenant: str, config_path: str | None) -> _MCPHubClientAdapter:
++    if InProcessTransport is None:
++        client = HubClient(tenant=tenant, config_path=config_path)
++    else:
++        client = HubClient(
++            tenant=tenant,
++            config_path=config_path,
++            inprocess_transport=InProcessTransport(config_path=config_path),
++        )
++    return _MCPHubClientAdapter(client)
++
++
++def _classify_mcp_operation(tool_name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
++    if tool_name == "local_ai_status":
++        action = str(arguments.get("detail") or arguments.get("action") or "brief")
++    else:
++        action = str(arguments.get("action") or tool_name)
++    action = action.strip().lower().replace("-", "_")
++    if tool_name == "local_ai_status" and action in {"status", "health", "check", "info"}:
++        action = "brief"
++    lightweight_read = (
++        tool_name == "local_ai_artifact"
++        or (tool_name == "local_ai_status" and action in {"brief", "cache", "telemetry"})
++        or (tool_name == "local_ai_repo" and action in {"map", "code_index"})
++    )
++    return action, not lightweight_read
++
+ 
+ try:
+-    CLIENT = HubClient(tenant=TENANT)
+-    CFG = load_config(os.environ.get("LOCAL_AI_CONFIG"))
++    CLIENT = _build_mcp_client(TENANT, CONFIG_PATH)
++    CFG = load_config(CONFIG_PATH)
++    atexit.register(CLIENT.close)
+     FEATURES = FeatureSet.from_config(CFG)
+     MCP_CFG = CFG.get("mcp", {})
+     PROJECTOR = AgentProjector(CFG)
+@@ -1082,15 +1170,11 @@
+                     "maintenance", 0, None, degraded=True,
+                     error="operational mode state is unavailable",
+                 )
+-            action_name = str(arguments.get("action", "")).strip().lower().replace("-", "_")
+-            lightweight_read = (
+-                fn.__name__ in {"local_ai_status", "local_ai_artifact"}
+-                or (fn.__name__ == "local_ai_repo" and action_name in {"map", "code_index"})
+-            )
++            action_name, requires_heavy_work = _classify_mcp_operation(fn.__name__, arguments)
+             mode_rejection = operational_mode_gate_error(
+                 mode_snapshot,
+                 action_name,
+-                requires_heavy_work=not lightweight_read,
++                requires_heavy_work=requires_heavy_work,
+             )
+             gaming_lint = (
+                 mode_rejection is not None
+@@ -1098,9 +1182,9 @@
+                 and not mode_snapshot.degraded
+                 and fn.__name__ == "local_ai_command"
+                 and bool(getattr(FEATURES, "speculative_lint", False))
+-                and str(arguments.get("action", "")).strip().lower().replace("-", "_") == "speculative_lint"
++                and action_name == "speculative_lint"
+             )
+-            operator_status = fn.__name__ == "local_ai_status"
++            operator_status = fn.__name__ == "local_ai_status" and not requires_heavy_work
+             if mode_rejection is not None and not (gaming_lint or operator_status):
+                 return mode_rejection
+             extra = arguments.get("extra_fields") or kwargs.get("extra_fields")
+@@ -1111,6 +1195,9 @@
+                 "reuse_key": arguments.get("reuse_key", ""),
+                 "tool": fn.__name__,
+             })
++            operational_token = _CURRENT_OPERATIONAL_CONTEXT.set(
++                (action_name, requires_heavy_work)
++            )
+             metadata_token = set_metadata(
+                 task_id=arguments.get("task_id", ""),
+                 parent_task=arguments.get("parent_task_id", ""),
+@@ -1132,6 +1219,7 @@
+                 if token is not None:
+                     _CURRENT_EXTRA_FIELDS.reset(token)
+                 _CURRENT_RESPONSE_OPTIONS.reset(response_token)
++                _CURRENT_OPERATIONAL_CONTEXT.reset(operational_token)
+             clean, measured = pop_accounting(result)
+             if isinstance(clean, dict) and clean.get("success") is True:
+                 hint = semantic_handoff_hint(
+--- a/tests/test_mcp_contract_dispatch.py
++++ b/tests/test_mcp_contract_dispatch.py
+@@ -204,3 +204,176 @@
+     assert gate_calls == [("run", True), ("map", False)]
+     assert read_result.get("error_code") != "operational_mode_blocked"
+     assert client_calls == ["/api/repo/map"]
++
++
++def test_instrumented_mcp_action_reaches_inprocess_client_with_classified_metadata(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    calls = []
++
++    class FakeHubClient:
++        def request(
++            self,
++            path,
++            payload=None,
++            *,
++            timeout=30.0,
++            replay_safe=False,
++            request_id=None,
++            operational_action=None,
++            requires_heavy_work=True,
++        ):
++            calls.append((
++                path,
++                operational_action,
++                requires_heavy_work,
++            ))
++            return {"success": True, "items": []}
++
++        def post(self, path, payload=None, *, timeout=30.0):
++            return self.request(path, payload, timeout=timeout)
++
++    monkeypatch.setattr(mcp_server, "CLIENT", mcp_server._MCPHubClientAdapter(FakeHubClient()))
++    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda *_a, **_k: mcp_server.OperationalModeSnapshot("active", 0, None))
++    monkeypatch.setattr(mcp_server, "operational_mode_gate_error", lambda *_a, **_k: None)
++    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_a, **_k: None)
++    monkeypatch.setattr(mcp_server, "_tool_catalog_schema_tokens", lambda: 0)
++    monkeypatch.setattr(mcp_server, "finalize_tool_accounting", lambda **_k: {})
++    monkeypatch.setattr(mcp_server.CONTEXT_LEDGER, "record", lambda **_k: None)
++    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda *_a: None)
++    monkeypatch.setattr(mcp_server, "semantic_handoff_hint", lambda *_a: None)
++
++    def local_ai_repo(action: str, root: str):
++        return mcp_server.CLIENT.post("/api/search", {"action": action, "root": root})
++
++    dispatch = mcp_server._instrumented_tool()(local_ai_repo)
++    dispatch(action="map", root="C:/repo")
++    dispatch(action="search", root="C:/repo")
++
++    assert calls == [
++        ("/api/search", "map", False),
++        ("/api/search", "search", True),
++    ]
++
++def test_mcp_client_adapter_forwards_semantic_metadata_to_hub_client_request() -> None:
++    from local_ai_hub import mcp_server
++
++    calls = []
++
++    class FakeHubClient:
++        def request(
++            self,
++            path,
++            payload=None,
++            *,
++            timeout=30.0,
++            replay_safe=False,
++            request_id=None,
++            operational_action=None,
++            requires_heavy_work=True,
++        ):
++            calls.append((path, payload, {
++                "timeout": timeout,
++                "replay_safe": replay_safe,
++                "request_id": request_id,
++                "operational_action": operational_action,
++                "requires_heavy_work": requires_heavy_work,
++            }))
++            return {"success": True}
++
++        def post(self, path, payload=None, *, timeout=30.0):
++            return self.request(path, payload, timeout=timeout)
++
++        def get(
++            self,
++            path,
++            *,
++            timeout=15.0,
++            operational_action=None,
++            requires_heavy_work=True,
++        ):
++            return self.request(
++                path,
++                None,
++                timeout=timeout,
++                operational_action=operational_action,
++                requires_heavy_work=requires_heavy_work,
++            )
++
++    client = mcp_server._MCPHubClientAdapter(FakeHubClient())
++    token = mcp_server._CURRENT_OPERATIONAL_CONTEXT.set(("map", False))
++    try:
++        result = client.post("/api/repo/map", {"root": "C:/repo"}, timeout=2.0)
++        status = client.get("/api/live/status", timeout=1.0)
++    finally:
++        mcp_server._CURRENT_OPERATIONAL_CONTEXT.reset(token)
++
++    assert result == {"success": True}
++    assert status == {"success": True}
++    assert calls == [
++        (
++            "/api/repo/map",
++            {"root": "C:/repo"},
++            {
++                "timeout": 2.0,
++                "replay_safe": False,
++                "request_id": None,
++                "operational_action": "map",
++                "requires_heavy_work": False,
++            },
++        ),
++        (
++            "/api/live/status",
++            None,
++            {
++                "timeout": 1.0,
++                "replay_safe": False,
++                "request_id": None,
++                "operational_action": "map",
++                "requires_heavy_work": False,
++            },
++        ),
++    ]
++
++def test_mcp_transport_metadata_keeps_deterministic_reads_light() -> None:
++    from local_ai_hub.mcp_server import _classify_mcp_operation
++
++    assert _classify_mcp_operation("local_ai_repo", {"action": "map"}) == ("map", False)
++    assert _classify_mcp_operation("local_ai_repo", {"action": "code_index"}) == ("code_index", False)
++    assert _classify_mcp_operation("local_ai_artifact", {"action": "slice"}) == ("slice", False)
++    assert _classify_mcp_operation("local_ai_status", {"detail": "brief"}) == ("brief", False)
++    assert _classify_mcp_operation("local_ai_status", {}) == ("brief", False)
++    assert _classify_mcp_operation("local_ai_status", {"detail": "agent_state"}) == ("agent_state", True)
++    assert _classify_mcp_operation("local_ai_command", {"action": "run"}) == ("run", True)
++    assert _classify_mcp_operation("local_ai_repo", {"action": "search"}) == ("search", True)
++
++def test_mcp_transport_selection_injects_lazy_transport_with_same_config_and_tenant(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    calls = {}
++
++    class FakeTransport:
++        def __init__(self, *, config_path):
++            calls["transport_config"] = config_path
++
++    class FakeHubClient:
++        def __init__(self, *, tenant, config_path, inprocess_transport):
++            self.inprocess_transport = inprocess_transport
++            calls.update(
++                tenant=tenant,
++                client_config=config_path,
++                transport=inprocess_transport,
++            )
++
++    monkeypatch.setattr(mcp_server, "InProcessTransport", FakeTransport, raising=False)
++    monkeypatch.setattr(mcp_server, "HubClient", FakeHubClient)
++
++    client = mcp_server._build_mcp_client("agent:workspace", "C:/config/hub.toml")
++
++    assert isinstance(client._client, FakeHubClient)
++    assert calls == {
++        "tenant": "agent:workspace",
++        "client_config": "C:/config/hub.toml",
++        "transport_config": "C:/config/hub.toml",
++        "transport": client._client.inprocess_transport,
++    }
