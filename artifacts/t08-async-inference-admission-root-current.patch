@@ -1,0 +1,77 @@
+--- a/src/local_ai_hub/async_jobs.py
++++ b/src/local_ai_hub/async_jobs.py
+@@ -54,6 +54,10 @@
+         self.path.parent.mkdir(parents=True, exist_ok=True)
+         self._lock = threading.RLock()
+         self._mode_transition_lock = threading.RLock()
++        self._inference_condition = threading.Condition(self._mode_transition_lock)
++        self._active_inference_operations = 0
++        self._inference_transition_active = False
++        self._inference_transition_owner: int | None = None
+         self._events: dict[str, threading.Event] = {}
+         self._delayed_dispatch: dict[str, threading.Timer] = {}
+         self._dispatchers: set[threading.Thread] = set()
+@@ -249,11 +253,60 @@
+         with self._mode_transition_lock:
+             self._cancel_jobs_blocked_by_mode(normalized)
+ 
++    @property
++    def active_inference_operations(self) -> int:
++        with self._inference_condition:
++            return self._active_inference_operations
++
+     @contextmanager
+-    def operational_mode_change_guard(self):
+-        """Serialize mode persistence and cancellation against executor admission."""
+-        with self._mode_transition_lock:
++    def inference_operation(self, admission_check: Callable[[], bool] | None = None):
++        """Track admitted inference work and reject admission during mode transitions."""
++        with self._inference_condition:
++            self._inference_condition.wait_for(lambda: not self._inference_transition_active)
++            if admission_check is not None and not admission_check():
++                admitted = False
++            else:
++                self._active_inference_operations += 1
++                admitted = True
++        if not admitted:
++            yield False
++            return
++        try:
++            yield True
++        finally:
++            with self._inference_condition:
++                self._active_inference_operations -= 1
++                self._inference_condition.notify_all()
++
++    @contextmanager
++    def operational_mode_change_guard(self, timeout_seconds: float | None = None):
++        """Stop admission and drain tracked inference before persisting a mode change."""
++        deadline = None if timeout_seconds is None else time.monotonic() + max(0.0, timeout_seconds)
++        current_thread = threading.get_ident()
++        owns_transition = True
++        with self._inference_condition:
++            if self._inference_transition_active and self._inference_transition_owner == current_thread:
++                owns_transition = False
++            else:
++                self._inference_condition.wait_for(lambda: not self._inference_transition_active)
++                self._inference_transition_active = True
++                self._inference_transition_owner = current_thread
++                while self._active_inference_operations:
++                    remaining = None if deadline is None else deadline - time.monotonic()
++                    if remaining is not None and remaining <= 0:
++                        self._inference_transition_active = False
++                        self._inference_transition_owner = None
++                        self._inference_condition.notify_all()
++                        raise TimeoutError("active inference operations did not drain before mode change")
++                    self._inference_condition.wait(remaining)
++        try:
+             yield
++        finally:
++            if owns_transition:
++                with self._inference_condition:
++                    self._inference_transition_active = False
++                    self._inference_transition_owner = None
++                    self._inference_condition.notify_all()
+ 
+     @classmethod
+     def _mode_blocked_actions(cls, snapshot: dict[str, Any]) -> frozenset[str]:

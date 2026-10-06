@@ -1,0 +1,201 @@
+from __future__ import annotations
+
+from local_ai_hub import client as client_module
+from local_ai_hub.client import HubClient
+
+
+class _FailBeforeFirstWriteTransport:
+    def __init__(self) -> None:
+        self.request_ids: list[str] = []
+
+    def open(self, method, path, body, headers, timeout, **kwargs):
+        self.request_ids.append(headers["X-LocalAI-Request-ID"])
+        if len(self.request_ids) == 1:
+            raise client_module._TransportFailure(
+                ConnectionRefusedError("in-process transport rejected before write"),
+                request_not_sent=True,
+            )
+        return b'{"success":true}'
+
+    def close(self) -> None:
+        pass
+
+
+def test_inprocess_safe_request_retries_before_write_with_stable_request_id(tmp_path) -> None:
+    config = tmp_path / "client.toml"
+    config.write_text(
+        f"[server]\nport=39123\nstate_dir='{(tmp_path / 'state').as_posix()}'\n"
+        "[client]\nmax_request_timeout_seconds=5\n",
+        encoding="utf-8",
+    )
+    transport = _FailBeforeFirstWriteTransport()
+    client = HubClient(
+        config_path=str(config), auto_start=False, inprocess_transport=transport
+    )
+
+    result = client.get("/api/status", timeout=1)
+
+    assert result == {"success": True}
+    assert len(transport.request_ids) == 2
+    assert transport.request_ids[0] == transport.request_ids[1]
+
+class _RecordingTransport:
+    def __init__(self, failure=None) -> None:
+        self.failure = failure
+        self.request_ids: list[str] = []
+
+    def open(self, method, path, body, headers, timeout, **kwargs):
+        self.request_ids.append(headers["X-LocalAI-Request-ID"])
+        if self.failure is not None:
+            raise self.failure
+        return b'{"success":true}'
+
+    def close(self) -> None:
+        pass
+
+
+def _configured_client(tmp_path, transport) -> HubClient:
+    config = tmp_path / "client.toml"
+    config.write_text(
+        f"[server]\nport=39123\nstate_dir='{(tmp_path / 'state').as_posix()}'\n"
+        "[client]\nmax_request_timeout_seconds=5\n",
+        encoding="utf-8",
+    )
+    return HubClient(config_path=str(config), auto_start=False, inprocess_transport=transport)
+
+
+def test_explicit_request_id_validation_runs_before_transport(tmp_path) -> None:
+    transport = _RecordingTransport()
+    client = _configured_client(tmp_path, transport)
+
+    result = client.request(
+        "/api/command", {"command": "echo safe"}, request_id="bad id"
+    )
+
+    assert result["preflight"] is True
+    assert result["retryable"] is False
+    assert transport.request_ids == []
+
+
+def test_request_cancelled_before_send_preserves_id_and_skips_transport(tmp_path) -> None:
+    import threading
+
+    transport = _RecordingTransport()
+    client = _configured_client(tmp_path, transport)
+    cancel = threading.Event()
+    cancel.set()
+
+    result = client.request(
+        "/api/command",
+        {"command": "echo safe"},
+        request_id="cancel-before-send",
+        cancel_event=cancel,
+    )
+
+    assert result["cancelled"] is True
+    assert result["request_not_sent"] is True
+    assert result["outcome_unknown"] is False
+    assert result["request_id"] == "cancel-before-send"
+    assert transport.request_ids == []
+
+
+def test_cancelled_transport_after_possible_write_reports_unknown(tmp_path) -> None:
+    import threading
+
+    failure = client_module._TransportFailure(
+        TimeoutError("cancelled after write"), request_not_sent=False, cancelled=True
+    )
+    transport = _RecordingTransport(failure)
+    client = _configured_client(tmp_path, transport)
+
+    result = client.request(
+        "/api/command",
+        {"command": "echo safe"},
+        request_id="cancel-after-write",
+        cancel_event=threading.Event(),
+    )
+
+    assert transport.request_ids == ["cancel-after-write"]
+    assert result["cancelled"] is True
+    assert result["outcome_unknown"] is True
+    assert result.get("request_not_sent") is not True
+    assert result["request_id"] == "cancel-after-write"
+
+def test_request_cancel_event_reaches_bounded_transport(tmp_path, monkeypatch) -> None:
+    import threading
+
+    transport = _RecordingTransport()
+    client = _configured_client(tmp_path, transport)
+    client._inprocess_transport = None
+    cancel = threading.Event()
+    observed = []
+
+    def pooled_open(method, path, body, headers, timeout, *, cancel_event=None):
+        observed.append(cancel_event)
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+    result = client.request(
+        "/api/command",
+        {"command": "echo safe"},
+        request_id="cancel-hook",
+        cancel_event=cancel,
+    )
+
+    assert result == {"success": True}
+    assert observed == [cancel]
+
+class _CustomPreSendFailure(OSError):
+    request_not_sent = True
+
+
+class _CustomSafeRetryTransport(_RecordingTransport):
+    def open(self, method, path, body, headers, timeout, **kwargs):
+        self.request_ids.append(headers["X-LocalAI-Request-ID"])
+        if len(self.request_ids) == 1:
+            raise _CustomPreSendFailure("custom transport refused before write")
+        return b'{"success":true}'
+
+
+def test_custom_transport_pre_send_signal_still_allows_safe_autostart_retry(tmp_path) -> None:
+    transport = _CustomSafeRetryTransport()
+    client = _configured_client(tmp_path, transport)
+    client.auto_start = True
+
+    result = client.request(
+        "/api/command",
+        {"command": "echo safe"},
+        request_id="custom-pre-send",
+    )
+
+    assert result == {"success": True}
+    assert transport.request_ids == ["custom-pre-send", "custom-pre-send"]
+
+
+def test_connect_error_before_request_write_is_classified_as_not_sent(tmp_path, monkeypatch) -> None:
+    class _ConnectFailure:
+        sock = None
+
+        def connect(self):
+            raise OSError("temporary resolver failure")
+
+        def send(self, _data):
+            raise AssertionError("request bytes must not be written")
+
+        def request(self, _method, _path, *, body=None, headers=None):
+            self.send(body)
+
+        def close(self):
+            pass
+
+    client = _configured_client(tmp_path, _RecordingTransport())
+    client._inprocess_transport = None
+    monkeypatch.setattr(client, "_connection", lambda _timeout: _ConnectFailure())
+
+    try:
+        client._pooled_open("POST", "/api/command", b"{}", {}, 1.0)
+    except client_module._TransportFailure as exc:
+        assert exc.request_not_sent is True
+        assert exc.cancelled is False
+    else:
+        raise AssertionError("connect failure must be reported as a transport failure")

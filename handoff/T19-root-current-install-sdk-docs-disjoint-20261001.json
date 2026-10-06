@@ -1,0 +1,96 @@
+{
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "candidate": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "records": [
+    {
+      "path": "docs/INSTALLATION.md",
+      "root_exists": true,
+      "root_sha256": "D2C3B909BF2E00D137C1EF73CCF1FB59CDD4089954CC63FD480D894F9044F607",
+      "patched_sha256": "CA4D570B3A07AD32E95C41B0E089114F15EC414BCC6568DB62C7F7D840389062",
+      "candidate_sha256": "EC275E8EDE2DBE8A24ED4F795AD9CBA8A7815FD89E7790E08AB516CC7A3EDE38",
+      "state": "update"
+    },
+    {
+      "path": "docs/INSTALL_PROMPT.md",
+      "root_exists": true,
+      "root_sha256": "B7C683D483E1276F589ED7FDC8A7A9D863BCF7E37D7F547E728C0F4E80EEBB35",
+      "patched_sha256": "2A1A1F2F8784F182A33C946A6347A16812666E6D1B0B2C51C9F5079A0CD4115F",
+      "candidate_sha256": "D77344A3B685141413F90FA4BCDB5E716D976BB6E2029D7B8CB62AB94B027FBC",
+      "state": "update"
+    },
+    {
+      "path": "docs/UPDATE_PROMPT.md",
+      "root_exists": true,
+      "root_sha256": "900FC99C3938493E86B6E09F5F36B9A7D2E96156419F3453943AE0B2E6950466",
+      "patched_sha256": "F74A080661EB1B230B5D63C63FD36EE1E8B21894F2AAFB69A00E54B17CB60EB8",
+      "candidate_sha256": "BDDE8E04ADA45DA2B92EB84A8AFAD372A3DF02DD7472DBFEB83652CA08697A31",
+      "state": "update"
+    },
+    {
+      "path": "tests/test_t19_packaging_contract.py",
+      "root_exists": false,
+      "root_sha256": null,
+      "patched_sha256": "EC50FE5D2720B23D2602A17F12D2BED299A6511B3341570595A66022FE8EA95C",
+      "candidate_sha256": "EC50FE5D2720B23D2602A17F12D2BED299A6511B3341570595A66022FE8EA95C",
+      "state": "add"
+    },
+    {
+      "path": "tests/test_t19_prompt_profile_parity.py",
+      "root_exists": true,
+      "root_sha256": "50B4B67A135A486276A7788B1F80BB7D997E78FAD08E2F907FA211765633A0F2",
+      "patched_sha256": "318491030AC58E988DD196500F9498D62A17181AB17006D88EDF82711949B69F",
+      "candidate_sha256": "318491030AC58E988DD196500F9498D62A17181AB17006D88EDF82711949B69F",
+      "state": "update"
+    },
+    {
+      "path": "tests/test_t19_codegraph_removal.py",
+      "root_exists": true,
+      "root_sha256": "1EEE87F9F7517A2AD35CA5D10F17D4CD3D47053C2129412896F5277611EE4A06",
+      "patched_sha256": "DAC3457585B536164492C4AE697924F5D9ADF95D5B787CB4394BFFB96E462CD7",
+      "candidate_sha256": "DAC3457585B536164492C4AE697924F5D9ADF95D5B787CB4394BFFB96E462CD7",
+      "state": "update"
+    }
+  ],
+  "patch_sha256": "E003E1F7C372981742D932A1DB5A2BB4D4EB92EF45DE13CFEE8C80C4D996E5CA",
+  "patch_bytes": 26247,
+  "paths": [
+    "docs/INSTALLATION.md",
+    "docs/INSTALL_PROMPT.md",
+    "docs/UPDATE_PROMPT.md",
+    "tests/test_t19_packaging_contract.py",
+    "tests/test_t19_prompt_profile_parity.py",
+    "tests/test_t19_codegraph_removal.py"
+  ],
+  "prompt_sync": "Root target adaptive sections are byte-equal to both T19 candidate prompts. Added policy statements at corresponding pre-adaptive routing and rollout positions, preserving existing root section content. Added full Document/diagram and LLM card tail.",
+  "install_docs": "Adds current --skip-service behavior explanation; refreshes optional standalone CodeGraph gcf pin to verified current 0.6.13. Hub runtime/setup remains separate.",
+  "omissions": [
+    "docs/PYTHON_SDK.md and exhaustive SDK route test intentionally omitted under no context/pack scope",
+    "all source changes including generator.py",
+    "AGENTS.md and tests/test_release_contract.py shared files",
+    "API_COVERAGE, tools/surface_inventory.py, tests/test_surface_inventory.py",
+    "all other inherited dirty paths"
+  ],
+  "command": [
+    "python",
+    "-B",
+    "-m",
+    "pytest",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--confcutdir=tests",
+    "--noconftest",
+    "--tb=short",
+    "tests/test_t19_packaging_contract.py",
+    "tests/test_t19_prompt_profile_parity.py",
+    "tests/test_t19_codegraph_removal.py::test_optional_codegraph_docs_use_current_gcf_extra_without_hub_integration"
+  ],
+  "overlay_validation": "patch check/apply passed; prompt section parity with both candidate docs passed; CodeGraph remains optional standalone; patch has no /api/context/pack reference",
+  "test_exit_code": 0,
+  "test_stdout": "....                                                                     [100%]\n4 passed in 0.03s\n",
+  "test_stderr": "",
+  "root_writes": false,
+  "full_checkout_copied": false
+}

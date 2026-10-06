@@ -1,0 +1,349 @@
+{
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_dirty_paths_observed": 333,
+  "candidate": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "candidate_dirty_paths_observed": 258,
+  "scope_paths": 28,
+  "test_paths": 19,
+  "states": {
+    "same": 2,
+    "updated": 7,
+    "added": 19
+  },
+  "excluded_owner_paths": [
+    "docs/API_COVERAGE.md",
+    "tools/surface_inventory.py",
+    "tests/test_surface_inventory.py"
+  ],
+  "shared_hunks_excluded": [
+    "AGENTS.md",
+    "tests/test_release_contract.py"
+  ],
+  "records": [
+    {
+      "path": "MANIFEST.in",
+      "root_sha256": "BCBB4D098A772C2C6BFD57FEDDCD5CE5DAF65DA69EE1AC7C9D74F1BCC306E854",
+      "candidate_sha256": "BCBB4D098A772C2C6BFD57FEDDCD5CE5DAF65DA69EE1AC7C9D74F1BCC306E854",
+      "root_exists": true,
+      "candidate_exists": true,
+      "state": "same"
+    },
+    {
+      "path": "docs/INSTALLATION.md",
+      "root_sha256": "D2C3B909BF2E00D137C1EF73CCF1FB59CDD4089954CC63FD480D894F9044F607",
+      "candidate_sha256": "EC275E8EDE2DBE8A24ED4F795AD9CBA8A7815FD89E7790E08AB516CC7A3EDE38",
+      "root_exists": true,
+      "candidate_exists": true,
+      "state": "updated"
+    },
+    {
+      "path": "docs/INSTALL_PROMPT.md",
+      "root_sha256": "B7C683D483E1276F589ED7FDC8A7A9D863BCF7E37D7F547E728C0F4E80EEBB35",
+      "candidate_sha256": "D77344A3B685141413F90FA4BCDB5E716D976BB6E2029D7B8CB62AB94B027FBC",
+      "root_exists": true,
+      "candidate_exists": true,
+      "state": "updated"
+    },
+    {
+      "path": "docs/UPDATE_PROMPT.md",
+      "root_sha256": "900FC99C3938493E86B6E09F5F36B9A7D2E96156419F3453943AE0B2E6950466",
+      "candidate_sha256": "BDDE8E04ADA45DA2B92EB84A8AFAD372A3DF02DD7472DBFEB83652CA08697A31",
+      "root_exists": true,
+      "candidate_exists": true,
+      "state": "updated"
+    },
+    {
+      "path": "docs/MODEL_CAPABILITIES.md",
+      "root_sha256": "4FBBDFB63DBF01902A5D23045C346A42C28440CAF41CCF6057FF43F32DB99F69",
+      "candidate_sha256": "A3152A20A00C4A012CD790FB419DF9E2A274DC8287E77736C37A8D2405C61BCD",
+      "root_exists": true,
+      "candidate_exists": true,
+      "state": "updated"
+    },
+    {
+      "path": "docs/PYTHON_SDK.md",
+      "root_sha256": null,
+      "candidate_sha256": "9EF0136CAE929E968CA38B561301F7DA495124ECF43CCD3FCC6C07588E6C856F",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "docs/T19_RELEASE_VALIDATION_RUNBOOK.md",
+      "root_sha256": null,
+      "candidate_sha256": "948A6E826F0944478CA586298D47861140D4291E93F858B03984DF9BD7874700",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-25-t19-install-sdk-rollout.md",
+      "root_sha256": null,
+      "candidate_sha256": "6D3A0D94507E377748A40F1A318DE217581E7D71F938386BE92055ABC5D3D7A7",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tools/rollback_snapshot.py",
+      "root_sha256": null,
+      "candidate_sha256": "4117889BB751AFAE0A6B198AC67B8E80CB1517F8D45C1CAA98C16E1D00E9DEB6",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_clean_profile_roundtrip.py",
+      "root_sha256": "F61876A7641AAC367C4EAD7BF096BB8FE511B29C80544FBC15079DA5AE824065",
+      "candidate_sha256": "F61876A7641AAC367C4EAD7BF096BB8FE511B29C80544FBC15079DA5AE824065",
+      "root_exists": true,
+      "candidate_exists": true,
+      "state": "same"
+    },
+    {
+      "path": "tests/test_t19_codegraph_removal.py",
+      "root_sha256": "1EEE87F9F7517A2AD35CA5D10F17D4CD3D47053C2129412896F5277611EE4A06",
+      "candidate_sha256": "DAC3457585B536164492C4AE697924F5D9ADF95D5B787CB4394BFFB96E462CD7",
+      "root_exists": true,
+      "candidate_exists": true,
+      "state": "updated"
+    },
+    {
+      "path": "tests/test_t19_coverage_owner.py",
+      "root_sha256": "26F3BD59F2B7D812DF238B7393CFCFA793024DF666DE53C8852BEE323BBEEE81",
+      "candidate_sha256": "6A38FD858410E2048365DA2CC7418B12D1B42C578391050684CAB9407C567945",
+      "root_exists": true,
+      "candidate_exists": true,
+      "state": "updated"
+    },
+    {
+      "path": "tests/test_t19_current_prompt_adoption.py",
+      "root_sha256": null,
+      "candidate_sha256": "91D629C9B1D189B93A21E940D87BEF7D680EC06DB3B514002623E9FF773A00E3",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_doctor_optional_status.py",
+      "root_sha256": null,
+      "candidate_sha256": "2A9B76FA7CF33B38B8C81AFC0AF23DF5BF7AEDF4127A733E1A27CEB12B622E33",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_hubctl_config_isolation.py",
+      "root_sha256": null,
+      "candidate_sha256": "A0B43509A29288B4A6522640047CE929E4EA3E7680008584A2DE2D5889AE7EAA",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_install_contracts.py",
+      "root_sha256": null,
+      "candidate_sha256": "B70BFB014653F6C21DF71A85F817FA9A94194BCC4E898C2D8FF0F80638B74928",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_mcp_handshake.py",
+      "root_sha256": null,
+      "candidate_sha256": "AFD53488DD718C320FB149F1354D9A98A97D4C8456FC9434D92EF0504D08B300",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_packaged_sdk_smoke.py",
+      "root_sha256": null,
+      "candidate_sha256": "CF0889E223467D5606161270FF9831005971E4F1BFFF315D1201E50BD9F46144",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_packaging_contract.py",
+      "root_sha256": null,
+      "candidate_sha256": "EC50FE5D2720B23D2602A17F12D2BED299A6511B3341570595A66022FE8EA95C",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_parity_contract.py",
+      "root_sha256": null,
+      "candidate_sha256": "4AE596BA4BB7E534C817338843F33EF87B7D17999CAE99997DCCDDD6A9CE6B20",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_project_config_prompts.py",
+      "root_sha256": null,
+      "candidate_sha256": "EE476BFF3741DF06FF666FDBC4CF2BB3E32D9B5B47841602BE2A7CC418176218",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_prompt_profile_parity.py",
+      "root_sha256": "50B4B67A135A486276A7788B1F80BB7D997E78FAD08E2F907FA211765633A0F2",
+      "candidate_sha256": "318491030AC58E988DD196500F9498D62A17181AB17006D88EDF82711949B69F",
+      "root_exists": true,
+      "candidate_exists": true,
+      "state": "updated"
+    },
+    {
+      "path": "tests/test_t19_recovery_journal_schema.py",
+      "root_sha256": null,
+      "candidate_sha256": "C3881E0E67C9999DD90C98CC568902D90329997613B18F570332E9ADA6D265B9",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_rollback_contract.py",
+      "root_sha256": null,
+      "candidate_sha256": "85BAC790B5A1772CF6BA2419D8BE1EE78CDA420F46B27AE4100D7EBEAC67E005",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_rollback_snapshot.py",
+      "root_sha256": null,
+      "candidate_sha256": "9B17465298795A312D7A76A392A8F6EA958FF03C18CA1A9E49D90FB2CC1AC96C",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_sdk_docs.py",
+      "root_sha256": null,
+      "candidate_sha256": "228E9E02FE7E00B7075E082DE3BD9CBA53460EB99B7D18A8A807A5D785D323E6",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_sdk_scenarios.py",
+      "root_sha256": null,
+      "candidate_sha256": "62A8D9FAFCDAFBBDC9DF694BB7A7264263217E78F11340CA1BD2DE9F5449F0D4",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    },
+    {
+      "path": "tests/test_t19_sdk_wrapper_payloads.py",
+      "root_sha256": null,
+      "candidate_sha256": "172F4C078440AA5C3F88BD89566B11140AC43B7DC7BAC37FB48B24136ED3B58A",
+      "root_exists": false,
+      "candidate_exists": true,
+      "state": "added"
+    }
+  ],
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\T19-root-current-owned-overlay-20261001.patch",
+  "patch_sha256": "348309F6FF0237A9A590730DC65FF4BCAF29515BDF9B67D09E266B4A0CB5D0D8",
+  "patch_bytes": 330125,
+  "overlay_validation": "git apply --check passed; patch applied to an isolated overlay of current-root selected paths; all resulting scoped hashes match candidate",
+  "inherited_or_unconfirmed_from_ownership_snapshot": {
+    "paths": [
+      "docs/ARCHITECTURE.md",
+      "docs/DASHBOARD.md",
+      "docs/FEATURE_AUDIT_V4.md",
+      "docs/MCP_AND_AGENTS.md",
+      "docs/OPERATIONS.md",
+      "docs/SECURITY_MODEL.md",
+      "docs/TROUBLESHOOTING.md",
+      "docs/superpowers/plans/2026-09-22-adaptive-retrieval-orchestrator.md",
+      "src/local_ai_hub/client.py",
+      "src/local_ai_hub/external_tools.py",
+      "src/local_ai_hub/generator.py",
+      "src/local_ai_hub/http_server.py",
+      "src/local_ai_hub/mcp_server.py",
+      "src/local_ai_hub/ollama_subagents.py",
+      "src/local_ai_hub/preprocess.py",
+      "src/local_ai_hub/resilience.py",
+      "src/local_ai_hub/retrieval.py",
+      "tests/test_adaptive_retrieval.py",
+      "tests/test_agent_os_enhancements.py",
+      "tests/test_client_transport.py",
+      "tests/test_codegraph_package_policy.py",
+      "tests/test_doctor_support.py",
+      "tests/test_external_tools.py",
+      "tests/test_features.py",
+      "tests/test_mcp_agent_routing.py",
+      "tests/test_preprocessing_overhaul.py",
+      "tests/test_preprocessor_and_deterministic.py",
+      "tests/test_projection_extra_fields.py",
+      "tests/test_release_hardening.py",
+      "tests/test_setup.py",
+      "tests/test_stuck_preprocessing_and_dashboard_fixes.py",
+      "tools/doctor.py",
+      "tools/hubctl.py",
+      "tools/selftest.py",
+      "tools/telemetry_report.py",
+      "tools/uninstall.py"
+    ],
+    "snapshot_header_claimed_count": 38,
+    "parsed_path_count": 36,
+    "currently_dirty_in_candidate": [
+      "docs/ARCHITECTURE.md",
+      "docs/DASHBOARD.md",
+      "docs/FEATURE_AUDIT_V4.md",
+      "docs/MCP_AND_AGENTS.md",
+      "docs/OPERATIONS.md",
+      "docs/SECURITY_MODEL.md",
+      "docs/TROUBLESHOOTING.md",
+      "docs/superpowers/plans/2026-09-22-adaptive-retrieval-orchestrator.md",
+      "src/local_ai_hub/client.py",
+      "src/local_ai_hub/external_tools.py",
+      "src/local_ai_hub/generator.py",
+      "src/local_ai_hub/http_server.py",
+      "src/local_ai_hub/mcp_server.py",
+      "src/local_ai_hub/ollama_subagents.py",
+      "src/local_ai_hub/preprocess.py",
+      "src/local_ai_hub/resilience.py",
+      "src/local_ai_hub/retrieval.py",
+      "tests/test_adaptive_retrieval.py",
+      "tests/test_agent_os_enhancements.py",
+      "tests/test_client_transport.py",
+      "tests/test_codegraph_package_policy.py",
+      "tests/test_doctor_support.py",
+      "tests/test_external_tools.py",
+      "tests/test_features.py",
+      "tests/test_mcp_agent_routing.py",
+      "tests/test_preprocessing_overhaul.py",
+      "tests/test_preprocessor_and_deterministic.py",
+      "tests/test_projection_extra_fields.py",
+      "tests/test_release_hardening.py",
+      "tests/test_setup.py",
+      "tests/test_stuck_preprocessing_and_dashboard_fixes.py",
+      "tools/doctor.py",
+      "tools/hubctl.py",
+      "tools/selftest.py",
+      "tools/telemetry_report.py",
+      "tools/uninstall.py"
+    ],
+    "dirty_count": 36,
+    "missing_from_candidate": []
+  },
+  "overlay_test_status": "Selected-path apply/hash validation passed. Bounded current-root source overlay ran T19 suite: all 19 collection blocked by absent root T19_RUNTIME_PARITY_CONTRACT; remaining 18 yielded 19 failed, 49 passed, 1 skipped, 3 subtests. Exact receipt handoff/T19-root-source-tests-20261001.json.",
+  "temporary_overlay_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t19-root-current-overlay-jpny09i8",
+  "root_dirty_paths_observed_latest": 447,
+  "root_status_count_note": "Initial observed count 332, latest observed 333; this work made no writes to root. T20 owns root and was active; source of concurrent delta not verified.",
+  "candidate_inherited_scope_overlap": [],
+  "root_scoped_files_still_match_baseline": true,
+  "root_source_selected_overlay_tests": {
+    "receipt": "handoff/T19-root-source-tests-20261001.json",
+    "receipt_sha256": "EF737EE653DB5BECF4091A4D5D2CD5977B5973E45CBB7F1898BB7C38AFAC8A68",
+    "attempt_19": "collection error: T19_RUNTIME_PARITY_CONTRACT absent from current root generator.py",
+    "remaining_18": "19 failed, 49 passed, 1 skipped, 3 subtests passed in 45.92s",
+    "interpretation": "Root-current integration gaps; candidate dirty inherited source/docs were deliberately excluded."
+  }
+}

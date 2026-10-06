@@ -1,0 +1,375 @@
+{
+  "base_map": "handoff/T01-operation-evidence-review-20261001-v1.json",
+  "base_map_actual_sha256": "AB8D736107DC57EC611D41FE1A4D4CDD8D4A69932910E5E37DCE5E15E00D7412",
+  "base_map_claimed_sha256": "AB8D736107DC57EC611D41FE1A4D4CDD8D4A69932910E5E37DCE5E15E00D7412",
+  "base_map_csv": "handoff/T01-operation-evidence-review-20261001-v1.csv",
+  "base_map_csv_actual_sha256": "2223D4341F6DD72703458F19E9C8E8B1A1E4613D98B5E02AD25CEC124E632922",
+  "base_map_csv_claimed_sha256": "2223D4341F6DD72703458F19E9C8E8B1A1E4613D98B5E02AD25CEC124E632922",
+  "base_map_csv_sha_status": "matches",
+  "base_map_sha_status": "matches",
+  "builder": "handoff/T01-build-root-transfer-delta-20261001-v2.py",
+  "builder_sha256": "2C1C63DA52FC9142FBCC457352185FB61C05E15F93903E69B10E848354D78579",
+  "claims": "handoff/T01-root-transfer-claims-20261001-v2.json",
+  "claims_sha256": "84B11DFFC658A275A322A500BFB2404717A917BB6C370BF7B292B86088347D35",
+  "counts": {
+    "candidate_scope": 2,
+    "classifications": {
+      "candidate_only_not_root_green": 2,
+      "root_batch_partial_with_five_failures_unpinned": 1,
+      "root_reported_pass_receipt_sha_missing": 1,
+      "root_suite_failed_one_restart_stop_failure_receipt_sha_missing": 1
+    },
+    "receipt_sha_matches": 0,
+    "root_green": 0,
+    "root_scope": 3,
+    "source_pin_sets_complete": 3,
+    "source_run_bindings_verified": 0,
+    "total": 5
+  },
+  "generated_utc": "2026-10-01T22:00:33+00:00",
+  "merged_operation_map_csv": "handoff/T01-operation-evidence-review-20261001-v2.csv",
+  "merged_operation_map_csv_sha256": "F71D4BCD89B37877D16C6D5FCEF25F140A79CB9A9ABE0900684FE2EA0C3E0A37",
+  "merged_operation_map_rows": 446,
+  "operation_map_deltas": [
+    {
+      "applied": true,
+      "new_status": "root_reported_pass_receipt_sha_missing",
+      "operation_id": "op-39cb63957f93",
+      "previous_status": "unverified_no_asserted_operation_test"
+    }
+  ],
+  "operation_map_rows_updated": 1,
+  "output_csv": "handoff/T01-root-transfer-delta-20261001-v2.csv",
+  "output_csv_sha256": "F9DC3AF249B25F9847476FD53EA2B724CD76EC8BD705B56C749BF1E77A8C6635",
+  "records": [
+    {
+      "applies_to_operation_map": true,
+      "classification": "root_reported_pass_receipt_sha_missing",
+      "command": "$env:PYTHONDONTWRITEBYTECODE='1'; python -B -m pytest -q -p no:cacheprovider tests/test_t13_gaming_conversation_release_receipt.py::test_gaming_release_receipt_includes_conversation_cancelled_before_snapshot",
+      "evidence_ref": "T20 thread 01a0d322-b3bd-7930-b552-14e9b7020fec; result message msg_096b4ab4b44c07df016abecc86e83887d2a670b03237f0fbfe; pass command outputs exec-7454b5f1-1d6f-491f-a043-0de7b3d6e7b9 and exec-4c104403-c68d-4475-940c-d646bf975cb0",
+      "notes": "Positive route assertion. T20 post-run test source pin was DD7266...; current root test hash drifted to 433427... after that run. Root GREEN withheld until immutable test-result receipt with SHA is attached.",
+      "operation": "HTTP POST /api/conversations/continue",
+      "operation_id": "op-39cb63957f93",
+      "owner": "T13",
+      "patch_sha_status": "missing",
+      "patch_verification": {
+        "actual_sha256": "",
+        "claimed_sha256": "",
+        "path": "",
+        "sha_status": "missing"
+      },
+      "previous_operation_status": "unverified_no_asserted_operation_test",
+      "receipt": null,
+      "receipt_sha_status": "missing",
+      "receipt_verification": {
+        "actual_sha256": "",
+        "claimed_sha256": "",
+        "path": "",
+        "sha_status": "missing"
+      },
+      "record_id": "T13-conversation-release",
+      "report_sha_status": "missing",
+      "report_verification": {
+        "actual_sha256": "",
+        "claimed_sha256": "",
+        "path": "",
+        "sha_status": "missing"
+      },
+      "result": "1 passed in 4.99s; repeated identical selector 1 passed in 6.10s",
+      "root_green": false,
+      "scope": "root operation selector",
+      "selector": "tests/test_t13_gaming_conversation_release_receipt.py::test_gaming_release_receipt_includes_conversation_cancelled_before_snapshot",
+      "source_files": [
+        {
+          "path": "C:/Users/Adam/.local-ai-hub/tests/test_t13_gaming_conversation_release_receipt.py",
+          "run_binding": "T20 hashed root test after passing selector; root file was untracked",
+          "sha256_claimed": "DD7266EC46E03BAB5F2CC6002D22867CEA832656A2152261CAB6DDD73117FD43",
+          "sha256_observed_at_delta_build": "4334271F47273A5FA99520BBF56E6E1D311A60F1CCAA79D189D86D721073DAB4"
+        },
+        {
+          "path": "C:/Users/Adam/.local-ai-hub/src/local_ai_hub/http_server.py",
+          "run_binding": "post-run hash observed by T20; result transcript did not include hash",
+          "sha256_claimed": "BDB4ECF50C149FCB144F3745EC9AB58FCE029F900A6ED83A41C5FAF1D2C9BECB"
+        }
+      ],
+      "source_run_binding_status": "T20 postrun source pins verified; root test source changed later; receipt SHA still missing",
+      "source_sha_status": "partial_or_unbound",
+      "source_verification": [
+        {
+          "actual_sha256": "4334271F47273A5FA99520BBF56E6E1D311A60F1CCAA79D189D86D721073DAB4",
+          "claimed_sha256": "DD7266EC46E03BAB5F2CC6002D22867CEA832656A2152261CAB6DDD73117FD43",
+          "path": "C:\\Users\\Adam\\.local-ai-hub\\tests\\test_t13_gaming_conversation_release_receipt.py",
+          "sha_status": "mismatch"
+        },
+        {
+          "actual_sha256": "BDB4ECF50C149FCB144F3745EC9AB58FCE029F900A6ED83A41C5FAF1D2C9BECB",
+          "claimed_sha256": "BDB4ECF50C149FCB144F3745EC9AB58FCE029F900A6ED83A41C5FAF1D2C9BECB",
+          "path": "C:\\Users\\Adam\\.local-ai-hub\\src\\local_ai_hub\\http_server.py",
+          "sha_status": "matches"
+        }
+      ]
+    },
+    {
+      "applies_to_operation_map": false,
+      "classification": "root_batch_partial_with_five_failures_unpinned",
+      "command": "not transferred",
+      "evidence_ref": "T20 thread 01a0d322-b3bd-7930-b552-14e9b7020fec; result message msg_096b4ab4b44c07df016abecb0f645487d28272de83dbce127b",
+      "notes": "Batch result is root-reported but lacks exact selector list, source pins, command, and immutable result receipt SHA. Do not distribute 13 passes across operation rows.",
+      "operation": "T05 memory/lease acceptance selector batch",
+      "operation_id": "",
+      "owner": "T05",
+      "patch_sha_status": "missing",
+      "patch_verification": {
+        "actual_sha256": "",
+        "claimed_sha256": "",
+        "path": "",
+        "sha_status": "missing"
+      },
+      "previous_operation_status": "unverified_no_asserted_operation_test",
+      "receipt": null,
+      "receipt_sha_status": "missing",
+      "receipt_verification": {
+        "actual_sha256": "",
+        "claimed_sha256": "",
+        "path": "",
+        "sha_status": "missing"
+      },
+      "record_id": "T05-corrected-root-batch",
+      "report": {
+        "path": "C:/Users/Adam/.local-ai-hub/docs/superpowers/plans/2026-10-01-hub-consolidated-completion.md"
+      },
+      "report_sha_status": "no_claimed_sha",
+      "report_verification": {
+        "actual_sha256": "FF39F3DEE48338A9D61E487D9A7562F399544DA6AA6D95FF543E779BF1DE3D04",
+        "claimed_sha256": "",
+        "path": "C:\\Users\\Adam\\.local-ai-hub\\docs\\superpowers\\plans\\2026-10-01-hub-consolidated-completion.md",
+        "sha_status": "no_claimed_sha"
+      },
+      "result": "13 passed, 5 failed in 28.03s; failures retained for unsupported migration layout/error text and stale transition/delete/provenance expectations",
+      "root_green": false,
+      "scope": "root owner batch; exact selectors not transferred",
+      "selector": "18 selectors reported; exact selector set unavailable in transferred evidence",
+      "source_files": [],
+      "source_run_binding_status": "missing_exact_selectors_and_pins",
+      "source_sha_status": "not_supplied",
+      "source_verification": []
+    },
+    {
+      "applies_to_operation_map": false,
+      "classification": "root_suite_failed_one_restart_stop_failure_receipt_sha_missing",
+      "command": "$env:PYTHONDONTWRITEBYTECODE='1'; python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_daemon_lifecycle_hardening.py::test_daemon_job_stops_descendants_after_leader_exits tests/test_daemon_lifecycle_hardening.py::test_live_daemon_is_reconciled_after_broker_restart tests/test_daemon_lifecycle_hardening.py::test_restart_reconciliation_rejects_pid_reuse tests/test_t06_project_validation_receipts.py::test_structured_project_validation_binds_args_and_private_environment tests/test_t06_project_validation_receipts.py::test_generic_test_receipt_cannot_satisfy_configured_alias_rule",
+      "evidence_ref": "T20 thread 01a0d322-b3bd-7930-b552-14e9b7020fec; latest narrow run command output exec-88435d88-3506-4271-81d8-7ed46043b1aa; result summary msg_096b4ab4b44c07df016abed6e9722c87d2960fe25aa3e68c97",
+      "notes": "Both root runs fail same restart-stop selector; latest batch isolates descendant ownership, restart reconciliation, PID reuse, and project-receipt tests. Mutable T20 plan is only a status reference, not a hashed receipt. Failed root run is not acceptance green. No operation ID assigned because inventory mapping for this daemon selector has not been established.",
+      "operation": "T06 command broker daemon recovery",
+      "operation_id": "",
+      "owner": "T06",
+      "patch_sha_status": "missing",
+      "patch_verification": {
+        "actual_sha256": "",
+        "claimed_sha256": "",
+        "path": "",
+        "sha_status": "missing"
+      },
+      "previous_operation_status": "unverified_no_asserted_operation_test",
+      "receipt": null,
+      "receipt_sha_status": "missing",
+      "receipt_verification": {
+        "actual_sha256": "",
+        "claimed_sha256": "",
+        "path": "",
+        "sha_status": "missing"
+      },
+      "record_id": "T06-root-daemon-suite",
+      "report": {
+        "path": "C:/Users/Adam/.local-ai-hub/docs/superpowers/plans/2026-10-01-hub-consolidated-completion.md"
+      },
+      "report_sha_status": "no_claimed_sha",
+      "report_verification": {
+        "actual_sha256": "FF39F3DEE48338A9D61E487D9A7562F399544DA6AA6D95FF543E779BF1DE3D04",
+        "claimed_sha256": "",
+        "path": "C:\\Users\\Adam\\.local-ai-hub\\docs\\superpowers\\plans\\2026-10-01-hub-consolidated-completion.md",
+        "sha_status": "no_claimed_sha"
+      },
+      "result": "full daemon lifecycle suite: 34 passed, 1 failed in 9.99s; later root targeted batch: 22 passed, 1 failed in 25.17s; both fail test_live_daemon_is_reconciled_after_broker_restart",
+      "root_green": false,
+      "scope": "root daemon lifecycle suite",
+      "selector": "tests/test_daemon_lifecycle_hardening.py::test_daemon_job_stops_descendants_after_leader_exits; tests/test_daemon_lifecycle_hardening.py::test_live_daemon_is_reconciled_after_broker_restart; tests/test_daemon_lifecycle_hardening.py::test_restart_reconciliation_rejects_pid_reuse; tests/test_t06_project_validation_receipts.py::test_structured_project_validation_binds_args_and_private_environment; tests/test_t06_project_validation_receipts.py::test_generic_test_receipt_cannot_satisfy_configured_alias_rule",
+      "source_files": [
+        {
+          "path": "C:/Users/Adam/.local-ai-hub/tests/test_daemon_lifecycle_hardening.py",
+          "run_binding": "current root source observed; exact run snapshot not bound",
+          "sha256_claimed": "",
+          "sha256_observed_at_delta_build": "66065F38B3436CC6742BF5B771F0C675C1AA2288B3C9296028CC670CA451C7E5"
+        },
+        {
+          "path": "C:/Users/Adam/.local-ai-hub/src/local_ai_hub/commands.py",
+          "run_binding": "current root source observed; exact run snapshot not bound",
+          "sha256_claimed": "",
+          "sha256_observed_at_delta_build": "DC125391DC6BC06C8C5777018E524230233E41E68D09894174D66E6BABF0344E"
+        },
+        {
+          "path": "C:/Users/Adam/.local-ai-hub/tests/test_t06_project_validation_receipts.py",
+          "run_binding": "current root source observed; exact run snapshot not bound",
+          "sha256_claimed": "",
+          "sha256_observed_at_delta_build": "2C9330384385433AA60F5DB32A228A873E9F868D50EA61884DB98637AAD07CCC"
+        }
+      ],
+      "source_run_binding_status": "current_source_hashes_observed_no_run_binding",
+      "source_sha_status": "all_claimed_pins_match",
+      "source_verification": [
+        {
+          "actual_sha256": "66065F38B3436CC6742BF5B771F0C675C1AA2288B3C9296028CC670CA451C7E5",
+          "claimed_sha256": "66065F38B3436CC6742BF5B771F0C675C1AA2288B3C9296028CC670CA451C7E5",
+          "path": "C:\\Users\\Adam\\.local-ai-hub\\tests\\test_daemon_lifecycle_hardening.py",
+          "sha_status": "matches"
+        },
+        {
+          "actual_sha256": "DC125391DC6BC06C8C5777018E524230233E41E68D09894174D66E6BABF0344E",
+          "claimed_sha256": "DC125391DC6BC06C8C5777018E524230233E41E68D09894174D66E6BABF0344E",
+          "path": "C:\\Users\\Adam\\.local-ai-hub\\src\\local_ai_hub\\commands.py",
+          "sha_status": "matches"
+        },
+        {
+          "actual_sha256": "2C9330384385433AA60F5DB32A228A873E9F868D50EA61884DB98637AAD07CCC",
+          "claimed_sha256": "2C9330384385433AA60F5DB32A228A873E9F868D50EA61884DB98637AAD07CCC",
+          "path": "C:\\Users\\Adam\\.local-ai-hub\\tests\\test_t06_project_validation_receipts.py",
+          "sha_status": "matches"
+        }
+      ]
+    },
+    {
+      "applies_to_operation_map": false,
+      "classification": "candidate_only_not_root_green",
+      "command": "candidate command not stored in hashed report; isolated root-overlay selector commands recorded in report",
+      "notes": "Report and patch hashes can be verified. Candidate-only evidence; isolated overlay failure remains visible; do not label root GREEN.",
+      "operation": "T14 response budget / MCP envelope accounting",
+      "operation_id": "",
+      "owner": "T14",
+      "patch": {
+        "path": "C:/Users/Adam/.codex/worktrees/0c2e/.local-ai-hub/handoff/T14-mcp-wire-budget-root-current-v1.patch",
+        "sha256_claimed": "23D99715BF31E7E5D6AFC71DD2A6FD070CAA1A5E3F0E63F2D81248750AFCC3DA"
+      },
+      "patch_sha_status": "matches",
+      "patch_verification": {
+        "actual_sha256": "23D99715BF31E7E5D6AFC71DD2A6FD070CAA1A5E3F0E63F2D81248750AFCC3DA",
+        "claimed_sha256": "23D99715BF31E7E5D6AFC71DD2A6FD070CAA1A5E3F0E63F2D81248750AFCC3DA",
+        "path": "C:\\Users\\Adam\\.codex\\worktrees\\0c2e\\.local-ai-hub\\handoff\\T14-mcp-wire-budget-root-current-v1.patch",
+        "sha_status": "matches"
+      },
+      "previous_operation_status": "candidate-only; no root row update",
+      "receipt": null,
+      "receipt_sha_status": "missing",
+      "receipt_verification": {
+        "actual_sha256": "",
+        "claimed_sha256": "",
+        "path": "",
+        "sha_status": "missing"
+      },
+      "record_id": "T14-candidate-context-budget",
+      "report": {
+        "path": "C:/Users/Adam/.codex/worktrees/0c2e/.local-ai-hub/handoff/T14-current-root-acceptance.md",
+        "sha256_claimed": "842009BF1F3015A78E0BA65AA53B47B76621455D2C3B79E4EFCAEA16D0AAF006"
+      },
+      "report_sha_status": "matches",
+      "report_verification": {
+        "actual_sha256": "842009BF1F3015A78E0BA65AA53B47B76621455D2C3B79E4EFCAEA16D0AAF006",
+        "claimed_sha256": "842009BF1F3015A78E0BA65AA53B47B76621455D2C3B79E4EFCAEA16D0AAF006",
+        "path": "C:\\Users\\Adam\\.codex\\worktrees\\0c2e\\.local-ai-hub\\handoff\\T14-current-root-acceptance.md",
+        "sha_status": "matches"
+      },
+      "result": "candidate focused acceptance 236 passed in 24.68s; separate isolated root-source overlay 1 failed, 1 passed in 11.76s",
+      "root_green": false,
+      "scope": "candidate patch and isolated root-source overlay",
+      "selector": "tests/test_mcp_compact_transport.py::test_transport_accounting_uses_final_emitted_call_result; tests/test_mcp_budget_wire_accounting.py::test_live_mcp_budget_measures_final_envelope_and_accounting",
+      "source_files": [
+        {
+          "path": "C:/Users/Adam/.codex/worktrees/0c2e/.local-ai-hub/tests/test_mcp_budget_wire_accounting.py",
+          "run_binding": "candidate current hash observed; execution-source pin absent from report",
+          "sha256_claimed": "",
+          "sha256_observed_at_delta_build": "D899D8CDE979F7CE9ADDCD3C7E7EC1DD902539164CD2D161F348A35698031AE3"
+        }
+      ],
+      "source_run_binding_status": "candidate_patch_report_bound_test_source_unbound",
+      "source_sha_status": "all_claimed_pins_match",
+      "source_verification": [
+        {
+          "actual_sha256": "D899D8CDE979F7CE9ADDCD3C7E7EC1DD902539164CD2D161F348A35698031AE3",
+          "claimed_sha256": "D899D8CDE979F7CE9ADDCD3C7E7EC1DD902539164CD2D161F348A35698031AE3",
+          "path": "C:\\Users\\Adam\\.codex\\worktrees\\0c2e\\.local-ai-hub\\tests\\test_mcp_budget_wire_accounting.py",
+          "sha_status": "matches"
+        }
+      ]
+    },
+    {
+      "applies_to_operation_map": false,
+      "classification": "candidate_only_not_root_green",
+      "command": "python -m pytest -q --tb=short tests/test_project_config.py tests/test_project_path_hints.py tests/test_project_config_service_integration.py tests/test_project_config_worktrees.py tests/test_t21_candidate_path_hint_worktree_e2e.py tests/test_t21_search_policy_consumers.py tests/test_repo_cache_outcomes.py tests/test_repo_tools.py",
+      "evidence_ref": "T21 thread 01a0d7b9-04b9-7da1-906e-393693d07f65 final answer; the thread 4294 workspace has no Git checkout",
+      "notes": "Current candidate files and patch pins verify; no immutable pytest output receipt SHA. Root consumer reports are excluded from root-GREEN classification by instruction.",
+      "operation": "T21 project configuration and search consumers",
+      "operation_id": "",
+      "owner": "T21",
+      "patch": {
+        "path": "C:/Users/Adam/.codex/worktrees/t21-project-config/.local-ai-hub/handoff/T21-project-worktree-config-20261001.patch",
+        "sha256_claimed": "22919F7E489FD11C0C6218554FD5D696064DDB1564DEED18DAC343745473D2B0"
+      },
+      "patch_sha_status": "matches",
+      "patch_verification": {
+        "actual_sha256": "22919F7E489FD11C0C6218554FD5D696064DDB1564DEED18DAC343745473D2B0",
+        "claimed_sha256": "22919F7E489FD11C0C6218554FD5D696064DDB1564DEED18DAC343745473D2B0",
+        "path": "C:\\Users\\Adam\\.codex\\worktrees\\t21-project-config\\.local-ai-hub\\handoff\\T21-project-worktree-config-20261001.patch",
+        "sha_status": "matches"
+      },
+      "previous_operation_status": "candidate-only; no root row update",
+      "receipt": null,
+      "receipt_sha_status": "missing",
+      "receipt_verification": {
+        "actual_sha256": "",
+        "claimed_sha256": "",
+        "path": "",
+        "sha_status": "missing"
+      },
+      "record_id": "T21-candidate-project-config",
+      "report_sha_status": "missing",
+      "report_verification": {
+        "actual_sha256": "",
+        "claimed_sha256": "",
+        "path": "",
+        "sha_status": "missing"
+      },
+      "result": "134 passed in 19.05s on candidate HEAD 824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+      "root_green": false,
+      "scope": "candidate core/search acceptance",
+      "selector": "tests/test_project_config.py tests/test_project_path_hints.py tests/test_project_config_service_integration.py tests/test_project_config_worktrees.py tests/test_t21_candidate_path_hint_worktree_e2e.py tests/test_t21_search_policy_consumers.py tests/test_repo_cache_outcomes.py tests/test_repo_tools.py",
+      "source_files": [
+        {
+          "path": "C:/Users/Adam/.codex/worktrees/t21-project-config/.local-ai-hub/src/local_ai_hub/project_config.py",
+          "run_binding": "candidate HEAD and hash match owner handoff",
+          "sha256_claimed": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B"
+        },
+        {
+          "path": "C:/Users/Adam/.codex/worktrees/t21-project-config/.local-ai-hub/tests/test_project_path_hints.py",
+          "run_binding": "candidate HEAD and hash match owner handoff",
+          "sha256_claimed": "41FAFD939B97B5580E653784F977060E03DB330B460315A87A16DAED1BF4BE5C"
+        }
+      ],
+      "source_run_binding_status": "candidate_source_pins_match_owner_report_and_checkout",
+      "source_sha_status": "all_claimed_pins_match",
+      "source_verification": [
+        {
+          "actual_sha256": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+          "claimed_sha256": "FFD425B1260B285F25B1D121A7C6BCD585C618B5C7E26415E2AD0A7014196B0B",
+          "path": "C:\\Users\\Adam\\.codex\\worktrees\\t21-project-config\\.local-ai-hub\\src\\local_ai_hub\\project_config.py",
+          "sha_status": "matches"
+        },
+        {
+          "actual_sha256": "41FAFD939B97B5580E653784F977060E03DB330B460315A87A16DAED1BF4BE5C",
+          "claimed_sha256": "41FAFD939B97B5580E653784F977060E03DB330B460315A87A16DAED1BF4BE5C",
+          "path": "C:\\Users\\Adam\\.codex\\worktrees\\t21-project-config\\.local-ai-hub\\tests\\test_project_path_hints.py",
+          "sha_status": "matches"
+        }
+      ]
+    }
+  ],
+  "schema_version": "t01-root-transfer-delta/v2"
+}

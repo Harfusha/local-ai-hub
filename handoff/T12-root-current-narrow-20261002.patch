@@ -1,0 +1,310 @@
+diff --git a/src/local_ai_hub/llama_cpp.py b/src/local_ai_hub/llama_cpp.py
+--- a/src/local_ai_hub/llama_cpp.py
++++ b/src/local_ai_hub/llama_cpp.py
+@@ -65,9 +65,13 @@
+             if remaining <= 0:
+                 raise TimeoutError("request deadline expired")
+             try:
+-                readable, _, exceptional = select.select(
+-                    [self._sock], [], [self._sock], min(self._POLL_SECONDS, remaining),
+-                )
++                pending = getattr(self._sock, "pending", None)
++                if pending is not None and pending() > 0:
++                    readable, exceptional = [self._sock], []
++                else:
++                    readable, _, exceptional = select.select(
++                        [self._sock], [], [self._sock], min(self._POLL_SECONDS, remaining),
++                    )
+             except (OSError, ValueError):
+                 if _stop_requested(self._should_stop):
+                     raise InterruptedError("request cancelled")
+@@ -93,6 +97,7 @@
+                 self._eof = True
+                 break
+             self._buffer.extend(chunk)
++            return
+ 
+     def read(self, size: int = -1) -> bytes:
+         if size == 0:
+@@ -149,6 +154,13 @@
+ 
+ def _resolve_interruptibly(host: str, port: int, remaining: Any) -> list[tuple[Any, ...]]:
+     """Resolve a host without letting a stalled system resolver hold the request."""
++    try:
++        return socket.getaddrinfo(
++            host, port, 0, socket.SOCK_STREAM, 0, socket.AI_NUMERICHOST,
++        )
++    except socket.gaierror:
++        pass
++
+     while not _DNS_RESOLUTION_SLOTS.acquire(timeout=min(0.025, remaining())):
+         remaining()
+ 
+@@ -178,11 +190,39 @@
+             return value
+         raise value
+ 
++def _tls_handshake_interruptibly(sock: ssl.SSLSocket, remaining: Any) -> None:
++    """Complete TLS setup while honoring the request's cancellation and deadline."""
++    sock.setblocking(False)
++    while True:
++        timeout = remaining()
++        try:
++            sock.do_handshake()
++        except ssl.SSLWantReadError:
++            readable, _, exceptional = select.select([sock], [], [sock], min(0.025, timeout))
++        except ssl.SSLWantWriteError:
++            _, writable, exceptional = select.select([], [sock], [sock], min(0.025, timeout))
++            readable = []
++        except (OSError, ValueError):
++            remaining()
++            raise
++        else:
++            sock.settimeout(remaining())
++            return
++        if exceptional:
++            remaining()
++            raise OSError("TLS handshake socket became exceptional")
++
++
+ 
+ def _http_proxy_for_url(parsed: Any) -> tuple[str, int, str | None] | None:
+     """Return configured HTTP proxy host, port and optional Basic credentials."""
+-    if proxy_bypass(parsed.hostname):
++    host = parsed.hostname
++    if proxy_bypass(host):
+         return None
++    if parsed.port is not None:
++        authority = f"[{host}]:{parsed.port}" if ":" in host and not host.startswith("[") else f"{host}:{parsed.port}"
++        if proxy_bypass(authority):
++            return None
+     configured = getproxies().get(parsed.scheme.lower())
+     if not configured:
+         return None
+@@ -311,9 +351,12 @@
+                 headers["Authorization"] = "Basic " + base64.b64encode(credentials).decode("ascii")
+             if parsed.scheme == "https":
+                 connection.sock.settimeout(remaining())
+-                connection.sock = ssl.create_default_context().wrap_socket(
++                tls_sock = ssl.create_default_context().wrap_socket(
+                     connection.sock, server_hostname=parsed.hostname,
++                    do_handshake_on_connect=False,
+                 )
++                connection.sock = tls_sock
++                _tls_handshake_interruptibly(tls_sock, remaining)
+             request_headers = dict(headers)
+             request_target = target
+             if proxy_info is not None and parsed.scheme == "http":
+diff --git a/src/local_ai_hub/scheduler.py b/src/local_ai_hub/scheduler.py
+--- a/src/local_ai_hub/scheduler.py
++++ b/src/local_ai_hub/scheduler.py
+@@ -1330,15 +1330,18 @@
+     def _run_job(self, job: Job) -> None:
+         job.started_at = time.monotonic()
+         try:
+-            job.result = job.context.run(job.execute)
+-            if not isinstance(job.result, dict):
+-                job.result = {"success": True, "result": job.result}
+-            with self._cond:
+-                self._stats["completed"] += 1
+-                if job.background:
+-                    self._stats["background_completed"] += 1
+-                else:
+-                    self._last_foreground_activity = time.monotonic()
++            if job.cancel_event is not None and job.cancel_event.is_set():
++                job.error = "caller cancelled before execution"
++            else:
++                job.result = job.context.run(job.execute)
++                if not isinstance(job.result, dict):
++                    job.result = {"success": True, "result": job.result}
++                with self._cond:
++                    self._stats["completed"] += 1
++                    if job.background:
++                        self._stats["background_completed"] += 1
++                    else:
++                        self._last_foreground_activity = time.monotonic()
+         except Exception as exc:
+             job.error = str(exc)
+             with self._cond:
+diff --git a/tests/test_t12_llama_cpp_transport.py b/tests/test_t12_llama_cpp_transport.py
+--- a/tests/test_t12_llama_cpp_transport.py
++++ b/tests/test_t12_llama_cpp_transport.py
+@@ -10,11 +10,17 @@
+ from urllib.request import Request
+ import unittest
+ from unittest.mock import patch
++from urllib.parse import urlsplit
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+ sys.path.insert(0, str(ROOT / "src"))
+ 
+-from local_ai_hub.llama_cpp import _open_interruptible_response
++from local_ai_hub.llama_cpp import (
++    _InterruptibleSocketReader,
++    _http_proxy_for_url,
++    _open_interruptible_response,
++    _resolve_interruptibly,
++)
+ 
+ 
+ class LlamaCppInterruptibleTransportTests(unittest.TestCase):
+@@ -146,6 +152,64 @@
+             finally:
+                 cancelled.set()
+                 worker.join(1)
++
++    def test_interruptible_response_cancels_during_tls_handshake(self):
++        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++        listener.bind(("127.0.0.1", 0))
++        listener.listen(1)
++        accepted = threading.Event()
++        release_server = threading.Event()
++        stop = threading.Event()
++        request_done = threading.Event()
++        outcomes: list[str] = []
++
++        def serve_without_tls_handshake():
++            try:
++                connection, _ = listener.accept()
++                with connection:
++                    accepted.set()
++                    release_server.wait(2)
++            except OSError:
++                pass
++
++        server_thread = threading.Thread(target=serve_without_tls_handshake, daemon=True)
++        server_thread.start()
++
++        def open_request():
++            try:
++                with _open_interruptible_response(
++                    Request(f"https://127.0.0.1:{listener.getsockname()[1]}/"),
++                    time.monotonic() + 2,
++                    stop.is_set,
++                ):
++                    outcomes.append("opened")
++            except Exception as exc:
++                outcomes.append(type(exc).__name__)
++            finally:
++                request_done.set()
++
++        caller = threading.Thread(target=open_request, daemon=True)
++        with patch.dict(
++            "os.environ",
++            {
++                "http_proxy": "", "HTTP_PROXY": "", "https_proxy": "", "HTTPS_PROXY": "",
++                "no_proxy": "127.0.0.1", "NO_PROXY": "127.0.0.1",
++            },
++        ):
++            caller.start()
++            try:
++                self.assertTrue(accepted.wait(1))
++                time.sleep(0.05)
++                stop.set()
++                self.assertTrue(request_done.wait(0.5), "TLS handshake did not stop promptly")
++                self.assertNotEqual(outcomes, ["opened"])
++            finally:
++                release_server.set()
++                caller.join(1)
++                listener.close()
++                server_thread.join(1)
++
+     def test_interruptible_response_enforces_absolute_header_deadline(self):
+         request_seen = threading.Event()
+         release_handler = threading.Event()
+@@ -267,3 +331,56 @@
+             server.shutdown()
+             server.server_close()
+             server_thread.join(1)
++
++    def test_proxy_bypass_matches_host_and_explicit_port(self):
++        target = urlsplit("http://127.0.0.1:12438/api/chat")
++        with patch.dict(
++            "os.environ",
++            {
++                "http_proxy": "http://127.0.0.1:3128",
++                "HTTP_PROXY": "http://127.0.0.1:3128",
++                "no_proxy": "127.0.0.1:12438",
++                "NO_PROXY": "127.0.0.1:12438",
++            },
++        ):
++            self.assertIsNone(_http_proxy_for_url(target))
++
++    def test_interruptible_reader_drains_buffered_tls_plaintext(self):
++        class _BufferedTLSLikeSocket:
++            def __init__(self):
++                self.buffer = bytearray(b"ready\n")
++
++            def pending(self):
++                return len(self.buffer)
++
++            def recv(self, size):
++                chunk = bytes(self.buffer[:size])
++                del self.buffer[:size]
++                return chunk
++
++            def settimeout(self, _timeout):
++                pass
++
++        sock = _BufferedTLSLikeSocket()
++        reader = _InterruptibleSocketReader(sock, time.monotonic() + 0.2, None)
++        with patch("local_ai_hub.llama_cpp.select.select", return_value=([], [], [])):
++            self.assertEqual(reader.read(6), b"ready\n")
++
++    def test_numeric_host_resolves_without_waiting_for_dns_slot(self):
++        slots = threading.BoundedSemaphore(1)
++        self.assertTrue(slots.acquire(blocking=False))
++        deadline = time.monotonic() + 0.2
++
++        def remaining() -> float:
++            value = deadline - time.monotonic()
++            if value <= 0:
++                raise TimeoutError("test deadline expired")
++            return value
++
++        with patch("local_ai_hub.llama_cpp._DNS_RESOLUTION_SLOTS", slots):
++            addresses = _resolve_interruptibly(
++                "127.0.0.1", 12438, remaining,
++            )
++        self.assertTrue(addresses)
++        self.assertEqual(addresses[0][0], socket.AF_INET)
++        self.assertEqual(addresses[0][4], ("127.0.0.1", 12438))
+diff --git a/tests/test_t12_scheduler_scenarios.py b/tests/test_t12_scheduler_scenarios.py
+--- a/tests/test_t12_scheduler_scenarios.py
++++ b/tests/test_t12_scheduler_scenarios.py
+@@ -663,3 +663,34 @@
+         if not closed:
+             scheduler.close()
+         caller.join(1)
++
++
++def test_t12_cancelled_dispatched_job_does_not_start_execute() -> None:
++    import threading
++    from local_ai_hub.scheduler import Job
++
++    started: list[bool] = []
++    cancel = threading.Event()
++    cancel.set()
++    job = Job(
++        id=1,
++        model="fixture-model",
++        tenant="tenant-a",
++        source="test",
++        priority=5,
++        execute=lambda: (started.append(True) or {"success": True}),
++        cancel_event=cancel,
++    )
++    scheduler = AffinityScheduler.__new__(AffinityScheduler)
++    scheduler._cond = threading.Condition()
++    scheduler._stats = {"completed": 0, "failed": 0, "background_completed": 0, "background_failed": 0}
++    scheduler._inflight = 1
++    scheduler._inflight_jobs = {job.id: job}
++    scheduler._inflight_background = 0
++    scheduler._inflight_by_tenant = {job.tenant: 1}
++    scheduler._last_foreground_activity = 0.0
++
++    scheduler._run_job(job)
++
++    assert started == []
++    assert job.done.is_set()

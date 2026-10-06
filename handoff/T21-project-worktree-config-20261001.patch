@@ -1,0 +1,3026 @@
+diff --git a/docs/PROJECT_CONFIGURATION.md b/docs/PROJECT_CONFIGURATION.md
+index 7ce402b..8df11b3 100644
+--- a/docs/PROJECT_CONFIGURATION.md
++++ b/docs/PROJECT_CONFIGURATION.md
+@@ -1,11 +1,14 @@
+ # Project configuration
+ 
+-Local AI Hub reads optional project settings from four layers, low to high:
++Local AI Hub reads optional project settings from five layers, low to high:
+ 
+ 1. Built-in defaults.
+-2. Repository root `.local-ai.toml`.
+-3. Git common directory `info/local-ai.toml`, shared by linked worktrees.
+-4. Repository root `.local-ai.worktree.toml`, local to that worktree.
++2. Primary repository root `.local-ai.toml`, inherited by linked worktrees.
++3. Current worktree root `.local-ai.toml`, when distinct from primary root.
++4. Git common directory `info/local-ai.toml`, shared by linked worktrees.
++5. Current worktree root `.local-ai.worktree.toml`.
++
++The resolver finds the primary worktree through Git's common directory and bounded `git worktree list --porcelain` fallback. The current worktree's project file can override inherited keys; its worktree file remains the highest local layer.
+ 
+ Single-developer deployments may keep settings durably in local config sources. These files are never required for Hub startup. Config files must resolve within their project or Git common source root; escaping links are rejected. Invalid configuration rejects the complete overlay and returns built-in defaults with a safe error code.
+ 
+@@ -19,7 +22,7 @@ Maps merge by key. A higher layer replaces values for keys it names while unrela
+ - `[custom_extensions].text`, `[custom_extensions].binary`, and `[file_limits].max_file_size_bytes` configure file classification and size policy. `custom_extension_kind(path, settings, language=...)` returns `text`, `binary`, or `None`; matching is case-insensitive and supports compound extensions such as `.tar.gz`. `path_is_allowed(...)` rejects configured binary extensions. Readers and indexers must call `custom_extension_kind(...)` before interpreting content; adapter adoption remains owner-gated. A configured size cap rejects missing or malformed size evidence and files larger than the cap.
+ - `skip_phases` accepts `rag`, `call_graph`, and `modules`. `phase_is_allowed(settings, phase)` denies unknown phase names before an optional phase starts; `path_is_allowed(...)` and `may_descend(...)` deny unknown path phases and candidates in skipped optional phases. Known path phases include `search`, `repository_search`, `preprocess`, and `test`; optional phases use the names above. Task-facing settings also include `commands`, `affected_tests_mapping`, `env`, and additive `verification_rules`. Verification rule values accept only `true` or a non-empty array of non-blank strings; `false`, empty arrays, and malformed entries reject the overlay. Names and list items remain data for the owning evaluator; resolver does not execute commands, enforce evaluator semantics, or cross-validate rule strings against command aliases. Command aliases are a separate `commands` mapping from `_KEY` names to shell strings or typed `argv` definitions.
+ - Literal repo-relative `pinned_context` files (no glob syntax), literal `entry_points` (files or directories; no glob syntax), and `[retrieval_weights]` provide retrieval inputs. `resolve_pinned_context(...)` returns existing repo-contained pinned candidates after `path_is_allowed`; `resolve_entry_points(...)` does the same for files and directories, using `may_descend(...)` for directories. These are candidates, not read authorization: consumers must reapply policy with actual soft-ignore/hard-deny state before reading pinned files and during every directory traversal. `project_type`, `solution_path`, and `[language_overrides]` provide project and language context; `model_profile` selects the project model context. `system_prompt_prefix` supplies task-prompt context; T21 does not define a separate `task_profile` key.
+-- `shared_namespace` shares hints across linked worktrees under the same Git common directory and partitions them by namespace; different common directories remain isolated. Top-level `[env]` keys must use portable environment identifier syntax (`[A-Za-z_][A-Za-z0-9_]*`). It accepts literal project values such as `PYTHONPATH = "."` and `NODE_ENV = "test"`; values written as `${NAME}` remain host-environment references in `env_references`. Keep secrets in host variables, not literal config values.
++- `shared_namespace` shares hints across linked worktrees under the same Git common directory and partitions them by namespace; different common directories remain isolated. It is a local single-developer partition key, not multi-user synchronization. Top-level `[env]` keys must use portable environment identifier syntax (`[A-Za-z_][A-Za-z0-9_]*`). It accepts literal project values such as `PYTHONPATH = "."` and `NODE_ENV = "test"`; values written as `${NAME}` remain host-environment references in `env_references`. Keep secrets in host variables, not literal config values.
+ 
+ Example project or worktree file:
+ 
+@@ -51,8 +54,7 @@ NODE_ENV = "test"
+ API_TOKEN = "${HOST_API_TOKEN}"
+ 
+ [verification_rules]
+-require_receipt = true
+-required_commands = ["check"]
++task_complete = ["check"]
+ 
+ [retrieval_weights]
+ lexical = 0.6
+@@ -62,7 +64,7 @@ text_extensions = [".py"]
+ 
+ ```
+ 
+-Command values are data; resolver does not execute them. Host variable names resolve only in the owning command adapter.
++Command values are data; resolver does not execute them. Host variable names resolve only in the owning command adapter. The `verification_rules` table maps exact task acceptance-criterion names to receipt requirements; each array names configured command aliases required for that criterion.
+ 
+ ## Path patterns and overrides
+ 
+@@ -98,10 +100,10 @@ Hub-wide configuration is separate: `config.py::load_config` merges installation
+ 
+ Call `ProjectContext.prioritize_paths(candidates, purpose, scope, repository_revision, path_hints=())` to rank the complete candidate list in this order: configured literal `entry_points`, per-call `path_hints`, then saved hints matching current scope, revision, and config digest. The optional `path_hints` argument is a tuple of `PathHint` records; it is request-scoped and is not persisted. Ranking preserves every candidate and returns `PathHintUsage`. `hint_helped` remains unknown until a consumer measures usefulness; `telemetry_metadata()` exposes only `hint_used`, `fallback_used`, and `hint_helped`, without candidate paths. Consumers use the normal broader fallback when no hint helps. Save only verified hints through `ProjectContext.save_path_hint(...)`.
+ 
+-Use one optional wire field, `path_hints`, for search-oriented repo, command, or MCP requests that rank repository candidates. Its JSON shape is an array of objects with required string fields `path`, `purpose`, and `scope`, plus optional string fields `evidence_id`, `provenance`, `repository_revision`, `config_digest`, and `expires_at`. Cap it at 64 records at ingress; core also caps direct calls. There is no `paths` alias. Keep this separate from command argument paths, changed paths, focus text, and durable `entry_points`. Request hints may omit evidence metadata; learned/persisted hints require evidence ID, provenance, matching repository revision and config digest.
++The internal adapter contract uses one optional `path_hints` field for search-oriented requests that rank repository candidates. The approved HTTP wire path is `/api/search`; `HubClient.post` accepts typed hints only for `/api/search` and strips them on `/api/command`. T03 owns public `local_ai_repo` schema and output registry. T03's latest owner report says wrapper work is in progress: closed objects, at most 64 records, required string fields `path` (1–1024 characters), `purpose`, and `scope`, optional string fields `evidence_id`, `provenance`, `repository_revision`, `config_digest`, and `expires_at`; wrapper normalizes slash variants and rejects escapes. T03 has static AST/diff checks only; shared tests remain queued. T21's MCP private search dispatch already forwards typed hints internally; the public `local_ai_repo` argument is not exposed in this checkout. Do not add a `paths` alias. Keep hints separate from command argument paths, changed paths, focus text, and durable `entry_points`. Request hints may omit evidence metadata; learned/persisted hints require evidence ID, provenance, matching repository revision and config digest. `/api/context/pack` does not accept or consume hints.
+ 
+-Resolve hints beneath the trusted project root and reject absolute, drive/UNC, traversal, glob, missing, and symlink/junction escape paths. A hint can reorder candidates only: it cannot choose the root, authorize a path, narrow recall, bypass exclusions or trust checks, or change security scope. Consumers still apply `path_is_allowed(...)` to each file and `may_descend(...)` to each directory. Never write raw paths or hint contents to telemetry.
++Resolve hints beneath the trusted project root and reject absolute, drive/UNC, traversal, glob, missing, and symlink/junction escape paths. Core trims hint paths, converts backslashes to `/`, limits them to 1024 characters, rejects `.`/`..` segments, then resolves containment. A hint can reorder candidates only: it cannot choose the root, authorize a path, narrow recall, bypass exclusions or trust checks, or change security scope. Consumers still apply `path_is_allowed(...)` to each file and `may_descend(...)` to each directory. Never write raw paths or hint contents to telemetry.
+ 
+ Retrieval adapters must call this API at their owned integration seam. The core API does not change HTTP, MCP, search, preprocessing, RAG, or command behavior by itself.
+ 
+-`path_matches_pattern(path, pattern)` exposes the same validated repo-relative glob matching for owned adapters. T21 currently wires project mapping, entry points, request hints, saved hints, and post-ranking path policy into T06's released `LocalAIServices.affected_tests` seam. Other adapters remain owner-gated.
++`path_matches_pattern(path, pattern)` exposes the same validated repo-relative glob matching for owned adapters. T21 has wired project mapping/path policy into the released `LocalAIServices.affected_tests` seam and project policy/path hints into the approved `LocalAIServices.repo_search` and `RepositoryTools.search_paths` symbols. Search transport is wired through internal MCP `local_ai_repo` search dispatch and HTTP `/api/search`; T03 reports its public wrapper schema in progress, with static checks only and shared tests queued. Verification rules use the T09 evaluator through the separately approved completion adapter. Other consumer surfaces remain owner-gated.
+diff --git a/docs/superpowers/specs/2026-09-25-t21-adapter-handoff.md b/docs/superpowers/specs/2026-09-25-t21-adapter-handoff.md
+index ec3aa0b..c2fbf57 100644
+--- a/docs/superpowers/specs/2026-09-25-t21-adapter-handoff.md
++++ b/docs/superpowers/specs/2026-09-25-t21-adapter-handoff.md
+@@ -22,7 +22,7 @@ Precedence: built-in defaults < root `.local-ai.toml` < `<git-common-dir>/info/l
+ PathHint(path, purpose, scope, evidence_id?, provenance?, repository_revision?, config_digest?, expires_at?)
+ ```
+ 
+-The single optional wire field is `path_hints`, an array of records with required `path`, `purpose`, and `scope` strings and optional `evidence_id`, `provenance`, `repository_revision`, `config_digest`, and `expires_at` strings. Do not add a `paths` alias. Request hints may omit evidence metadata; persisted learned hints require evidence ID, provenance, current repository revision, current config digest, repo-relative literal path, and an existing contained target. The store keys by a hash of Git common directory plus optional `shared_namespace`; no full root path is stored. Different common directories cannot share hints.
++The adapter field is `path_hints`, an array of records with required `path`, `purpose`, and `scope` strings and optional `evidence_id`, `provenance`, `repository_revision`, `config_digest`, and `expires_at` strings. User released HTTP `/api/search` and `HubClient.post` search serialization. T21 owns only internal MCP `local_ai_repo` search dispatch; T03 owns its public tool schema/argument. No `paths` alias. `/api/command`, `/api/context/pack`, and other MCP actions remain outside this release. Request hints may omit evidence metadata; persisted learned hints require evidence ID, provenance, current repository revision, current config digest, repo-relative literal path, and an existing contained target. The store keys by a hash of Git common directory plus optional `shared_namespace`; no full root path is stored. Different common directories cannot share hints.
+ 
+ Retention is bounded to 256 hints per purpose/scope/revision/config group and 4096 hints per project identity. Oldest rows are evicted first; other revisions remain available until project-wide cap is reached.
+ 
+@@ -36,22 +36,22 @@ Adapters walking directories must call `may_descend(...)` before pruning each di
+ 
+ Command definitions are data only; resolver never runs them. Nested command env entries accept exact `${HOST_VARIABLE}` references only. Top-level `[env]` separates literal project values into `ProjectSettings.env` and exact references into `ProjectSettings.env_references`; partial interpolation rejects. Only an owning adapter resolves host references at command execution. Verification rules accept only `true` or a non-empty tuple of non-blank strings after normalization; `false`, empty lists, and malformed entries reject the overlay. Rule names/items remain data; evaluator semantics are owner-owned. `settings.commands` separately maps `_KEY` aliases to strings or `CommandDefinition(argv, description, env_references)`. `system_prompt_prefix` stays untrusted project context below system policy. Consumers must include `config_digest` and Git revision in affected cache keys. Telemetry may contain neither prompts/source/model output/secrets nor project or hint paths; emit only the three path-hint outcome booleans.
+ 
+-## Proposed adapter contract (not implemented)
++## Shared typed adapter contract
+ 
+ | Field / boundary | Type and rule |
+ |---|---|
+-| `path_hints` request field | Optional `tuple[PathHint, ...]`, capped at 64 records both at ingress and in core. Same JSON object shape across search-oriented repo, command, and MCP operations. Separate from `focus`, `changed_paths`, command argument paths, and durable `entry_points`; no `paths` alias. |
++| `path_hints` request field | Optional `tuple[PathHint, ...]`, capped at 64 records in core and released HTTP `/api/search` client transport. T03 owns public schema. Latest T03 owner report: public `local_ai_repo(action="search")` wrapper is being updated for closed objects with `path` 1–1024 chars; required string `path`, `purpose`, `scope`; optional string `evidence_id`, `provenance`, `repository_revision`, `config_digest`, `expires_at`; wrapper normalizes slash variants and rejects escapes. T03 has static AST/diff checks only; shared test slot remains queued. T21's private dispatcher already accepts/forwards typed hints on `/api/search` (`mcp_server.py:1743, 1808–1816`). Client strips hints on `/api/command`. Separate from `focus`, `changed_paths`, command argument paths, and durable `entry_points`; no `paths` alias. |
+ | `ContextRequest.path_hints` | Default `()`. Preserve validated request hints through context construction; core merges them after durable `entry_points` and before saved hints. Do not source request hints from the persisted store. |
+ | `ContextRequest.settings_digest` | `str | None = None`; map from `ProjectContext.config_digest`; opaque printable string, maximum 128 characters. Never forward raw settings or config paths. |
+ | Adapter input | Accept allow-listed `PathHint` records only. Drop malformed, stale revision/digest, wrong-scope, traversal, glob, missing, or out-of-root hints. Normalize accepted paths to repository-relative form. |
+ | Selected root | Obtain only from trusted route/worktree identity. A retrieval hint never selects or changes root. Never use ambient CWD fallback. |
+ | Retrieval use | `entry_points` first, request hints next, saved hints last. Reorder full candidate set only. Preserve recall; apply path policy after ranking; use bounded broader fallback when hints yield no useful result. Telemetry reports only `hint_used`, `fallback_used`, and `hint_helped=None`; never infer usefulness from ordering. |
+ 
+-No adapter implementation is authorized until its current owner releases exact paths and symbols.
++Only released seams listed in the ownership matrix may be implemented in T21. Further adapter work requires exact path/symbol release from its current owner.
+ 
+ ## Retrieval integration handoff
+ 
+-T06 released `LocalAIServices.affected_tests` and the `run_affected` branch inside `LocalAIServices.command`; T21 resolves project config there, overlays `affected_tests_mapping`, ranks the full test candidate set by durable `entry_points`, request hints, then saved hints, and enforces `path_is_allowed` before building the command. Cache parameters include config digest, current workspace fingerprint, and an opaque request-hint digest. `tests/test_project_config_service_integration.py` verifies this seam and the command branch. The general repo-search route is `/api/search` in `http_server.py`, which delegates to `APP.services.repo_search`; `HubServices.repo_search` gathers deterministic, code-index, and preprocessor candidates, then falls back to `repo_tools.search`. T03 owns the route but has not released it. T06 explicitly states it does not own `HubServices.repo_search` and denied a lease; the service owner remains unresolved. T10 separately identified `HubServices._hybrid_context_uncached` as a hybrid-context insertion seam before fusion/limits; this is used by `/api/context/pack`, which Agent 2 exclusively owns. T10 grants read-only fusion semantics, not write ownership. T21 does not edit `/api/context/pack`.
++T06 released `LocalAIServices.affected_tests` and the `run_affected` branch inside `LocalAIServices.command`; T21 resolves project config there, overlays `affected_tests_mapping`, ranks the full test candidate set by durable `entry_points`, request hints, then saved hints, and enforces `path_is_allowed` before building the command. Cache parameters include config digest, current workspace fingerprint, and an opaque request-hint digest. `tests/test_project_config_service_integration.py` verifies this seam and the command branch. The general repo-search route is `/api/search` in `http_server.py`, which delegates to `APP.services.repo_search` (`LocalAIServices.repo_search`); T21's exact integration symbol was explicitly released by the user on 2026-09-30. The release covers project policy and path hints in that symbol and the `/api/search` hint forwarder; T03 still owns the broader route contract and public MCP schema. T06's earlier denial concerned the then-unreleased general repo-search lease and is superseded only for the exact user-released symbols. T10 separately identified the hybrid-context insertion seam before fusion/limits; this is used by `/api/context/pack`, which Agent 2 exclusively owns. T10 grants read-only fusion semantics, not write ownership. T21 does not edit `/api/context/pack`.
+ 
+ T10 supplied current fixed weights: deterministic 1.25, code_index 1.20, serena 1.15, preprocessor 1.00, rag 0.90, lexical 0.80, unknown 0.75. T10 did not define an override parameter and grants no write ownership. Project `[retrieval_weights]` integration still needs explicit override semantics and exact write release. Do not change RRF defaults or result schema without that release. T06 owns service call sites; T10 owns fusion semantics.
+ 
+@@ -64,11 +64,17 @@ T10 supplied current fixed weights: deterministic 1.25, code_index 1.20, serena
+ | Commands, env references, verification, pinned context, entry points, retrieval weights, language/model/task context, shared namespace | `_normalize`, typed `ProjectSettings`; `tests/test_project_config.py` | Schema covered; consumer effects remain owner-gated |
+ | Compound and custom extensions | `_has_extension`, `custom_extension_kind`; `tests/test_project_config.py` | Core classification covered; reader/indexer adoption remains owner-gated |
+ | Config persistence | `.local-ai.toml`, `.git/info/local-ai.toml`, `.local-ai.worktree.toml`; `tests/test_project_config_worktrees.py` | Config stays outside Hub runtime |
+-| Path-hint safety, privacy, and reuse | `PathHintUsage.telemetry_metadata`; `tests/test_project_path_hints.py`; released T06 `run_affected` test in `tests/test_project_config_service_integration.py` | Privacy and one command/test-candidate seam covered; general search/preprocess/RAG/MCP remain unreleased |
++| Path-hint safety, privacy, and reuse | `PathHintUsage.telemetry_metadata`; `tests/test_project_path_hints.py`; T06 `run_affected`; released `repo_search`, `search_paths`, internal MCP dispatch, client serialization, and HTTP `/api/search` tests | Historical receipts cover core and released search seams; public MCP schema/test, command, RAG, and other MCP surfaces remain pending or owner-gated |
+ 
+ ## Current verification
+ 
+-`python -m pytest -q --tb=short --disable-warnings tests/test_project_config.py tests/test_project_path_hints.py tests/test_project_config_worktrees.py tests/test_project_config_service_integration.py` passed with 77 tests on Windows, Python 3.13.2, pytest 9.0.2. `git diff --check` passed. These are native-only preliminary receipts; no policy-valid Hub command receipt exists because the user directed T21 to continue without Hub. Extension-overlap validation returns `invalid_config`; language-specific `text_extensions` normalize to tuples. Privacy test confirms telemetry projection excludes candidate paths.
++Current native validation (2026-09-29): `tests/test_project_config.py` passed 61 tests; `tests/test_project_path_hints.py` passed 14; `tests/test_project_config_worktrees.py` passed 2; `tests/test_project_config_service_integration.py` passed 1 (78 total). The new linked-path regression failed before the resolver fix and passes now; `git diff --check` is clean. Hub was not called, per user direction. Extension-overlap validation returns `invalid_config`; language-specific `text_extensions` normalize to tuples. Privacy tests confirm telemetry projection excludes candidate paths.
++
++Current native validation (2026-09-30): `python -m pytest -q --tb=short tests/test_project_config.py tests/test_project_path_hints.py tests/test_t21_project_config_preprocess.py` passed 93; `python -m pytest -q --tb=short tests/test_project_config_worktrees.py` passed 2; `python -m pytest -q --tb=short tests/test_project_config_service_integration.py` passed 12. Exact client/MCP receipt: `python -m pytest -q --tb=short tests/test_client_path_hints.py tests/test_mcp_repo_path_hints.py` passed 10 (7 client, 2 internal dispatch, 1 HTTP `/api/search`). The MCP file alone also passed 3 after public-schema scope was removed. The separately approved verification adapter has a fresh receipt: `python -m pytest -q --tb=short tests/test_verification_rules.py` passed 6. Client hints are limited to `/api/search`; `/api/command` receives no `path_hints`. `git diff --check` passed for changed T21 paths. No `/api/context/pack` diff hunk exists. Hub was not retried.
++
++Consolidated focused validation (2026-09-30): `python -m pytest -q --tb=short tests/test_project_config.py tests/test_project_path_hints.py tests/test_t21_project_config_preprocess.py tests/test_project_config_worktrees.py tests/test_project_config_service_integration.py tests/test_client_path_hints.py tests/test_mcp_repo_path_hints.py tests/test_verification_rules.py` passed 123. This receipt covers T21 core and released search seams; it does not transfer ownership for preprocessing/RAG, other MCP schemas, command broker, or context consumers.
++
++Post-T04/T07-queue consumer check (2026-09-30): `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_project_path_hints.py tests/test_project_config_service_integration.py tests/test_client_path_hints.py tests/test_mcp_repo_path_hints.py` passed 39. This checks T21 path-hint core and released consumers without touching T04 transport tests.
+ 
+ ## Typed consumer contract
+ 
+@@ -78,12 +84,16 @@ The trusted route or command owner resolves `ProjectContext` once with `resolve_
+ 
+ | Consumer path or seam | Owner evidence | T21 status |
+ |---|---|---|
+-| `src/local_ai_hub/http_server.py` `/api/search` | T03 owns route/transport; route delegates to `APP.services.repo_search` | No T21 route edit; exact route release absent |
+-| `src/local_ai_hub/services.py` `HubServices.repo_search` | T06 owns the symbol, but current T06 acceptance excludes general `repo_search`; T06 confirmed this is N/A for its current scope | No T21 release; T03 route remains gated. Keep T06 files untouched. |
++| `src/local_ai_hub/http_server.py` `/api/search` | T03 owns the route/transport contract; user approved the exact `path_hints` forwarder | T21 forwards only this field on `/api/search`; `/api/context/pack` stays excluded. The separately approved verification completion hook remains a distinct change. |
++| `src/local_ai_hub/services.py` `LocalAIServices.repo_search` | User approved this exact symbol for T21 project policy and path-hint integration; current SHA256 `15DAA1136C301F59FD4A630D3DEC870CEA621C2053A3A1AC13B2B01CE2098C60` | Existing T21 diff hunks stay inside `LocalAIServices.repo_search`. Original first 64 indexed paths remain in the candidate set; added hint/config candidates are detected at lines 2781–2786. If an expanded candidate window yields targeted hits, code now runs bounded broad search, filters it through project policy, merges/deduplicates by path and start line, then ranks by score and candidate priority (lines 2820–2911). `search_paths` scans up to 128 candidates (`repo_tools.py:1633–35`) but returns at most `top_k` (line 1733); previous short-circuit skipped broad fallback after any targeted hit. New regression/behavior remain unverified until slot. No T21 hunk changes `affected_tests` or `command`. |
++| `tests/test_project_config_service_integration.py` repo-search/search-path selectors | T21 owns the repo-search/search-path cases; current SHA256 `FA849D33998C70BD6351A6A46BC354395DA72A0194E92CBA09EA5C3BD957AC7B` | Adds `test_repo_search_hint_hit_does_not_skip_broader_results`, a source-only regression for targeted partial hit versus broader hit outside the candidate window. It is unrun. The pre-existing T06 `test_run_affected_*` case at line 15 is unchanged. No T15 command-broker tests are present in this file's diff. |
++| `src/local_ai_hub/repo_tools.py` `RepositoryTools.search_paths` | User approved this exact symbol for bounded candidate policy/filtering | Implemented in the dirty candidate and covered by focused search/exclude/size selectors; unrelated hunks remain inherited. |
+ | `/api/context/pack` and `HubServices._hybrid_context_uncached` | Agent 2 exclusively owns the endpoint; T10 supplied read-only fusion semantics | Out of T21 scope; do not edit route or its pack behavior |
+ | `src/local_ai_hub/preprocess.py`, `src/local_ai_hub/pipeline.py` callers of `_hybrid_context` | RAG/orchestration task scopes exist; exact file/symbol release not evidenced | Keep untouched until exact owner release |
+-| `src/local_ai_hub/app.py`, `src/local_ai_hub/mcp_server.py::local_ai_repo` search forwarding | T13 owns app/MCP paths but says `local_ai_repo` search forwarding is outside its ownership; search-wrapper owner unresolved. | No release. Keep untouched. |
++| `src/local_ai_hub/mcp_server.py::_local_ai_repo_impl` search dispatch | T21 owns internal `path_hints` propagation and `/api/search` callsite; T03 owns public `local_ai_repo` action schema and output registry | T03 owner reports public wrapper contract work in progress; its private e809 consumer lacks this keyword. T21 checkout already accepts `path_hints` at `_local_ai_repo_impl` and forwards up to 64 typed records to `CLIENT.post("/api/search", ...)` (`mcp_server.py:1743, 1808–1816`). Core independently canonicalizes paths in `_relative_pattern` (`project_config.py:340–354`: trim, backslash to slash, cap 1024, reject drive/absolute/dot segments) and `validate_path_hint` rechecks scope, freshness and root containment (`project_config.py:800–856`). T03 has only static AST/diff checks; shared tests remain queued. |
++| `src/local_ai_hub/client.py` `PathHint` protocol and `HubClient.post` | User-approved T21 path-hint transport symbols; T04 owns request-id and SSE transport hunks | T21 sanitizes typed hints, caps to 64, gives explicit paths precedence, and forwards only on `/api/search`. T21 does not forward request IDs for `local_ai_task(action="submit")`; that is outside this release. Preserve T04 hunks. |
+ | `src/local_ai_hub/commands.py::CommandBroker.run` | T15 owns command-broker work; exact T21 integration release remains unconfirmed. | T21 requested scoped release for project command aliases/env; no grant received. Keep untouched. |
++| `src/local_ai_hub/agent_verification.py::project_path_hint_usage_details` | T09 owns this adapter; owner-reported current `32fc` SHA256: source `1BFE7AA3C32BB1EAF31E618B831E512C1C484C4BE977A8E18049C8924DED58D7`, tests `7E23EE84D8E339D053468B417596213B23F09C580F696E61929E5A27617A4EAF` | Owner handoff contract is `project_path_hint_usage_details(usage: Any) -> dict[str, bool | None]`; it reads only `hint_used`, `fallback_used`, and `hint_helped`. First two require exact `bool`; third allows `bool | None`. Missing attributes raise `AttributeError`; invalid values raise `TypeError`. `hint_used` records a validated, in-scope hint prioritizing an overlapping candidate, not quality gain; `fallback_used` records available hints with no usable candidate; producer `hint_helped=None` means unmeasured. Output contains exactly those keys. It is optional audit detail, never completion evidence. Privacy and missing-value selectors are unrun; no T09 test receipt exists. T21 does not edit this file. |
+ | `src/local_ai_hub/agent_tasks.py` task-search symbols | T09 confirmed task metadata search is not repo retrieval; T09 separately accepted owner-side `verification_rules` evaluator/tests integration | No hints on task-list/search; send typed settings contract for evaluator owner to consume |
+ | T16 request-scoped hint seam | T16 owns `payload.path_hints` through `_request_path_hints`, `_with_request_path_hints`, `WorkOrchestrator.submit`, and `_execute`; its own adapter now calls the T21 project-context contract | T16 fixed its fixture to create candidate files and match hint purpose/scope/revision/digest. Latest focused broker request returned `outcome_unknown` (`req_e64dca1e7e89`), no stdout/receipt; earlier request `req_da3437864c4d` also has no receipt. T16 files remain untouched by T21. |
+ | T08 namespace and T19 paths | T08's bounded owner search found no `shared_namespace` consumer; T19 has no repo-search consumer path in current evidence | T08 is N/A; keep T19 files untouched absent an exact consumer |
+@@ -92,30 +102,33 @@ The trusted route or command owner resolves `ProjectContext` once with `resolve_
+ 
+ | Adapter or concern | Current owner / dependency | T21 action before handoff |
+ |---|---|---|
+-| `src/local_ai_hub/http_server.py` | T03 owns request/transport schema; `/api/search` delegates to `APP.services.repo_search`. Agent 2 exclusively owns `/api/context/pack`. | Optional `path_hints` may enter only released search routes with trusted root. No T21 route edits. `/api/context/pack` stays untouched. |
+-| `src/local_ai_hub/services.py` | T06 owns service call sites but explicitly says it does not own `HubServices.repo_search`; current owner is unresolved. Only `LocalAIServices.affected_tests` and `run_affected` branch are released. | Keep `repo_search` and all other unreleased hunks untouched. The two released symbols remain covered by the T21-owned service test. |
+-| `src/local_ai_hub/app.py`, `mcp_server.py::local_ai_repo` | `app.py` remains T13-owned; T13 says `local_ai_repo` search forwarding is outside its ownership. Search-wrapper owner unresolved; no MCP release. | No edits. `/api/context/pack` stays Agent 2-owned and untouched. |
++| `src/local_ai_hub/http_server.py` | T03 owns request/transport schema; user approved the single `/api/search` `path_hints` forwarder. Agent 2 exclusively owns `/api/context/pack`. | Forward only on `/api/search`. Keep `/api/context/pack` untouched. |
++| `src/local_ai_hub/services.py`, `repo_tools.py` | User approved only `LocalAIServices.repo_search` and `RepositoryTools.search_paths` for T21 | Candidate ranking, config digest/cache identity, exclusions and size checks live in these exact symbols. Preserve unrelated hunks. |
++| `src/local_ai_hub/mcp_server.py::local_ai_repo` | T21 release covers only internal search dispatch; T03 owns public wrapper/schema | T21 private dispatch accepts and forwards typed hints on search only. T03 owner reports wrapper work in progress with 1–1024-char path constraint and path normalization/escape rejection; its checks are static only and shared test slot is queued. Do not expose or claim a public argument in this T21 checkout. Keep other operations and `app.py` untouched. |
++| `src/local_ai_hub/client.py` | T21 owns `PathHint` protocol and `HubClient.post` path-hint normalization; T04 owns request-id and SSE hunks | Keep path-hint edits isolated to those symbols and preserve T04 transport changes. |
+ | `src/local_ai_hub/commands.py::CommandBroker.run` | T15 owns command-broker work; exact T21 integration release remains unconfirmed. | Keep command broker untouched; request only covers project aliases/env in this symbol. |
+-| `src/local_ai_hub/repo_tools.py` | Agent 2-owned. | No edits. T21 must not overload `search_paths` or command `paths`. |
+-| `src/local_ai_hub/preprocess.py`, `retrieval.py`, code-index files | T10 grants read-only consumption of `fuse_ranked_paths`, `CodeIndex.related_paths`, and `CodeIndex.query`; no write ownership. Fusion weights remain hard-coded. | No edits. Weight override semantics and exact write release remain prerequisites. |
+-| `src/local_ai_hub/rag.py` | T11 owns RAG/embedding/reranker paths and now plans its own consumer slice for exclusions, force-includes, custom extensions, file limits, and phases across owned preprocessing/RAG ingestion. | T21 core API handoff only; T11 implements in its worktree. Preserve containment, ignores, extensions, size, and symlink rules. Hints cannot filter recursive indexing or weaken dirty-path checks. |
+-| `src/local_ai_hub/agent_tasks.py`, leases, verification evaluator | T09 confirms `TaskStore.list_tasks(query=...)` filters task metadata only; it does not rank repository candidates. T09 requests project `verification_rules` and command aliases in its own evaluator/tests. T03 owns `task_list` route forwarding; T04 owns `HubClient.list_tasks(query=None)`. | No `path_hints` on task listing, receipts, leases, or mutation APIs. T09 consumes only its evaluator settings; T21 does not edit T09 files. |
++| `src/local_ai_hub/repo_tools.py::RepositoryTools.search_paths` | User released this exact T21 symbol; remaining file hunks keep existing owners | Apply project filters and size policy to full search candidates. Do not change command `paths` or unrelated hunks. |
++| `src/local_ai_hub/preprocess.py`, `retrieval.py`, code-index files | Existing `preprocess.py` candidate adds project policy; T10 permits read-only fusion/code-index consumption. T11's planned preprocessing/RAG policy slice may overlap. | Five `test_t21_project_config_preprocess.py` tests are within the 93-test core receipt. Preserve current diff; ownership/rebase review and retrieval-weight consumer release remain unresolved. |
++| `src/local_ai_hub/rag.py`, `tests/test_t11_rag_policy_consumer_rebased.py` | T11 owns RAG/embedding/reranker and policy-consumer validation. T11 reports its target HEAD `885b93a` lacks `project_config.py`; its lazy policy adapter skips the real consumer path (prior suite: 128 passed, 2 skipped, 1 deselected). T11 has not validated the T21 candidate at `824c9eb` against its target revision. | Preserve inherited/other-task hunks. No T21 RAG receipt or edit authority; T11 must select/integrate target revision and provide current-source receipt. `/api/context/pack` remains excluded. |
++| `src/local_ai_hub/agent_tasks.py`, leases, verification evaluator | T09 confirms `TaskStore.list_tasks(query=...)` filters task metadata only; it does not rank repository candidates. T09 owns `project_path_hint_usage_details(usage)` projection and two privacy/validation tests, currently unrun. T03 owns `task_list` route forwarding; T04 owns `HubClient.list_tasks(query=None)`. | No `path_hints` on task listing, receipts, leases, or mutation APIs. Keep T09 evaluator and receipt projection separate from T21 core telemetry. |
++| `src/local_ai_hub/verification_rules.py`, HTTP completion hook, `tests/test_verification_rules.py` | Separate user-approved completion adapter; T09 evaluator ownership remains distinct. | Preserve this separate candidate. Focused `test_verification_rules.py` receipt: 6 passed; T09 evaluator ownership remains distinct. |
+ | `src/local_ai_hub/agent_events.py`, `work_orchestrator.py`, handoff tests | T16 owns the request-scoped `payload.path_hints` seam through `_request_path_hints`, `_with_request_path_hints`, `WorkOrchestrator.submit`, and `_execute`; verification also overlaps T09. | T16 has its own consumer/test changes. Latest focused broker request `req_e64dca1e7e89` is `outcome_unknown`, with no output or receipt; no retry. No T16 files are in T21's diff. |
+ | `src/local_ai_hub/agent_context.py::ContextRequest` | T14 confirms ownership; `task_context.py::build_context_request()` populates `path_hints`/`settings_digest`, and `ContextCompiler.compile()` consumes them. | T14 did not release these symbols; integration design awaits its user's approval. No T21 edits. `/api/context/pack` remains untouched. |
+ | `src/local_ai_hub/context_ledger.py` | Context-ledger ownership unresolved. | No edits. Keep adapter contract below as handoff only. |
+-| MCP repo/search and command discovery schemas | T03/T06/T10 own overlapping schema/consumer surfaces; no exact edit release and no MCP release is recorded. | Use one optional `path_hints` field only where operation ranks repo candidates. Keep it out of mutation, verification, and `/api/context/pack` surfaces. Never use pending `clientThreadId`s or create replacement tasks. |
++| MCP repo/search and command discovery schemas | T03 released the exact public search-only field contract but owns production schema/output registry; its regression is authored, implementation/test await T15 benchmark slot. T21 release covers only private repo-search dispatch. T15 command integration remains owner-gated. | Forward internally only on repo search. Do not claim the public argument shipped or passed; do not add command discovery fields, mutation/verification hints, or `/api/context/pack` support. Never use pending `clientThreadId`s or create replacement tasks. |
+ | `docs/INSTALL_PROMPT.md`, `docs/UPDATE_PROMPT.md`, `docs/PYTHON_SDK.md` | T19 owns prompt parity/guidance and SDK contract. T19 says document config digest/telemetry only after T21 releases and verifies consumer seam; label feature unshipped until release receipt. | No T21 edits. |
+ | `docs/INSTALLATION.md` | Shared: T10 owns CodeGraph runtime/setup wording; T19 owns SDK-link hunk only. | No T21 edits. |
+ | `docs/PROJECT_CONFIGURATION.md`, `src/local_ai_hub/config.py`, `project_config.py`, T21-owned tests | T21 scope; no conflict reported for core/config docs. | Continue core resolver/schema and T21 tests only. |
+ 
+-## Current acceptance matrix and coordination (2026-09-27)
++## Current acceptance matrix and coordination (2026-09-30)
++
++Scope updated 2026-09-30: user released `LocalAIServices.repo_search`, `RepositoryTools.search_paths`, T21's internal MCP `local_ai_repo` search dispatch, `HubClient.post` search serialization, and only the `path_hints` forwarder on HTTP `/api/search`. T03 still owns the broader HTTP route contract and public MCP argument schema. `run_affected` remains T06-released. T10/T11 retrieval and RAG consumers, T09 verification evaluation, T14/T16 context, T15 command integration, T19 SDK/prompts, other T03/T06/T13 surfaces, and `/api/context/pack` stay owner-gated or excluded. Do not use pending T14/T15 client task IDs or create replacements.
+ 
+ | Surface | Applicability | Current evidence / gate |
+ |---|---|---|
+ | HTTP `/api/context/pack` | Excluded from T21 edits | Agent 2 exclusive; untouched. |
+-| HTTP `/api/search` | Applies | T03 route delegates to `APP.services.repo_search`; route release absent. T06 explicitly says it does not own `HubServices.repo_search`; service owner unresolved. No T21 edits until exact owner releases scope. |
+-| HTTP `/api/context/pack` | Excluded | Agent 2 exclusive. T10's hybrid-context/fusion seam is read-only; endpoint remains untouched. |
+-| MCP and app root/config transport | Applies | T13 owns other app/MCP paths but disclaims `local_ai_repo` search forwarding; its owner is unresolved. No T21 release. Keep untouched. |
++| HTTP `/api/search` | Applies | User released the exact `path_hints` forwarder; T21 forwards only on this route. T03 retains the broader route contract. `APP.services.repo_search` delegates to the user-released `LocalAIServices.repo_search` symbol. |
++| MCP repo search and app root/config transport | Applies | T21 release covers only private `local_ai_repo` repo-search dispatch. T03 released the exact public field contract but production schema and regression test remain pending T15 benchmark slot. T13's other app/MCP paths remain outside this release and untouched. |
+ | Preprocessing and code-index candidates | Applies | `repo_search` reads deterministic, code-index, and preprocessor candidate paths. T10 provided read-only semantics; exact writer release for these providers is not established. |
+ | RAG search candidates | Applies | T11 owns `RAGStore.search` before limit/reranking; no RAG adapter release. |
+ | Command broker / `run_affected` | Applies | T06's precise `LocalAIServices.affected_tests` and `run_affected` release is integrated/tested. Other `commands.py` changes remain owner-gated. |
+@@ -124,41 +137,40 @@ The trusted route or command owner resolves `ProjectContext` once with `resolve_
+ 
+ Do not use unverified `clientThreadId`s or create replacement tasks. Task presence does not transfer ownership; require exact owner release for each adapter symbol. The adapter root must come from trusted route identity; retrieval `PathHint` never selects root. Reject absolute/drive/UNC/`..` operation paths, resolve beneath selected root, deny symlink/junction escape, and never fall back to ambient CWD.
+ 
+-Fresh owner check (2026-09-28): T06 confirms it does not own `HubServices.repo_search` and denied a lease; the service owner remains unresolved. Its narrower `affected_tests`/`run_affected` seam remains released and tested. T13 says MCP `local_ai_repo` search forwarding is not its path; its owner remains unresolved. T14 confirms ownership of `ContextRequest`, `build_context_request()`, and `ContextCompiler.compile()` but denies release pending its user's approval. T15 received a scoped `CommandBroker.run` release request; no grant recorded. T08's bounded search found no consumer for T21 `shared_namespace` (N/A). T09 accepted owner-side `verification_rules`/command evaluator integration; task metadata search stays out of hint flow. T11 plans to consume path policy in its own preprocessing/RAG scope. T16's own consumer/test changes remain in its checkout; after fixing candidate-file setup, latest focused broker request returned `outcome_unknown` (`req_e64dca1e7e89`) without output or receipt; no retry/native fallback. T03 has not released the HTTP search route. T12 and T19 have received project model/language/prompt handoffs; their consumer receipts/releases remain pending. T10 remains read-only on fusion semantics. No replacement task was created. T21 did not retry Hub. Keep all consumer files owner-owned.
++Fresh owner check (2026-09-28), superseded only where noted by the 2026-09-30 user release: T06 denied the then-unreleased general repo-search lease; the user later released only `LocalAIServices.repo_search` and `RepositoryTools.search_paths` for T21 project policy/path hints. The narrower `affected_tests`/`run_affected` seam remains T06-released and tested. T13 says MCP `local_ai_repo` search forwarding is not its path; the exact T21 internal search-dispatch release is separately recorded above, while public schema remains T03-owned. T14 confirms ownership of `ContextRequest`, `build_context_request()`, and `ContextCompiler.compile()` but did not release them. T15 received a scoped `CommandBroker.run` release request; no grant recorded. T08's bounded search found no consumer for T21 `shared_namespace` (N/A). T09 accepted owner-side `verification_rules`/command evaluator integration; task metadata search stays out of hint flow. T11 plans to consume path policy in its own preprocessing/RAG scope. T16's own consumer/test changes remain in its checkout; its latest focused broker request returned `outcome_unknown` without output or receipt; no retry/native fallback. T03 still owns the broader HTTP route contract and public MCP schema; the user released only the `/api/search` `path_hints` forwarder. T12 and T19 have received project model/language/prompt handoffs; their consumer receipts/releases remain pending. T10 remains read-only on fusion semantics. No replacement task was created. T21 did not retry Hub. Keep all consumer files owner-owned.
+ 
+-## T21 core handoff status (2026-09-27)
++## T21 current worktree and handoff status (2026-09-30)
+ 
+-- Goal checkpoint (2026-09-27): goal is active; full acceptance remains incomplete while general consumer integration/runtime retrieval proof is owner-gated. No replacement task or master merge was made. Hub was not retried after user direction.
+-- Worktree: `C:\Users\Adam\.codex\worktrees\t21-project-config\.local-ai-hub`; branch `codex/t21-project-config`, `HEAD=7ee8a09d29d25664cf52e1fc8cbc60074f361c0b`, baseline `2b33602adef0d030fea66cdcc04ca742c60b2e32`. T21 snapshot commit `2310bc47bd5bd2b94dd1e2af7ba0b259fa86b3c8` and follow-up commits are inherited. Current thread cwd `C:\Users\Adam\.codex\worktrees\4294\.local-ai-hub` is not a Git checkout (`git rev-parse` fails); no replacement was created. Continue in the only verified T21 project checkout. No merge to master.
+-- Current T21-owned working diff: `src/local_ai_hub/project_config.py`, `tests/test_project_config.py`, `tests/test_project_config_worktrees.py`, `tests/test_project_path_hints.py`, `docs/PROJECT_CONFIGURATION.md`, and this handoff. Baseline was clean before T21 resumed. The inherited T21 snapshot also contains `services.py`, worktree/service integration tests, and the T21 master-plan/handoff changes; no consumer adapter is modified in the current diff.
+-- Inherited/held scope: T06's two narrow service symbols remain previously released and tested; `repo_search`, routes, RAG, MCP, command, and T16 orchestration consumers remain owner-held. `/api/context/pack` remains untouched.
+-- Focused validation (2026-09-27): `python -m pytest -q --tb=short --disable-warnings tests/test_project_config.py tests/test_project_path_hints.py tests/test_project_config_worktrees.py tests/test_project_config_service_integration.py` exited 0 with 73 passed. Native run after T21 env privacy/interpolation/compatibility fixes; no Hub receipt. Coverage includes config precedence/inheritance, path and phase policy, safe resolvers, namespace and hint reuse/freshness, full candidate retention, T06 `run_affected` mapping/cache reuse, compound extension classification, and path-free telemetry privacy.
+-- Regression receipt: `python -m pytest -q --tb=short tests/test_project_config.py -k globbed_pinned_context` first failed because the config accepted `docs/*.md`; after switching `pinned_context` to literal-path validation, that case passes in the 54-test focused run. `python -m pytest -q --tb=short tests/test_project_config.py -k configured_path_resolvers_reject_resolved_escape` exited 0; 1 passed.
+-- T06's two released `services.py` symbols are integrated and tested. T16's project-context changes remain in its own checkout; its one owner-run test attempt returned `outcome_unknown`, with no acceptance receipt or transfer. General hybrid search, RAG, MCP, command-broker, task-context, and HTTP route seams remain owner-gated. `/api/context/pack` remains untouched.
+-- A fresh read-only review found no concrete resolver/schema defect. General retrieval wiring remains owner-gated. `PathHintUsage.telemetry_metadata()` and T21 privacy tests prove only `hint_used`, `fallback_used`, and nullable `hint_helped` are projected; no paths are copied. The configured `ensure-tools.ps1` path was unavailable; Python and pytest were already available.
++- Verified checkout: `C:\Users\Adam\.codex\worktrees\t21-project-config\.local-ai-hub`; branch `codex/t21-project-config`; `HEAD=824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11`. Current tree has 23 dirty paths (2 docs, 11 source, 10 tests). No stage, commit, or master merge made. Preserve inherited edits.
++- Released T21 search hunks are limited to `LocalAIServices.repo_search`, `RepositoryTools.search_paths`, `PathHint`/`HubClient.post` path-hint serialization, internal `_local_ai_repo_impl` search dispatch, and the HTTP `/api/search` forwarder. Exact symbols and hashes are recorded in the matrix above. T06 `affected_tests`/`run_affected` remains separately released.
++- The dirty diff also contains out-of-scope hunks: generic `client.py` request-ID and SSE transport changes (T04-owned); HTTP task-completion verification changes (T09-owned); and `repo_tools.py` constructor, ignore-dir, Python fallback, and broad-search changes outside `search_paths` (preserve as inherited/other-owner work). Do not attribute these to T21 or edit them. No `/api/command` handler or `/api/context/pack` hunk was found.
++- Recorded focused receipts from 2026-09-30 remain historical receipts; no tests ran during this continuation. The consolidated 123-pass receipt predates the 256 KiB boundary regression and the current `repo_search` broad-result merge. T09's `project_path_hint_usage_details` implementation is owner-reported; its two privacy/missing-value selectors remain unrun. T03 released the exact public field contract, but production MCP schema and regression test remain pending T15 benchmark slot. No public MCP argument acceptance claim.
++- Added T21-owned boundary test `test_config_overlay_accepts_256_kib_and_rejects_one_byte_more` and consumer regression `test_repo_search_hint_hit_does_not_skip_broader_results`; both are unrun pending T20 test-slot assignment. Existing `test_linked_worktree_inherits_common_config_and_keeps_local_override` covers linked-worktree inheritance and precedence. `test_cakephp_button_hint_prioritizes_templates_without_narrowing_results` covers CakePHP-style hint ordering and recall. No built-in known-directory auto-discovery list exists in T21 core; consumer behavior outside released symbols remains unaudited. Preprocess source tests exist in the historical 123-pass receipt.
++- Once T20 assigns a free test slot, run the consolidated released-scope acceptance command once: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_project_config.py tests/test_project_path_hints.py tests/test_t21_project_config_preprocess.py tests/test_project_config_worktrees.py tests/test_project_config_service_integration.py tests/test_client_path_hints.py tests/test_mcp_repo_path_hints.py tests/test_verification_rules.py`. This command includes the new boundary regression; prior 123-pass evidence predates it.
++- Hub remains unavailable after its one bounded failure; no retry. No replacement T14/T15 task IDs used or created. `/api/context/pack` remains untouched.
+ 
+ | Acceptance criterion | Evidence | State |
+ |---|---|---|
+ | Layer precedence and inheritance | `test_project_configuration_merges_sources_in_documented_order`; `test_linked_worktree_inherits_common_config_and_keeps_local_override` covers project/Git-common/worktree env map merge with per-key winner, local list/map overrides, and scalar `shared_namespace` override. Targeted rerun after adding env assertions: 1 passed. | Core verified |
+ | Safe glob, excludes, force-include, containment | `test_path_globs_respect_segments_and_recursive_double_star`, `test_force_include_overrides_only_soft_ignores`, `test_project_exclude_wins_over_force_include_and_path_override_include`, and `test_symlink_escape_stays_hard_denied_with_force_include` cover segment matching, preprocess-only exclusions, explicit-exclude precedence, hard-deny and containment. | Core verified |
+-| File and phase limits | `test_file_size_limit_rejects_invalid_size_evidence`, `test_shared_path_policy_enforces_skipped_optional_phases`, and `test_shared_path_policy_denies_unknown_phases`; unrelated path phases remain allowed. | Core verified |
++| File and phase limits | `test_file_size_limit_rejects_invalid_size_evidence`, `test_shared_path_policy_enforces_skipped_optional_phases`, `test_shared_path_policy_denies_unknown_phases`, and new `test_config_overlay_accepts_256_kib_and_rejects_one_byte_more`. Config boundary test source awaits assigned test slot; unrelated path phases remain allowed. | Core behavior present; new boundary test unverified |
+ | Pinned context path resolution | Config rejects globbed pinned paths; `resolve_pinned_context` returns existing repo-contained literal candidates in config order after shared config checks. Tests cover exclusion, missing/traversal/glob paths, resolved escape, skipped phases, binary extension, and size cap. Consumers must still apply actual walker ignore/hard-deny state before reading. No retrieval consumer is wired. | Core verified; consumer gated |
+ | Entry point path resolution | `resolve_entry_points` returns contained file/directory candidates in config order through `path_is_allowed`/`may_descend`; tests cover exclusion, missing/traversal/glob paths, resolved escape, oversize files, and directories. Consumers must still apply actual walker state to every traversed file. | Core verified; consumer gated |
+ | Commands, env, verification, retrieval/model/language/task-facing settings | `test_all_declared_configuration_fields_have_typed_values`, `test_project_environment_separates_literals_from_references`, `test_project_configuration_accepts_host_references_and_rejects_partial_references`, `test_project_environment_rejects_invalid_keys_values_and_references`, `test_project_settings_repr_omits_literal_environment_values`, `test_command_environment_reference_keys_keep_legacy_names`, `test_project_configuration_rejects_weakening_verification_and_nonfinite_weights`, `test_project_configuration_rejects_extension_overlap`, and `test_binary_extension_policy_matches_compound_extensions`. `[env]` separates literal project values (`ProjectSettings.env`, omitted from repr) from exact `${NAME}` references (`ProjectSettings.env_references`); partial interpolation rejects. Command env destination keys retain the legacy `_KEY` syntax. Host-variable resolution and environment application remain adapter-owned; command values stay data only. The overlap test also rejects language-specific text extensions colliding with global binary extensions. | Schema verified; consumer use awaits owner release |
+ | Shared namespace and path hints | `test_shared_namespace_scopes_hints_within_git_common_directory`, `test_project_context_reuses_only_current_evidence_bound_hints`, and `test_project_context_prioritizes_candidates_with_current_saved_hints` cover namespace boundaries, persisted reuse, revision/config freshness, ranking, and invalidation. Other tests cover 64 request-hint cap, recall preservation, and excluded-path denial after ranking. | Core verified |
+-| Retrieval consumer reuse | T06's released `LocalAIServices.affected_tests`/`run_affected` seam resolves config, applies `affected_tests_mapping`, ranks candidates, and applies path policy. `test_run_affected_applies_project_mapping_and_path_hints_safely` asserts `project_config_digest` and the exact `path_hints_digest` cache parameter without raw hint paths; it also asserts returned `path_hint_usage` contains only the three metadata fields. T10 identifies `_hybrid_context_uncached` before fusion/limits with read-only use only; T11 identifies `RAGStore.search` before candidate limit/reranking with no release. | Partial; general retrieval wiring/runtime proof pending |
++| Retrieval consumer reuse | T06's released `LocalAIServices.affected_tests`/`run_affected` seam resolves config, applies `affected_tests_mapping`, ranks candidates, and applies path policy. `test_run_affected_applies_project_mapping_and_path_hints_safely` asserts `project_config_digest` and the exact `path_hints_digest` cache parameter without raw hint paths; it also asserts returned `path_hint_usage` contains only the three metadata fields. T21's released repo-search symbols and HTTP `/api/search` forwarder have focused historical receipts. T10 identifies `_hybrid_context_uncached` before fusion/limits with read-only use only; T11 identifies `RAGStore.search` before candidate limit/reranking with no release. | Released seams have receipts; broader retrieval and runtime proof pending |
+ | Explicit project search paths | `entry_points` are literal repo-relative files/directories; glob syntax rejects. `exclude_paths` and `force_include_paths` remain separate glob fields. No duplicate `explicit_search_paths` setting. `test_entry_points_are_literal_but_path_filters_keep_glob_support` covers this contract. | Core verified |
+ | Config storage boundary | `test_project_context_reuses_only_current_evidence_bound_hints` confirms configured state directory contains only the hint database; config sources are project `.local-ai.toml`, Git common `.git/info/local-ai.toml`, and project `.local-ai.worktree.toml`. Escaping config links reject with `unsafe_config_path`. `config.py::load_config` remains separate; T21 project resolver reads/writes no Hub config. | Core verified |
+-| Consumer integration and runtime retrieval proof | T06's narrow release covers `LocalAIServices.affected_tests` and `run_affected`, verified by `test_run_affected_applies_project_mapping_and_path_hints_safely`. General `/api/search` remains gated by T03; T06 marks general `repo_search` N/A for its acceptance. T10 fusion consumption is read-only and tied to hybrid context; `/api/context/pack` is Agent 2-owned. T11 is implementing its owned path-policy slice; receipt pending. T09 is implementing its verification evaluator slice; receipt pending. T16's one test attempt has no receipt. T08 namespace is N/A; T12/T19 consumer receipts pending. | Partial; route/search, RAG, MCP and orchestration integration remain open |
+-| Owned test/docs review | 73 focused tests pass; config and consumer-handoff docs updated. `PathHintUsage.telemetry_metadata()` projects only `hint_used`, `fallback_used`, and nullable `hint_helped`; privacy tests prove candidate paths and malformed runtime values are excluded. | T21 core partial; owner gates remain |
++| Consumer integration and runtime retrieval proof | Historical receipts: T06 `run_affected` plus `repo_search`/`search_paths` in the service integration file; 10 focused selectors (7 client, 2 internal MCP dispatch, 1 HTTP search), with 3 MCP/HTTP tests passing again after public-schema scope was removed. T03's public-schema regression is authored but production schema/test await T15 benchmark slot. T10 fusion is read-only; `/api/context/pack` excluded. Preprocessing has five T21 source tests in the 123-pass receipt but needs T11 ownership/rebase review. T11 RAG, two T09 path-hint projection tests, T16 task context, T15 command, and T19 SDK/prompt seams remain pending or owner-gated. | Released seams have historical receipts; public schema and remaining owner gates pending |
++| Owned test/docs review | Historical receipts: 93 core, 12 service integration, 10 client/MCP/HTTP search, and 6 verification-rule tests. `PathHintUsage.telemetry_metadata()` projects only `hint_used`, `fallback_used`, and nullable `hint_helped`; privacy tests exclude candidate paths. T09's distinct adapter projection has two unrun privacy/missing-value tests. | Historical T21 core and released seams covered; owner-specific pending tests remain |
+ 
+ ## Integration acceptance still required
+ 
+-- Explicit `applies` / `not applicable` matrix for query-capable HTTP/API routes, existing MCP actions, repository search/context, commands including `run_affected`, and task context.
++- Explicit `applies` / `not applicable` matrix: HTTP `/api/search`, MCP `local_ai_repo` search, `HubClient.post` search serialization, `repo_search`, `search_paths`, and T06 `run_affected` apply; `/api/context/pack` is excluded; command-broker, other MCP, T14/T16 task context, T10 fusion, T11 RAG, and T19 SDK/prompt seams remain owner-gated.
+ - Core typed surface: `resolve_project_context(root, state_dir) -> ProjectContext`; `context.settings: ProjectSettings`; `context.config_digest: str`; `context.resolution.error_codes: tuple[str, ...]`; `context.path_hints(*, purpose, scope, repository_revision) -> tuple[PathHint, ...]`; and `context.prioritize_paths(candidates, *, purpose, scope, repository_revision, path_hints=()) -> PathHintUsage` with ordered `.paths` and path-free `.telemetry_metadata()`. Path resolvers provide contained pinned context and entry points. A future adapter may accept `path_hints: tuple[PathHint, ...]`; derive trusted root and `config_digest` server-side. Pass effective retrieval weights and project/language/model metadata from `settings`. Keep hints separate from focus, changed paths, command paths, and trusted root. Add only after each owner releases its exact adapter symbol.
+ - Apply one path policy to preprocessing, repository/index walking, deterministic search, and separate RAG walking. Enumerate ignored files before force-include can override soft ignore; preserve hard deny, containment, binary and size limits.
+ - Reuse task-scoped verified hints. `PathHintUsage.telemetry_metadata()` is the path-free projection for `hint_used`, `fallback_used`, and `hint_helped` only; do not add candidate paths or prompt/source data to telemetry. Preserve complete results and prove CakePHP hint does not reduce recall.
+-- Config docs and T21 core tests are in scope. Consumer/cache integration, prompt updates, and cold/warm retrieval measurements await owner releases.
++- Config docs and T21 core tests are in scope. Released consumer/cache seams have focused receipts; command integration, other retrieval consumers, prompt updates, and cold/warm retrieval measurements await owner releases.
+ - Hub failed once; native focused tests ran by user direction. Do not retry Hub.
+ 
+ ## Validation receipts
+@@ -170,3 +182,31 @@ Fresh owner check (2026-09-28): T06 confirms it does not own `HubServices.repo_s
+ - `python -m compileall -q src tools tests` with `PYTHONPYCACHEPREFIX` directed outside the worktree: passed. The documented `mcp` directory does not exist in this checkout.
+ - `python -B -m pytest -p no:cacheprovider -q`: reached 100% and completed with failures/errors outside the T21 focused set; the tool clipped the aggregate count. Visible examples include `test_agent_state_transport` fixture errors from `MemoryStore.put(..., 3600)`, async-job/coordination and client-transport failures, and transcription/vision-artifact failures. No broader-suite fix was attempted.
+ - No Hub command receipt is available; no retry was made.
++
++## Current checkpoint (2026-10-02)
++
++Current T21 candidate: `C:\Users\Adam\.codex\worktrees\t21-project-config\.local-ai-hub`, branch `codex/t21-project-config`, HEAD `824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11`. It has inherited dirty work; keep non-T21 paths intact. T20 root remains read-only at HEAD `01df56605ccf484ebfe2808ac60d696c4e81dffc`.
++
++T03 released its public `local_ai_repo(action="search").path_hints` contract for T21 consumption. The verified patch is `T03-root-contracts.patch`, SHA-256 `93DC04CA87C054964DD3A3581F52BE90D40E137C8D44DF3D62D820EC32767AFF`. It specifies at most 64 closed hint objects, required string `path` (1–1024 chars), `purpose`, and `scope`, plus the five optional string metadata fields. T20 root contains `operation_contracts.py` with `path_hints`; this T21 candidate has neither `operation_contracts.py` nor `tests/test_operation_contracts.py`, so the T03 patch cannot apply here. T03 did not release its MCP adapter file for editing.
++
++Remaining owner gates: T04 `client.py`; T03 `mcp_server.py`; T07 `http_server.py` `/api/search`; T09 receipt/telemetry adapter paths; T14 `agent_context.py` and `/api/context/pack`. T10 preprocessing, T11 RAG, T16 orchestration, T19 SDK/docs, and ambiguous T06-owned tests remain untouched. No release received for those adapter files. `/api/context/pack` remains excluded.
++
++The T21 focused candidate command `python -m pytest -q --tb=short tests/test_project_config.py tests/test_project_path_hints.py tests/test_project_config_service_integration.py tests/test_project_config_worktrees.py tests/test_t21_candidate_path_hint_worktree_e2e.py tests/test_t21_search_policy_consumers.py tests/test_repo_cache_outcomes.py tests/test_repo_tools.py` passed `134` tests in `19.05s`. `git diff --check` passed. This is a candidate-worktree receipt; it does not prove T20-root integration or release-gated adapters.
++
++Application goal remains `blocked`. One `local_ai_coord(action="task_list")` request (`req_72115def8427`) returned `request_not_sent=true` before transport write; no coordination retry was made and no Agent OS checkpoint update is claimed. Continue only after owner release or T20 integration.
++
++## T20 integration blocker and consumer dependency (2026-10-02)
++
++Latest candidate acceptance rerun: `python -m pytest -q --tb=short tests/test_project_config.py tests/test_project_path_hints.py tests/test_project_config_service_integration.py tests/test_project_config_worktrees.py tests/test_t21_candidate_path_hint_worktree_e2e.py tests/test_t21_search_policy_consumers.py tests/test_repo_cache_outcomes.py tests/test_repo_tools.py` passed `134` in `16.07s`. This validates the T21 candidate checkout only. Its existing dirty consumer files are part of the test environment, not owner approval.
++
++Latest unique T21 selectors: `python -m pytest -q --tb=short tests/test_t21_candidate_path_hint_worktree_e2e.py tests/test_t21_search_policy_consumers.py tests/test_project_config_service_integration.py::test_repo_search_hint_hit_does_not_skip_broader_results` passed `7` in `5.06s`. T20-owned root integration tests were not run.
++
++The concrete integration chain is:
++
++`ProjectConfig/PathHint` (`project_config.py`, T21) → `LocalAIServices.repo_search` and `RepositoryTools.search_paths` (T21) → public `local_ai_repo(action="search").path_hints` schema (`operation_contracts.py`, T03) → private MCP dispatch (`mcp_server.py`, T03) → `HubClient.post` (`client.py`, T04) → HTTP `/api/search` (`http_server.py`, T07). T21 core keeps complete candidate recall, applies project policy, and emits path-free usage metadata. The candidate E2E tests exercise the dirty transport code, but that does not release or validate those files for root integration.
++
++T03's public contract patch is already represented in T20 root (`operation_contracts.py` contains `path_hints`); it is absent from the older T21 candidate base. Do not apply T03's patch to the candidate or duplicate it into root. T20 must selectively reconcile the T21 patch with its dirty root tree and preserve its existing changes. Before claiming a merged transport, retain the separate file-owner gates: T03 MCP dispatch, T04 client, and T07 HTTP route. T09's receipt/telemetry adapter is an optional downstream consumer and has no release. T14's `agent_context.py::ContextRequest` is a separate context consumer; `/api/context/pack` remains excluded. T10 preprocessing, T11 RAG, T16 orchestration, T19 SDK/docs, and ambiguous T06 tests remain outside this integration patch.
++
++Latest T03 owner receipt (2026-10-02): `operation_contracts.py` SHA-256 `D676494561F1B6581121CD74FB0ED6CDE6D6843796040070F1C7363729614BBA`; `tests/test_operation_contracts.py` SHA-256 `BA35FCDC9F8A4A0A5F37382A93A85AD9082A8C9BBDD734E13FC776451CEBE446`. T03 reports the full contract file passed `97` tests in `28.07s`. Hashes were verified read-only from the T03 worktree. The exact forwarding/timeout test name is `test_repo_search_timeout_respects_120_second_protocol_limit` (not `test_repo_search_forwards_path_hints`); it asserts the `/api/search` payload includes `path_hints` and the timeout is `120`. Schema selectors are `test_repo_search_path_hints_schema_declares_bounds` and `test_repo_search_path_hints_rejects_invalid_nested_records`. T03's report releases the optional public search input for consumption; T21 still does not edit T03's adapter/schema files.
++
++The only required T21 integration targets are `project_config.py`, `repo_tools.py`, `services.py`, the T21-owned config/path-hint tests, and T21 docs. Patch `handoff/T21-project-worktree-config-20261001.patch` contains these ten paths; apply it by selective reconciliation, not by replacing the dirty root checkout. Current goal status remains `blocked` until T20 root integration and owner-gated consumers have receipts.
+diff --git a/src/local_ai_hub/project_config.py b/src/local_ai_hub/project_config.py
+index ff7bf84..afa76f5 100644
+--- a/src/local_ai_hub/project_config.py
++++ b/src/local_ai_hub/project_config.py
+@@ -9,6 +9,7 @@ import math
+ import os
+ import re
+ import sqlite3
++import stat
+ import subprocess
+ import tomllib
+ from contextlib import closing
+@@ -189,6 +190,18 @@ class ProjectContext:
+     def config_digest(self) -> str:
+         return self.resolution.config_digest
+ 
++    @property
++    def coordination_id(self) -> str | None:
++        """Server-derived repository namespace; never a filesystem root.
++
++        Reuse the existing git-common/namespace identity without opening a
++        database. Invalid configuration must not silently join a default
++        namespace when a caller expected a different scope.
++        """
++        if self.resolution.error_codes:
++            return None
++        return self._hint_store.project_id
++
+     def path_hints(
+         self, *, purpose: str, scope: str, repository_revision: str
+     ) -> tuple[PathHint, ...]:
+@@ -312,6 +325,73 @@ def _git_common_dir(root: Path) -> Path | None:
+         return None
+ 
+ 
++def _git_primary_worktree_root(root: Path, common_dir: Path | None) -> Path | None:
++    """Find primary worktree without assuming the Git directory layout."""
++    if common_dir is None:
++        return None
++
++    def _points_to_common_dir(worktree: Path) -> bool:
++        git_marker = worktree / ".git"
++        try:
++            if git_marker.is_dir():
++                return git_marker.resolve(strict=False) == common_dir
++            if git_marker.is_file():
++                marker = git_marker.read_text(encoding="utf-8", errors="replace")[:1024]
++                prefix, separator, raw_path = marker.partition(":")
++                if prefix.strip().lower() != "gitdir" or not separator:
++                    return False
++                git_dir = Path(raw_path.strip())
++                if not git_dir.is_absolute():
++                    git_dir = worktree / git_dir
++                return git_dir.resolve(strict=False) == common_dir
++        except (OSError, RuntimeError, ValueError):
++            return False
++        return False
++
++    try:
++        resolved_root = root.resolve(strict=True)
++        if _points_to_common_dir(resolved_root):
++            return resolved_root
++    except (OSError, RuntimeError):
++        return None
++
++    if common_dir.name.lower() == ".git":
++        candidate = common_dir.parent
++        if _points_to_common_dir(candidate):
++            return candidate
++
++    kwargs: dict[str, Any] = {
++        "cwd": str(root),
++        "stdin": subprocess.DEVNULL,
++        "stdout": subprocess.PIPE,
++        "stderr": subprocess.DEVNULL,
++        "text": True,
++        "encoding": "utf-8",
++        "errors": "replace",
++        "timeout": _GIT_TIMEOUT_SECONDS,
++        "check": False,
++    }
++    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
++    if no_window:
++        kwargs["creationflags"] = no_window
++    try:
++        result = subprocess.run(["git", "worktree", "list", "--porcelain"], **kwargs)
++    except (OSError, subprocess.TimeoutExpired):
++        return None
++    if result.returncode != 0:
++        return None
++    for line in result.stdout.splitlines():
++        if not line.startswith("worktree "):
++            continue
++        candidate = Path(line[len("worktree ") :].strip())
++        if _points_to_common_dir(candidate):
++            try:
++                return candidate.resolve(strict=True)
++            except (OSError, RuntimeError):
++                continue
++    return None
++
++
+ def _merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+     merged = dict(base)
+     for key, value in override.items():
+@@ -468,7 +548,9 @@ def _environment_values(value: Any) -> tuple[dict[str, str], dict[str, str]]:
+     return values, references
+ 
+ 
+-def _normalize(data: dict[str, Any]) -> ProjectSettings:
++def _normalize(
++    data: dict[str, Any], *, require_verification_commands: bool = True
++) -> ProjectSettings:
+     if set(data) - _TOP_LEVEL:
+         raise ProjectConfigError("invalid_config")
+     preprocess = data.get("preprocess", {})
+@@ -539,6 +621,14 @@ def _normalize(data: dict[str, Any]) -> ProjectSettings:
+             rules[name] = tuple(item.strip() for item in rule)
+         else:
+             raise ProjectConfigError("invalid_config")
++    command_aliases = {
++        alias
++        for rule in rules.values()
++        if isinstance(rule, tuple)
++        for alias in rule
++    }
++    if require_verification_commands and not command_aliases.issubset(commands):
++        raise ProjectConfigError("invalid_config")
+ 
+     weights = data.get("retrieval_weights", {})
+     if not isinstance(weights, dict):
+@@ -644,13 +734,31 @@ def _normalize(data: dict[str, Any]) -> ProjectSettings:
+     )
+ 
+ 
+-def _read_layer(path: Path) -> dict[str, Any]:
++def _read_layer(safe_file: tuple[Path, int, int]) -> dict[str, Any]:
++    path, expected_device, expected_inode = safe_file
++    descriptor = -1
+     try:
+-        if not path.is_file():
+-            raise ProjectConfigError("invalid_toml")
+-        if path.stat().st_size > _MAX_CONFIG_BYTES:
+-            raise ProjectConfigError("config_too_large")
+-        with path.open("rb") as stream:
++        flags = (
++            os.O_RDONLY
++            | getattr(os, "O_BINARY", 0)
++            | getattr(os, "O_NOFOLLOW", 0)
++            | getattr(os, "O_NONBLOCK", 0)
++        )
++        descriptor = os.open(path, flags)
++        stream = os.fdopen(descriptor, "rb")
++        descriptor = -1
++        with stream:
++            opened = os.fstat(stream.fileno())
++            if (
++                not stat.S_ISREG(opened.st_mode)
++                or not expected_inode
++                or not opened.st_ino
++                or (opened.st_dev, opened.st_ino)
++                != (expected_device, expected_inode)
++            ):
++                raise ProjectConfigError("unsafe_config_path")
++            if opened.st_size > _MAX_CONFIG_BYTES:
++                raise ProjectConfigError("config_too_large")
+             raw = stream.read(_MAX_CONFIG_BYTES + 1)
+         if len(raw) > _MAX_CONFIG_BYTES:
+             raise ProjectConfigError("config_too_large")
+@@ -659,16 +767,32 @@ def _read_layer(path: Path) -> dict[str, Any]:
+         raise
+     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+         raise ProjectConfigError("invalid_toml") from None
++    finally:
++        if descriptor >= 0:
++            try:
++                os.close(descriptor)
++            except OSError:
++                # Preserve the parser's safe fallback if descriptor cleanup itself
++                # fails; do not replace the original bounded read error.
++                pass
+     if not isinstance(value, dict):
+         raise ProjectConfigError("invalid_toml")
+     return value
+ 
+ 
+-def _safe_config_file(path: Path, base: Path) -> bool:
++def _safe_config_file(path: Path, base: Path) -> tuple[Path, int, int] | None:
+     try:
+-        return path.resolve(strict=True).is_relative_to(base.resolve(strict=True))
++        resolved = path.resolve(strict=True)
++        if not resolved.is_relative_to(base.resolve(strict=True)):
++            return None
++        identity = resolved.stat()
++        if not identity.st_ino:
++            return None
++        if resolved.resolve(strict=True) != resolved:
++            return None
++        return resolved, identity.st_dev, identity.st_ino
+     except (OSError, ValueError, RuntimeError):
+-        return False
++        return None
+ 
+ 
+ def _digest(settings: ProjectSettings) -> str:
+@@ -693,9 +817,15 @@ def _resolve_project_config(
+     project_root: Path, common_dir: Path | None
+ ) -> ProjectConfigResolution:
+     project_path = project_root / _PROJECT_CONFIG
++    primary_root = _git_primary_worktree_root(project_root, common_dir)
+     worktree_path = project_root / ".local-ai.worktree.toml"
+     machine_path = common_dir / "info" / "local-ai.toml" if common_dir else None
+-    layers: list[tuple[str, Path, Path]] = [("project", project_path, project_root)]
++    layers: list[tuple[str, Path, Path]] = []
++    if primary_root is not None and primary_root != project_root:
++        layers.append(
++            ("primary_project", primary_root / _PROJECT_CONFIG, primary_root)
++        )
++    layers.append(("project", project_path, project_root))
+     if machine_path is not None and common_dir is not None:
+         layers.append(("git_common", machine_path, common_dir))
+     layers.append(("worktree", worktree_path, project_root))
+@@ -706,9 +836,11 @@ def _resolve_project_config(
+         for source, path, containment_root in layers:
+             if not path.exists():
+                 continue
+-            if not _safe_config_file(path, containment_root):
++            safe_path = _safe_config_file(path, containment_root)
++            if safe_path is None:
+                 raise ProjectConfigError("unsafe_config_path")
+-            layer = _canonicalize_path_override_keys(_read_layer(path))
++            layer = _canonicalize_path_override_keys(_read_layer(safe_path))
++            _normalize(layer, require_verification_commands=False)
+             combined = _merge(combined, layer)
+             active_sources.append(source)
+         settings = _normalize(combined)
+@@ -763,6 +895,8 @@ def validate_path_hint(
+ ) -> Path | None:
+     """Return contained, existing path only when hint scope and freshness match."""
+     try:
++        if not isinstance(hint, PathHint):
++            return None
+         relative = _relative_pattern(hint.path)
+         if any(char in relative for char in "*?[]"):
+             return None
+@@ -931,13 +1065,12 @@ def path_is_allowed(
+         resolved_relative, settings.exclude_paths
+     ):
+         return False
+-    overrides = {
+-        _path_override_for(path, settings.path_overrides)
+-        for path in (lexical_relative, resolved_relative)
+-    }
+-    if "exclude" in overrides:
++    override = _path_override_for_paths(
++        (lexical_relative, resolved_relative), settings.path_overrides
++    )
++    if override == "exclude":
+         return False
+-    if "include" in overrides:
++    if override == "include":
+         return True
+     if _matches_any(lexical_relative, settings.force_include_paths) or _matches_any(
+         resolved_relative, settings.force_include_paths
+@@ -1075,10 +1208,9 @@ def may_descend(
+         resolved_relative, settings.exclude_paths
+     ):
+         return False
+-    overrides = {
+-        _path_override_for(path, settings.path_overrides)
+-        for path in (lexical_relative, resolved_relative)
+-    }
++    override = _path_override_for_paths(
++        (lexical_relative, resolved_relative), settings.path_overrides
++    )
+     include_patterns = list(settings.force_include_paths) + [
+         pattern
+         for pattern, action in settings.path_overrides.items()
+@@ -1089,9 +1221,9 @@ def may_descend(
+         or _pattern_may_match_descendant(resolved_relative, pattern)
+         for pattern in include_patterns
+     )
+-    if "exclude" in overrides:
++    if override == "exclude":
+         return may_reach_included_descendant
+-    if "include" in overrides:
++    if override == "include":
+         return True
+     ignored = soft_ignored
+     if not ignored:
+@@ -1121,8 +1253,15 @@ def _matches_any(path: str, patterns: tuple[str, ...]) -> bool:
+ 
+ 
+ def _path_override_for(path: str, overrides: Mapping[str, str]) -> str | None:
++    return _path_override_for_paths((path,), overrides)
++
++
++def _path_override_for_paths(
++    paths: tuple[str, ...], overrides: Mapping[str, str]
++) -> str | None:
+     matched = [
+         (_pattern_specificity(pattern), action)
++        for path in paths
+         for pattern, action in overrides.items()
+         if _path_glob_matches(path, pattern)
+     ]
+@@ -1271,8 +1410,14 @@ class ProjectPathHintStore:
+             )
+             connection.commit()
+ 
+-    def _connect(self) -> sqlite3.Connection:
+-        connection = sqlite3.connect(self.database, timeout=2.0)
++    def _connect(self, *, existing_only: bool = False) -> sqlite3.Connection:
++        if existing_only:
++            database_uri = f"{self.database.resolve(strict=False).as_uri()}?mode=ro"
++            connection = sqlite3.connect(
++                database_uri, timeout=2.0, uri=True
++            )
++        else:
++            connection = sqlite3.connect(self.database, timeout=2.0)
+         connection.execute("PRAGMA busy_timeout = 2000")
+         return connection
+ 
+@@ -1349,25 +1494,38 @@ class ProjectPathHintStore:
+         repository_revision: str,
+         config_digest: str,
+     ) -> tuple[PathHint, ...]:
+-        with closing(self._connect()) as connection:
+-            now = datetime.now(timezone.utc).isoformat()
+-            rows = connection.execute(
+-                """SELECT path, purpose, scope, evidence_id, provenance,
+-                          repository_revision, config_digest, expires_at
+-                   FROM project_path_hints
+-                   WHERE project_id = ? AND purpose = ? AND scope = ?
+-                     AND repository_revision = ? AND config_digest = ?
+-                     AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))
+-                   ORDER BY path LIMIT 256""",
+-                (
+-                    self.project_id,
+-                    purpose,
+-                    scope,
+-                    repository_revision,
+-                    config_digest,
+-                    now,
+-                ),
+-            ).fetchall()
++        if not self.database.is_file():
++            return ()
++        try:
++            with closing(self._connect(existing_only=True)) as connection:
++                table_exists = connection.execute(
++                    """SELECT 1 FROM sqlite_master
++                       WHERE type = 'table' AND name = 'project_path_hints'"""
++                ).fetchone()
++                if table_exists is None:
++                    return ()
++                now = datetime.now(timezone.utc).isoformat()
++                rows = connection.execute(
++                    """SELECT path, purpose, scope, evidence_id, provenance,
++                              repository_revision, config_digest, expires_at
++                       FROM project_path_hints
++                       WHERE project_id = ? AND purpose = ? AND scope = ?
++                         AND repository_revision = ? AND config_digest = ?
++                         AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))
++                       ORDER BY path LIMIT 256""",
++                    (
++                        self.project_id,
++                        purpose,
++                        scope,
++                        repository_revision,
++                        config_digest,
++                        now,
++                    ),
++                ).fetchall()
++        except sqlite3.OperationalError:
++            if not self.database.is_file():
++                return ()
++            raise
+         result: list[PathHint] = []
+         for row in rows:
+             hint = PathHint(*row)
+diff --git a/src/local_ai_hub/repo_tools.py b/src/local_ai_hub/repo_tools.py
+index bde9d8e..f5a7a3e 100644
+--- a/src/local_ai_hub/repo_tools.py
++++ b/src/local_ai_hub/repo_tools.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import hashlib
++import fnmatch
+ import json
+ import os
+ import re
+@@ -11,7 +12,7 @@ import time
+ from collections import Counter, OrderedDict
+ from queue import Empty, Queue
+ from dataclasses import dataclass
+-from pathlib import Path
++from pathlib import Path, PureWindowsPath
+ from types import MappingProxyType
+ from typing import Any, Iterable, Mapping
+ 
+@@ -21,6 +22,7 @@ from .process_utils import canonical_root, hidden_run_kwargs, terminate_tree
+ 
+ 
+ _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
++_HARD_SEARCH_DIRS = frozenset({".git", ".local-ai-hub", ".serena", ".codegraphcontext"})
+ _SYMBOL_PATTERNS = [
+     re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)"),
+     re.compile(r"^\s*class\s+([A-Za-z_]\w*)"),
+@@ -91,7 +93,7 @@ class RepositoryTools:
+             ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
+             "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
+             "library", "temp", "logs", "usersettings", "packagestore", "memorycaptures", "builds",
+-                ".serena", ".local-ai-hub",
++                ".serena", ".local-ai-hub", ".codegraphcontext",
+         }
+         self.ignore_dirs = {str(name).lower() for name in rag.get("ignore_dirs", [])} | default_ignore_dirs
+         self.ignore_extensions = {str(x).lower() for x in rag.get("ignore_extensions", [
+@@ -103,6 +105,13 @@ class RepositoryTools:
+         ])}
+         self.max_file_bytes = int(rag.get("max_file_bytes", 2_000_000))
+         self.max_files = int(search.get("max_files", 8000))
++        self.python_fallback_max_files = max(
++            1,
++            min(
++                max(1, self.max_files),
++                int(search.get("python_fallback_max_files", self.max_files)),
++            ),
++        )
+         self.max_hits = int(search.get("max_hits", 80))
+         self.max_search_terms = max(4, int(search.get("max_terms", 12)))
+         self.snippet_lines = int(search.get("snippet_lines", 5))
+@@ -873,7 +882,11 @@ class RepositoryTools:
+             return None, True
+         return out, False
+ 
+-    def search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None) -> dict[str, Any]:
++    def search(
++        self, root: str, query: str, top_k: int = 12,
++        context_lines: int | None = None, *, project_settings: Any | None = None,
++        git_inventory: list[Path] | None = None,
++    ) -> dict[str, Any]:
+         base = self._root(root)
+         terms = self._terms(query)
+         phrase = query.strip().lower()
+@@ -882,12 +895,24 @@ class RepositoryTools:
+         effective_snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
+         hits: list[dict[str, Any]] = []
+         scanned = 0
++        python_fallback_scanned_files = 0
++        python_fallback_truncated = False
+         candidate_engine = "python"
+-        candidates, accelerator_failed = self._ripgrep_candidates(base, terms, self.max_hits * 4)
+-        accelerated = candidates is not None
++        project_candidates = (
++            list(self._iter_project_search_files(
++                base, project_settings, git_inventory=git_inventory
++            ))
++            if project_settings is not None else None
++        )
++        if project_candidates is not None:
++            candidates, accelerator_failed = None, False
++            accelerated = False
++        else:
++            candidates, accelerator_failed = self._ripgrep_candidates(base, terms, self.max_hits * 4)
++            accelerated = candidates is not None
+         if accelerated:
+             candidate_engine = "ripgrep"
+-        else:
++        elif project_candidates is None:
+             candidates, git_grep_failed = self._git_grep_candidates(base, terms, self.max_hits * 4)
+             accelerator_failed = accelerator_failed or git_grep_failed
+             accelerated = candidates is not None
+@@ -930,7 +955,16 @@ class RepositoryTools:
+                 "retryable": True,
+             }
+         if not hits and not accelerated:
+-            for path in self.iter_files(str(base)):
++            candidate_files = (
++                project_candidates
++                if project_candidates is not None
++                else self.iter_files(str(base))
++            )
++            for path in candidate_files:
++                if python_fallback_scanned_files >= self.python_fallback_max_files:
++                    python_fallback_truncated = True
++                    break
++                python_fallback_scanned_files += 1
+                 scanned += 1
+                 rel = str(path.relative_to(base)).replace("\\", "/")
+                 path_lower = rel.lower()
+@@ -973,6 +1007,12 @@ class RepositoryTools:
+         candidate_pool = hits[: max(len(dedup), max(1, int(top_k)) * 4)]
+         candidate_tokens = sum(estimate_tokens(str(item.get("text", ""))) for item in candidate_pool)
+         result = {"success": True, "root": str(base), "scanned_files": scanned, "terms": terms, "results": dedup, "engine": candidate_engine}
++        if candidate_engine == "python":
++            result.update({
++                "python_fallback_limit": self.python_fallback_max_files,
++                "python_fallback_scanned_files": python_fallback_scanned_files,
++                "python_fallback_truncated": python_fallback_truncated,
++            })
+         if candidate_tokens:
+             # Diagnostic only. Local RG-like filtering is not proof that a cloud
+             # agent would otherwise have paid for the candidate snippets.
+@@ -1558,27 +1598,249 @@ class RepositoryTools:
+ 
+ 
+ 
++    def _expand_project_force_paths(
++        self, base: Path, project_settings: Any, limit: int,
++    ) -> list[Path]:
++        """Expand configured include globs with bounded, symlink-free traversal."""
++        limit = max(0, int(limit))
++        if limit == 0:
++            return []
++        patterns = list(getattr(project_settings, "force_include_paths", ()))
++        overrides = getattr(project_settings, "path_overrides", {})
++        if isinstance(overrides, Mapping):
++            patterns.extend(
++                pattern for pattern, action in overrides.items() if action == "include"
++            )
++        found: dict[str, Path] = {}
++        entry_budget = max(256, min(65_536, max(1, limit) * 32))
++        deadline = time.monotonic() + min(2.0, self.git_files_timeout)
++        entries_seen = 0
++        for raw_pattern in patterns[:64]:
++            pattern = str(raw_pattern).replace("\\", "/").strip()
++            pure = PureWindowsPath(pattern)
++            parts = tuple(part for part in pattern.split("/") if part not in {"", "."})
++            if not parts or pure.is_absolute() or pure.drive or any(part == ".." for part in parts):
++                continue
++            stack: list[tuple[Path, int]] = [(base, 0)]
++            visited: set[tuple[str, int]] = set()
++            while (
++                stack and len(found) < limit and entries_seen < entry_budget
++                and time.monotonic() < deadline
++            ):
++                directory, index = stack.pop()
++                try:
++                    directory.resolve(strict=True).relative_to(base)
++                    key = (str(directory), index)
++                    if key in visited:
++                        continue
++                    visited.add(key)
++                    if index >= len(parts):
++                        if directory.is_file():
++                            found[str(directory)] = directory
++                        continue
++                    segment = parts[index]
++                    with os.scandir(directory) as scanner:
++                        for entry in scanner:
++                            entries_seen += 1
++                            if entries_seen > entry_budget or time.monotonic() >= deadline:
++                                break
++                            if entry.is_symlink():
++                                continue
++                            child = Path(entry.path)
++                            is_directory = entry.is_dir(follow_symlinks=False)
++                            relative_parts = child.relative_to(base).parts
++                            denied_parts = relative_parts if is_directory else relative_parts[:-1]
++                            if any(part.casefold() in _HARD_SEARCH_DIRS for part in denied_parts):
++                                continue
++                            if segment == "**":
++                                stack.append((directory, index + 1))
++                                if is_directory:
++                                    stack.append((child, index))
++                                elif index == len(parts) - 1 and entry.is_file(follow_symlinks=False):
++                                    found[str(child)] = child
++                            elif fnmatch.fnmatchcase(entry.name, segment):
++                                if index == len(parts) - 1 and entry.is_file(follow_symlinks=False):
++                                    found[str(child)] = child
++                                elif is_directory:
++                                    stack.append((child, index + 1))
++                except (OSError, RuntimeError, ValueError):
++                    continue
++        return list(found.values())[:limit]
++
++    def _project_file_allowed(
++        self, base: Path, path: Path, project_settings: Any,
++    ) -> bool:
++        try:
++            if path.is_symlink():
++                return False
++            lexical_relative = Path(os.path.abspath(path)).relative_to(base)
++            current = base
++            for part in lexical_relative.parts:
++                current = current / part
++                if current.is_symlink():
++                    return False
++            resolved = path.resolve(strict=True)
++            resolved.relative_to(base)
++            relative_path = resolved.relative_to(base)
++            if any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
++                return False
++            if resolved.name in {".local-ai.toml", ".local-ai.worktree.toml"}:
++                return False
++            size_bytes = resolved.stat().st_size
++            if size_bytes > self.max_file_bytes:
++                return False
++            if not self._path_extension_is_searchable(
++                resolved, project_settings=project_settings
++            ):
++                return False
++            soft_ignored = any(
++                part.casefold() in self.ignore_dirs for part in relative_path.parts[:-1]
++            )
++            from .project_config import path_is_allowed
++
++            return path_is_allowed(
++                base, resolved, project_settings, phase="search",
++                soft_ignored=soft_ignored, size_bytes=size_bytes,
++            )
++        except (ImportError, OSError, RuntimeError, TypeError, ValueError):
++            return False
++
++    def _iter_project_search_files(
++        self, base: Path, project_settings: Any,
++        *, git_inventory: list[Path] | None = None,
++    ) -> Iterable[Path]:
++        limit = max(1, min(int(self.max_files), 100_000))
++        forced = self._expand_project_force_paths(base, project_settings, limit)
++        inventory = git_inventory if git_inventory is not None else self._git_files(base)
++        candidates: Iterable[Path] = inventory if inventory is not None else self.iter_files(str(base))
++        seen: set[str] = set()
++        yielded = 0
++        for group in (forced, candidates):
++            for path in group:
++                try:
++                    key = str(path.resolve(strict=False))
++                except (OSError, RuntimeError):
++                    continue
++                if key in seen or not self._project_file_allowed(base, path, project_settings):
++                    continue
++                seen.add(key)
++                yield path
++                yielded += 1
++                if yielded >= limit:
++                    return
++
+     def search_paths(self, root: str, query: str, paths: list[str], top_k: int = 10, context_lines: int | None = None) -> dict[str, Any]:
+         """Search only preselected files. Used with preprocessed semantic cards to avoid full-repo scans."""
++        from .project_config import path_is_allowed, resolve_project_context
++        from .state_paths import configured_state_dir
++
+         base = self._root(root)
++        try:
++            project_context = resolve_project_context(
++                base, configured_state_dir(self.config)
++            )
++            if project_context.resolution.error_codes:
++                raise ValueError("project_policy_unavailable")
++            project_settings = project_context.settings
++        except (OSError, RuntimeError, ValueError):
++            return {
++                "success": False,
++                "root": str(base),
++                "error": "project_policy_unavailable",
++                "results": [],
++                "scanned_files": 0,
++                "targeted": True,
++            }
++        max_file_bytes = (
++            project_settings.max_file_size_bytes
++            if project_settings.max_file_size_bytes is not None
++            else self.max_file_bytes
++        )
++        git_inventory = self._git_files(base)
++        if git_inventory is None and (base / ".git").exists():
++            return {
++                "success": False,
++                "root": str(base),
++                "error": "git_inventory_unavailable",
++                "results": [],
++                "scanned_files": 0,
++                "targeted": True,
++            }
++        git_paths = None
++        if git_inventory is not None:
++            git_paths = set()
++            for candidate in git_inventory:
++                try:
++                    resolved_candidate = candidate.resolve(strict=False)
++                    relative = resolved_candidate.relative_to(base).as_posix()
++                except (OSError, RuntimeError, ValueError):
++                    continue
++                git_paths.add(relative)
+         terms = self._terms(query)
+         phrase = query.strip().lower()
+         effective_snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
+         hits: list[dict[str, Any]] = []
+         scanned = 0
+         seen_paths: set[str] = set()
+-        for rel in paths[: max(1, min(len(paths), 64))]:
++        candidate_paths = paths[: max(1, min(len(paths), 128))]
++        path_rank = {str(path).replace("\\", "/"): rank for rank, path in enumerate(candidate_paths)}
++        for rel in candidate_paths:
+             rel = str(rel).replace("\\", "/")
+             if rel in seen_paths:
+                 continue
+             seen_paths.add(rel)
+-            path = (base / rel).resolve(strict=False)
+             try:
++                path = (base / rel).resolve(strict=False)
+                 path.relative_to(base)
+-            except ValueError:
++            except (OSError, RuntimeError, ValueError):
+                 continue
+             if not path.is_file():
+                 continue
++            relative_parts = Path(rel).parts
++            ignored_directory = any(
++                part.lower() in self.ignore_dirs for part in relative_parts[:-1]
++            )
++            if not self._path_extension_is_searchable(
++                path, project_settings=project_settings
++            ):
++                continue
++            if project_settings is not None:
++                if not self._project_file_allowed(base, path, project_settings):
++                    continue
++                try:
++                    size_bytes = path.stat().st_size
++                except OSError:
++                    continue
++                if ignored_directory and not path_is_allowed(
++                    base,
++                    rel,
++                    project_settings,
++                    phase="search",
++                    soft_ignored=True,
++                    size_bytes=size_bytes,
++                ):
++                    continue
++                if size_bytes > max_file_bytes:
++                    continue
++                if git_paths is not None and rel not in git_paths and not path_is_allowed(
++                    base,
++                    rel,
++                    project_settings,
++                    phase="search",
++                    soft_ignored=True,
++                    size_bytes=size_bytes,
++                ):
++                    continue
++                if not path_is_allowed(
++                    base,
++                    rel,
++                    project_settings,
++                    phase="search",
++                    size_bytes=size_bytes,
++                ):
++                    continue
++            elif ignored_directory:
++                continue
+             scanned += 1
+             try:
+                 file_hash, lines = self._read_snapshot(path)
+@@ -1602,7 +1864,14 @@ class RepositoryTools:
+                     "path": rel, "start_line": start + 1, "end_line": end,
+                     "score": round(score, 3), "text": snippet, "file_sha256": file_hash,
+                 })
+-        hits.sort(key=lambda x: (-x["score"], x["path"], x["start_line"]))
++        hits.sort(
++            key=lambda x: (
++                -x["score"],
++                path_rank.get(x["path"], len(path_rank)),
++                x["path"],
++                x["start_line"],
++            )
++        )
+         dedup: list[dict[str, Any]] = []
+         per_file: Counter[str] = Counter()
+         for hit in hits:
+@@ -1619,6 +1888,26 @@ class RepositoryTools:
+             result["candidate_context_tokens_est"] = candidate_tokens
+         return result
+ 
++    def _path_extension_is_searchable(
++        self, path: str | os.PathLike[str], *, project_settings: Any | None = None,
++    ) -> bool:
++        candidate = Path(path)
++        suffix = candidate.suffix.lower()
++        name = candidate.name.casefold()
++        text_extensions = getattr(project_settings, "text_extensions", ())
++        binary_extensions = getattr(project_settings, "binary_extensions", ())
++        return not (
++            suffix in self.ignore_extensions
++            or any(name.endswith(str(item).casefold()) for item in binary_extensions)
++        ) and (
++            any(name.endswith(str(item).casefold()) for item in text_extensions)
++            or not (
++                self.extensions
++                and suffix not in self.extensions
++                and name not in self.special_filenames
++            )
++        )
++
+     def context_pack_paths(self, root: str, query: str, paths: list[str], max_tokens: int = 2600, top_k: int = 10) -> dict[str, Any]:
+         search = self.search_paths(root, query, paths, top_k=top_k)
+         if not search.get("success"):
+diff --git a/src/local_ai_hub/services.py b/src/local_ai_hub/services.py
+index 9e37b5b..abc4188 100644
+--- a/src/local_ai_hub/services.py
++++ b/src/local_ai_hub/services.py
+@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
+ import base64
+ import copy
+ import hashlib
++import inspect
+ import json
+ import os
+ import re
+@@ -2556,7 +2557,15 @@ class LocalAIServices:
+     def repo_profile(self, root: str) -> dict[str, Any]:
+         return self._repo_cached("profile", root, {}, lambda: self.repo_tools.project_profile(root))
+ 
+-    def repo_search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None, enrich: bool = False) -> dict[str, Any]:
++    def repo_search(
++        self,
++        root: str,
++        query: str,
++        top_k: int = 12,
++        context_lines: int | None = None,
++        enrich: bool = False,
++        path_hints: list[Any] | tuple[Any, ...] | None = None,
++    ) -> dict[str, Any]:
+         if enrich and not rollout_feature_enabled(self.config, "enriched_search"):
+             return {
+                 "success": False,
+@@ -2591,7 +2600,226 @@ class LocalAIServices:
+                         paths.append(p)
+             except Exception:
+                 pass
++        from .project_config import (
++            PathHint,
++            path_is_allowed,
++            resolve_project_context,
++            validate_path_hint,
++        )
++
++        path_hint_usage = None
++        search_paths_expanded = False
++        project_config_digest = ""
++        project_settings = None
++        search_file_inventory: list[Path] | None = None
++        project_policy_unavailable = False
++        try:
++            project_context = resolve_project_context(
++                root, configured_state_dir(getattr(self, "config", {}))
++            )
++            project_policy_unavailable = bool(project_context.resolution.error_codes)
++            if not project_policy_unavailable:
++                project_settings = project_context.settings
++                project_config_digest = project_context.config_digest
++        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
++            project_policy_unavailable = True
++        try:
++            if project_policy_unavailable:
++                raise ValueError("project_policy_unavailable")
++            cache_state = self._repo_cache_state(root) or {}
++            revision = (
++                str(cache_state.get("fingerprint", ""))
++                if not cache_state.get("stale") and not cache_state.get("degraded")
++                else ""
++            )
++            hint_records = list(
++                project_context.path_hints(
++                    purpose="repository_search",
++                    scope="repo_search",
++                    repository_revision=revision,
++                )
++            )
++            request_hints = (
++                tuple(
++                    hint
++                    for hint in path_hints[:64]
++                    if isinstance(hint, PathHint)
++                )
++                if isinstance(path_hints, (list, tuple))
++                else ()
++            )
++            if isinstance(path_hints, (list, tuple)):
++                allowed_hint_fields = {
++                    "path",
++                    "purpose",
++                    "scope",
++                    "evidence_id",
++                    "provenance",
++                    "repository_revision",
++                    "config_digest",
++                    "expires_at",
++                }
++                parsed_hints = list(request_hints)
++                for item in path_hints[:64]:
++                    if not isinstance(item, dict) or set(item) - allowed_hint_fields:
++                        continue
++                    try:
++                        parsed_hints.append(
++                            PathHint(
++                                **{
++                                    key: value
++                                    for key, value in item.items()
++                                    if key in allowed_hint_fields
++                                }
++                            )
++                        )
++                    except TypeError:
++                        continue
++                request_hints = tuple(parsed_hints)
++            hint_records.extend(request_hints)
++            hint_records.extend(
++                PathHint(path=path, purpose="repository_search", scope="repo_search")
++                for path in project_context.settings.entry_points
++            )
++            hinted_candidates: list[str] = []
++            root_path = Path(root).expanduser().resolve(strict=True)
++            inventory_loader = getattr(self.repo_tools, "_git_files", None)
++            file_inventory = inventory_loader(root_path) if callable(inventory_loader) else None
++            if isinstance(file_inventory, list):
++                search_file_inventory = file_inventory
++            inventory_paths: list[tuple[str, Path]] = []
++            if file_inventory is not None:
++                for candidate in file_inventory:
++                    try:
++                        resolved_candidate = Path(candidate).resolve(strict=False)
++                        relative = resolved_candidate.relative_to(root_path).as_posix()
++                    except (OSError, RuntimeError, ValueError):
++                        continue
++                    inventory_paths.append((relative, resolved_candidate))
++            hinted_files: list[Path] = []
++            hinted_roots: list[Path] = []
++            for hint in hint_records:
++                target = validate_path_hint(
++                    root_path,
++                    hint,
++                    purpose="repository_search",
++                    scope="repo_search",
++                    repository_revision=revision,
++                    config_digest=project_context.config_digest,
++                    learned=bool(hint.evidence_id),
++                )
++                if target is None:
++                    continue
++                if target.is_file():
++                    hinted_files.append(target)
++                    continue
++                if not target.is_dir():
++                    continue
++                hinted_roots.append(target)
++            force_path_expander = getattr(
++                self.repo_tools, "_expand_project_force_paths", None
++            )
++            if hinted_roots and callable(force_path_expander):
++                for candidate in force_path_expander(
++                    root_path, project_context.settings, 64
++                ):
++                    if any(
++                        candidate == target or target in candidate.parents
++                        for target in hinted_roots
++                    ):
++                        hinted_files.append(candidate)
++            # Use Git's bounded, cached `ls-files --exclude-standard` inventory
++            # for tracked directory-hint candidates. Configured force-includes
++            # are added through the separate bounded, symlink-free expander above.
++            # If inventory is unavailable, retain normal indexed candidates.
++            if file_inventory is not None:
++                collapsed_roots: list[Path] = []
++                for target in sorted(set(hinted_roots), key=lambda item: (len(item.parts), item.as_posix())):
++                    if any(target == parent or parent in target.parents for parent in collapsed_roots):
++                        continue
++                    collapsed_roots.append(target)
++                hinted_root_paths = set(collapsed_roots)
++                hinted_files.extend(
++                    candidate
++                    for relative, candidate in inventory_paths
++                    if any(
++                        candidate == target or target in candidate.parents
++                        for target in hinted_root_paths
++                    )
++                )
++                seen_hint_files: set[str] = set()
++                ignored_dirs = getattr(self.repo_tools, "ignore_dirs", set())
++                ignored_extensions = getattr(self.repo_tools, "ignore_extensions", set())
++                allowed_extensions = getattr(self.repo_tools, "extensions", set())
++                special_filenames = getattr(self.repo_tools, "special_filenames", set())
++                max_file_bytes = (
++                    project_settings.max_file_size_bytes
++                    if project_settings.max_file_size_bytes is not None
++                    else getattr(self.repo_tools, "max_file_bytes", 2_000_000)
++                )
++                for candidate in hinted_files:
++                    try:
++                        relative_path = candidate.relative_to(root_path)
++                        relative = relative_path.as_posix()
++                        size_bytes = candidate.stat().st_size
++                        ignored_directory = any(
++                            part.lower() in ignored_dirs
++                            for part in relative_path.parts[:-1]
++                        )
++                        if (
++                            candidate.suffix.lower() in ignored_extensions
++                            or (
++                                allowed_extensions
++                                and candidate.suffix.lower() not in allowed_extensions
++                                and candidate.name.lower() not in special_filenames
++                            )
++                            or size_bytes > max_file_bytes
++                        ):
++                            continue
++                    except (AttributeError, OSError, RuntimeError, ValueError):
++                        continue
++                    if ignored_directory and not path_is_allowed(
++                        root_path,
++                        relative,
++                        project_settings,
++                        phase="search",
++                        soft_ignored=True,
++                        size_bytes=size_bytes,
++                    ):
++                        continue
++                    if relative not in seen_hint_files:
++                        hinted_candidates.append(relative)
++                        seen_hint_files.add(relative)
++                    if len(hinted_candidates) >= 64:
++                        break
++            # Preserve the original indexed search window while allowing a
++            # separate bounded window for verified/configured path hints.
++            original_paths = list(dict.fromkeys(paths[:64]))
++            original_path_set = set(original_paths)
++            search_paths_expanded = any(
++                path not in original_path_set for path in hinted_candidates[:64]
++            )
++            paths = list(dict.fromkeys([*hinted_candidates[:64], *original_paths]))
++            path_hint_usage = project_context.prioritize_paths(
++                paths,
++                purpose="repository_search",
++                scope="repo_search",
++                repository_revision=revision,
++                path_hints=request_hints,
++            )
++            paths = list(path_hint_usage.paths)
++        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
++            # Optional path-hint enrichment must not block established candidates.
++            pass
+         def compute() -> dict[str, Any]:
++            if project_policy_unavailable:
++                return {
++                    "success": False,
++                    "root": str(root),
++                    "error": "project_policy_unavailable",
++                    "results": [],
++                    "scanned_files": 0,
++                }
+             if paths:
+                 targeted = (
+                     self.repo_tools.search_paths(root, query, paths, top_k, context_lines=eff_ctx_lines)
+@@ -2601,12 +2829,118 @@ class LocalAIServices:
+             else:
+                 targeted = {"results": []}
+             used_preprocessed = bool(paths and targeted.get("results"))
+-            result = targeted if targeted.get("results") else (
+-                self.repo_tools.search(root, query, top_k, context_lines=eff_ctx_lines)
+-                if eff_ctx_lines is not None
+-                else self.repo_tools.search(root, query, top_k)
+-            )
++            fail_closed_error = targeted.get("error") in {
++                "project_policy_unavailable",
++                "git_inventory_unavailable",
++            }
++            if fail_closed_error or (
++                targeted.get("results")
++                and not search_paths_expanded
++            ):
++                result = targeted
++            else:
++                fallback_top_k = max(1, min(int(top_k), 256)) * 8
++                search_method = self.repo_tools.search
++                search_options: dict[str, Any] = {}
++                if eff_ctx_lines is not None:
++                    search_options["context_lines"] = eff_ctx_lines
++                try:
++                    search_parameters = inspect.signature(search_method).parameters
++                except (TypeError, ValueError):
++                    search_parameters = {}
++                if "project_settings" in search_parameters:
++                    search_options["project_settings"] = project_settings
++                if "git_inventory" in search_parameters:
++                    search_options["git_inventory"] = search_file_inventory
++                result = search_method(root, query, fallback_top_k, **search_options)
++                if project_settings is not None:
++                    base = Path(root).expanduser().resolve(strict=True)
++                    filtered_results = []
++                    extension_is_searchable = getattr(
++                        self.repo_tools, "_path_extension_is_searchable", None
++                    )
++                    for hit in result.get("results", []):
++                        relative = str(hit.get("path") or "")
++                        try:
++                            candidate = (base / relative).resolve(strict=True)
++                            size_bytes = candidate.stat().st_size
++                        except (OSError, RuntimeError, ValueError):
++                            continue
++                        if callable(extension_is_searchable) and not extension_is_searchable(
++                            candidate, project_settings=project_settings
++                        ):
++                            continue
++                        if path_is_allowed(
++                            base,
++                            relative,
++                            project_settings,
++                            phase="search",
++                            size_bytes=size_bytes,
++                        ):
++                            filtered_results.append(hit)
++                            if len(filtered_results) >= max(1, int(top_k)):
++                                break
++                    result = dict(result)
++                    result["results"] = filtered_results
++                if targeted.get("results"):
++                    candidate_order = {
++                        str(path): index
++                        for index, path in enumerate(
++                            path_hint_usage.paths if path_hint_usage is not None else ()
++                        )
++                    }
++                    merged_by_location: dict[tuple[str, int], dict[str, Any]] = {}
++                    for hit in [
++                        *targeted.get("results", []),
++                        *result.get("results", []),
++                    ]:
++                        if not isinstance(hit, dict):
++                            continue
++                        hit_path = str(hit.get("path") or "")
++                        try:
++                            start_line = int(hit.get("start_line", 0) or 0)
++                        except (TypeError, ValueError):
++                            continue
++                        if hit_path:
++                            merged_by_location.setdefault(
++                                (hit_path, start_line), hit
++                            )
++                    merged = sorted(
++                        merged_by_location.values(),
++                        key=lambda hit: (
++                            -float(hit.get("score", 0) or 0),
++                            candidate_order.get(
++                                str(hit.get("path") or ""), len(candidate_order)
++                            ),
++                            str(hit.get("path") or ""),
++                            int(hit.get("start_line", 0) or 0),
++                        ),
++                    )
++                    max_per_file = max(
++                        1,
++                        int(
++                            getattr(
++                                self.repo_tools,
++                                "max_snippets_per_file",
++                                max(1, int(top_k)),
++                            )
++                        ),
++                    )
++                    selected: list[dict[str, Any]] = []
++                    per_file: dict[str, int] = {}
++                    for hit in merged:
++                        hit_path = str(hit.get("path") or "")
++                        if per_file.get(hit_path, 0) >= max_per_file:
++                            continue
++                        per_file[hit_path] = per_file.get(hit_path, 0) + 1
++                        selected.append(hit)
++                        if len(selected) >= max(1, int(top_k)):
++                            break
++                    result = dict(result)
++                    result["results"] = selected
+             result["preprocessed_hit"] = used_preprocessed
++            if path_hint_usage is not None:
++                result["path_hint_usage"] = path_hint_usage.telemetry_metadata()
+             if enrich:
+                 result["enriched"] = True
+                 base = Path(root).expanduser().resolve()
+@@ -2634,7 +2968,23 @@ class LocalAIServices:
+                 except Exception:
+                     pass
+             return result
+-        return self._repo_cached("search", root, {"query": query, "top_k": top_k, "ci": paths[:24], "ctx": eff_ctx_lines}, compute)
++        return self._repo_cached(
++            "search",
++            root,
++            {
++                "query": query,
++                "top_k": top_k,
++                "ci": paths[:64],
++                "ctx": eff_ctx_lines,
++                "project_config_digest": project_config_digest,
++                "path_hint_usage": (
++                    path_hint_usage.telemetry_metadata()
++                    if path_hint_usage is not None
++                    else None
++                ),
++            },
++            compute,
++        )
+ 
+     def _refresh_changed_intelligence(self, root: str) -> None:
+         """Synchronize only Git-changed files before serving a cache-miss intelligence query.
+diff --git a/tests/test_project_config.py b/tests/test_project_config.py
+index e56bf7f..d2ef563 100644
+--- a/tests/test_project_config.py
++++ b/tests/test_project_config.py
+@@ -123,6 +123,30 @@ def test_config_file_resolving_outside_its_source_root_is_rejected(
+     assert result.error_codes == ("unsafe_config_path",)
+ 
+ 
++def test_config_overlay_accepts_256_kib_and_rejects_one_byte_more(
++    tmp_path: Path,
++) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    config = root / ".local-ai.toml"
++    prefix = b'project_type = "python"\n'
++    limit = 256 * 1024
++    at_limit = prefix + b"#" * (limit - len(prefix))
++    assert len(at_limit) == limit
++    config.write_bytes(at_limit)
++
++    accepted = resolve_project_config(root)
++
++    assert accepted.error_codes == ()
++    assert accepted.settings.project_type == "python"
++
++    config.write_bytes(at_limit + b"\n")
++    rejected = resolve_project_config(root)
++
++    assert rejected.settings == ProjectSettings()
++    assert rejected.error_codes == ("config_too_large",)
++
++
+ def test_invalid_project_configuration_falls_back_atomically(tmp_path: Path) -> None:
+     (tmp_path / ".local-ai.toml").write_text(
+         'exclude_paths = ["should-not-leak/**"]\n'
+@@ -137,6 +161,209 @@ def test_invalid_project_configuration_falls_back_atomically(tmp_path: Path) ->
+     assert result.error_codes == ("invalid_config",)
+ 
+ 
++def test_invalid_lower_layer_cannot_be_hidden_by_valid_worktree_override(
++    tmp_path: Path,
++) -> None:
++    (tmp_path / ".local-ai.toml").write_text(
++        'skip_phases = "rag"\n', encoding="utf-8"
++    )
++    (tmp_path / ".local-ai.worktree.toml").write_text(
++        "skip_phases = []\n", encoding="utf-8"
++    )
++
++    result = resolve_project_config(tmp_path)
++
++    assert result.settings == ProjectSettings()
++    assert result.active_sources == ("defaults",)
++    assert result.error_codes == ("invalid_config",)
++
++
++def test_verification_alias_can_be_defined_in_lower_config_layer(
++    tmp_path: Path,
++) -> None:
++    (tmp_path / ".local-ai.toml").write_text(
++        '[commands]\ntest = "python -m pytest"\n', encoding="utf-8"
++    )
++    (tmp_path / ".local-ai.worktree.toml").write_text(
++        '[verification_rules]\ntask_complete = ["test"]\n', encoding="utf-8"
++    )
++
++    result = resolve_project_config(tmp_path)
++
++    assert result.error_codes == ()
++    assert result.settings.commands == {"test": "python -m pytest"}
++    assert result.settings.verification_rules == {"task_complete": ("test",)}
++
++
++def test_verification_rule_rejects_unknown_command_alias(tmp_path: Path) -> None:
++    (tmp_path / ".local-ai.toml").write_text(
++        '[verification_rules]\ntask_complete = ["missing"]\n', encoding="utf-8"
++    )
++
++    result = resolve_project_config(tmp_path)
++
++    assert result.settings == ProjectSettings()
++    assert result.active_sources == ("defaults",)
++    assert result.error_codes == ("invalid_config",)
++
++
++def test_config_loader_opens_resolved_path_that_passed_containment_check(
++    tmp_path: Path, monkeypatch
++) -> None:
++    import os
++
++    root = tmp_path / "repo"
++    root.mkdir()
++    config = root / ".local-ai.toml"
++    config.write_text('project_type = "python"\n', encoding="utf-8")
++    verified_path = root / "verified.toml"
++    verified_path.write_text('project_type = "python"\n', encoding="utf-8")
++    original_resolve = Path.resolve
++    original_open = os.open
++    opened_paths: list[Path] = []
++
++    def resolve_config(self: Path, strict: bool = False) -> Path:
++        if self == config:
++            return verified_path
++        return original_resolve(self, strict=strict)
++
++    def record_open(path, flags: int, *args, **kwargs):
++        if Path(path) == verified_path:
++            opened_paths.append(Path(path))
++        return original_open(path, flags, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "resolve", resolve_config)
++    monkeypatch.setattr(os, "open", record_open)
++
++    result = resolve_project_config(root)
++
++    assert result.settings.project_type == "python"
++    assert result.error_codes == ()
++    assert opened_paths == [verified_path]
++
++
++def test_config_loader_rejects_file_replaced_after_containment_check(
++    tmp_path: Path, monkeypatch
++) -> None:
++    import os
++
++    root = tmp_path / "repo"
++    root.mkdir()
++    config = root / ".local-ai.toml"
++    config.write_text('project_type = "python"\n', encoding="utf-8")
++    verified_path = root / "verified.toml"
++    verified_path.write_text('project_type = "python"\n', encoding="utf-8")
++    outside = tmp_path / "outside.toml"
++    outside.write_text('project_type = "outside"\n', encoding="utf-8")
++    original_resolve = Path.resolve
++    original_open = os.open
++
++    def resolve_config(self: Path, strict: bool = False) -> Path:
++        if self == config:
++            return verified_path
++        return original_resolve(self, strict=strict)
++
++    def replace_after_validation(path, flags: int, *args, **kwargs):
++        if Path(path) == verified_path:
++            path = outside
++        return original_open(path, flags, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "resolve", resolve_config)
++    monkeypatch.setattr(os, "open", replace_after_validation)
++
++    result = resolve_project_config(root)
++
++    assert result.settings == ProjectSettings()
++    assert result.active_sources == ("defaults",)
++    assert result.error_codes == ("unsafe_config_path",)
++
++
++def test_config_loader_rejects_unavailable_file_identity(
++    tmp_path: Path, monkeypatch
++) -> None:
++    import stat
++    from types import SimpleNamespace
++
++    root = tmp_path / "repo"
++    root.mkdir()
++    config = root / ".local-ai.toml"
++    config.write_text('project_type = "python"\n', encoding="utf-8")
++    original_stat = Path.stat
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++
++    def stat_without_file_id(path: Path, *args, **kwargs):
++        if path == config:
++            return SimpleNamespace(st_dev=7, st_ino=0, st_mode=stat.S_IFREG)
++        return original_stat(path, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "stat", stat_without_file_id)
++
++    result = resolve_project_config(root)
++
++    assert result.settings == ProjectSettings()
++    assert result.active_sources == ("defaults",)
++    assert result.error_codes == ("unsafe_config_path",)
++
++
++def test_config_loader_rejects_unavailable_open_file_identity(
++    tmp_path: Path, monkeypatch
++) -> None:
++    import os
++    import stat
++    from types import SimpleNamespace
++
++    root = tmp_path / "repo"
++    root.mkdir()
++    (root / ".local-ai.toml").write_text(
++        'project_type = "python"\n', encoding="utf-8"
++    )
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    monkeypatch.setattr(
++        os,
++        "fstat",
++        lambda _descriptor: SimpleNamespace(
++            st_dev=7, st_ino=0, st_mode=stat.S_IFREG, st_size=20
++        ),
++    )
++
++    result = resolve_project_config(root)
++
++    assert result.settings == ProjectSettings()
++    assert result.active_sources == ("defaults",)
++    assert result.error_codes == ("unsafe_config_path",)
++
++
++def test_config_loader_survives_descriptor_cleanup_failure(
++    tmp_path: Path, monkeypatch
++) -> None:
++    import os
++
++    root = tmp_path / "repo"
++    root.mkdir()
++    (root / ".local-ai.toml").write_text(
++        'project_type = "python"\n', encoding="utf-8"
++    )
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    monkeypatch.setattr(os, "open", lambda *_args, **_kwargs: 941)
++
++    def fail_fdopen(*_args, **_kwargs):
++        raise OSError("fdopen failed")
++
++    monkeypatch.setattr(os, "fdopen", fail_fdopen)
++
++    def fail_close(descriptor: int) -> None:
++        assert descriptor == 941
++        raise PermissionError("close denied")
++
++    monkeypatch.setattr(os, "close", fail_close)
++
++    result = resolve_project_config(root)
++
++    assert result.settings == ProjectSettings()
++    assert result.active_sources == ("defaults",)
++    assert result.error_codes == ("invalid_toml",)
++
++
+ def test_malformed_toml_falls_back_atomically_and_digest_tracks_effective_config(
+     tmp_path: Path,
+ ) -> None:
+@@ -866,6 +1093,40 @@ def test_file_size_limit_rejects_invalid_size_evidence(tmp_path: Path) -> None:
+     )
+ 
+ 
++def test_path_override_specificity_is_shared_across_symlink_alias_and_target(
++    tmp_path: Path, monkeypatch
++) -> None:
++    alias_dir = tmp_path / "alias" / "module"
++    alias_dir.mkdir(parents=True)
++    alias_file = alias_dir / "keep.py"
++    alias_file.write_text("x", encoding="utf-8")
++    target_dir = tmp_path / "generated" / "src" / "module"
++    target_dir.mkdir(parents=True)
++    target_file = target_dir / "keep.py"
++    target_file.write_text("x", encoding="utf-8")
++    _mock_resolutions(
++        monkeypatch,
++        {
++            alias_dir: target_dir,
++            alias_file: target_file,
++        },
++    )
++    settings = ProjectSettings(
++        path_overrides={
++            "alias/module": "include",
++            "alias/module/keep.py": "include",
++            "generated/**": "exclude",
++        }
++    )
++
++    assert may_descend(
++        tmp_path, "alias/module", settings, phase="search", soft_ignored=True
++    )
++    assert path_is_allowed(
++        tmp_path, "alias/module/keep.py", settings, phase="search"
++    )
++
++
+ def test_specific_default_override_falls_through_to_force_include(
+     tmp_path: Path,
+ ) -> None:
+@@ -1211,3 +1472,98 @@ def test_ignored_parent_stays_traversable_for_forced_descendant(tmp_path: Path)
+         phase="search",
+         soft_ignored=True,
+     )
++
++
++def test_project_context_never_reads_hub_state_as_configuration(
++    tmp_path: Path,
++) -> None:
++    root = tmp_path / "repo"
++    state_dir = tmp_path / "hub-state"
++    root.mkdir()
++    state_dir.mkdir()
++    (root / ".local-ai.toml").write_text(
++        'shared_namespace = "project-local"\n', encoding="utf-8"
++    )
++    (state_dir / ".local-ai.toml").write_text(
++        'shared_namespace = "runtime-override"\n', encoding="utf-8"
++    )
++
++    context = project_config.resolve_project_context(root, state_dir)
++
++    assert context.settings.shared_namespace == "project-local"
++    assert context.resolution.active_sources == ("defaults", "project")
++    assert (state_dir / ".local-ai.toml").read_text(encoding="utf-8") == (
++        'shared_namespace = "runtime-override"\n'
++    )
++
++
++def test_model_profile_and_prompt_prefix_defaults_and_validation(
++    tmp_path: Path,
++) -> None:
++    defaults = project_config.resolve_project_config(tmp_path)
++
++    assert defaults.settings.model_profile == "balanced"
++    assert defaults.settings.system_prompt_prefix is None
++    assert defaults.error_codes == ()
++
++    (tmp_path / ".local-ai.toml").write_text(
++        'model_profile = "unknown"\n', encoding="utf-8"
++    )
++    rejected = project_config.resolve_project_config(tmp_path)
++
++    assert rejected.settings == project_config.ProjectSettings()
++    assert rejected.error_codes == ("invalid_config",)
++
++
++def test_linked_worktree_inherits_primary_repository_project_config(
++    tmp_path: Path, monkeypatch
++) -> None:
++    primary = tmp_path / "primary"
++    common = primary / ".git"
++    linked = tmp_path / "worktrees" / "feature"
++    (common / "info").mkdir(parents=True)
++    linked.mkdir(parents=True)
++    (primary / ".local-ai.toml").write_text(
++        'exclude_paths = ["shared-generated/**"]\n'
++        '[commands]\nlint = "python -m ruff check"\n',
++        encoding="utf-8",
++    )
++    (linked / ".local-ai.toml").write_text(
++        '[commands]\ntest = "python -m pytest"\n', encoding="utf-8"
++    )
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: common)
++
++    result = project_config.resolve_project_config(linked)
++
++    assert result.error_codes == ()
++    assert result.settings.exclude_paths == ("shared-generated/**",)
++    assert result.settings.commands == {
++        "lint": "python -m ruff check",
++        "test": "python -m pytest",
++    }
++    assert result.active_sources == ("defaults", "primary_project", "project")
++
++
++def test_primary_worktree_discovery_uses_git_worktree_list(
++    tmp_path: Path, monkeypatch
++) -> None:
++    common = tmp_path / "custom-git-dir"
++    primary = tmp_path / "primary"
++    linked = tmp_path / "linked"
++    common.mkdir()
++    primary.mkdir()
++    linked.mkdir()
++    (primary / ".git").write_text(f"gitdir: {common}\n", encoding="utf-8")
++    (linked / ".git").write_text(
++        f"gitdir: {common / 'worktrees' / 'linked'}\n", encoding="utf-8"
++    )
++    output = (
++        f"worktree {primary}\nHEAD {('a' * 40)}\nbranch refs/heads/main\n\n"
++        f"worktree {linked}\nHEAD {('b' * 40)}\nbranch refs/heads/feature\n"
++    )
++    result = type("CommandResult", (), {"returncode": 0, "stdout": output})()
++    monkeypatch.setattr(
++        project_config.subprocess, "run", lambda *_args, **_kwargs: result
++    )
++
++    assert project_config._git_primary_worktree_root(linked, common) == primary
+diff --git a/tests/test_project_config_service_integration.py b/tests/test_project_config_service_integration.py
+index 9758487..bee5bc7 100644
+--- a/tests/test_project_config_service_integration.py
++++ b/tests/test_project_config_service_integration.py
+@@ -2,11 +2,13 @@ from __future__ import annotations
+ 
+ from dataclasses import asdict
+ from pathlib import Path
++import subprocess
+ from types import SimpleNamespace
+ 
+ import local_ai_hub.project_config as project_config
+ from local_ai_hub.cache import stable_hash
+ from local_ai_hub.project_config import PathHint, resolve_project_context
++from local_ai_hub.repo_tools import RepositoryTools
+ from local_ai_hub.services import LocalAIServices
+ 
+ 
+@@ -167,3 +169,603 @@ def test_run_affected_applies_project_mapping_and_path_hints_safely(
+     )
+     assert "repository_revision" not in observed
+     assert "tests/requested" not in repr(observed)
++
++
++def test_repo_search_prioritizes_verified_project_path_hint_without_narrowing(
++    tmp_path: Path, monkeypatch
++) -> None:
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
++    state_dir = tmp_path / "runtime"
++    (tmp_path / "templates" / "element").mkdir(parents=True)
++    (tmp_path / "src").mkdir()
++    (tmp_path / "templates" / "element" / "button.php").write_text(
++        "button()", encoding="utf-8"
++    )
++    (tmp_path / "src" / "button.py").write_text("button()", encoding="utf-8")
++    context = resolve_project_context(tmp_path, state_dir)
++    context.save_path_hint(
++        PathHint(
++            path="templates/element",
++            purpose="repository_search",
++            scope="repo_search",
++            evidence_id="verified-1",
++            provenance="verified_search",
++            repository_revision="workspace-1",
++            config_digest=context.config_digest,
++        )
++    )
++    class Flight:
++        def get_or_compute(self, _key, compute):
++            return compute(), False, False
++
++    class Tools:
++        observed_paths: list[str] = []
++        ignore_dirs: set[str] = set()
++        ignore_extensions: set[str] = set()
++        extensions: set[str] = set()
++        special_filenames: set[str] = set()
++        max_file_bytes = 2_000_000
++
++        def _git_files(self, _root):
++            return [tmp_path / "templates" / "element" / "button.php"]
++
++        def search(self, *_args, **_kwargs):
++            return {"success": True, "results": []}
++
++        def search_paths(self, _root, query, paths, top_k, context_lines=None):
++            self.observed_paths = list(paths)
++            return {"success": True, "results": [{"path": path} for path in paths[:top_k]]}
++
++    services = LocalAIServices.__new__(LocalAIServices)
++    services.config = {"server": {"state_dir": str(state_dir)}, "features": {}}
++    services.repo_flight = Flight()
++    services._touch_project = lambda _root: None
++    services._repo_cache_state = lambda _root: {
++        "fingerprint": "workspace-1", "kind": "filesystem", "stale": False,
++    }
++    services.repo_tools = Tools()
++    services.learner = None
++    services.deterministic = SimpleNamespace(
++        related_paths=lambda *_args: ["src/button.py"]
++    )
++    services.code_index = services.preprocessor = services.evidence_store = None
++
++    result = services.repo_search(str(tmp_path), "button", top_k=10)
++
++    assert services.repo_tools.observed_paths == [
++        "templates/element/button.php", "src/button.py"
++    ]
++    assert {item["path"] for item in result["results"]} == {
++        "templates/element/button.php", "src/button.py"
++    }
++    assert result["path_hint_usage"] == {
++        "hint_used": True, "fallback_used": False, "hint_helped": None
++    }
++
++
++def test_repo_search_uses_explicit_request_hint_for_unindexed_file(
++    tmp_path: Path, monkeypatch
++) -> None:
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
++    state_dir = tmp_path / "runtime"
++    hinted = tmp_path / "templates" / "element" / "button.php"
++    hinted.parent.mkdir(parents=True)
++    hinted.write_text("button()", encoding="utf-8")
++    subprocess.run(
++        ["git", "-C", str(tmp_path), "add", "--", "templates/element/button.php"],
++        check=True,
++    )
++
++    class Flight:
++        def get_or_compute(self, _key, compute):
++            return compute(), False, False
++
++    services = LocalAIServices.__new__(LocalAIServices)
++    services.config = {"server": {"state_dir": str(state_dir)}, "features": {}}
++    services.repo_flight = Flight()
++    services._touch_project = lambda _root: None
++    services._repo_cache_state = lambda _root: {
++        "fingerprint": "workspace-1", "kind": "filesystem", "stale": False,
++    }
++    services.repo_tools = RepositoryTools(
++        {"server": {"state_dir": str(state_dir)}, "rag": {}, "search": {}}
++    )
++    services.learner = None
++    services.deterministic = SimpleNamespace(related_paths=lambda *_args: [])
++    services.code_index = services.preprocessor = services.evidence_store = None
++
++    result = services.repo_search(
++        str(tmp_path),
++        "button",
++        top_k=10,
++        path_hints=[
++            {
++                "path": "templates/element/button.php",
++                "purpose": "repository_search",
++                "scope": "repo_search",
++            }
++        ],
++    )
++
++    assert [hit["path"] for hit in result["results"]] == [
++        "templates/element/button.php"
++    ]
++    assert result["results"][0]["text"].find("button()") >= 0
++    assert result["path_hint_usage"] == {
++        "hint_used": True, "fallback_used": False, "hint_helped": None
++    }
++
++
++def test_repo_search_keeps_full_original_candidate_window_when_adding_hints(
++    tmp_path: Path, monkeypatch
++) -> None:
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
++    state_dir = tmp_path / "runtime"
++    hinted_dir = tmp_path / "templates"
++    hinted_dir.mkdir()
++    (hinted_dir / "button.php").write_text("button", encoding="utf-8")
++    context = resolve_project_context(tmp_path, state_dir)
++    context.save_path_hint(
++        PathHint(
++            path="templates",
++            purpose="repository_search",
++            scope="repo_search",
++            evidence_id="verified-2",
++            provenance="verified_search",
++            repository_revision="workspace-1",
++            config_digest=context.config_digest,
++        )
++    )
++
++    class Flight:
++        def get_or_compute(self, _key, compute):
++            return compute(), False, False
++
++    class Tools:
++        observed_paths: list[str] = []
++        ignore_dirs: set[str] = set()
++        ignore_extensions: set[str] = set()
++        extensions: set[str] = set()
++        special_filenames: set[str] = set()
++        max_file_bytes = 2_000_000
++
++        def _git_files(self, _root):
++            return [hinted_dir / "button.php"]
++
++        def search(self, *_args, **_kwargs):
++            return {"success": True, "results": []}
++
++        def search_paths(self, _root, _query, paths, _top_k, context_lines=None):
++            self.observed_paths = list(paths)
++            return {"success": True, "results": []}
++
++    original_paths = [f"src/file_{index:02}.py" for index in range(64)]
++    services = LocalAIServices.__new__(LocalAIServices)
++    services.config = {"server": {"state_dir": str(state_dir)}, "features": {}}
++    services.repo_flight = Flight()
++    services._touch_project = lambda _root: None
++    services._repo_cache_state = lambda _root: {
++        "fingerprint": "workspace-1", "kind": "filesystem", "stale": False,
++    }
++    services.repo_tools = Tools()
++    services.learner = None
++    services.deterministic = SimpleNamespace(
++        related_paths=lambda *_args: original_paths
++    )
++    services.code_index = services.preprocessor = services.evidence_store = None
++
++    services.repo_search(str(tmp_path), "button", top_k=200)
++
++    assert services.repo_tools.observed_paths[0] == "templates/button.php"
++    assert set(services.repo_tools.observed_paths[1:]) == set(original_paths)
++
++
++def test_repo_search_hint_hit_does_not_skip_broader_results(
++    tmp_path: Path, monkeypatch
++) -> None:
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
++    state_dir = tmp_path / "runtime"
++    hinted_file = tmp_path / "templates" / "element" / "button.php"
++    original_file = tmp_path / "src" / "indexed.py"
++    broader_file = tmp_path / "src" / "discovered.py"
++    hinted_file.parent.mkdir(parents=True)
++    original_file.parent.mkdir(parents=True)
++    hinted_file.write_text("button()", encoding="utf-8")
++    original_file.write_text("unmatched", encoding="utf-8")
++    broader_file.write_text("broader match", encoding="utf-8")
++    context = resolve_project_context(tmp_path, state_dir)
++    context.save_path_hint(
++        PathHint(
++            path="templates/element",
++            purpose="repository_search",
++            scope="repo_search",
++            evidence_id="verified-broader-fallback",
++            provenance="verified_search",
++            repository_revision="workspace-1",
++            config_digest=context.config_digest,
++        )
++    )
++
++    class Flight:
++        def get_or_compute(self, _key, compute):
++            return compute(), False, False
++
++    class Tools:
++        ignore_dirs: set[str] = set()
++        ignore_extensions: set[str] = set()
++        extensions: set[str] = set()
++        special_filenames: set[str] = set()
++        max_file_bytes = 2_000_000
++        broad_search_calls = 0
++
++        def _git_files(self, _root):
++            return [hinted_file, original_file, broader_file]
++
++        def search(self, *_args, **_kwargs):
++            self.broad_search_calls += 1
++            return {
++                "success": True,
++                "results": [
++                    {
++                        "path": "src/discovered.py",
++                        "start_line": 1,
++                        "score": 8.0,
++                    }
++                ],
++            }
++
++        def search_paths(self, _root, _query, paths, _top_k, context_lines=None):
++            self.targeted_paths = list(paths)
++            return {
++                "success": True,
++                "results": [
++                    {
++                        "path": "templates/element/button.php",
++                        "start_line": 1,
++                        "score": 5.0,
++                    }
++                ],
++            }
++
++    services = LocalAIServices.__new__(LocalAIServices)
++    services.config = {"server": {"state_dir": str(state_dir)}, "features": {}}
++    services.repo_flight = Flight()
++    services._touch_project = lambda _root: None
++    services._repo_cache_state = lambda _root: {
++        "fingerprint": "workspace-1", "kind": "filesystem", "stale": False,
++    }
++    services.repo_tools = Tools()
++    services.learner = None
++    services.deterministic = SimpleNamespace(
++        related_paths=lambda *_args: ["src/indexed.py"]
++    )
++    services.code_index = services.preprocessor = services.evidence_store = None
++
++    result = services.repo_search(str(tmp_path), "button", top_k=10)
++
++    assert services.repo_tools.targeted_paths[:2] == [
++        "templates/element/button.php",
++        "src/indexed.py",
++    ]
++    assert "src/discovered.py" not in services.repo_tools.targeted_paths
++    assert services.repo_tools.broad_search_calls == 1
++    assert {item["path"] for item in result["results"]} == {
++        "templates/element/button.php",
++        "src/discovered.py",
++    }
++
++
++def test_search_paths_enforces_project_excludes_and_file_size_limit(
++    tmp_path: Path, monkeypatch
++) -> None:
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    (tmp_path / "public").mkdir()
++    (tmp_path / "private").mkdir()
++    (tmp_path / "public" / "match.py").write_text("needle", encoding="utf-8")
++    (tmp_path / "private" / "match.py").write_text("needle", encoding="utf-8")
++    (tmp_path / "public" / "large.py").write_text("needle " * 20, encoding="utf-8")
++    (tmp_path / ".local-ai.toml").write_text(
++        'exclude_paths = ["private/**"]\n'
++        "[file_limits]\nmax_file_size_bytes = 32\n",
++        encoding="utf-8",
++    )
++    tools = RepositoryTools(
++        {"server": {"state_dir": str(tmp_path / "runtime")}, "rag": {}, "search": {}}
++    )
++
++    result = tools.search_paths(
++        str(tmp_path),
++        "needle",
++        ["public/match.py", "private/match.py", "public/large.py"],
++    )
++
++    assert [item["path"] for item in result["results"]] == ["public/match.py"]
++    assert result["scanned_files"] == 1
++
++
++def test_repo_search_hints_respect_gitignore_and_searchable_file_rules(
++    tmp_path: Path, monkeypatch
++) -> None:
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
++    hinted_dir = tmp_path / "templates" / "element"
++    hinted_dir.mkdir(parents=True)
++    (tmp_path / ".gitignore").write_text(
++        "templates/element/ignored.php\n", encoding="utf-8"
++    )
++    (hinted_dir / "button.php").write_text("button", encoding="utf-8")
++    (hinted_dir / "ignored.php").write_text("button", encoding="utf-8")
++    (hinted_dir / "preview.png").write_text("button", encoding="utf-8")
++    state_dir = tmp_path / "runtime"
++    context = resolve_project_context(tmp_path, state_dir)
++    context.save_path_hint(
++        PathHint(
++            path="templates/element",
++            purpose="repository_search",
++            scope="repo_search",
++            evidence_id="verified-ignored-filter",
++            provenance="verified_search",
++            repository_revision="workspace-1",
++            config_digest=context.config_digest,
++        )
++    )
++    context.save_path_hint(
++        PathHint(
++            path="templates",
++            purpose="repository_search",
++            scope="repo_search",
++            evidence_id="verified-ignored-filter-parent",
++            provenance="verified_search",
++            repository_revision="workspace-1",
++            config_digest=context.config_digest,
++        )
++    )
++
++    class Flight:
++        def get_or_compute(self, _key, compute):
++            return compute(), False, False
++
++    services = LocalAIServices.__new__(LocalAIServices)
++    services.config = {"server": {"state_dir": str(state_dir)}, "features": {}}
++    services.repo_flight = Flight()
++    services._touch_project = lambda _root: None
++    services._repo_cache_state = lambda _root: {
++        "fingerprint": "workspace-1", "kind": "filesystem", "stale": False,
++    }
++    services.repo_tools = RepositoryTools(
++        {"server": {"state_dir": str(state_dir)}, "rag": {}, "search": {}}
++    )
++    inventory_calls = 0
++    original_inventory = services.repo_tools._git_files
++
++    def counted_inventory(root):
++        nonlocal inventory_calls
++        inventory_calls += 1
++        return original_inventory(root)
++
++    monkeypatch.setattr(services.repo_tools, "_git_files", counted_inventory)
++    services.learner = None
++    services.deterministic = services.code_index = services.preprocessor = None
++    services.evidence_store = None
++
++    result = services.repo_search(str(tmp_path), "button", top_k=10)
++
++    assert [item["path"] for item in result["results"]] == [
++        "templates/element/button.php"
++    ]
++    assert inventory_calls == 2
++
++
++def test_search_paths_skips_unresolvable_git_inventory_entries(
++    tmp_path: Path, monkeypatch
++) -> None:
++    (tmp_path / "src").mkdir()
++    good_file = tmp_path / "src" / "match.py"
++    good_file.write_text("needle", encoding="utf-8")
++    broken_file = tmp_path / "loop.py"
++    tools = RepositoryTools(
++        {"server": {"state_dir": str(tmp_path / "runtime")}, "rag": {}, "search": {}}
++    )
++    monkeypatch.setattr(tools, "_git_files", lambda _root: [broken_file, good_file])
++    original_resolve = Path.resolve
++
++    def resolve(path: Path, *args, **kwargs) -> Path:
++        if path == broken_file:
++            raise RuntimeError("symlink loop")
++        return original_resolve(path, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "resolve", resolve)
++
++    result = tools.search_paths(str(tmp_path), "needle", ["src/match.py"])
++
++    assert result["success"] is True
++    assert [item["path"] for item in result["results"]] == ["src/match.py"]
++
++
++def test_search_paths_declines_git_repo_when_ignore_inventory_unavailable(
++    tmp_path: Path, monkeypatch
++) -> None:
++    (tmp_path / ".git").mkdir()
++    (tmp_path / ".gitignore").write_text("private/\n", encoding="utf-8")
++    (tmp_path / "private").mkdir()
++    (tmp_path / "private" / "match.py").write_text("needle", encoding="utf-8")
++    tools = RepositoryTools(
++        {"server": {"state_dir": str(tmp_path / "runtime")}, "rag": {}, "search": {}}
++    )
++    monkeypatch.setattr(tools, "_git_files", lambda _root: None)
++
++    result = tools.search_paths(str(tmp_path), "needle", ["private/match.py"])
++
++    assert result["success"] is False
++    assert result["error"] == "git_inventory_unavailable"
++    assert result["results"] == []
++
++
++def test_repo_search_propagates_unavailable_git_inventory(
++    tmp_path: Path, monkeypatch
++) -> None:
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    (tmp_path / ".git").mkdir()
++    (tmp_path / "src").mkdir()
++    (tmp_path / "src" / "match.py").write_text("needle", encoding="utf-8")
++
++    class Flight:
++        def get_or_compute(self, _key, compute):
++            return compute(), False, False
++
++    tools = RepositoryTools(
++        {"server": {"state_dir": str(tmp_path / "runtime")}, "rag": {}, "search": {}}
++    )
++    monkeypatch.setattr(tools, "_git_files", lambda _root: None)
++    full_search_calls = 0
++
++    def full_search(*_args, **_kwargs):
++        nonlocal full_search_calls
++        full_search_calls += 1
++        return {"success": True, "results": [{"path": "src/match.py"}]}
++
++    monkeypatch.setattr(tools, "search", full_search)
++    services = LocalAIServices.__new__(LocalAIServices)
++    services.config = {"server": {"state_dir": str(tmp_path / "runtime")}, "features": {}}
++    services.repo_flight = Flight()
++    services._touch_project = lambda _root: None
++    services._repo_cache_state = lambda _root: {"fingerprint": "rev", "stale": False}
++    services.repo_tools = tools
++    services.learner = None
++    services.deterministic = SimpleNamespace(
++        related_paths=lambda *_args: ["src/match.py"]
++    )
++    services.code_index = services.preprocessor = services.evidence_store = None
++
++    result = services.repo_search(str(tmp_path), "needle")
++
++    assert result["success"] is False
++    assert result["error"] == "git_inventory_unavailable"
++    assert result["results"] == []
++    assert full_search_calls == 0
++
++
++def test_repo_search_fails_closed_when_project_policy_cannot_load(
++    tmp_path: Path, monkeypatch
++) -> None:
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    (tmp_path / ".local-ai.toml").write_text("exclude_paths = 7\n", encoding="utf-8")
++    (tmp_path / "src").mkdir()
++    (tmp_path / "src" / "match.py").write_text("needle", encoding="utf-8")
++
++    class Flight:
++        def get_or_compute(self, _key, compute):
++            return compute(), False, False
++
++    tools = RepositoryTools(
++        {"server": {"state_dir": str(tmp_path / "runtime")}, "rag": {}, "search": {}}
++    )
++    full_search_calls = 0
++    original_search = tools.search
++
++    def counted_search(*args, **kwargs):
++        nonlocal full_search_calls
++        full_search_calls += 1
++        return original_search(*args, **kwargs)
++
++    monkeypatch.setattr(tools, "search", counted_search)
++    services = LocalAIServices.__new__(LocalAIServices)
++    services.config = {"server": {"state_dir": str(tmp_path / "runtime")}, "features": {}}
++    services.repo_flight = Flight()
++    services._touch_project = lambda _root: None
++    services._repo_cache_state = lambda _root: {"fingerprint": "rev", "stale": False}
++    services.repo_tools = tools
++    services.learner = None
++    services.deterministic = SimpleNamespace(
++        related_paths=lambda *_args: ["src/match.py"]
++    )
++    services.code_index = services.preprocessor = services.evidence_store = None
++
++    result = services.repo_search(str(tmp_path), "needle")
++
++    assert result["success"] is False
++    assert result["error"] == "project_policy_unavailable"
++    assert result["results"] == []
++    assert full_search_calls == 0
++
++
++def test_repo_search_filters_project_excludes_from_full_fallback(
++    tmp_path: Path, monkeypatch
++) -> None:
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    (tmp_path / ".local-ai.toml").write_text(
++        'exclude_paths = ["private/**"]\n', encoding="utf-8"
++    )
++    (tmp_path / "private").mkdir()
++    (tmp_path / "public").mkdir()
++    (tmp_path / "private" / "match.py").write_text("needle", encoding="utf-8")
++    (tmp_path / "public" / "match.py").write_text("needle", encoding="utf-8")
++
++    class Flight:
++        def get_or_compute(self, _key, compute):
++            return compute(), False, False
++
++    tools = RepositoryTools(
++        {"server": {"state_dir": str(tmp_path / "runtime")}, "rag": {}, "search": {}}
++    )
++    monkeypatch.setattr(
++        tools,
++        "search",
++        lambda *_args, **_kwargs: {
++            "success": True,
++            "root": str(tmp_path),
++            "results": [
++                {"path": "private/match.py", "start_line": 1, "text": "needle"},
++                {"path": "public/match.py", "start_line": 1, "text": "needle"},
++            ],
++        },
++    )
++    services = LocalAIServices.__new__(LocalAIServices)
++    services.config = {"server": {"state_dir": str(tmp_path / "runtime")}, "features": {}}
++    services.repo_flight = Flight()
++    services._touch_project = lambda _root: None
++    services._repo_cache_state = lambda _root: {"fingerprint": "rev", "stale": False}
++    services.repo_tools = tools
++    services.learner = None
++    services.deterministic = SimpleNamespace(related_paths=lambda *_args: [])
++    services.code_index = services.preprocessor = services.evidence_store = None
++
++    result = services.repo_search(str(tmp_path), "needle")
++
++    assert [item["path"] for item in result["results"]] == ["public/match.py"]
++
++
++def test_repo_search_fails_closed_for_invalid_policy_without_index_candidates(
++    tmp_path: Path, monkeypatch
++) -> None:
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    (tmp_path / ".local-ai.toml").write_text("exclude_paths = 7\n", encoding="utf-8")
++    (tmp_path / "src").mkdir()
++    (tmp_path / "src" / "match.py").write_text("needle", encoding="utf-8")
++
++    class Flight:
++        def get_or_compute(self, _key, compute):
++            return compute(), False, False
++
++    tools = RepositoryTools(
++        {"server": {"state_dir": str(tmp_path / "runtime")}, "rag": {}, "search": {}}
++    )
++    services = LocalAIServices.__new__(LocalAIServices)
++    services.config = {"server": {"state_dir": str(tmp_path / "runtime")}, "features": {}}
++    services.repo_flight = Flight()
++    services._touch_project = lambda _root: None
++    services._repo_cache_state = lambda _root: {"fingerprint": "rev", "stale": False}
++    services.repo_tools = tools
++    services.learner = None
++    services.deterministic = SimpleNamespace(related_paths=lambda *_args: [])
++    services.code_index = services.preprocessor = services.evidence_store = None
++
++    result = services.repo_search(str(tmp_path), "needle")
++
++    assert result["success"] is False
++    assert result["error"] == "project_policy_unavailable"
++    assert result["results"] == []
+diff --git a/tests/test_project_path_hints.py b/tests/test_project_path_hints.py
+index 1bf3047..aad8304 100644
+--- a/tests/test_project_path_hints.py
++++ b/tests/test_project_path_hints.py
+@@ -134,6 +134,137 @@ def test_hint_freshness_scope_existence_and_containment_are_rechecked(
+     ) is None
+ 
+ 
++def test_path_hint_normalizes_windows_separators_and_outer_whitespace(
++    tmp_path: Path,
++) -> None:
++    candidate = tmp_path / "templates" / "element" / "button.php"
++    candidate.parent.mkdir(parents=True)
++    candidate.write_text("button()", encoding="utf-8")
++    hint = PathHint(
++        r" templates\element\button.php ",
++        "repository_search",
++        "repo_search",
++    )
++
++    resolved = validate_path_hint(
++        tmp_path,
++        hint,
++        purpose="repository_search",
++        scope="repo_search",
++        repository_revision="rev-1",
++        config_digest="digest-1",
++    )
++
++    assert resolved == candidate.resolve()
++
++
++def test_path_hint_rejects_absolute_and_dot_paths(
++    tmp_path: Path,
++) -> None:
++    root = tmp_path / "repo"
++    candidate = root / "src" / "main.py"
++    candidate.parent.mkdir(parents=True)
++    candidate.write_text("main()", encoding="utf-8")
++    expected = {
++        "purpose": "repository_search",
++        "scope": "repo_search",
++        "repository_revision": "rev-1",
++        "config_digest": "digest-1",
++    }
++
++    assert validate_path_hint(
++        root,
++        PathHint(str(candidate), "repository_search", "repo_search"),
++        **expected,
++    ) is None
++    assert validate_path_hint(
++        root,
++        PathHint(".", "repository_search", "repo_search"),
++        **expected,
++    ) is None
++
++
++def test_path_hint_rejects_absolute_and_relative_paths_outside_root(
++    tmp_path: Path,
++) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    outside = tmp_path / "outside.py"
++    outside.write_text("outside", encoding="utf-8")
++    expected = {
++        "purpose": "repository_search",
++        "scope": "repo_search",
++        "repository_revision": "rev-1",
++        "config_digest": "digest-1",
++    }
++
++    for path in (str(outside), "../outside.py"):
++        assert validate_path_hint(
++            root,
++            PathHint(path, "repository_search", "repo_search"),
++            **expected,
++        ) is None
++
++
++def test_path_hint_requires_exact_purpose_and_scope(tmp_path: Path) -> None:
++    candidate = tmp_path / "src" / "main.py"
++    candidate.parent.mkdir()
++    candidate.write_text("x", encoding="utf-8")
++    hint = PathHint("src/main.py", "search", "repository_search")
++    expected = {
++        "repository_revision": "rev-1",
++        "config_digest": "digest-1",
++    }
++
++    assert validate_path_hint(
++        tmp_path, hint, purpose="other", scope="repository_search", **expected
++    ) is None
++    assert validate_path_hint(
++        tmp_path, hint, purpose="search", scope="other", **expected
++    ) is None
++
++
++def test_path_hint_rejects_absolute_unc_and_glob_paths(tmp_path: Path) -> None:
++    for path in ("C:/private/secret.py", "//server/share/secret.py", "src/*.py"):
++        assert validate_path_hint(
++            tmp_path,
++            PathHint(path, "search", "repo"),
++            purpose="search",
++            scope="repo",
++            repository_revision="rev-1",
++            config_digest="digest-1",
++        ) is None
++
++
++def test_path_hint_rejects_symlink_target_outside_root(
++    tmp_path: Path, monkeypatch
++) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    alias = root / "src" / "alias.py"
++    alias.parent.mkdir()
++    alias.write_text("inside", encoding="utf-8")
++    outside = tmp_path / "outside.py"
++    outside.write_text("outside", encoding="utf-8")
++    original_resolve = Path.resolve
++
++    def resolve_escape(path: Path, *args, **kwargs) -> Path:
++        if path == alias:
++            return outside
++        return original_resolve(path, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "resolve", resolve_escape)
++
++    assert validate_path_hint(
++        root,
++        PathHint("src/alias.py", "search", "repo"),
++        purpose="search",
++        scope="repo",
++        repository_revision="rev-1",
++        config_digest="digest-1",
++    ) is None
++
++
+ def test_persisted_hints_share_only_within_same_git_common_directory(
+     tmp_path: Path, monkeypatch
+ ) -> None:
+@@ -592,3 +723,59 @@ def test_hint_store_caps_rows_without_evicting_newest_other_revision(
+         ).fetchall()
+ 
+     assert rows == [("revision-1",), ("revision-2",)]
++def test_hint_find_does_not_recreate_database_removed_after_existence_check(
++    tmp_path: Path, monkeypatch
++) -> None:
++    store = ProjectPathHintStore(
++        tmp_path / "state", tmp_path, git_common_dir=None
++    )
++    with closing(store._connect()):
++        pass
++    connect = store._connect
++
++    def unlink_before_read(**kwargs):
++        store.database.unlink()
++        return connect(**kwargs)
++
++    monkeypatch.setattr(store, "_connect", unlink_before_read)
++    assert store.find(
++        purpose="entry",
++        scope="repo",
++        repository_revision="revision-current",
++        config_digest="digest-current",
++    ) == ()
++    assert not store.database.exists()
++def test_expired_persisted_hint_is_not_reused(tmp_path: Path) -> None:
++    (tmp_path / "main.py").write_text("x")
++    store = ProjectPathHintStore(
++        tmp_path / "state", tmp_path, git_common_dir=None
++    )
++    store.add(
++        PathHint(
++            path="main.py",
++            purpose="entry",
++            scope="repo",
++            evidence_id="evidence-expired",
++            provenance="verified_search",
++            repository_revision="revision-current",
++            config_digest="digest-current",
++            expires_at="2099-01-01T00:00:00+00:00",
++        )
++    )
++    with closing(store._connect()) as connection, connection:
++        connection.execute(
++            """UPDATE project_path_hints SET expires_at = ?
++               WHERE project_id = ? AND evidence_id = ?""",
++            (
++                "2000-01-01T00:00:00+00:00",
++                store.project_id,
++                "evidence-expired",
++            ),
++        )
++
++    assert store.find(
++        purpose="entry",
++        scope="repo",
++        repository_revision="revision-current",
++        config_digest="digest-current",
++    ) == ()
+diff --git a/tests/test_t21_candidate_path_hint_worktree_e2e.py b/tests/test_t21_candidate_path_hint_worktree_e2e.py
+new file mode 100644
+index 0000000..b0660db
+--- /dev/null
++++ b/tests/test_t21_candidate_path_hint_worktree_e2e.py
+@@ -0,0 +1,243 @@
++from __future__ import annotations
++
++import asyncio
++import json
++import subprocess
++import threading
++from http.server import ThreadingHTTPServer
++from pathlib import Path
++
++from local_ai_hub import http_server, mcp_server, project_config
++from local_ai_hub.client import HubClient
++from local_ai_hub.project_config import resolve_project_config
++from local_ai_hub.repo_tools import RepositoryTools
++from local_ai_hub.resilience import RecoveryJournal
++from local_ai_hub.services import LocalAIServices
++
++
++def test_registered_search_path_hints_use_candidate_worktree_config(
++    monkeypatch, tmp_path: Path
++) -> None:
++    primary = tmp_path / "primary"
++    primary.mkdir()
++
++    def git(*args: str) -> str:
++        completed = subprocess.run(
++            ["git", "-C", str(primary), *args],
++            capture_output=True,
++            text=True,
++            check=False,
++        )
++        assert completed.returncode == 0, (
++            args,
++            completed.stdout,
++            completed.stderr,
++        )
++        return completed.stdout.strip()
++
++    git("init", "-q")
++    (primary / ".gitignore").write_text(
++        "templates/element/ignored.py\n", encoding="utf-8"
++    )
++    (primary / ".local-ai.toml").write_text(
++        'exclude_paths = ["templates/element/private.py"]\n'
++        "[path_overrides]\n"
++        '"templates/element/private.py" = "include"\n',
++        encoding="utf-8",
++    )
++    element = primary / "templates" / "element"
++    hard_denied = primary / "templates" / ".local-ai-hub"
++    element.mkdir(parents=True)
++    hard_denied.mkdir()
++    token = "T21_CANDIDATE_PATH_HINT_WORKTREE_TOKEN"
++    for file in (
++        element / "button.py",
++        element / "private.py",
++        hard_denied / "hard.py",
++    ):
++        file.write_text(f"marker = '{token}'\n", encoding="utf-8")
++    git("add", ".")
++    git(
++        "-c",
++        "user.name=T21 Test",
++        "-c",
++        "user.email=t21@example.invalid",
++        "commit",
++        "-qm",
++        "fixture",
++    )
++
++    worktree = tmp_path / "worktree"
++    git("worktree", "add", "--detach", str(worktree), "HEAD")
++    (worktree / ".local-ai.worktree.toml").write_text(
++        'force_include_paths = ["templates/element/ignored.py", '
++        '"templates/element/private.py", "templates/.local-ai-hub/hard.py"]\n',
++        encoding="utf-8",
++    )
++    (worktree / "templates" / "element" / "ignored.py").write_text(
++        f"marker = '{token}'\n", encoding="utf-8"
++    )
++
++    resolution = resolve_project_config(worktree)
++    assert "primary_project" in resolution.active_sources
++    assert "worktree" in resolution.active_sources
++    assert resolution.settings.exclude_paths == ("templates/element/private.py",)
++    assert resolution.settings.force_include_paths == (
++        "templates/element/ignored.py",
++        "templates/element/private.py",
++        "templates/.local-ai-hub/hard.py",
++    )
++
++    state_dir = tmp_path / "hub-state"
++    config = {
++        "server": {"state_dir": str(state_dir)},
++        "features": {},
++        "rag": {"extensions": [".py"]},
++        "search": {
++            "prefer_git_files": True,
++            "use_git_grep_fallback": False,
++            "use_ripgrep_if_available": False,
++            "max_files": 100,
++            "max_hits": 100,
++        },
++    }
++    services = LocalAIServices.__new__(LocalAIServices)
++    services.config = config
++    services._touch_project = lambda _root: None
++    services._repo_cache_state = lambda _root: {
++        "fingerprint": "revision-1",
++        "stale": False,
++        "degraded": False,
++    }
++    services._repo_cached = lambda _operation, _root, _params, compute: compute()
++    services.repo_tools = RepositoryTools(config)
++    services.learner = None
++    services.deterministic = None
++    services.code_index = None
++    services.preprocessor = None
++    services.evidence_store = None
++
++    app = type(
++        "TestApp",
++        (),
++        {
++            "config": config,
++            "debug_traces": None,
++            "recovery": RecoveryJournal(state_dir),
++            "services": services,
++        },
++    )()
++
++    class AuthorizedHandler(http_server.Handler):
++        def _require_authorized(self):
++            return True
++
++        def _tenant(self):
++            return "t21-candidate"
++
++        def _agent(self):
++            return "t21-candidate-test"
++
++        def log_message(self, *_args):
++            return None
++
++    monkeypatch.setattr(http_server, "APP", app)
++    server = ThreadingHTTPServer(("127.0.0.1", 0), AuthorizedHandler)
++    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
++    server_thread.start()
++    client_config = tmp_path / "client.toml"
++    client_config.write_text(
++        f"[server]\nport={server.server_port}\n"
++        f"state_dir='{state_dir.as_posix()}'\n",
++        encoding="utf-8",
++    )
++    client = HubClient(
++        tenant="t21-candidate-e2e",
++        config_path=str(client_config),
++        auto_start=False,
++    )
++    monkeypatch.setattr(mcp_server, "CLIENT", client)
++    wire_payloads: list[dict[str, object]] = []
++    accepted_hints: list[tuple[str, str]] = []
++    original_open = client._pooled_open
++    original_validate = project_config.validate_path_hint
++
++    def capture_open(method, path, body, headers, timeout):
++        if path == "/api/search" and body is not None:
++            wire_payloads.append(json.loads(body.decode("utf-8")))
++        return original_open(method, path, body, headers, timeout)
++
++    def capture_validate(root, hint, **kwargs):
++        resolved = original_validate(root, hint, **kwargs)
++        if resolved is not None:
++            accepted_hints.append((hint.path, hint.scope))
++        return resolved
++
++    client._pooled_open = capture_open
++    monkeypatch.setattr(project_config, "validate_path_hint", capture_validate)
++    try:
++        async def call_tool(arguments):
++            result = await mcp_server.mcp.call_tool("local_ai_repo", arguments)
++            contents = result[0] if isinstance(result, tuple) else result
++            content = next(item for item in contents if getattr(item, "type", None) == "text")
++            return json.loads(content.text)
++
++        hint = {
++            "path": "templates/element",
++            "purpose": "repository_search",
++            "scope": "repo_search",
++        }
++        result = asyncio.run(
++            call_tool(
++                {
++                    "action": "search",
++                    "root": str(worktree),
++                    "query": token,
++                    "path_hints": [hint],
++                }
++            )
++        )
++        assert result.get("success") is True, result
++        paths = {item.get("path") for item in result.get("results", [])}
++        assert "templates/element/button.py" in paths, paths
++        assert "templates/element/ignored.py" in paths, paths
++        assert "templates/element/private.py" not in paths, paths
++        assert "templates/.local-ai-hub/hard.py" not in paths, paths
++        assert wire_payloads == [
++            {
++                "root": str(worktree.resolve()),
++                "query": token,
++                "top_k": 12,
++                "enrich": False,
++                "path_hints": [hint],
++            }
++        ]
++        assert ("templates/element", "repo_search") in accepted_hints
++
++        before_invalid = len(wire_payloads)
++        invalid = asyncio.run(
++            call_tool(
++                {
++                    "action": "search",
++                    "root": str(worktree),
++                    "query": token,
++                    "path_hints": [
++                        {
++                            "path": "../outside.py",
++                            "purpose": "repository_search",
++                            "scope": "repo_search",
++                        }
++                    ],
++                }
++            )
++        )
++        assert invalid.get("success") is False, invalid
++        assert invalid.get("status_code") == 400, invalid
++        assert invalid.get("terminal") is True
++        assert invalid.get("retryable") is False
++        assert len(wire_payloads) == before_invalid
++    finally:
++        client.close()
++        server.shutdown()
++        server.server_close()
++        server_thread.join(timeout=3)
+diff --git a/tests/test_t21_search_policy_consumers.py b/tests/test_t21_search_policy_consumers.py
+new file mode 100644
+index 0000000..659d76b
+--- /dev/null
++++ b/tests/test_t21_search_policy_consumers.py
+@@ -0,0 +1,76 @@
++"""Project search settings must reach the real lexical search consumers."""
++from __future__ import annotations
++
++import os
++import subprocess
++from pathlib import Path
++
++import pytest
++
++import local_ai_hub.project_config as project_config
++import local_ai_hub.repo_tools as repo_tools
++import local_ai_hub.services as services_module
++from local_ai_hub.project_config import PathHint
++from local_ai_hub.repo_tools import RepositoryTools
++from local_ai_hub.services import LocalAIServices
++
++
++def _search_service(tmp_path: Path, settings: str) -> tuple[Path, LocalAIServices]:
++    expected = os.environ.get("T21_EXPECT_SOURCE_ROOT")
++    if expected:
++        for module in (project_config, repo_tools, services_module):
++            assert Path(module.__file__).resolve().is_relative_to(Path(expected).resolve())
++    root = tmp_path / "repo"
++    root.mkdir()
++    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, timeout=10)
++    (root / ".local-ai.toml").write_text(settings, encoding="utf-8")
++    (root / "src").mkdir()
++    (root / "src" / "visible.py").write_text("needle = 1\n", encoding="utf-8")
++    config = {
++        "server": {"state_dir": str(tmp_path / "state")},
++        "search": {"max_files": 100},
++        "rag": {"extensions": [".py", ".php"]},
++    }
++    service = LocalAIServices.__new__(LocalAIServices)
++    service.config = config
++    service.repo_tools = RepositoryTools(config)
++    service.learner = service.code_index = service.preprocessor = None
++    service.deterministic = service.evidence_store = None
++    service._repo_cache_state = lambda _root: {"fingerprint": "current", "stale": False}
++    service._repo_cached = lambda _operation, _root, _params, compute: compute()
++    return root, service
++
++
++@pytest.mark.parametrize("explicit_hint", [False, True])
++def test_search_honors_project_custom_text_extensions(tmp_path: Path, explicit_hint: bool) -> None:
++    root, service = _search_service(tmp_path, '[custom_extensions]\ntext = [".shader"]\n')
++    (root / "src" / "button.shader").write_text("needle shader\n", encoding="utf-8")
++    hints = [PathHint(path="src/button.shader", purpose="repository_search", scope="repo_search")] if explicit_hint else []
++    result = service.repo_search(str(root), "needle", path_hints=hints)
++    assert result["success"] is True, result
++    assert {hit["path"] for hit in result["results"]} == {"src/visible.py", "src/button.shader"}
++
++
++@pytest.mark.parametrize("explicit_hint", [False, True])
++def test_search_honors_forced_gitignored_directory(tmp_path: Path, explicit_hint: bool) -> None:
++    root, service = _search_service(tmp_path, 'force_include_paths = ["node_modules/@my-org/**"]\n')
++    (root / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
++    forced = root / "node_modules" / "@my-org" / "button.php"
++    forced.parent.mkdir(parents=True)
++    forced.write_text("needle forced dependency\n", encoding="utf-8")
++    hints = [PathHint(path="node_modules/@my-org/button.php", purpose="repository_search", scope="repo_search")] if explicit_hint else []
++    result = service.repo_search(str(root), "needle", path_hints=hints)
++    assert result["success"] is True, result
++    assert {hit["path"] for hit in result["results"]} == {"src/visible.py", "node_modules/@my-org/button.php"}
++
++
++def test_force_include_does_not_override_project_binary_policy(tmp_path: Path) -> None:
++    root, service = _search_service(
++        tmp_path, 'force_include_paths = ["src/**"]\n[custom_extensions]\nbinary = [".php"]\n'
++    )
++    (root / "src" / "opaque.php").write_text("needle must remain binary\n", encoding="utf-8")
++    result = service.repo_search(str(root), "needle", path_hints=[
++        PathHint(path="src/opaque.php", purpose="repository_search", scope="repo_search")
++    ])
++    assert result["success"] is True, result
++    assert {hit["path"] for hit in result["results"]} == {"src/visible.py"}

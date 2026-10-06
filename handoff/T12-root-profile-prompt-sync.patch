@@ -1,0 +1,34 @@
+--- a/docs/INSTALL_PROMPT.md
++++ b/docs/INSTALL_PROMPT.md
+@@ -4,4 +4,6 @@
+ 
+ Preserve profile-aware model routing when refreshing repository instructions: integrated uses qwen2.5-coder:0.5b preprocessing, 1.5b quick, 3b involved, 7b hard reasoning and qwen3-vl:4b vision; balanced uses qwen2.5-coder:1.5b preprocessing, 3b fast, 7b ordinary/involved work and qwen3.5:9b for hardest reasoning and vision; `high` uses `qwen2.5-coder:1.5b` preprocessing, `qwen2.5-coder:3b` quick, `qwen2.5-coder:7b` involved, `qwen3.5:9b` ordinary and hardest reasoning, and `qwen3.5:9b` vision; `max` uses `qwen2.5-coder:1.5b` preprocessing, `qwen2.5-coder:3b` quick, and `qwen3.5:9b` for involved, ordinary and hardest reasoning, and `qwen3.5:9b` vision.
++Local model routing starts from `[hardware].profile="auto"`; hardware detection or an explicit profile selects a role map, then user overrides apply. In order `background_code/fast_code/heavy_code/reasoning/general/vision`: integrated=`qwen2.5-coder:0.5b/qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen2.5-coder:1.5b/qwen3-vl:4b`; balanced=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen2.5-coder:7b/qwen3.5:9b`; high=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`; max=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`. Ordinary reasoning uses `heavy_code`; only heavy reasoning uses `reasoning`. These are routing targets, not proof that models are installed; model pulls remain opt-in. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
++For model roles, `cpu` and `low` reuse the integrated model map; profile-specific scheduler settings still apply. Explicit model overrides and runtime fallbacks preserve the routed request's minimum tier; do not lower its quality floor for latency.
+ 
+ ---
+@@ -127,5 +129,5 @@
+ Delegation is the default for any task with useful bounded independent work.
+ 
+-- Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression. Resolve routes from active config. In balanced, use `qwen2.5-coder:1.5b` only for preprocessing, `qwen2.5-coder:3b` for quick/simple tasks, `qwen2.5-coder:7b` for ordinary and more involved work and hard reasoning, and `qwen3.5:9b` for extreme reasoning and vision.
++- Model routing follows `[hardware].profile` (default `auto`) and user overrides; task routers select the role tier. For bounded semantic generation, reasoning, review, independent second opinions, or compression, use `local_ai_task` selectively after deterministic evidence when it adds value. Cloud reasoning and planning may proceed directly without a local semantic handoff; keep deterministic simple tasks enabled for exact facts, symbols, diff and tests.
+ - Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
+ - Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
+@@ -180,5 +182,5 @@
+ - Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
+ - Surgical edits: Prefer targeted block replacements over rewriting entire files.
+-- Local model delegation: use `local_ai_task` with model routes resolved from active config. In balanced, `qwen2.5-coder:1.5b` is preprocessing-only, `qwen2.5-coder:3b` handles quick/simple tasks, `qwen2.5-coder:7b` handles ordinary and more involved work and hard reasoning, and `qwen3.5:9b` handles extreme reasoning and vision. Reserve `qwen2.5-coder:0.5b` for preprocessing when selected.
++- Local model delegation follows the active hardware profile and configured role tiers; do not assume a named model is installed. Use `local_ai_task` only for bounded semantic work after deterministic evidence.
+ <!-- END TOKEN ECONOMY POLICY -->
+ ```
+--- a/docs/UPDATE_PROMPT.md
++++ b/docs/UPDATE_PROMPT.md
+@@ -4,4 +4,8 @@
+ 
+ Preserve profile-aware model routing when refreshing repository instructions: integrated uses qwen2.5-coder:0.5b preprocessing, 1.5b quick, 3b involved, 7b hard reasoning and qwen3-vl:4b vision; balanced uses qwen2.5-coder:1.5b preprocessing, 3b fast, 7b ordinary/involved work and qwen3.5:9b for hardest reasoning and vision; `high` uses `qwen2.5-coder:1.5b` preprocessing, `qwen2.5-coder:3b` quick, `qwen2.5-coder:7b` involved, `qwen3.5:9b` ordinary and hardest reasoning, and `qwen3.5:9b` vision; `max` uses `qwen2.5-coder:1.5b` preprocessing, `qwen2.5-coder:3b` quick, and `qwen3.5:9b` for involved, ordinary and hardest reasoning, and `qwen3.5:9b` vision.
++Local model routing starts from `[hardware].profile="auto"`; hardware detection or an explicit profile selects a role map, then user overrides apply. In order `background_code/fast_code/heavy_code/reasoning/general/vision`: integrated=`qwen2.5-coder:0.5b/qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen2.5-coder:1.5b/qwen3-vl:4b`; balanced=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen2.5-coder:7b/qwen3.5:9b`; high=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`; max=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`. Ordinary reasoning uses `heavy_code`; only heavy reasoning uses `reasoning`. These are routing targets, not proof that models are installed; model pulls remain opt-in. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
++For model roles, `cpu` and `low` reuse the integrated model map; profile-specific scheduler settings still apply. Explicit model overrides and runtime fallbacks preserve the routed request's minimum tier; do not lower its quality floor for latency.
++Semantic delegation is optional and on-demand; use it when bounded independent work would add value.
++- Model routing follows `[hardware].profile` (default `auto`) and user overrides; task routers select the role tier. For bounded semantic generation, reasoning, review, independent second opinions, or compression, use `local_ai_task` selectively after deterministic evidence when it adds value. Cloud reasoning and planning may proceed directly without a local semantic handoff; keep deterministic simple tasks enabled for exact facts, symbols, diff and tests.
+ 
+ ---

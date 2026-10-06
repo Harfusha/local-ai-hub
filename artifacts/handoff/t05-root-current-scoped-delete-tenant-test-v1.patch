@@ -1,0 +1,31 @@
+diff --git a/tests/test_t05_cache_state_isolation.py b/tests/test_t05_cache_state_isolation.py
+--- a/tests/test_t05_cache_state_isolation.py
++++ b/tests/test_t05_cache_state_isolation.py
+@@ -131,11 +131,13 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
+         record.record_id,
+         scope=AgentScope.WORKTREE,
+         scope_id="another-worktree",
++        tenant="tenant-a",
+     ) is False
+     assert memories.get(
+         record.record_id,
+         scope=AgentScope.WORKTREE,
+         scope_id="t05-worktree",
++        tenant="tenant-a",
+     ).value == "keep until owner deletes"
+     assert memories.find_relations(source_entity=record.record_id) == original_relations
+ 
+@@ -143,11 +145,13 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
+         record.record_id,
+         scope=AgentScope.WORKTREE,
+         scope_id="t05-worktree",
++        tenant="tenant-a",
+     ) is True
+     assert memories.get(
+         record.record_id,
+         scope=AgentScope.WORKTREE,
+         scope_id="t05-worktree",
++        tenant="tenant-a",
+     ) is None
+     assert memories.find_relations(source_entity=record.record_id) == []
+ 

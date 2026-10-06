@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-03",
+  "status": "BLOCKED_DEPENDENCY_PIN_MISMATCH",
+  "root_modified_by_this_task": false,
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "t05_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "t08_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "t08_acceptance_status": "PASS_T08_TARGETED_CURRENT_HASH_T09_MISSING",
+  "t08_manifest_sha256": "FCD436C4E51DBCD89A28C6842C0369186F1FD823D582DF89E683701FE08417FF",
+  "t08_manifest_path": "artifacts/t08-acceptance-gate-20261003.json",
+  "receipt_source_pin_count": 8,
+  "t08_sources_matching_receipt": 8,
+  "t05_sources_matching_receipt": 0,
+  "root_sources_matching_receipt": 1,
+  "source_comparisons": [
+    {
+      "path": "src/local_ai_hub/agent_events.py",
+      "t08_receipt_sha256": "CBCAF5D8E1C2200F33F4285ED4E99532B951738C071F3F5A025DB5D97225ADF1",
+      "t08_current_sha256": "CBCAF5D8E1C2200F33F4285ED4E99532B951738C071F3F5A025DB5D97225ADF1",
+      "t05_current_sha256": "84EDB06DFD22FA900DB09474EFCF0689393E1A9FB76C0E0D636BFD5826B63AC2",
+      "root_current_sha256": "1B8E63A5FF329090801CD7F19E7DF7A95E42AC0034465AC5FA06D566B279CCF4",
+      "t08_pin_match": true,
+      "t05_pin_match": false,
+      "root_pin_match": false
+    },
+    {
+      "path": "src/local_ai_hub/agent_tasks.py",
+      "t08_receipt_sha256": "3CCDB0B42A2B3886DA7E7DB75788E17F2B4EA0BAFF13FC4ECCA5F4B3F09E18F5",
+      "t08_current_sha256": "3CCDB0B42A2B3886DA7E7DB75788E17F2B4EA0BAFF13FC4ECCA5F4B3F09E18F5",
+      "t05_current_sha256": "C432D07FB1D3773A79FD3B723509F0A771A82D990C832347B74B5A0B73BD245F",
+      "root_current_sha256": "73A5BDBB25205B1F789A6E452D3B28AC24A278D781D071AC6FABE347992BDCBB",
+      "t08_pin_match": true,
+      "t05_pin_match": false,
+      "root_pin_match": false
+    },
+    {
+      "path": "src/local_ai_hub/agent_verification.py",
+      "t08_receipt_sha256": "468E4B18117CF77CE0BB34CFE08F9D1898EE0BDA43C5494BEAF7AE23F418645D",
+      "t08_current_sha256": "468E4B18117CF77CE0BB34CFE08F9D1898EE0BDA43C5494BEAF7AE23F418645D",
+      "t05_current_sha256": "6BEE105EAE596E93910FE91AA5AA2541E7B084F8E15AF7831257CFDD02B86BF2",
+      "root_current_sha256": "FB477438FF110AB80FE6F2D486FFA5D87AAB1A855735FCD94592F8080EAF0017",
+      "t08_pin_match": true,
+      "t05_pin_match": false,
+      "root_pin_match": false
+    },
+    {
+      "path": "src/local_ai_hub/agent_memory.py",
+      "t08_receipt_sha256": "BFC91D7958654D6BD0669E1C92C391C6E93A9A42D1E134A44A8E04868F4C9E70",
+      "t08_current_sha256": "BFC91D7958654D6BD0669E1C92C391C6E93A9A42D1E134A44A8E04868F4C9E70",
+      "t05_current_sha256": "FBB379CF1119ED2C2AE956D01C3238976496B2554F763544FB0E15FD13445DBF",
+      "root_current_sha256": "6D2DCD12F10E78340CE411C24E70FD0B9C0D7217ED48802274393979D0B3A32F",
+      "t08_pin_match": true,
+      "t05_pin_match": false,
+      "root_pin_match": false
+    },
+    {
+      "path": "src/local_ai_hub/agent_context.py",
+      "t08_receipt_sha256": "60FD4C3C5233934F58E1C8B79E0FD309D785A1B479765EA021A6E55F700096C7",
+      "t08_current_sha256": "60FD4C3C5233934F58E1C8B79E0FD309D785A1B479765EA021A6E55F700096C7",
+      "t05_current_sha256": "8E1BDE68D2307872DBBF337393E6ECA81517ABDF7290F1A6B0F91ADCB8E65705",
+      "root_current_sha256": "01B647D7EB685C2849DBE960F47B364849B1C130A3F567E875DD82173E1786C1",
+      "t08_pin_match": true,
+      "t05_pin_match": false,
+      "root_pin_match": false
+    },
+    {
+      "path": "src/local_ai_hub/agent_blackboard.py",
+      "t08_receipt_sha256": "9222A5084BBB0A937CADB79A091134CABD4CA3A73B7A1321F0035DB4DC78E2D1",
+      "t08_current_sha256": "9222A5084BBB0A937CADB79A091134CABD4CA3A73B7A1321F0035DB4DC78E2D1",
+      "t05_current_sha256": "5AB9BF2BF92DB8953AB6E01C5AE43A6CCC77C123AC08BD637CA389460DBA9E27",
+      "root_current_sha256": "9222A5084BBB0A937CADB79A091134CABD4CA3A73B7A1321F0035DB4DC78E2D1",
+      "t08_pin_match": true,
+      "t05_pin_match": false,
+      "root_pin_match": true
+    },
+    {
+      "path": "src/local_ai_hub/agent_incidents.py",
+      "t08_receipt_sha256": "5A3443FCC6ABA35A379C51CD75A6EE5A07C0A66954BB9AF093AE0FDC77CF69C8",
+      "t08_current_sha256": "5A3443FCC6ABA35A379C51CD75A6EE5A07C0A66954BB9AF093AE0FDC77CF69C8",
+      "t05_current_sha256": "1A00AF09B4859CFF89474C32492FDC83B3AE09C1F516FA79759651437FEC1EB3",
+      "root_current_sha256": "4B4F4A16B853C63AB70BE163322EF1ACAA12F8230A84552B4954A9BB165752C3",
+      "t08_pin_match": true,
+      "t05_pin_match": false,
+      "root_pin_match": false
+    },
+    {
+      "path": "src/local_ai_hub/leases.py",
+      "t08_receipt_sha256": "08864C962783D530B255EBB6EEEB3154E496492AF12D869CD8CA45EC45577F89",
+      "t08_current_sha256": "08864C962783D530B255EBB6EEEB3154E496492AF12D869CD8CA45EC45577F89",
+      "t05_current_sha256": "BF56E69ABC46DCF1B9CC4B4778251618FD1EA243329D58E48BEFE833DB1AF1CB",
+      "root_current_sha256": "446959227D37E706BFA1511CEE304C6D84FDD91DA0EBFEF5FBB88AFAEEAFD6AE",
+      "t08_pin_match": true,
+      "t05_pin_match": false,
+      "root_pin_match": false
+    }
+  ],
+  "t05_task_store_sha256": "C432D07FB1D3773A79FD3B723509F0A771A82D990C832347B74B5A0B73BD245F",
+  "t05_test_path": "tests/test_t05_memory_adoption_context.py",
+  "t05_test_sha256": "675D2ECC78B83CA96F634ED45F34F227D73D193D58679C3290D1A8784DE92CFB",
+  "root_task_store_sha256": "73A5BDBB25205B1F789A6E452D3B28AC24A278D781D071AC6FABE347992BDCBB",
+  "root_task_memory_test_sha256": "22E0A371A50E9D728940682D43783ED0A1ECC546355C075EAA645F27CBCCCAC4",
+  "root_dirty_paths": [
+    "src/local_ai_hub/agent_events.py",
+    "src/local_ai_hub/agent_tasks.py",
+    "tests/test_agent_task_memory_adoption.py"
+  ],
+  "candidate_dirty_paths": [
+    "src/local_ai_hub/agent_events.py",
+    "src/local_ai_hub/agent_tasks.py",
+    "tests/test_t05_memory_adoption_context.py"
+  ],
+  "tests_run_after_pin_check": false,
+  "test_blocker": "T05 and root source pins do not match T08 receipt; candidate TaskStore also differs substantially from root-current TaskStore. Do not transplant candidate source diff without owner reconciliation.",
+  "route_edit": "none: /api/context/pack preserved"
+}

@@ -1,0 +1,23 @@
+--- a/docs/T19_RELEASE_VALIDATION_RUNBOOK.md
++++ b/docs/T19_RELEASE_VALIDATION_RUNBOOK.md
+@@ -5,5 +5,5 @@
+ ## Frozen-source command pack — prepared, not run
+ 
+-Run only after T20 names one frozen integration revision and T02 releases the shared CPU/test slot. Set environment variable `T19_FROZEN_SOURCE` to a clean checkout of that revision with no pre-existing `build/` or `dist/`; keep existing user worktrees and artifacts untouched. The commands derive a revision-specific artifact directory outside `$SourceRoot`. These commands validate T19 source gates; they do not complete T20 release acceptance.
++Run only after T20 names one frozen integration revision and explicitly assigns T19 a serial validation slot. T20 owns the central queue; a prior slot release alone does not authorize the next run. Set environment variable `T19_FROZEN_SOURCE` to a clean checkout of that revision with no pre-existing `build/` or `dist/`; keep existing user worktrees and artifacts untouched. The commands derive a revision-specific artifact directory outside `$SourceRoot`. These commands validate T19 source gates; they do not complete T20 release acceptance.
+ 
+ ```powershell
+@@ -108,5 +108,5 @@
+ ```
+ 
+-Run the Windows block once for each `$PythonVersion` value: `'3.11'`, `'3.12'`, `'3.13'`, and `'3.14'`. It derives separate sdist/wheel environments per version. Do not run pytest until T02 releases the shared test slot.
++Run the Windows block once for each `$PythonVersion` value: `'3.11'`, `'3.12'`, `'3.13'`, and `'3.14'`. It derives separate sdist/wheel environments per version. Treat package builds and install smoke as serial validation: run only under T20's explicit T19 slot assignment. That assignment must also cover any pytest command; never infer authorization from a prior slot release.
+ 
+ ## Linux
+@@ -149,5 +149,5 @@
+ ```
+ 
+-Run the Linux block four times, setting these values before each run: `PYTHON_BIN=python3.11` and `PYTHON_TAG=py311`; `PYTHON_BIN=python3.12` and `PYTHON_TAG=py312`; `PYTHON_BIN=python3.13` and `PYTHON_TAG=py313`; `PYTHON_BIN=python3.14` and `PYTHON_TAG=py314`. It derives separate sdist/wheel environments per version. Do not run pytest until T02 releases the shared test slot.
++Run the Linux block four times, setting these values before each run: `PYTHON_BIN=python3.11` and `PYTHON_TAG=py311`; `PYTHON_BIN=python3.12` and `PYTHON_TAG=py312`; `PYTHON_BIN=python3.13` and `PYTHON_TAG=py313`; `PYTHON_BIN=python3.14` and `PYTHON_TAG=py314`. It derives separate sdist/wheel environments per version. Treat package builds and install smoke as serial validation: run only under T20's explicit T19 slot assignment. That assignment must also cover any pytest command; never infer authorization from a prior slot release.
+ 
+ ## Installer reinstall/uninstall cycle

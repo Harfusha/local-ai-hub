@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-04",
+  "scope": "candidate synthetic smoke only",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t02-quality-baseline-resume\\.local-ai-hub",
+  "candidate_head": "ad974c54e150d5f2c9bdada8179bc02457147549",
+  "command": "python -B tools/benchmark_surfaces.py --state-dir C:\\Users\\Adam\\.codex\\worktrees\\t02-evidence-20261004\\state --scratch-dir C:\\Users\\Adam\\.codex\\worktrees\\t02-evidence-20261004\\scratch\\files-100-rag-10000 --files 100 --rag-chunks 10000 --repetitions 3 --light-repetitions 10 --paired-repetitions 3 --concurrency 1 4 16 32 --full --checkpoint C:\\Users\\Adam\\.codex\\worktrees\\t02-evidence-20261004\\checkpoints\\files-100-rag-10000.json --checkpoint-batch-size 25",
+  "broker_attempt": {
+    "terminal": true,
+    "retryable": false,
+    "blocked": "mutation requires task-owned registered worktree",
+    "request_id": "req_9c129b5ea92f"
+  },
+  "native_fallback": {
+    "exit_code": 0,
+    "process_session_id": 10808,
+    "duration_seconds": 44.0
+  },
+  "record_path": "C:\\Users\\Adam\\.codex\\worktrees\\t02-evidence-20261004\\state\\surface-benchmark-1791131666250847500.json",
+  "record_sha256": "F00B458DF9EBDCB839CEB93A64B8ECC64BBF7B20B111804CC38EF56D8EFFA927",
+  "record_timestamp_utc": "2026-10-04T16:34:22.699049+00:00",
+  "total_duration_ms": 46770.644,
+  "workload": {
+    "inference": "skipped_not_requested",
+    "rag_chunk_count": 10000,
+    "synthetic_file_count": 100,
+    "light_repetitions": 10,
+    "concurrency": [
+      1,
+      4,
+      16,
+      32
+    ],
+    "paired_repetitions": 3
+  },
+  "machine": {
+    "system": "Windows 11",
+    "cpu_count": 16,
+    "total_memory_bytes": 33998716928,
+    "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"
+  },
+  "stages": {
+    "hub_health": {
+      "p95_ms": 0.961,
+      "p50_ms": 0.832,
+      "status": "passed",
+      "count": 10
+    },
+    "hub_context_pack": {
+      "p95_ms": 481.326,
+      "p50_ms": 169.476,
+      "status": "passed",
+      "count": 6
+    },
+    "hub_rag_chunking": {
+      "p95_ms": 0.006,
+      "p50_ms": 0.001,
+      "status": "passed",
+      "count": 6
+    },
+    "hub_sqlite_index": {
+      "p95_ms": 75.679,
+      "p50_ms": 54.41,
+      "status": "passed",
+      "count": 3
+    },
+    "synthetic_setup": {
+      "status": "passed",
+      "p50_ms": 47.208
+    },
+    "hub_code_index": {
+      "p95_ms": 115.949,
+      "p50_ms": 108.67,
+      "status": "passed",
+      "count": 6
+    },
+    "transport": {
+      "p95_ms": 0.393,
+      "p50_ms": 0.326,
+      "status": "passed",
+      "count": 10
+    },
+    "hub_sqlite_db_read": {
+      "p95_ms": 1.425,
+      "p50_ms": 1.357,
+      "status": "passed",
+      "count": 6
+    },
+    "hub_queue_admission": {
+      "p95_ms": 5899.735,
+      "p50_ms": 987.085,
+      "status": "passed",
+      "errors": 0,
+      "count": 530
+    },
+    "hub_validation": {
+      "p95_ms": 88.665,
+      "p50_ms": 88.316,
+      "status": "passed",
+      "count": 3
+    }
+  },
+  "synthetic_quality": {
+    "unavailable": [
+      "graph",
+      "affected_tests",
+      "retrieval_relevance",
+      "code_generation",
+      "vision",
+      "speech"
+    ],
+    "scored_checks": 2,
+    "passing": [
+      "symbols",
+      "context_pack"
+    ],
+    "reported_score_pct": 100
+  },
+  "baseline_readiness": "per_case",
+  "baseline_readiness_reasons": [
+    "light_repetitions_below_1000",
+    "paired_repetitions_below_30",
+    "completed_matrix_missing_or_incomplete",
+    "required_golden_operations_incomplete"
+  ],
+  "acceptance": "NOT_ACCEPTED",
+  "limitations": [
+    "one smoke workload only; not 24-cell matrix",
+    "synthetic quality only; no real corpus/query evaluation",
+    "not plan-grade; 10 light and 3 paired samples",
+    "model inference and VRAM not measured"
+  ]
+}

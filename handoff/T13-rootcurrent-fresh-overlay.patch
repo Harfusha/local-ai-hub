@@ -1,0 +1,183 @@
+--- a/src/local_ai_hub/operational_mode.py
++++ b/src/local_ai_hub/operational_mode.py
+@@ -192,7 +192,7 @@
+     mode = snapshot.mode if snapshot is not None else "maintenance"
+     degraded = snapshot is None or snapshot.degraded
+     safe_job_actions = {"status", "wait", "result", "cancel", "evaluation_report"}
+-    if not degraded and action.strip().lower().replace("-", "_") in safe_job_actions:
++    if not degraded and mode == "gaming" and action.strip().lower().replace("-", "_") in safe_job_actions:
+         return None
+     if not degraded and mode == "gaming" and not requires_heavy_work:
+         return None
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -323,7 +323,7 @@
+         action = str((payload or {}).get("action", "submit")).strip().lower().replace("-", "_")
+         return "speculative_lint" if action == "submit" else f"speculative_lint_{action}"
+     if path in {"/api/async-jobs", "/api/work-orders"}:
+-        action_key = "job_action" if path == "/api/async-jobs" else "action"
++        action_key = "action" if path == "/api/work-orders" else ("job_action" if "job_action" in (payload or {}) else "action")
+         return str((payload or {}).get(action_key, "submit")).strip().lower().replace("-", "_")
+     if path == "/api/delegate":
+         return "delegate"
+@@ -368,7 +368,7 @@
+     method: str, path: str, payload: Mapping[str, Any] | None = None
+ ) -> dict[str, Any] | None:
+     policy = _http_mode_policy(method, path, payload)
+-    if policy in {"operator", "existing_job"}:
++    if policy == "operator":
+         return None
+     action = _http_mode_action(path, payload)
+     try:
+@@ -376,9 +376,11 @@
+         snapshot = load_operational_mode(state_dir)
+         if not snapshot.degraded and snapshot.mode == "active":
+             return None
+-        if not snapshot.degraded and snapshot.mode == "gaming" and policy == "gaming_read":
++        if not snapshot.degraded and snapshot.mode == "gaming" and policy in {"gaming_read", "existing_job"}:
+             return None
+-        rejection = operational_mode_gate_error(snapshot, action, requires_heavy_work=True)
++        rejection = operational_mode_gate_error(
++            snapshot, action, requires_heavy_work=policy != "gaming_read"
++        )
+     except Exception:
+         rejection = {
+             "success": False, "mode": "maintenance",
+@@ -2694,18 +2696,21 @@
+             guard_factory = getattr(async_jobs, "operational_mode_change_guard", None)
+             guard = guard_factory() if callable(guard_factory) else nullcontext()
+             cancellation_error = ""
++            release_token = None
+             try:
+                 with guard:
+                     state_dir = APP.config.get("server", {}).get("state_dir", "state")
+                     current_mode = load_operational_mode(state_dir)
+                     requested_mode = str(mode).strip().lower().replace("-", "_")
++                    release_active = getattr(async_jobs, "resource_release_active", None)
++                    release_in_progress = bool(release_active()) if callable(release_active) else False
+                     if (
+                         requested_mode == "active" and current_mode.mode != "active"
+-                        and (_ACTIVE_TRANSCRIPTIONS.active_count() or _ACTIVE_CONVERSATIONS.active_count())
++                        and (release_in_progress or _ACTIVE_TRANSCRIPTIONS.active_count() or _ACTIVE_CONVERSATIONS.active_count())
+                     ):
+                         self._send(423, {
+-                            "success": False, "error": "cannot reactivate while Whisper or conversation cleanup is active",
+-                            "error_code": "inference_active", "mode_changed": False,
++                            "success": False, "error": "cannot reactivate while inference or resource cleanup is active",
++                            "error_code": "resource_release_in_progress" if release_in_progress else "inference_active", "mode_changed": False,
+                             "mode": current_mode.mode, "revision": current_mode.revision,
+                             "terminal": False, "retryable": True, "retry_after_seconds": 1,
+                         }); return
+@@ -2721,6 +2726,10 @@
+                             mode_changed(snapshot)
+                         except Exception as exc:
+                             cancellation_error = type(exc).__name__
++                    if snapshot.mode == "gaming" and async_jobs is not None:
++                        begin_release = getattr(async_jobs, "begin_resource_release", None)
++                        if callable(begin_release):
++                            release_token = begin_release()
+             except ValueError as exc:
+                 self._send(400, {
+                     "success": False, "error": str(exc), "error_code": "invalid_mode_request",
+@@ -2793,6 +2802,21 @@
+                         "reason": "inference_admission_tracking_unavailable",
+                     }
+                 inference_active = inference_active or bool(admission_release.get("inference_active"))
++                if inference_active and release_token is not None:
++                    manager_token = release_token
++                    release_token = None
++                    wait_for_drain = getattr(async_jobs, "when_inference_actions_drained", None)
++                    if callable(wait_for_drain):
++                        def release_after_drain() -> None:
++                            wait_for_drain(
++                                set(tracked_actions),
++                                lambda: async_jobs.end_resource_release(manager_token),
++                            )
++                        _ACTIVE_TRANSCRIPTIONS.when_drained(
++                            lambda: _ACTIVE_CONVERSATIONS.when_drained(release_after_drain)
++                        )
++                    else:
++                        admission_release["release_ownership_retained"] = True
+             response["whisper_process_release"] = whisper_release
+             response["conversation_release"] = conversation_release
+             response["inference_admission_release"] = admission_release
+@@ -2809,18 +2833,24 @@
+                     response["runtime_unload"] = stale_unload
+                     response["accelerator_release"] = stale_accelerator
+                 else:
++                    release_current = False
+                     with guard_factory():
+                         release_snapshot = load_operational_mode(APP.config.get("server", {}).get("state_dir", "state"))
+-                        if (
++                        release_current = not (
+                             release_snapshot.degraded
+                             or release_snapshot.mode != snapshot.mode
+                             or release_snapshot.revision != snapshot.revision
+-                        ):
+-                            response["success"] = False
+-                            response["mode_transition_stale"] = True
+-                            response["runtime_unload"] = stale_unload
+-                            response["accelerator_release"] = stale_accelerator
+-                        else:
++                        )
++                    if not release_current:
++                        response["success"] = False
++                        response["mode_transition_stale"] = True
++                        response["runtime_unload"] = stale_unload
++                        response["accelerator_release"] = stale_accelerator
++                        if release_token is not None:
++                            async_jobs.end_resource_release(release_token)
++                            release_token = None
++                    else:
++                        try:
+                                 runtime = getattr(APP, "runtime", None)
+                                 unload = getattr(runtime, "unload_configured_models", None)
+                                 if callable(unload):
+@@ -2872,6 +2902,10 @@
+                                         accelerator_release["verified"] = False
+                                         accelerator_release["failed"][name] = type(exc).__name__
+                                 response["accelerator_release"] = accelerator_release
++                        finally:
++                            if release_token is not None:
++                                async_jobs.end_resource_release(release_token)
++                                release_token = None
+             if cancellation_error:
+                 response["job_cancellation"] = {"success": False, "error": cancellation_error}
+             elif mode in {"gaming", "maintenance"} and not callable(mode_changed):
+--- a/src/local_ai_hub/mcp_server.py
++++ b/src/local_ai_hub/mcp_server.py
+@@ -1100,13 +1100,8 @@
+                 and bool(getattr(FEATURES, "speculative_lint", False))
+                 and str(arguments.get("action", "")).strip().lower().replace("-", "_") == "speculative_lint"
+             )
+-            gaming_status = (
+-                mode_rejection is not None
+-                and mode_snapshot.mode == "gaming"
+-                and not mode_snapshot.degraded
+-                and fn.__name__ == "local_ai_status"
+-            )
+-            if mode_rejection is not None and not (gaming_lint or gaming_status):
++            operator_status = fn.__name__ == "local_ai_status"
++            if mode_rejection is not None and not (gaming_lint or operator_status):
+                 return mode_rejection
+             extra = arguments.get("extra_fields") or kwargs.get("extra_fields")
+             token = _CURRENT_EXTRA_FIELDS.set(extra) if extra is not None else None
+--- a/src/local_ai_hub/app.py
++++ b/src/local_ai_hub/app.py
+@@ -536,8 +536,14 @@
+                 task_payload = dict(raw_task) if isinstance(raw_task, dict) else {"task": str(raw_task)}
+                 for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
+                     task_payload.pop(untrusted_context, None)
+-                for key, value in inherited_context.items():
+-                    task_payload.setdefault(key, value)
++                child_has_workspace = any(
++                    str(task_payload.get(key) or "").strip()
++                    for key in ("root", "cwd")
++                )
++                if not child_has_workspace:
++                    for key, value in inherited_context.items():
++                        if str(value or "").strip():
++                            task_payload[key] = value
+                 tasks.append(task_payload)
+             return self.services.batch_delegate({"tasks": tasks, "priority": 1}, tenant)
+         if action == "speculative_lint":

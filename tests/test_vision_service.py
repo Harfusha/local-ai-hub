@@ -15,6 +15,7 @@ from local_ai_hub.app import LocalAIApp
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.model_policy import ModelExecutionPolicy
 from local_ai_hub.services import LocalAIServices
+from local_ai_hub.vision_inputs import VisionInputs, prepare_vision_inputs
 from local_ai_hub.vision_contracts import VISION_MAX_IMAGE_BYTES, VISION_MAX_IMAGE_CHARS
 
 
@@ -27,6 +28,20 @@ def _png(width: int = 640, height: int = 360) -> bytes:
     row = b"\0" + b"\0" * (width * 3)
     pixels = zlib.compress(row * height)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", pixels) + chunk(b"IEND", b"")
+
+
+def test_prepare_vision_inputs_normalizes_data_url_without_runtime() -> None:
+    data_url = "data:image/png;base64,aW1hZ2U="
+    prepared = prepare_vision_inputs(
+        args={"image": data_url},
+        image_path=data_url,
+        prompt="review this page",
+        tenant="tenant-a",
+        artifacts=MagicMock(),
+    )
+    assert isinstance(prepared, VisionInputs)
+    assert prepared.images == ["aW1hZ2U="]
+    assert prepared.image_size is None
 
 
 def _services(tmp_path: Path, *, models: dict[str, str] | None = None):

@@ -1,0 +1,23 @@
+{
+  "scope": "test-only project_config monkeypatch correction",
+  "target": "tests/test_agent_crash_recovery.py",
+  "base_sha256": "0cf21a13894b28fe526a2264ae59e869a82fe4a937a9b6ade4eeec3272f6709f",
+  "post_sha256": "cdf89e65279b6c876771338cfe414a9a94e6a20a83f7e7f6cfdd1ec0b5136232",
+  "patch": "t08-crash-projectconfig-module-fixture-20261005.patch",
+  "patch_sha256": "d23eda38e1434de789ae86220b37a1ed534a02170d7d34404fd34461c99d0676",
+  "root_written": false,
+  "receipts": {
+    "root_red": {
+      "selector": "test_committed_task_completion_survives_restart_before_publish",
+      "result": "1 failed",
+      "trace": "ImportError: cannot import name ProjectSettings from local_ai_hub.project_config; CompletionGateError: trusted task project root is unavailable",
+      "cause": "test replaced the real project_config module with a synthetic ModuleType containing only resolve_project_context"
+    },
+    "overlay_green": {
+      "selector": "test_committed_task_completion_survives_restart_before_publish",
+      "result": "1 passed in 0.59s",
+      "setup": "overlay imports the real project_config module and monkeypatches only resolve_project_context"
+    },
+    "root_written": false
+  }
+}

@@ -1,0 +1,260 @@
+--- a/src/local_ai_hub/agent_memory.py
++++ b/src/local_ai_hub/agent_memory.py
+@@ -54,6 +54,28 @@
+ def _memory_event_stream_id(scope: AgentScope, scope_id: str | None, key: str) -> str:
+     parts = (scope.value, scope_id or "", key)
+     return "memory:" + "".join(f"{len(part)}:{part}" for part in parts)
++
++
++def _memory_deletion_event(
++    con: Any,
++    *,
++    record_id: str,
++) -> AgentEvent | None:
++    rows = con.execute(
++        """
++        SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
++               correlation_id, actor, created_at
++        FROM agent_events
++        WHERE kind = 'memory.deleted' AND idempotency_key = ?
++        """,
++        (f"deleted_{record_id}",),
++    ).fetchall()
++    for row in rows:
++        event = AgentEvent.from_row(row)
++        if str(event.payload.get("record_id", "")) != record_id:
++            raise ValueError("memory deletion idempotency key collision")
++        return event
++    return None
+ 
+ 
+ def _normalise_scope_root(value: str) -> str:
+@@ -727,6 +749,12 @@
+                     ).fetchone()
+                     if existing:
+                         existing_event = AgentEvent.from_row(existing)
++                        existing_record_id = str(existing_event.payload.get("record_id", ""))
++                        if _memory_deletion_event(
++                            con,
++                            record_id=existing_record_id,
++                        ) is not None:
++                            raise ValueError("memory record was deleted and cannot be replayed")
+                         self.state_store.append_in_transaction(
+                             con,
+                             existing_event,
+@@ -750,6 +778,11 @@
+                         con.execute("COMMIT")
+                         return existing_record, True, None
+ 
++                    if _memory_deletion_event(
++                        con,
++                        record_id=record.record_id,
++                    ) is not None:
++                        raise ValueError("memory record was deleted and cannot be replayed")
+                     final_record = self._resolve_conflict_in_transaction(con, record)
+                     event = AgentEvent.create(
+                         stream_id=stream_id,
+@@ -1853,49 +1886,93 @@
+         if not self.state_store.enabled or not self.state_store.db_path.exists():
+             return False
+         self._init_table()
+-        con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+-        try:
+-            con.execute("BEGIN IMMEDIATE")
+-            row = con.execute(
+-                "SELECT provenance FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = ?",
+-                (record_id, scope_value, scope_id_value),
+-            ).fetchone()
+-            if row is None:
+-                con.execute("COMMIT")
+-                return False
++
++        def _do_delete() -> tuple[bool, AgentEvent | None]:
++            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+             try:
+-                provenance = json.loads(row[0]) if row[0] else {}
+-            except (TypeError, ValueError):
+-                provenance = {}
+-            if not isinstance(provenance, dict):
+-                provenance = {}
+-            for identity_key, expected in identity_values.items():
+-                if not expected or identity_key == scope_identity_key:
+-                    continue
+-                if parsed_scope is AgentScope.GLOBAL and identity_key == "tenant":
+-                    continue
+-                actual = str(provenance.get(identity_key, "") or "").strip()
+-                if identity_key == "root":
+-                    if _normalise_scope_root(actual) != _normalise_scope_root(expected):
++                with self.state_store.ordered_event_publication(con) as publish:
++                    con.execute("BEGIN IMMEDIATE")
++                    row = con.execute(
++                        """
++                        SELECT scope_id, key, provenance
++                        FROM agent_memory_records
++                        WHERE record_id = ? AND scope = ? AND scope_id = ?
++                        """,
++                        (record_id, scope_value, scope_id_value),
++                    ).fetchone()
++                    if row is None:
+                         con.execute("COMMIT")
+-                        return False
+-                elif actual != expected:
++                        return False, None
++                    try:
++                        provenance = json.loads(row[2]) if row[2] else {}
++                    except (TypeError, ValueError):
++                        provenance = {}
++                    if not isinstance(provenance, dict):
++                        provenance = {}
++                    for identity_key, expected in identity_values.items():
++                        if not expected or identity_key == scope_identity_key:
++                            continue
++                        if parsed_scope is AgentScope.GLOBAL and identity_key == "tenant":
++                            continue
++                        actual = str(provenance.get(identity_key, "") or "").strip()
++                        if identity_key == "root":
++                            if _normalise_scope_root(actual) != _normalise_scope_root(expected):
++                                con.execute("COMMIT")
++                                return False, None
++                        elif actual != expected:
++                            con.execute("COMMIT")
++                            return False, None
++
++                    stream_id = _memory_event_stream_id(
++                        parsed_scope,
++                        str(row[0] or ""),
++                        str(row[1] or record_id),
++                    )
++                    event = AgentEvent.create(
++                        stream_id=stream_id,
++                        kind="memory.deleted",
++                        payload={"record_id": record_id},
++                        idempotency_key=f"deleted_{record_id}",
++                        actor="memory-store",
++                    )
++                    appended = self.state_store.append_in_transaction(
++                        con,
++                        event,
++                        strict_idempotency=True,
++                    )
++                    if appended.error or appended.event is None:
++                        raise RuntimeError(appended.error or "memory deletion event append returned no persisted event")
++
++                    cur = con.execute(
++                        "DELETE FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = ?",
++                        (record_id, scope_value, scope_id_value),
++                    )
++                    cnt = cur.rowcount
++                    if cnt <= 0:
++                        raise RuntimeError("memory record disappeared during deletion")
++                    if cnt > 0:
++                        con.execute(
++                            "DELETE FROM agent_entity_relations WHERE source_entity = ? OR target_entity = ?",
++                            (record_id, record_id),
++                        )
+                     con.execute("COMMIT")
+-                    return False
+-            cur = con.execute(
+-                "DELETE FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = ?",
+-                (record_id, scope_value, scope_id_value),
+-            )
+-            cnt = cur.rowcount
+-            if cnt > 0:
+-                con.execute(
+-                    "DELETE FROM agent_entity_relations WHERE source_entity = ? OR target_entity = ?",
+-                    (record_id, record_id),
+-                )
+-            con.execute("COMMIT")
+-            return cnt > 0
+-        finally:
+-            con.close()
++                    publish([appended.event])
++                    return True, appended.event
++            except Exception:
++                try:
++                    con.execute("ROLLBACK")
++                except sqlite3.Error:
++                    pass
++                raise
++            finally:
++                con.close()
++
++        deleted, _ = retry_busy(
++            _do_delete,
++            retries=5,
++            base_delay_seconds=0.02,
++        )
++        return deleted
+ 
+     def compact(
+         self,
+--- /dev/null
++++ b/tests/test_agent_memory_t08_tombstones.py
+@@ -0,0 +1,67 @@
++from __future__ import annotations
++
++import json
++from contextlib import closing
++
++import pytest
++
++from local_ai_hub.agent_events import AgentStateStore
++from local_ai_hub.agent_identity import AgentScope
++from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
++from local_ai_hub.sqlite_support import connect_sqlite
++
++
++def test_deleted_memory_record_replay_is_tombstoned_after_reopen(tmp_path):
++    root = tmp_path / "repo"
++    root.mkdir()
++    db_path = tmp_path / "agent_state.sqlite3"
++    original = MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.REPOSITORY,
++        scope_id=str(root),
++        key="deleted memory replay fact",
++        value="private deleted value",
++        status=MemoryStatus.CONFIRMED,
++        source="user",
++        provenance={"root": str(root), "tenant": "tenant-a"},
++    )
++    idempotency_key = "deleted-memory-replay-once"
++    store = MemoryStore(AgentStateStore(db_path))
++    saved = store.record(original, actor="user", idempotency_key=idempotency_key)
++
++    assert store.delete(
++        saved.record_id,
++        scope=AgentScope.REPOSITORY,
++        scope_id=str(root),
++        root=str(root),
++        tenant="tenant-a",
++    )
++    with closing(connect_sqlite(db_path)) as con:
++        payloads = [
++            str(row[0])
++            for row in con.execute(
++                "SELECT payload FROM agent_events WHERE kind = 'memory.deleted'"
++            ).fetchall()
++        ]
++    assert any(
++        json.loads(payload).get("record_id") == saved.record_id
++        and "private deleted value" not in payload
++        for payload in payloads
++    )
++
++    reopened = MemoryStore(AgentStateStore(db_path))
++    with pytest.raises(ValueError, match="deleted"):
++        reopened.record(original, actor="user", idempotency_key=idempotency_key)
++
++    assert reopened.get(
++        saved.record_id,
++        scope=AgentScope.REPOSITORY,
++        root=str(root),
++        tenant="tenant-a",
++    ) is None
++    assert reopened.find(
++        scope=AgentScope.REPOSITORY,
++        root=str(root),
++        tenant="tenant-a",
++        semantic=False,
++    ) == []

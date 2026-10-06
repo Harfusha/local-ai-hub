@@ -1,0 +1,42 @@
+{
+  "task": "T05 root-current memory acceptance manifest",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "root_patch_state": "root current source/test hashes exactly equal isolated patch v1 postimage; patch already applied by T20; T05 made no root edits",
+  "patch": "artifacts/t05-root-current-memory-v1.patch",
+  "patch_sha256": "F7B2F7761E72755A8AB7ACF889DEAF02CB7AD413C15E0AC1CC287A87344DCB19",
+  "patch_paths": [
+    "src/local_ai_hub/agent_memory.py",
+    "tests/test_agent_memory.py"
+  ],
+  "root_preimage_sha256": {
+    "src/local_ai_hub/agent_memory.py": "C68A8C70386BA5155C23D48AE23735E3E0344C3E72F021F0D76DEF708AF2B838",
+    "tests/test_agent_memory.py": "F4F12E52C105D23E88A6F0F69A6D5AC2C23580BF9515E5DD1EA5C1EC6206E29C"
+  },
+  "root_postimage_sha256": {
+    "src/local_ai_hub/agent_memory.py": "38A9A86C3E9C6EF90BAF1CF7F2CE12DB32DA8D1DDCDB4288512942C39FEBEA73",
+    "tests/test_agent_memory.py": "4C15BC64C5D67735DA1C061CD392D29E9F40F63B8AC0FF683070334474649F3E"
+  },
+  "root_current_sha256": {
+    "src/local_ai_hub/agent_memory.py": "38A9A86C3E9C6EF90BAF1CF7F2CE12DB32DA8D1DDCDB4288512942C39FEBEA73",
+    "tests/test_agent_memory.py": "4C15BC64C5D67735DA1C061CD392D29E9F40F63B8AC0FF683070334474649F3E"
+  },
+  "http_identity_test": "fix already present in root current preimage",
+  "http_identity_sha256": "FB721E8CAF6E2394A73DED286D6EDAA64DE1BD891DE915BBA569521B0269E321",
+  "isolated_apply_check": "PASS",
+  "isolated_reverse_check": "PASS",
+  "candidate_full_acceptance_receipt": "t05-candidate-full-acceptance-receipt-v1.json",
+  "candidate_full_acceptance_receipt_sha256": "78FA10F100F43B061D7984029EA0724BD18FF4FEC946A77717B2259B441B9B34",
+  "candidate_passes": [
+    "cross-project/tenant negative suite: 15 passed in 20.01s with current root event bridge",
+    "tenant/global-delete selectors: 4 passed in 1.68s",
+    "evidence_ids shape selectors: 2 passed in 0.48s",
+    "HTTP global identity selector: 1 passed in 5.56s",
+    "candidate-native migrations: 24 passed in 16.77s"
+  ],
+  "remaining_dependencies": [
+    "candidate event bridge lacks T08-owned AgentStateStore.ordered_event_publication; full planned candidate batch 43 passed/11 failed",
+    "current root event bridge rejects agent_incidents in seven migration integration selectors"
+  ],
+  "root_modified_by_T05": false
+}
