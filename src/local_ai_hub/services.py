@@ -6,6 +6,7 @@ import base64
 import copy
 import fnmatch
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -1002,7 +1003,6 @@ class LocalAIServices:
                         error_code_override=failed["error_code"],
                         retryable=failed["retryable"], recovered=recovered,
                     )
-
             admission_action = source.split(":", 1)[0].strip().replace("-", "_")
             known_actions = {
                 "delegate", "reason", "review", "review_diff", "second_opinion",
@@ -4196,7 +4196,11 @@ class LocalAIServices:
             }
         project_config_digest = ""
         retrieval_weights: dict[str, float] = {}
-        effective_path_hints = request.path_hints
+        request_path_hints = tuple(getattr(request, "path_hints", ()))
+        request_directory_hints = tuple(getattr(request, "directory_hints", ()))
+        request_exclude_paths = tuple(getattr(request, "exclude_paths", ()))
+        request_force_include_paths = tuple(getattr(request, "force_include_paths", ()))
+        effective_path_hints = request_path_hints
         if mode == "adaptive":
             from .project_config import ProjectConfigError, resolve_project_context
 
@@ -4217,7 +4221,7 @@ class LocalAIServices:
                     config_digest=project_config_digest,
                 )
                 effective_path_hints = normalize_context_path_hints(
-                    (*pinned_hints, *entry_hints, *request.path_hints, *saved_hints)
+                    (*pinned_hints, *entry_hints, *request_path_hints, *saved_hints)
                 )
             except ProjectConfigError as exc:
                 return {
@@ -4256,9 +4260,9 @@ class LocalAIServices:
             "focus": request.focus,
             "changed_paths": request.changed_paths,
             "path_hints": effective_path_hints,
-            "directory_hints": request.directory_hints,
-            "exclude_paths": request.exclude_paths,
-            "force_include_paths": request.force_include_paths,
+            "directory_hints": request_directory_hints,
+            "exclude_paths": request_exclude_paths,
+            "force_include_paths": request_force_include_paths,
             "preload_profile": request.preload_profile,
             "token_budget": request.token_budget,
             "base": request.base,
@@ -4281,9 +4285,11 @@ class LocalAIServices:
                 quality_first=mode == "adaptive",
                 context_identity=context_cache_identity,
                 path_hints=effective_path_hints if mode == "adaptive" else (),
-                directory_hints=request.directory_hints if mode == "adaptive" else (),
-                exclude_paths=request.exclude_paths if mode == "adaptive" else (),
-                force_include_paths=request.force_include_paths if mode == "adaptive" else (),
+                directory_hints=request_directory_hints if mode == "adaptive" else (),
+                exclude_paths=request_exclude_paths if mode == "adaptive" else (),
+                force_include_paths=request_force_include_paths if mode == "adaptive" else (),
+                focus=request.focus,
+                changed_paths=request.changed_paths,
                 retrieval_weights=retrieval_weights if mode == "adaptive" else None,
             )
         else:
@@ -4541,6 +4547,8 @@ class LocalAIServices:
         directory_hints: tuple[str, ...] = (),
         exclude_paths: tuple[str, ...] = (),
         force_include_paths: tuple[str, ...] = (),
+        focus: tuple[str, ...] = (),
+        changed_paths: tuple[str, ...] = (),
         retrieval_weights: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         resolved_root = Path(root).expanduser().resolve(strict=False)
@@ -4588,6 +4596,8 @@ class LocalAIServices:
                     "directory_hints": directory_hints,
                     "exclude_paths": exclude_paths,
                     "force_include_paths": force_include_paths,
+                    "focus": focus,
+                    "changed_paths": changed_paths,
                 })
                 try:
                     from .agent_consistency import ConsistencyRequest
@@ -4657,6 +4667,7 @@ class LocalAIServices:
             rag_revision=str(rag_revision or ""), rag_revision_available=rag_revision_available,
             path_hints=path_hints, directory_hints=directory_hints,
             exclude_paths=exclude_paths, force_include_paths=force_include_paths,
+            focus=focus, changed_paths=changed_paths,
             retrieval_weights=retrieval_weights,
         )
         if rag_enabled and not rag_revision_available:
@@ -4829,6 +4840,8 @@ class LocalAIServices:
         directory_hints: tuple[str, ...] = (),
         exclude_paths: tuple[str, ...] = (),
         force_include_paths: tuple[str, ...] = (),
+        focus: tuple[str, ...] = (),
+        changed_paths: tuple[str, ...] = (),
         retrieval_weights: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         started_at = time.perf_counter()
@@ -4923,7 +4936,11 @@ class LocalAIServices:
             retrieval_warnings.extend(external_warnings)
         else:
             backend_states.update({"serena": "skipped", "rag": "skipped"})
-        hinted_paths = [str(item.get("path", "")) for item in path_hints if isinstance(item, dict) and item.get("path")]
+        hinted_paths = [
+            str(item.get("path", "")) if isinstance(item, dict) else item
+            for item in path_hints
+            if (isinstance(item, dict) and item.get("path")) or isinstance(item, str)
+        ]
         if hinted_paths:
             path_groups["project_hints"] = hinted_paths
         if directory_hints:
@@ -4948,34 +4965,200 @@ class LocalAIServices:
         def excluded_path(path: str) -> bool:
             return path_matches(path, exclude_paths)
 
+        def safe_relative_candidate(raw_path: Any, base_path: Path) -> str | None:
+            value = str(raw_path or "").strip()
+            if not value:
+                return None
+            try:
+                candidate = Path(value)
+                candidate = candidate if candidate.is_absolute() else base_path / candidate
+                lexical_relative = candidate.relative_to(base_path)
+                if ".." in lexical_relative.parts:
+                    return None
+                current = base_path
+                for part in lexical_relative.parts:
+                    current = current / part
+                    if current.is_symlink():
+                        return None
+                resolved = candidate.resolve(strict=False)
+                relative = resolved.relative_to(base_path)
+            except (OSError, RuntimeError, ValueError):
+                return None
+            normalized = relative.as_posix().strip("/")
+            return normalized if normalized and normalized != "." else None
+
+        inventory_candidate_limit = 512
+        inventory_scan_limit = 4096
+        try:
+            fallback_scan_limit = max(1, min(512, int(search_cfg.get("context_fallback_scan_limit", 512))))
+        except (TypeError, ValueError, OverflowError):
+            fallback_scan_limit = 512
+        path_inventory_state = "skipped"
+        recall_paths: tuple[str, ...] = ()
+        path_controls_active = bool(
+            path_hints or directory_hints or exclude_paths or force_include_paths or focus or changed_paths
+        )
+        forced_candidate_paths: tuple[str, ...] = ()
+        if path_controls_active:
+            base_path = Path(root).expanduser().resolve(strict=False)
+            forced_candidate_paths = tuple(dict.fromkeys(
+                path for raw_path in force_include_paths
+                if (path := safe_relative_candidate(raw_path, base_path))
+            ))
+            raw_inventory: Any = None
+            inventory_source = ""
+            indexed_paths = getattr(self.preprocessor, "indexed_paths", None)
+            if callable(indexed_paths):
+                try:
+                    raw_inventory = indexed_paths(root)
+                    inventory_source = "preprocessor"
+                    path_inventory_state = "used"
+                except Exception as exc:
+                    retrieval_warnings.append(f"path inventory unavailable: {type(exc).__name__}")
+            indexes_available = any(
+                backend_states.get(name) == "used"
+                for name in ("deterministic", "code_index", "preprocessor")
+            )
+            if raw_inventory is None and indexes_available:
+                # Existing ranked backend results remain the bounded index candidate set.
+                raw_inventory = ()
+                path_inventory_state = "degraded"
+                retrieval_warnings.append("path inventory unavailable; using ranked index candidates")
+            elif raw_inventory is None:
+                raw_inventory = self.repo_tools.iter_files(str(base_path))
+                inventory_source = "filesystem_fallback"
+                path_inventory_state = "degraded"
+                retrieval_warnings.append("path inventory unavailable; bounded filesystem fallback")
+
+            scan_limit = fallback_scan_limit if inventory_source == "filesystem_fallback" else inventory_scan_limit
+            scope_patterns = tuple(dict.fromkeys((
+                *hinted_paths, *directory_hints, *force_include_paths, *changed_paths,
+            )))
+            focus_terms = tuple(dict.fromkeys(
+                term.casefold()
+                for value in focus
+                for term in re.findall(r"[a-zA-Z0-9_]{3,}", str(value))
+            ))
+            selected_inventory: list[str] = []
+            other_inventory: list[str] = []
+            inspected_count = 0
+            try:
+                for inspected, raw_path in enumerate(itertools.islice(raw_inventory, scan_limit)):
+                    inspected_count = inspected + 1
+                    candidate = safe_relative_candidate(raw_path, base_path)
+                    if candidate is None:
+                        continue
+                    in_scope = (
+                        not scope_patterns and not focus_terms
+                    ) or path_matches(candidate, scope_patterns) or any(
+                        term in candidate.casefold() for term in focus_terms
+                    )
+                    target = selected_inventory if in_scope else other_inventory
+                    if candidate not in target and len(target) < inventory_candidate_limit:
+                        target.append(candidate)
+                    if len(selected_inventory) >= inventory_candidate_limit:
+                        break
+                if inventory_source == "filesystem_fallback" and inspected_count >= scan_limit:
+                    retrieval_warnings.append("filesystem fallback candidate limit reached")
+                if inventory_source != "filesystem_fallback" and inspected_count >= scan_limit:
+                    raw_size = len(raw_inventory) if hasattr(raw_inventory, "__len__") else None
+                    if raw_size is None or raw_size > scan_limit:
+                        retrieval_warnings.append("indexed path candidate scan reached its bound")
+                        path_inventory_state = "degraded"
+            except Exception as exc:
+                path_inventory_state = "degraded"
+                retrieval_warnings.append(f"path inventory scan degraded: {type(exc).__name__}")
+            recall_paths = tuple((
+                *selected_inventory,
+                *other_inventory[:max(0, inventory_candidate_limit - len(selected_inventory))],
+            ))
+            normalized_directories = tuple(dict.fromkeys(
+                path for raw_path in directory_hints
+                if (path := safe_relative_candidate(raw_path, base_path))
+            ))
+            if normalized_directories:
+                directory_candidates = tuple(
+                    candidate for candidate in recall_paths
+                    if path_matches(candidate, normalized_directories)
+                )
+                if directory_candidates:
+                    path_groups["directory_hints"] = list(directory_candidates)
+            backend_states["path_inventory"] = path_inventory_state
+
+        base_path = Path(root).expanduser().resolve(strict=False)
+        forced_candidate_paths = tuple(dict.fromkeys((
+            *forced_candidate_paths,
+            *(path for raw_path in force_include_paths
+              if (path := safe_relative_candidate(raw_path, base_path))),
+        )))
+        # Every backend and request hint is normalized against the same repository root.
+        path_groups = {
+            backend: list(dict.fromkeys(
+                path for raw_path in paths
+                if (path := safe_relative_candidate(raw_path, base_path))
+            ))
+            for backend, paths in path_groups.items()
+        }
         if exclude_paths:
             path_groups = {
                 backend: [path for path in paths if not excluded_path(path)]
                 for backend, paths in path_groups.items()
             }
-        fused_candidates = fuse_ranked_paths(
-            path_groups, limit=64, max_per_path=2,
+        changed_candidate_paths = tuple(dict.fromkeys(
+            path for raw_path in changed_paths
+            if (path := safe_relative_candidate(raw_path, Path(root).expanduser().resolve(strict=False)))
+            and not excluded_path(path)
+        ))
+        all_candidate_paths = tuple(dict.fromkeys((
+            *(path for paths in path_groups.values() for path in paths), *recall_paths,
+            *changed_candidate_paths,
+        )))
+        focus_terms = tuple(dict.fromkeys(
+            term.casefold()
+            for value in focus
+            for term in re.findall(r"[a-zA-Z0-9_]{3,}", str(value))
+        ))
+        focus_candidate_paths = tuple(
+            path for path in all_candidate_paths
+            if any(term in path.casefold() for term in focus_terms)
+            and not excluded_path(path)
         )
+        if changed_candidate_paths:
+            path_groups["changed_paths"] = list(changed_candidate_paths)
+        if focus_candidate_paths:
+            path_groups["task_focus"] = list(focus_candidate_paths)
+        fused_candidates = fuse_ranked_paths(path_groups, limit=64, max_per_path=2)
         pinned_paths = tuple(
-            str(item["path"])
+            path
             for item in path_hints[:64]
             if isinstance(item, dict)
             and item.get("provenance") == "project_config:pinned_context"
             and isinstance(item.get("path"), str)
+            and (path := safe_relative_candidate(item["path"], base_path))
         )
         # Pins survive ranking limits, but never become force-include authorization.
         candidate_paths = list(dict.fromkeys((
             *pinned_paths,
-            *force_include_paths,
+            *forced_candidate_paths,
+            *changed_candidate_paths,
+            *focus_candidate_paths,
             *(path for path, _score in fused_candidates),
+            *recall_paths,
         )))
-        candidate_paths = [path for path in candidate_paths if not excluded_path(path)]
-        has_path_controls = bool(path_hints or directory_hints or exclude_paths or force_include_paths)
+        candidate_paths = [
+            path for raw_path in candidate_paths
+            if (path := safe_relative_candidate(raw_path, base_path))
+            and not excluded_path(path)
+            and not ((base_path / path).is_dir() and any(
+                candidate.startswith(path.rstrip("/") + "/") for candidate in recall_paths
+            ))
+        ]
+        candidate_paths = candidate_paths[:inventory_candidate_limit]
         try:
             lexical_candidate_limit = max(1, min(64, int(search_cfg.get("context_top_k", 14))))
         except (TypeError, ValueError, OverflowError):
             lexical_candidate_limit = 14
-        if has_path_controls and len(candidate_paths) < lexical_candidate_limit:
+        if path_controls_active and path_inventory_state != "used" and len(candidate_paths) < lexical_candidate_limit:
             # Hints bias candidate ordering; they must not turn a bounded adaptive
             # lookup into a search restricted to hinted paths. Fill sparse indexed
             # candidates with a bounded lexical pass, then apply explicit excludes.
@@ -4987,12 +5170,13 @@ class LocalAIServices:
                 )
                 if isinstance(completion, dict) and completion.get("success"):
                     candidate_paths.extend(
-                        str(item.get("path"))
+                        path
                         for item in completion.get("results", [])
                         if isinstance(item, dict)
                         and isinstance(item.get("path"), str)
                         and item.get("path")
-                        and not excluded_path(str(item["path"]))
+                        and (path := safe_relative_candidate(item["path"], base_path))
+                        and not excluded_path(path)
                     )
                     candidate_paths = list(dict.fromkeys(candidate_paths))
                 else:
@@ -5019,13 +5203,13 @@ class LocalAIServices:
                 lexical = self.repo_tools.context_pack_paths(
                     root, query, candidate_paths, **pack_kwargs,
                 )
-                # If targeted cards return no exact evidence, do one completeness scan.
-                if isinstance(lexical, dict) and lexical.get("success") and not lexical.get("evidence") and not has_path_controls:
+                # A targeted request must never silently expand into a repository-wide walk.
+                if isinstance(lexical, dict) and lexical.get("success") and not lexical.get("evidence") and not path_controls_active:
                     lexical = self.repo_tools.context_pack(
                         root, query, max_tokens=lexical_tokens,
                         top_k=int(search_cfg.get("context_top_k", 14)),
                     )
-            elif exclude_paths:
+            elif path_controls_active:
                 lexical = {
                     "success": True, "root": str(root_path), "context": "", "evidence": [],
                     "scanned_files": 0, "targeted": True,
@@ -5255,6 +5439,8 @@ class LocalAIServices:
             "success": True, "root": lexical["root"], "query": query, "context": context,
             "evidence": evidence, "estimated_tokens": estimate_tokens(context),
             "scanned_files": lexical.get("scanned_files", 0), "semantic_used": semantic_used,
+            **({"degraded": True, "degraded_reason": "bounded_path_candidate_fallback"}
+               if path_inventory_state == "degraded" else {}),
             "context_budget_tokens": max_tokens,
             "retrieval": {
                 "quality_first": bool(quality_first),

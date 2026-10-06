@@ -753,6 +753,269 @@ def test_context_http_endpoint_defaults_to_adaptive():
     assert 'payload.get("mode", "adaptive")' in source
 
 
+def _path_inventory_services(tmp_path, *, indexed_paths=None, index_error=None, inventory_size=0):
+    class Preprocessor:
+        def __init__(self):
+            self.roots = []
+
+        def candidate_paths(self, _root, _query, limit=32):
+            return ["src/generic.py"][:limit]
+
+        def indexed_paths(self, root):
+            self.roots.append(str(root))
+            if index_error:
+                raise index_error
+            if callable(indexed_paths):
+                return list(indexed_paths(str(root)))
+            return list(indexed_paths or ())
+
+    class RepoTools:
+        def __init__(self):
+            self.iterated = 0
+            self.candidates = []
+
+        def iter_files(self, _root):
+            for index in range(inventory_size):
+                self.iterated += 1
+                yield tmp_path / f"inventory/{index:04}.py"
+
+        def context_pack_paths(self, root, query, paths, max_tokens=2600, top_k=10, **path_controls):
+            self.candidates = list(paths)
+            evidence = [
+                {"path": path, "evidence_id": f"e-{index}", "text": path}
+                for index, path in enumerate(self.candidates[:20])
+            ]
+            return {
+                "success": True, "root": str(root), "query": query,
+                "context": "\n".join(item["text"] for item in evidence),
+                "evidence": evidence, "scanned_files": len(evidence),
+            }
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"features": {"rag": False}, "search": {"context_top_k": 14}}
+    services.learner = None
+    services.rag = None
+    services.deterministic = None
+    services.code_index = None
+    services.preprocessor = Preprocessor() if indexed_paths is not None or index_error else None
+    services.repo_tools = RepoTools()
+    services.evidence_store = None
+    services._external_context_candidates = lambda *_args, **_kwargs: (
+        {}, [], {"serena": "skipped", "rag": "skipped"}
+    )
+    return services
+
+
+def test_adaptive_path_controls_use_root_scoped_index_without_full_file_walk(tmp_path):
+    services = _path_inventory_services(
+        tmp_path,
+        indexed_paths=(
+            "src/generic.py", "templates/element/button.php", "build/private.py",
+            "build/required.py", "src/forced.py", "../outside.py",
+        ),
+    )
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), "find button", "tenant-a", None, 512,
+        quality_first=True,
+        path_hints=({"path": "templates/element/button.php", "purpose": "button"},),
+        directory_hints=("templates/element",),
+        exclude_paths=("build/**",),
+        force_include_paths=("build/required.py", "src/forced.py"),
+    )
+
+    assert result["success"] is True
+    assert services.repo_tools.iterated == 0
+    assert "templates/element/button.php" in services.repo_tools.candidates
+    assert "build/required.py" not in services.repo_tools.candidates
+    assert "build/required.py" not in [item["path"] for item in result["evidence"]]
+    assert "src/forced.py" in services.repo_tools.candidates
+    assert "build/private.py" not in services.repo_tools.candidates
+    assert "build/private.py" not in [item["path"] for item in result["evidence"]]
+    assert "../outside.py" not in services.repo_tools.candidates
+    assert result["retrieval"]["backend_states"]["path_inventory"] == "used"
+
+
+def test_directory_hint_resolves_indexed_descendants_and_structured_hint(tmp_path):
+    services = _path_inventory_services(
+        tmp_path,
+        indexed_paths=(
+            "templates/element/button.php", "templates/element/input.php",
+            "templates/other/hidden.php", "../outside.php",
+        ),
+        inventory_size=1000,
+    )
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), "find button", "tenant-a", None, 512,
+        quality_first=True,
+        path_hints=({"path": "templates/element/button.php", "purpose": "button template"},),
+        directory_hints=("templates/element",),
+    )
+
+    assert result["success"] is True
+    assert services.repo_tools.iterated == 0
+    assert "templates/element/button.php" in services.repo_tools.candidates
+    assert "templates/element/input.php" in services.repo_tools.candidates
+    assert "templates/other/hidden.php" in services.repo_tools.candidates
+    assert services.repo_tools.candidates.index("templates/element/button.php") < services.repo_tools.candidates.index("templates/element/input.php")
+    assert services.repo_tools.candidates.index("templates/element/button.php") < services.repo_tools.candidates.index("templates/other/hidden.php")
+    assert services.repo_tools.candidates.index("templates/element/input.php") < services.repo_tools.candidates.index("templates/other/hidden.php")
+    assert "../outside.php" not in services.repo_tools.candidates
+
+
+def test_directory_hint_finds_late_index_entries_without_filesystem_walk(tmp_path):
+    indexed_paths = tuple(f"unrelated/{index:04}.py" for index in range(600)) + (
+        "templates/element/button.php", "templates/element/input.php",
+    )
+    services = _path_inventory_services(tmp_path, indexed_paths=indexed_paths, inventory_size=1000)
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), "find button", "tenant-a", None, 512,
+        quality_first=True, directory_hints=("templates/element",),
+    )
+
+    assert result["success"] is True
+    assert services.repo_tools.iterated == 0
+    assert "templates/element/button.php" in services.repo_tools.candidates
+    assert "templates/element/input.php" in services.repo_tools.candidates
+    assert len(services.repo_tools.candidates) <= 512
+
+
+def test_focus_and_changed_paths_change_candidate_order(tmp_path):
+    services = _path_inventory_services(
+        tmp_path,
+        indexed_paths=("src/app.py", "docs/database.md", "tests/test_app.py"),
+    )
+
+    services._hybrid_context_uncached(
+        str(tmp_path), "find app", "tenant-a", None, 512,
+        quality_first=True, focus=("database",),
+    )
+    focus_order = list(services.repo_tools.candidates)
+    services._hybrid_context_uncached(
+        str(tmp_path), "find app", "tenant-a", None, 512,
+        quality_first=True, changed_paths=("tests/test_app.py",),
+    )
+    changed_order = list(services.repo_tools.candidates)
+
+    assert focus_order[0] == "docs/database.md"
+    assert changed_order[0] == "tests/test_app.py"
+    assert focus_order != changed_order
+    assert "src/app.py" in focus_order
+    assert "docs/database.md" in changed_order
+
+
+def test_adaptive_path_scan_fallback_is_bounded_and_explicitly_degraded(tmp_path):
+    services = _path_inventory_services(tmp_path, inventory_size=1000)
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), "find route", "tenant-a", None, 512,
+        quality_first=True, exclude_paths=("inventory/private/**",),
+    )
+
+    assert result["success"] is True
+    assert services.repo_tools.iterated == 512
+    assert len(services.repo_tools.candidates) <= 512
+    assert result["retrieval"]["backend_states"]["path_inventory"] == "degraded"
+    assert any("bounded filesystem fallback" in warning for warning in result["retrieval"]["warnings"])
+
+
+def test_fallback_hints_boost_without_narrowing_inventory_candidates(tmp_path):
+    services = _path_inventory_services(tmp_path, inventory_size=1000)
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), "find route", "tenant-a", None, 512,
+        quality_first=True,
+        path_hints=({"path": "src/desired.py", "purpose": "task"},),
+        directory_hints=("src",),
+    )
+
+    assert result["success"] is True
+    assert services.repo_tools.iterated == 512
+    assert "inventory/0000.py" in services.repo_tools.candidates
+    assert result["retrieval"]["backend_states"]["path_inventory"] == "degraded"
+
+
+def test_empty_available_path_index_does_not_trigger_filesystem_fallback(tmp_path):
+    services = _path_inventory_services(tmp_path, indexed_paths=(), inventory_size=1000)
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), "find route", "tenant-a", None, 512,
+        quality_first=True, exclude_paths=("private/**",),
+    )
+
+    assert result["success"] is True
+    assert services.repo_tools.iterated == 0
+    assert result["retrieval"]["backend_states"]["path_inventory"] == "used"
+
+
+def test_path_inventory_candidates_stay_repository_scoped(tmp_path):
+    root_a = tmp_path / "repo-a"
+    root_b = tmp_path / "repo-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    root_paths = {
+        str(root_a): ("src/a.py",),
+        str(root_b): ("src/b.py",),
+    }
+    services = _path_inventory_services(
+        tmp_path, indexed_paths=lambda root: root_paths[root],
+    )
+
+    first = services._hybrid_context_uncached(
+        str(root_a), "find item", "tenant-a", None, 512,
+        quality_first=True, directory_hints=("src",),
+    )
+    candidates_a = list(services.repo_tools.candidates)
+    second = services._hybrid_context_uncached(
+        str(root_b), "find item", "tenant-b", None, 512,
+        quality_first=True, directory_hints=("src",),
+    )
+    candidates_b = list(services.repo_tools.candidates)
+
+    assert first["success"] is second["success"] is True
+    assert "src/a.py" in candidates_a and "src/b.py" not in candidates_a
+    assert "src/b.py" in candidates_b and "src/a.py" not in candidates_b
+    assert services.preprocessor.roots == [str(root_a), str(root_b)]
+
+
+def test_path_inventory_rejects_symlink_alias_before_candidate_normalization(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    (root / "linked").mkdir(parents=True)
+    (root / "linked" / "private.py").write_text("private needle", encoding="utf-8")
+    services = _path_inventory_services(root, indexed_paths=("linked/private.py", "src/safe.py"))
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(Path, "is_symlink", lambda path: path == root / "linked" or original_is_symlink(path))
+
+    result = services._hybrid_context_uncached(
+        str(root), "needle", "tenant", None, 512,
+        quality_first=True, directory_hints=("linked",),
+        force_include_paths=("linked/private.py",),
+    )
+
+    assert result["success"] is True
+    assert "linked/private.py" not in services.repo_tools.candidates
+    assert "src/safe.py" in services.repo_tools.candidates
+
+
+def test_context_pack_forwards_focus_and_changed_paths_to_candidate_ranking():
+    services = _guarded_services(_Guard())
+    services.consistency_guard = None
+    captured = []
+    services._hybrid_context = lambda *args, **kwargs: (
+        captured.append(kwargs) or {"success": True, "context": "", "evidence": []}
+    )
+
+    services.adaptive_context_pack(
+        _request(focus=("authentication flow",), changed_paths=("src/auth/session.py",)),
+        mode="full",
+    )
+
+    assert captured[0]["focus"] == ("authentication flow",)
+    assert captured[0]["changed_paths"] == ("src/auth/session.py",)
+
+
 def test_realtime_status_includes_preprocessor_projects_on_light():
     import threading
     from local_ai_hub.app import LocalAIApp, _STATUS_MAX_INFLIGHT_DEPENDENCIES, _new_status_dependency_executor
@@ -990,7 +1253,7 @@ class _PathScanRepoTools:
         self.full_scan_calls = 0
         self.iterated = []
 
-    def context_pack_paths(self, root, query, paths, max_tokens, top_k):
+    def context_pack_paths(self, root, query, paths, max_tokens, top_k, **path_controls):
         self.path_calls.append(list(paths))
         return {
             "success": True, "root": root, "query": query, "context": "",
@@ -1036,7 +1299,7 @@ def test_path_scoped_context_uses_bounded_candidates_with_exclude_force_preceden
     )
 
     assert result["success"] is True
-    assert services.repo_tools.path_calls == [["src/private.py", "vendor/lib.py"]]
+    assert services.repo_tools.path_calls == [["vendor/lib.py"]]
     assert services.repo_tools.full_scan_calls == 0
 
 
