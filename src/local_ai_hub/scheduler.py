@@ -193,6 +193,7 @@ class AffinityScheduler:
         self._last_foreground_activity = time.monotonic()
         self._foreground_generation = 0
         self._foreground_preempt_hook: Callable[[], None] | None = None
+        self._foreground_preempting = False
         self._background_gpu_lease = False
         self._executor = ThreadPoolExecutor(max_workers=self.max_parallel, thread_name_prefix="local-ai")
         self._stats = {
@@ -704,20 +705,31 @@ class AffinityScheduler:
                 # user request arriving and the foreground model beginning to load.
                 self._last_foreground_activity = time.monotonic()
                 self._foreground_generation += 1
-                preempt_hook = self._foreground_preempt_hook
+                if self._foreground_preempt_hook is not None and not self._foreground_preempting:
+                    preempt_hook = self._foreground_preempt_hook
+                    self._foreground_preempting = True
+                    self._background_gpu_lease = True
 
-        # Local AI background GPU work runs on a separate Ollama endpoint and is disposable.
-        # Stop it synchronously before the foreground dispatcher is allowed to load a
-        # foreground runner, preventing transient dual-runner VRAM pressure/offload.
+        # Gate dispatch while the disposable background runner is being preempted.
+        # Run the hook separately so a blocked stop cannot exceed the caller deadline.
         if preempt_hook is not None:
             try:
-                preempt_hook()
+                threading.Thread(
+                    target=self._run_foreground_preempt_hook,
+                    args=(preempt_hook,),
+                    name="local-ai-preempt",
+                    daemon=True,
+                ).start()
             except Exception:
-                pass
-        with self._cond:
-            if not background:
-                self._background_gpu_lease = False
-            self._cond.notify_all()
+                with self._cond:
+                    self._foreground_preempting = False
+                    self._background_gpu_lease = False
+                    self._cond.notify_all()
+        else:
+            with self._cond:
+                if not background and not self._foreground_preempting:
+                    self._background_gpu_lease = False
+                self._cond.notify_all()
 
         deadline = request_deadline
         while not job.done.is_set():
@@ -793,6 +805,17 @@ class AffinityScheduler:
                 job.result.setdefault("_lah_scheduler_model_switch", dict(job.model_switch_receipt))
             job.result.setdefault("_lah_scheduler_background", job.background)
         return job.result
+
+    def _run_foreground_preempt_hook(self, hook: Callable[[], None]) -> None:
+        try:
+            hook()
+        except Exception:
+            pass
+        finally:
+            with self._cond:
+                self._foreground_preempting = False
+                self._background_gpu_lease = False
+                self._cond.notify_all()
 
     def enqueue(
         self,
