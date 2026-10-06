@@ -1,0 +1,82 @@
+diff --git a/src/local_ai_hub/telemetry.py b/src/local_ai_hub/telemetry.py
+--- a/src/local_ai_hub/telemetry.py
++++ b/src/local_ai_hub/telemetry.py
+@@ -153,5 +153,9 @@
+     elif isinstance(value, json.JSONDecodeError):
+         reason = "invalid JSON"
++    elif isinstance(value, FileNotFoundError):
++        reason = "file not found"
++    elif isinstance(value, PermissionError):
++        reason = "permission denied"
+     elif isinstance(value, ValueError):
+         reason = "invalid value or argument"
+     elif isinstance(value, TypeError):
+diff --git a/tests/test_telemetry_sqlite_dashboard_t18.py b/tests/test_telemetry_sqlite_dashboard_t18.py
+new file mode 100644
+index 0000000..343381e
+--- /dev/null
++++ b/tests/test_telemetry_sqlite_dashboard_t18.py
+@@ -0,0 +1,62 @@
++from __future__ import annotations
++
++import json
++
++from local_ai_hub.telemetry import TelemetryStore
++
++
++def test_dashboard_summary_uses_bounded_safe_diagnostics_from_sqlite(tmp_path):
++    store = TelemetryStore(tmp_path / "telemetry", enabled=True)
++    errors = [
++        ("runtime", f"ordinary-{index}", RuntimeError(f"private prompt {index} /private/project/source.py"))
++        for index in range(11)
++    ]
++    errors.extend([
++        ("json", "decode", json.JSONDecodeError(
++            'PROMPT-PRIVATE at /private/project/config.json token=TOKEN-PRIVATE',
++            '{"source":"/private/project/source.py"}', 0,
++        )),
++        ("filesystem", "missing", FileNotFoundError("missing /private/project/model.bin token=TOKEN-PRIVATE")),
++        ("filesystem", "timeout", TimeoutError("MODEL-OUTPUT-PRIVATE timed out /private/project/model.bin")),
++        ("filesystem", "permission", PermissionError("denied SOURCE-PRIVATE /private/project/cache.sqlite3")),
++    ])
++    try:
++        for component, operation, error in errors:
++            store.record_error(component, operation, error)
++        assert store.flush(1)
++
++        connection = store._connect()
++        try:
++            persisted = connection.execute(
++                "SELECT error_type, safe_message FROM errors ORDER BY created_at"
++            ).fetchall()
++        finally:
++            connection.close()
++
++        summary = store.realtime_summary(scope="window")
++        report = store.dashboard_report(30, ttl_seconds=1, scope="window")
++    finally:
++        store.close()
++
++    assert len(persisted) == len(errors)
++    expected = {
++        "JSONDecodeError": "JSONDecodeError: invalid JSON",
++        "FileNotFoundError": "FileNotFoundError: file not found",
++        "TimeoutError": "TimeoutError: operation timed out",
++        "PermissionError": "PermissionError: permission denied",
++    }
++    persisted_by_type = {error_type: safe_message for error_type, safe_message in persisted}
++    dashboard_by_type = {row["error_type"]: row["safe_message"] for row in summary["recent_errors"]}
++    for error_type, safe_message in expected.items():
++        assert persisted_by_type[error_type] == safe_message
++        assert dashboard_by_type[error_type] == safe_message
++    assert len(summary["recent_errors"]) == 12
++    assert report["error_fingerprints_page"]["total"] == len(errors)
++    assert all(len(row["safe_message"]) <= 96 for row in summary["recent_errors"])
++
++    serialized = repr((persisted, summary["recent_errors"], report["error_fingerprints_page"]))
++    for private in (
++        "PROMPT-PRIVATE", "SOURCE-PRIVATE", "TOKEN-PRIVATE", "MODEL-OUTPUT-PRIVATE",
++        "/private/project",
++    ):
++        assert private not in serialized
+

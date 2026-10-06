@@ -1,0 +1,69 @@
+diff --git a/tests/test_telemetry_report_bounds_t18.py b/tests/test_telemetry_report_bounds_t18.py
+--- a/tests/test_telemetry_report_bounds_t18.py
++++ b/tests/test_telemetry_report_bounds_t18.py
+@@ -6,10 +6,13 @@
+ 
+ from local_ai_hub.app import LocalAIApp
+ from local_ai_hub import http_server
++import local_ai_hub.telemetry as telemetry_module
+ from local_ai_hub.json_utils import dumps as json_dumps
+ from local_ai_hub.telemetry import (
+     _MAX_TELEMETRY_REPORT_BYTES,
+     _bound_telemetry_report,
++    _decode_error_page_cursor,
++    _encode_error_page_cursor,
+     TelemetryStore,
+ )
+ 
+@@ -124,3 +127,51 @@
+         thread.join(timeout=2)
+         http_server.APP = previous_app
+         app.telemetry.close()
++
++def test_report_budget_truncation_advances_cursor_after_retained_rows(monkeypatch):
++    rows = [
++        {
++            "fingerprint": f"fingerprint-{index}",
++            "error_type": "ValueError",
++            "component": "inference",
++            "operation": f"operation-{index}",
++            "count": index + 1,
++        }
++        for index in range(8)
++    ]
++    seed_cursor = _encode_error_page_cursor(17, 123.0, ("seed", "ValueError", "inference", "seed"))
++    report = {
++        "generated_at": "now",
++        "window_days": 30,
++        "scope": "window",
++        "error_fingerprints": rows,
++        "error_fingerprints_page": {
++            "offset": 0,
++            "limit": len(rows),
++            "total": len(rows),
++            "cursor": "",
++            "snapshot_id": 17,
++            "snapshot_cutoff": 123.0,
++            "next_cursor": seed_cursor,
++        },
++    }
++    one_row_report = {**report, "error_fingerprints": [rows[0]]}
++    byte_budget = len(json_dumps(one_row_report).encode("utf-8")) + 256
++    monkeypatch.setattr(telemetry_module, "_MAX_TELEMETRY_REPORT_BYTES", byte_budget)
++
++    bounded = _bound_telemetry_report(report)
++    kept = bounded["error_fingerprints"]
++    page = bounded["error_fingerprints_page"]
++
++    assert 0 < len(kept) < len(rows)
++    assert page["next_offset"] is None
++    assert page["has_more"] is True
++    assert page["next_cursor"] != seed_cursor
++    assert _decode_error_page_cursor(page["next_cursor"]) == (
++        17,
++        123.0,
++        kept[-1]["fingerprint"],
++        kept[-1]["error_type"],
++        kept[-1]["component"],
++        kept[-1]["operation"],
++    )
