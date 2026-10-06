@@ -29,7 +29,7 @@ runtime/model/backend probes, not unimplemented source changes.
 - Live proof: Hub 4.0.0 served `/api/agent-state/context` with a complete
   task-scoped envelope and the current dirty repository revision; the endpoint
   is now consumed by `local_ai_task(task_id=...)` before local inference.
-- Remaining non-claims: live optional Serena/CodeGraph/Ollama/device quality,
+- Remaining non-claims: live optional Serena/Ollama/device quality; CodeGraphContext is standalone external tooling, not a Hub backend,
   sustained multi-agent contention and external-project migration rehearsal.
 
 ---

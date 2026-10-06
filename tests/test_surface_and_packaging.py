@@ -39,6 +39,14 @@ def test_browser_bridge_files_are_in_source_and_wheel_manifests():
         assert f"browser_bridge/{name}" in pyproject
 
 
+def test_sdist_manifest_prunes_internal_superpowers_docs_after_docs_include():
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    docs_include = manifest.index("recursive-include docs *.md")
+    internal_docs_prune = manifest.index("prune docs/superpowers")
+
+    assert internal_docs_prune > docs_include
+
+
 def test_shipping_agent_policy_advertises_compact_workflow():
     policy = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     assert "local_ai_work" in policy

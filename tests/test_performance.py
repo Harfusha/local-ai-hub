@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import subprocess
 import time
 from contextlib import closing
 from pathlib import Path
@@ -12,6 +13,7 @@ from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.config import load_config
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.preprocess import ProjectPreprocessor
+from local_ai_hub import repo_tools as repo_tools_module
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.tool_agent import ToolAwareLocalAgent
 
@@ -59,6 +61,125 @@ def test_search_successful_empty_accelerator_never_scans_repo(tmp_path: Path):
     assert result["results"] == []
     assert result["engine"] == "ripgrep"
     assert result["scanned_files"] == 0
+
+
+def test_git_repo_uses_git_grep_before_ripgrep_and_reads_exact_candidate(tmp_path: Path):
+    config = cfg(tmp_path)
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    source = repo / "src" / "module.py"
+    source.parent.mkdir()
+    source.write_text("def needle(): return 1\n", encoding="utf-8")
+    tools = RepositoryTools(config)
+    calls: list[str] = []
+
+    def git_grep(*_args, **_kwargs):
+        calls.append("git-grep")
+        return [("src/module.py", 1)], False
+
+    def ripgrep(*_args, **_kwargs):
+        calls.append("ripgrep")
+        return None, True
+
+    tools._git_grep_candidates = git_grep
+    tools._ripgrep_candidates = ripgrep
+
+    result = tools.search(str(repo), "needle", 5)
+
+    assert calls == ["git-grep"]
+    assert result["success"] is True
+    assert result["engine"] == "git-grep"
+    assert result["results"][0]["path"] == "src/module.py"
+    assert result["results"][0]["start_line"] == 1
+def test_git_search_finds_untracked_file_before_ripgrep(tmp_path: Path):
+    config = cfg(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    source = repo / "src" / "new_module.py"
+    source.parent.mkdir()
+    source.write_text("def untracked_search_target(): return 1\n", encoding="utf-8")
+    tools = RepositoryTools(config)
+
+    result = tools.search(str(repo), "untracked_search_target", 5)
+
+    assert result["success"] is True
+    assert result["engine"] == "git-grep"
+    assert result["results"][0]["path"] == "src/new_module.py"
+    assert result["results"][0]["start_line"] == 1
+
+
+def test_ripgrep_timeout_cools_down_repo_and_keeps_search_bounded(tmp_path: Path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    tools = RepositoryTools({
+        "rag": {"extensions": [".py"]},
+        "search": {
+            "max_files": 100,
+            "prefer_git_files": False,
+            "use_git_grep_fallback": False,
+            "use_ripgrep_if_available": False,
+            "ripgrep_timeout_seconds": 0.5,
+            "ripgrep_slow_cooldown_seconds": 15,
+        },
+    })
+    tools._rg = "rg"
+    subprocess_calls = []
+
+    def timeout(*_args, **_kwargs):
+        subprocess_calls.append(True)
+        raise subprocess.TimeoutExpired("rg", 0.5)
+
+    def forbidden_scan(*_args, **_kwargs):
+        raise AssertionError("timed-out accelerator must not trigger a Python scan")
+
+    monkeypatch.setattr(repo_tools_module.subprocess, "run", timeout)
+    monkeypatch.setattr(tools, "iter_files", forbidden_scan)
+
+    first = tools.search(str(root), "missing_symbol", 5)
+    second = tools.search(str(root), "another_missing_symbol", 5)
+
+    assert first["engine"] == "bounded-accelerator-failure"
+    assert second["engine"] == "bounded-accelerator-failure"
+    assert first["retryable"] is True
+    assert second["retryable"] is True
+    assert subprocess_calls == [True]
+    assert tools._git_stats["ripgrep_timeouts"] == 1
+    assert tools._git_stats["ripgrep_cooldown_skips"] == 1
+
+    tools._ripgrep_slow_until[str(root)] = 0.0
+    monkeypatch.setattr(
+        repo_tools_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(["rg"], 1, stdout="", stderr=""),
+    )
+    recovered_candidates, recovered_failed = tools._ripgrep_candidates(root, ["needle"], 20)
+
+    assert recovered_candidates == []
+    assert recovered_failed is False
+    assert str(root) not in tools._ripgrep_slow_until
+
+
+def test_python_search_fallback_metric_is_separate_from_ripgrep_timeout(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "module.py").write_text("def target(): pass\n", encoding="utf-8")
+    tools = RepositoryTools({
+        "rag": {"extensions": [".py"]},
+        "search": {
+            "prefer_git_files": False,
+            "max_files": 5,
+            "use_git_grep_fallback": False,
+            "use_ripgrep_if_available": False,
+        },
+    })
+
+    result = tools.search(str(root), "target", 5)
+
+    assert result["engine"] == "python"
+    stats = tools.snapshot_stats()["git_files"]
+    assert stats["python_search_fallbacks"] == 1
+    assert stats["ripgrep_timeouts"] == 0
 
 
 def _insert_project(pre: ProjectPreprocessor, root: Path):
@@ -177,3 +298,19 @@ def test_local_agent_checks_exact_cache_before_bootstrap_and_prompts_with_prepro
     second = agent.run("qwen2.5-coder:3b-instruct-q5_K_M", "worker", "where is A", str(repo), "t", 128, 5)
     assert second["tool_agent_cache"]["hit"] is True
     assert services.det_calls == 1 and services.code_calls == 1 and pre.compact_calls == 1
+
+
+def test_git_grep_searches_source_files_when_rag_extensions_are_unconfigured(tmp_path: Path):
+    config = {"server": {"state_dir": str(tmp_path / "state")}, "search": {"max_files": 100}}
+    repo = tmp_path / "repo"
+    source = repo / "src" / "module.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def needle(): return 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+
+    result = RepositoryTools(config).search(str(repo), "needle", top_k=5)
+
+    assert result["success"] is True
+    assert result["engine"] == "git-grep"
+    assert result["results"][0]["path"] == "src/module.py"
+    assert result["results"][0]["start_line"] == 1

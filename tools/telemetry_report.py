@@ -112,7 +112,7 @@ def main() -> int:
             "gpu": _gpu_info(),
             "clients": {"codex": _command_version("codex"), "claude": _command_version("claude"), "gemini": _command_version("gemini")},
             "packages": {
-                "serena-agent": _package_version("serena-agent"), "codegraphcontext": _package_version("codegraphcontext"),
+                "serena-agent": _package_version("serena-agent"),
                 "sentence-transformers": _package_version("sentence-transformers"), "mcp": _package_version("mcp"),
             },
         },
