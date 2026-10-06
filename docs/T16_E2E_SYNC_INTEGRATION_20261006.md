@@ -36,7 +36,7 @@ Native check owner: this integration task. Python bytecode and pytest cache disa
 2. `python -B -m pytest -q --tb=short -p no:cacheprovider --basetemp=state/t16-integration-checks/pytest-2 tests/test_agent_t08_durable_contract.py tests/test_agent_t08_migration_recovery.py tests/test_t06_durable_command_provenance.py tests/test_mcp_live_wire_schema.py tests/test_t19_codegraph_removal.py tests/test_sync_codegraph_scan_ignore.py tests/test_t21_project_config_preprocess.py`
    Result: **33 passed, 7 failed**, 31.96 seconds, exit 1. T08 durable/migration suites and scan-ignore invariant passed.
 3. AST parsing: all 18 resolved Python files passed; subsequent changed-source/test check parsed 10 files, zero errors. No duplicate top-level functions/class methods in checked agent-events, agent-tasks, commands, client or process-utils modules.
-4. `git diff --check`: passed. Preprocessing/config/defaults and `.gitignore`: no diff against pinned master.
+4. Working-resolution `git diff --check`: passed. Final source/tests/docs diff against pinned master: passed. Whole pinned diff reports trailing whitespace at line 7 of the preserved `.patch` artifact (exit 2); artifact bytes deliberately retained. The incoming-master staged diff also reports pre-existing whitespace in master handoff overlays/tests; no broad cleanup performed. Preprocessing/config/defaults and `.gitignore`: no diff against pinned master.
 5. Token-economizer setup script at the instructed `.agents` location was missing. No packages installed or PATH changed.
 
 ## Outstanding behavior and remaining checks
@@ -60,4 +60,4 @@ The branch is committed and structurally ready for integration review, **not tes
 - `src/local_ai_hub/agent_tasks.py` (blank-line-only difference), `agent_verification.py`, `client.py`, `commands.py`, `generator.py`, `http_server.py`, `mcp_server.py`, `services.py`.
 - `tests/test_agent_tasks.py`, `tests/test_worktree_release_ownership.py`.
 
-Final handoff reports committed HEAD, clean tracked/index state, no unresolved paths and pinned-master ancestry after the merge commit is written. Ignored runtime check artifacts remain outside commits.
+Resolved merge commit: `1935a48df3b34be6bd5e1f392133bcd668d1ede0`, parents `1240bce13b18eb14d1b0be359834b0989dc1c194` and pinned master. Post-merge checks confirmed clean tracked/index state, no ordinary untracked or unresolved paths, and `git merge-base --is-ancestor` exit 0. This note receives a follow-up documentation commit; final HEAD is reported in chat. Ignored runtime check artifacts remain outside commits.
