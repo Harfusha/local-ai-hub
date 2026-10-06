@@ -33,8 +33,16 @@ class _ReaderProc:
 
 
 class _LiveProc:
+    pid = 12345
+    stdin = None
+    stdout = None
+    stderr = None
+
     def poll(self):
         return None
+
+    def wait(self, timeout=None):
+        return 0
 
 
 def test_mcp_reader_is_bound_to_process_generation_queue() -> None:
@@ -53,6 +61,7 @@ def test_mcp_reader_is_bound_to_process_generation_queue() -> None:
 def test_mcp_explicit_short_deadline_is_honored(monkeypatch: pytest.MonkeyPatch) -> None:
     client = MCPStdioClient(["dummy"])
     client._proc = _LiveProc()  # type: ignore[assignment]
+    monkeypatch.setattr("local_ai_hub.external_tools.terminate_tree", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(client, "_send", lambda _message: None)
     started = time.monotonic()
     with pytest.raises(TimeoutError):
@@ -226,9 +235,23 @@ def test_release_gate_can_bind_expected_tag_version() -> None:
     assert any("expected release version '9.9.9'" in e for e in bad["errors"])
 
 
-def test_release_gate_allows_the_live_installed_checkout() -> None:
-    result = run_checks(ROOT, expected_version="4.0.0", allow_installed=True)
-    assert result["success"] is True, result["errors"]
+def test_release_hygiene_allows_managed_installed_directories(tmp_path: Path) -> None:
+    for name in (".venv", "tool-envs", "state", ".serena", ".agents", ".superpowers", ".worktrees"):
+        (tmp_path / name).mkdir()
+
+    violations = list(_iter_release_hygiene_violations(tmp_path, allow_installed=True))
+    assert violations == []
+
+
+def test_release_hygiene_still_rejects_build_outputs(tmp_path: Path) -> None:
+    (tmp_path / "build").mkdir()
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "stale.whl").write_bytes(b"wheel")
+
+    violations = list(_iter_release_hygiene_violations(tmp_path, allow_installed=True))
+    assert "forbidden directory: build/" in violations
+    assert "forbidden directory: dist/" in violations
+    assert "runtime/build payload: stale.whl" in violations
 
 
 def test_release_workflow_contracts() -> None:

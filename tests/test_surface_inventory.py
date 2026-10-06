@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import builtins
 import importlib.util
 import hashlib
@@ -110,13 +111,26 @@ def chat_path_helper(self):
         root,
         "src/local_ai_hub/features.py",
         '''FEATURES = {"semantic": True, "vision": False}
+
+class FeatureSet:
+    commands = True
+    speculative_lint = True
+
+    def supported_command_actions(self):
+        actions = ["run"]
+        if self.speculative_lint:
+            actions.append("speculative_lint")
+        return actions
 ''',
     )
     write(
         root,
         "src/local_ai_hub/generator.py",
         '''TOOLS = ("local_ai_repo", "local_ai_status")
-MANIFESTS = ("docs/INSTALL_PROMPT.md", "docs/UPDATE_PROMPT.md")
+
+def generate(root):
+    (root / "generated/schemas/local_ai_repo.json").write_text("{}")
+    (root / "generated" / "schemas" / "local_ai_status.json").write_text("{}")
 ''',
     )
     write(
@@ -332,9 +346,16 @@ def test_inventory_extracts_surfaces_and_resolves_dynamic_route_registry(tmp_pat
     assert inventory["http_routes_by_target"]["POST /api/context/pack"]["classification"] == (
         "registered_dynamic"
     )
+    assert "GET /api/context/pack" not in inventory["http_routes_by_target"]
+    assert inventory["http_routes_by_target"]["OPTIONS /api/browser/"]["match"] == "prefix"
+    assert inventory["http_routes_by_target"]["OPTIONS /api/vision/review"]["match"] == "exact"
     assert "GET /health" in inventory["http_routes_by_target"]
     assert "POST /health" in inventory["http_routes_by_target"]
-    assert not {"/api/browser/", "/api/chat/completions"} & {
+    assert inventory["http_routes_by_target"]["OPTIONS /api/browser/"]["classification"] == (
+        "registered_dynamic"
+    )
+    assert "POST /api/browser/" not in inventory["http_routes_by_target"]
+    assert "/api/chat/completions" not in {
         route["path"] for route in inventory["http_routes"]
     }
     assert "get_health" in {method["name"] for method in inventory["client_methods"]}
@@ -344,11 +365,14 @@ def test_inventory_extracts_surfaces_and_resolves_dynamic_route_registry(tmp_pat
     assert inventory["conditional_mcp_actions"]["local_ai_repo"]["batch_replace"] == (
         "batch_replacement"
     )
+    assert inventory["conditional_mcp_actions"]["local_ai_command"]["speculative_lint"] == (
+        "speculative_lint"
+    )
     assert inventory["mcp_action_aliases"]["local_ai_repo"]["ctx"] == "context"
     assert {"agent-state", "clean"} <= set(inventory["cli_operations"])
     assert set(inventory["generated_manifests"]) == {
-        "docs/INSTALL_PROMPT.md",
-        "docs/UPDATE_PROMPT.md",
+        "generated/schemas/local_ai_repo.json",
+        "generated/schemas/local_ai_status.json",
     }
     assert inventory["drift"] == []
 
@@ -414,6 +438,82 @@ def test_inventory_reports_orphan_client_target_and_ignores_prompt_text(tmp_path
 
     assert any("/api/missing" in item for item in inventory["drift"])
     assert not any("MCP tool" in item and "INSTALL_PROMPT.md" in item for item in inventory["drift"])
+
+
+def test_client_inventory_includes_urllib_health_and_event_stream_targets():
+    source = '''from urllib.request import Request, urlopen
+
+class HubClient:
+    def _online(self):
+        with urlopen(Request(f"{self.base_url}/health")) as response:
+            return response.status == 200
+
+    def send_positional_post(self):
+        return urlopen(Request("/api/positional", None, {}, None, False, "POST"))
+
+    def send_dynamic_method(self, method):
+        return urlopen(Request("/api/dynamic", method=method))
+
+    def send_keyword_url(self):
+        return urlopen(Request(url="/api/named"))
+
+    def send_data_post(self):
+        return urlopen(Request("/api/data-post", data=b"payload"))
+
+    def send_dynamic_data(self, payload):
+        return urlopen(Request("/api/dynamic-data", data=payload))
+
+    def send_none_data(self):
+        payload = None
+        return urlopen(Request("/api/none-data", data=payload))
+
+    def send_branch_data(self, enabled):
+        payload = None
+        if enabled:
+            payload = b"payload"
+        return urlopen(Request("/api/branch-data", data=payload))
+
+    def send_reassigned_parameter(self, payload, enabled):
+        if enabled:
+            payload = None
+        return urlopen(Request("/api/reassigned-parameter", data=payload))
+
+    def stream_events(self):
+        url = f"{self.base_url}/api/agent-state/events/stream{query}"
+        request = Request(url)
+        return urlopen(request)
+'''
+
+    _, targets = MODULE._extract_client(ast.parse(source), "src/local_ai_hub/client.py")
+
+    assert {
+        (target["method"], target["path"].split("{", 1)[0])
+        for target in targets
+    } >= {
+        ("GET", "/health"),
+        ("GET", "/api/agent-state/events/stream"),
+        ("POST", "/api/positional"),
+        ("ANY", "/api/dynamic"),
+        ("GET", "/api/named"),
+        ("POST", "/api/data-post"),
+        ("ANY", "/api/dynamic-data"),
+        ("GET", "/api/none-data"),
+        ("ANY", "/api/branch-data"),
+        ("ANY", "/api/reassigned-parameter"),
+    }
+
+
+def test_current_client_inventory_includes_urllib_targets():
+    client_tree = ast.parse((ROOT / "src/local_ai_hub/client.py").read_text(encoding="utf-8"))
+
+    _, targets = MODULE._extract_client(client_tree, "src/local_ai_hub/client.py")
+
+    assert {
+        (target["method"], target["path"]) for target in targets
+    } >= {
+        ("GET", "/health"),
+        ("GET", "/api/agent-state/events/stream"),
+    }
 
 
 def test_inventory_recognizes_action_alias_checked_against_dynamic_detail_type(tmp_path):
@@ -1398,7 +1498,23 @@ def test_missing_generated_manifest_is_reported(tmp_path):
 
     inventory = MODULE.collect_inventory(tmp_path)
 
-    assert any("missing generated manifest docs/UPDATE_PROMPT.md" in item for item in inventory["drift"])
+    assert set(inventory["generated_manifests"]) == {
+        "generated/schemas/local_ai_repo.json",
+        "generated/schemas/local_ai_status.json",
+    }
+    assert not any("missing generated manifest" in item for item in inventory["drift"])
+
+
+def test_missing_declared_generated_manifest_is_reported(tmp_path):
+    make_repo(tmp_path)
+    (tmp_path / "generated" / "schemas" / "local_ai_status.json").unlink()
+
+    inventory = MODULE.collect_inventory(tmp_path)
+
+    assert any(
+        "missing generated manifest generated/schemas/local_ai_status.json" in item
+        for item in inventory["drift"]
+    )
 
 
 def test_inventory_contract_rows_include_required_machine_readable_fields(tmp_path):

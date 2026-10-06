@@ -1,0 +1,115 @@
+{
+  "status": "VERIFIED bounded T19 current-prompt docs parity only",
+  "goal_scope": "Own verification complete; not whole T19",
+  "workspace": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub",
+  "primary_changes": [
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\docs\\INSTALL_PROMPT.md",
+      "sha256": "1D6021FDE9EB66411F274607B517C6F498B51C1D9565B5AAC2187BDC16FB6A3D",
+      "pre_sha256": "6EC6B55A08EEE0E552346DB6526BBCBA08D887CDC44145A1432ABB2652854AF8"
+    },
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\docs\\UPDATE_PROMPT.md",
+      "sha256": "3B0513C3BFF44EF95AD4EB3908D3C95F7152E3A45FFCDDFC74EE81532BC5995D",
+      "pre_sha256": "4B40839C25891B00A704A1178D20C2343D41FB0F0F08422D39DE186807AB3D3C"
+    },
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\tests\\test_t19_current_prompt_adoption.py",
+      "sha256": "4DC9A34231395D45884FDE62B932F6304EEACBC675893A79010976F12324B78E",
+      "pre_sha256": null
+    }
+  ],
+  "new_handoff_artifacts": [
+    {
+      "path": "handoff/t19-current-prompt-adoption/01-baseline.json",
+      "sha256": "68516703973B39C74E25203F93E504846B9FD929B5D864DAD2137C92206D6BC5",
+      "absolute_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\t19-current-prompt-adoption\\01-baseline.json",
+      "pre_sha256": null
+    },
+    {
+      "path": "handoff/t19-current-prompt-adoption/02-red-adaptive-schema.json",
+      "sha256": "FB804A72789058B5E448B08F42CE86CA00DC21554ACF13258202A8DFBD170486",
+      "absolute_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\t19-current-prompt-adoption\\02-red-adaptive-schema.json",
+      "pre_sha256": null
+    },
+    {
+      "path": "handoff/t19-current-prompt-adoption/03-red-path-modes-memory.json",
+      "sha256": "A8B34F4A416392A5B80F1CAE52799BDEAE6560153E1A61E045203CB819F725B7",
+      "absolute_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\t19-current-prompt-adoption\\03-red-path-modes-memory.json",
+      "pre_sha256": null
+    },
+    {
+      "path": "handoff/t19-current-prompt-adoption/04-root-current-narrow.patch",
+      "sha256": "C4F762C533C63FA0D29A563836BF2F7C0BB4F276FA3D4CC471F6050B668D0A8D",
+      "absolute_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\t19-current-prompt-adoption\\04-root-current-narrow.patch",
+      "pre_sha256": null
+    },
+    {
+      "path": "handoff/t19-current-prompt-adoption/05-source-review.json",
+      "sha256": "4C03BD70D13385A1A36885213071C643A9A482C178D379056040D18E95AD2364",
+      "absolute_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\t19-current-prompt-adoption\\05-source-review.json",
+      "pre_sha256": null
+    },
+    {
+      "path": "handoff/t19-current-prompt-adoption/06-worker-only.patch",
+      "sha256": "2857CF3C5CD87339FF88E98F2CC9FEEF0BDD473D460309863DE66D4DBC341F85",
+      "absolute_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\t19-current-prompt-adoption\\06-worker-only.patch",
+      "pre_sha256": null
+    },
+    {
+      "path": "handoff/t19-current-prompt-adoption/07-HANDOFF.md",
+      "sha256": "1095818392548ECBC917B8E7CFF5FA735C4700468CD0CD6A4F6A0BD701A51775",
+      "absolute_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\t19-current-prompt-adoption\\07-HANDOFF.md",
+      "pre_sha256": null
+    }
+  ],
+  "manifest_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\t19-current-prompt-adoption\\08-verification-manifest.json",
+  "manifest_note": "Manifest is also new immutable artifact. Its SHA256 is returned externally after creation to avoid recursive self-hashing.",
+  "tests": {
+    "command": "$env:PYTHONDONTWRITEBYTECODE='1'; $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'; python -B -m pytest -q -p no:cacheprovider --confcutdir=tests --noconftest tests/test_t19_current_prompt_adoption.py --tb=short",
+    "actual_result": "11 passed in 0.07s",
+    "exit_code": 0,
+    "scope": "New candidate docs-only regression; no Hub/root runtime"
+  },
+  "root_current_patch": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\t19-current-prompt-adoption\\04-root-current-narrow.patch",
+    "sha256": "C4F762C533C63FA0D29A563836BF2F7C0BB4F276FA3D4CC471F6050B668D0A8D",
+    "applycheck": "git apply --check --unsafe-paths --directory=C:/Users/Adam/.local-ai-hub handoff/t19-current-prompt-adoption/04-root-current-narrow.patch",
+    "actual_result": "No apply errors; exec exit 0",
+    "applied": false,
+    "root_doc_pre_and_post_sha256": [
+      {
+        "path": "C:\\Users\\Adam\\.local-ai-hub\\docs\\INSTALL_PROMPT.md",
+        "sha256": "1B5E57631929A3CA1FDDEF87DB3A3DCE0E9CCE1A61E485B96FABE0AB8CFC71C5"
+      },
+      {
+        "path": "C:\\Users\\Adam\\.local-ai-hub\\docs\\UPDATE_PROMPT.md",
+        "sha256": "692301661A67C0FEF78A0CEAAD90F87665ADC1EFC88BCE934F1D2366355D2BCF"
+      }
+    ],
+    "root_test_absent": true,
+    "drift_policy": "Existing root/worktree doc divergence preserved. Do not overwrite later root drift."
+  },
+  "worker_only_patch_reverse_check": {
+    "command": "git apply --reverse --check --unidiff-zero handoff/t19-current-prompt-adoption/06-worker-only.patch",
+    "actual_exit_code": 0,
+    "prior_attempt_without_unidiff_zero": "exit 1; patch failed at install line 157; no mutation"
+  },
+  "whitespace": {
+    "command": "git diff --check -- docs/INSTALL_PROMPT.md docs/UPDATE_PROMPT.md",
+    "actual_exit_code": 0
+  },
+  "protected_sdk_test": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\tests\\test_t19_packaged_sdk_smoke.py",
+    "sha256": "CF0889E223467D5606161270FF9831005971E4F1BFFF315D1201E50BD9F46144"
+  },
+  "source_review": "05-source-review.json",
+  "main_owned_remaining": [
+    "Legacy source-stale tests and generator parity",
+    "Full release gates",
+    "Runtime/physical GPU proof",
+    "Cross-worktree Agent OS memory sharing HOLD"
+  ],
+  "immutability": "Each numbered artifact created once and never overwritten.",
+  "ownership_handoff": "Two docs released to orchestrator at completed handoff"
+}
