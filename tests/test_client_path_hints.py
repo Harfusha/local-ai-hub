@@ -1,0 +1,201 @@
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+from local_ai_hub.client import HubClient
+
+
+def _client(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        encoding="utf-8",
+    )
+    return HubClient(config_path=str(config), auto_start=False)
+
+
+def test_post_forwards_path_hints_to_search_only(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def capture_request(path, payload, **_kwargs):
+        calls.append((path, payload))
+        return {"success": True}
+
+    monkeypatch.setattr(client, "request", capture_request)
+    hints = ({"path": "src/app.py", "purpose": "implementation", "scope": "repository"},)
+
+    client.post("/api/search", {"query": "needle"}, path_hints=hints)
+    client.post("/api/command", {"command": "pytest"}, path_hints=hints)
+
+    assert calls == [
+        (
+            "/api/search",
+            {"query": "needle", "path_hints": list(hints)},
+        ),
+        ("/api/command", {"command": "pytest"}),
+    ]
+
+
+def test_explicit_path_takes_precedence_and_does_not_mutate_payload(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+    monkeypatch.setattr(client, "request", lambda path, payload, **kwargs: calls.append((path, payload, kwargs)) or {"success": True})
+    payload = {
+        "query": "needle",
+        "path": "src/explicit.py",
+        "path_hints": [
+            {"path": "src/payload-hint.py", "purpose": "implementation", "scope": "repository"}
+        ],
+    }
+    original_payload = dict(payload)
+
+    client.post(
+        "/api/search",
+        payload,
+        path_hints=({"path": "src/hinted.py", "purpose": "implementation", "scope": "repository"},),
+    )
+
+    assert calls[0][1] == {"query": "needle", "path": "src/explicit.py"}
+    assert "path_hints" not in calls[0][1]
+    assert payload == original_payload
+
+
+def test_post_does_not_forward_hints_to_other_routes_or_create_paths_alias(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+    monkeypatch.setattr(client, "request", lambda path, payload, **kwargs: calls.append((path, payload)) or {"success": True})
+    payload = {"paths": ["src/explicit.py"], "query": "needle"}
+
+    client.post("/api/context/pack", payload, path_hints=({"path": "src/hinted.py", "purpose": "implementation", "scope": "repository"},))
+
+    assert calls == [("/api/context/pack", payload)]
+    assert "path_hints" not in calls[0][1]
+    assert calls[0][1]["paths"] == ["src/explicit.py"]
+
+
+def test_post_sanitizes_embedded_path_hints_and_drops_unsupported_routes(
+    tmp_path, monkeypatch
+):
+    client = _client(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        client,
+        "request",
+        lambda path, payload, **kwargs: calls.append((path, payload)) or {"success": True},
+    )
+    payload = {
+        "query": "needle",
+        "path_hints": [
+            {
+                "path": "src/hinted.py",
+                "purpose": "implementation",
+                "scope": "repository",
+                "private": "drop",
+            },
+            {"path": "src/invalid.py", "scope": "repository"},
+        ],
+    }
+    original_payload = dict(payload)
+
+    client.post("/api/search", payload)
+    client.post("/api/context/pack", payload)
+
+    assert calls == [
+        (
+            "/api/search",
+            {
+                "query": "needle",
+                "path_hints": [
+                    {
+                        "path": "src/hinted.py",
+                        "purpose": "implementation",
+                        "scope": "repository",
+                    }
+                ],
+            },
+        ),
+        ("/api/context/pack", {"query": "needle"}),
+    ]
+    assert payload == original_payload
+
+
+def test_post_serializes_path_hint_objects_and_omits_empty_metadata(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+    monkeypatch.setattr(client, "request", lambda path, payload, **kwargs: calls.append(payload) or {"success": True})
+    hint = SimpleNamespace(
+        path="src/app.py",
+        purpose="implementation",
+        scope="repository",
+    )
+
+    client.post("/api/search", {"query": "needle"}, path_hints=(hint,))
+
+    assert calls == [
+        {
+            "query": "needle",
+            "path_hints": [{"path": "src/app.py", "purpose": "implementation", "scope": "repository"}],
+        }
+    ]
+
+
+def test_search_sends_exact_typed_path_hints_request_body(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def capture_open(method, path, body, headers, _timeout):
+        calls.append((method, path, body, headers))
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", capture_open)
+    hint = SimpleNamespace(
+        path="src/auth.py",
+        purpose="implementation",
+        scope="repository",
+        evidence_id="evidence-42",
+        provenance="repo-search",
+        repository_revision="rev-abc",
+        config_digest="cfg-123",
+        expires_at="2030-01-01T00:00:00Z",
+    )
+    request_payload = {"root": str(tmp_path), "query": "authorization flow", "top_k": 12}
+    expected_payload = {
+        **request_payload,
+        "path_hints": [{
+            "path": "src/auth.py",
+            "purpose": "implementation",
+            "scope": "repository",
+            "evidence_id": "evidence-42",
+            "provenance": "repo-search",
+            "repository_revision": "rev-abc",
+            "config_digest": "cfg-123",
+            "expires_at": "2030-01-01T00:00:00Z",
+        }],
+    }
+
+    client.post("/api/search", request_payload, path_hints=(hint,))
+
+    assert len(calls) == 1
+    method, path, body, headers = calls[0]
+    assert (method, path) == ("POST", "/api/search")
+    assert body == json.dumps(expected_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    assert all("src/auth.py" not in value for value in headers.values())
+
+
+def test_post_caps_path_hints_and_drops_unlisted_fields(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+    monkeypatch.setattr(client, "request", lambda path, payload, **kwargs: calls.append(payload) or {"success": True})
+    hints = tuple(
+        {"path": f"src/{index}.py", "purpose": "implementation", "scope": "repository", "private": "drop"}
+        for index in range(65)
+    )
+
+    client.post("/api/search", {"query": "needle"}, path_hints=hints)
+
+    records = calls[0]["path_hints"]
+    assert len(records) == 64
+    assert records[0] == {"path": "src/0.py", "purpose": "implementation", "scope": "repository"}
+    assert all("private" not in record for record in records)
