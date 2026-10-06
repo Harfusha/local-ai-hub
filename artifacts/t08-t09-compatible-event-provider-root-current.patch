@@ -1,0 +1,220 @@
+--- a/src/local_ai_hub/agent_events.py
++++ b/src/local_ai_hub/agent_events.py
+@@ -1,4 +1,6 @@
+ from __future__ import annotations
++
++from contextlib import contextmanager
+ 
+ from .json_utils import dumps as json_dumps
+ 
+@@ -10,7 +12,7 @@
+ import uuid
+ from dataclasses import dataclass
+ from pathlib import Path
+-from typing import Any, Mapping
++from typing import Any, Callable, Iterator, Mapping, Sequence
+ 
+ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
+ 
+@@ -126,6 +128,9 @@
+ 
+ 
+ class AgentStateStore:
++    _append_publish_locks_guard = threading.Lock()
++    _append_publish_locks: dict[str, Any] = {}
++
+     def __init__(
+         self,
+         db_path: Path | str,
+@@ -137,6 +142,9 @@
+         self.enabled = bool(enabled)
+         self.max_payload_bytes = int(max_payload_bytes)
+         self._lock = threading.RLock()
++        self._append_publish_lock = self._append_publish_locks.setdefault(
++            str(self.db_path.resolve()), threading.RLock()
++        )
+         self._initialized = False
+         self._subscribers: list[queue.Queue[AgentEvent]] = []
+         self._subscribers_lock = threading.Lock()
+@@ -228,25 +236,23 @@
+             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+             self._initialized = True
+ 
+-    def append(self, event: AgentEvent) -> AppendResult:
++    def append(self, event: AgentEvent, *, strict_idempotency: bool = False) -> AppendResult:
+         if not self.enabled:
+             return AppendResult(seq=0, duplicate=False, error="agent_state is disabled")
+-
+         payload_bytes = json_dumps(event.payload, separators=(",", ":")).encode("utf-8")
+         if len(payload_bytes) > self.max_payload_bytes:
+             raise ValueError(
+                 f"payload exceeds maximum allowed {self.max_payload_bytes} bytes (got {len(payload_bytes)})"
+             )
+-
+         self._ensure_schema()
+ 
+         def _do_append() -> AppendResult:
+-            # Keep each busy wait short; retry_busy provides bounded recovery for
+-            # transient locks, while persistent locks must return retryable quickly.
+             con = connect_sqlite(self.db_path, isolation_level=None, timeout_seconds=0.25)
+             try:
+                 con.execute("BEGIN IMMEDIATE")
+-                result = self._append_event_in_transaction(con, event, payload=payload_bytes.decode("utf-8"))
++                result = self.append_in_transaction(
++                    con, event, strict_idempotency=strict_idempotency
++                )
+                 con.execute("COMMIT")
+                 return result
+             except Exception as exc:
+@@ -261,21 +267,95 @@
+                 con.close()
+ 
+         try:
+-            res = retry_busy(_do_append, retries=5, base_delay_seconds=0.02)
+-            if not res.duplicate and res.event is not None:
+-                self._publish(res.event)
+-            return res
++            with self._append_publish_lock:
++                result = retry_busy(_do_append, retries=5, base_delay_seconds=0.02)
++                if not result.duplicate and result.event is not None:
++                    self._publish(result.event)
++                return result
+         except Exception as exc:
+             if is_busy_error(exc):
+                 return AppendResult(seq=0, duplicate=False, retryable=True, error=str(exc))
+             raise
+ 
++    def append_in_transaction(
++        self, con: Any, event: AgentEvent, *, strict_idempotency: bool = False
++    ) -> AppendResult:
++        """Append and advance the legacy durable cursor in the caller transaction."""
++        if not self.enabled:
++            raise RuntimeError("agent_state is disabled")
++        if not bool(getattr(con, "in_transaction", False)):
++            raise RuntimeError("append_in_transaction requires a caller-owned transaction")
++        payload = json_dumps(event.payload, separators=(",", ":"))
++        if len(payload.encode("utf-8")) > self.max_payload_bytes:
++            raise ValueError(
++                f"payload exceeds maximum allowed {self.max_payload_bytes} bytes "
++                f"(got {len(payload.encode('utf-8'))})"
++            )
++        return self._append_event_in_transaction(
++            con, event, payload=payload, strict_idempotency=strict_idempotency
++        )
++
++    @contextmanager
++    def ordered_event_publication(
++        self, con: Any
++    ) -> Iterator[Callable[[Sequence[AgentEvent]], None]]:
++        """Serialize a caller-owned commit with publication to live subscribers.
++
++        Enter before the caller starts its transaction. The caller retains ownership
++        of BEGIN, COMMIT, and ROLLBACK; call the yielded publisher only after COMMIT.
++        The publisher verifies committed rows before emitting any event. A rollback
++        therefore cannot produce a live event, even if the caller mistakenly tries
++        to publish its pending result.
++        """
++        if not self.enabled:
++            raise RuntimeError("agent_state is disabled")
++        if bool(getattr(con, "in_transaction", False)):
++            raise RuntimeError(
++                "ordered_event_publication must be entered before caller transaction begins"
++            )
++        with self._append_publish_lock:
++            scope_active = True
++
++            def publish_committed(events: Sequence[AgentEvent]) -> None:
++                if not scope_active:
++                    raise RuntimeError("ordered event publication scope is closed")
++                if bool(getattr(con, "in_transaction", False)):
++                    raise RuntimeError("caller transaction is still open")
++                committed: list[AgentEvent] = []
++                last_seq_by_stream: dict[str, int] = {}
++                for event in events:
++                    if event.seq is None:
++                        raise RuntimeError("event is not committed")
++                    prior_seq = last_seq_by_stream.get(event.stream_id)
++                    if prior_seq is not None and event.seq <= prior_seq:
++                        raise ValueError("committed events must be supplied in stream sequence order")
++                    last_seq_by_stream[event.stream_id] = event.seq
++                    row = con.execute(
++                        """
++                        SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
++                               correlation_id, actor, created_at
++                        FROM agent_events
++                        WHERE stream_id = ? AND seq = ? AND event_id = ?
++                        """,
++                        (event.stream_id, event.seq, event.event_id),
++                    ).fetchone()
++                    if row is None or AgentEvent.from_row(row) != event:
++                        raise RuntimeError("event is not committed")
++                    committed.append(event)
++                for event in committed:
++                    self._publish(event)
++
++            try:
++                yield publish_committed
++            finally:
++                scope_active = False
+     def _append_event_in_transaction(
+         self,
+         con: sqlite3.Connection,
+         event: AgentEvent,
+         *,
+         payload: str | None = None,
++        strict_idempotency: bool = False,
+     ) -> AppendResult:
+         """Insert an event and advance its durable cursor using a caller-owned transaction."""
+         event_payload = payload if payload is not None else json_dumps(event.payload, separators=(",", ":"))
+@@ -293,11 +373,18 @@
+             except (TypeError, ValueError):
+                 same_payload = False
+             if existing_event.kind != event.kind or not same_payload:
++                if strict_idempotency:
++                    raise ValueError("idempotency key was already used for a different event payload")
+                 return AppendResult(
+                     seq=existing_event.seq or 0,
+                     duplicate=False,
+                     error=f"idempotency key conflict for stream {event.stream_id}",
+                 )
++            if strict_idempotency and (
++                existing_event.actor != event.actor
++                or existing_event.correlation_id != event.correlation_id
++            ):
++                raise ValueError("idempotency key was already used for a different event payload")
+             return AppendResult(seq=existing_event.seq or 0, duplicate=True, event=existing_event)
+ 
+         cursor = con.execute(
+@@ -429,7 +516,9 @@
+         finally:
+             con.close()
+ 
+-    def event_page(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> dict[str, Any]:
++    def event_page(
++        self, stream_id: str, after_seq: int = 0, limit: int = 1000, *, through_seq: int | None = None
++    ) -> dict[str, Any]:
+         """Read one replay page with durable retention bounds and gap metadata."""
+         if not self.enabled:
+             return {"success": False, "events": [], "gap": False, "error": "agent_state is unavailable"}
+@@ -445,13 +534,18 @@
+                 "SELECT first_retained_seq, last_seq FROM agent_stream_cursors WHERE stream_id = ?",
+                 (stream_id,),
+             ).fetchone()
+-            first_seq, last_seq = (int(cursor[0]), int(cursor[1])) if cursor else (0, 0)
++            first_seq, current_last_seq = (int(cursor[0]), int(cursor[1])) if cursor else (0, 0)
++            last_seq = current_last_seq if through_seq is None else min(
++                current_last_seq, max(0, int(through_seq))
++            )
+             rows = con.execute(
+                 """
+                 SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
+-                FROM agent_events WHERE stream_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?
++                FROM agent_events
++                WHERE stream_id = ? AND seq > ? AND seq <= ?
++                ORDER BY seq ASC LIMIT ?
+                 """,
+-                (stream_id, cursor_seq, page_limit + 1),
++                (stream_id, cursor_seq, last_seq, page_limit + 1),
+             ).fetchall()
+             has_more = len(rows) > page_limit
+             events = [AgentEvent.from_row(row) for row in rows[:page_limit]]
