@@ -156,7 +156,7 @@ def test_cached_external_unavailability_is_retried_when_backend_is_available(tmp
         with closing(pre._connect()) as con:
             con.execute(
                 "INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
-                (str(repo), "serena", revision, "unavailable", 0.0, "serena indexing exceeded 120s"),
+                (str(repo), "serena", revision, "unavailable", 0.0, "Serena indexing exceeded 120s"),
             )
             con.commit()
         row = {"root": str(repo), "workspace": "test", "generation": 0}
@@ -190,7 +190,7 @@ def test_startup_requeues_complete_project_with_available_external_backend(tmp_p
             )
             con.execute(
                 "INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
-                (str(repo), "serena", "same", "skipped", now, "serena indexing exceeded 120s"),
+                (str(repo), "serena", "same", "skipped", now, "Serena indexing exceeded 120s"),
             )
             con.commit()
     finally:
@@ -427,7 +427,7 @@ def test_external_index_failure_degrades_and_advances_preprocessing(tmp_path: Pa
     )
     try:
         row = {"root": str(repo), "workspace": "test", "generation": 0}
-        assert pre._step_external_index(row, "serena", "codegraph") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
         with closing(pre._connect()) as con:
             state = con.execute(
                 "SELECT status,error FROM external_index_state WHERE root=? AND backend=?",
@@ -446,7 +446,7 @@ def test_external_index_timeout_is_retryable_for_unchanged_revision():
         "TimeoutError: serena indexing exceeded 30s"
     )
     assert not ProjectPreprocessor._external_error_is_revision_scoped(
-        "RuntimeError: codegraph index exited 1: temporary resource pressure"
+        "RuntimeError: serena index exited 1: temporary resource pressure"
     )
     assert ProjectPreprocessor._external_error_is_revision_scoped(
         "no associated project configuration"
@@ -469,14 +469,14 @@ def test_malformed_external_index_response_degrades_and_advances_preprocessing(t
     )
     try:
         row = {"root": str(repo), "workspace": "test", "generation": 0}
-        assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
         with closing(pre._connect()) as con:
             state = con.execute(
                 "SELECT status,error FROM external_index_state WHERE root=? AND backend=?",
-                (str(repo), "codegraph"),
+                (str(repo), "serena"),
             ).fetchone()
         assert state[0] == "degraded"
-        assert state[1] == "invalid codegraph index response"
+        assert state[1] == "invalid serena index response"
     finally:
         pre.close()
 
@@ -498,8 +498,8 @@ def test_stale_external_project_configuration_is_skipped_once_per_revision(tmp_p
     )
     try:
         row = {"root": str(repo), "workspace": "test", "generation": 0}
-        assert pre._step_external_index(row, "serena", "codegraph") is True
-        assert pre._step_external_index(row, "serena", "codegraph") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
         with closing(pre._connect()) as con:
             state = con.execute(
                 "SELECT status,error FROM external_index_state WHERE root=? AND backend=?",
@@ -529,24 +529,24 @@ def test_time_bounded_external_index_retries_after_backoff(tmp_path: Path):
     )
     try:
         row = {"root": str(repo), "workspace": "test", "generation": 0}
-        assert pre._step_external_index(row, "codegraph", "lexical") is True
-        assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
         assert external.calls == 1
         with closing(pre._connect()) as con:
             con.execute(
                 "UPDATE external_index_state SET updated_at=? WHERE root=? AND backend=?",
-                (time.time() - 3600, str(repo), "codegraph"),
+                (time.time() - 3600, str(repo), "serena"),
             )
             con.commit()
-        assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
         assert external.calls == 2
         with closing(pre._connect()) as con:
             state = con.execute(
                 "SELECT status,error FROM external_index_state WHERE root=? AND backend=?",
-                (str(repo), "codegraph"),
+                (str(repo), "serena"),
             ).fetchone()
         assert state[0] == "degraded"
-        assert state[1] == "codegraph indexing exceeded 30s"
+        assert state[1] == "serena indexing exceeded 30s"
     finally:
         pre.close()
 
@@ -568,8 +568,8 @@ def test_available_backend_timeout_is_not_retried_forever(tmp_path: Path):
     )
     try:
         row = {"root": str(repo), "workspace": "test", "generation": 0}
-        assert pre._step_external_index(row, "codegraph", "lexical") is True
-        assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
         assert external.calls == 1
     finally:
         pre.close()
@@ -593,7 +593,7 @@ def test_external_index_publishes_running_state_before_invocation(tmp_path: Path
     external.pre = pre
     try:
         row = {"root": str(repo), "workspace": "test", "generation": 0}
-        assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
         assert tuple(external.state_during_index) == ("running", "")
     finally:
         pre.close()
@@ -619,15 +619,15 @@ def test_force_refresh_retries_cached_external_index(tmp_path: Path):
         with closing(pre._connect()) as con:
             con.execute(
                 "INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
-                (str(repo), "codegraph", revision, "unavailable", 0.0, "codegraph indexing exceeded 30s"),
+                (str(repo), "serena", revision, "unavailable", 0.0, "serena indexing exceeded 30s"),
             )
             con.commit()
         row = {"root": str(repo), "workspace": "test", "generation": 0, "force_refresh": 1}
-        assert pre._step_external_index(row, "codegraph", "lexical") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
         with closing(pre._connect()) as con:
             state = con.execute(
                 "SELECT status FROM external_index_state WHERE root=? AND backend=?",
-                (str(repo), "codegraph"),
+                (str(repo), "serena"),
             ).fetchone()
         assert external.calls == 1
         assert state[0] == "ready"
@@ -653,7 +653,7 @@ def test_force_refresh_requeues_complete_project_from_inventory(tmp_path: Path):
             )
             con.execute(
                 "INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
-                (str(repo), "codegraph", "old", "skipped", now, "old timeout"),
+                (str(repo), "serena", "old", "skipped", now, "old timeout"),
             )
             con.commit()
         pre.refresh(str(repo))
@@ -696,7 +696,7 @@ def test_existing_timed_out_external_index_is_retried_after_restart(tmp_path: Pa
             )
             con.commit()
         row = {"root": str(repo), "workspace": "test", "generation": 0}
-        assert pre._step_external_index(row, "serena", "codegraph") is True
+        assert pre._step_external_index(row, "serena", "lexical") is True
         with closing(pre._connect()) as con:
             state = con.execute(
                 "SELECT status FROM external_index_state WHERE root=? AND backend=?",
@@ -719,7 +719,7 @@ def test_external_state_is_preserved_across_restart(tmp_path: Path):
         with closing(pre._connect()) as con:
             con.execute(
                 "INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
-                (str(repo), "codegraph", revision, "degraded", 0.0, "codegraph indexing exceeded 30s"),
+                (str(repo), "serena", revision, "degraded", 0.0, "serena indexing exceeded 30s"),
             )
             con.commit()
     finally:
@@ -730,7 +730,7 @@ def test_external_state_is_preserved_across_restart(tmp_path: Path):
         with closing(reopened._connect()) as con:
             state = con.execute(
                 "SELECT status FROM external_index_state WHERE root=? AND backend=?",
-                (str(repo), "codegraph"),
+                (str(repo), "serena"),
             ).fetchone()
         assert state[0] == "degraded"
     finally:

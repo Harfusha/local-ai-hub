@@ -54,10 +54,9 @@ def test_python_sdk_docs_cover_t19_workflows():
     assert "maps one client call to one endpoint" in sdk_doc
     assert "terminal" in sdk_doc and "retryable" in sdk_doc
     assert "8/8 successful workflows on first direct call; 8 HTTP requests total" in sdk_doc
-    assert 'client.coord("pubsub_poll", topic=..., since_timestamp=0.0, limit=50)' in sdk_doc
-    assert "count of returned messages" in sdk_doc
-    assert "Prunes expired in-memory topic messages during poll" in sdk_doc
-    assert "`timestamp > since_timestamp`" in sdk_doc
+    assert 'client.coord("pubsub_poll", root=root, topic=..., after_seq=0, limit=50)' in sdk_doc
+    assert "integer `after_seq` cursor" in sdk_doc
+    assert "historical evidence, not acceptance for this merged revision" in sdk_doc
 
 
 def test_sdk_docs_explain_resume_state_and_failure_recovery():

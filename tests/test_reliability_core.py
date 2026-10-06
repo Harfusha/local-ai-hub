@@ -150,11 +150,12 @@ def test_external_sessions_are_bounded_lru(monkeypatch, tmp_path: Path):
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},
         "code_intelligence": {
-            "enabled": True, "serena_enabled": True,
-            "serena_command": sys.executable, "max_sessions_per_backend": 1, "session_idle_ttl_seconds": 3600,
+            "enabled": True, "serena_enabled": False,
+            "max_sessions_per_backend": 1, "session_idle_ttl_seconds": 3600,
         },
     }
     ext = ExternalCodeIntelligence(cfg)
+    ext._serena = sys.executable
     roots = [tmp_path / "a", tmp_path / "b"]
     for root in roots: root.mkdir()
     ext._serena_session(str(roots[0]))
@@ -241,6 +242,7 @@ def test_bundle_roundtrip_current_schema_and_binary_embedding(tmp_path: Path):
             assert con.execute("SELECT COUNT(*) FROM facts WHERE root=?", (root,)).fetchone()[0] == 1
         with closing(app.rag._connect()) as con:
             raw = con.execute("SELECT embedding FROM chunks WHERE tenant=? AND workspace=?", (scope,workspace)).fetchone()[0]
+        assert isinstance(raw, (bytes, bytearray, memoryview))
         assert bytes(raw) == bytes(blob)
     finally:
         app.close()
@@ -448,7 +450,7 @@ def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path
         assert json.loads(body)["success"] is True
 
         # Broad public deterministic contract: every cheap repository/operator endpoint
-     # must remain usable without Ollama or an external Serena process.
+        # must remain usable without Ollama or optional external processes.
         (repo / "main.py").write_text("class SampleService:\n    pass\n", encoding="utf-8")
         (repo / "pyproject.toml").write_text('[project]\nname="smoke"\nversion="0.1"\n', encoding="utf-8")
         def jpost(path, payload):

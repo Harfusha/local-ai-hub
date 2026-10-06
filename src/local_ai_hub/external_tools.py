@@ -177,16 +177,16 @@ class MCPStdioClient:
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
     def _request(self, method: str, params: dict[str, Any], *, timeout: float | None = None, soft_timeout: float | None = None, ensure_started: bool = True) -> Any:
+        request_started = time.monotonic()
+        hard_timeout = self.call_timeout if timeout is None else max(0.05, float(timeout))
+        hard_deadline = request_started + hard_timeout
+        soft_deadline = (request_started + max(0.05, float(soft_timeout))) if soft_timeout is not None else None
+        effective_deadline = min(hard_deadline, soft_deadline) if soft_deadline is not None else hard_deadline
         if ensure_started:
             self._spawn()
         request_id = self._next_id
         self._next_id += 1
         self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
-        now = time.monotonic()
-        hard_timeout = self.call_timeout if timeout is None else max(0.05, float(timeout))
-        hard_deadline = now + hard_timeout
-        soft_deadline = (now + max(0.05, float(soft_timeout))) if soft_timeout is not None else None
-        effective_deadline = min(hard_deadline, soft_deadline) if soft_deadline is not None else hard_deadline
 
         while time.monotonic() < effective_deadline:
             proc = self._proc
@@ -213,7 +213,7 @@ class MCPStdioClient:
         if soft_deadline is not None and time.monotonic() >= soft_deadline and time.monotonic() < hard_deadline:
             raise MCPSoftTimeoutError(f"MCP soft timeout: {method}")
 
-        self._stop_process()
+        self._stop_process(deadline=hard_deadline)
         raise TimeoutError(f"MCP call timed out: {method}")
 
     def _refresh_tools(self) -> None:
@@ -284,7 +284,7 @@ class MCPStdioClient:
             out["result"] = {k: v for k, v in result.items() if k not in {"content", "structuredContent"}}
         return out
 
-    def _stop_process(self) -> None:
+    def _stop_process(self, *, deadline: float | None = None) -> None:
         proc = self._proc
         responses = self._responses
         stderr_lines = self._stderr
@@ -298,20 +298,47 @@ class MCPStdioClient:
         self._stderr = deque(maxlen=80)
         if not proc:
             return
+
+        # A request timeout has no remaining budget for process-tree teardown.
+        # Detach state now, then reap in the background so cleanup cannot extend
+        # the caller's explicit deadline.
+        if deadline is not None and time.monotonic() >= deadline:
+            threading.Thread(
+                target=self._cleanup_process,
+                args=(proc, reader_threads, responses, stderr_lines),
+                name="local-ai-mcp-reaper",
+                daemon=True,
+            ).start()
+            return
+        self._cleanup_process(proc, reader_threads, responses, stderr_lines)
+
+    @staticmethod
+    def _cleanup_process(
+        proc: subprocess.Popen[str],
+        reader_threads: tuple[threading.Thread, ...],
+        responses: queue.Queue[dict[str, Any]],
+        stderr_lines: deque[str],
+    ) -> None:
         try:
-            if proc.stdin:
-                proc.stdin.close()
+            stdin = getattr(proc, "stdin", None)
+            if stdin:
+                stdin.close()
         except Exception:
             pass
         if proc.poll() is None:
-            terminate_tree(proc.pid, grace_seconds=1.0)
+            pid = getattr(proc, "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                try:
+                    terminate_tree(pid, grace_seconds=1.0)
+                except Exception:
+                    pass
         try:
             proc.wait(timeout=1.0)
         except Exception:
             pass
         # Popen does not guarantee pipe file objects are closed merely because
         # the child exited. Closing them also unblocks line-reader threads.
-        for stream in (proc.stdout, proc.stderr):
+        for stream in (getattr(proc, "stdout", None), getattr(proc, "stderr", None)):
             try:
                 if stream:
                     stream.close()
@@ -349,12 +376,7 @@ class MCPStdioClient:
 
 
 class ExternalCodeIntelligence:
-    """Managed Serena integration for preprocessing and local agents."""
-
-    _SAFE_GIT_IGNORE_DIR_NAMES = {
-        ".tmp", ".vs", ".woodbound", "Builds", "Library", "Logs", "Temp", "UserSettings",
-        "artifacts", "coverage", "htmlcov",
-    }
+    """Manage Serena integration for preprocessing and local agents."""
 
     def __init__(self, config: dict[str, Any], telemetry: Any | None = None, code_index: Any | None = None):
         self.config = config
@@ -488,16 +510,14 @@ class ExternalCodeIntelligence:
                 normalized = pattern.rstrip("/").replace("\\", "/")
                 name = normalized.rsplit("/", 1)[-1]
                 is_global = "/" not in normalized.lstrip("/")
-                if name and (is_global or name in ExternalCodeIntelligence._SAFE_GIT_IGNORE_DIR_NAMES) and not any(char in name for char in "*?["):
+                if name and is_global and not any(char in name for char in "*?["):
                     names.add(name)
         return names
 
-    def _prune_sessions_locked(self, backend: str) -> list[MCPStdioClient]:
+    def _prune_sessions_locked(self) -> list[MCPStdioClient]:
         """Remove idle/LRU project MCP processes while holding ``self._lock``."""
-        if backend != "serena":
-            return []
         sessions = self._serena_sessions
-        access = self._session_access[backend]
+        access = self._session_access["serena"]
         now = time.monotonic()
         evicted: list[MCPStdioClient] = []
         for root, touched in list(access.items()):
@@ -516,9 +536,9 @@ class ExternalCodeIntelligence:
             evicted.append(client)
         return evicted
 
-    def _touch_session_locked(self, backend: str, root: str) -> list[MCPStdioClient]:
-        self._session_access[backend][root] = time.monotonic()
-        return self._prune_sessions_locked(backend)
+    def _touch_session_locked(self, root: str) -> list[MCPStdioClient]:
+        self._session_access["serena"][root] = time.monotonic()
+        return self._prune_sessions_locked()
 
     @contextmanager
     def _backend_operation(self, backend: str, root: str, timeout: float | None = None):
@@ -596,7 +616,15 @@ class ExternalCodeIntelligence:
             "project root is missing",
         ))
 
-    def _record_failure(self, backend: str, exc: Exception, *, operation: str, root: str | None = None) -> None:
+    def _record_failure(
+        self,
+        backend: str,
+        exc: Exception,
+        *,
+        operation: str,
+        root: str | None = None,
+        emit_telemetry: bool = True,
+    ) -> None:
         message = str(exc)
         health = self._backend_health[backend]
         key = (backend, root or "")
@@ -619,14 +647,24 @@ class ExternalCodeIntelligence:
         self._failures[backend] = sum(value for (name, _root), value in self._root_failures.items() if name == backend)
         if self._root_failures[key] >= self.failure_threshold:
             self._root_cooldown_until[key] = time.monotonic() + self.cooldown_seconds
-        if self.telemetry is not None:
+        if emit_telemetry and self.telemetry is not None:
             try:
                 self.telemetry.record_error("code_intelligence", f"{backend}:{operation}", exc, retryable=True, recovered=False)
             except Exception:
                 pass
 
+    def _record_failure_recovery(self, backend: str, exc: Exception, *, operation: str, recovered: bool) -> None:
+        if self.telemetry is not None:
+            try:
+                self.telemetry.record_error(
+                    "code_intelligence", f"{backend}:{operation}", exc,
+                    retryable=True, recovered=recovered,
+                )
+            except Exception:
+                pass
+
     def _backend_enabled(self, backend: str) -> bool:
-        return backend == "serena" and self.enabled and self.serena_enabled
+        return self.enabled and backend == "serena" and self.serena_enabled
 
     def _tool_python(self, backend: str) -> Path:
         bindir = "Scripts" if os.name == "nt" else "bin"
@@ -735,7 +773,7 @@ class ExternalCodeIntelligence:
             lock.release()
 
     def _needs_package_repair(self, backend: str, exc: Exception | None) -> bool:
-        command = self._serena if backend == "serena" else None
+        command = self._serena
         if not command or not Path(command).is_file():
             return True
         if exc is None:
@@ -744,12 +782,10 @@ class ExternalCodeIntelligence:
         return any(marker in message for marker in ("no module named", "cannot import name", "modulenotfounderror", "importerror"))
 
     def _recover_backend(self, backend: str, root: str, exc: Exception) -> bool:
-        if backend != "serena":
-            return False
         sessions = self._serena_sessions
         with self._lock:
             session = sessions.pop(root, None)
-            self._session_access[backend].pop(root, None)
+            self._session_access["serena"].pop(root, None)
             self._root_failures.pop((backend, root), None)
             self._root_cooldown_until.pop((backend, root), None)
             self._failures[backend] = sum(value for (name, _root), value in self._root_failures.items() if name == backend)
@@ -863,7 +899,7 @@ class ExternalCodeIntelligence:
         backend = backend.strip().lower()
         root = self._root(root)
         if backend != "serena":
-            return {"success": False, "error": f"unknown code-intelligence backend: {backend}"}
+            return {"success": False, "backend": backend, "unavailable": True, "error": f"unsupported backend: {backend}"}
         if not self.enabled:
             return {"success": False, "skipped": True, "backend": backend, "reason": "code intelligence disabled"}
         if self._backend_enabled(backend):
@@ -933,7 +969,7 @@ class ExternalCodeIntelligence:
                     call_timeout=self.call_timeout,
                 )
                 self._serena_sessions[root] = session
-            evicted = self._touch_session_locked("serena", root)
+            evicted = self._touch_session_locked(root)
         self._close_clients(evicted)
         return session
 
@@ -1056,23 +1092,32 @@ class ExternalCodeIntelligence:
             return {"backend": "serena", "action": action, **self._trim(result)}
         except MCPSoftTimeoutError as exc:
             self.query_failures += 1
+            self._record_failure("serena", exc, operation=action, root=root, emit_telemetry=False)
             if self.code_index is not None:
-                return self._fallback_code_index(root, action, query, path, limit, reason="serena_soft_timeout")
+                fallback = self._fallback_code_index(root, action, query, path, limit, reason="serena_soft_timeout")
+                self._record_failure_recovery("serena", exc, operation=action, recovered=bool(fallback.get("success")))
+                return fallback
+            self._record_failure_recovery("serena", exc, operation=action, recovered=False)
             return {"success": False, "backend": "serena", "error": str(exc), "error_type": "MCPSoftTimeoutError", "fallback_used": False, "degraded_reason": "serena_soft_timeout"}
         except Exception as exc:
-            self._record_failure("serena", exc, operation=action, root=root)
+            self._record_failure("serena", exc, operation=action, root=root, emit_telemetry=False)
             if not _retrying and self._recover_backend("serena", root, exc):
-                return self._query_serena_locked(root, action, query, path, limit, timeout=timeout, soft_timeout=soft_timeout, _retrying=True)
+                recovered = self._query_serena_locked(root, action, query, path, limit, timeout=timeout, soft_timeout=soft_timeout, _retrying=True)
+                self._record_failure_recovery("serena", exc, operation=action, recovered=bool(recovered.get("success")))
+                return recovered
             self.query_failures += 1
             if self.code_index is not None:
-                return self._fallback_code_index(root, action, query, path, limit, reason=f"serena_error:{type(exc).__name__}")
+                fallback = self._fallback_code_index(root, action, query, path, limit, reason=f"serena_error:{type(exc).__name__}")
+                self._record_failure_recovery("serena", exc, operation=action, recovered=bool(fallback.get("success")))
+                return fallback
+            self._record_failure_recovery("serena", exc, operation=action, recovered=False)
             return {"success": False, "backend": "serena", "error": str(exc), "error_type": type(exc).__name__}
 
     def query(self, root: str, query: str, *, backend: str = "auto", action: str = "search", path: str = "", limit: int = 20, timeout: float | None = None, soft_timeout: float | None = None) -> dict[str, Any]:
         backend = backend.strip().lower()
-        if backend in {"auto", "serena"}:
-            return self.query_serena(root, action, query, path, limit, timeout=timeout, soft_timeout=soft_timeout)
-        return {"success": False, "error": f"unknown code-intelligence backend: {backend}"}
+        if backend not in {"auto", "serena"}:
+            return {"success": False, "backend": backend, "unavailable": True, "error": f"unsupported backend: {backend}"}
+        return self.query_serena(root, action, query, path, limit, timeout=timeout, soft_timeout=soft_timeout)
 
     @staticmethod
     def _raise_tool_error(result: dict[str, Any], backend: str) -> None:
@@ -1141,7 +1186,7 @@ class ExternalCodeIntelligence:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            evicted = self._prune_sessions_locked("serena")
+            evicted = self._prune_sessions_locked()
             serena_sessions = len(self._serena_sessions)
         self._close_clients(evicted)
         def backend_status(name: str, command: str | None, sessions: int) -> dict[str, Any]:

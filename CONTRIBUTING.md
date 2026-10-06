@@ -35,7 +35,7 @@ All commands must pass with no errors.
 - Keep the **eight-tool MCP surface compact**. `local_ai_work` is the deliberate high-level whole-task boundary; do not expose planner/executor internals as additional top-level tools. New lower-level repository capabilities should normally extend existing actions.
 - Keep **all waits bounded** — every subprocess, network call and model call must have a finite deadline. No `time.sleep` in hot paths without a bounded loop.
 - Preserve **loopback-first security** — the server must bind to 127.0.0.1 by default. Remote exposure is opt-in and requires an API token.
-- **Hub-managed optional tooling must fail soft** — Serena, Ollama and other supported backend absence, crash or timeout must degrade cleanly to built-in indexes, never block a request handler. Independent external tools are not Hub backends.
+- **Optional Hub-managed tooling must fail soft** — Serena, Ollama and other supported backend absence, crash or timeout must degrade cleanly to built-in indexes, never block a request handler. CodeGraphContext is independent standalone tooling, not a Hub backend.
 - **One current state contract** — derived SQLite state is disposable and is rebuilt when it does not match the current schema.
 
 ## Commit messages

@@ -27,7 +27,7 @@ def test_generated_mcp_config_ignores_stale_codegraph_flag(tmp_path):
     assert "codegraph" not in generated["mcpServers"]
 
 
-def test_codegraph_removed_from_configs_and_backends():
+def test_codegraph_removed_from_configs_and_features():
     for path in (ROOT / "defaults.toml", ROOT / "src" / "local_ai_hub" / "defaults.toml"):
         with path.open("rb") as config_file:
             cfg = tomllib.load(config_file)
@@ -42,5 +42,5 @@ def test_codegraph_removed_from_configs_and_backends():
     assert ext.backend_available("codegraph") is False
     assert "codegraph" not in ext.status()
     res = ext.query(".", "test", backend="codegraph")
-    assert res == {"success": False, "error": "unknown code-intelligence backend: codegraph"}
+    assert res == {"success": False, "backend": "codegraph", "unavailable": True, "error": "unsupported backend: codegraph"}
     ext.close()

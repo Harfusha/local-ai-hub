@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import subprocess
 import sys
+import subprocess
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 from local_ai_hub.commands import CommandBroker
+from local_ai_hub.process_utils import hidden_run_kwargs
+from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 
 
 class _Artifacts:
@@ -14,6 +20,45 @@ class _Artifacts:
 class _RepoState:
     def fingerprint(self, _cwd):
         return {"fingerprint": "stable"}
+
+
+class _TaskStore:
+    def __init__(self, worktree_path):
+        self.worktree_path = str(worktree_path)
+        path = Path(worktree_path).resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        probe = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
+        if probe.returncode != 0:
+            subprocess.run(["git", "init"], cwd=str(path), capture_output=True, check=True)
+            top = str(path)
+            branch = "master"
+        else:
+            top = probe.stdout.strip()
+            branch = subprocess.run(["git", "-C", str(path), "symbolic-ref", "--quiet", "--short", "HEAD"], capture_output=True, text=True, check=False).stdout.strip() or "master"
+        self.task = SimpleNamespace(
+            checkpoint=SimpleNamespace(
+                state_data={"worktree": {
+                    "worktree_path": self.worktree_path,
+                    "success": True,
+                    "repo_root": top,
+                    "branch": branch,
+                }}
+            )
+        )
+
+    def get(self, _task_id):
+        return self.task
+
+
+def _register_task_worktree(broker, tmp_path):
+    broker.set_task_store(_TaskStore(tmp_path))
+    install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
+    broker._transaction_docker_ready = lambda: (True, "")
+    broker._run_private_transaction = (
+        lambda cmd, cwd, tenant, cancel_event=None, **kwargs: broker._execute(
+            cmd, cwd, 30, cancel_event
+        )
+    )
 
 
 def _default_broker(tmp_path):
@@ -45,6 +90,7 @@ def test_mutating_command_bypasses_existing_singleflight(tmp_path, monkeypatch):
         _Artifacts(),
         _RepoState(),
     )
+    _register_task_worktree(broker, tmp_path)
     command = "git add changed.py"
     classification = broker.classify(command)
     assert classification["class"] == "mutating"
@@ -59,7 +105,7 @@ def test_mutating_command_bypasses_existing_singleflight(tmp_path, monkeypatch):
 
     monkeypatch.setattr(broker, "_execute", execute)
 
-    result = broker.run(command, str(tmp_path), "tenant")
+    result = broker.run(command, str(tmp_path), "tenant", task_id="task-owned", paths=["changed.py"])
 
     assert result["success"] is True
     assert result["coalesced"] is False
@@ -77,6 +123,7 @@ def test_concurrent_mutating_commands_keep_separate_active_entries(tmp_path, mon
         _Artifacts(),
         _RepoState(),
     )
+    _register_task_worktree(broker, tmp_path)
     command = "git add changed.py"
     started = [threading.Event(), threading.Event()]
     release = [threading.Event(), threading.Event()]
@@ -93,7 +140,14 @@ def test_concurrent_mutating_commands_keep_separate_active_entries(tmp_path, mon
         return {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
 
     monkeypatch.setattr(broker, "_execute", execute)
-    workers = [threading.Thread(target=broker.run, args=(command, str(tmp_path), "tenant")) for _ in range(2)]
+    workers = [
+        threading.Thread(
+            target=broker.run,
+            args=(command, str(tmp_path), "tenant"),
+            kwargs={"task_id": "task-owned", "paths": ["changed.py"]},
+        )
+        for _ in range(2)
+    ]
     for worker in workers:
         worker.start()
     assert started[0].wait(2)
@@ -121,6 +175,7 @@ def test_concurrent_mutating_commands_require_exact_execution_id_for_cancel(tmp_
         _Artifacts(),
         _RepoState(),
     )
+    _register_task_worktree(broker, tmp_path)
     command = "git add changed.py"
     started = [threading.Event(), threading.Event()]
     release = [threading.Event(), threading.Event()]
@@ -138,7 +193,14 @@ def test_concurrent_mutating_commands_require_exact_execution_id_for_cancel(tmp_
         return {"success": False, "cancelled": args[3].is_set(), "exit_code": 1, "stdout": "", "stderr": ""}
 
     monkeypatch.setattr(broker, "_execute", execute)
-    workers = [threading.Thread(target=lambda: results.append(broker.run(command, str(tmp_path), "tenant"))) for _ in range(2)]
+    workers = [
+        threading.Thread(
+            target=lambda: results.append(
+                broker.run(command, str(tmp_path), "tenant", task_id="task-owned", paths=["changed.py"])
+            )
+        )
+        for _ in range(2)
+    ]
     for worker in workers:
         worker.start()
     assert started[0].wait(2)
@@ -173,6 +235,7 @@ def test_execution_id_cannot_cross_cancel_same_prefix_tenant(tmp_path, monkeypat
         _Artifacts(),
         _RepoState(),
     )
+    _register_task_worktree(broker, tmp_path)
     started = threading.Event()
     release = threading.Event()
     tenant_prefix = "tenant-" + "x" * 80
@@ -185,7 +248,11 @@ def test_execution_id_cannot_cross_cancel_same_prefix_tenant(tmp_path, monkeypat
         return {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
 
     monkeypatch.setattr(broker, "_execute", execute)
-    worker = threading.Thread(target=broker.run, args=("git add changed.py", str(tmp_path), owner))
+    worker = threading.Thread(
+        target=broker.run,
+        args=("git add changed.py", str(tmp_path), owner),
+        kwargs={"task_id": "task-owned", "paths": ["changed.py"]},
+    )
     worker.start()
     assert started.wait(2)
     active = broker.stats()["active"]
@@ -238,9 +305,10 @@ def test_mutating_policy_block_is_not_suppressed(tmp_path):
         _Artifacts(),
         _RepoState(),
     )
+    _register_task_worktree(broker, tmp_path)
 
-    first = broker.run("git add changed.py", str(tmp_path), "tenant")
-    second = broker.run("git add changed.py", str(tmp_path), "tenant")
+    first = broker.run("git add changed.py", str(tmp_path), "tenant", task_id="task-owned")
+    second = broker.run("git add changed.py", str(tmp_path), "tenant", task_id="task-owned")
 
     assert first["policy_blocked"] is True
     assert second["policy_blocked"] is True
@@ -257,10 +325,11 @@ def test_docker_sandbox_mutation_is_not_suppressed(tmp_path, monkeypatch):
         _Artifacts(),
         _RepoState(),
     )
+    _register_task_worktree(broker, tmp_path)
     monkeypatch.setattr("local_ai_hub.commands.shutil.which", lambda name: "docker" if name == "docker" else None)
 
-    first = broker.run("git add changed.py", str(tmp_path), "tenant", sandbox="docker")
-    second = broker.run("git add changed.py", str(tmp_path), "tenant", sandbox="docker")
+    first = broker.run("git add changed.py", str(tmp_path), "tenant", task_id="task-owned", sandbox="docker")
+    second = broker.run("git add changed.py", str(tmp_path), "tenant", task_id="task-owned", sandbox="docker")
 
     assert first["policy_blocked"] is True
     assert "git add may mutate" in first["error"]
