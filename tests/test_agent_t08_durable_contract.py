@@ -472,3 +472,50 @@ def test_add_verification_receipt_wrapper_rolls_back_when_event_append_fails(tmp
     assert state_store.event_page(stream_id)["events"] == before
     assert subscriber.empty()
     state_store.unsubscribe(subscriber)
+
+
+def test_expired_memory_delete_and_event_are_atomic(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    state_store = AgentStateStore(db_path)
+    memory = MemoryStore(state_store)
+    root = str(tmp_path.resolve())
+    tenant = "t08-expiry-tenant"
+    record = MemoryRecord.create(
+        kind=MemoryKind.FINDING,
+        scope=AgentScope.TASK,
+        scope_id="task-expired",
+        key="expires",
+        value={"keep_until": 1},
+        provenance={"root": root, "tenant": tenant},
+        expires_at=time.time() + 10,
+    )
+    saved = memory.record(record)
+    with closing(sqlite3.connect(db_path)) as con, con:
+        con.execute(
+            "CREATE TRIGGER fail_memory_expired BEFORE INSERT ON agent_events "
+            "WHEN NEW.kind = 'memory.expired' "
+            "BEGIN SELECT RAISE(ABORT, 'memory expiry event fault'); END"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="memory expiry event fault"):
+        memory.reap_expired(now=time.time() + 20)
+    assert memory.get(
+        saved.record_id, scope=AgentScope.TASK, scope_id="task-expired",
+        task_id="task-expired", root=root, tenant=tenant,
+    ) is not None
+    stream_id = "memory:" + "".join(
+        f"{len(part)}:{part}" for part in (saved.scope.value, saved.scope_id, saved.key)
+    )
+    assert [event.kind for event in state_store.events(stream_id)] == [
+        "memory.recorded"
+    ]
+
+    with closing(sqlite3.connect(db_path)) as con, con:
+        con.execute("DROP TRIGGER fail_memory_expired")
+    assert memory.reap_expired(now=time.time() + 20) == 1
+    assert memory.get(
+        saved.record_id, scope=AgentScope.TASK, scope_id="task-expired",
+        task_id="task-expired", root=root, tenant=tenant,
+    ) is None
+    assert [event.kind for event in state_store.events(stream_id)] == [
+        "memory.recorded", "memory.expired"
+    ]
