@@ -1,0 +1,39 @@
+{
+  "schema": "t12-model-transition-diagnostic-v1",
+  "created_epoch": 1790708785,
+  "config_path": "C:\\Users\\Adam\\.codex\\worktrees\\4816\\.local-ai-hub\\.handoff\\t12-measured-transition-config.toml",
+  "hardware_profile": "balanced",
+  "scheduler_change": "conservative_configured_active_model_estimate",
+  "results": [
+    {
+      "task": "review",
+      "model": "qwen2.5-coder:7b",
+      "success": true,
+      "failure_code": null,
+      "error_type": null,
+      "routed_profile": "heavy_code",
+      "quality_score_pct": 100.0,
+      "ttft_ms": 8666.37,
+      "end_to_end_latency_ms": 9417.78,
+      "load_duration_ms": 2729.7,
+      "model_digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+      "peak_vram_bytes": 5964300288,
+      "vram_required_bytes": 4905437756
+    }
+  ],
+  "transition_admission": {
+    "state": "degraded",
+    "reason": "resource_pressure",
+    "pressure_level": "critical",
+    "context_budget_factor": 0.25,
+    "queue_age_ms": 0,
+    "retryable": false,
+    "vram_budget_bytes": 8585740288,
+    "vram_available_bytes": 1045430272,
+    "vram_admission_budget_bytes": 7142330332,
+    "vram_incremental_required_bytes": 6853448695,
+    "vram_admission": "admitted",
+    "vram_estimate_source": "configured"
+  },
+  "managed_server_stopped": true
+}

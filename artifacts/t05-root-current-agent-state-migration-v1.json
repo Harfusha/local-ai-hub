@@ -1,0 +1,47 @@
+{
+  "schema": "t05.root_current_migration_handoff.v1",
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-root-current-agent-state-migration-v1.patch",
+  "patch_sha256": "713D13D64749D8A885D44B988A6E4150783AF431EF31CFAC8744FA0D416A9FC4",
+  "root_preimages_sha256": {
+    "src/local_ai_hub/agent_events.py": "02A25102B888B23FE99B8C508F59AEDD846BA24FD38A268BCC6893B0877E0A38",
+    "src/local_ai_hub/sqlite_support.py": "B181ED9DDB11D1A6A4959AD90175A6DFA03C69FD06B79CBACDCA9AB4E04E39EC",
+    "tests/test_t05_agent_state_migrations.py": null
+  },
+  "candidate_inputs_sha256": {
+    "src/local_ai_hub/agent_events.py": "84EDB06DFD22FA900DB09474EFCF0689393E1A9FB76C0E0D636BFD5826B63AC2",
+    "tests/test_t05_agent_state_migrations.py": "1447C8B4D5D113F729A8CCAEB1AD8B5494A4D5DB2B70F985378E98B45ED6167D"
+  },
+  "changed_paths": [
+    "src/local_ai_hub/agent_events.py",
+    "tests/test_t05_agent_state_migrations.py"
+  ],
+  "root_changes": "none; patch only, not applied",
+  "overlay": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t05-root-migration-v1-cafa022128b646f5884d27fe70e0781b",
+  "verification": [
+    {
+      "command": "python -m pytest -q <overlay>/tests/test_t05_agent_state_migrations.py::<10 focused selectors> --tb=short",
+      "selectors": [
+        "test_unversioned_current_schema_migrates_with_verified_backup_and_restart",
+        "test_historical_schema_version_migrates_and_preserves_legacy_event_versions",
+        "test_migration_backup_verification_failure_preserves_source_bytes_and_retries",
+        "test_migration_ddl_failure_rolls_back_after_backup_and_retry_succeeds",
+        "test_concurrent_legacy_initializers_accept_completed_migration",
+        "test_migration_backup_timeout_fails_closed_before_database_mutation",
+        "test_unsupported_newer_schema_version_fails_closed_byte_for_byte",
+        "test_unknown_schema_read_only_preflight_preserves_wal_and_shm_bytes",
+        "test_backup_verifier_rejects_same_count_different_row_content",
+        "test_backup_verifier_rejects_same_objects_with_different_sql"
+      ],
+      "result": "11 passed in 26.99s"
+    },
+    {
+      "command": "git apply --check --whitespace=error <patch> against root current preimages",
+      "result": "PASS"
+    }
+  ],
+  "notes": [
+    "Migration imports root candidate additions narrowly into root AgentStateStore while preserving append_in_transaction and ordered_event_publication/cursor code.",
+    "Schema classifier permits only exact hashes for the eight additional root-owned incident/search/outbox objects; unknown objects remain fail-closed.",
+    "Test receipt fixture supplies a trusted source-review artifact required by current root verification policy."
+  ]
+}

@@ -1,0 +1,231 @@
+diff --git a/src/local_ai_hub/agent_tasks.py b/src/local_ai_hub/agent_tasks.py
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -457,7 +457,11 @@
+             raise KeyError(f"Task {task_id} not found")
+ 
+         if target == current.status:
+-            return current
++            if not idempotency_key:
++                return current
++            return self._replay_same_status_transition(
++                task_id, target, reason=reason, actor=actor, idempotency_key=idempotency_key
++            )
+ 
+         allowed = VALID_TRANSITIONS.get(current.status, set())
+         if target not in allowed:
+@@ -547,6 +551,66 @@
+             actor=actor,
+         )
+         return self._commit_update(current, updated, event)
++
++    def _replay_same_status_transition(
++        self,
++        task_id: str,
++        target: TaskStatus,
++        *,
++        reason: str,
++        actor: str,
++        idempotency_key: str,
++    ) -> TaskState:
++        """Serialize a no-op retry with writers and validate its original operation."""
++        def _read_retry() -> TaskState:
++            con = connect_sqlite(
++                self.state_store.db_path, isolation_level=None, timeout_seconds=0.25
++            )
++            try:
++                con.execute("BEGIN IMMEDIATE")
++                row = con.execute(
++                    "SELECT * FROM agent_tasks_projection WHERE task_id = ?", (task_id,)
++                ).fetchone()
++                if not row:
++                    raise KeyError(f"Task {task_id} not found")
++                persisted = self._row_to_state(row)
++                if persisted.status != target:
++                    raise ConcurrentTaskUpdateError(
++                        f"Task {task_id} changed during transition; reload and retry"
++                    )
++                existing = con.execute(
++                    """SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
++                              correlation_id, actor, created_at
++                       FROM agent_events WHERE stream_id = ? AND idempotency_key = ?""",
++                    (f"task:{task_id}", idempotency_key),
++                ).fetchone()
++                if existing:
++                    event = AgentEvent.from_row(existing)
++                    payload = dict(event.payload)
++                    try:
++                        source_status = TaskStatus(payload.get("from_status"))
++                        valid_transition = target in VALID_TRANSITIONS.get(source_status, set())
++                    except (TypeError, ValueError):
++                        valid_transition = False
++                    if (
++                        event.actor != actor
++                        or event.kind != "task.transitioned"
++                        or set(payload) != {"from_status", "to_status", "reason"}
++                        or payload.get("to_status") != target.value
++                        or payload.get("reason") != reason
++                        or not valid_transition
++                    ):
++                        raise ValueError("idempotency key was already used")
++                con.execute("COMMIT")
++                return persisted
++            except Exception:
++                if con.in_transaction:
++                    con.execute("ROLLBACK")
++                raise
++            finally:
++                con.close()
++
++        return retry_busy(_read_retry, retries=5, base_delay_seconds=0.02)
+ 
+     def complete(
+         self,
+diff --git a/tests/test_agent_tasks.py b/tests/test_agent_tasks.py
+--- a/tests/test_agent_tasks.py
++++ b/tests/test_agent_tasks.py
+@@ -1,10 +1,11 @@
+ from __future__ import annotations
+ 
+ import json
++import threading
+ from pathlib import Path
+ import pytest
+ 
+-from local_ai_hub.agent_events import AgentStateStore
++from local_ai_hub.agent_events import AgentEvent, AgentStateStore
+ from local_ai_hub.artifacts import ArtifactStore
+ from local_ai_hub.agent_identity import AgentScope, ScopeContext
+ from local_ai_hub.agent_tasks import (
+@@ -18,6 +19,7 @@
+ )
+ from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
+ from local_ai_hub.sqlite_support import connect_sqlite
++import local_ai_hub.agent_tasks as agent_tasks_module
+ 
+ 
+ @pytest.fixture
+@@ -74,6 +76,123 @@
+     assert fetched is not None
+     assert fetched.task_id == "t-1"
+     assert fetched.contract.goal == "Implement feature"
++
++
++def test_same_status_transition_rejects_idempotency_key_owned_by_another_actor(store: TaskStore):
++    task = store.create(contract_with_criteria(), task_context())
++    active = store.transition(
++        task.task_id,
++        TaskStatus.ACTIVE,
++        reason="R",
++        actor="agent-one",
++        idempotency_key="shared-transition-key",
++    )
++    with pytest.raises(ValueError, match="^idempotency key was already used$"):
++        store.transition(
++            task.task_id,
++            TaskStatus.ACTIVE,
++            reason="R",
++            actor="agent-two",
++            idempotency_key="shared-transition-key",
++        )
++
++    same_actor_retry = store.transition(
++        task.task_id,
++        TaskStatus.ACTIVE,
++        reason="R",
++        actor="agent-one",
++        idempotency_key="shared-transition-key",
++    )
++    assert same_actor_retry == active
++
++    with pytest.raises(ValueError, match="idempotency key was already used"):
++        store.transition(
++            task.task_id,
++            TaskStatus.ACTIVE,
++            reason="changed reason",
++            actor="agent-one",
++            idempotency_key="shared-transition-key",
++        )
++
++
++def test_same_status_retry_serializes_with_concurrent_transition_event(
++    store: TaskStore, monkeypatch: pytest.MonkeyPatch
++):
++    task = store.create(contract_with_criteria(), task_context())
++    active = store.transition(
++        task.task_id,
++        TaskStatus.ACTIVE,
++        reason="start",
++        actor="agent-one",
++        idempotency_key="start-key",
++    )
++    key = "concurrent-transition-key"
++    concurrent_event = AgentEvent.create(
++        stream_id=f"task:{task.task_id}",
++        kind="task.transitioned",
++        payload={"from_status": TaskStatus.PLANNED.value, "to_status": TaskStatus.ACTIVE.value, "reason": "R"},
++        idempotency_key=key,
++        actor="agent-one",
++    )
++    writer = connect_sqlite(store.state_store.db_path, isolation_level=None)
++    writer.execute("BEGIN IMMEDIATE")
++    appended = store.state_store.append_in_transaction(writer, concurrent_event, strict_idempotency=True)
++    assert appended.error is None and appended.event is not None
++
++    lock_attempted = threading.Event()
++    outcome: list[object] = []
++    worker_name = "t08-same-status-replay"
++    original_connect = agent_tasks_module.connect_sqlite
++
++    class ConnectionProbe:
++        def __init__(self, inner):
++            self.inner = inner
++
++        def execute(self, sql, *args):
++            if threading.current_thread().name == worker_name and sql.strip().upper() == "BEGIN IMMEDIATE":
++                lock_attempted.set()
++            return self.inner.execute(sql, *args)
++
++        def close(self):
++            self.inner.close()
++
++        @property
++        def in_transaction(self):
++            return self.inner.in_transaction
++
++    def connect_with_probe(path, *args, **kwargs):
++        connection = original_connect(path, *args, **kwargs)
++        if threading.current_thread().name == worker_name:
++            return ConnectionProbe(connection)
++        return connection
++
++    monkeypatch.setattr(agent_tasks_module, "connect_sqlite", connect_with_probe)
++
++    def replay_from_other_actor():
++        try:
++            outcome.append(store.transition(
++                task.task_id,
++                TaskStatus.ACTIVE,
++                reason="R",
++                actor="agent-two",
++                idempotency_key=key,
++            ))
++        except Exception as exc:
++            outcome.append(exc)
++
++    worker = threading.Thread(target=replay_from_other_actor, name=worker_name)
++    try:
++        worker.start()
++        assert lock_attempted.wait(timeout=2), "replay did not enter its write-serialized check"
++    finally:
++        writer.execute("COMMIT")
++        writer.close()
++        worker.join(timeout=2)
++
++    assert not worker.is_alive()
++    assert len(outcome) == 1 and isinstance(outcome[0], ValueError)
++    assert str(outcome[0]) == "idempotency key was already used"
++    assert active.status is TaskStatus.ACTIVE
+ 
+ 
+ def test_completed_requires_all_criteria_to_have_fresh_receipts(store: TaskStore):

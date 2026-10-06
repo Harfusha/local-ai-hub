@@ -1,0 +1,202 @@
+diff --git a/src/local_ai_hub/agent_memory.py b/src/local_ai_hub/agent_memory.py
+index 4e6fb2f..3b3ff8c 100644
+--- a/src/local_ai_hub/agent_memory.py
++++ b/src/local_ai_hub/agent_memory.py
+@@ -1368,7 +1368,7 @@ class MemoryStore:
+             )
+             sql += f" AND {provenance_repository_id} = ?"
+             params.append(repository_id)
+-        if tenant:
++        if tenant and scope_val != AgentScope.GLOBAL.value:
+             provenance_tenant = (
+                 "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
+                 "'$.tenant')"
+@@ -1691,12 +1691,15 @@ class MemoryStore:
+         *,
+         scope: AgentScope | str | None = None,
+         scope_id: str | None = None,
++        tenant: str | None = None,
+     ) -> bool:
+         # Never derive authorization from the record being deleted. Callers must
+-        # provide the scope identity they already verified.
++        # provide the scope identity they already verified. Tenant provenance is
++        # an additional predicate for scoped records; GLOBAL records are shared.
+         if scope is None:
+             return False
+         scope_value = scope.value if isinstance(scope, AgentScope) else str(scope)
++        tenant_value = str(tenant).strip() if tenant else ""
+         if scope_value == AgentScope.GLOBAL.value and scope_id is None:
+             scope_id = ""
+         elif scope_value != AgentScope.GLOBAL.value and not scope_id:
+@@ -1707,9 +1710,21 @@ class MemoryStore:
+         con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+         try:
+             con.execute("BEGIN IMMEDIATE")
++            sql = "DELETE FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id IS ?"
++            params: list[Any] = [record_id, scope_value, scope_id]
++            if scope_value != AgentScope.GLOBAL.value:
++                provenance_tenant = (
++                    "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
++                    "'$.tenant')"
++                )
++                if tenant_value:
++                    sql += f" AND {provenance_tenant} = ?"
++                    params.append(tenant_value)
++                else:
++                    sql += f" AND ({provenance_tenant} IS NULL OR {provenance_tenant} = '')"
+             cur = con.execute(
+-                "DELETE FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id IS ?",
+-                (record_id, scope_value, scope_id),
++                sql,
++                params,
+             )
+             cnt = cur.rowcount
+             if cnt > 0:
+diff --git a/tests/test_agent_memory.py b/tests/test_agent_memory.py
+index c96309b..cc8bf28 100644
+--- a/tests/test_agent_memory.py
++++ b/tests/test_agent_memory.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++from contextlib import closing
+ from concurrent.futures import ThreadPoolExecutor
+ import json
+ import os
+@@ -181,6 +182,104 @@ def test_memory_find_enforces_root_repository_and_tenant_identity(store: MemoryS
+     ) == []
+ 
+ 
++def test_global_memory_delete_ignores_transport_tenant_but_keeps_scope(store: MemoryStore, tmp_path: Path):
++    repo = tmp_path / "repo-a"
++    other_repo = tmp_path / "repo-b"
++    repo.mkdir()
++    other_repo.mkdir()
++    global_record = store.record(MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.GLOBAL,
++        key="global-delete-tenant",
++        value="global value",
++        provenance={"root": str(repo), "repository_id": "repo-a", "tenant": "legacy-tenant"},
++    ), actor="user")
++
++    request_record = store.get(
++        global_record.record_id,
++        scope=AgentScope.GLOBAL,
++        root=str(repo),
++        repository_id="repo-a",
++        tenant="codex",
++    )
++    assert request_record == global_record
++    assert store.get(
++        global_record.record_id,
++        scope=AgentScope.GLOBAL,
++        root=str(other_repo),
++        repository_id="repo-a",
++        tenant="codex",
++    ) is None
++    assert store.delete(
++        global_record.record_id,
++        scope=request_record.scope,
++        scope_id=request_record.scope_id,
++        tenant="codex",
++    ) is True
++
++    session_record = store.record(MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.SESSION,
++        scope_id="session-codex",
++        key="tenant-delete-guard",
++        value="tenant value",
++        provenance={"tenant": "codex"},
++    ), actor="user")
++    assert store.get(
++        session_record.record_id,
++        scope=AgentScope.SESSION,
++        scope_id="session-codex",
++        tenant="other-tenant",
++    ) is None
++    assert store.get(
++        session_record.record_id,
++        scope=AgentScope.SESSION,
++        scope_id="session-codex",
++        tenant="codex",
++    ) == session_record
++
++
++def test_scoped_memory_delete_requires_matching_tenant(store: MemoryStore):
++    record = store.record(MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.SESSION,
++        scope_id="session-owner",
++        key="tenant-delete-identity",
++        value="tenant private value",
++        provenance={"tenant": "owner-tenant"},
++    ), actor="user")
++
++    assert store.delete(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++    ) is False
++    assert store.delete(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++        tenant="other-tenant",
++    ) is False
++    assert store.get(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++        tenant="owner-tenant",
++    ) == record
++    assert store.delete(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++        tenant="owner-tenant",
++    ) is True
++    assert store.get(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++        tenant="owner-tenant",
++    ) is None
++
++
+ def test_memory_identity_indexes_exist_for_bounded_filtered_queries(store: MemoryStore):
+     con = connect_sqlite(store.state_store.db_path)
+     try:
+@@ -370,9 +469,12 @@ def test_record_idempotency_reuses_existing_record(store: MemoryStore):
+ 
+     assert second.record_id == first.record_id
+     assert store.count() == 1
+-    assert [event.kind for event in store.state_store.events(
+-        stream_id=f"memory:{AgentScope.TASK.value}:same-request"
+-    )].count("memory.recorded") == 1
++    with closing(connect_sqlite(store.state_store.db_path)) as con:
++        event_count = con.execute(
++            "SELECT COUNT(*) FROM agent_events WHERE kind = ? AND idempotency_key = ?",
++            ("memory.recorded", "memory-request-1"),
++        ).fetchone()[0]
++    assert event_count == 1
+ 
+ 
+ def test_evidence_memory_persists_revision_metadata_and_is_idempotent(store: MemoryStore, tmp_path: Path):
+@@ -431,9 +533,12 @@ def test_record_idempotency_is_atomic_under_concurrency(store: MemoryStore):
+ 
+     assert len(set(record_ids)) == 1
+     assert store.count() == 1
+-    assert [event.kind for event in store.state_store.events(
+-        stream_id=f"memory:{AgentScope.TASK.value}:concurrent"
+-    )].count("memory.recorded") == 1
++    with closing(connect_sqlite(store.state_store.db_path)) as con:
++        event_count = con.execute(
++            "SELECT COUNT(*) FROM agent_events WHERE kind = ? AND idempotency_key = ?",
++            ("memory.recorded", "memory-concurrent-1"),
++        ).fetchone()[0]
++    assert event_count == 1
+ 
+ 
+ def test_conflicting_high_confidence_insert_is_atomic_under_concurrency(tmp_path: Path):

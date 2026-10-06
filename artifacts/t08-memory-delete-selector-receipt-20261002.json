@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "task": "T08 current-hash scoped memory deletion selectors",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "timestamp_utc": "2026-10-02T03:04:08Z",
+  "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_state_e2e.py::test_local_app_wires_scoped_memory_adoption_on_create_and_resume tests/test_agent_memory_t08_tombstones.py::test_deleted_memory_record_replay_is_tombstoned_after_reopen tests/test_agent_memory_t08_rollback_masking.py::test_delete_preserves_primary_fts_error_when_rollback_also_fails tests/test_agent_task_memory_adoption.py::test_correction_stale_transition_and_delete_preserve_provenance_lineage",
+  "result": {
+    "status": "partial",
+    "passed": 3,
+    "failed": 1,
+    "duration_seconds": 4.23,
+    "exit_code": 1,
+    "failure": "tests/test_agent_memory_t08_rollback_masking.py::test_delete_preserves_primary_fts_error_when_rollback_also_fails: Failed: DID NOT RAISE sqlite3.OperationalError; candidate lacks T05-owned FTS cleanup hunk."
+  },
+  "source_test_sha256": {
+    "src/local_ai_hub/agent_memory.py": "8FD845109C5DD9105EE0AEF74C80337AEB9AD1D9A934996EBBA09382D13E72B5",
+    "tests/test_agent_state_e2e.py": "ED96F5FADC1F116B02A52AB15139438256C5B066ED3A98F825C69A48F23D0E38",
+    "tests/test_agent_memory_t08_tombstones.py": "60722CBD769CE6BD3704D9632BE1A1EA9FDC7ABE0C9F6EF4C3D97F041A7513EF",
+    "tests/test_agent_memory_t08_rollback_masking.py": "555A16A3FA67E1244C75C6EE1289E46C95960131B251B5FA9821888547B5D726",
+    "tests/test_agent_task_memory_adoption.py": "58E6ACBDC568F020BE1CF6CD399890AFB1B12F0FB89E85FC56BB776CD6CF221F"
+  },
+  "selector_results": {
+    "tests/test_agent_state_e2e.py::test_local_app_wires_scoped_memory_adoption_on_create_and_resume": "passed",
+    "tests/test_agent_memory_t08_tombstones.py::test_deleted_memory_record_replay_is_tombstoned_after_reopen": "passed",
+    "tests/test_agent_memory_t08_rollback_masking.py::test_delete_preserves_primary_fts_error_when_rollback_also_fails": "failed; requires T05-owned FTS cleanup",
+    "tests/test_agent_task_memory_adoption.py::test_correction_stale_transition_and_delete_preserve_provenance_lineage": "passed"
+  },
+  "root_modified_by_T08": false
+}

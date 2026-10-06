@@ -1,0 +1,15 @@
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -5092,7 +5092,11 @@
+             except Exception:
+                 pass
+         try:
+-            if (is_mutating or auto_fix) and not _transaction_context:
++            if (
++                is_mutating
++                or auto_fix
++                or (rollback_on_failure and classification.get("class") == "unknown")
++            ) and not _transaction_context:
+                 result = self._run_private_transaction(
+                     command, cwd, tenant, task_id=task_id, paths=list(declared_paths or []),
+                     timeout=int(timeout or self.timeout), docker_image=docker_image,

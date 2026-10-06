@@ -1,0 +1,30 @@
+{
+  "patch": "t08-root-current-identity-inference-blackboard-F47991E39CB7D5C69ED7B2F3096360ADF3F602E3EA22B85FDDFED89B9D6D4178.patch",
+  "sha256": "F47991E39CB7D5C69ED7B2F3096360ADF3F602E3EA22B85FDDFED89B9D6D4178",
+  "immutable_copy_of": "t08-root-current-identity-inference-blackboard.patch",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "root_target": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_preimage_sha256": {
+    "src/local_ai_hub/agent_memory.py": "B3736D39B44722C9030CD9F47F58B58A5F86C1197921375310604EF31F79D8E7",
+    "src/local_ai_hub/agent_context.py": "0B705B6E5EED61FFB021414854ED983F380C32D2EB686C7D11F5D4138BD16EDD",
+    "src/local_ai_hub/task_context.py": "B93905EE43B6F16F4494D56CAAD125F0A78C05E13731DDFA08FB068E47893862",
+    "src/local_ai_hub/agent_tasks.py": "9DA56C5C50B4E4E1171D358360314010832F32F1F3C22D93FD01CF5D4D24463D",
+    "src/local_ai_hub/http_server.py": "15BD92CE83A7FB472AAC4581F1A5FAD42ECF6E303C73C7DBC463E05A4528F57F",
+    "src/local_ai_hub/async_jobs.py": "A524078F716D4915F6ABFFB27347C4625FDBB9C34A1373F5F8442D7102AEF935",
+    "tests/test_agent_task_memory_adoption.py": "7709335CF1337D3F1A2017BD220311FA39B15554FFDBD4B69269116391593DA6",
+    "tests/test_t08_coordination_identity.py": null,
+    "tests/test_async_inference_admission.py": null
+  },
+  "t13_root": "C:\\Users\\Adam\\.codex\\worktrees\\t13-operational-mode\\.local-ai-hub",
+  "t13_head": "6050c41ce5510a6de3eaeb674a180560ea404f24",
+  "t12_root": "C:\\Users\\Adam\\.codex\\worktrees\\4816\\.local-ai-hub",
+  "t12_head": "933c0129079fcc0c894a71fe842cbbb5e6ad7285",
+  "patch_check": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check <patch> => passed; patch not applied",
+  "focused_receipts": [
+    "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_task_memory_adoption.py tests/test_agent_context.py => 29 passed in 44.03s",
+    "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t08_coordination_identity.py tests/test_async_inference_admission.py => 11 passed in 20.57s"
+  ],
+  "scope": "8 source/test files in patch; root not edited; T13 app.py dispatcher wiring and T20 integration not done"
+}

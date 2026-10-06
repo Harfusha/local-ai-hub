@@ -2,6 +2,7 @@ import io
 import os
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -263,6 +264,100 @@ def test_terminate_tree_escalates_explicit_group_when_leader_exits(monkeypatch):
     ]
 
 
+def test_terminate_tree_does_not_signal_reused_pid_after_group_disappears(monkeypatch):
+    pid_signals = []
+
+    def killpg(group_id, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(process_utils.os, "name", "posix")
+    monkeypatch.setattr(process_utils.os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: pid_signals.append((pid, sig)))
+    monkeypatch.setattr(process_utils, "pid_alive", lambda pid: True)
+
+    assert process_utils.terminate_tree(4321, process_group=4321, grace_seconds=0.1)
+    assert pid_signals == []
+
+
+def test_terminate_tree_does_not_escalate_after_group_disappears(monkeypatch):
+    signals = []
+    pid_signals = []
+
+    def killpg(group_id, sig):
+        signals.append((group_id, sig))
+        if sig == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(process_utils.os, "name", "posix")
+    monkeypatch.setattr(process_utils.os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: pid_signals.append((pid, sig)))
+
+    assert process_utils.terminate_tree(4321, process_group=7777, grace_seconds=0.1)
+    assert signals == [(7777, process_utils.signal.SIGTERM), (7777, 0)]
+    assert pid_signals == []
+
+
+def test_terminate_tree_does_not_fallback_to_pid_after_group_signal_error(monkeypatch):
+    pid_signals = []
+
+    def killpg(group_id, sig):
+        raise PermissionError
+
+    monkeypatch.setattr(process_utils.os, "name", "posix")
+    monkeypatch.setattr(process_utils.os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: pid_signals.append((pid, sig)))
+    monkeypatch.setattr(process_utils.signal, "SIGKILL", 9, raising=False)
+
+    assert process_utils.terminate_tree(4321, process_group=7777, grace_seconds=0.1) is False
+    assert pid_signals == []
+
+
+def test_terminate_tree_stops_when_group_liveness_is_unverifiable(monkeypatch):
+    calls = []
+    pid_checks = []
+
+    def killpg(group_id, sig):
+        calls.append((group_id, sig))
+        if sig == 0:
+            raise OSError("group state unavailable")
+
+    monkeypatch.setattr(process_utils.os, "name", "posix")
+    monkeypatch.setattr(process_utils.os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+    monkeypatch.setattr(process_utils, "pid_alive", lambda pid: pid_checks.append(pid) or True)
+    monkeypatch.setattr(process_utils.signal, "SIGKILL", 9, raising=False)
+    ticks = iter([0.0, 0.0, 1.0])
+    monkeypatch.setattr(process_utils.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(process_utils.time, "sleep", lambda seconds: None)
+
+    assert process_utils.terminate_tree(4321, process_group=7777, grace_seconds=0.1) is False
+    assert calls == [(7777, process_utils.signal.SIGTERM), (7777, 0)]
+    assert pid_checks == []
+
+
+def test_terminate_tree_does_not_escalate_when_group_liveness_returns_eperm(monkeypatch):
+    calls = []
+    pid_checks = []
+
+    def killpg(group_id, sig):
+        calls.append((group_id, sig))
+        if sig == 0:
+            raise PermissionError("operation not permitted")
+
+    monkeypatch.setattr(process_utils.os, "name", "posix")
+    monkeypatch.setattr(process_utils.os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+    monkeypatch.setattr(process_utils, "pid_alive", lambda pid: pid_checks.append(pid) or True)
+    monkeypatch.setattr(process_utils.signal, "SIGKILL", 9, raising=False)
+    ticks = iter([0.0, 0.0, 1.0])
+    monkeypatch.setattr(process_utils.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(process_utils.time, "sleep", lambda seconds: None)
+
+    assert process_utils.terminate_tree(4321, process_group=7777, grace_seconds=0.1) is False
+    assert calls == [(7777, process_utils.signal.SIGTERM), (7777, 0)]
+    assert pid_checks == []
+
+
 def test_run_hidden_bounds_drain_when_descendant_keeps_pipes_open(monkeypatch):
     process = _FakeProcess(
         [
@@ -294,6 +389,49 @@ def test_run_hidden_cancellation_terminates_process_tree(monkeypatch):
 
     assert calls == [4321]
     assert process.wait_timeouts
+
+
+def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
+    cancel_event = threading.Event()
+    process = _FakeProcess(
+        [
+            subprocess.TimeoutExpired(["tool"], 0.1, output=b"partial", stderr=b"err"),
+            (b"partial", b"err"),
+        ]
+    )
+    process.returncode = None
+    original_communicate = process.communicate
+    first_call = True
+
+    def communicate(input=None, timeout=None):
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            cancel_event.set()
+        return original_communicate(input=input, timeout=timeout)
+
+    process.communicate = communicate
+    calls = []
+    monkeypatch.setattr(process_utils.os, "name", "posix")
+    monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
+    monkeypatch.setattr(
+        process_utils,
+        "terminate_tree",
+        lambda pid, *, process_group=None, grace_seconds=5.0: calls.append(
+            (pid, process_group, grace_seconds)
+        )
+        or True,
+    )
+
+    with pytest.raises(process_utils.ProcessCancelledError) as raised:
+        process_utils.run_hidden(
+            ["tool"], capture_output=True, timeout=60, cancel_event=cancel_event
+        )
+
+    assert calls == [(4321, 4321, 1.0)]
+    assert process.returncode == -9
+    assert raised.value.output == b"partial"
+    assert raised.value.stderr == b"err"
 
 
 def test_run_hidden_uses_hidden_windows_process_group(monkeypatch):

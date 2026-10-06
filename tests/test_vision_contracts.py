@@ -6,6 +6,7 @@ import pytest
 from local_ai_hub.vision_contracts import (
     FrontendReviewBundle,
     build_coder_packet,
+    image_dimensions,
     parse_vision_result,
 )
 
@@ -79,7 +80,7 @@ def test_bundle_forwards_network_runtime_artifact_id() -> None:
     assert bundle.network_artifact_id == "network-1"
 
 
-def test_vision_result_accepts_fenced_json_and_clamps_confidence() -> None:
+def test_vision_result_rejects_confidence_outside_contract() -> None:
     result = parse_vision_result(
         "```json\n"
         '{"summary":"bad CTA","findings":[{"id":"f1",'
@@ -88,8 +89,8 @@ def test_vision_result_accepts_fenced_json_and_clamps_confidence() -> None:
         "\n```"
     )
 
-    assert result.findings[0].finding_id == "f1"
-    assert result.findings[0].confidence == 1.0
+    assert result.terminal is True
+    assert "confidence" in result.error["message"]
 
 
 def test_vision_result_rejects_empty_findings_without_summary() -> None:
@@ -187,14 +188,15 @@ def test_vision_result_rejects_missing_required_finding_fields(missing: str) -> 
     assert result.error["code"] == "malformed_vision_output"
 
 
-def test_vision_result_clamps_confidence_at_zero() -> None:
+def test_vision_result_rejects_confidence_below_contract() -> None:
     result = parse_vision_result(
         '{"summary":"bad","findings":[{"id":"f1","severity":"low",'
         '"category":"layout","problem":"bad","confidence":-0.5,'
         '"evidence":["visible layout issue"]}]}'
     )
 
-    assert result.findings[0].confidence == 0.0
+    assert result.terminal is True
+    assert "confidence" in result.error["message"]
 
 
 @pytest.mark.parametrize("confidence", ["NaN", "Infinity", "-Infinity"])
@@ -263,6 +265,110 @@ def test_vision_result_rejects_non_finite_bbox_coordinates() -> None:
 
     assert result.terminal is True
     assert result.error["code"] == "malformed_vision_output"
+
+
+def test_vision_result_bounds_bbox_to_image_dimensions() -> None:
+    raw = json.dumps({
+        "summary": "bounded region",
+        "findings": [{
+            "id": "f1", "severity": "low", "category": "layout",
+            "problem": "issue", "confidence": 0.5,
+            "bbox": [90, 80, 20, 30], "evidence": ["visible region"],
+        }],
+    })
+
+    result = parse_vision_result(raw, image_size=(100, 100))
+
+    assert result.terminal is True
+    assert "image dimensions" in result.error["message"]
+
+
+def test_image_dimensions_reads_png_header() -> None:
+    header = bytearray(24)
+    header[:8] = b"\x89PNG\r\n\x1a\n"
+    header[16:20] = (640).to_bytes(4, "big")
+    header[20:24] = (480).to_bytes(4, "big")
+
+    assert image_dimensions(bytes(header)) == (640, 480)
+
+
+@pytest.mark.parametrize(
+    ("image", "expected"),
+    [
+        (b"GIF89a" + (320).to_bytes(2, "little") + (240).to_bytes(2, "little"), (320, 240)),
+        (
+            b"RIFF" + b"\x00\x00\x00\x00" + b"WEBPVP8X"
+            + b"\x00\x00\x00\x00" + b"\x00\x00\x00\x00"
+            + (319).to_bytes(3, "little") + (239).to_bytes(3, "little"),
+            (320, 240),
+        ),
+    ],
+)
+def test_image_dimensions_reads_gif_and_webp_headers(
+    image: bytes, expected: tuple[int, int]
+) -> None:
+    assert image_dimensions(image) == expected
+
+
+def test_dom_facts_must_ground_every_cited_element() -> None:
+    raw = json.dumps({
+        "summary": "two controls",
+        "findings": [{
+            "id": "f1", "severity": "low", "category": "accessibility",
+            "problem": "controls", "confidence": 0.5,
+            "element_ids": ["a", "b"],
+            "observation_facts": [
+                {"source": "dom", "element_id": "a", "field": "text", "value": "A"}
+            ],
+            "evidence": ["DOM controls, including A"],
+        }],
+    })
+
+    result = parse_vision_result(
+        raw,
+        valid_element_ids={"a", "b"},
+        observation_sources={"dom": {"a": {"text": "A"}, "b": {"text": "B"}}},
+    )
+
+    assert result.terminal is True
+    assert "every cited DOM element" in result.error["message"]
+
+
+def test_dom_fact_must_support_observed_text() -> None:
+    raw = json.dumps({
+        "summary": "button label",
+        "findings": [{
+            "id": "f1", "severity": "low", "category": "accessibility",
+            "problem": "button label", "observed": "button is disabled",
+            "confidence": 0.5, "element_ids": ["a"],
+            "observation_facts": [
+                {"source": "dom", "element_id": "a", "field": "text", "value": "Submit"}
+            ],
+            "evidence": ["DOM fact for a"],
+        }],
+    })
+
+    result = parse_vision_result(
+        raw,
+        valid_element_ids={"a"},
+        observation_sources={"dom": {"a": {"text": "Submit"}}},
+    )
+
+    assert result.terminal is True
+    assert "support" in result.error["message"]
+
+
+def test_visible_angle_bracket_text_is_not_treated_as_dom_markup() -> None:
+    result = parse_vision_result(json.dumps({
+        "summary": "keyboard hint",
+        "findings": [{
+            "id": "f1", "severity": "info", "category": "accessibility",
+            "problem": "keyboard hint", "confidence": 0.5,
+            "evidence": ["The visible shortcut is <Enter>."],
+        }],
+    }))
+
+    assert result.terminal is False
 
 
 @pytest.mark.parametrize("field", ["unknowns", "recommended_checks"])
@@ -356,6 +462,17 @@ def test_coder_packet_keeps_referenced_dom_ancestors_and_bounded_runtime() -> No
     ]
     assert packet["runtime"]["console"] == ["error", "error"]
     assert packet["repo"] == {"files": ["src/Checkout.tsx"]}
+
+
+def test_coder_packet_bounds_finding_payloads() -> None:
+    packet = build_coder_packet(
+        prompt="Review",
+        findings=[{"element_ids": ["cta"], "problem": "x" * 100_000}],
+        dom={"elements": [{"element_id": "cta"}]},
+    )
+
+    assert packet["terminal"] is True
+    assert packet["error"]["code"] == "frontend_context_too_large"
 
 
 def test_coder_packet_rejects_findings_that_reference_missing_dom_elements() -> None:
@@ -476,3 +593,92 @@ def test_coder_packet_reports_falsey_non_mapping_runtime_as_terminal_failure(
 
     assert packet["terminal"] is True
     assert packet["error"]["code"] == "malformed_coder_context"
+
+
+def test_strict_vision_output_rejects_unknown_root_field() -> None:
+    result = parse_vision_result(
+        '{"summary":"No findings.","findings":[],"unknowns":[],'
+        '"recommended_checks":[],"extra":"ignored"}',
+        strict_output_shape=True,
+    )
+
+    assert result.terminal is True
+    assert "required root fields" in result.error["message"]
+
+@pytest.mark.parametrize(("observed", "fact", "terminal"), [
+    ("The exact button text is 'Continue'.", "Continue", True),
+    ("The exact button text is 'Cancel'.", "Cancel", False),
+])
+def test_grounded_vision_checks_explicit_expected_value_mismatch(
+    observed: str, fact: str, terminal: bool,
+) -> None:
+    payload = {
+        "summary": "button mismatch",
+        "findings": [{
+            "id": "f1",
+            "severity": "low",
+            "category": "interaction",
+            "problem": "Button text does not match the expected value of 'Continue'.",
+            "observed": observed,
+            "hypothesized": "The label may be incorrect.",
+            "uncertainty": [],
+            "confidence": 0.7,
+            "element_ids": ["button-1"],
+            "bbox": None,
+            "evidence": [f"DOM text: {fact}"],
+            "observation_facts": [{
+                "source": "dom",
+                "element_id": "button-1",
+                "field": "text",
+                "value": fact,
+            }],
+        }],
+    }
+
+    result = parse_vision_result(
+        json.dumps(payload),
+        require_observation_fields=True,
+        valid_element_ids={"button-1"},
+        observation_sources={"dom": {"button-1": {"text": fact}}},
+        image_size=(800, 450),
+    )
+
+    assert result.terminal is terminal
+    if terminal:
+        assert "problem contradicts supplied observation fact" in result.error["message"]
+    else:
+        assert result.findings[0].observation_facts[0].value == fact
+
+def test_grounded_vision_rejects_live_output_missing_hypothesized() -> None:
+    payload = {
+        "summary": "button label review",
+        "findings": [{
+            "id": "f1",
+            "severity": "low",
+            "category": "interaction",
+            "problem": "Button may show an incorrect label.",
+            "observed": "Button text is Continue.",
+            "uncertainty": [],
+            "confidence": 0.7,
+            "element_ids": ["button-1"],
+            "bbox": None,
+            "evidence": ["DOM text: Continue"],
+            "observation_facts": [{
+                "source": "dom",
+                "element_id": "button-1",
+                "field": "text",
+                "value": "Continue",
+            }],
+        }],
+    }
+
+    result = parse_vision_result(
+        json.dumps(payload),
+        require_observation_fields=True,
+        valid_element_ids={"button-1"},
+        observation_sources={"dom": {"button-1": {"text": "Continue"}}},
+        image_size=(800, 450),
+    )
+
+    assert result.terminal is True
+    assert "hypothesized" in result.error["message"]

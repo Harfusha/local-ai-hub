@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "task": "T08 Agent OS atomicity/events/recovery",
+  "recorded_date": "2026-10-02",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "owned_source_and_test_files": {
+    "src/local_ai_hub/agent_events.py": {
+      "sha256": "B00AAF9A109B697CE7D3A8756EF3E88BD72772D2F36DEC30BF3ACDA76E6BABE3",
+      "scope": "T08 append_in_transaction/outbox, ordered publication; event_page through_seq boundary recorded separately from T18 byte-cap/pub-sub hunks"
+    },
+    "src/local_ai_hub/agent_tasks.py": {
+      "sha256": "1D59F3E1FA8A6082EAA439F4EC3D4C542BBAD47FA5F2664D76570462FB505D25",
+      "scope": "T08 caller-owned receipt projection and task CAS/atomic update hunks; whole file mixed with completion/verifier seams"
+    },
+    "src/local_ai_hub/agent_verification.py": {
+      "sha256": "468E4B18117CF77CE0BB34CFE08F9D1898EE0BDA43C5494BEAF7AE23F418645D",
+      "scope": "T08 receipt transaction and verifier failure isolation hunks; whole file mixed, no whole-file transfer"
+    },
+    "src/local_ai_hub/leases.py": {
+      "sha256": "08864C962783D530B255EBB6EEEB3154E496492AF12D869CD8CA45EC45577F89",
+      "scope": "T08-owned SQLite migration/transaction hunks only; claim_batch baseline is not a T08 change"
+    },
+    "tests/test_agent_t08_durable_contract.py": {
+      "sha256": "D47741E331210A18D369677C1942081BDF9BDD229117A631D6853BDF4212AA90",
+      "scope": "T08 transaction/outbox/receipt, actor/correlation, annotation selectors; file also contains T18 event-page selectors"
+    },
+    "tests/test_agent_t08_crash_after_commit.py": {
+      "sha256": "AEE9E6B7A74E3E16C7985BF5C7843B0DDC420F26D748DA9881E33451C0BC8541",
+      "scope": "T08 process-exit before/after commit and receipt recovery selectors"
+    },
+    "tests/test_agent_crash_recovery.py": {
+      "sha256": "5D74703C2AB77D2C3B59412C3E7FB6BCDE505764BBF7F9BADB4FB85B44BC0FBF",
+      "scope": "T08 rollback and restart recovery selectors"
+    },
+    "tests/test_agent_t08_receipt_transaction.py": {
+      "sha256": "D07BFDF7781F42C93730E867AEFB66FD04CD528E23D222AF7A69DCB5EEBCA118",
+      "scope": "caller-owned receipt projection rollback/commit selector"
+    },
+    "tests/test_agent_t08_cache_isolation.py": {
+      "sha256": "75A289CB3027A623F3D2CBEC50E530DCA801EBE15ED8FA09538D156E98127F4C",
+      "scope": "durable task/event/memory/receipt state survives disposable cache rebuild selector"
+    },
+    "tests/test_agent_t08_event_page_snapshot.py": {
+      "sha256": "5D5E6F946D8165F640F0798129F45C70BA27D396C0A90F2BCA9846D01B3CA7DA",
+      "scope": "append-between-pages through_seq snapshot selector"
+    },
+    "tests/test_agent_t08_live_order.py": {
+      "sha256": "385F014E54BA9DFCFAD9194B658C7103B6FE1962393C5B8D92F268571D565D9A",
+      "scope": "concurrent ordered publication selectors"
+    },
+    "tests/test_agent_tasks.py": {
+      "sha256": "552F5FA6C5E4E5DEAF2067B98ADD684D18D10824FADC6B94D81A21FB54663234",
+      "scope": "T08 actor-owned idempotency selector among mixed task tests"
+    },
+    "tests/test_agent_verification.py": {
+      "sha256": "A95129488A04FD3E0FC5513A25EC9C7F1A5E8AF3604015996DC0C85BCC10CF24",
+      "scope": "receipt isolation and verifier failure selectors"
+    },
+    "tests/test_lease_atomic_deadlock.py": {
+      "sha256": "F0A0768CBF17B8AC2A4C0DFA9B47003C79EC147B48060C5C727C699BD11C8A70",
+      "scope": "atomic claim rollback/wait-cycle selectors"
+    }
+  },
+  "preserved_owner_boundaries": {
+    "T05": "No edits to agent_memory.py; T05 owns tenant retrieval and memory store changes.",
+    "integrated_blackboard": "No edits to agent_context.py; keep already-integrated trust-label hunk unchanged.",
+    "mixed_source": "sqlite_support.py and mixed test files are excluded from whole-file transfer."
+  },
+  "current_change_summary": [
+    "Caller-owned SQLite transaction keeps event/outbox and task projection atomic.",
+    "Verification receipt projection joins caller transaction; restart and rollback fault cases are prepared.",
+    "Ordered event publication and inclusive through_seq event-page bound are present in candidate.",
+    "Candidate-only source fix since prior receipt: sqlite3 import for transaction-connection type annotation."
+  ],
+  "validation": {
+    "tests_run_this_receipt": false,
+    "test_status": "pending explicit T08 serial-slot assignment; current queue ownership is not treated as release.",
+    "static_receipt": "Prior AST and diff checks are historical; hashes above bind current candidate bytes.",
+    "historical_tests": "3 crash-after-commit selectors passed in 2.48s before new receipt-recovery cases; not current-hash validation.",
+    "test_command": "PYTHONDONTWRITEBYTECODE=1; python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_t08_durable_contract.py tests/test_agent_t08_cache_isolation.py::test_disposable_cache_rebuild_preserves_live_agent_state tests/test_agent_t08_receipt_transaction.py::test_receipt_projection_helper_is_caller_transaction_atomic tests/test_agent_tasks.py::test_transition_idempotency_reuse_by_different_actor_is_rejected tests/test_agent_tasks.py::test_checkpoint_idempotency_replay_requires_same_actor tests/test_agent_tasks.py::test_same_status_transition_rejects_idempotency_key_owned_by_another_actor tests/test_agent_tasks.py::test_completed_uses_task_context_repo_root_without_worktree_checkpoint tests/test_agent_verification.py tests/test_lease_atomic_deadlock.py tests/test_agent_t08_live_order.py tests/test_agent_crash_recovery.py::test_crash_after_task_event_append_before_commit_rolls_back_projection_and_event tests/test_agent_crash_recovery.py::test_os_exit_after_task_event_insert_rolls_back_projection_and_event tests/test_agent_crash_recovery.py::test_committed_receipt_and_task_projection_survive_restart_before_publish tests/test_agent_t08_crash_after_commit.py::test_process_exit_during_receipt_write_recovers_atomically"
+  },
+  "root_current_written": false,
+  "completion": "open; current-hash targeted recovery batch and remaining integration selectors still require assigned serial slot."
+}

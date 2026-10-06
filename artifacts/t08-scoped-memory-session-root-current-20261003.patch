@@ -1,0 +1,109 @@
+--- a/src/local_ai_hub/agent_context.py
++++ b/src/local_ai_hub/agent_context.py
+@@ -535,6 +535,7 @@
+                         root=request.root,
+                         task_id=request.task_id,
+                         tenant=request.tenant,
++                        session_id=request.session_id,
+                         clone_id=request.clone_id,
+                         worktree_id=request.worktree_id,
+                         branch=request.branch,
+@@ -778,6 +779,7 @@
+                     root=request.root,
+                     task_id=request.task_id,
+                     tenant=context_tenant,
++                    session_id=request.session_id,
+                     clone_id=request.clone_id,
+                     worktree_id=request.worktree_id,
+                     branch=request.branch,
+@@ -812,6 +814,7 @@
+                         root=request.root,
+                         task_id=request.task_id,
+                         tenant=context_tenant,
++                        session_id=request.session_id,
+                         clone_id=request.clone_id,
+                         worktree_id=request.worktree_id,
+                         branch=request.branch,
+--- a/src/local_ai_hub/agent_memory.py
++++ b/src/local_ai_hub/agent_memory.py
+@@ -193,6 +193,7 @@
+     clone_id: str,
+     worktree_id: str,
+     branch: str,
++    session_id: str = "",
+ ) -> tuple[str, list[Any]]:
+     root = str(root or "").strip()
+     tenant = str(tenant or "").strip()
+@@ -228,7 +229,10 @@
+             conditions.append("scope_id = ?")
+             identity_params.append(identity_value)
+             if root:
+-                conditions.append(f"{_CONTEXT_ROOT_SQL} = ?")
++                if scope_value in {AgentScope.TASK.value, AgentScope.SESSION.value}:
++                    conditions.append(f"({_CONTEXT_ROOT_SQL} = ? OR {_CONTEXT_ROOT_SQL} = '')")
++                else:
++                    conditions.append(f"{_CONTEXT_ROOT_SQL} = ?")
+                 identity_params.append(canonical_root)
+             else:
+                 conditions.append(f"{_CONTEXT_ROOT_SQL} = ''")
+@@ -242,7 +246,7 @@
+ 
+     add_scoped_identity(AgentScope.REPOSITORY.value)
+     add_scoped_identity(AgentScope.TASK.value, task_id)
+-    add_scoped_identity(AgentScope.SESSION.value, tenant)
++    add_scoped_identity(AgentScope.SESSION.value, session_id)
+     add_scoped_identity(AgentScope.CLONE.value, clone_id)
+     add_scoped_identity(AgentScope.WORKTREE.value, worktree_id)
+     add_scoped_identity(AgentScope.BRANCH.value, branch)
+@@ -1183,6 +1187,7 @@
+         root: str | None = None,
+         task_id: str | None = None,
+         tenant: str | None = None,
++        session_id: str | None = None,
+         clone_id: str | None = None,
+         worktree_id: str | None = None,
+         branch: str | None = None,
+@@ -1201,7 +1206,7 @@
+         self._init_table()
+         capped_limit = max(0, min(32, int(id_limit)))
+         request_scope_provided = any(
+-            value is not None for value in (root, task_id, tenant, clone_id, worktree_id, branch)
++            value is not None for value in (root, task_id, tenant, session_id, clone_id, worktree_id, branch)
+         )
+         con = connect_sqlite(self.state_store.db_path)
+         try:
+@@ -1217,6 +1222,7 @@
+                     root=root or "",
+                     task_id=task_id or "",
+                     tenant=tenant or "",
++                    session_id=session_id or "",
+                     clone_id=clone_id or "",
+                     worktree_id=worktree_id or "",
+                     branch=branch or "",
+@@ -1347,6 +1353,7 @@
+         root: str = "",
+         task_id: str = "",
+         tenant: str = "",
++        session_id: str = "",
+         clone_id: str = "",
+         worktree_id: str = "",
+         branch: str = "",
+@@ -1361,6 +1368,7 @@
+             root=root,
+             task_id=task_id,
+             tenant=tenant,
++            session_id=session_id,
+             clone_id=clone_id,
+             worktree_id=worktree_id,
+             branch=branch,
+--- a/tests/test_agent_context.py
++++ b/tests/test_agent_context.py
+@@ -632,7 +632,7 @@
+     )
+ 
+     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+-        ContextRequest(task_id="task-1", tenant="session-1", root=current_root, token_budget=300)
++        ContextRequest(task_id="task-1", session_id="session-1", root=current_root, token_budget=300)
+     )
+     element_ids = {element.element_id for element in context.elements}
+ 

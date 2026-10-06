@@ -1,0 +1,12 @@
+diff --git a/tests/test_async_jobs.py b/tests/test_async_jobs.py
+--- a/tests/test_async_jobs.py
++++ b/tests/test_async_jobs.py
+@@ -63,7 +63,7 @@
+         assert columns == [
+             "job_id", "tenant", "action", "request_hash", "payload_json", "state", "result_json",
+             "artifact_id", "error", "lease_until", "attempts", "cancel_requested", "created_at",
+-            "updated_at", "expires_at", "trace_id", "task_id",
++            "updated_at", "expires_at", "trace_id", "task_id", "dispatch_not_before",
+         ]
+         assert rows == 0
+     finally:

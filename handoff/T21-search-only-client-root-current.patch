@@ -1,0 +1,31 @@
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -955,7 +955,7 @@
+     ) -> dict[str, Any]:
+         clean_payload = dict(payload or {})
+         route = path.lower().split("?", 1)[0]
+-        if route in {"/api/search", "/api/command"}:
++        if route == "/api/search":
+             explicit_path = isinstance(clean_payload.get("path"), str) and bool(clean_payload["path"].strip())
+             if explicit_path:
+                 clean_payload.pop("path_hints", None)
+--- a/tests/test_client_path_hints.py
++++ b/tests/test_client_path_hints.py
+@@ -14,7 +14,7 @@
+     return HubClient(config_path=str(config), auto_start=False)
+ 
+ 
+-def test_post_forwards_path_hints_to_search_and_command(tmp_path, monkeypatch):
++def test_post_forwards_path_hints_to_search_only(tmp_path, monkeypatch):
+     client = _client(tmp_path)
+     calls = []
+ 
+@@ -36,7 +36,7 @@
+         ),
+         (
+             "/api/command",
+-            {"command": "pytest", "path_hints": list(hints)},
++            {"command": "pytest"},
+             {"timeout": 360.0, "replay_safe": False, "request_id": "command-1"},
+         ),
+     ]

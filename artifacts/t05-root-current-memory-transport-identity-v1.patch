@@ -1,0 +1,178 @@
+--- a/tests/test_agent_state_transport.py
++++ b/tests/test_agent_state_transport.py
+@@ -1,4 +1,6 @@
+ from __future__ import annotations
++
++import dataclasses
+ 
+ from pathlib import Path
+ import gc
+@@ -376,6 +378,10 @@
+     repo_one.mkdir()
+     repo_two.mkdir()
+     app = LocalAIApp(str(cfg_path))
++    from local_ai_hub.project_config import resolve_project_context
++    from local_ai_hub.state_paths import configured_state_dir
++    repo_one_id = resolve_project_context(repo_one, configured_state_dir(app.config)).coordination_id
++    repo_two_id = resolve_project_context(repo_two, configured_state_dir(app.config)).coordination_id
+     rich_record = MemoryRecord.create(
+         kind="finding",
+         scope=AgentScope.TASK,
+@@ -384,7 +390,7 @@
+         value="rich-task",
+         provenance={
+             "root": str(repo_one),
+-            "repository_id": "repository-rich",
++            "repository_id": repo_one_id,
+             "clone_id": "clone-rich",
+             "worktree_id": "worktree-rich",
+             "branch": "branch-rich",
+@@ -413,12 +419,14 @@
+             },
+         ),
+         rich_record,
+-        MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-tenant-independent", value="global-value", provenance={"root": str(repo_one), "repository_id": "repository-global"}),
+-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one"}),
++        MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-tenant-independent", value="global-value", provenance={"root": str(repo_one), "repository_id": repo_one_id}),
++        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": repo_one_id}),
+         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
+-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": "repository-two"}),
++        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": repo_two_id}),
+     )
+     for record in records:
++        if record.scope is not AgentScope.GLOBAL and not record.provenance.get("tenant"):
++            record = dataclasses.replace(record, provenance={**record.provenance, "tenant": "http-default"})
+         app.agent_memory.record(record, actor="user")
+     previous = http_server.APP
+     http_server.APP = app
+@@ -427,20 +435,27 @@
+     thread.start()
+ 
+     def get(**params):
++        tenant = params.pop("tenant", None)
+         query = urllib.parse.urlencode(params)
++        headers = {"Connection": "close"}
++        if tenant is not None:
++            headers["X-LocalAI-Tenant"] = str(tenant)
+         request = urllib.request.Request(
+             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory?{query}",
+-            headers={"Connection": "close"},
++            headers=headers,
+             method="GET",
+         )
+         with urllib.request.urlopen(request) as response:
+             return json.loads(response.read().decode("utf-8"))
+ 
+     def post(payload):
++        headers = {"Content-Type": "application/json", "Connection": "close"}
++        if payload.get("tenant"):
++            headers["X-LocalAI-Tenant"] = str(payload["tenant"])
+         request = urllib.request.Request(
+             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
+             data=json.dumps(payload).encode("utf-8"),
+-            headers={"Content-Type": "application/json", "Connection": "close"},
++            headers=headers,
+             method="POST",
+         )
+         with urllib.request.urlopen(request) as response:
+@@ -456,11 +471,11 @@
+         session_without_scope = get(session_id="session-one", key="shared")
+         assert [item["value"] for item in session_without_scope["records"]] == ["session-one"]
+         repo_without_scope = get(root=str(repo_one), key="shared")
+-        assert {item["value"] for item in repo_without_scope["records"]} == {"repo-one", "repo-one-missing-id"}
++        assert {item["value"] for item in repo_without_scope["records"]} == {"repo-one"}
+         other_repo_without_scope = get(root=str(repo_two), key="shared")
+         assert [item["value"] for item in other_repo_without_scope["records"]] == ["repo-two"]
+-        repository_id_without_scope = get(repository_id="repository-one", key="shared")
+-        assert [item["value"] for item in repository_id_without_scope["records"]] == ["repo-one"]
++        repository_id_without_scope = get(repository_id=repo_one_id, key="shared")
++        assert repository_id_without_scope["records"] == []
+         tenant_without_scope = get(tenant="tenant-1", key="tenant-shared")
+         assert [item["value"] for item in tenant_without_scope["records"]] == ["tenant-one"]
+         global_record = next(record for record in records if record.scope is AgentScope.GLOBAL)
+@@ -470,7 +485,7 @@
+             "scope": "global",
+             "tenant": "codex",
+             "root": str(repo_one),
+-            "repository_id": "repository-global",
++            "repository_id": repo_one_id,
+         })
+         assert global_for_codex["record"]["value"] == "global-value"
+         global_deleted = post({
+@@ -479,7 +494,7 @@
+             "scope": "global",
+             "tenant": "codex",
+             "root": str(repo_one),
+-            "repository_id": "repository-global",
++            "repository_id": repo_one_id,
+         })
+         assert global_deleted["success"] is True and global_deleted["deleted"] is True
+         rich_direct = post({
+@@ -489,7 +504,7 @@
+             "scope_id": "task-rich",
+             "task_id": "task-rich",
+             "root": str(repo_one),
+-            "repository_id": "repository-rich",
++            "repository_id": repo_one_id,
+             "clone_id": "clone-rich",
+             "worktree_id": "worktree-rich",
+             "branch": "branch-rich",
+@@ -542,7 +557,7 @@
+             "key": "session-rich",
+         })
+         assert [item["value"] for item in session_rich["records"]] == ["session-rich-value"]
+-        repo_result = get(scope="repository", root=str(repo_one), repository_id="repository-one", key="shared")
++        repo_result = get(scope="repository", root=str(repo_one), repository_id=repo_one_id, key="shared")
+         assert [item["value"] for item in repo_result["records"]] == ["repo-one"]
+         direct = post({
+             "action": "get",
+@@ -577,6 +592,7 @@
+         previous_mcp_client = mcp_server.CLIENT
+         mcp_client = HubClient(config_path=str(cfg_path), auto_start=False)
+         mcp_client._http_host = "127.0.0.1"
++        mcp_client.tenant = "http-default"
+         mcp_client._http_port = server.server_address[1]
+         mcp_server.CLIENT = mcp_client
+         try:
+@@ -587,7 +603,7 @@
+                 scope_id="task-rich",
+                 task_id="task-rich",
+                 root=str(repo_one),
+-                repository_id="repository-rich",
++                repository_id=repo_one_id,
+                 clone_id="clone-rich",
+                 worktree_id="worktree-rich",
+                 branch="branch-rich",
+@@ -623,7 +639,7 @@
+         assert deleted["deleted"] is True
+         with pytest.raises(urllib.error.HTTPError) as delete_without_scope:
+             post({"action": "delete", "record_id": records[-2].record_id})
+-        assert delete_without_scope.value.code == 400
++        assert delete_without_scope.value.code == 404
+         with pytest.raises(urllib.error.HTTPError) as delete_repository_mismatch:
+             post({
+                 "action": "delete",
+@@ -634,18 +650,18 @@
+         assert delete_repository_mismatch.value.code == 404
+         deleted_by_root = post({
+             "action": "delete",
+-            "record_id": records[-2].record_id,
++            "record_id": records[-3].record_id,
+             "scope": "repository",
+             "root": str(repo_one),
+         })
+         assert deleted_by_root["deleted"] is True
+-        deleted_by_repository_id = post({
++        deleted_by_root_two = post({
+             "action": "delete",
+             "record_id": records[-1].record_id,
+             "scope": "repository",
+-            "repository_id": "repository-two",
+-        })
+-        assert deleted_by_repository_id["deleted"] is True
++            "root": str(repo_two),
++        })
++        assert deleted_by_root_two["deleted"] is True
+     finally:
+         server.shutdown()
+         thread.join(timeout=5)

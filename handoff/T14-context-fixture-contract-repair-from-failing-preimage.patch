@@ -1,0 +1,12 @@
+diff --git a/tests/test_context_delivery.py b/tests/test_context_delivery.py
+--- a/tests/test_context_delivery.py
++++ b/tests/test_context_delivery.py
+@@ -817,4 +817,6 @@
+     for digest, weight in (("config-a", 0.25), ("config-b", 0.75)):
+         project = SimpleNamespace(
+-            settings=SimpleNamespace(retrieval_weights={"lexical": weight}),
++            root=ROOT,
++            settings=project_config.ProjectSettings(retrieval_weights={"lexical": weight}),
+             config_digest=digest,
++            path_hints=lambda **_kwargs: (),
+         )

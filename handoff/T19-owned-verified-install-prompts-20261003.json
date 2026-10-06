@@ -1,0 +1,32 @@
+{
+  "t19_root": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub",
+  "t19_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "root_repo": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "360a58f90d0d6562641e62d15095410fc5dd044a",
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\T19-owned-verified-install-prompts-20261003.patch",
+  "patch_sha256": "47f7ee85debcf9e50daa31e6e5eb358f6d27576ac27869f8e43bbb6b1243e711",
+  "patch_bytes": 22134,
+  "changed_paths": [
+    "tools/setup.py",
+    "install.ps1",
+    "install.sh",
+    "docs/INSTALL_PROMPT.md",
+    "docs/UPDATE_PROMPT.md",
+    "tests/test_t19_verified_install_flow.py"
+  ],
+  "root_head_preimage_sha256": {
+    "tools/setup.py": "5210b84781d1d77d2a4e114b0b6f15d6012c9ff4b6be9120756676658dff1612",
+    "install.ps1": "c77a70d25fcfc8cf51645eabbbcb8eb34c7c628c67864188a9c8ba046501f550",
+    "install.sh": "eb15e04ab5ed31a0a393e897dcc5a81bae4e01bf292108c523060421d189850d",
+    "docs/INSTALL_PROMPT.md": "d89c79cad3f50ca857c67eb964d7dcb94532e5ac92db4404daa19a50ae7d573d",
+    "docs/UPDATE_PROMPT.md": "76fe2a07ac799cb545663cb72299bccc1595b97207486263fb7bcf1fd2ca1f58",
+    "tests/test_t19_verified_install_flow.py": "ABSENT"
+  },
+  "git_apply_check": {
+    "command": "git apply --check C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\T19-owned-verified-install-prompts-20261003.patch",
+    "target": "temporary archive of root HEAD 360a58f; root checkout untouched",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  }
+}

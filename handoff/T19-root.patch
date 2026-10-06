@@ -1,0 +1,21 @@
+--- a/MANIFEST.in
++++ b/MANIFEST.in
+@@ -26,3 +26,4 @@
+ prune generated
+ 
+ recursive-include docs *.md
++prune docs/superpowers
+
+--- a/tests/test_release_contract.py
++++ b/tests/test_release_contract.py
+@@ -152,6 +152,9 @@
+             continue
+         if any(part in skip_parts for part in path.parts) or path.name in skip_files or path.name.startswith(".coverage"):
+             continue
++        # MANIFEST.in excludes release-plan docs from the source distribution.
++        if path.relative_to(ROOT).parts[:2] == ("docs", "superpowers"):
++            continue
+         if path.suffix in {".pyc", ".sqlite3", ".db", ".zip", ".pkl"} or ".local-ai-hub-backup-" in path.name:
+             continue
+         try:
+

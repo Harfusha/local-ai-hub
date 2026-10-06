@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "task": "T08 memory adoption, HTTP context immutability, incident scope, command receipt completion",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "timestamp_utc": "2026-10-02T01:52:48Z",
+  "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_task_memory_adoption.py tests/test_t08_http_memory_context_immutable.py tests/test_agent_incident_scope.py tests/test_agent_t08_receipt_transaction.py::test_command_receipt_is_durable_and_allows_task_completion",
+  "result": {
+    "status": "passed",
+    "passed": 23,
+    "failed": 0,
+    "duration_seconds": 19.52,
+    "exit_code": 0
+  },
+  "preflight": {
+    "first_attempt_exit_code": 2,
+    "reason": "Unrelated pytest process PID 409528 was active; T08 tests were not launched on that attempt",
+    "retry_after_process_exit": true,
+    "pytest_processes_after_batch": 0
+  },
+  "slot": {
+    "assignment": "T02-CPU-20261002-01",
+    "release_message_received_before_batch": true,
+    "conflicting_correction_received_after_batch": true,
+    "no_further_tests_run": true
+  },
+  "sha256": {
+    "tests/test_agent_task_memory_adoption.py": "41AC03E3121C4E307B303D638C9E624A38633C3E74D0D62BB6CE3807C2811AF0",
+    "tests/test_t08_http_memory_context_immutable.py": "68413A40B1D404A9D8714D960288928E3AA390D4CF1C09292BA9B12E507DC68B",
+    "tests/test_agent_incident_scope.py": "088301A122A8FDF585223E216F54F27BDF524DF4C38FBBEF50A4095DDF98298E",
+    "tests/test_agent_t08_receipt_transaction.py": "D07BFDF7781F42C93730E867AEFB66FD04CD528E23D222AF7A69DCB5EEBCA118",
+    "src/local_ai_hub/agent_tasks.py": "1D59F3E1FA8A6082EAA439F4EC3D4C542BBAD47FA5F2664D76570462FB505D25",
+    "src/local_ai_hub/agent_memory.py": "BA83A6D7F13B05CCCF2CB1C34A3A8C98D7D23BBA6BF304F8A8C6A9196B5A71C2",
+    "src/local_ai_hub/agent_incidents.py": "CF3D22739857F2B7AF5BC7C27A04A617D92D261A97EB4BB4F99B2BC58CDD5805",
+    "src/local_ai_hub/http_server.py": "E1EEFF1C3C81252FC8D1FAAA0F9486366460B33C7CDF73B269F7EF3525666BDF",
+    "src/local_ai_hub/commands.py": "4F96F79A1FCDC72889C7AA2E305B784684F2AEFC8815EEBD972C52D47E827577"
+  },
+  "root_modified_by_T08": false
+}

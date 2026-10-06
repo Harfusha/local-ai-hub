@@ -1,0 +1,38 @@
+--- a/src/local_ai_hub/agent_memory.py
++++ b/src/local_ai_hub/agent_memory.py
+@@ -1226,6 +1226,7 @@
+         worktree_id: str | None = None,
+         branch: str | None = None,
+         allow_legacy_unscoped: bool = False,
++        tenant_agnostic_global: bool = False,
+     ) -> MemoryRecord | None:
+         if not self.state_store.enabled or not self.state_store.db_path.exists():
+             return None
+@@ -1246,6 +1247,7 @@
+                 worktree_id=worktree_id,
+                 branch=branch,
+                 include_expired=include_expired,
++                tenant_agnostic_global=tenant_agnostic_global,
+                 semantic=False,
+                 limit=1,
+             )
+@@ -1342,6 +1344,7 @@
+         root: str | None = None,
+         repository_id: str | None = None,
+         tenant: str | None = None,
++        tenant_agnostic_global: bool = False,
+         task_id: str | None = None,
+         session_id: str | None = None,
+         clone_id: str | None = None,
+@@ -1487,7 +1490,10 @@
+             "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
+             "'$.tenant')"
+         )
+-        if tenant:
++        if tenant_agnostic_global:
++            if scope_val != AgentScope.GLOBAL.value:
++                raise ValueError("tenant-agnostic memory lookup is only valid for GLOBAL scope")
++        elif tenant:
+             sql += (
+                 f" AND ((scope = ? AND ({provenance_tenant} IS NULL OR "
+                 f"{provenance_tenant} = '' OR {provenance_tenant} = ?)) "

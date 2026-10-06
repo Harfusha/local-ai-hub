@@ -1,0 +1,22 @@
+{
+  "task": "T05 memory evidence_ids shape",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub",
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "changed_paths": [
+    "src/local_ai_hub/agent_memory.py",
+    "tests/test_agent_memory.py"
+  ],
+  "source_sha256": "784116FF1ADA548979126F9639C4B795016540AF5ED85D1897C6963DFA6AC73E",
+  "test_sha256": "4933AAFB662C1EF151F1A24F470C412AA0350905A032B3E1DE317D4C222E2346",
+  "patch": "artifacts/t05-evidence-ids-shape-v1.patch",
+  "patch_sha256": "E740FC7DA9F0F9992F22722D78721A5A1C2CA5DD241B5D608A29FDC57FC8C69F",
+  "patch_reverse_check": "PASS",
+  "planned_selector": "tests/test_agent_memory.py::test_find_skips_corrupt_rows_without_aborting_scoped_read",
+  "test_status": "NOT RUN: T20 shared pytest slot held",
+  "root_modified": false,
+  "notes": [
+    "Reject scalar JSON evidence_ids; corrupt persisted row is skipped by existing scoped decoder.",
+    "Ensure MemoryRecord.from_dict and write sanitization reject malformed evidence_ids shapes.",
+    "Candidate contains inherited dirty changes; hashes pin whole files, patch isolates this change."
+  ]
+}

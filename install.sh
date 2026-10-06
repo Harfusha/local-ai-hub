@@ -3,18 +3,35 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROFILE=auto
+EXPECTED_REVISION=""
 EXTRA=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --profile) PROFILE=${2:?missing profile}; shift 2 ;;
+    --expected-revision) EXPECTED_REVISION=${2:?missing verified commit SHA}; shift 2 ;;
     --skip-model-pull|--skip-tools|--skip-agent-config|--skip-service|--skip-ollama-install|--skip-local-nlp-preload|--skip-token-economy|--skip-companion-skills)
       EXTRA="$EXTRA $1"; shift ;;
     -h|--help)
-      echo "Usage: ./install.sh [--profile auto|cpu|integrated|low|balanced|high|max] [setup skip flags]"; exit 0 ;;
+      echo "Usage: ./install.sh --expected-revision <40-character-commit-SHA> [--profile auto|cpu|integrated|low|balanced|high|max] [setup skip flags]"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+case "$EXPECTED_REVISION" in
+  *[!0-9a-fA-F]*|"") echo "--expected-revision must be a 40-character verified commit SHA." >&2; exit 2 ;;
+esac
+if [ "${#EXPECTED_REVISION}" -ne 40 ]; then echo "--expected-revision must be a 40-character verified commit SHA." >&2; exit 2; fi
+if ! command -v git >/dev/null 2>&1; then echo "Git is required to verify the installer source commit." >&2; exit 2; fi
+ACTUAL_REVISION=$(git -C "$ROOT" rev-parse --verify HEAD) || { echo "Could not resolve installer source commit." >&2; exit 2; }
+if [ "$(printf '%s' "$ACTUAL_REVISION" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$EXPECTED_REVISION" | tr '[:upper:]' '[:lower:]')" ]; then
+  echo "Source checkout does not match expected verified commit $EXPECTED_REVISION. Refusing install/update." >&2; exit 2
+fi
+SOURCE_STATUS=$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all) || { echo "Could not inspect installer source status. Refusing install/update." >&2; exit 2; }
+if [ -n "$SOURCE_STATUS" ]; then
+  echo "Source checkout is dirty. Preserve changes, use the verified clean commit, then rerun install/update." >&2; exit 2
+fi
+echo "[local-ai-hub] Verified clean source commit: $ACTUAL_REVISION"
 
 python_ok() {
   "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)' >/dev/null 2>&1
@@ -77,4 +94,4 @@ if ! "$PYTHON" -m venv --help >/dev/null 2>&1; then
   exit 1
 fi
 # shellcheck disable=SC2086
-exec "$PYTHON" "$ROOT/tools/setup.py" --profile "$PROFILE" $EXTRA
+exec "$PYTHON" "$ROOT/tools/setup.py" --expected-revision "$EXPECTED_REVISION" --profile "$PROFILE" $EXTRA
