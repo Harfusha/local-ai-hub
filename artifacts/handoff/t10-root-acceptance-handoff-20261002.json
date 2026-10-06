@@ -1,0 +1,202 @@
+{
+  "task": "T10 root acceptance handoff",
+  "date": "2026-10-02",
+  "candidate": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t10-path-hints\\.local-ai-hub",
+    "head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "source_sha256": {
+      "src/local_ai_hub/code_index.py": "D933EDF4C8B0BB90AF6B87CB00C68CA6F0F05427F1BEB5E3267E4D428929C929",
+      "src/local_ai_hub/repo_tools.py": "6C43F6FA7B067856E4543833EF79C2195FFEACC8C900EB0988AFDE16392E527B",
+      "src/local_ai_hub/preprocess.py": "3377491FFAA0A7150E2F8B5CC097E7CA1636449E77B8FF2C98A912368984ABD3",
+      "src/local_ai_hub/retrieval.py": "396A494A65A774ABAEF17099F79D4603CB9EFAB0AFAE1F81F84ECF143E128442",
+      "src/local_ai_hub/defaults.toml": "418B62992343D074C33BB6DF7D2E8139F2B0DDCD6B47CDB1A4E94971A502D57B",
+      "defaults.toml": "418B62992343D074C33BB6DF7D2E8139F2B0DDCD6B47CDB1A4E94971A502D57B"
+    },
+    "test_sha256": {
+      "tests/test_t10_ast_impact_acceptance.py": "9EDA789CF61D320AF5221E78F0CC96C88CA2F0DEF6D7579F1A929A3BBD52C098",
+      "tests/test_t10_code_index_schema_rebuild.py": "EE13096E48A9E209806928886D0070AD7045986A80DDD164B88231A2C6D8D887",
+      "tests/test_t10_fallback_callgraph_parity.py": "E0DD5A7DA09FF33D6E0A8C50DC15BB87033F13495907683EA91A0C8C2F40830E",
+      "tests/test_t10_python_fallback_budget.py": "33DF2F3730293C5C8962556268C6E3DB2C33F13BB661683DAB2632BDE786C075",
+      "tests/test_t10_repo_search_path_hints.py": "06ED8143F5E6B62A3D9D945C6A451163398C3AEC48332923507885BA525C4E90",
+      "tests/test_t10_retrieval_fixture_matrix.py": "4B843BA75C1092BB730404CD4E68B7C3AD1B03D4B74BB0999A26FB7C7E5C310C",
+      "tests/test_adaptive_retrieval.py": "BC8CB31549324CA38CC310E4D7ED8F82D303F0E86B3EC88EF18E44F0D75EDE60",
+      "tests/test_repo_topology.py": "F57CF34BAD744B5C7D5B57E8BA9D84BD0D9152F51444906529DB5562B1F8C73F",
+      "tests/test_affected_tests.py": "0A94EF9BD1BF81F733E216CE0A6A81F2741515F84990F17657AAC02D13152530",
+      "tests/test_cross_repo_federation.py": "567AC3C4DCE8479ABF93FA50D8E5B9BB966E523A1567F8F5E41080C66DC40434"
+    },
+    "targeted_result": "30 passed in 4.81s; candidate-only; not root acceptance"
+  },
+  "root": {
+    "path": "C:\\Users\\Adam\\.local-ai-hub",
+    "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "scoped_dirty_status": [
+      " M defaults.toml",
+      " M src/local_ai_hub/code_index.py",
+      " M src/local_ai_hub/defaults.toml",
+      " M src/local_ai_hub/preprocess.py",
+      " M src/local_ai_hub/repo_tools.py",
+      " M src/local_ai_hub/retrieval.py",
+      " M tests/test_adaptive_retrieval.py",
+      "?? tests/test_t10_ast_impact_acceptance.py",
+      "?? tests/test_t10_code_index_schema_rebuild.py",
+      "?? tests/test_t10_python_fallback_budget.py",
+      "?? tests/test_t10_repo_search_path_hints.py"
+    ],
+    "source_sha256": {
+      "src/local_ai_hub/code_index.py": "73BE2A44010E3EF9BA8367CAC7C99D1DBA4F2DEB7DFA3EACD4A2D4FE361BC00B",
+      "src/local_ai_hub/repo_tools.py": "360734CEB316A8A9FC698C19C1098D88FC591170DBBF5F3B67DB6608CD3A6A36",
+      "src/local_ai_hub/preprocess.py": "FB7A0B55D05BEE9C84FC0C1AA988DC74D48346FA11CFB6529FDB40CDDD582F57",
+      "src/local_ai_hub/retrieval.py": "98D900595EF238E9B21A9EB569B7C70E88BADF3290EF4B702174CAB5252A90AE",
+      "src/local_ai_hub/defaults.toml": "418B62992343D074C33BB6DF7D2E8139F2B0DDCD6B47CDB1A4E94971A502D57B",
+      "defaults.toml": "418B62992343D074C33BB6DF7D2E8139F2B0DDCD6B47CDB1A4E94971A502D57B"
+    },
+    "test_manifest": {
+      "tests/test_t10_ast_impact_acceptance.py": {
+        "present": true,
+        "sha256": "B300FB05514EC5DAF7078AADDFE84235D20EC059104DF8323B4DAE6A8049219D",
+        "test_functions": 6
+      },
+      "tests/test_t10_code_index_schema_rebuild.py": {
+        "present": true,
+        "sha256": "718FC258C6368B355F90A466113ABC3F232B4BBD01A0EB2BF068DE2AF3C1CC52",
+        "test_functions": 2
+      },
+      "tests/test_t10_fallback_callgraph_parity.py": {
+        "present": true,
+        "sha256": "B2F6E35A8BB46ED7E57895C9A6827EAB41B6311FE142679BAB7896DB3457E108",
+        "test_functions": 1
+      },
+      "tests/test_t10_python_fallback_budget.py": {
+        "present": true,
+        "sha256": "D2D810213F0230AF20B42152E0E7C19D03F42896EB692E5A7C4AF7127D117B20",
+        "test_functions": 1
+      },
+      "tests/test_t10_repo_search_path_hints.py": {
+        "present": true,
+        "sha256": "2155D19CE642ADA864EE102660EB02EDDA098366409F2F0D3A905B7ED10C17E4",
+        "test_functions": 5
+      },
+      "tests/test_t10_retrieval_fixture_matrix.py": {
+        "present": true,
+        "sha256": "243A378E72EF993EB75D13DC8B724BC908A58C49FBD345B33E7B9355EE82859C",
+        "test_functions": 4
+      },
+      "tests/test_adaptive_retrieval.py": {
+        "present": true,
+        "sha256": "8E604CD3C034811A871400178AE450A26F5B1E3AC4FD2A27061E31F88595FBA7",
+        "test_functions": 19
+      },
+      "tests/test_repo_topology.py": {
+        "present": true,
+        "sha256": "F57CF34BAD744B5C7D5B57E8BA9D84BD0D9152F51444906529DB5562B1F8C73F",
+        "test_functions": 1
+      },
+      "tests/test_affected_tests.py": {
+        "present": true,
+        "sha256": "0A94EF9BD1BF81F733E216CE0A6A81F2741515F84990F17657AAC02D13152530",
+        "test_functions": 2
+      },
+      "tests/test_cross_repo_federation.py": {
+        "present": true,
+        "sha256": "BCFC5878253FA71A05ACFD2978EC080F64B4E297DE5B53924B1CF3FA67CC4C43",
+        "test_functions": 1
+      }
+    }
+  },
+  "root_candidate_differences": {
+    "code_index": "Root has T20 parser analyzer version call-edges-v13-scoped-fallback in addition to schema guard; root and candidate source hashes differ.",
+    "repo_tools": "Root includes additional path-hint and hard-exclude consumer changes; root and candidate source hashes differ.",
+    "preprocess": "Root includes additional owner work; root and candidate source hashes differ.",
+    "retrieval": "Root has a modified retrieval.py absent from candidate current source hash; root acceptance must test this exact root snapshot.",
+    "tests": "Five T10 test files are newline-normalized equal; root test_repo_search_path_hints.py has one additional positive default-scope test (5 functions vs candidate 4).",
+    "defaults": "Root/package/candidate defaults are byte-identical at SHA-256 418B62992343D074C33BB6DF7D2E8139F2B0DDCD6B47CDB1A4E94971A502D57B."
+  },
+  "acceptance_matrix": [
+    {
+      "criterion": "adaptive retrieval ownership and behavior",
+      "status": "root acceptance open",
+      "evidence": "candidate test receipt only; exact root adaptive test is modified and hash-bound below"
+    },
+    {
+      "criterion": "scan/parse/SQL/graph freshness and incremental invalidation",
+      "status": "root acceptance open",
+      "evidence": "root T10 AST tests exist; source/test hashes pinned; not run here"
+    },
+    {
+      "criterion": "backend plan, deadlines, fallback, coverage/truncation and exact evidence",
+      "status": "root acceptance open",
+      "evidence": "tests/test_adaptive_retrieval.py is present and hash-pinned; root test not run here"
+    },
+    {
+      "criterion": "language/framework fixtures for graph, dead code, impact, cross-repo, API/invariants",
+      "status": "root acceptance open",
+      "evidence": "root fixture modules exist and hashes pinned; no current root run"
+    },
+    {
+      "criterion": "built-in/Serena/CodeGraph on/off/crash/timeout and latency/coverage matrix",
+      "status": "open; external receipt required",
+      "evidence": "T02 outputs -02/-03 each 128 files, no valid paired receipt; -03 timing contaminated; no clean p95 or separate memory"
+    },
+    {
+      "criterion": "CodeGraph standalone and clean-host package/release",
+      "status": "open; T19/T20 owner gate",
+      "evidence": "T19 receipts exist but clean-host install/release remains open"
+    }
+  ],
+  "root_command_for_T20_after_serial_slot": "$env:PYTHONPATH='C:\\Users\\Adam\\.local-ai-hub\\src'; python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t10_ast_impact_acceptance.py tests/test_t10_code_index_schema_rebuild.py tests/test_t10_fallback_callgraph_parity.py tests/test_t10_python_fallback_budget.py tests/test_t10_repo_search_path_hints.py tests/test_t10_retrieval_fixture_matrix.py tests/test_adaptive_retrieval.py tests/test_repo_topology.py tests/test_affected_tests.py tests/test_cross_repo_federation.py",
+  "execution_status": "not run in this continuation; T02 owns the only test/benchmark slot",
+  "patch_decision": "No source patch indicated by static review: root contains the schema guard, forced freshness reindex, separate Python fallback cap/metric and preprocess invalidation. Existing root source has owner changes beyond candidate; keep source untouched. Root acceptance still requires exclusive root tests and owner backend/release receipts.",
+  "required_preflight": "Wait for explicit T02 release. Rehash the 16 root source/test paths in this manifest and compare; assert import resolves to root src/local_ai_hub; run the listed command only in an exclusive serial slot. T10 must not launch a test or benchmark while T02 holds the slot.",
+  "root_written_by_T10": false,
+  "performance_owner": "T02",
+  "release_owners": [
+    "T19",
+    "T20"
+  ],
+  "current_gate_20261002": {
+    "owner": "T02",
+    "thread_id": "01a0d30b-ffee-7fa2-bc6e-f503a4bc18b7",
+    "status": "waiting_for_T11_release_and_T20_grant",
+    "latest_note": "T11 reports native test outside assigned route and an incomplete/UNKNOWN stopped suite; T20 requested receipt and immediate slot release. No explicit T10 grant yet.",
+    "slot": "T11 release pending; T10 queued, awaiting explicit T20 grant",
+    "t10_tests_or_benchmark_run": false,
+    "t10_next_action": "wait for explicit T20 slot; then rehash root and run exact root selector once"
+  },
+  "root_static_checks": {
+    "python_ast_parse": "passed for 14 root Python source/test paths; parse-only, no imports/tests",
+    "defaults_toml_parse": "both root defaults files parsed with tomllib",
+    "defaults_byte_parity": "equal",
+    "pinned_snapshot_recheck": {
+      "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+      "head_matches": true,
+      "path_count": 16,
+      "hash_drift": {}
+    }
+  },
+  "root_contract_markers": {
+    "src/local_ai_hub/code_index.py": {
+      "schema_column": "line 66 analyzer_version TEXT",
+      "stale_schema_guard": "line 128 raises on missing analyzer_version",
+      "forced_snapshot_reindex": "line 692 _read_snapshot(..., force=True)"
+    },
+    "src/local_ai_hub/repo_tools.py": {
+      "snapshot_force_api": "line 308 _read_snapshot(..., force=False)",
+      "snapshot_invalidation": "line 474 invalidate_snapshot",
+      "python_fallback_cap": "line 110 python_fallback_max_files",
+      "separate_fallback_metric": "line 1358 python_fallback_files_scanned"
+    },
+    "src/local_ai_hub/preprocess.py": {
+      "freshness_invalidates_snapshot": "lines 1963 and 2256 invalidate(path)"
+    },
+    "defaults.toml": {
+      "separate_fallback_default": "line 471 python_fallback_max_files=8000; comment explicitly distinguishes ripgrep timeout"
+    }
+  },
+  "T02_impact_stage": {
+    "owner": "T02",
+    "status": "planned",
+    "stage": "hub_impact_latency",
+    "affected_tests": "separate correctness golden",
+    "T10_duplicate_work": "none"
+  }
+}
