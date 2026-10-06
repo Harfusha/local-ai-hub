@@ -143,43 +143,83 @@ def test_command_broker_webhook_replay(tmp_path: Path):
 def test_command_broker_webhook_replay_bounds_response_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     class Response:
         status = 200
-        headers: dict[str, str] = {}
+        read_size: int | None = None
 
         def read(self, size: int = -1) -> bytes:
-            assert size == 65_536
+            self.read_size = size
             return b"ok"
 
-        def __enter__(self):
-            return self
+        def getheaders(self) -> list[tuple[str, str]]:
+            return []
 
-        def __exit__(self, *_args):
-            return False
+    response = Response()
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: Response())
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}, "commands": {"enabled": True}})
+    class Connection:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def request(self, *_args, **_kwargs) -> None:
+            pass
+
+        def getresponse(self) -> Response:
+            return response
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("local_ai_hub.commands._PinnedHTTPConnection", Connection)
+    broker = CommandBroker({
+        "server": {"state_dir": str(tmp_path)},
+        "commands": {"enabled": True},
+        "network": {"allow_private_hosts": ["127.0.0.1/32"]},
+    })
 
     result = broker.webhook_replay("http://127.0.0.1/webhook", {"event": "ping"})
 
     assert result["success"] is True
     assert result["body_preview"] == "ok"
+    assert response.read_size == 65_537
 
 
 def test_command_broker_webhook_replay_bounds_error_response_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    class ErrorBody(io.BytesIO):
-        read_size: int | None = None
+    class Response:
+        status = 413
+
+        def __init__(self) -> None:
+            self.read_size: int | None = None
 
         def read(self, size: int = -1) -> bytes:
             self.read_size = size
-            return super().read(size)
+            return b"error"
 
-    body = ErrorBody(b"error")
-    error = HTTPError("http://127.0.0.1/webhook", 413, "payload too large", {}, body)
-    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(error))
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}, "commands": {"enabled": True}})
+        def getheaders(self) -> list[tuple[str, str]]:
+            return []
+
+    response = Response()
+
+    class Connection:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def request(self, *_args, **_kwargs) -> None:
+            pass
+
+        def getresponse(self) -> Response:
+            return response
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("local_ai_hub.commands._PinnedHTTPConnection", Connection)
+    broker = CommandBroker({
+        "server": {"state_dir": str(tmp_path)},
+        "commands": {"enabled": True},
+        "network": {"allow_private_hosts": ["127.0.0.1/32"]},
+    })
 
     result = broker.webhook_replay("http://127.0.0.1/webhook", {"event": "ping"})
 
-    assert body.read_size == 65_536
+    assert response.read_size == 65_537
     assert result["status_code"] == 413
     assert result["body_preview"] == "error"
 

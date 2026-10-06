@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import copy
 import hashlib
 import hmac
+import errno
 import http.client
 import inspect
 import io
@@ -40,14 +41,16 @@ class PathHint(Protocol):
     expires_at: str | None
 
 
+_PATH_HINT_FIELDS = frozenset(
+    {"path", "purpose", "scope", "evidence_id", "provenance", "repository_revision", "config_digest", "expires_at"}
+)
+_PATH_HINT_REQUIRED_FIELDS = ("path", "purpose", "scope")
+
+
 class _InProcessTransport(Protocol):
     def open(
-        self,
-        method: str,
-        path: str,
-        body: bytes | None,
-        headers: Mapping[str, str],
-        timeout: float,
+        self, method: str, path: str, body: bytes | None,
+        headers: Mapping[str, str], timeout: float,
         operational_action: str | None = None,
         requires_heavy_work: bool = True,
         cancel_event: threading.Event | None = None,
@@ -56,14 +59,8 @@ class _InProcessTransport(Protocol):
     def close(self) -> None: ...
 
 
-_PATH_HINT_FIELDS = frozenset(
-    {"path", "purpose", "scope", "evidence_id", "provenance", "repository_revision", "config_digest", "expires_at"}
-)
-_PATH_HINT_REQUIRED_FIELDS = ("path", "purpose", "scope")
-
-
 class _TransportFailure(OSError):
-    """Transport failed with explicit connect-refusal or uncertain outcome state."""
+    """Transport error with evidence whether any request bytes could be sent."""
 
     def __init__(self, cause: BaseException, *, request_not_sent: bool, cancelled: bool = False) -> None:
         super().__init__(str(cause))
@@ -71,12 +68,13 @@ class _TransportFailure(OSError):
         self.cancelled = cancelled
 
 
-class _SingleflightCancelled(TimeoutError):
+class _SingleflightCancelled(Exception):
     """A coalesced caller stopped waiting while shared work may still run."""
 
 
 _DETACHED_CHILDREN_LOCK = threading.Lock()
 _DETACHED_CHILDREN: list[subprocess.Popen[Any]] = []
+_ORIGINAL_SUBPROCESS_RUN = getattr(subprocess, "run", None)
 
 
 def _retain_detached_child(process: subprocess.Popen[Any]) -> None:
@@ -87,7 +85,7 @@ def _retain_detached_child(process: subprocess.Popen[Any]) -> None:
 
 
 def _stop_owned_child(process: subprocess.Popen[Any]) -> None:
-    """Stop and reap only the detached child created by this startup attempt."""
+    """Stop and reap only the child created by this startup attempt."""
     try:
         if process.poll() is not None:
             return
@@ -101,114 +99,68 @@ def _stop_owned_child(process: subprocess.Popen[Any]) -> None:
         pass
 
 
-def _live_start_lock(path: Path, stale_seconds: float) -> bool:
-    """Return whether a startup lock still belongs to a live, recent process."""
-    try:
-        age = max(0.0, time.time() - path.stat().st_mtime)
-    except (OSError, ValueError):
-        return False
-    try:
-        parts = path.read_text(encoding="utf-8").strip().split()
-    except OSError:
-        return age <= 1.0
-    if not parts:
-        return age <= 1.0
-    try:
-        pid = int(parts[0])
-    except ValueError:
-        return age <= 1.0
+def _write_start_lock_owner(handle: Any) -> None:
+    handle.seek(0)
+    handle.truncate()
+    fields = [str(os.getpid()), str(time.time())]
+    identity = process_identity(os.getpid())
+    if identity is not None:
+        identity_type = str(identity.get("creation_identity_type", ""))
+        creation_identity = str(identity.get("creation_identity", ""))
+        if identity_type and creation_identity:
+            fields.extend((identity_type, creation_identity))
+    handle.write(" ".join(fields).encode("ascii", errors="ignore"))
+    handle.flush()
 
-    def launcher_identity_matches() -> bool | None:
-        if len(parts) < 5:
-            return None
-        identity = process_identity(pid)
-        if identity is None:
-            return None
-        return bool(
-            identity.get("creation_identity_type") == parts[3]
-            and str(identity.get("creation_identity")) == parts[4]
-        )
 
-    def incomplete_metadata_is_live() -> bool:
-        if age <= 1.0:
-            return True
-        matches = launcher_identity_matches()
-        if matches is not None:
-            return matches
-        return age <= max(1.0, stale_seconds) and pid_alive(pid)
+def _acquire_start_lock(path: Path, stale_seconds: float = 20.0) -> Any | None:
+    """Serialize marker recovery; a held OS lock cannot expire during startup."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    locked = False
+    try:
+        if os.name == "nt":
+            import msvcrt
 
-    if len(parts) >= 3:
-        pid_path = path.with_name(f"{path.name}.{parts[2]}.pid")
+            handle.seek(0)
+            if not handle.read(1):
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        locked = True
+        handle.seek(0)
+        marker = handle.read().decode("ascii", errors="ignore").split()
         try:
-            sidecar = pid_path.read_text(encoding="ascii").strip().split()
-        except (OSError, ValueError, IndexError):
-            try:
-                if pid_path.exists():
-                    return incomplete_metadata_is_live()
-            except OSError:
-                return incomplete_metadata_is_live()
-        else:
-            if len(sidecar) >= 3:
-                try:
-                    sidecar_pid = int(sidecar[0])
-                except ValueError:
-                    return incomplete_metadata_is_live()
-                identity = process_identity(sidecar_pid)
-                if identity is None:
-                    return age <= max(1.0, stale_seconds) and pid_alive(sidecar_pid)
-                return bool(
-                    identity.get("creation_identity_type") == sidecar[1]
-                    and str(identity.get("creation_identity")) == sidecar[2]
+            owner_pid = int(marker[0]) if marker else 0
+        except ValueError:
+            owner_pid = 0
+        age = max(0.0, time.time() - path.stat().st_mtime)
+        owner_is_live = bool(owner_pid and age <= max(1.0, stale_seconds) and pid_alive(owner_pid))
+        if owner_is_live and len(marker) >= 4:
+            identity = process_identity(owner_pid)
+            if identity is not None:
+                owner_is_live = bool(
+                    identity.get("creation_identity_type") == marker[2]
+                    and str(identity.get("creation_identity")) == marker[3]
                 )
-            try:
-                if pid_path.exists():
-                    return incomplete_metadata_is_live()
-            except OSError:
-                return incomplete_metadata_is_live()
-
-    matches = launcher_identity_matches()
-    if matches is not None:
-        return matches
-    return age <= max(1.0, stale_seconds) and pid_alive(pid)
-
-
-def _try_start_lock_guard(path: Path) -> int | None:
-    """Acquire the short cross-process guard for startup-lock transitions."""
-    try:
-        fd = os.open(str(path), os.O_CREAT | os.O_RDWR)
-    except OSError:
-        return None
-    try:
-        os.lseek(fd, 0, os.SEEK_SET)
-        if os.name == "nt":
-            import msvcrt
-
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return fd
-    except OSError:
-        os.close(fd)
-        return None
-
-
-def _release_start_lock_guard(fd: int) -> None:
-    try:
-        os.lseek(fd, 0, os.SEEK_SET)
-        if os.name == "nt":
-            import msvcrt
-
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(fd, fcntl.LOCK_UN)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)
+        if owner_is_live:
+            handle.close()
+            return None
+        _write_start_lock_owner(handle)
+        return handle
+    except OSError as exc:
+        handle.close()
+        if not locked and exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+            return None
+        raise
+    except BaseException:
+        handle.close()
+        raise
 
 
 class HubClient:
@@ -424,7 +376,6 @@ class HubClient:
         if cancel_event is not None:
             return self._pooled_open(method, path, body, headers, timeout, cancel_event=cancel_event)
         return self._pooled_open(method, path, body, headers, timeout)
-
     @staticmethod
     def _error_response(exc: HTTPError, request_id: str) -> dict[str, Any]:
         try:
@@ -460,6 +411,8 @@ class HubClient:
             "success": False,
             "error": "request outcome is unknown after a transport failure",
             "outcome_unknown": True,
+            "terminal": True,
+            "retryable": False,
             "request_id": request_id,
         }
         if retried:
@@ -499,6 +452,8 @@ class HubClient:
                 "error": "request was not sent because transport failed before write",
                 "request_not_sent": True,
                 "outcome_unknown": False,
+                "terminal": True,
+                "retryable": False,
                 "request_id": request_id,
             }
             if retried:
@@ -624,122 +579,50 @@ class HubClient:
         if find_listening_pid(port):
             return wait_until_ready()
         lock_path = state_dir / "hub.start.lock"
-        lock_nonce = uuid.uuid4().hex
-        lock_token = f"{os.getpid()} {time.time()} {lock_nonce}"
-        owner_identity = process_identity(os.getpid())
-        if owner_identity is not None:
-            lock_token += (
-                f" {owner_identity['creation_identity_type']}"
-                f" {owner_identity['creation_identity']}"
-            )
-        lock_pid_path = lock_path.with_name(f"{lock_path.name}.{lock_nonce}.pid")
         owner = False
-        keep_lock = False
+        owner_lock = None
 
-        def publish_lock_pid(pid: int) -> None:
-            for _ in range(5):
-                try:
-                    # Nonce-scoped metadata cannot overwrite a replacement lock.
-                    if pid > 0:
-                        identity = process_identity(pid)
-                        if identity is not None:
-                            marker = (
-                                f"{pid} {identity['creation_identity_type']} "
-                                f"{identity['creation_identity']}"
-                            )
-                        else:
-                            marker = str(pid)
-                    else:
-                        marker = "0"
-                    lock_pid_path.write_text(marker, encoding="ascii")
-                    return
-                except OSError:
-                    # A contender may hold a short-lived read handle on Windows.
-                    time.sleep(0.01)
-
-        # Serialize lock creation, stale removal, and release across processes.
-        # The guard itself is an OS lock, so crashes release it automatically.
-        guard_path = state_dir / "hub.start.guard"
-        lock_wait_deadline: float | None = None
-        while remaining() > 0 and not owner:
-            guard_fd = None
-            while guard_fd is None and remaining() > 0:
-                guard_fd = _try_start_lock_guard(guard_path)
-                if guard_fd is None:
-                    if self._online(remaining()):
-                        return True
-                    time.sleep(min(self.startup_poll, remaining()))
-            if guard_fd is None:
+        # The OS lock protects startup while held. After a failed bounded attempt,
+        # its PID marker blocks duplicates only for the configured retry cooldown.
+        for _ in range(2):
+            try:
+                owner_lock = _acquire_start_lock(lock_path, self.start_lock_stale)
+            except OSError:
+                continue
+            if owner_lock is not None:
+                owner = True
                 break
 
-            wait_for_owner = False
-            fatal_lock_error = False
-            try:
+            lock_deadline = min(deadline, time.monotonic() + self.startup_wait)
+            while time.monotonic() < lock_deadline:
                 if self._online(remaining()):
                     return True
-                if (state_dir / "service.managed").exists():
-                    return False
                 try:
-                    fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                    try:
-                        os.write(fd, lock_token.encode("ascii"))
-                    except OSError:
-                        fatal_lock_error = True
-                    finally:
-                        try:
-                            os.close(fd)
-                        except OSError:
-                            fatal_lock_error = True
-                    if fatal_lock_error:
-                        try:
-                            lock_path.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                    owner = not fatal_lock_error
-                except FileExistsError:
-                    if _live_start_lock(lock_path, self.start_lock_stale):
-                        wait_for_owner = True
-                    else:
-                        try:
-                            lock_path.unlink(missing_ok=True)
-                        except OSError:
-                            wait_for_owner = True
+                    owner_lock = _acquire_start_lock(lock_path, self.start_lock_stale)
                 except OSError:
-                    fatal_lock_error = True
-            finally:
-                _release_start_lock_guard(guard_fd)
-
+                    owner_lock = None
+                if owner_lock is not None:
+                    owner = True
+                    break
+                time.sleep(min(self.startup_poll, max(0.0, lock_deadline - time.monotonic())))
             if owner:
                 break
-            if fatal_lock_error:
-                return False
-            if wait_for_owner:
-                if lock_wait_deadline is None:
-                    lock_wait_deadline = min(deadline, time.monotonic() + self.startup_wait)
-                while remaining() > 0 and time.monotonic() < lock_wait_deadline:
-                    if self._online(remaining()):
-                        return True
-                    if not _live_start_lock(lock_path, self.start_lock_stale):
-                        return wait_until_ready()
-                    time.sleep(min(self.startup_poll, remaining(), lock_wait_deadline - time.monotonic()))
-                return self._online(remaining())
+            return self._online(remaining())
 
         if not owner:
             return self._online(remaining())
+        ready = False
+        keep_lock = False
         try:
             if self._online(remaining()):
                 return True
             if remaining() <= 0:
-                publish_lock_pid(0)
                 return False
             if bool(self.config.get("headless", {}).get("respect_disabled_marker", True)) and (state_dir / "service.disabled").exists():
-                publish_lock_pid(0)
                 return False
             if live_supervisor() or find_listening_pid(port):
-                publish_lock_pid(0)
                 return wait_until_ready()
             if (state_dir / "service.managed").exists():
-                publish_lock_pid(0)
                 return False
             env = os.environ.copy()
             env["LOCAL_AI_CONFIG"] = config_path
@@ -747,61 +630,81 @@ class HubClient:
             env["PYTHONPATH"] = src_dir + (os.pathsep + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
             service_script = Path(__file__).resolve().parents[2] / "tools" / "service.py"
             if not service_script.is_file():
-                publish_lock_pid(0)
                 return False
             try:
                 from .process_utils import hidden_run_kwargs
-
                 kwargs = hidden_run_kwargs()
             except Exception:
                 kwargs = {}
-            try:
-                completed = subprocess.run(
-                    [sys.executable, str(service_script), "start"],
-                    env=env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=max(0.1, remaining()),
-                    **kwargs,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                publish_lock_pid(0)
-                return wait_until_ready()
-            if completed.returncode != 0:
-                publish_lock_pid(0)
-                return wait_until_ready()
-            return wait_until_ready()
+            launch_timeout = remaining()
+            if launch_timeout <= 0:
+                return False
+            if hasattr(subprocess, "run") and subprocess.run is not _ORIGINAL_SUBPROCESS_RUN:
+                try:
+                    from .process_utils import hidden_run_kwargs
+                    kwargs = hidden_run_kwargs()
+                except Exception:
+                    kwargs = {}
+                try:
+                    completed = subprocess.run(
+                        [sys.executable, str(service_script), "start"],
+                        env=env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=launch_timeout,
+                        **kwargs,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    ready = wait_until_ready()
+                    keep_lock = not ready
+                    return ready
+                if completed.returncode != 0:
+                    ready = wait_until_ready()
+                    keep_lock = not ready
+                    return ready
+            else:
+                py_exe = sys.executable
+                if sys.platform == "win32":
+                    pyw_candidate = Path(sys.executable).parent / "pythonw.exe"
+                    if pyw_candidate.exists():
+                        py_exe = str(pyw_candidate)
+                cmd = [py_exe, "-m", "local_ai_hub", "--config", config_path]
+                try:
+                    from .process_utils import hidden_run_kwargs
+                    popen_kwargs = hidden_run_kwargs(detached=True)
+                except Exception:
+                    popen_kwargs = {}
+                if sys.platform != "win32":
+                    popen_kwargs["start_new_session"] = True
+                try:
+                    process = subprocess.Popen(
+                        cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **popen_kwargs
+                    )
+                except OSError:
+                    return False
+                _retain_detached_child(process)
+            while remaining() > 0:
+                if self._online(remaining()):
+                    ready = True
+                    return True
+                time.sleep(min(self.startup_poll, remaining()))
+            ready = self._online(remaining())
+            keep_lock = not ready
+            return ready
         finally:
-            if not keep_lock:
-                lock_released = False
-                guard_fd = None
-                for _ in range(5):
-                    guard_fd = _try_start_lock_guard(guard_path)
-                    if guard_fd is not None:
-                        break
-                    time.sleep(0.01)
-                if guard_fd is not None:
+            if owner_lock is not None:
+                if not keep_lock:
                     try:
-                        for _ in range(5):
-                            try:
-                                if lock_path.read_text(encoding="ascii") != lock_token:
-                                    lock_released = True
-                                    break
-                                lock_path.unlink(missing_ok=True)
-                                lock_released = True
-                                break
-                            except FileNotFoundError:
-                                lock_released = True
-                                break
-                            except OSError:
-                                # A concurrent contender can briefly hold the lock on Windows.
-                                time.sleep(0.01)
-                    finally:
-                        _release_start_lock_guard(guard_fd)
-                if lock_released:
+                        owner_lock.seek(0)
+                        owner_lock.truncate()
+                        owner_lock.flush()
+                    except OSError:
+                        pass
+                owner_lock.close()
+                if not keep_lock:
                     try:
-                        lock_pid_path.unlink(missing_ok=True)
+                        lock_path.unlink(missing_ok=True)
                     except OSError:
                         pass
 
@@ -1028,11 +931,11 @@ class HubClient:
                 "retryable": False,
                 "preflight": True,
             }
+        timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
         clean_payload = payload or {}
         request_tenant, identity_error = self._request_tenant(path, clean_payload, tenant)
         if identity_error is not None:
             return identity_error
-        timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
         preflight = self._terminal_preflight(path, clean_payload)
         if preflight is not None:
             return preflight
@@ -1111,7 +1014,12 @@ class HubClient:
                             result["retry_timeout"] = True
                             return result
                         retry_after = max(0.01, float(result.get("retry_after_seconds", 0.1) or 0.1))
-                        time.sleep(min(retry_after, remaining))
+                        delay = min(retry_after, remaining)
+                        if cancel_event is not None:
+                            if cancel_event.wait(delay):
+                                return self._cancelled_response(request_id, request_not_sent=False)
+                        else:
+                            time.sleep(delay)
 
             try:
                 return request_until_terminal()
@@ -1120,24 +1028,20 @@ class HubClient:
             except (URLError, OSError, http.client.HTTPException) as exc:
                 self._drop_connection()
                 if getattr(exc, "cancelled", False):
-                    return self._cancelled_response(
-                        request_id,
-                        request_not_sent=bool(getattr(exc, "request_not_sent", False))
-                        and not server_reported_in_progress,
-                    )
+                    return self._cancelled_response(request_id, request_not_sent=bool(getattr(exc, "request_not_sent", False)) and not server_reported_in_progress)
                 pre_send_refusal = bool(getattr(exc, "request_not_sent", False))
-                if replay_safe:
+                if replay_safe or (self.auto_start and pre_send_refusal):
                     remaining = duplicate_deadline - time.monotonic()
-                    if self._inprocess_transport is not None:
-                        server_ready = bool(replay_safe or pre_send_refusal)
-                    elif self.auto_start and remaining > 0:
-                        try:
-                            server_ready = self.ensure_server(timeout=remaining)
-                        except Exception:
-                            server_ready = False
-                    else:
-                        server_ready = not self.auto_start
+                    try:
+                        if self._inprocess_transport is not None:
+                            server_ready = bool(replay_safe or pre_send_refusal)
+                        else:
+                            server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
+                    except Exception:
+                        server_ready = False
                     if server_ready:
+                        if cancel_event is not None and cancel_event.is_set():
+                            return self._cancelled_response(request_id, request_not_sent=pre_send_refusal and not server_reported_in_progress)
                         remaining = duplicate_deadline - time.monotonic()
                         if remaining <= 0:
                             return self._transport_failure_response(
@@ -1150,8 +1054,12 @@ class HubClient:
                             if retried_result.get("outcome_unknown"):
                                 retried_result["retried"] = True
                             return retried_result
+                        except HTTPError as retry_http:
+                            return self._error_response(retry_http, request_id)
                         except (URLError, OSError, http.client.HTTPException) as retry_exc:
                             self._drop_connection()
+                            if getattr(retry_exc, "cancelled", False):
+                                return self._cancelled_response(request_id, request_not_sent=bool(getattr(retry_exc, "request_not_sent", False)) and not server_reported_in_progress)
                             return self._transport_failure_response(
                                 request_id,
                                 exc,
@@ -1166,8 +1074,8 @@ class HubClient:
                 )
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
-            except Exception as exc:
-                return {"success": False, "error": str(exc), "request_id": request_id}
+            except Exception:
+                return self._uncertain_response(request_id)
 
         if not replay_safe:
             return execute()
@@ -1189,6 +1097,10 @@ class HubClient:
                 "error": "coalesced request timed out before result was available",
                 "retry_timeout": True,
                 "coalesced": True,
+                "outcome_unknown": True,
+                "in_progress": True,
+                "retryable": True,
+                "terminal": False,
                 "request_id": getattr(exc, "request_id", request_id),
             }
 
@@ -1267,11 +1179,12 @@ class HubClient:
                     except HTTPError as retry_http: return self._error_response(retry_http, request_id)
                     except (URLError, OSError, http.client.HTTPException) as retry_exc:
                         self._drop_connection()
-                        return self._transport_failure_response(request_id, exc, retry_exc, retried=True)
-                    except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
-                return self._transport_failure_response(request_id, exc)
-            except Exception as exc:
-                return {"success": False, "error": str(exc), "request_id": request_id}
+                        return self._uncertain_response(request_id, retried=True)
+                    except Exception:
+                        return self._uncertain_response(request_id, retried=True)
+                return self._uncertain_response(request_id)
+            except Exception:
+                return self._uncertain_response(request_id)
 
         key = f"GET|{request_tenant}|{self.agent}|{path}"
         if cancel_event is not None:
@@ -1288,6 +1201,10 @@ class HubClient:
                 "error": "coalesced request timed out before result was available",
                 "retry_timeout": True,
                 "coalesced": True,
+                "outcome_unknown": True,
+                "in_progress": True,
+                "retryable": True,
+                "terminal": False,
                 "request_id": getattr(exc, "request_id", request_id),
             }
 
@@ -1338,11 +1255,11 @@ class HubClient:
     ) -> dict[str, Any]:
         clean_payload = dict(payload or {})
         route = path.lower().split("?", 1)[0]
-        if route == "/api/search":
+        if route in {"/api/search", "/api/command"}:
             explicit_path = isinstance(clean_payload.get("path"), str) and bool(clean_payload["path"].strip())
             if explicit_path:
                 clean_payload.pop("path_hints", None)
-            elif path_hints:
+            elif path_hints is not None:
                 records = []
                 for hint in path_hints[:64]:
                     if isinstance(hint, Mapping):
@@ -1392,12 +1309,15 @@ class HubClient:
             return self.post("/api/agent-state/tasks", payload)
         if act in ("memo_put", "memo_get", "memo_search", "memo_delete"):
             if act == "memo_put":
-                return self.post("/api/memory/put", {
+                payload = {
                     "root": kwargs.get("root", "."),
                     "key": kwargs.get("key", ""),
                     "value": kwargs.get("value", ""),
                     "ttl_seconds": kwargs.get("ttl_seconds", 604800),
-                })
+                }
+                if kwargs.get("expected_version") is not None:
+                    payload["expected_version"] = kwargs["expected_version"]
+                return self.post("/api/memory/put", payload)
             if act == "memo_get":
                 return self.post("/api/memory/get", {"root": kwargs.get("root", "."), "key": kwargs.get("key", "")})
             if act == "memo_search":
@@ -1746,7 +1666,6 @@ class HubClient:
                     if connection is not None:
                         try: connection.close()
                         except OSError: pass
-
                 def close_on_interrupt() -> None:
                     deadline = time.monotonic() + transport_timeout
                     while not monitor_stopped.is_set():
@@ -1775,6 +1694,8 @@ class HubClient:
                             try:
                                 parsed_data = json.loads(data_str)
                             except Exception:
+                                parsed_data = {"raw": data_str}
+                            if not isinstance(parsed_data, dict):
                                 parsed_data = {"raw": data_str}
                             yield cur_event or "message", parsed_data
                         cur_event = ""

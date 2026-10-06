@@ -42,7 +42,8 @@ token = "T04_ROOT_PATH_HINT_CHAIN_TOKEN"
     'entry_points = ["templates/element"]\n'
     'exclude_paths = ["secret/**"]\n'
     '[path_overrides]\n'
-    '"templates/element/**" = "include"\n',
+    '"templates/element/**" = "include"\n'
+    '"secret/**" = "include"\n',
     encoding="utf-8",
 )
 with socket.socket() as probe:

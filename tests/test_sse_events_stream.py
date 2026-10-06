@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import io
 import json
 import threading
@@ -107,17 +108,38 @@ def test_sse_stream_replays_and_receives_live_events(tmp_path: Path):
         http_server.APP = orig_app
 
 
+def test_sse_stream_resumes_from_last_event_id_for_explicit_stream(tmp_path: Path):
+    store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    store.append(AgentEvent.create("task-1", "task.created", {"step": 1}, "k1"))
+    store.append(AgentEvent.create("task-1", "task.updated", {"step": 2}, "k2"))
+
+    class DummyApp:
+        agent_state = store
+
+    orig_app = http_server.APP
+    http_server.APP = DummyApp()
+    try:
+        handler = DummyHandler(DummyApp())
+        handler.headers = {"Last-Event-ID": "1"}
+        handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.01)
+
+        output = handler.wfile.getvalue().decode("utf-8")
+        assert "event: task.created" not in output
+        assert "event: task.updated" in output
+    finally:
+        http_server.APP = orig_app
+
+
 def test_sse_stream_does_not_lose_event_between_replay_and_subscribe(tmp_path: Path, monkeypatch):
     store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     store.append(AgentEvent.create("task-1", "task.created", {"step": 1}, "k1"))
-    original_events = store.events
+    original_event_page = store.event_page
 
-    def events_then_publish(*args, **kwargs):
-        replay = original_events(*args, **kwargs)
+    def event_page_after_subscribe(*args, **kwargs):
         store.append(AgentEvent.create("task-1", "task.updated", {"step": 2}, "k2"))
-        return replay
+        return original_event_page(*args, **kwargs)
 
-    monkeypatch.setattr(store, "events", events_then_publish)
+    monkeypatch.setattr(store, "event_page", event_page_after_subscribe)
 
     class DummyApp:
         agent_state = store
@@ -130,6 +152,34 @@ def test_sse_stream_does_not_lose_event_between_replay_and_subscribe(tmp_path: P
     assert "event: task.updated" in output
     assert '"step":2' in output
 
+
+def test_sse_stream_replays_all_bounded_pages(tmp_path: Path, monkeypatch):
+    store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    store._ensure_schema()
+    connection = sqlite3.connect(store.db_path)
+    try:
+        connection.executemany(
+            """INSERT INTO agent_events
+               (stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (("task-1", index, f"evt-{index}", "task.updated", "{}", f"key-{index}", "", "agent", 1.0)
+             for index in range(1, 1002)),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    class DummyApp:
+        agent_state = store
+
+    monkeypatch.setattr(http_server, "APP", DummyApp())
+    handler = DummyHandler(DummyApp())
+    handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.05)
+
+    output = handler.wfile.getvalue().decode("utf-8")
+    assert output.count("event: task.updated") == 1001
+    assert output.count("event: replay_page") == 11
+    assert "id: 1001\n" in output
 
 def test_sse_stream_timeout_bounds_queue_wait(tmp_path: Path, monkeypatch):
     store = AgentStateStore(tmp_path / "agent_state.sqlite3")
@@ -178,3 +228,90 @@ def test_client_stream_events_parsing(monkeypatch):
     assert events[0][1]["step"] == 1
     assert events[1][0] == "task.completed"
     assert events[1][1]["ok"] is True
+
+class _T03ReplayPageState:
+    def __init__(self, total: int):
+        self.total = total
+        self.calls = []
+        self.enabled = True
+
+    def subscribe(self, maxsize: int):
+        return http_server.queue.Queue(maxsize=maxsize)
+
+    def unsubscribe(self, subscriber) -> None:
+        pass
+
+    def event_page(self, *, stream_id, after_seq, limit, through_seq=None):
+        self.calls.append((stream_id, after_seq, limit))
+        high_water = self.total if through_seq is None else min(self.total, through_seq)
+        last = min(after_seq + limit, high_water)
+        events = [
+            {"seq": seq, "kind": "task.created", "stream_id": stream_id, "payload": {}}
+            for seq in range(after_seq + 1, last + 1)
+        ]
+        return {
+            "success": True,
+            "events": events,
+            "first_retained_seq": 1,
+            "last_seq": self.total,
+            "next_seq": last,
+            "has_more": last < high_water,
+            "cursor_reset": False,
+            "gap_ranges": [],
+        }
+
+
+def test_sse_future_cursor_resets_and_replays_real_agent_event_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    store.append(AgentEvent.create("task-1", "task.created", {"step": 1}, "k1"))
+    store.append(AgentEvent.create("task-1", "task.updated", {"step": 2}, "k2"))
+
+    class DummyApp:
+        agent_state = store
+        config = {}
+
+    monkeypatch.setattr(http_server, "APP", DummyApp())
+    handler = DummyHandler(DummyApp())
+    handler._stream_agent_events(stream_id="task-1", after_seq=99, timeout=0.05)
+
+    output = handler.wfile.getvalue().decode("utf-8")
+    assert "id: 0\nevent: replay_cursor_reset" in output
+    assert '"requested_after_seq":99' in output
+    assert '"last_seq":2' in output
+    assert '"resume_after_seq":0' in output
+    assert "id: 1\nevent: task.created" in output
+    assert "id: 2\nevent: task.updated" in output
+
+
+def test_sse_replay_has_more_caps_without_probe_and_false_stops(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _T03ReplayPageState(total=http_server.SSE_REPLAY_MAX_EVENTS + 1)
+
+    class DummyApp:
+        agent_state = state
+        config = {}
+
+    monkeypatch.setattr(http_server, "APP", DummyApp())
+    handler = DummyHandler(DummyApp())
+    handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.05)
+
+    output = handler.wfile.getvalue().decode("utf-8")
+    assert output.count("event: task.created") == http_server.SSE_REPLAY_MAX_EVENTS
+    assert f"id: {http_server.SSE_REPLAY_MAX_EVENTS}\nevent: replay_limit" in output
+    assert '"replay_limit":10000' in output
+    assert state.calls == [
+        ("task-1", after_seq, http_server.AGENT_EVENT_PAGE_MAX_LIMIT)
+        for after_seq in range(0, http_server.SSE_REPLAY_MAX_EVENTS, http_server.AGENT_EVENT_PAGE_MAX_LIMIT)
+    ]
+    assert ("task-1", http_server.SSE_REPLAY_MAX_EVENTS, 1) not in state.calls
+
+    short = _T03ReplayPageState(total=http_server.AGENT_EVENT_PAGE_MAX_LIMIT)
+
+    class ShortApp:
+        agent_state = short
+        config = {}
+
+    monkeypatch.setattr(http_server, "APP", ShortApp())
+    short_handler = DummyHandler(ShortApp())
+    short_handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.05)
+    assert len(short.calls) == 1
+    assert "event: replay_limit" not in short_handler.wfile.getvalue().decode("utf-8")

@@ -6,6 +6,7 @@ import json
 import threading
 from types import SimpleNamespace
 from typing import Any
+from urllib.error import URLError
 
 import pytest
 import sqlite3
@@ -28,6 +29,107 @@ def _broker(tmp_path) -> CommandBroker:
         artifacts=None,
         repo_state=None,
     )
+
+
+def test_repair_loop_replays_explicitly_safe_validation(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    command = "python -m pytest -q tests/test_example.py"
+    executions: list[str] = []
+    generated: list[str] = []
+
+    monkeypatch.setattr(
+        broker,
+        "classify",
+        lambda _command: {"class": "validation", "replay_safe": True},
+    )
+    monkeypatch.setattr(
+        broker,
+        "run",
+        lambda cmd, *_args, **_kwargs: executions.append(cmd) or {"success": True},
+    )
+
+    def generate(cmd: str, *_args: Any) -> dict[str, str]:
+        generated.append(cmd)
+        return {"repair_candidate.txt": "candidate"}
+
+    result = broker.repair_loop(
+        command,
+        tmp_path,
+        "tenant",
+        max_attempts=1,
+        fix_generator=generate,
+        initial_result={"success": False, "outcome_unknown": False},
+    )
+
+    assert result["success"] is True
+    assert result["repaired"] is True
+    assert executions == [command]
+    assert generated == [command]
+
+
+def test_repair_loop_does_not_replay_unclassified_validation(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    command = "python -m pytest -q tests/test_example.py"
+    executions: list[str] = []
+    generated: list[str] = []
+
+    monkeypatch.setattr(broker, "classify", lambda _command: {"class": "validation"})
+    monkeypatch.setattr(
+        broker,
+        "run",
+        lambda cmd, *_args, **_kwargs: executions.append(cmd) or {"success": True},
+    )
+    result = broker.repair_loop(
+        command,
+        tmp_path,
+        "tenant",
+        max_attempts=1,
+        fix_generator=lambda cmd, *_args: generated.append(cmd) or {"repair_candidate.txt": "candidate"},
+        initial_result={"success": False, "outcome_unknown": False},
+    )
+
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is True
+    assert result["attempts"] == 0
+    assert executions == []
+    assert generated == []
+
+
+def test_repair_loop_honors_explicit_replay_unsafe_classification(tmp_path, monkeypatch) -> None:
+    broker = _broker(tmp_path)
+    command = "powershell -NoProfile -Command Invoke-Pester"
+    executions: list[str] = []
+    generated: list[str] = []
+
+    monkeypatch.setattr(
+        broker,
+        "classify",
+        lambda _command: {"class": "validation", "replay_safe": False},
+    )
+    monkeypatch.setattr(
+        broker,
+        "run",
+        lambda cmd, *_args, **_kwargs: executions.append(cmd) or {"success": True},
+    )
+
+    def generate(cmd: str, *_args: Any) -> dict[str, str]:
+        generated.append(cmd)
+        return {"repair_candidate.txt": "candidate"}
+
+    result = broker.repair_loop(
+        command,
+        tmp_path,
+        "tenant",
+        max_attempts=1,
+        fix_generator=generate,
+        initial_result={"success": False, "outcome_unknown": False},
+    )
+
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is True
+    assert result["attempts"] == 0
+    assert executions == []
+    assert generated == []
 
 
 def test_repair_loop_does_not_replay_failed_mutating_command(tmp_path, monkeypatch) -> None:
@@ -94,6 +196,25 @@ def test_repair_loop_stops_after_timed_out_command_outcome_is_unknown(tmp_path, 
     assert result["outcome_unknown"] is True
     assert result["attempts"] == 0
     assert executions == [command]
+    assert generator_calls == []
+
+
+@pytest.mark.parametrize("status", [{"timed_out": True}, {"in_progress": True}])
+def test_repair_loop_skips_timed_out_or_running_command(tmp_path, monkeypatch, status) -> None:
+    broker = _broker(tmp_path)
+    generator_calls: list[str] = []
+    monkeypatch.setattr(broker, "run", lambda *_args, **_kwargs: pytest.fail("must not replay command"))
+    result = broker.repair_loop(
+        "python -m pytest -q",
+        str(tmp_path),
+        "tenant",
+        initial_result={"success": False, **status},
+        fix_generator=lambda command, *_args: generator_calls.append(command) or {"changed.py": "value=1"},
+    )
+
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is True
+    assert result["attempts"] == 0
     assert generator_calls == []
 
 
@@ -278,6 +399,35 @@ def test_corrupt_journal_rebuild_never_claims_mutations(tmp_path) -> None:
         restarted_process.begin("req-1", "tenant", "/api/command", identity="agent-a", payload={"command": "deploy"})
 
 
+def test_unsupported_legacy_journal_is_preserved_and_fails_closed(tmp_path) -> None:
+    path = tmp_path / "recovery.sqlite3"
+    with closing(sqlite3.connect(path)) as con:
+        con.execute("""
+            CREATE TABLE requests (
+                request_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, action TEXT NOT NULL,
+                state TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                detail TEXT NOT NULL DEFAULT '', status_code INTEGER NOT NULL DEFAULT 0,
+                response_json TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        con.execute(
+            "INSERT INTO requests(request_id,tenant,action,state,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            ("req-legacy", "tenant", "/api/command", "running", 1.0, 1.0),
+        )
+        con.commit()
+    original = path.read_bytes()
+
+    journal = RecoveryJournal(tmp_path)
+
+    assert journal._journal_unavailable is True
+    assert (tmp_path / "recovery.unavailable").is_file()
+    assert path.read_bytes() == original
+    with closing(sqlite3.connect(path)) as con:
+        assert con.execute("SELECT request_id,state FROM requests").fetchall() == [("req-legacy", "running")]
+    with pytest.raises(sqlite3.DatabaseError, match="refusing mutation dispatch"):
+        journal.begin("req-new", "tenant", "/api/command", identity="agent-a", payload={"command": "safe"})
+
+
 def test_response_is_journaled_before_a_client_disconnect(tmp_path, monkeypatch) -> None:
     journal = RecoveryJournal(tmp_path)
     payload = {"action": "submit", "work_id": "work-1"}
@@ -316,7 +466,8 @@ def test_response_is_journaled_before_a_client_disconnect(tmp_path, monkeypatch)
     )
     assert replay is not None
     assert replay["state"] == "done"
-    assert replay["response"] == {"success": True, "work_id": "work-1"}
+    assert replay["response"] == {"success": True, "work_id": "work-1", "request_id": "req-1"}
+    assert replay["response"]["request_id"] == "req-1"
 
 
 @pytest.mark.parametrize(
@@ -425,6 +576,32 @@ def test_client_allows_explicit_retry_with_the_same_request_id(tmp_path, monkeyp
     assert seen_request_ids == ["t07-checkpoint-1", "t07-checkpoint-1"]
 
 
+def test_client_safe_transport_retry_reuses_request_id(tmp_path, monkeypatch) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        encoding="utf-8",
+    )
+    client = HubClient(config_path=str(config), auto_start=False)
+    seen_request_ids: list[str] = []
+
+    def open_request(_method: str, _path: str, _body: bytes, headers: dict[str, str], _timeout: float) -> bytes:
+        seen_request_ids.append(headers["X-LocalAI-Request-ID"])
+        if len(seen_request_ids) == 1:
+            raise URLError("connection refused before request dispatch")
+        return b'{"success":true,"checkpoint_id":"cp-1"}'
+
+    monkeypatch.setattr(client, "_pooled_open", open_request)
+    result = client.post(
+        "/api/repo/complexity",
+        {"root": str(tmp_path)},
+        request_id="t07-pre-send-retry-1",
+    )
+
+    assert result == {"success": True, "checkpoint_id": "cp-1"}
+    assert seen_request_ids == ["t07-pre-send-retry-1", "t07-pre-send-retry-1"]
+
+
 @pytest.mark.parametrize("request_id", ["", "bad request", "bad\nid", "café"])
 def test_client_rejects_malformed_request_id_before_network(tmp_path, monkeypatch, request_id: str) -> None:
     config = tmp_path / "config.toml"
@@ -525,7 +702,9 @@ def test_maintenance_get_routes_are_read_only(tmp_path, monkeypatch) -> None:
         purge_stale_cache=lambda _days: pytest.fail("GET must not purge cache"),
         resolve_all_errors=lambda: pytest.fail("GET must not resolve errors"),
     )
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}, services=services))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"server": {"state_dir": str(tmp_path)}}, services=services
+    ))
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: None)
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     responses: list[tuple[int, dict[str, Any], dict[str, str]]] = []
@@ -542,6 +721,7 @@ def test_maintenance_get_routes_are_read_only(tmp_path, monkeypatch) -> None:
     ):
         handler = object.__new__(http_server.Handler)
         handler.path = path
+        handler.headers = {}
         http_server.Handler.do_GET(handler)
 
     assert [status for status, _data, _headers in responses] == [405, 405, 405]
@@ -649,6 +829,132 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
     assert changed == {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
 
 
+def test_http_retry_from_two_live_clients_dispatches_once(tmp_path, monkeypatch) -> None:
+    from http.client import HTTPConnection
+    import logging
+
+    journal = RecoveryJournal(tmp_path)
+    payload = {"action": "submit", "root": str(tmp_path), "task": "live HTTP idempotence"}
+    publish_started = threading.Event()
+    release_publish = threading.Event()
+    duplicate_waiting = threading.Event()
+    handler_started = threading.Event()
+    journal_begin_started = threading.Event()
+    journal_begin_finished = threading.Event()
+    journal_begin_result: dict[str, Any] = {}
+    submissions: list[dict[str, Any]] = []
+
+    def submit(_tenant: str, value: dict[str, Any]) -> dict[str, Any]:
+        submissions.append(dict(value))
+        publish_started.set()
+        if not release_publish.wait(10.0):
+            raise TimeoutError("test did not release first publication")
+        return {"success": True, "work_id": "live-work-one"}
+
+    telemetry = SimpleNamespace(record_live=lambda **_kwargs: None, record_http=lambda **_kwargs: None)
+    app = SimpleNamespace(
+        # Keep replay wait above the 5s synchronization barrier for loaded CI.
+        config={"resilience": {"singleflight_wait_timeout_seconds": 10.0}, "observability": {}},
+        recovery=journal,
+        telemetry=telemetry,
+        logger=logging.getLogger("test.http-idempotence"),
+        work_orchestrator=SimpleNamespace(enabled=True, submit=submit),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+
+    original_do_post = http_server.Handler.do_POST
+
+    def observed_do_post(self) -> None:
+        handler_started.set()
+        original_do_post(self)
+
+    monkeypatch.setattr(http_server.Handler, "do_POST", observed_do_post)
+
+    original_begin = journal.begin
+
+    def observed_begin(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        journal_begin_started.set()
+        try:
+            result = original_begin(*args, **kwargs)
+            journal_begin_result.update({"claimed": result.get("claimed"), "state": result.get("state")})
+            return result
+        except Exception as exc:
+            journal_begin_result["error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            journal_begin_finished.set()
+
+    monkeypatch.setattr(journal, "begin", observed_begin)
+
+    wait_for = journal.wait_for
+
+    def observed_wait(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        duplicate_waiting.set()
+        return wait_for(*args, **kwargs)
+
+    monkeypatch.setattr(journal, "wait_for", observed_wait)
+
+    server = http_server.ThreadingHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    host, port = server.server_address
+
+    def send_request() -> tuple[int, dict[str, Any]]:
+        connection = HTTPConnection(host, port, timeout=10.0)
+        try:
+            connection.request(
+                "POST",
+                "/api/work-orders",
+                body=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-LocalAI-Request-ID": "req-live-two-clients",
+                },
+            )
+            response = connection.getresponse()
+            return response.status, json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_client = pool.submit(send_request)
+            if not publish_started.wait(10.0):
+                first_result: Any = "pending"
+                if first_client.done():
+                    try:
+                        first_result = first_client.result()
+                    except Exception as exc:
+                        first_result = f"{type(exc).__name__}: {exc}"
+                raise AssertionError(
+                    "live HTTP request did not reach submit callback; "
+                    f"handler_started={handler_started.is_set()}, "
+                    f"journal_begin_started={journal_begin_started.is_set()}, "
+                    f"journal_begin_finished={journal_begin_finished.is_set()}, "
+                    f"journal_begin_result={journal_begin_result!r}, "
+                    f"first_client={first_result!r}"
+                )
+            second_client = pool.submit(send_request)
+            try:
+                assert duplicate_waiting.wait(5.0)
+            finally:
+                release_publish.set()
+            first_response = first_client.result(timeout=10.0)
+            second_response = second_client.result(timeout=10.0)
+    finally:
+        release_publish.set()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5.0)
+
+    expected = (200, {"success": True, "work_id": "live-work-one", "request_id": "req-live-two-clients"})
+    assert submissions == [payload]
+    assert first_response == second_response == expected
+    assert first_response[1]["request_id"] == "req-live-two-clients"
+    assert second_response[1]["request_id"] == "req-live-two-clients"
+    assert not server_thread.is_alive()
+
 def test_http_retry_after_response_loss_publishes_one_durable_event(tmp_path, monkeypatch) -> None:
     journal = RecoveryJournal(tmp_path / "recovery")
     state_store = AgentStateStore(tmp_path / "agent-state.sqlite3")
@@ -749,6 +1055,9 @@ def test_post_rejects_malformed_request_id_before_mutation_dispatch(tmp_path, mo
 
     assert submitted == []
     assert responses[0][0] == 400
+    assert responses[0][1]["terminal"] is True
+    assert responses[0][1]["retryable"] is False
+    assert "request_id" in responses[0][1]["error"]
     with closing(journal._connect()) as con:
         assert con.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 0
 
@@ -782,18 +1091,23 @@ def test_send_normalizes_http_error_before_journaling_and_serializing(monkeypatc
         "status_code": 503,
         "retryable": True,
         "terminal": False,
+        "request_id": "req-send-error",
     }
     assert finished[0]["success"] is False
     assert finished[0]["status_code"] == 503
     assert finished[0]["response"] == expected
+    assert finished[0]["response"]["request_id"] == "req-send-error"
     assert json.loads(handler.wfile.getvalue().decode("utf-8")) == expected
+    assert json.loads(handler.wfile.getvalue().decode("utf-8"))["request_id"] == "req-send-error"
 
 
 @pytest.mark.parametrize(
     ("path", "payload", "expected_call"),
     [
         ("/api/rag/index", {"root": "project"}, "rag-index"),
+        ("/api/rag/docset/index", {"name": "docs", "root": "project"}, "rag-docset-index"),
         ("/api/rag/ingest_document", {"workspace": "default", "content": "doc"}, "rag-ingest"),
+        ("/api/rag/ingest_diagram", {"workspace": "default", "image_path": "diagram.png"}, "rag-diagram"),
         ("/api/work-orders", {"action": "submit", "work_id": "work-1"}, "work-submit"),
         ("/api/agent-state/tasks", {"action": "checkpoint", "task_id": "task-1", "phase": "testing", "next_action": "verify"}, "task-checkpoint"),
         ("/api/command", {"command": "pytest"}, "command"),
@@ -818,7 +1132,9 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
         recovery=journal,
         rag=SimpleNamespace(
             index=lambda *_args, **_kwargs: failed_publish("rag-index"),
+            docset_index=lambda *_args, **_kwargs: failed_publish("rag-docset-index"),
             ingest_document=lambda *_args, **_kwargs: failed_publish("rag-ingest"),
+            ingest_diagram=lambda *_args, **_kwargs: failed_publish("rag-diagram"),
         ),
         work_orchestrator=SimpleNamespace(
             enabled=True,
@@ -892,6 +1208,85 @@ def test_bundle_import_retry_uses_content_and_target_fingerprint(tmp_path, monke
     assert imports == [(bundle, "project")]
     assert len(responses) == 2
     assert responses[1] == responses[0]
+
+
+def test_bundle_import_failure_finishes_journal_and_is_not_replayed(tmp_path, monkeypatch) -> None:
+    journal = RecoveryJournal(tmp_path)
+    calls: list[tuple[bytes, str | None]] = []
+
+    def import_bundle(raw: bytes, target: str | None) -> dict[str, Any]:
+        calls.append((raw, target))
+        raise RuntimeError("private import detail")
+
+    app = SimpleNamespace(
+        config={"bundles": {"max_bundle_bytes": 1024}},
+        recovery=journal,
+        import_bundle=import_bundle,
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-bundle-failure"))
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
+    monkeypatch.setattr(http_server.Handler, "_read_body", lambda self, *, limit: b"bundle")
+    responses: list[tuple[int, dict[str, Any]]] = []
+
+    def respond(self, status: int, data: dict[str, Any]) -> None:
+        if not getattr(self, "_journal_finished", False):
+            journal.finish(self._journal_request_id, http_server._journal_outcome_success(status, data), status_code=status, response=data)
+            self._journal_finished = True
+        responses.append((status, data))
+
+    monkeypatch.setattr(http_server.Handler, "_send", respond)
+    for _ in range(2):
+        handler = object.__new__(http_server.Handler)
+        handler.path = "/api/bundle/import?target_root=project"
+        handler.headers = {"Content-Type": "application/zip"}
+        http_server.Handler.do_POST(handler)
+
+    assert len(calls) == 1
+    assert [status for status, _data in responses] == [500, 500]
+    assert "private import detail" not in str(responses)
+
+
+def test_debug_trace_failure_after_claim_does_not_block_post_dispatch(monkeypatch, tmp_path) -> None:
+    journal = RecoveryJournal(tmp_path)
+    submitted: list[dict[str, Any]] = []
+
+    class BrokenTraceStore:
+        def update(self, *_args: Any, **_kwargs: Any) -> None:
+            raise OSError("trace store unavailable")
+
+    app = SimpleNamespace(
+        config={},
+        recovery=journal,
+        debug_traces=BrokenTraceStore(),
+        work_orchestrator=SimpleNamespace(
+            enabled=True,
+            submit=lambda _tenant, payload: submitted.append(dict(payload)) or {"success": True},
+        ),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-trace-failure") or setattr(self, "_debug_trace_id", "trace-1"))
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"action": "submit", "work_id": "work-1"})
+    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
+    responses: list[tuple[int, dict[str, Any]]] = []
+    monkeypatch.setattr(http_server.Handler, "_send", lambda self, status, data: responses.append((status, data)))
+    handler = object.__new__(http_server.Handler)
+    handler.path = "/api/work-orders"
+    handler.headers = {"Content-Type": "application/json"}
+
+    http_server.Handler.do_POST(handler)
+
+    assert submitted == [{"action": "submit", "work_id": "work-1"}]
+    assert responses[0][0] == 200
+    assert journal.lookup(
+        "req-trace-failure", "tenant", "/api/work-orders", identity="agent-a",
+        payload_fingerprint=journal.fingerprint_payload({"action": "submit", "work_id": "work-1"}),
+    )["state"] == "running"
 
 
 def test_tool_accounting_retry_does_not_duplicate_event_batch(tmp_path, monkeypatch) -> None:
@@ -983,3 +1378,368 @@ def test_confirmed_restart_request_is_not_replayed(tmp_path, monkeypatch) -> Non
         identity="agent-a",
         payload_fingerprint=journal.fingerprint_payload({"action": "restart_hub"}),
     )["state"] == "running"
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "expected_call"),
+    [
+        ("/api/models/manage", {"action": "pull", "model": "test-model"}, "model-pull"),
+        (
+            "/api/agent-state/learning",
+            {"action": "observe", "candidate_id": "candidate-1", "observation": {"latency_ms": 1}},
+            "learning-observe",
+        ),
+        ("/api/agent-state/cleanup", {"retention_days": 7}, "agent-state-cleanup"),
+        (
+            "/api/agent-state/tasks",
+            {"action": "cleanup_worktree", "task_id": "task-1"},
+            "worktree-cleanup",
+        ),
+    ],
+)
+def test_http_request_journal_replays_action_mutations_once(
+    tmp_path, monkeypatch, path: str, payload: dict[str, Any], expected_call: str
+) -> None:
+    journal = RecoveryJournal(tmp_path)
+    calls: list[str] = []
+    responses: list[tuple[int, dict[str, Any]]] = []
+
+    def effect(name: str, result: Any = None) -> Any:
+        calls.append(name)
+        return result if result is not None else {"success": True, "effect": name}
+
+    app = SimpleNamespace(
+        config={"agent_state": {"retention_days": 30}},
+        recovery=journal,
+        rag=SimpleNamespace(),
+        agent_state=SimpleNamespace(enabled=True, cleanup=lambda **_kwargs: effect("agent-state-cleanup")),
+        agent_tasks=SimpleNamespace(
+            enabled=True,
+            state_store=SimpleNamespace(enabled=True),
+            cleanup_worktree=lambda *_args, **_kwargs: effect("worktree-cleanup"),
+        ),
+        agent_learning=SimpleNamespace(
+            state_store=SimpleNamespace(enabled=True),
+            observe=lambda *_args, **_kwargs: calls.append("learning-observe") or None,
+        ),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-action-family"))
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
+    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
+    monkeypatch.setattr(
+        http_server.Handler,
+        "_handle_models_action",
+        lambda _self, action, _model: effect(f"model-{action}"),
+    )
+
+    def respond(self, status: int, data: dict[str, Any]) -> None:
+        if not getattr(self, "_journal_finished", False):
+            journal.finish(
+                "req-action-family",
+                http_server._journal_outcome_success(status, data),
+                status_code=status,
+                response=data,
+            )
+            self._journal_finished = True
+        responses.append((status, data))
+
+    monkeypatch.setattr(http_server.Handler, "_send", respond)
+
+    for _ in range(2):
+        handler = object.__new__(http_server.Handler)
+        handler.path = path
+        handler.headers = {"Content-Type": "application/json"}
+        http_server.Handler.do_POST(handler)
+
+    assert calls == [expected_call]
+    assert len(responses) == 2
+    assert responses[1] == responses[0]
+
+
+def test_journal_outcome_unknown_overrides_terminal() -> None:
+    assert http_server._journal_outcome_success(409, {"terminal": True, "outcome_unknown": True}) is False
+
+
+def test_live_client_does_not_journal_typed_unknown_command_as_success(tmp_path, monkeypatch) -> None:
+    from http.client import HTTPConnection
+    import logging
+
+    journal = RecoveryJournal(tmp_path / "recovery")
+    payload = {"command": "publish", "root": str(tmp_path)}
+    uncertain = {
+        "success": False,
+        "outcome_unknown": True,
+        "fail_closed": True,
+        "retryable": False,
+        "terminal": True,
+        "cache_hit": False,
+        "coalesced": False,
+        "cache_invalidation_failed": True,
+        "cache_invalidation_errors": ["cache delete reported failure"],
+    }
+    dispatches: list[dict[str, Any]] = []
+
+    def command(value: dict[str, Any], _tenant: str) -> dict[str, Any]:
+        dispatches.append(dict(value))
+        return dict(uncertain)
+
+    telemetry = SimpleNamespace(record_live=lambda **_kwargs: None, record_http=lambda **_kwargs: None)
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(
+            config={"observability": {}},
+            recovery=journal,
+            telemetry=telemetry,
+            logger=logging.getLogger("test.typed-unknown-command"),
+            services=SimpleNamespace(command=command),
+        ),
+    )
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+
+    server = http_server.ThreadingHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    host, port = server.server_address
+    config = tmp_path / "client.toml"
+    config.write_text(
+        "[server]\nbind='127.0.0.1'\nport=" + str(port) + "\nstate_dir='" + (tmp_path / "client-state").as_posix() + "'\n",
+        encoding="utf-8",
+    )
+    client = HubClient(config_path=str(config), auto_start=False, tenant="tenant")
+    client.agent = "agent-a"
+
+    try:
+        first = client.post("/api/command", payload, timeout=5.0, request_id="t07-typed-unknown")
+        retry = client.post("/api/command", payload, timeout=5.0, request_id="t07-typed-unknown")
+        changed = client.post(
+            "/api/command",
+            {**payload, "command": "different publish"},
+            timeout=5.0,
+            request_id="t07-typed-unknown",
+        )
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5.0)
+
+    fingerprint = journal.fingerprint_payload(payload)
+    stored = journal.lookup(
+        "t07-typed-unknown",
+        "tenant",
+        "/api/command",
+        identity="agent-a",
+        payload_fingerprint=fingerprint,
+    )
+    assert first["success"] is False
+    assert first["outcome_unknown"] is True
+    assert first["request_id"] == "t07-typed-unknown"
+    assert "verification_receipt" not in first
+    assert retry == first
+    assert changed.get("status_code") == 409
+    assert dispatches == [payload]
+    assert first.get("status_code") == 409 and stored["state"] == "failed", (
+        f"typed unknown was returned as HTTP {first.get('status_code', 200)} "
+        f"and journaled as {stored['state']} (status {stored['status_code']})"
+    )
+    assert stored["response"]["outcome_unknown"] is True
+
+def test_http_retry_after_restart_is_unknown_and_never_redispatches(tmp_path, monkeypatch) -> None:
+    import logging
+
+    request_id = "t07-restart-outcome-unknown"
+    payload = {
+        "action": "submit",
+        "root": str(tmp_path),
+        "task": "restart idempotency contract",
+        "work_id": "work-before-restart",
+    }
+    first_process = RecoveryJournal(tmp_path / "recovery")
+    claim = first_process.begin(
+        request_id,
+        "tenant",
+        "/api/work-orders",
+        identity="agent-a",
+        payload=payload,
+    )
+    assert claim["claimed"] is True
+
+    restarted = RecoveryJournal(tmp_path / "recovery")
+    dispatches: list[dict[str, Any]] = []
+    telemetry = SimpleNamespace(record_live=lambda **_kwargs: None, record_http=lambda **_kwargs: None)
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(
+            config={"observability": {}},
+            recovery=restarted,
+            telemetry=telemetry,
+            logger=logging.getLogger("test.restart-outcome-unknown"),
+            work_orchestrator=SimpleNamespace(
+                enabled=True,
+                submit=lambda _tenant, value: dispatches.append(dict(value)) or {"success": True},
+            ),
+        ),
+    )
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+
+    server = http_server.ThreadingHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    host, port = server.server_address
+    config = tmp_path / "client.toml"
+    config.write_text(
+        "[server]\nbind='127.0.0.1'\nport=" + str(port) + "\nstate_dir='" + (tmp_path / "client-state").as_posix() + "'\n",
+        encoding="utf-8",
+    )
+    client = HubClient(config_path=str(config), auto_start=False, tenant="tenant")
+    client.agent = "agent-a"
+
+    try:
+        first = client.post("/api/work-orders", payload, timeout=5.0, request_id=request_id)
+        repeated = client.post("/api/work-orders", payload, timeout=5.0, request_id=request_id)
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5.0)
+
+    assert first["success"] is False
+    assert first.get("outcome_unknown") is True, first
+    assert first["retryable"] is False
+    assert first["request_id"] == request_id
+    assert repeated == first
+    assert dispatches == []
+
+def test_wait_observation_failure_is_unknown_without_rewriting_committed_outcome(tmp_path, monkeypatch) -> None:
+    journal = RecoveryJournal(tmp_path)
+    request_id = "req-wait-observation-failure"
+    payload = {"action": "submit", "root": str(tmp_path), "task": "observation failure contract"}
+    original = journal.begin(request_id, "tenant", "/api/work-orders", identity="agent-a", payload=payload)
+    assert original["claimed"] is True
+    committed = {"success": True, "work_id": "committed-before-observation-error"}
+
+    def finish_then_fail(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        journal.finish(request_id, True, status_code=200, response=committed)
+        raise OSError("journal observation failed after durable completion")
+
+    monkeypatch.setattr(journal, "wait_for", finish_then_fail)
+    app = SimpleNamespace(config={"resilience": {"singleflight_wait_timeout_seconds": 0.05}}, recovery=journal)
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", request_id))
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
+    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
+    dispatched: list[dict[str, Any]] = []
+    app.work_orchestrator = SimpleNamespace(
+        enabled=True,
+        submit=lambda _tenant, value: dispatched.append(dict(value)) or {"success": True},
+    )
+    responses: list[tuple[int, dict[str, Any]]] = []
+    monkeypatch.setattr(http_server.Handler, "_send", lambda self, status, data: responses.append((status, data)))
+
+    handler = object.__new__(http_server.Handler)
+    handler.path = "/api/work-orders"
+    handler.headers = {"Content-Type": "application/json", "X-LocalAI-Request-ID": request_id}
+    http_server.Handler.do_POST(handler)
+
+    stored = journal.lookup(
+        request_id,
+        "tenant",
+        "/api/work-orders",
+        identity="agent-a",
+        payload_fingerprint=journal.fingerprint_payload(payload),
+    )
+    assert dispatched == []
+    assert responses[0][0] == 409
+    assert responses[0][1]["outcome_unknown"] is True
+    assert responses[0][1]["retryable"] is False
+    assert responses[0][1]["request_id"] == request_id
+    assert stored["state"] == "done"
+    assert stored["status_code"] == 200
+    assert stored["response"] == committed
+
+@pytest.mark.parametrize(
+    ("headers", "expected_request_id"),
+    [({"X-LocalAI-Request-ID": "caller-request-1"}, "caller-request-1"), ({}, None)],
+)
+def test_async_delivery_uses_only_caller_request_id(monkeypatch, headers, expected_request_id) -> None:
+    submitted: list[dict[str, Any]] = []
+    app = SimpleNamespace(
+        config={},
+        telemetry=SimpleNamespace(http_latency_estimate=lambda _path: {"samples": 5}),
+        async_jobs=SimpleNamespace(
+            submit=lambda _tenant, _action, payload: submitted.append(dict(payload)) or {"job_id": "job-1"}
+        ),
+        debug_traces=None,
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server, "decide_delivery", lambda *_args, **_kwargs: {"mode": "async"})
+    handler = object.__new__(http_server.Handler)
+    handler.headers = headers
+    handler._trace_request_id = "server-generated-trace-id"
+
+    status, _result = http_server.Handler._async_delivery(
+        handler, "/api/reason", {"delivery": "async", "task": "bounded task"}, "tenant-a"
+    )
+
+    assert status == 200
+    assert len(submitted) == 1
+    assert submitted[0].get("request_id") == expected_request_id
+
+def test_direct_async_submit_carries_caller_request_id(tmp_path, monkeypatch) -> None:
+    from local_ai_hub.resilience import RecoveryJournal
+
+    submitted: list[dict[str, Any]] = []
+    app = SimpleNamespace(
+        config={},
+        recovery=RecoveryJournal(tmp_path),
+        async_jobs=SimpleNamespace(
+            submit=lambda _tenant, _action, payload: submitted.append(dict(payload)) or {"success": True}
+        ),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(
+        http_server.Handler,
+        "_begin_trace",
+        lambda self, _path: setattr(self, "_trace_request_id", "caller-request-2"),
+    )
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda _self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda _self: "agent-a")
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda _self: "tenant-a")
+    monkeypatch.setattr(
+        http_server.Handler,
+        "_read_json",
+        lambda _self: {"action": "submit", "job_action": "reason", "task": "bounded task"},
+    )
+    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda _self, _path, _payload: None)
+    responses: list[tuple[int, dict[str, Any]]] = []
+
+    def respond(self, status: int, body: dict[str, Any]) -> None:
+        if not getattr(self, "_journal_finished", False):
+            app.recovery.finish(self._journal_request_id, status < 400, status_code=status, response=body)
+            self._journal_finished = True
+        responses.append((status, body))
+
+    monkeypatch.setattr(http_server.Handler, "_send", respond)
+
+    def request() -> None:
+        handler = object.__new__(http_server.Handler)
+        handler.path = "/api/async-jobs"
+        handler.headers = {"Content-Type": "application/json", "X-LocalAI-Request-ID": "caller-request-2"}
+        http_server.Handler.do_POST(handler)
+
+    request()
+    request()
+
+    assert [status for status, _body in responses] == [200, 200]
+    assert responses[1][1] == responses[0][1]
+    assert len(submitted) == 1
+    assert submitted[0]["request_id"] == "caller-request-2"

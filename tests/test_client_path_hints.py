@@ -15,40 +15,32 @@ def _client(tmp_path, port=39123):
     return HubClient(config_path=str(config), auto_start=False)
 
 
-def test_post_forwards_path_hints_only_to_search(tmp_path, monkeypatch):
+def test_post_forwards_path_hints_to_search_and_command(tmp_path, monkeypatch):
     client = _client(tmp_path)
     calls = []
 
-    def capture_request(path, payload, **_kwargs):
-        calls.append((path, payload))
+    def capture_request(path, payload, **kwargs):
+        calls.append((path, payload, kwargs))
         return {"success": True}
 
     monkeypatch.setattr(client, "request", capture_request)
     hints = ({"path": "src/app.py", "purpose": "implementation", "scope": "repository"},)
 
-    client.post("/api/search", {"query": "needle"}, path_hints=hints)
-    client.post("/api/command", {"command": "pytest"}, path_hints=hints)
+    client.post("/api/search", {"query": "needle"}, path_hints=hints, request_id="search-1")
+    client.post("/api/command", {"command": "pytest"}, path_hints=hints, request_id="command-1")
 
     assert calls == [
         (
             "/api/search",
             {"query": "needle", "path_hints": list(hints)},
+            {"timeout": 360.0, "replay_safe": False, "request_id": "search-1"},
         ),
         (
             "/api/command",
-            {"command": "pytest"},
+            {"command": "pytest", "path_hints": list(hints)},
+            {"timeout": 360.0, "replay_safe": False, "request_id": "command-1"},
         ),
     ]
-
-
-def test_post_omits_empty_path_hints(tmp_path, monkeypatch):
-    client = _client(tmp_path)
-    calls = []
-    monkeypatch.setattr(client, "request", lambda path, payload, **kwargs: calls.append((path, payload)) or {"success": True})
-
-    client.post("/api/search", {"query": "needle"}, path_hints=[])
-
-    assert calls == [("/api/search", {"query": "needle"})]
 
 
 def test_explicit_path_takes_precedence_and_does_not_mutate_payload(tmp_path, monkeypatch):
@@ -68,20 +60,17 @@ def test_explicit_path_takes_precedence_and_does_not_mutate_payload(tmp_path, mo
     assert payload == {"query": "needle", "path": "src/explicit.py"}
 
 
-def test_post_does_not_forward_hints_to_unapproved_routes_or_create_paths_alias(tmp_path, monkeypatch):
+def test_post_does_not_forward_hints_to_other_routes_or_create_paths_alias(tmp_path, monkeypatch):
     client = _client(tmp_path)
     calls = []
     monkeypatch.setattr(client, "request", lambda path, payload, **kwargs: calls.append((path, payload)) or {"success": True})
     payload = {"paths": ["src/explicit.py"], "query": "needle"}
 
-    command_payload = {"command": "pytest"}
-    client.post("/api/command", command_payload, path_hints=({"path": "src/hinted.py", "purpose": "implementation", "scope": "repository"},))
     client.post("/api/context/pack", payload, path_hints=({"path": "src/hinted.py", "purpose": "implementation", "scope": "repository"},))
 
-    assert calls == [("/api/command", command_payload), ("/api/context/pack", payload)]
+    assert calls == [("/api/context/pack", payload)]
     assert "path_hints" not in calls[0][1]
-    assert "path_hints" not in calls[1][1]
-    assert calls[1][1]["paths"] == ["src/explicit.py"]
+    assert calls[0][1]["paths"] == ["src/explicit.py"]
 
 
 def test_post_transmits_path_hints_over_http_and_returns_search_result(tmp_path):
@@ -226,7 +215,7 @@ def test_post_caps_path_hints_and_drops_unlisted_fields(tmp_path, monkeypatch):
         for index in range(65)
     )
 
-    client.post("/api/search", {"query": "needle"}, path_hints=hints)
+    client.post("/api/command", {"command": "pytest"}, path_hints=hints)
 
     records = calls[0]["path_hints"]
     assert len(records) == 64

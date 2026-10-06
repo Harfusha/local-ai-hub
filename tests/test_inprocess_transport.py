@@ -31,7 +31,7 @@ class _Recovery:
     def lookup(self, request_id, tenant, action):
         return None
 
-    def begin(self, request_id, tenant, action, **kwargs):
+    def begin(self, request_id, tenant, action, **_identity):
         self.requests.append((request_id, tenant, action))
         return {"claimed": True}
 
@@ -114,7 +114,7 @@ def inprocess_client(tmp_path, monkeypatch):
         "rate_limit_window_seconds = 60.0\n",
         encoding="utf-8",
     )
-    set_operational_mode(mode="active", state_dir=state_dir)
+    set_operational_mode(state_dir, "active")
     app = _App(state_dir)
     transport = InProcessTransport(config_path=str(config_path))
     monkeypatch.setattr(transport, "_create_app", lambda: app)
@@ -216,7 +216,11 @@ def test_inprocess_transport_preserves_request_identity_and_cancel_route(inproce
         operational_action="work_orders",
     )
 
-    assert result == {"success": True, "cancelled": "work-17"}
+    assert result == {
+        "success": True,
+        "cancelled": "work-17",
+        "request_id": "stable-cancel-17",
+    }
     assert app.cancel_calls == [("tenant-a", "work-17")]
     assert app.recovery.requests == [
         ("stable-cancel-17", "tenant-a", "/api/work-orders")
@@ -245,7 +249,7 @@ def test_inprocess_transport_preserves_auth_and_payload_validation(inprocess_cli
     client, _transport, _app, _state_dir = inprocess_client
     from local_ai_hub.operational_mode import set_operational_mode
 
-    set_operational_mode(mode="gaming", state_dir=_state_dir)
+    set_operational_mode(_state_dir, "gaming")
     client.api_token = "wrong-token"
 
     unauthorized = client.get(
@@ -255,7 +259,7 @@ def test_inprocess_transport_preserves_auth_and_payload_validation(inprocess_cli
     assert unauthorized["status_code"] == 401
     assert unauthorized["success"] is False
 
-    set_operational_mode(mode="active", state_dir=_state_dir)
+    set_operational_mode(_state_dir, "active")
     client.api_token = "test-secret"
     invalid_action = client.request(
         "/api/work-orders",
@@ -271,7 +275,7 @@ def test_inprocess_transport_fails_closed_in_restricted_operational_mode(inproce
     client, _transport, app, state_dir = inprocess_client
     from local_ai_hub.operational_mode import set_operational_mode
 
-    set_operational_mode(mode="gaming", state_dir=state_dir)
+    set_operational_mode(state_dir, "gaming")
 
     result = client.request(
         "/api/delegate",
@@ -290,7 +294,7 @@ def test_inprocess_transport_keeps_deterministic_read_allowed_in_restricted_mode
     client, _transport, app, state_dir = inprocess_client
     from local_ai_hub.operational_mode import set_operational_mode
 
-    set_operational_mode(mode="gaming", state_dir=state_dir)
+    set_operational_mode(state_dir, "gaming")
     result = client.get(
         "/api/repo/topology?root=fixture-root",
         operational_action="repo_topology",
