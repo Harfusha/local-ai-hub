@@ -3,6 +3,8 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import copy
+import hashlib
+import hmac
 import errno
 import http.client
 import inspect
@@ -16,7 +18,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from .process_utils import find_listening_pid, pid_alive, process_identity
 from typing import Any, Mapping, Protocol, Sequence
@@ -179,7 +181,8 @@ class HubClient:
         self._http_host = str(endpoint.hostname or "127.0.0.1")
         self._http_port = int(endpoint.port or 80)
         self.api_token = str(self.config.get("security", {}).get("api_token", ""))
-        self.tenant = tenant or os.environ.get("LOCAL_AI_TENANT") or f"agent-{os.getpid()}"
+        configured_tenant = tenant if tenant is not None else os.environ.get("LOCAL_AI_TENANT")
+        self.tenant = str(configured_tenant).strip() if configured_tenant is not None and str(configured_tenant).strip() else ""
         self.agent = os.environ.get("LOCAL_AI_AGENT_PROFILE") or os.environ.get("LOCAL_AI_AGENT") or "generic"
         self.auto_start = bool(auto_start)
         self._inprocess_transport = inprocess_transport
@@ -216,7 +219,6 @@ class HubClient:
         for conn in connections:
             try: conn.close()
             except Exception: pass
-
         if self._inprocess_transport is not None:
             try:
                 self._inprocess_transport.close()
@@ -550,19 +552,26 @@ class HubClient:
             return False
         if getattr(operational_mode, "mode", None) != "active" or getattr(operational_mode, "degraded", True):
             return False
+        if (state_dir / "service.managed").exists():
+            return False
         config_path = self.config["_config_path"]
         state_dir.mkdir(parents=True, exist_ok=True)
         if bool(self.config.get("headless", {}).get("respect_disabled_marker", True)) and (state_dir / "service.disabled").exists():
             return False
-        # Managed mode has one supervisor responsible for startup/recovery. During
-        # its cold-start interval MCP clients must not bypass it with direct pythonw
-        # spawns, otherwise every client can create a competing hub tree.
-        try:
-            supervisor_pid = int((state_dir / "supervisor.pid").read_text(encoding="utf-8").strip() or 0)
-            if pid_alive(supervisor_pid):
-                return wait_until_ready()
-        except (OSError, ValueError):
-            pass
+        def live_supervisor() -> bool:
+            for supervisor_marker in (state_dir / "supervisor.pid", state_dir / "supervisor.lock"):
+                try:
+                    supervisor_pid = int(supervisor_marker.read_text(encoding="utf-8").strip() or 0)
+                except (OSError, ValueError):
+                    continue
+                if pid_alive(supervisor_pid):
+                    return True
+            return False
+
+        # A live supervisor owns startup, even during its short interval before
+        # publishing supervisor.pid. Check both supervisor markers before autostart.
+        if live_supervisor():
+            return wait_until_ready()
         # A listener can be alive before its health endpoint is ready (cold model/
         # index startup). Starting another hub in that gap creates duplicate pythonw
         # trees and competing supervisors; let the caller retry its request instead.
@@ -608,6 +617,12 @@ class HubClient:
             if self._online(remaining()):
                 return True
             if remaining() <= 0:
+                return False
+            if bool(self.config.get("headless", {}).get("respect_disabled_marker", True)) and (state_dir / "service.disabled").exists():
+                return False
+            if live_supervisor() or find_listening_pid(port):
+                return wait_until_ready()
+            if (state_dir / "service.managed").exists():
                 return False
             env = os.environ.copy()
             env["LOCAL_AI_CONFIG"] = config_path
@@ -721,6 +736,179 @@ class HubClient:
             and all(0x21 <= ord(char) <= 0x7E for char in request_id)
         )
 
+    @staticmethod
+    def _valid_tenant(tenant: Any) -> bool:
+        return (
+            isinstance(tenant, str)
+            and 1 <= len(tenant) <= 128
+            and tenant.isascii()
+            and all(0x21 <= ord(char) <= 0x7E for char in tenant)
+        )
+
+    @staticmethod
+    def _identity_preflight(error: str, error_code: str) -> dict[str, Any]:
+        return {
+            "success": False,
+            "error": error,
+            "error_code": error_code,
+            "terminal": True,
+            "retryable": False,
+            "preflight": True,
+        }
+
+    def _principal_tenant(self) -> str:
+        security = self.config.get("security", {})
+        configured = str(security.get("api_token_tenant", "") or "").strip()
+        if configured:
+            return configured
+        principal = str(security.get("api_token_principal", "") or "").strip()
+        return principal or "api-token-default"
+
+    @staticmethod
+    def _strict_root_path(raw_root: Any) -> Path:
+        if not isinstance(raw_root, str) or not raw_root.strip() or len(raw_root.strip()) > 4096:
+            raise ValueError("root is required")
+        candidate = Path(raw_root.strip()).expanduser()
+        if not candidate.is_absolute():
+            raise ValueError("root must be an absolute directory")
+        if any(path.is_symlink() for path in (candidate, *candidate.parents)):
+            raise ValueError("symlink roots are not allowed")
+        resolved = candidate.resolve(strict=True)
+        if not resolved.is_dir():
+            raise ValueError("root must resolve to an existing directory")
+        return resolved
+
+    def _root_scoped_tenant(self, roots: list[Any]) -> tuple[str | None, dict[str, Any] | None]:
+        security = self.config.get("security", {})
+        try:
+            if not roots:
+                raise ValueError("root is required")
+            canonical_roots = [self._strict_root_path(root) for root in roots]
+            canonical_root = canonical_roots[0]
+            if any(root != canonical_root for root in canonical_roots[1:]):
+                raise ValueError("root identity mismatch")
+            allowed_roots = security.get("allowed_roots", [])
+            if not isinstance(allowed_roots, list) or not allowed_roots:
+                raise ValueError("allowed roots are unavailable")
+            allowed = False
+            for raw_allowed in allowed_roots:
+                try:
+                    canonical_allowed = self._strict_root_path(raw_allowed)
+                    canonical_root.relative_to(canonical_allowed)
+                    allowed = True
+                    break
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    continue
+            if not allowed:
+                raise ValueError("root is not allowed")
+            key = str(security.get("tenant_derivation_key") or security.get("api_token") or "")
+            if not key:
+                raise ValueError("tenant derivation key is unavailable")
+            principal = self._principal_tenant()
+            message = f"local-ai-root-tenant\0{principal}\0{canonical_root}".encode("utf-8")
+            digest = hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
+            return f"root-{digest}", None
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return None, self._identity_preflight(
+                "root is missing, invalid, or not allowed",
+                "root_not_allowed",
+            )
+
+    def _request_tenant(
+        self,
+        path: str,
+        payload: dict[str, Any] | None,
+        tenant_hint: str | None,
+        *,
+        query: dict[str, list[str]] | None = None,
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        if tenant_hint is not None and not self._valid_tenant(tenant_hint):
+            return None, self._identity_preflight(
+                "tenant must be 1-128 visible ASCII characters without whitespace",
+                "tenant_binding_mismatch",
+            )
+
+        route = urlsplit(path).path.lower()
+        task_route = route == "/api/agent-state/tasks"
+        memory_route = route == "/api/agent-state/memory"
+        if not task_route and not memory_route:
+            if tenant_hint is not None and tenant_hint != self.tenant:
+                return None, self._identity_preflight(
+                    "tenant override cannot select request scope",
+                    "tenant_binding_mismatch",
+                )
+            return self.tenant or None, None
+
+        request_payload = payload if isinstance(payload, dict) else {}
+        query_values = query or {}
+        tenant_hints: list[Any] = []
+        if tenant_hint is not None:
+            tenant_hints.append(tenant_hint)
+
+        if query is not None:
+            raw_roots = list(query_values.get("root", []))
+            roots = raw_roots if task_route else (
+                [raw_roots[0], *[root for root in raw_roots[1:] if root not in (None, "")]]
+                if raw_roots and raw_roots[0] not in (None, "")
+                else []
+            )
+            tenant_hints.extend(query_values.get("tenant", []))
+            scope = (query_values.get("scope") or [""])[0]
+            has_task_identity = any(
+                str((query_values.get(name) or [""])[0] or "").strip()
+                for name in ("task_id", "repository_id", "clone_id", "worktree_id", "branch")
+            )
+        elif task_route:
+            context = request_payload.get("context") if isinstance(request_payload.get("context"), dict) else {}
+            roots = [request_payload.get("root")]
+            if context.get("repository_id"):
+                roots.append(context["repository_id"])
+            if request_payload.get("repo_root"):
+                roots.append(request_payload["repo_root"])
+            tenant_hints.append(request_payload.get("tenant"))
+            scope = ""
+            has_task_identity = True
+        else:
+            record = request_payload.get("record") if isinstance(request_payload.get("record"), dict) else {}
+            payload_provenance = request_payload.get("provenance") if isinstance(request_payload.get("provenance"), dict) else {}
+            record_provenance = record.get("provenance") if isinstance(record.get("provenance"), dict) else {}
+            containers = (request_payload, record, payload_provenance, record_provenance)
+            roots = [item.get("root") for item in containers if item.get("root") not in (None, "")]
+            tenant_hints.extend(item.get("tenant") for item in containers if item.get("tenant") not in (None, ""))
+            scope = request_payload.get("scope") or record.get("scope") or ""
+            has_task_identity = any(
+                item.get(key)
+                for item in (request_payload, record)
+                for key in ("task_id", "repository_id", "clone_id", "worktree_id", "branch")
+            )
+
+        principal = self._principal_tenant()
+        effective_tenant = principal
+        if task_route:
+            effective_tenant, error = self._root_scoped_tenant(roots)
+            if error is not None:
+                return None, error
+        elif roots:
+            effective_tenant, error = self._root_scoped_tenant(roots)
+            if error is not None:
+                return None, error
+        else:
+            scoped_memory_scopes = {
+                "code", "task", "tasks", "repo", "repository", "project", "workspace",
+                "worktree", "worktrees", "clone", "branch", "branches",
+            }
+            if str(scope or "").strip().lower() in scoped_memory_scopes or has_task_identity:
+                return None, self._identity_preflight(
+                    "root is required for repository or task memory",
+                    "root_required",
+                )
+
+        for hint in tenant_hints:
+            if hint is not None and str(hint).strip() != effective_tenant:
+                error = "tenant does not match authenticated root scope" if roots or task_route else "tenant does not match authenticated principal"
+                return None, self._identity_preflight(error, "tenant_binding_mismatch")
+        return effective_tenant, None
+
     def request(
         self,
         path: str,
@@ -731,6 +919,7 @@ class HubClient:
         request_id: str | None = None,
         operational_action: str | None = None,
         requires_heavy_work: bool = True,
+        tenant: str | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         explicit_request_id = request_id is not None
@@ -744,6 +933,9 @@ class HubClient:
             }
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
         clean_payload = payload or {}
+        request_tenant, identity_error = self._request_tenant(path, clean_payload, tenant)
+        if identity_error is not None:
+            return identity_error
         preflight = self._terminal_preflight(path, clean_payload)
         if preflight is not None:
             return preflight
@@ -754,18 +946,28 @@ class HubClient:
 
         def once(attempt_timeout: float) -> dict[str, Any]:
             headers = {
-                "Content-Type": "application/json", "X-LocalAI-Tenant": self.tenant,
+                "Content-Type": "application/json",
                 "X-LocalAI-Agent": self.agent, "X-LocalAI-Request-ID": request_id,
             }
+            if request_tenant:
+                headers["X-LocalAI-Tenant"] = request_tenant
             if self.api_token:
                 headers["X-LocalAI-Token"] = self.api_token
             try:
+                open_options = {
+                    "operational_action": operational_action,
+                    "requires_heavy_work": requires_heavy_work,
+                }
+                if cancel_event is not None:
+                    open_options["cancel_event"] = cancel_event
                 result = json.loads(
                     self._open(
-                        "POST", path, body, headers, attempt_timeout,
-                        operational_action=operational_action,
-                        requires_heavy_work=requires_heavy_work,
-                        cancel_event=cancel_event,
+                        "POST",
+                        path,
+                        body,
+                        headers,
+                        attempt_timeout,
+                        **open_options,
                     ).decode("utf-8")
                 )
             except (UnicodeDecodeError, json.JSONDecodeError):
@@ -777,10 +979,15 @@ class HubClient:
         def execute() -> dict[str, Any]:
             duplicate_deadline = time.monotonic() + timeout
             server_reported_in_progress = False
-            try:
+
+            def request_until_terminal() -> dict[str, Any]:
+                nonlocal server_reported_in_progress
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
-                        return self._cancelled_response(request_id, request_not_sent=not server_reported_in_progress)
+                        return self._cancelled_response(
+                            request_id,
+                            request_not_sent=not server_reported_in_progress,
+                        )
                     remaining = duplicate_deadline - time.monotonic()
                     if remaining <= 0:
                         return {
@@ -795,7 +1002,11 @@ class HubClient:
                         return once(min(timeout, remaining))
                     except HTTPError as exc:
                         result = self._error_response(exc, request_id)
-                        if not (result.get("in_progress") and result.get("retryable")):
+                        if not (
+                            replay_safe
+                            and result.get("in_progress")
+                            and result.get("retryable")
+                        ):
                             return result
                         server_reported_in_progress = True
                         remaining = duplicate_deadline - time.monotonic()
@@ -809,6 +1020,9 @@ class HubClient:
                                 return self._cancelled_response(request_id, request_not_sent=False)
                         else:
                             time.sleep(delay)
+
+            try:
+                return request_until_terminal()
             except HTTPError as exc:
                 return self._error_response(exc, request_id)
             except (URLError, OSError, http.client.HTTPException) as exc:
@@ -831,25 +1045,33 @@ class HubClient:
                         remaining = duplicate_deadline - time.monotonic()
                         if remaining <= 0:
                             return self._transport_failure_response(
-                                request_id, exc, prior_send_possible=not pre_send_refusal
+                                request_id,
+                                exc,
+                                prior_send_possible=server_reported_in_progress or not pre_send_refusal,
                             )
                         try:
-                            retry_result = once(remaining)
-                            if retry_result.get("outcome_unknown"):
-                                retry_result["retried"] = True
-                            return retry_result
-                        except HTTPError as retry_http: return self._error_response(retry_http, request_id)
+                            retried_result = request_until_terminal()
+                            if retried_result.get("outcome_unknown"):
+                                retried_result["retried"] = True
+                            return retried_result
+                        except HTTPError as retry_http:
+                            return self._error_response(retry_http, request_id)
                         except (URLError, OSError, http.client.HTTPException) as retry_exc:
                             self._drop_connection()
                             if getattr(retry_exc, "cancelled", False):
                                 return self._cancelled_response(request_id, request_not_sent=bool(getattr(retry_exc, "request_not_sent", False)) and not server_reported_in_progress)
                             return self._transport_failure_response(
-                                request_id, exc, retry_exc, retried=True,
-                                prior_send_possible=not pre_send_refusal,
+                                request_id,
+                                exc,
+                                retry_exc,
+                                retried=True,
+                                prior_send_possible=server_reported_in_progress or not pre_send_refusal,
                             )
                         except Exception:
                             return self._uncertain_response(request_id, retried=True)
-                return self._transport_failure_response(request_id, exc)
+                return self._transport_failure_response(
+                    request_id, exc, prior_send_possible=server_reported_in_progress
+                )
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
             except Exception:
@@ -858,7 +1080,7 @@ class HubClient:
         if not replay_safe:
             return execute()
 
-        key = f"POST|{self.tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
+        key = f"POST|{request_tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
         if explicit_request_id:
             key += f"|explicit-request-id|{request_id}"
         if cancel_event is not None:
@@ -883,27 +1105,48 @@ class HubClient:
             }
 
     def get(
-        self, path: str, timeout: float = 15.0, *,
+        self,
+        path: str,
+        timeout: float = 15.0,
+        *,
         operational_action: str | None = None,
         requires_heavy_work: bool = True,
+        tenant: str | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        query = parse_qs(urlsplit(path).query, keep_blank_values=True)
+        request_tenant, identity_error = self._request_tenant(path, None, tenant, query=query)
+        if identity_error is not None:
+            return identity_error
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
         request_id = f"req_{uuid.uuid4().hex[:12]}"
+        if cancel_event is not None and cancel_event.is_set():
+            return self._cancelled_response(request_id, request_not_sent=True)
         headers = {
-            "X-LocalAI-Tenant": self.tenant,
             "X-LocalAI-Agent": self.agent,
             "X-LocalAI-Request-ID": request_id,
         }
+        if request_tenant:
+            headers["X-LocalAI-Tenant"] = request_tenant
         if self.api_token:
             headers["X-LocalAI-Token"] = self.api_token
 
         def once(attempt_timeout: float) -> dict[str, Any]:
             try:
+                open_options = {
+                    "operational_action": operational_action,
+                    "requires_heavy_work": requires_heavy_work,
+                }
+                if cancel_event is not None:
+                    open_options["cancel_event"] = cancel_event
                 result = json.loads(
                     self._open(
-                        "GET", path, None, headers, attempt_timeout,
-                        operational_action=operational_action,
-                        requires_heavy_work=requires_heavy_work,
+                        "GET",
+                        path,
+                        None,
+                        headers,
+                        attempt_timeout,
+                        **open_options,
                     ).decode("utf-8")
                 )
             except (UnicodeDecodeError, json.JSONDecodeError):
@@ -916,8 +1159,13 @@ class HubClient:
                 return once(timeout)
             except HTTPError as exc:
                 return self._error_response(exc, request_id)
-            except (URLError, OSError, http.client.HTTPException):
+            except (URLError, OSError, http.client.HTTPException) as exc:
                 self._drop_connection()
+                if getattr(exc, "cancelled", False):
+                    return self._cancelled_response(
+                        request_id,
+                        request_not_sent=bool(getattr(exc, "request_not_sent", False)),
+                    )
                 remaining = deadline - time.monotonic()
                 if self._inprocess_transport is not None:
                     server_ready = remaining > 0
@@ -926,10 +1174,10 @@ class HubClient:
                 if server_ready:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        return self._uncertain_response(request_id)
+                        return self._transport_failure_response(request_id, exc)
                     try: return once(remaining)
                     except HTTPError as retry_http: return self._error_response(retry_http, request_id)
-                    except (URLError, OSError, http.client.HTTPException):
+                    except (URLError, OSError, http.client.HTTPException) as retry_exc:
                         self._drop_connection()
                         return self._uncertain_response(request_id, retried=True)
                     except Exception:
@@ -938,9 +1186,15 @@ class HubClient:
             except Exception:
                 return self._uncertain_response(request_id)
 
-        key = f"GET|{self.tenant}|{self.agent}|{path}"
+        key = f"GET|{request_tenant}|{self.agent}|{path}"
+        if cancel_event is not None:
+            key += f"|cancel-event|{id(cancel_event)}"
         try:
-            return self._singleflight(key, timeout, execute, request_id=request_id)
+            return self._singleflight(
+                key, timeout, execute, request_id=request_id, cancel_event=cancel_event
+            )
+        except _SingleflightCancelled:
+            return self._cancelled_response(request_id, request_not_sent=False)
         except TimeoutError as exc:
             return {
                 "success": False,
@@ -959,6 +1213,7 @@ class HubClient:
         """Fail closed: only known read-only POST endpoints may be replayed."""
         path = path.lower().split("?", 1)[0]
         if path in {
+            "/api/search",
             "/api/memory/get",
             "/api/memory/search",
             "/api/repo/circular_dependencies",
@@ -995,6 +1250,8 @@ class HubClient:
         *,
         request_id: str | None = None,
         path_hints: Sequence[PathHint | Mapping[str, str]] | None = None,
+        tenant: str | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         clean_payload = dict(payload or {})
         route = path.lower().split("?", 1)[0]
@@ -1021,8 +1278,23 @@ class HubClient:
                 clean_payload["path_hints"] = records
         replay_safe = self._post_replay_safe(path, clean_payload)
         if request_id is None:
-            return self.request(path, clean_payload, timeout=timeout, replay_safe=replay_safe)
-        return self.request(path, clean_payload, timeout=timeout, replay_safe=replay_safe, request_id=request_id)
+            return self.request(
+                path,
+                clean_payload,
+                timeout=timeout,
+                replay_safe=replay_safe,
+                tenant=tenant,
+                cancel_event=cancel_event,
+            )
+        return self.request(
+            path,
+            clean_payload,
+            timeout=timeout,
+            replay_safe=replay_safe,
+            request_id=request_id,
+            tenant=tenant,
+            cancel_event=cancel_event,
+        )
 
     def status(self, detail: str = "brief", scope: str = "process") -> dict[str, Any]:
         if detail == "agent_state":
@@ -1195,7 +1467,15 @@ class HubClient:
             "task_id": task_id,
         })
 
-    def create_task(self, goal: str, acceptance_criteria: list[str] | None = None, task_id: str = "", scope: str = "task", **kwargs: Any) -> dict[str, Any]:
+    def create_task(
+        self,
+        goal: str,
+        acceptance_criteria: list[str] | None = None,
+        task_id: str = "",
+        scope: str = "task",
+        root: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         payload = {
             "action": "create",
             "goal": goal,
@@ -1204,31 +1484,53 @@ class HubClient:
             "scope": scope,
             **kwargs,
         }
+        if root is not None:
+            payload["root"] = root
         return self.post("/api/agent-state/tasks", payload)
 
-    def get_task(self, task_id: str) -> dict[str, Any]:
-        return self.post("/api/agent-state/tasks", {"action": "get", "task_id": task_id})
+    def get_task(self, task_id: str, root: str | None = None) -> dict[str, Any]:
+        payload = {"action": "get", "task_id": task_id}
+        if root is not None:
+            payload["root"] = root
+        return self.post("/api/agent-state/tasks", payload)
 
     def list_tasks(
         self,
         status: str | None = None,
         limit: int = 100,
         query: str | None = None,
+        root: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"action": "list", "limit": limit}
+        if root is not None:
+            payload["root"] = root
         if status:
             payload["status"] = status
         if query is not None:
             payload["query"] = query
         return self.post("/api/agent-state/tasks", payload)
 
-    def complete_task(self, task_id: str, reason: str = "completed by agent") -> dict[str, Any]:
-        return self.post("/api/agent-state/tasks", {"action": "complete", "task_id": task_id, "reason": reason})
+    def complete_task(self, task_id: str, reason: str = "completed by agent", root: str | None = None) -> dict[str, Any]:
+        payload = {"action": "complete", "task_id": task_id, "reason": reason}
+        if root is not None:
+            payload["root"] = root
+        return self.post("/api/agent-state/tasks", payload)
 
-    def fail_task(self, task_id: str, reason: str = "failed by agent") -> dict[str, Any]:
-        return self.post("/api/agent-state/tasks", {"action": "fail", "task_id": task_id, "reason": reason})
+    def fail_task(self, task_id: str, reason: str = "failed by agent", root: str | None = None) -> dict[str, Any]:
+        payload = {"action": "fail", "task_id": task_id, "reason": reason}
+        if root is not None:
+            payload["root"] = root
+        return self.post("/api/agent-state/tasks", payload)
 
-    def checkpoint_task(self, task_id: str, phase: str = "", next_action: str = "", affected_paths: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
+    def checkpoint_task(
+        self,
+        task_id: str,
+        phase: str = "",
+        next_action: str = "",
+        affected_paths: list[str] | None = None,
+        root: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         payload = {
             "action": "checkpoint",
             "task_id": task_id,
@@ -1237,6 +1539,8 @@ class HubClient:
             "affected_paths": affected_paths or [],
             **kwargs,
         }
+        if root is not None:
+            payload["root"] = root
         return self.post("/api/agent-state/tasks", payload)
 
     def record_memory(self, key: str, value: Any, scope: str = "task", kind: str = "fact", **kwargs: Any) -> dict[str, Any]:
@@ -1250,8 +1554,17 @@ class HubClient:
         }
         return self.post("/api/agent-state/memory", payload)
 
-    def find_memory(self, scope: str | None = None, key: str | None = None, query: str | None = None, limit: int = 100) -> dict[str, Any]:
+    def find_memory(
+        self,
+        scope: str | None = None,
+        key: str | None = None,
+        query: str | None = None,
+        limit: int = 100,
+        root: str | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {"action": "find", "limit": limit}
+        if root is not None:
+            payload["root"] = root
         if scope:
             payload["scope"] = scope
         if key:

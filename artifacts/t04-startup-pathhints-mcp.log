@@ -1,0 +1,16 @@
+....................FF..                                                 [100%]
+================================== FAILURES ===================================
+______ test_ensure_server_autostarts_for_active_or_missing_mode[active] _______
+tests\test_client_operational_mode_autostart.py:83: in test_ensure_server_autostarts_for_active_or_missing_mode
+    assert len(starts) == 1
+E   assert 0 == 1
+E    +  where 0 = len([])
+_______ test_ensure_server_autostarts_for_active_or_missing_mode[None] ________
+tests\test_client_operational_mode_autostart.py:83: in test_ensure_server_autostarts_for_active_or_missing_mode
+    assert len(starts) == 1
+E   assert 0 == 1
+E    +  where 0 = len([])
+=========================== short test summary info ===========================
+FAILED tests/test_client_operational_mode_autostart.py::test_ensure_server_autostarts_for_active_or_missing_mode[active]
+FAILED tests/test_client_operational_mode_autostart.py::test_ensure_server_autostarts_for_active_or_missing_mode[None]
+2 failed, 22 passed in 12.89s

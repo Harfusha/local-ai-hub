@@ -113,11 +113,20 @@ class InProcessTransport:
     def _mode_rejection(self, operational_action: str | None, requires_heavy_work: bool) -> dict[str, Any] | None:
         state_dir = self.config.get("server", {}).get("state_dir")
         snapshot = load_operational_mode(state_dir)
-        return operational_mode_gate_error(
+        rejection = operational_mode_gate_error(
             snapshot,
             operational_action,
             requires_heavy_work=requires_heavy_work,
         )
+        if rejection is None:
+            return None
+        normalized = dict(rejection)
+        mode = normalized.get("operational_mode", normalized.get("mode", "maintenance"))
+        normalized.setdefault("error_code", "operational_mode_blocked")
+        normalized.setdefault("operational_mode", mode)
+        normalized.setdefault("mode", mode)
+        normalized.setdefault("action", operational_action or "inprocess_request")
+        return normalized
 
     def _dispatch(
         self,
