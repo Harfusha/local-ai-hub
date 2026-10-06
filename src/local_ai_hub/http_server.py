@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
@@ -1953,6 +1954,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
         path = urlparse(self.path).path
+        supplied_request_id = self.headers.get("X-LocalAI-Request-ID")
+        if supplied_request_id is not None:
+            try:
+                APP.recovery.validate_request_id(supplied_request_id)
+            except (TypeError, ValueError) as exc:
+                self._journal_request_id = None
+                self._journal_finished = True
+                self._telemetry_finished = True
+                self._debug_trace_finished = True
+                self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+                return
         self._begin_trace(path)
         if not self._require_authorized():
             return
@@ -1965,36 +1977,19 @@ class Handler(BaseHTTPRequestHandler):
                 raw_bundle = self._read_body(limit=limit)
                 query = parse_qs(urlparse(self.path).query)
                 target_root = (query.get("target_root") or [None])[0]
-                self._send(200, APP.import_bundle(raw_bundle, target_root)); return
+                payload = {
+                    "target_root": target_root,
+                    "bundle_sha256": hashlib.sha256(raw_bundle).hexdigest(),
+                    "bundle_bytes": len(raw_bundle),
+                }
             except RequestBodyError as exc:
                 self._send(exc.status, {"success": False, "error": str(exc)}); return
-        try:
-            payload = self._read_json()
-            self._validate_payload(path, payload)
-        except RequestBodyError as exc:
-            self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
-        if path == "/api/telemetry/tool-accounting":
-            # Internal MCP reporter path: do not journal or recursively count this
-            # metadata transport as an agent workload/tool call.
-            self._telemetry_finished = True
-            accepted = 0
-            rejected = 0
-            rejection_reasons: dict[str, int] = {}
-            for event in payload.get("events", []):
-                try:
-                    APP.telemetry.record_tool_accounting(event)
-                    accepted += 1
-                except Exception as exc:
-                    rejected += 1
-                    reason = "invalid_event" if isinstance(exc, (TypeError, ValueError)) else "record_failed"
-                    rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
-                    continue
-            self._send(200, {
-                "success": True,
-                "accepted": accepted,
-                "rejected": rejected,
-                "rejection_reasons": rejection_reasons,
-            }); return
+        else:
+            try:
+                payload = self._read_json()
+                self._validate_payload(path, payload)
+            except RequestBodyError as exc:
+                self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
         self._request_evaluation = payload.get("evaluation")
         if path == "/api/conversations/continue" or (
             path in {"/api/delegate", "/api/reason"} and bool(payload.get("conversation", False))
@@ -2016,24 +2011,91 @@ class Handler(BaseHTTPRequestHandler):
         self._journal_request_id = str(getattr(self, "_trace_request_id", ""))
         self._journal_finished = False
         try:
-            prior = APP.recovery.lookup(self._journal_request_id, tenant, path)
-            if prior and prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
+            identity = self._agent()
+            prior = APP.recovery.begin(
+                self._journal_request_id,
+                tenant,
+                path,
+                identity=identity,
+                payload=payload,
+            )
+            if prior.get("state") == "conflict":
+                self._journal_finished = True
+                self._send(409, {"success": False, "error": prior.get("error", "request id conflict"), "request_id": self._journal_request_id}); return
+            fingerprint = str(prior.get("payload_fingerprint", ""))
+            if not prior.get("claimed") and prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
                 self._journal_finished = True
                 self._send(int(prior.get("status_code") or (200 if prior.get("state") == "done" else 500)), prior["response"]); return
-            if prior and prior.get("state") == "running":
+            if not prior.get("claimed") and prior.get("state") == "running":
                 wait_seconds = min(2.0, max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))))
-                replay = APP.recovery.wait_for(self._journal_request_id, tenant, path, timeout_seconds=wait_seconds)
+                replay = APP.recovery.wait_for(
+                    self._journal_request_id,
+                    tenant,
+                    path,
+                    timeout_seconds=wait_seconds,
+                    identity=identity,
+                    payload_fingerprint=fingerprint,
+                )
                 if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
                     self._journal_finished = True
                     self._send(int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500)), replay["response"]); return
+                if replay and replay.get("state") == "conflict":
+                    self._journal_finished = True
+                    self._send(409, {"success": False, "error": replay.get("error", "request id conflict"), "request_id": self._journal_request_id}); return
+                if replay and (
+                    replay.get("state") == "abandoned"
+                    or (replay.get("state") in {"done", "failed"} and replay.get("response") is None)
+                ):
+                    self._journal_finished = True
+                    self._send(409, {
+                        "success": False,
+                        "error": "request outcome is unavailable; operation was not replayed",
+                        "outcome_unknown": True,
+                        "retryable": False,
+                        "request_id": self._journal_request_id,
+                    }); return
                 self._journal_finished = True
                 self._send(409, {"success": False, "error": "request with this id is already running", "retryable": True, "in_progress": True, "retry_after_seconds": 1, "waited_seconds": wait_seconds}); return
-            if prior and prior.get("state") == "conflict":
+            if not prior.get("claimed"):
                 self._journal_finished = True
-                self._send(409, {"success": False, "error": prior.get("error", "request id conflict")}); return
-            APP.recovery.begin(self._journal_request_id, tenant, path)
+                self._send(409, {
+                    "success": False,
+                    "error": "request outcome is unavailable; operation was not replayed",
+                    "outcome_unknown": True,
+                    "retryable": False,
+                    "request_id": self._journal_request_id,
+                }); return
         except Exception:
-            pass
+            self._journal_finished = True
+            self._send(503, {
+                "success": False,
+                "error": "request journal unavailable; operation was not started",
+                "retryable": True,
+                "outcome_unknown": False,
+                "request_id": self._journal_request_id,
+            }); return
+        if path == "/api/bundle/import":
+            assert raw_bundle is not None
+            self._send(200, APP.import_bundle(raw_bundle, target_root)); return
+        if path == "/api/telemetry/tool-accounting":
+            # Keep metadata traffic out of workload telemetry while journaling retries.
+            accepted = 0
+            rejected = 0
+            rejection_reasons: dict[str, int] = {}
+            for event in payload.get("events", []):
+                try:
+                    APP.telemetry.record_tool_accounting(event)
+                    accepted += 1
+                except Exception as exc:
+                    rejected += 1
+                    reason = "invalid_event" if isinstance(exc, (TypeError, ValueError)) else "record_failed"
+                    rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+            self._send(200, {
+                "success": True,
+                "accepted": accepted,
+                "rejected": rejected,
+                "rejection_reasons": rejection_reasons,
+            }); return
         try:
             if path == "/api/work-orders":
                 if not getattr(APP, "work_orchestrator", None) or not APP.work_orchestrator.enabled:
@@ -3742,11 +3804,13 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/api/command/daemon", "/api/daemon"}:
                 act = str(payload.get("action", "status")).lower()
                 if act == "spawn":
-                    self._send(200, APP.services.spawn_daemon(str(payload.get("command", "")), str(payload.get("cwd", ".")), name=str(payload.get("name", "")), env=payload.get("env"))); return
+                    self._send(200, APP.services.spawn_daemon(str(payload.get("command", "")), str(payload.get("cwd", ".")), name=str(payload.get("name", "")), env=payload.get("env"), task_id=str(payload.get("task_id", "")))); return
                 elif act == "stop":
-                    self._send(200, APP.services.stop_daemon(str(payload.get("daemon_id", "")))); return
+                    self._send(200, APP.services.stop_daemon(str(payload.get("daemon_id", "")), task_id=str(payload.get("task_id", "")))); return
                 else:
-                    self._send(200, APP.services.daemon_status(payload.get("daemon_id"))); return
+                    self._send(200, APP.services.daemon_status(
+                        payload.get("daemon_id"), task_id=str(payload.get("task_id", ""))
+                    )); return
             if path in {"/api/command/lint_fix", "/api/lint_fix"}:
                 self._send(200, APP.services.lint_fix(str(payload.get("root", ".")), command=payload.get("command"), paths=payload.get("paths"), tenant=tenant, timeout=payload.get("timeout"))); return
             if path in {"/api/command/http_probe", "/api/http_probe"}:

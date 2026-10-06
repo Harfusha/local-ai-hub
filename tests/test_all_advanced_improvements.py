@@ -100,7 +100,7 @@ def test_auto_worktree_task_lifecycle(tmp_path: Path) -> None:
     assert (wt_path / "README.md").exists()
 
     # Clean up worktree
-    cleanup_res = tasks.cleanup_worktree(task.task_id, delete_branch=True)
+    cleanup_res = tasks.cleanup_worktree(task.task_id, delete_branch=True, actor=task.owner)
     assert cleanup_res["success"] is True
     assert cleanup_res["had_worktree"] is True
     assert not wt_path.exists()

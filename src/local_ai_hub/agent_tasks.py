@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import json
+import math
 import threading
 import time
 import uuid
@@ -314,7 +315,19 @@ class TaskStore:
             try:
                 from .process_utils import create_git_worktree
                 r_root = repo_root or context.repository_id or "."
-                wt_res = create_git_worktree(r_root, branch_name=f"hub/task-{t_id}")
+                if context.repository_id and Path(r_root).expanduser().resolve(strict=False) != Path(context.repository_id).expanduser().resolve(strict=False):
+                    raise ValueError("task worktree repository does not match task context")
+                worktree_ttl = 24 * 60 * 60.0
+                worktree_expiry = now + worktree_ttl
+                wt_res = create_git_worktree(
+                    r_root,
+                    branch_name=f"hub/task-{t_id}",
+                    task_id=t_id,
+                    owner=actor,
+                    created_at=now,
+                    ttl_seconds=worktree_ttl,
+                    expires_at=worktree_expiry,
+                )
                 if wt_res.get("success"):
                     initial_sd["worktree"] = wt_res
             except Exception:
@@ -825,19 +838,110 @@ class TaskStore:
         )
         return self._commit_update(current, updated, event)
 
-    def cleanup_worktree(self, task_id: str, delete_branch: bool = True) -> dict[str, Any]:
+    def cleanup_worktree(
+        self,
+        task_id: str,
+        delete_branch: bool = True,
+        *,
+        actor: str = "http-default",
+    ) -> dict[str, Any]:
         task = self.get(task_id)
         if not task:
             return {"success": False, "error": f"Task {task_id} not found"}
         wt = task.checkpoint.state_data.get("worktree")
         if not isinstance(wt, dict) or not wt.get("worktree_path"):
             return {"success": True, "had_worktree": False}
+        actor_value = str(actor or "").strip()
+        if not actor_value or actor_value.lower() in {"http-default", "system", "admin", "*"}:
+            return {"success": False, "error": "cleanup requires a non-reserved owner actor"}
+        if actor_value != task.owner:
+            return {"success": False, "error": "cleanup actor does not own task"}
+
         try:
-            from .process_utils import remove_git_worktree
-            r_root = wt.get("repo_root", ".")
-            w_path = wt.get("worktree_path")
-            rm_res = remove_git_worktree(r_root, w_path, delete_branch=delete_branch)
-            return {"success": True, "had_worktree": True, "cleanup": rm_res}
+            from .process_utils import get_git_worktree_ownership, remove_git_worktree
+
+            task_id_value = str(wt.get("task_id", ""))
+            owner_value = str(wt.get("owner", ""))
+            repo_value = Path(str(wt.get("repo_root", ""))).expanduser().resolve(strict=False)
+            worktree_id = str(wt.get("worktree_id", ""))
+            branch = str(wt.get("branch", ""))
+            worktree_path = Path(str(wt.get("worktree_path", ""))).expanduser()
+            if not task_id_value or task_id_value != task.task_id:
+                return {"success": False, "error": "worktree task identity mismatch"}
+            if not owner_value or owner_value != task.owner:
+                return {"success": False, "error": "worktree owner identity mismatch"}
+            if not worktree_id or not branch or worktree_path.is_symlink():
+                return {"success": False, "error": "worktree ownership metadata is incomplete"}
+            expected_repo = Path(task.context.repository_id or ".").expanduser().resolve(strict=False)
+            if repo_value != expected_repo:
+                return {"success": False, "error": "worktree repository does not match task context"}
+            created_at = float(wt["created_at"])
+            ttl_seconds = float(wt["ttl_seconds"])
+            expires_at = float(wt["expires_at"])
+            if (
+                not math.isfinite(created_at)
+                or not math.isfinite(ttl_seconds)
+                or not math.isfinite(expires_at)
+                or ttl_seconds < 60.0
+                or ttl_seconds > 30 * 24 * 60 * 60.0
+                or abs(expires_at - (created_at + ttl_seconds)) > 0.001
+            ):
+                return {"success": False, "error": "worktree lifetime metadata is inconsistent"}
+
+            if wt.get("cleanup_success") and not worktree_path.exists():
+                return {"success": True, "had_worktree": True, "already_cleaned": True}
+            ownership = get_git_worktree_ownership(repo_value, worktree_path)
+            if ownership is None:
+                return {"success": False, "error": "live worktree ownership marker is missing"}
+            expected_fields = (
+                "worktree_id",
+                "task_id",
+                "owner",
+                "repo_root",
+                "worktree_path",
+                "branch",
+                "created_at",
+                "ttl_seconds",
+                "expires_at",
+            )
+            if any(ownership.get(field) != wt.get(field) for field in expected_fields):
+                return {"success": False, "error": "worktree ownership metadata was tampered"}
+
+            rm_res = remove_git_worktree(
+                repo_value,
+                worktree_path,
+                delete_branch=delete_branch,
+                branch_name=branch,
+                worktree_id=worktree_id,
+                expected_metadata=wt,
+            )
+            if not rm_res.get("success"):
+                return {"success": False, "had_worktree": True, "cleanup": rm_res, "error": rm_res.get("error", "cleanup failed")}
+
+            cleaned_at = time.time()
+            cleaned_wt = {**wt, "cleanup_success": True, "cleaned_at": cleaned_at}
+            state_data = {**task.checkpoint.state_data, "worktree": cleaned_wt}
+            updated_checkpoint = TaskCheckpoint(
+                phase=task.checkpoint.phase,
+                next_action=task.checkpoint.next_action,
+                affected_paths=task.checkpoint.affected_paths,
+                evidence_ids=task.checkpoint.evidence_ids,
+                blockers=task.checkpoint.blockers,
+                state_data=state_data,
+            )
+            updated = self.checkpoint(
+                task_id,
+                updated_checkpoint,
+                actor=actor_value,
+                idempotency_key=f"cleanup_{task_id}_{worktree_id}",
+            )
+            return {
+                "success": True,
+                "had_worktree": True,
+                "cleanup": rm_res,
+                "cleaned_at": cleaned_at,
+                "task": updated.to_dict(),
+            }
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
