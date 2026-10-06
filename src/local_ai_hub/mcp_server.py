@@ -17,6 +17,12 @@ from typing import Any, Literal, TypeAlias
 from urllib.parse import quote
 
 from local_ai_hub.client import HubClient
+try:
+    from local_ai_hub.inprocess_transport import InProcessTransport
+except ModuleNotFoundError as exc:
+    if exc.name != "local_ai_hub.inprocess_transport":
+        raise
+    InProcessTransport = None  # type: ignore[assignment,misc]
 from local_ai_hub.compact import compact_result
 from local_ai_hub.response_budget import (
     _CONTEXT_PROTECTED_KEYS,
@@ -47,6 +53,11 @@ from local_ai_hub.operation_contracts import (
 from local_ai_hub.state_paths import configured_state_dir
 from local_ai_hub.semantic_quality import assess_semantic_result
 from local_ai_hub.evidence_contract import evidence_meta
+from local_ai_hub.operational_mode import (
+    OperationalModeSnapshot,
+    load_operational_mode,
+    operational_mode_gate_error,
+)
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -84,10 +95,84 @@ AGENT_NAME = os.environ.get("LOCAL_AI_AGENT", "agent")
 _workspace = canonical_root(Path.cwd())
 _workspace_hash = hashlib.sha1(_workspace.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
 TENANT = os.environ.get("LOCAL_AI_TENANT") or f"{AGENT_NAME}:{_workspace_hash}"
+CONFIG_PATH = os.environ.get("LOCAL_AI_CONFIG")
+_CURRENT_OPERATIONAL_CONTEXT: contextvars.ContextVar[tuple[str, bool]] = contextvars.ContextVar(
+    "mcp_operational_context", default=("", True)
+)
+
+
+class _MCPHubClientAdapter:
+    """Pass MCP action policy metadata through HubClient without changing wire payloads."""
+
+    def __init__(self, client: HubClient) -> None:
+        self._client = client
+        try:
+            parameters = inspect.signature(client.request).parameters
+        except (AttributeError, TypeError, ValueError):
+            parameters = {}
+        self._supports_operational_metadata = {
+            "operational_action", "requires_heavy_work"
+        } <= set(parameters)
+        if self._supports_operational_metadata:
+            original_request = client.request
+
+            def request_with_policy(
+                path: str, payload: dict[str, Any] | None = None, **kwargs: Any
+            ) -> Any:
+                action, requires_heavy_work = _CURRENT_OPERATIONAL_CONTEXT.get()
+                kwargs.setdefault("operational_action", action or None)
+                kwargs.setdefault("requires_heavy_work", requires_heavy_work)
+                return original_request(path, payload, **kwargs)
+
+            # HubClient.post() calls self.request(), so metadata reaches in-process
+            # transport without bypassing post's replay-safety and payload handling.
+            client.request = request_with_policy  # type: ignore[method-assign]
+
+    def get(self, path: str, **kwargs: Any) -> Any:
+        if self._supports_operational_metadata:
+            action, requires_heavy_work = _CURRENT_OPERATIONAL_CONTEXT.get()
+            kwargs.setdefault("operational_action", action or None)
+            kwargs.setdefault("requires_heavy_work", requires_heavy_work)
+        return self._client.get(path, **kwargs)
+
+    def status(self, detail: str = "brief", scope: str = "process") -> Any:
+        if detail == "agent_state":
+            return self.get("/api/status?detail=agent_state")
+        return self.get(f"/api/live/status?light=1&scope={scope}&detail={detail}")
+
+    def close(self) -> None:
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+
+def _build_mcp_client(tenant: str, config_path: str | None) -> _MCPHubClientAdapter:
+    client = HubClient(tenant=tenant, config_path=config_path, auto_start=True)
+    return _MCPHubClientAdapter(client)
+
+
+def _classify_mcp_operation(tool_name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+    if tool_name == "local_ai_status":
+        action = str(arguments.get("detail") or arguments.get("action") or "brief")
+    else:
+        action = str(arguments.get("action") or tool_name)
+    action = action.strip().lower().replace("-", "_")
+    if tool_name == "local_ai_status" and action in {"status", "health", "check", "info"}:
+        action = "brief"
+    lightweight_read = (
+        tool_name == "local_ai_artifact"
+        or (tool_name == "local_ai_status" and action in {"brief", "cache", "telemetry"})
+        or (tool_name == "local_ai_repo" and action in {"map", "code_index"})
+    )
+    return action, not lightweight_read
 
 try:
-    CLIENT = HubClient(tenant=TENANT)
-    CFG = load_config(os.environ.get("LOCAL_AI_CONFIG"))
+    CLIENT = _build_mcp_client(TENANT, CONFIG_PATH)
+    CFG = load_config(CONFIG_PATH)
+    atexit.register(CLIENT.close)
     FEATURES = FeatureSet.from_config(CFG)
     MCP_CFG = CFG.get("mcp", {})
     PROJECTOR = AgentProjector(CFG)
@@ -494,7 +579,7 @@ _STATUS_PROTECTED_KEYS = (
 )
 _RELIABILITY_PROTECTED_KEYS = (
     "success", "terminal", "retryable", "degraded", "stale",
-    "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
+    "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
 )
 _REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
 _REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()
@@ -833,7 +918,6 @@ class _ProtocolAccountingReporter:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
-        self._client: HubClient | None = None
 
     def _ensure_worker(self) -> None:
         with self._lock:
@@ -853,12 +937,11 @@ class _ProtocolAccountingReporter:
     def _send(self, events: list[dict[str, Any]]) -> None:
         if not events:
             return
+        operational_token = _CURRENT_OPERATIONAL_CONTEXT.set(("telemetry", False))
         try:
-            if self._client is None:
-                self._client = HubClient(tenant=TENANT, auto_start=False)
             # batch_id prevents HubClient single-flight from coalescing two
             # numerically identical accounting batches from concurrent MCP clients.
-            self._client.post(
+            CLIENT.post(
                 "/api/telemetry/tool-accounting",
                 {"batch_id": f"{os.getpid()}-{time.time_ns()}", "events": events},
                 timeout=0.25,
@@ -867,6 +950,8 @@ class _ProtocolAccountingReporter:
             # Observability is best effort and must never become a retry/backpressure
             # path for the MCP foreground request.
             return
+        finally:
+            _CURRENT_OPERATIONAL_CONTEXT.reset(operational_token)
 
     def _run(self) -> None:
         batch: list[dict[str, Any]] = []
@@ -912,11 +997,6 @@ class _ProtocolAccountingReporter:
                 break
         if remaining:
             self._send(remaining)
-        if self._client is not None:
-            try:
-                self._client.close()
-            except Exception:
-                pass
 
 
 _ACCOUNTING_REPORTER = _ProtocolAccountingReporter()
@@ -954,12 +1034,56 @@ def _tool_catalog_schema_tokens() -> int:
         return 0
 
 
+def _operational_mode_rejection(
+    action: str, *, requires_heavy_work: bool = True
+) -> dict[str, Any] | None:
+    try:
+        snapshot = load_operational_mode(configured_state_dir(CFG, create=False))
+    except Exception:
+        snapshot = OperationalModeSnapshot(
+            "maintenance", 0, None, degraded=True,
+            error="operational mode state is unavailable",
+        )
+    if not snapshot.degraded and snapshot.mode == "active":
+        return None
+    if (
+        not snapshot.degraded
+        and snapshot.mode == "gaming"
+        and not requires_heavy_work
+    ):
+        return None
+    return operational_mode_gate_error(snapshot)
+
+
 def _instrumented_tool():
     def decorator(fn: Any) -> Any:
         signature = inspect.signature(fn)
 
         @functools.wraps(fn)
         def wrapped(*args: Any, **kwargs: Any) -> Any:
+            # Keep the monitoring tool available while all agent work is paused.
+            # Classify each MCP action before dispatch so cheap deterministic reads
+            # remain available in gaming mode while command execution stays heavy.
+            try:
+                mode_arguments = signature.bind_partial(*args, **kwargs).arguments
+                arguments = dict(mode_arguments)
+            except Exception:
+                arguments = dict(kwargs)
+            action_name, requires_heavy_work = _classify_mcp_operation(fn.__name__, arguments)
+            if fn.__name__ != "local_ai_status" or requires_heavy_work:
+                mode_rejection = _operational_mode_rejection(
+                    action_name, requires_heavy_work=requires_heavy_work
+                )
+                gaming_lint = (
+                    mode_rejection is not None
+                    and mode_rejection.get("operational_mode") == "gaming"
+                    and not bool(mode_rejection.get("degraded", True))
+                    and fn.__name__ == "local_ai_command"
+                    and bool(getattr(FEATURES, "speculative_lint", False))
+                    and action_name == "speculative_lint"
+                )
+                if mode_rejection is not None and not gaming_lint:
+                    return mode_rejection
             started = time.monotonic()
             handoff_added = False
             try:
@@ -977,6 +1101,9 @@ def _instrumented_tool():
                 "reuse_key": arguments.get("reuse_key", ""),
                 "tool": fn.__name__,
             })
+            operational_token = _CURRENT_OPERATIONAL_CONTEXT.set(
+                (action_name, requires_heavy_work)
+            )
             metadata_token = set_metadata(
                 task_id=arguments.get("task_id", ""),
                 parent_task=arguments.get("parent_task_id", ""),
@@ -998,6 +1125,7 @@ def _instrumented_tool():
                 if token is not None:
                     _CURRENT_EXTRA_FIELDS.reset(token)
                 _CURRENT_RESPONSE_OPTIONS.reset(response_token)
+                _CURRENT_OPERATIONAL_CONTEXT.reset(operational_token)
             clean, measured = pop_accounting(result)
             if isinstance(clean, dict) and clean.get("success") is True:
                 hint = semantic_handoff_hint(
@@ -1718,6 +1846,7 @@ def _local_ai_repo_impl(
     is_worktree: bool = False,
     parent_root: str = "",
     steps: list[dict[str, Any]] | None = None,
+    path_hints: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -1782,9 +1911,15 @@ def _local_ai_repo_impl(
         extra = list(extra_fields or [])
         if enrich:
             extra.extend(["text", "raw"])
+        search_path_hints = ([{
+            "path": path,
+            "purpose": "repository_search",
+            "scope": "repo_search",
+        }] if path else [])
+        search_path_hints.extend((path_hints or [])[:64])
         return _compact(CLIENT.post("/api/search", {
             "root": root, "query": query or task, "top_k": 12, "enrich": enrich,
-        }, timeout=min(120, _timeout("quick"))), "search", extra_fields=extra if extra else None)
+        }, timeout=min(120, _timeout("quick")), path_hints=search_path_hints or None), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
@@ -2180,6 +2315,7 @@ def local_ai_repo(
     is_worktree: bool = False,
     parent_root: str = "",
     steps: list[dict[str, Any]] | None = None,
+    path_hints: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     return _local_ai_repo_impl(
@@ -2188,7 +2324,7 @@ def local_ai_repo(
         include_code, include_tests, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
-        token_budget, is_worktree, parent_root, steps,
+        token_budget, is_worktree, parent_root, steps, path_hints,
     )
 
 
@@ -2705,8 +2841,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
     from local_ai_hub.json_utils import dumps as json_dumps
 
     # FastMCP 1.x reads `parameters` and `fn_metadata.output_schema` when listing
-    # tools. Publish the feature-aware conditional input schema and shared output
-    # envelope while keeping per-action output contracts in operation metadata.
+    # tools. Publish the feature-aware input schema and enabled action output
+    # variants; dispatch validates each result against its selected action.
     for _tool_name in _all_desc_map:
         _registered_tool = mcp._tool_manager._tools.get(_tool_name)
         _actions = operation_actions(_tool_name, FEATURES)
@@ -2721,6 +2857,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             getattr(_registered_tool, "__dict__", {}).pop("output_schema", None)
 
     async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
+        """Mirror HTTP error statuses: invalid=400, disabled=403, dispatch failure=500."""
         validation = validate_operation_call(name, arguments, features=FEATURES)
         if validation is not None:
             status_code, error = validation
@@ -2778,5 +2915,10 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
     mcp._mcp_server.call_tool(validate_input=False)(_compact_mcp_call_tool)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Enter stdio MCP; Hub daemon startup remains lazy until first request."""
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

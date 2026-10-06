@@ -86,6 +86,15 @@ _COORD_ACTIONS = (
 )
 _WORK_ACTIONS = ("submit", "status", "wait", "get", "cancel", "continue")
 _ARTIFACT_ACTIONS = ("get", "slice", "list")
+_ADOPTION_TOOL_NAMES = (
+    "local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_rag",
+    "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_work",
+)
+_ACTION_OUTPUT_TOOL_NAMES = frozenset({
+    "local_ai_status", "local_ai_artifact",
+    "local_ai_repo", "local_ai_task", "local_ai_rag",
+    "local_ai_command", "local_ai_coord", "local_ai_work",
+})
 
 _RESPONSE_BUDGET_PROPERTIES = {
     "max_response_tokens": {"type": "integer", "minimum": 0, "default": 0},
@@ -182,6 +191,10 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "action": {"type": "string", "enum": ["status", "health", "check", "info"], "default": ""},
             "detail": {"type": "string", "default": "brief"},
             "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
+            "adoption_signal": {"type": "string", "enum": ["", "bypassed"], "default": ""},
+            "target_tool": {"type": "string", "enum": list(_ADOPTION_TOOL_NAMES)},
+            "target_action": {"type": "string", "minLength": 1, "maxLength": 80,
+                               "pattern": "^[a-z][a-z0-9_]{0,79}$"},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
     ),
@@ -199,7 +212,27 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task": {"type": "string", "default": ""},
             "task_id": {"type": "string", "default": ""},
             "include_code": {"type": "boolean", "default": False},
+            "path_hints": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "maxLength": 1024},
+                        "purpose": {"type": "string"},
+                        "scope": {"type": "string"},
+                        "evidence_id": {"type": "string"},
+                        "provenance": {"type": "string"},
+                        "repository_revision": {"type": "string"},
+                        "config_digest": {"type": "string"},
+                        "expires_at": {"type": "string"},
+                    },
+                    "required": ["path", "purpose", "scope"],
+                    "additionalProperties": False,
+                },
+            },
             "include_tests": {"type": "boolean", "default": False},
+            "include_diagnostics": {"type": "boolean", "default": False},
             "phase": {"type": "string", "default": ""},
             "focus": {"type": "array", "items": {"type": "string"}},
             "preload_profile": {"type": "string", "default": ""},
@@ -246,6 +279,15 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                     },
                 }],
             },
+            "is_worktree": {"type": "boolean", "default": False},
+            "parent_root": {"type": "string", "default": ""},
+            "steps": {"type": "array", "items": {"type": "object"}},
+            "session_id": {"type": "string", "default": ""},
+            "clone_id": {"type": "string", "default": ""},
+            "worktree_id": {"type": "string", "default": ""},
+            "branch": {"type": "string", "default": ""},
+            "repository_id": {"type": "string", "default": ""},
+            "repository_revision": {"type": "string", "default": ""},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
         conditional_properties={
@@ -276,6 +318,13 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             )},
             "complexity": {"type": "string", "default": "auto"},
             "job_action": {"type": "string", "default": "reason"},
+            "task_id": {"type": "string", "default": ""},
+            "phase": {"type": "string", "default": ""},
+            "focus": {"type": "array", "items": {"type": "string"}},
+            "preload_profile": {"type": "string", "default": ""},
+            "changed_paths": {"type": "array", "items": {"type": "string"}},
+            "repository_revision": {"type": "string", "default": ""},
+            "language": {"type": "string", "default": "auto"},
             "max_tokens": {"type": "integer", "default": 0},
             "evaluation_days": {"type": "integer", "default": 30},
             "latency_budget_ms": {"type": "number", "default": 0},
@@ -295,6 +344,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "candidate_data": {"type": "object"},
             "json_schema": {"type": "object"},
             "tasks": {"type": "array", "items": {"type": "object"}},
+            "cases": {"type": "array", "items": {"type": "object"}},
             "format": {"type": ["string", "object"]},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
@@ -335,6 +385,12 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "max_attempts": {"type": "integer", "default": 3},
             "snapshot": {"type": "boolean", "default": False},
             "rollback_on_failure": {"type": "boolean", "default": False},
+            "paths": {"type": "array", "items": {"type": "string"}},
+            "patch": {"type": "string", "default": ""},
+            "auto_rollback": {"type": "boolean", "default": True},
+            "job_id": {"type": "string", "default": ""},
+            "execution_id": {"type": "string", "default": ""},
+            "lint_action": {"type": "string", "default": "submit"},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
     ),
@@ -357,13 +413,35 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "lease_id", "task_id", "key", "value", "query", "command", "task", "status", "reason",
                 "record_id", "target_scope", "approver",
             )},
+            "criterion": {"type": "string", "default": ""},
+            "board_id": {"type": "string", "default": ""},
+            "section": {"type": "string", "default": ""},
+            "changed_paths": {"type": "array", "items": {"type": "string"}},
             "ttl_seconds": {"type": "integer", "default": 0},
             "max_tokens": {"type": "integer", "default": 0},
             "contract": {"type": "object"},
             "checkpoint": {"type": "object"},
-            "record": {"type": "object"},
+            "record": {"type": ["object", "array"]},
             "fingerprint": {"type": "object"},
             "tool_outcome": {"type": "object"},
+            "scope": {"type": "string", "default": ""},
+            "scope_id": {"type": "string", "default": ""},
+            "target_scope": {"type": "string", "default": ""},
+            "tenant": {"type": "string", "default": ""},
+            "branch": {"type": "string", "default": ""},
+            "clone_id": {"type": "string", "default": ""},
+            "worktree_id": {"type": "string", "default": ""},
+            "repository_id": {"type": "string", "default": ""},
+            "session_id": {"type": "string", "default": ""},
+            "repository_revision": {"type": "string", "default": ""},
+            "phase": {"type": "string", "default": ""},
+            "focus": {"type": "array", "items": {"type": "string"}},
+            "preload_profile": {"type": "string", "default": ""},
+            "since_hash": {"type": "string", "default": ""},
+            "include_diagnostics": {"type": "boolean", "default": False},
+            "base": {"type": "string", "default": "HEAD"},
+            "after_seq": {"type": "integer", "minimum": 0, "default": 0},
+            "topic": {"type": "string", "default": ""},
             "include_stale": {"type": "boolean", "default": False},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
@@ -385,8 +463,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "action": {"type": "string", "default": "get"},
                 "artifact_id": {"type": "string", "default": ""},
                 "section": {"type": "string", "default": ""},
-                "offset": {"type": "integer", "default": 0},
-                "max_chars": {"type": "integer", "default": 4000},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "max_chars": {"type": "integer", "minimum": 512, "maximum": 12000, "default": 4000},
                 "extra_fields": {"type": "array", "items": {"type": "string"}},
                 "binary": {"type": "boolean", "default": False},
             },
@@ -415,11 +493,200 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "timeout_seconds": {"type": "number", "default": 90},
             "answer": {"type": "string", "default": ""},
             "return_fields": {"type": "array", "items": {"type": "string"}},
+            "response_profile": {"type": "string", "default": "compact"},
+            "extra_fields": {"type": "array", "items": {"type": "string"}},
             "max_output_tokens": {"type": "integer", "default": 0},
             "keep_failed_workspace": {"type": "boolean", "default": False},
         },
     ),
 }
+
+
+def _action_input_fields(tool: str, action: str) -> tuple[str, ...]:
+    """Return only arguments consumed by this action's MCP handler."""
+    if tool == "local_ai_status":
+        return ("detail", "scope", "adoption_signal", "target_tool", "target_action")
+    if tool == "local_ai_repo":
+        root = {"root"}
+        context = {
+            "query", "task", "workspace", "mode", "max_tokens", "token_budget", "task_id", "phase",
+            "focus", "preload_profile", "guarded", "changed_paths", "since_hash", "approval",
+            "override_reason", "base", "staged", "session_id", "repository_revision", "clone_id",
+            "worktree_id", "branch", "repository_id", "include_diagnostics",
+        }
+        groups = {
+            "search": {"query", "task", "include_code", "path_hints"},
+            "context": context | {"include_tests"},
+            "generate_dataset": {"query", "task", "path", "max_tokens", "relation"},
+            "secret_scan": {"query", "task", "path", "staged"},
+            "complexity": {"query", "task", "path", "max_tokens", "include_tests"},
+            "git_diff": {"path", "query", "staged", "max_tokens"},
+            "mutation_test": {"path", "query", "diff"},
+            "pipeline": {"steps"},
+            "batch_replace": {"edits", "dry_run"},
+            "verify": {"evidence"},
+            "verify_receipt": {"receipt"},
+            "verify_completion": {"task_id", "query", "task"},
+            "preprocess": {"is_worktree", "parent_root"},
+            "preprocess_refresh": {"is_worktree", "parent_root"},
+            "preprocess_pause": set(), "preprocess_resume": set(),
+            "preprocess_cancel": set(), "preprocess_unregister": set(),
+            "context_compile": context,
+            "route": {"path", "query", "task"},
+            "delegate": {"task", "query", "workspace", "profile", "max_tokens"},
+            "solve": {"task", "query", "workspace", "mode", "max_tokens", "base", "staged"},
+            "review_diff": {"base", "staged", "task", "mode", "max_tokens"},
+            "impact": {"base", "staged"},
+            "refactor_impact": {"path", "query", "task"},
+            "resolve_imports": {"query", "task", "language"},
+            "generate_tests": {"path", "query", "task", "max_tokens"},
+            "generate_tests_for_diff": {"path", "query", "task", "diff", "max_tokens"},
+            "validate_patch": {"query", "task"},
+            "ast_outline": {"path", "query", "task"},
+            "ast_refactor": {"path", "query", "task", "diff", "staged"},
+            "generate_mocks": {"path", "query", "task"},
+            "affected_tests": {"path", "query"},
+            "split_changes": {"path", "query"},
+            "semantic": {"path", "query", "task", "relation"},
+            "graph": {"path", "query", "task", "relation"},
+            "intelligence": {"path", "query", "task", "relation"},
+            "call_graph_diff": {"base", "staged", "query", "task"},
+            "semantic_diff": {"base", "staged", "query", "task"},
+            "cross_project_graph": {"root", "changed_paths"},
+            "cross_repo_graph": {"root", "changed_paths"},
+            "cross_project_symbols": {"root", "query", "path"},
+            "cross_repo_symbols": {"root", "query", "path"},
+            "cross_project_impact": {"root", "changed_paths"},
+            "cross_repo_impact": {"root", "changed_paths"},
+            "cross_repo_contract": {"root", "query", "task", "path"},
+        }
+        if action in groups:
+            return tuple(sorted(root | groups[action]))
+        if action in {"profile", "map", "topology", "audit_dependencies", "test_matrix", "security_audit",
+                      "synthesize_rules", "package_audit", "hotspots", "repo_state", "git_status"}:
+            return ("root",)
+        if action in {"git_diff", "git_history_search", "synthesize_commit", "repo_state"}:
+            return ("root", "base", "staged", "query", "task")
+        if action in {"generate_dataset", "code_invariants", "profile_digest", "schema_inspect", "explain_query",
+                      "env_compat", "circular_dependencies", "generate_types", "complexity", "api_spec",
+                      "dependency_slice", "migration_drift", "structural_search", "context_budget",
+                      "dead_code", "secret_scan", "callers", "reachability_dead_code", "mutation_test",
+                      "type_stubs", "skeletonize", "investigate", "diagnose", "briefing", "deterministic"}:
+            return ("root", "query", "task", "path", "mode", "max_tokens")
+        return ("root", "query", "task", "path")
+    if tool == "local_ai_task":
+        semantic = {"task", "prompt", "model", "context", "complexity", "max_tokens", "root", "workspace",
+                    "task_id", "phase", "focus", "preload_profile", "changed_paths", "repository_revision",
+                    "delivery", "latency_budget_ms", "profile"}
+        if action == "submit":
+            return tuple(sorted({
+                "job_id", "job_action", "timeout_seconds", "task", "context", "candidate",
+                "complexity", "max_tokens", "tasks", "profile", "root", "workspace", "task_id",
+                "phase", "focus", "preload_profile", "changed_paths", "repository_revision",
+            }))
+        if action in {"status", "wait", "result", "cancel"}:
+            return tuple(sorted({"job_id", "job_action", "timeout_seconds", "root", "task_id"}))
+        if action == "batch":
+            return ("tasks", "task", "model", "complexity", "max_tokens", "delivery")
+        if action in {"benchmark", "hardware_benchmark", "evaluation_report", "eval_suite", "eval_drift"}:
+            return tuple(sorted({"cases", "profile", "max_tokens", "evaluation_task_id", "evaluation_cohort", "evaluation_days"}))
+        if action == "evaluation_record":
+            return tuple(sorted({"evaluation_task_id", "evaluation_cohort", "quality_pass", "test_pass", "evaluation_duration_ms"}))
+        if action == "prompt_eval":
+            return tuple(sorted({"task", "prompt", "cases", "model", "max_tokens", "json_schema", "format"}))
+        if action in {"candidate_create", "candidate_promote"}:
+            return tuple(sorted({"candidate", "candidate_data", "task", "evaluation_task_id", "approver"}))
+        if action == "speculative_draft":
+            return tuple(sorted({"task", "prompt", "model", "context", "profile", "max_tokens"}))
+        if action in {"vision", "transcribe"}:
+            return tuple(sorted({"task", "prompt", "model", "context", "image_artifact_id", "screenshot_artifact_id",
+                                 "bundle_artifact_id", "dom_artifact_id", "accessibility_artifact_id",
+                                 "computed_styles_artifact_id", "runtime_artifact_id", "network_artifact_id",
+                                 "source", "dom", "accessibility", "computed_styles", "runtime", "bundle", "html",
+                                 "accessibility_snapshot", "computed_style_data", "runtime_context", "viewport", "page",
+                                 "language", "max_tokens", "complexity"}))
+        if action == "route":
+            return ("task", "prompt", "model", "context", "complexity", "profile", "root", "workspace")
+        if action == "continue":
+            return tuple(sorted(semantic | {"conversation_id"}))
+        return tuple(sorted(semantic))
+    if tool == "local_ai_rag":
+        if action in {"index", "docset_index"}:
+            return ("root", "workspace")
+        if action in {"search", "docset_search"}:
+            return ("root", "workspace", "query", "top_k")
+        if action == "list":
+            return ()
+        if action == "ingest_document":
+            return ("workspace", "query", "root")
+        return ("workspace", "query", "root", "extra_fields")
+    if tool == "local_ai_command":
+        run_fields = {"command", "cwd", "timeout", "force", "task_id", "criterion", "auto_fix", "max_attempts",
+                      "stream", "stream_id", "execution_id", "snapshot", "rollback_on_failure", "paths", "patch", "auto_rollback"}
+        if action in {"classify", "discover", "stats", "preflight"}:
+            return ("command", "cwd")
+        if action in {"spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "mock_server", "mock_server_start",
+                      "mock_server_stop", "mock_server_status", "record_mock", "replay_mock"}:
+            return ("cwd", "command", "criterion", "timeout")
+        if action in {"stash_save", "stash_restore"}:
+            return ("cwd", "paths", "patch", "force")
+        if action == "diff_hunk_stage":
+            return ("cwd", "paths", "patch", "command")
+        if action == "speculative_lint":
+            return ("cwd", "paths", "command", "job_id", "execution_id", "lint_action")
+        return tuple(sorted(run_fields))
+    if tool == "local_ai_coord":
+        if action == "task_sync":
+            return ("root", "status", "key", "task_id", "ttl_seconds", "max_tokens", "record")
+        if action in {"claim", "renew", "release", "leases"}:
+            return ("root", "paths", "lease_id", "ttl_seconds")
+        if action.startswith("memo_"):
+            return ("root", "key", "value", "query", "record_id", "scope", "scope_id", "target_scope")
+        if action.startswith("task_"):
+            return ("root", "task", "task_id", "contract", "checkpoint", "status", "reason", "tool_outcome",
+                    "fingerprint", "ttl_seconds", "include_stale", "include_diagnostics")
+        if action.startswith("memory_"):
+            return ("root", "record", "record_id", "key", "value", "query", "scope", "scope_id", "target_scope")
+        if action.startswith("relation_"):
+            return ("root", "key", "task_id", "query", "task", "reason", "status", "value",
+                    "target_scope", "record", "ttl_seconds", "max_tokens")
+        if action == "context_compile":
+            return ("root", "task_id", "max_tokens", "include_diagnostics", "clone_id", "worktree_id", "branch",
+                    "repository_id", "session_id", "repository_revision", "changed_paths", "phase", "focus", "preload_profile", "since_hash")
+        if action in {"verify_receipt", "verify_completion"}:
+            if action == "verify_receipt":
+                return ("root", "task_id", "criterion", "key", "value", "query", "checkpoint", "status")
+            return ("root", "task_id", "query", "value", "key", "repository_revision")
+        if action.startswith("negative_knowledge_") or action == "incident_decision":
+            return ("root", "record", "record_id", "query", "reason", "status", "scope", "scope_id", "target_scope", "approver",
+                    "fingerprint", "tool_outcome")
+        if action.startswith("blackboard_"):
+            return ("root", "board_id", "section", "scope", "scope_id", "record", "value", "query", "status")
+        if action.startswith("swarm_"):
+            return ("root", "task", "task_id", "contract", "checkpoint", "status", "reason", "board_id", "ttl_seconds")
+        if action.startswith("worktree_"):
+            return ("root", "paths", "lease_id", "ttl_seconds", "branch", "clone_id", "worktree_id", "repository_id")
+        if action.startswith("pubsub_"):
+            return ("root", "topic", "key", "value", "after_seq", "tenant")
+        if action == "simulate_merge":
+            return ("root", "key", "task_id", "value", "target_scope")
+        if action == "curate_dataset":
+            return ("root", "record", "record_id", "query", "scope", "scope_id")
+        return ("root", "task_id", "status", "reason", "record", "record_id")
+    if tool == "local_ai_work":
+        if action == "submit":
+            return ("root", "task", "acceptance_criteria", "constraints", "mode", "permissions", "budget",
+                    "timeout_seconds", "return_fields", "max_output_tokens", "keep_failed_workspace")
+        if action == "continue":
+            return ("work_id", "answer", "timeout_seconds", "response_profile", "return_fields", "max_output_tokens")
+        return ("work_id", "timeout_seconds", "response_profile", "return_fields", "max_output_tokens")
+    return ()
+
+
+for _tool_name, _tool_contract_row in OPERATION_CONTRACTS.items():
+    for _action_name, _action_row in _tool_contract_row["actions"].items():
+        if _action_row.get("allowed") is None:
+            _action_row["allowed"] = _action_input_fields(_tool_name, _action_name)
 
 
 def operation_contract(tool: str) -> dict[str, Any] | None:
@@ -468,10 +735,13 @@ def operation_input_schema(tool: str, action: str) -> dict[str, Any]:
     allowed = contract["actions"][action].get("allowed")
     if allowed is not None:
         common = set(_RESPONSE_BUDGET_PROPERTIES) | {"extra_fields", selector}
+        if tool == "local_ai_status":
+            common.add("action")
         schema["properties"] = {
             name: value for name, value in properties.items()
             if name in common or name in allowed
         }
+        schema["additionalProperties"] = False
     required = [selector, *contract["actions"][action].get("required", ())]
     schema["required"] = list(dict.fromkeys(required))
     return schema
@@ -484,7 +754,7 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
         return {"type": "object", "properties": {}, "additionalProperties": False}
 
     actions = operation_actions(tool, features)
-    schema = operation_parameters_schema(tool)
+    schema = operation_parameters_schema(tool, features)
     selector = str(contract.get("selector_field", "action"))
     properties = schema.setdefault("properties", {})
     selector_schema = properties.setdefault(selector, {"type": "string"})
@@ -508,6 +778,15 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
             then["required"] = list(dict.fromkeys((selector, *required)))
         if disallowed:
             then["not"] = {"anyOf": [{"required": [field]} for field in sorted(disallowed)]}
+        if allowed is not None:
+            common = set(_RESPONSE_BUDGET_PROPERTIES) | {"extra_fields", selector}
+            if tool == "local_ai_status":
+                common.add("action")
+            allowed_names = common | set(allowed)
+            then["properties"] = {
+                name: properties[name] for name in allowed_names if name in properties
+            }
+            then["additionalProperties"] = False
         if not then:
             continue
         conditions.append({
@@ -517,8 +796,12 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
             },
             "then": then,
         })
-    if conditions:
-        schema["allOf"] = conditions
+    existing_conditions = (
+        list(schema.get("allOf", ())) if tool == "local_ai_status" else []
+    )
+    combined_conditions = [*existing_conditions, *conditions]
+    if combined_conditions:
+        schema["allOf"] = combined_conditions
     else:
         schema.pop("allOf", None)
     return schema
@@ -535,6 +818,12 @@ def operation_output_schema(tool: str, action: str) -> dict[str, Any]:
         "error": {"type": "string"},
         "terminal": {"type": "boolean"},
         "retryable": {"type": "boolean"},
+        "status_code": {"type": "integer"},
+        "error_code": {"type": "string"},
+        "unsupported": {"type": "boolean"},
+        "feature": {"type": "string"},
+        "action": {"type": "string"},
+        "operational_mode": {"type": "string"},
         "degraded": {"type": "boolean"},
         "stale": {"type": "boolean"},
         "evidence_ids": {"type": "array", "items": {"type": "string"}},
@@ -542,20 +831,234 @@ def operation_output_schema(tool: str, action: str) -> dict[str, Any]:
         "cancel_requested": {"type": "boolean"},
         "cancel_reason": {"type": "string"},
     }
+    properties.update(_action_output_properties(tool, action))
+    variants: list[dict[str, Any]] = []
+    if tool == "local_ai_artifact":
+        variants = _artifact_output_variants(action)
+    elif tool == "local_ai_status":
+        variants = _status_output_variants(action)
+    for variant in variants:
+        variant_properties = variant.get("properties")
+        if isinstance(variant_properties, dict):
+            for name, value in variant_properties.items():
+                properties.setdefault(name, value)
     schema = {
         "type": "object",
         "title": f"{tool}.{action} result",
         "description": f"{contract['projection']} result for action '{action}'.",
         "properties": properties,
-        "additionalProperties": True,
+        "additionalProperties": False,
     }
-    if tool == "local_ai_artifact":
-        schema["anyOf"] = _artifact_output_variants(action)
-    elif tool == "local_ai_status":
-        status_variants = _status_output_variants(action)
-        if status_variants:
-            schema["anyOf"] = status_variants
+    if tool in _ACTION_OUTPUT_TOOL_NAMES:
+        schema["x-operation-action"] = action
+    if variants:
+        schema["anyOf"] = variants
     return schema
+
+
+def _action_output_properties(tool: str, action: str) -> dict[str, Any]:
+    """Expose the payload fields allowed by one action's output contract."""
+    array_object = {"type": "array", "items": {"type": "object"}}
+    object_value = {"type": "object"}
+    string_value = {"type": "string"}
+    integer_value = {"type": ["integer", "null"]}
+    number_value = {"type": ["number", "null"]}
+    json_value = {"type": ["object", "array", "string", "number", "boolean", "null"]}
+    if tool == "local_ai_repo":
+        fields: dict[str, dict[str, Any]] = {
+            "search": {"results": array_object, "query": string_value, "root": string_value},
+            "context": {"context_pack": object_value, "evidence": array_object,
+                        "warnings": array_object},
+            "pipeline": {
+                "steps_total": {"type": "integer"},
+                "steps_attempted": {"type": "integer"},
+                "steps_completed": {"type": "integer"},
+                "steps_failed": {"type": "integer"},
+                "step_results": array_object, "results": object_value,
+            },
+            "map": {"root": string_value, "tree": object_value, "files": array_object},
+            "code_index": {"symbols": array_object, "edges": array_object},
+            "verify": {"valid": {"type": "boolean"}, "issues": array_object},
+            "affected_tests": {"tests": array_object, "paths": array_object},
+            "profile": {"profile": object_value},
+            "verify_receipt": {"receipt_id": string_value, "evidence_id": string_value},
+        }
+        if action.startswith("preprocess"):
+            return {
+                "enabled": {"type": "boolean"},
+                "paused": {"type": "boolean"},
+                "phases": {"type": "array", "items": string_value},
+                "projects": array_object,
+                "scheduler_background_allowed": {"type": "boolean"},
+                "global_diagnostic": string_value,
+                "ingestion_reuse_rate": number_value,
+            }
+        if action in fields:
+            return fields[action]
+        if action in {"route"}:
+            return {"route": string_value, "provider": string_value, "reason": string_value}
+        if action in {"delegate", "solve", "generate_tests", "generate_tests_for_diff"}:
+            return {"text": string_value, "summary": string_value, "plan": array_object,
+                    "evidence_ids": {"type": "array", "items": string_value}}
+        if action in {"review_diff", "security_audit", "secret_scan", "package_audit", "verify"}:
+            return {"findings": array_object, "issues": array_object, "summary": string_value}
+        if action in {"impact", "refactor_impact", "cross_project_impact", "cross_repo_impact"}:
+            return {"dependents": array_object, "callers": array_object, "affected_tests": array_object}
+        if action in {"git_status", "repo_state", "synthesize_commit", "git_diff", "git_history_search", "hotspots"}:
+            return {"branch": string_value, "changes": array_object, "commits": array_object,
+                    "files": array_object, "summary": string_value}
+        if action in {
+            "semantic", "graph", "intelligence", "callers", "dead_code", "circular_dependencies",
+            "dependency_slice", "structural_search", "reachability_dead_code", "call_graph_diff",
+            "semantic_diff", "cross_project_graph", "cross_project_symbols", "cross_repo_graph",
+            "cross_repo_symbols", "cross_repo_contract", "topology",
+        }:
+            return {"symbols": array_object, "edges": array_object, "references": array_object,
+                    "relationships": array_object, "summary": string_value}
+        if action in {"affected_tests", "test_matrix", "generate_mocks", "mutation_test"}:
+            return {"tests": array_object, "cases": array_object, "results": array_object}
+        if action in {"batch_replace", "ast_refactor", "validate_patch", "verify_completion", "verify_receipt"}:
+            return {"valid": {"type": "boolean"}, "issues": array_object, "changed_paths": {"type": "array", "items": string_value}}
+        if action in {"pipeline"}:
+            return {"steps_total": {"type": "integer"}, "steps_completed": {"type": "integer"},
+                    "results": object_value}
+        if action in {"context_compile"}:
+            return {"context_id": string_value, "text": string_value, "evidence_ids": {"type": "array", "items": string_value}}
+        repo_fields: dict[str, dict[str, Any]] = {
+            "deterministic": {"facts": array_object, "evidence": array_object, "confidence": number_value},
+            "resolve_imports": {"resolutions": array_object, "missing": array_object, "dependencies": array_object},
+            "audit_dependencies": {"dependencies": array_object, "findings": array_object, "summary": string_value},
+            "ast_outline": {"symbols": array_object, "nodes": array_object, "path": string_value},
+            "code_invariants": {"invariants": array_object, "violations": array_object, "summary": string_value},
+            "generate_dataset": {"dataset_id": string_value, "records": array_object, "examples": array_object},
+            "profile_digest": {"profile": object_value, "digest": string_value, "paths": array_object},
+            "schema_inspect": {"schema": object_value, "fields": array_object},
+            "explain_query": {"explanation": string_value, "query_plan": array_object},
+            "env_compat": {"compatible": {"type": "boolean"}, "environment": object_value, "issues": array_object},
+            "generate_types": {"types": array_object, "files": array_object},
+            "type_stubs": {"types": array_object, "files": array_object, "stubs": array_object},
+            "complexity": {"metrics": object_value, "files": array_object},
+            "api_spec": {"endpoints": array_object, "schema": object_value},
+            "migration_drift": {"migrations": array_object, "drift": array_object, "findings": array_object},
+            "context_budget": {"token_budget": {"type": "integer"}, "total_tokens": {"type": "integer"}, "sections": array_object},
+            "skeletonize": {"skeleton": string_value, "files": array_object},
+            "investigate": {"findings": array_object, "summary": string_value, "evidence_ids": {"type": "array", "items": string_value}},
+            "diagnose": {"diagnosis": string_value, "issues": array_object, "recommendations": array_object},
+            "briefing": {"summary": string_value, "highlights": array_object, "risks": array_object},
+            "split_changes": {"changes": array_object, "groups": array_object, "summary": string_value},
+            "synthesize_rules": {"rules": array_object, "sources": array_object, "summary": string_value},
+        }
+        return repo_fields.get(action, {})
+    if tool == "local_ai_task":
+        if action in {"submit", "status", "wait", "result", "cancel"}:
+            return {"job_id": string_value, "status": string_value,
+                    "result": {"type": ["object", "array", "string", "number", "boolean", "null"]}}
+        if action in {"candidate_create", "candidate_promote"}:
+            return {"candidate_id": string_value, "candidate": object_value, "status": string_value}
+        if action in {"delegate", "explore", "reason", "continue", "review", "second_opinion",
+                      "compress", "complete_code", "scaffold"}:
+            return {"text": string_value, "model": string_value, "usage": object_value}
+        if action in {"vision", "transcribe"}:
+            return {"text": string_value, "segments": array_object,
+                    "language": string_value, "grounding": object_value}
+        if action in {"benchmark", "hardware_benchmark", "evaluation_report", "eval_suite", "eval_drift"}:
+            return {"results": array_object, "metrics": object_value, "summary": string_value}
+        if action == "batch":
+            return {"results": array_object, "tasks_total": {"type": "integer"}}
+        if action in {"evaluation_record"}:
+            return {"evaluation_id": string_value, "recorded": {"type": "boolean"}, "cohort": string_value}
+        if action in {"prompt_eval"}:
+            return {"cases": array_object, "results": array_object, "summary": string_value, "passed": {"type": "boolean"}}
+        if action == "speculative_draft":
+            return {"draft_id": string_value, "text": string_value, "model": string_value, "status": string_value}
+        if action == "route":
+            return {"route": string_value, "model": string_value, "reason": string_value}
+        return {"summary": string_value, "status": string_value, "evidence_ids": {"type": "array", "items": string_value}}
+    if tool == "local_ai_rag":
+        if action in {"search", "docset_search"}:
+            return {"results": array_object, "query": string_value, "total": integer_value}
+        if action == "list":
+            return {"collections": array_object, "docsets": array_object}
+        if action in {"index", "docset_index", "ingest_document", "ingest_diagram"}:
+            return {"indexed_count": {"type": "integer"}, "document_id": string_value,
+                    "docset_id": string_value, "status": string_value}
+    if tool == "local_ai_command":
+        if action in {"run", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix",
+                      "patch_and_verify", "flaky_detect"}:
+            return {"command_id": string_value, "exit_code": integer_value, "stdout": string_value,
+                    "stderr": string_value, "changed_paths": {"type": "array", "items": string_value}}
+        if action in {"spawn_daemon", "daemon_status", "stop_daemon", "http_probe"}:
+            return {"pid": integer_value, "port": integer_value, "running": {"type": "boolean"},
+                    "status": string_value}
+        if action in {"classify", "discover", "stats", "preflight"}:
+            return {"classification": string_value, "commands": array_object, "stats": object_value}
+        if action.startswith("mock_server") or action in {"record_mock", "replay_mock"}:
+            return {"server_id": string_value, "mock_id": string_value, "status": string_value}
+        if action == "cancel":
+            return {"job_id": string_value, "cancelled": {"type": "boolean"}, "status": string_value}
+        if action in {"stash_save", "stash_restore"}:
+            return {"stash_id": string_value, "restored": {"type": "boolean"}, "files": {"type": "array", "items": string_value}, "status": string_value}
+        if action == "diff_hunk_stage":
+            return {"path": string_value, "staged": {"type": "boolean"}, "hunk_id": string_value}
+        if action == "speculative_lint":
+            return {"job_id": string_value, "status": string_value, "result": object_value}
+        if action == "webhook_replay":
+            return {
+                "status_code": {"type": "integer"},
+                "duration_ms": {"type": "number"},
+                "body_preview": string_value,
+                "headers": object_value,
+            }
+        return {"command_id": string_value, "exit_code": integer_value, "changed_paths": {"type": "array", "items": string_value}, "status": string_value}
+    if tool == "local_ai_coord":
+        if action == "task_sync":
+            return {
+                "events": array_object,
+                "count": {"type": "integer"},
+                "imported_count": {"type": "integer"},
+                "duplicate_count": {"type": "integer"},
+            }
+        if action == "task_zombie_reap":
+            return {"reaped": {"type": "array", "items": string_value}, "count": {"type": "integer"}}
+        if action == "task_cleanup_worktree":
+            return {"had_worktree": {"type": "boolean"}, "cleanup": object_value}
+        if action.startswith("task_") or action == "task_create":
+            return {"task_id": string_value, "task": object_value, "status": string_value}
+        if action.startswith("memory_") or action.startswith("relation_"):
+            return {"record_id": string_value, "records": array_object, "value": json_value}
+        if action.startswith("pubsub_"):
+            return {"events": array_object, "cursor": string_value, "sequence": integer_value}
+        if action.startswith("worktree_") or action == "leases":
+            return {"leases": array_object, "lease_id": string_value, "expires_at": number_value}
+        if action.startswith("blackboard_") or action.startswith("swarm_"):
+            return {"board_id": string_value, "step_id": string_value, "status": string_value,
+                    "items": array_object}
+        if action.startswith("memo_"):
+            return {"memo_id": string_value, "memo": object_value, "results": array_object}
+        if action in {"claim", "renew", "release", "leases"}:
+            return {"lease_id": string_value, "leases": array_object, "expires_at": number_value, "status": string_value}
+        if action in {"context_compile"}:
+            return {"context_id": string_value, "task_context": object_value, "evidence_ids": {"type": "array", "items": string_value}}
+        if action in {"verify_receipt", "verify_completion"}:
+            return {"passed": {"type": "boolean"}, "receipt_id": string_value, "evidence_id": string_value, "issues": array_object}
+        if action in {"incident_decision", "negative_knowledge_record", "negative_knowledge_find"}:
+            return {"decision_id": string_value, "record_id": string_value, "records": array_object, "decision": object_value}
+        if action in {"simulate_merge"}:
+            return {"conflicts": array_object, "merged": {"type": "boolean"}, "summary": string_value}
+        if action in {"curate_dataset"}:
+            return {"dataset_id": string_value, "records_added": {"type": "integer"}, "status": string_value}
+        return {"record_id": string_value, "records": array_object, "status": string_value}
+    if tool == "local_ai_work":
+        return {
+            "work_id": string_value,
+            "status": string_value,
+            "state": string_value,
+            "acceptance_criteria": {"type": "array", "items": string_value},
+            "verification": object_value,
+            "handoff": object_value,
+            "awaiting_input": {"type": "boolean"},
+        }
+    return {}
 
 
 def _status_output_variants(action: str) -> list[dict[str, Any]]:
@@ -625,6 +1128,56 @@ def _status_output_variants(action: str) -> list[dict[str, Any]]:
                 "by_operation": {"type": "array", "items": {"type": "object"}},
                 "error_fingerprints": {"type": "array", "items": {"type": "object"}},
                 "detail": {"type": "object"}, "decision_grade": {"type": "object"},
+            },
+            "additionalProperties": True,
+        }, failure]
+    if action == "full":
+        return [{
+            "type": "object",
+            "required": ["success", "hub_online", "version", "uptime_seconds", "features",
+                         "runtime_stats", "capabilities"],
+            "properties": {
+                "success": {"type": "boolean"},
+                "hub_online": {"type": "boolean"},
+                "version": {"type": "string"},
+                "uptime_seconds": {"type": "integer"},
+                "features": {"type": "object"},
+                "runtime_stats": {"type": "object"},
+                "capabilities": {"type": "object"},
+                "ollama_online": {"type": ["boolean", "null"]},
+                "models": {"type": "object"},
+                "hardware": {"type": "object"},
+                "accelerators": {"type": "object"},
+                "code_intelligence": {"type": "object"},
+                "runtime_profile": {"type": "object"},
+                "scheduler": {"type": "object"},
+                "headless": {"type": "object"},
+                "background_gpu": {"type": "object"},
+                "ollama_profile": {"type": "object"},
+                "model_execution": {"type": "object"},
+                "vram_balancer": {"type": "object"},
+                "benchmark": {"type": "object"},
+                "debug_traces": {"type": "object"},
+                "observability": {"type": "object"},
+                "preprocessing": {"type": "object"},
+                "agent_state": {"type": "object"},
+                "http_concurrency": {"type": "object"},
+            },
+            "additionalProperties": True,
+        }, failure]
+    if action == "agent_state":
+        return [{
+            "type": "object",
+            "required": ["success", "enabled", "active_tasks", "tasks_count", "incidents_count",
+                         "candidates_count", "status"],
+            "properties": {
+                "success": {"type": "boolean"},
+                "enabled": {"type": "boolean"},
+                "active_tasks": {"type": "array", "items": {"type": "string"}},
+                "tasks_count": {"type": "integer"},
+                "incidents_count": {"type": "integer"},
+                "candidates_count": {"type": "integer"},
+                "status": {"type": "string"},
             },
             "additionalProperties": True,
         }, failure]
@@ -705,30 +1258,18 @@ def _artifact_output_variants(action: str) -> list[dict[str, Any]]:
 
 
 def operation_tool_output_schema(tool: str, features: Any = None) -> dict[str, Any]:
-    """Return a bounded union of distinct output shapes for MCP tools/list."""
+    """Return one output schema branch per enabled action for MCP tools/list."""
     actions = operation_actions(tool, features)
     if not actions:
         return {"type": "object", "properties": {}, "additionalProperties": True}
-    unique: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for action in actions:
-        schema = operation_output_schema(tool, action)
-        canonical = {key: value for key, value in schema.items() if key not in {"title", "description"}}
-        key = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
-        if key not in seen:
-            seen.add(key)
-            unique.append(schema)
-    if len(unique) == 1:
-        schema = unique[0]
-        schema["title"] = f"{tool} result"
-        schema["description"] = "Shared typed response envelope; action contracts are listed in x-operation-contract metadata."
-        return schema
+    variants = [operation_output_schema(tool, action) for action in actions]
+    if len(variants) == 1:
+        return variants[0]
     return {
         "type": "object",
         "title": f"{tool} result",
-        "description": "Output matches one of the distinct action result shapes listed in x-operation-contract metadata.",
-        "anyOf": unique,
-        "additionalProperties": True,
+        "description": "Output matches one closed action-specific result schema.",
+        "anyOf": variants,
     }
 
 
@@ -739,6 +1280,10 @@ def _validate_output_schema(value: Any, schema: dict[str, Any], path: str = "res
     if "const" in schema and value != schema["const"]:
         return f"{path} must equal {schema['const']!r}"
     if isinstance(value, dict):
+        if schema.get("additionalProperties") is False:
+            unknown = sorted(set(value) - set(schema.get("properties", {})))
+            if unknown:
+                return f"{path}.{unknown[0]} is not allowed"
         for field in schema.get("required", ()):
             if field not in value:
                 return f"{path}.{field} is required"
@@ -762,17 +1307,20 @@ def _validate_output_schema(value: Any, schema: dict[str, Any], path: str = "res
 def validate_operation_output(tool: str, action: str, result: Any) -> str | None:
     """Validate shared response-envelope fields while preserving payload fields."""
     contract = operation_contract(tool)
-    if contract is None or action not in contract["actions"] or not isinstance(result, dict):
+    if contract is None or action not in contract["actions"]:
         return None
-    for field in ("success", "terminal", "retryable"):
-        if field in result and not isinstance(result[field], bool):
-            return f"{field} must be boolean for action='{action}'"
-    if "error" in result and not isinstance(result["error"], str):
-        return f"error must be string for action='{action}'"
-    if tool in {"local_ai_artifact", "local_ai_status"}:
-        error = _validate_output_schema(result, operation_output_schema(tool, action))
-        if error:
-            return f"{error} for action='{action}'"
+    if isinstance(result, dict):
+        for field in ("success", "terminal", "retryable"):
+            if field in result and not isinstance(result[field], bool):
+                return f"{field} must be boolean for action='{action}'"
+        if "error" in result and not isinstance(result["error"], str):
+            return f"error must be string for action='{action}'"
+    non_finite_path = _non_finite_number_path(result, "result")
+    if non_finite_path is not None:
+        return f"{non_finite_path} must be finite for action='{action}'"
+    error = _validate_output_schema(result, operation_output_schema(tool, action))
+    if error:
+        return f"{error} for action='{action}'"
     return None
 
 
@@ -871,6 +1419,25 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
             }
             for action, row in required_actions
         ]
+    if tool == "local_ai_status":
+        parameters.setdefault("allOf", []).extend([
+            {
+                "if": {
+                    "properties": {"adoption_signal": {"const": "bypassed"}},
+                    "required": ["adoption_signal"],
+                },
+                "then": {"required": ["target_tool", "target_action"]},
+            },
+            {
+                "if": {
+                    "anyOf": [{"required": ["target_tool"]}, {"required": ["target_action"]}],
+                },
+                "then": {
+                    "required": ["adoption_signal"],
+                    "properties": {"adoption_signal": {"const": "bypassed"}},
+                },
+            },
+        ])
     return parameters
 
 
@@ -923,7 +1490,11 @@ def _matches_json_type(value: Any, expected: Any) -> bool:
         if expected_type == "integer" and type(value) is int:
             return True
         if expected_type == "number" and isinstance(value, (int, float)) and not isinstance(value, bool):
-            return True
+            try:
+                if math.isfinite(value):
+                    return True
+            except OverflowError:
+                pass
         if expected_type == "boolean" and type(value) is bool:
             return True
         if expected_type == "object" and isinstance(value, dict):
@@ -933,6 +1504,19 @@ def _matches_json_type(value: Any, expected: Any) -> bool:
         if expected_type == "null" and value is None:
             return True
     return not recognized
+
+
+def _non_finite_number_path(value: Any, path: str) -> str | None:
+    pending = [(value, path)]
+    while pending:
+        current, current_path = pending.pop()
+        if isinstance(current, float) and not math.isfinite(current):
+            return current_path
+        if isinstance(current, dict):
+            pending.extend((item, f"{current_path}.{key}") for key, item in current.items())
+        elif isinstance(current, list):
+            pending.extend((item, f"{current_path}[{index}]") for index, item in enumerate(current))
+    return None
 
 
 def _validate_nested_schema(value: Any, schema: dict[str, Any], path: str, action: str) -> str | None:
@@ -971,10 +1555,15 @@ def _validate_nested_schema(value: Any, schema: dict[str, Any], path: str, actio
                 if error:
                     return error
     if isinstance(value, dict):
+        item_properties = schema.get("properties", {})
+        if schema.get("additionalProperties") is False:
+            unexpected = sorted(set(value) - set(item_properties))
+            if unexpected:
+                return f"{path}.{unexpected[0]} is not allowed for action='{action}'"
         for field in schema.get("required", ()):
             if field not in value:
                 return f"{path}.{field} is required for action='{action}'"
-        for field, field_schema in schema.get("properties", {}).items():
+        for field, field_schema in item_properties.items():
             if field in value and isinstance(field_schema, dict):
                 error = _validate_nested_schema(value[field], field_schema, f"{path}.{field}", action)
                 if error:
@@ -1008,6 +1597,8 @@ def validate_operation_arguments(
     allowed = action_contract.get("allowed")
     if allowed is not None:
         common = set(_RESPONSE_BUDGET_PROPERTIES) | {"extra_fields", contract["selector_field"]}
+        if tool == "local_ai_status":
+            common.add("action")
         unexpected = sorted(set(arguments) - set(allowed) - common)
         if unexpected:
             return f"{unexpected[0]} is not valid for action='{action}'"
@@ -1016,6 +1607,9 @@ def validate_operation_arguments(
             return f"{field} is required for action='{action}'"
 
     for field, value in arguments.items():
+        non_finite_path = _non_finite_number_path(value, field)
+        if non_finite_path is not None:
+            return f"{non_finite_path} must be finite for action='{action}'"
         schema = properties.get(field) if isinstance(properties, dict) else None
         if not isinstance(schema, dict):
             continue
@@ -1050,6 +1644,21 @@ def validate_operation_arguments(
                 return f"{field} must have at least {schema['minItems']} items for action='{action}'"
             if "maxItems" in schema and len(value) > int(schema["maxItems"]):
                 return f"{field} must have at most {schema['maxItems']} items for action='{action}'"
+        if tool == "local_ai_repo" and action == "search" and field == "path_hints":
+            error = _validate_nested_schema(value, schema, field, action)
+            if error:
+                return error
+    if tool == "local_ai_status":
+        adoption_signal = arguments.get("adoption_signal", "")
+        target_tool = arguments.get("target_tool", "")
+        target_action = arguments.get("target_action", "")
+        if adoption_signal == "bypassed":
+            if not target_tool or not target_action:
+                return "bypass report requires target_tool and target_action"
+            if target_action not in operation_actions(target_tool):
+                return f"target_action is not supported for target_tool='{target_tool}'"
+        elif target_tool or target_action:
+            return "target_tool requires adoption_signal='bypassed'"
     if tool == "local_ai_repo" and action == "verify_receipt":
         receipt = arguments.get("receipt")
         if not isinstance(receipt, dict):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 import os
 import queue
 import re
@@ -10,6 +11,7 @@ import sqlite3
 import uuid
 import time
 import threading
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
@@ -42,6 +44,7 @@ from .browser_bridge import (
     stage_capture,
     validate_capture_request,
 )
+from .operational_mode import load_operational_mode, set_operational_mode
 
 
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -56,6 +59,7 @@ APP: LocalAIApp | None = None
 MONITOR_PATHS = {
     "/health", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
     "/api/status", "/api/capabilities", "/api/metrics", "/api/adoption", "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/audit/tail", "/api/control",
+    "/api/mode", "/api/admin/mode",
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
     "/api/debug-traces",
 }
@@ -63,6 +67,56 @@ MONITOR_PATHS = {
 
 def _json_bytes(data: Any) -> bytes:
     return json_dumps(data).encode("utf-8")
+
+
+def _unload_configured_runtime_models(runtime: Any, *, timeout_seconds: float = 3.0) -> dict[str, Any]:
+    """Best-effort bounded unload for either the direct or tiered runtime facade."""
+    method = getattr(runtime, "unload_configured_models", None)
+    if callable(method):
+        targets = [("runtime", method)]
+    else:
+        targets = [
+            (name, getattr(child, "unload_configured_models", None))
+            for name in ("fast", "smart")
+            if callable(getattr(child := getattr(runtime, name, None), "unload_configured_models", None))
+        ]
+    if not targets:
+        return {
+            "success": False, "backend_available": False, "unloaded": [],
+            "failed": {"runtime": "unload operation is unavailable"},
+        }
+
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+    aggregate: dict[str, Any] = {
+        "success": True, "backend_available": False, "unloaded": [], "failed": {},
+    }
+    for name, unload in targets:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            aggregate["success"] = False
+            aggregate["failed"][name] = "shared unload deadline expired"
+            continue
+        try:
+            result = unload(timeout_seconds=remaining)
+        except Exception as exc:
+            aggregate["success"] = False
+            aggregate["failed"][name] = type(exc).__name__
+            continue
+        if not isinstance(result, dict):
+            aggregate["success"] = False
+            aggregate["failed"][name] = "invalid unload result"
+            continue
+        aggregate["success"] = bool(aggregate["success"] and result.get("success", False))
+        aggregate["backend_available"] = bool(
+            aggregate["backend_available"] or result.get("backend_available", False)
+        )
+        aggregate["unloaded"].extend(str(model) for model in result.get("unloaded", []) if model)
+        failures = result.get("failed", {})
+        if isinstance(failures, dict):
+            aggregate["failed"].update({f"{name}:{key}": str(value) for key, value in failures.items()})
+        if failures:
+            aggregate["success"] = False
+    return aggregate
 
 
 def _resolve_memory_scope(
@@ -677,6 +731,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def _ensure_trace_request_id(self) -> str:
+        request_id = getattr(self, "_trace_request_id", None)
+        if not request_id:
+            request_id = self.headers.get("X-LocalAI-Request-ID") or uuid.uuid4().hex
+            self._trace_request_id = request_id
+        return request_id
+
     @classmethod
     def _safe_debug_trace_request(cls, payload: Any) -> dict[str, Any]:
         """Return a small redacted JSON/form payload suitable for durable trace storage."""
@@ -752,7 +813,12 @@ class Handler(BaseHTTPRequestHandler):
         if store is None or recovery is None or not trace.get("request_id"):
             return trace
         try:
-            journal = recovery.lookup(str(trace.get("request_id")), str(trace.get("tenant", "")), str(trace.get("action", "")))
+            journal = recovery.lookup_metadata(
+                str(trace.get("request_id")),
+                str(trace.get("tenant", "")),
+                str(trace.get("action", "")),
+                identity=str(trace.get("agent", "")),
+            )
             journal_state = str((journal or {}).get("state", ""))
             if journal_state not in {"done", "failed"}:
                 return trace
@@ -986,6 +1052,19 @@ class Handler(BaseHTTPRequestHandler):
                         return value
             raise RequestBodyError(f"{name} is required")
 
+        def bounded_integer(value: Any, name: str, minimum: int, maximum: int) -> None:
+            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                raise RequestBodyError(f"{name} must be an integer from {minimum} to {maximum}")
+
+        def bounded_number(value: Any, name: str, minimum: float, maximum: float) -> None:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or (isinstance(value, float) and not math.isfinite(value))
+                or not minimum <= value <= maximum
+            ):
+                raise RequestBodyError(f"{name} must be a finite number from {minimum:g} to {maximum:g}")
+
         if path == "/api/chat/completions":
             messages = payload.get("messages")
             if not isinstance(messages, list) or not messages or len(messages) > 128:
@@ -1041,6 +1120,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise RequestBodyError(f"{name} must be an object")
             if "response_profile" in payload:
                 text(payload["response_profile"], "response_profile", 16)
+            if action == "wait" or "timeout_seconds" in payload:
+                bounded_number(payload.get("timeout_seconds", 90), "timeout_seconds", 0, 90)
+            if action in {"submit", "get"} or "max_output_tokens" in payload:
+                bounded_integer(payload.get("max_output_tokens", 0), "max_output_tokens", 0, 4096)
         elif path in {"/api/preprocess", "/api/repo/profile", "/api/repo/map", "/api/repo/code-index", "/api/repo/investigate", "/api/repo/diagnose", "/api/repo/briefing", "/api/command/preflight", "/api/repo/deterministic", "/api/search"}:
             if "root" in payload:
                 text(payload["root"], "root", 4096)
@@ -1344,18 +1427,46 @@ class Handler(BaseHTTPRequestHandler):
             # are discarded by the sequence check below.
             last_seq = after_seq
             if stream_id and after_seq >= 0:
-                past = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=1000)
-                for ev in past:
-                    if kind and ev.kind != kind:
+                replay_cursor = after_seq
+                replayed = 0
+                replay_cap = 10_000
+                page_limit = 1_000
+                while replayed < replay_cap:
+                    page = APP.agent_state.events_page(
+                        stream_id=stream_id,
+                        after_seq=replay_cursor,
+                        limit=min(page_limit, replay_cap - replayed),
+                    )
+                    page_last_seq = int(page.get("last_seq", 0) or 0)
+                    if replay_cursor > page_last_seq:
+                        first_retained = page.get("first_retained_seq")
+                        replay_cursor = (
+                            min(int(first_retained) - 1, page_last_seq)
+                            if first_retained is not None
+                            else page_last_seq
+                        )
+                        last_seq = replay_cursor
                         continue
-                    last_seq = max(last_seq, ev.seq or 0)
-                    payload = json_dumps(ev.to_dict(), separators=(",", ":"))
-                    msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
-                    try:
-                        self.wfile.write(msg)
-                        self.wfile.flush()
-                    except OSError:
-                        return
+
+                    past = page.get("events", [])
+                    if not past:
+                        break
+                    for ev in past:
+                        if kind and ev.kind != kind:
+                            continue
+                        last_seq = max(last_seq, ev.seq or 0)
+                        payload = json_dumps(ev.to_dict(), separators=(",", ":"))
+                        msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
+                        try:
+                            self.wfile.write(msg)
+                            self.wfile.flush()
+                        except OSError:
+                            return
+                    replayed += len(past)
+                    next_cursor = int(page.get("cursor", replay_cursor))
+                    if next_cursor <= replay_cursor or not page.get("has_more"):
+                        break
+                    replay_cursor = next_cursor
 
             start_time = time.monotonic()
             while True:
@@ -1435,6 +1546,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "dashboard disabled"}); return
                 self._telemetry_finished = True
                 self._send_html(200, DASHBOARD_HTML); return
+            if path == "/api/mode":
+                snapshot = load_operational_mode(APP.config.get("server", {}).get("state_dir", "state"))
+                self._send(200, {"success": True, **snapshot.to_dict()}); return
             if path == "/favicon.ico":
                 self._telemetry_finished = True
                 self.send_response(204); self.end_headers(); return
@@ -1954,8 +2068,62 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         self._begin_trace(path)
+        self._ensure_trace_request_id()
         if not self._require_authorized():
             return
+        if path == "/api/admin/mode":
+            try:
+                payload = self._read_json()
+            except RequestBodyError as exc:
+                self._send(exc.status, {
+                    "success": False, "error": str(exc), "error_code": "invalid_mode_request",
+                    "terminal": True, "retryable": False,
+                }); return
+            mode = payload.get("mode")
+            if set(payload) != {"mode"} or not isinstance(mode, str):
+                self._send(400, {
+                    "success": False, "error": "request must contain only a string mode",
+                    "error_code": "invalid_mode_request", "terminal": True, "retryable": False,
+                }); return
+            async_jobs = getattr(APP, "async_jobs", None)
+            mode_changed = getattr(async_jobs, "on_operational_mode_changed", None)
+            guard_factory = getattr(async_jobs, "operational_mode_change_guard", None)
+            guard = guard_factory() if callable(guard_factory) else nullcontext()
+            cancellation_error = ""
+            try:
+                with guard:
+                    snapshot = set_operational_mode(APP.config.get("server", {}).get("state_dir", "state"), mode)
+                    if callable(mode_changed):
+                        try:
+                            mode_changed(snapshot)
+                        except Exception as exc:
+                            cancellation_error = type(exc).__name__
+            except ValueError as exc:
+                self._send(400, {
+                    "success": False, "error": str(exc), "error_code": "invalid_mode_request",
+                    "terminal": True, "retryable": False,
+                }); return
+            except OSError:
+                self._send(503, {
+                    "success": False, "error": "operational mode could not be persisted",
+                    "error_code": "mode_persistence_failed", "terminal": True, "retryable": True,
+                }); return
+            self._telemetry_finished = True
+            response = {"success": True, **snapshot.to_dict()}
+            if cancellation_error:
+                response["job_cancellation"] = {
+                    "success": False, "error": cancellation_error,
+                }
+            elif mode in {"gaming", "maintenance"}:
+                if not callable(mode_changed):
+                    response["job_cancellation"] = {
+                        "success": False, "error": "operational mode cancellation hook is unavailable",
+                    }
+            if mode == "gaming":
+                response["runtime_unload"] = _unload_configured_runtime_models(
+                    getattr(APP, "runtime", None), timeout_seconds=3.0,
+                )
+            self._send(200, response); return
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if path == "/api/bundle/import":
             if content_type not in {"application/zip", "application/octet-stream"}:
@@ -2016,24 +2184,69 @@ class Handler(BaseHTTPRequestHandler):
         self._journal_request_id = str(getattr(self, "_trace_request_id", ""))
         self._journal_finished = False
         try:
-            prior = APP.recovery.lookup(self._journal_request_id, tenant, path)
-            if prior and prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
+            identity = self._agent()
+            prior = APP.recovery.begin(
+                self._journal_request_id,
+                tenant,
+                path,
+                identity=identity,
+                payload=payload,
+            )
+            if prior.get("state") == "conflict":
+                self._journal_finished = True
+                self._send(409, {"success": False, "error": prior.get("error", "request id conflict"), "request_id": self._journal_request_id}); return
+            fingerprint = str(prior.get("payload_fingerprint", ""))
+            if not prior.get("claimed") and prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
                 self._journal_finished = True
                 self._send(int(prior.get("status_code") or (200 if prior.get("state") == "done" else 500)), prior["response"]); return
-            if prior and prior.get("state") == "running":
+            if not prior.get("claimed") and prior.get("state") == "running":
                 wait_seconds = min(2.0, max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))))
-                replay = APP.recovery.wait_for(self._journal_request_id, tenant, path, timeout_seconds=wait_seconds)
+                replay = APP.recovery.wait_for(
+                    self._journal_request_id,
+                    tenant,
+                    path,
+                    timeout_seconds=wait_seconds,
+                    identity=identity,
+                    payload_fingerprint=fingerprint,
+                )
                 if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
                     self._journal_finished = True
                     self._send(int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500)), replay["response"]); return
+                if replay and replay.get("state") == "conflict":
+                    self._journal_finished = True
+                    self._send(409, {"success": False, "error": replay.get("error", "request id conflict"), "request_id": self._journal_request_id}); return
+                if replay and (
+                    replay.get("state") == "abandoned"
+                    or (replay.get("state") in {"done", "failed"} and replay.get("response") is None)
+                ):
+                    self._journal_finished = True
+                    self._send(409, {
+                        "success": False,
+                        "error": "request outcome is unavailable; operation was not replayed",
+                        "outcome_unknown": True,
+                        "retryable": False,
+                        "request_id": self._journal_request_id,
+                    }); return
                 self._journal_finished = True
                 self._send(409, {"success": False, "error": "request with this id is already running", "retryable": True, "in_progress": True, "retry_after_seconds": 1, "waited_seconds": wait_seconds}); return
-            if prior and prior.get("state") == "conflict":
+            if not prior.get("claimed"):
                 self._journal_finished = True
-                self._send(409, {"success": False, "error": prior.get("error", "request id conflict")}); return
-            APP.recovery.begin(self._journal_request_id, tenant, path)
+                self._send(409, {
+                    "success": False,
+                    "error": "request outcome is unavailable; operation was not replayed",
+                    "outcome_unknown": True,
+                    "retryable": False,
+                    "request_id": self._journal_request_id,
+                }); return
         except Exception:
-            pass
+            self._journal_finished = True
+            self._send(503, {
+                "success": False,
+                "error": "request journal unavailable; operation was not started",
+                "retryable": True,
+                "outcome_unknown": False,
+                "request_id": self._journal_request_id,
+            }); return
         try:
             if path == "/api/work-orders":
                 if not getattr(APP, "work_orchestrator", None) or not APP.work_orchestrator.enabled:
@@ -2774,7 +2987,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 if action == "receipt":
-                    rcpt_data = payload.get("receipt") or {}
+                    rcpt_data = payload.get("receipt")
+                    if not isinstance(rcpt_data, dict):
+                        self._send(400, {"success": False, "error": "receipt must be an object", "terminal": True, "retryable": False}); return
+                    if type(rcpt_data.get("passed")) is not bool:
+                        self._send(400, {"success": False, "error": "receipt.passed must be boolean", "terminal": True, "retryable": False}); return
                     try:
                         if "receipt_id" in rcpt_data:
                             rcpt = VerificationReceipt.from_dict(rcpt_data)
@@ -2782,7 +2999,7 @@ class Handler(BaseHTTPRequestHandler):
                             rcpt = VerificationReceipt.create(
                                 task_id=str(rcpt_data.get("task_id", "")),
                                 criterion=str(rcpt_data.get("criterion", "")),
-                                passed=bool(rcpt_data.get("passed", True)),
+                                passed=rcpt_data["passed"],
                                 change_intent_id=str(rcpt_data.get("change_intent_id", "")),
                                 evidence_id=str(rcpt_data.get("evidence_id", "")),
                                 command_id=str(rcpt_data.get("command_id", "")),

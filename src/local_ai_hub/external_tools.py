@@ -178,16 +178,16 @@ class MCPStdioClient:
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
     def _request(self, method: str, params: dict[str, Any], *, timeout: float | None = None, soft_timeout: float | None = None, ensure_started: bool = True) -> Any:
+        request_started = time.monotonic()
+        hard_timeout = self.call_timeout if timeout is None else max(0.05, float(timeout))
+        hard_deadline = request_started + hard_timeout
+        soft_deadline = (request_started + max(0.05, float(soft_timeout))) if soft_timeout is not None else None
+        effective_deadline = min(hard_deadline, soft_deadline) if soft_deadline is not None else hard_deadline
         if ensure_started:
             self._spawn()
         request_id = self._next_id
         self._next_id += 1
         self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
-        now = time.monotonic()
-        hard_timeout = self.call_timeout if timeout is None else max(0.05, float(timeout))
-        hard_deadline = now + hard_timeout
-        soft_deadline = (now + max(0.05, float(soft_timeout))) if soft_timeout is not None else None
-        effective_deadline = min(hard_deadline, soft_deadline) if soft_deadline is not None else hard_deadline
 
         while time.monotonic() < effective_deadline:
             proc = self._proc
@@ -214,7 +214,7 @@ class MCPStdioClient:
         if soft_deadline is not None and time.monotonic() >= soft_deadline and time.monotonic() < hard_deadline:
             raise MCPSoftTimeoutError(f"MCP soft timeout: {method}")
 
-        self._stop_process()
+        self._stop_process(deadline=hard_deadline)
         raise TimeoutError(f"MCP call timed out: {method}")
 
     def _refresh_tools(self) -> None:
@@ -285,7 +285,7 @@ class MCPStdioClient:
             out["result"] = {k: v for k, v in result.items() if k not in {"content", "structuredContent"}}
         return out
 
-    def _stop_process(self) -> None:
+    def _stop_process(self, *, deadline: float | None = None) -> None:
         proc = self._proc
         responses = self._responses
         stderr_lines = self._stderr
@@ -299,20 +299,47 @@ class MCPStdioClient:
         self._stderr = deque(maxlen=80)
         if not proc:
             return
+
+        # A request timeout has no remaining budget for process-tree teardown.
+        # Detach state now, then reap in the background so cleanup cannot extend
+        # the caller's explicit deadline.
+        if deadline is not None and time.monotonic() >= deadline:
+            threading.Thread(
+                target=self._cleanup_process,
+                args=(proc, reader_threads, responses, stderr_lines),
+                name="local-ai-mcp-reaper",
+                daemon=True,
+            ).start()
+            return
+        self._cleanup_process(proc, reader_threads, responses, stderr_lines)
+
+    @staticmethod
+    def _cleanup_process(
+        proc: subprocess.Popen[str],
+        reader_threads: tuple[threading.Thread, ...],
+        responses: queue.Queue[dict[str, Any]],
+        stderr_lines: deque[str],
+    ) -> None:
         try:
-            if proc.stdin:
-                proc.stdin.close()
+            stdin = getattr(proc, "stdin", None)
+            if stdin:
+                stdin.close()
         except Exception:
             pass
         if proc.poll() is None:
-            terminate_tree(proc.pid, grace_seconds=1.0)
+            pid = getattr(proc, "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                try:
+                    terminate_tree(pid, grace_seconds=1.0)
+                except Exception:
+                    pass
         try:
             proc.wait(timeout=1.0)
         except Exception:
             pass
         # Popen does not guarantee pipe file objects are closed merely because
         # the child exited. Closing them also unblocks line-reader threads.
-        for stream in (proc.stdout, proc.stderr):
+        for stream in (getattr(proc, "stdout", None), getattr(proc, "stderr", None)):
             try:
                 if stream:
                     stream.close()
