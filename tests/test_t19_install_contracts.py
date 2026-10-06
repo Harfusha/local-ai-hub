@@ -185,7 +185,8 @@ def test_dry_install_copy_keeps_portable_toml_version_models_policy_and_schemas(
             continue
         assert expected_schemas[tool]["parameters"]["properties"]["action"]["enum"] == actions
     for name, expected in expected_schemas.items():
-        assert json.loads((schema_dir / f"{name}.json").read_text(encoding="utf-8")) == expected
+        serialized_expected = json.loads(json.dumps(expected))
+        assert json.loads((schema_dir / f"{name}.json").read_text(encoding="utf-8")) == serialized_expected
     policy = (install_dir / "generated" / "agent-policy.md").read_text(encoding="utf-8")
     assert policy == generate_global_policy(effective) + "\n"
 

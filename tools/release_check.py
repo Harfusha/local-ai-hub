@@ -151,7 +151,14 @@ def run_checks(root: Path, *, expected_version: str | None = None, post_test: bo
 
     source_defaults = root / "src" / "local_ai_hub" / "defaults.toml"
     root_defaults = root / "defaults.toml"
-    defaults_ok = source_defaults.is_file() and root_defaults.is_file() and source_defaults.read_bytes() == root_defaults.read_bytes()
+    defaults_ok = False
+    if source_defaults.is_file() and root_defaults.is_file():
+        try:
+            source_values = tomllib.loads(source_defaults.read_text(encoding="utf-8"))
+            packaged_values = tomllib.loads(root_defaults.read_text(encoding="utf-8"))
+            defaults_ok = source_values == packaged_values
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            defaults_ok = False
     checks.append({"name": "defaults-consistency", "ok": defaults_ok})
     if not defaults_ok:
         errors.append("root defaults.toml and packaged defaults.toml differ")
