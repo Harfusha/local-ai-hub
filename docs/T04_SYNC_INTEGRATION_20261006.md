@@ -49,3 +49,5 @@ Excluded, preserved on disk: `.serena/` generated backend state/local config,
 source/tests/tools `__pycache__/`, overlay generated cache files.
 Exact excluded paths are enumerated in the manifest.
 Final raw ref: `checkpoint/t04-lock-recovery-preservation-20261006`.
+Complete changed paths versus synchronized master:
+`docs/T04_SYNC_CHANGED_FILES_20261006.txt`.
