@@ -239,7 +239,11 @@ class ProjectContext:
         ordered = tuple(candidates)
         hints_available = bool(configured_hints or request_hints or saved_hints)
         hint_used = False
-        for hints in (saved_hints, request_hints, configured_hints):
+        for hints, learned in (
+            (saved_hints, True),
+            (request_hints, False),
+            (configured_hints, False),
+        ):
             if not hints:
                 continue
             usage = prioritize_paths_with_hints(
@@ -250,6 +254,7 @@ class ProjectContext:
                 scope=scope,
                 repository_revision=repository_revision,
                 config_digest=self.config_digest,
+                learned=learned,
             )
             ordered = usage.paths
             hint_used = hint_used or usage.hint_used
@@ -956,6 +961,7 @@ def prioritize_paths_with_hints(
     scope: str,
     repository_revision: str,
     config_digest: str,
+    learned: bool = False,
 ) -> PathHintUsage:
     """Move matching candidates first while preserving every original candidate."""
     original = tuple(candidates)
@@ -974,7 +980,7 @@ def prioritize_paths_with_hints(
                 scope=scope,
                 repository_revision=repository_revision,
                 config_digest=config_digest,
-                learned=bool(hint.evidence_id),
+                learned=learned,
             )
         )
     ]
@@ -1210,10 +1216,9 @@ def may_descend(
         resolved_relative, settings.exclude_paths
     ):
         return False
-    overrides = {
-        _path_override_for(path, settings.path_overrides)
-        for path in (lexical_relative, resolved_relative)
-    }
+    override = _path_override_for_candidates(
+        (lexical_relative, resolved_relative), settings.path_overrides
+    )
     include_patterns = list(settings.force_include_paths) + [
         pattern
         for pattern, action in settings.path_overrides.items()
@@ -1224,9 +1229,9 @@ def may_descend(
         or _pattern_may_match_descendant(resolved_relative, pattern)
         for pattern in include_patterns
     )
-    if "exclude" in overrides:
+    if override == "exclude":
         return may_reach_included_descendant
-    if "include" in overrides:
+    if override == "include":
         return True
     ignored = soft_ignored
     if not ignored:

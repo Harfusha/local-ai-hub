@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import subprocess
 import tempfile
 import threading
@@ -1349,9 +1350,14 @@ class WorkOrchestrator:
             cursor = root
             for index, part in enumerate(parts):
                 cursor = cursor / part
-                is_junction = getattr(cursor, "is_junction", None)
-                if cursor.is_symlink() or (is_junction is not None and is_junction()):
-                    raise ValueError("refusing to restore through a symlink or junction")
+                try:
+                    metadata = cursor.lstat()
+                except FileNotFoundError:
+                    continue
+                attributes = int(getattr(metadata, "st_file_attributes", 0))
+                reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+                if stat.S_ISLNK(metadata.st_mode) or attributes & reparse_flag:
+                    raise ValueError("refusing to restore through a symlink or reparse point")
                 if index < len(parts) - 1 and cursor.exists() and not cursor.is_dir():
                     raise RuntimeError(f"rollback refused non-directory ancestor: {entry.path}")
             if path.exists() and path.is_dir():
