@@ -1,0 +1,262 @@
+--- a/src/local_ai_hub/agent_memory.py
++++ b/src/local_ai_hub/agent_memory.py
+@@ -2,6 +2,7 @@
+ 
+ from .json_utils import dumps as json_dumps
+ 
++import hashlib
+ import json
+ import math
+ import os
+@@ -2090,7 +2091,27 @@
+             return {"success": False, "compacted_groups": 0, "compacted_records": 0, "created_records": []}
+ 
+         now = time.time()
+-        records = self.find(scope=scope, limit=1000)
++        self._init_table()
++        scope_value = (
++            scope.value if hasattr(scope, "value")
++            else (AgentScope.parse(scope, AgentScope.REPOSITORY).value if scope is not None else None)
++        )
++        select_sql = (
++            "SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source, "
++            "evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id, "
++            "quarantine_reason, provenance, created_at, updated_at, expires_at "
++            "FROM agent_memory_records WHERE (expires_at IS NULL OR expires_at > ?)"
++        )
++        select_params: list[Any] = [now]
++        if scope_value is not None:
++            select_sql += " AND scope = ?"
++            select_params.append(scope_value)
++        select_sql += " ORDER BY updated_at DESC LIMIT 1000"
++        con = connect_sqlite(self.state_store.db_path)
++        try:
++            records = self._decode_memory_rows(con.execute(select_sql, tuple(select_params)).fetchall())
++        finally:
++            con.close()
+         candidates = [
+             r for r in records
+             if r.status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED)
+@@ -2098,14 +2119,15 @@
+             and (older_than_seconds <= 0.0 or (now - r.updated_at) >= older_than_seconds)
+         ]
+ 
+-        groups: dict[tuple[AgentScope, MemoryKind], list[MemoryRecord]] = defaultdict(list)
++        groups: dict[tuple[AgentScope, str, MemoryKind, str], list[MemoryRecord]] = defaultdict(list)
+         for r in candidates:
+-            groups[(r.scope, r.kind)].append(r)
++            provenance_key = json_dumps(r.provenance or {}, sort_keys=True)
++            groups[(r.scope, r.scope_id, r.kind, provenance_key)].append(r)
+ 
+         created_records: list[dict[str, Any]] = []
+         total_compacted = 0
+ 
+-        for (grp_scope, grp_kind), grp_records in groups.items():
++        for (grp_scope, grp_scope_id, grp_kind, provenance_key), grp_records in groups.items():
+             if len(grp_records) < max(2, min_records):
+                 continue
+ 
+@@ -2113,7 +2135,18 @@
+             if target_scope is not None:
+                 out_scope = AgentScope.parse(target_scope, grp_scope)
+ 
+-            digest_key = f"compacted_{grp_kind.value}_{int(now)}"
++            group_identity = json_dumps(
++                [
++                    grp_scope.value,
++                    grp_scope_id,
++                    grp_kind.value,
++                    provenance_key,
++                    sorted(record.record_id for record in grp_records),
++                ],
++                sort_keys=True,
++            )
++            digest_suffix = hashlib.sha256(group_identity.encode("utf-8")).hexdigest()[:12]
++            digest_key = f"compacted_{grp_kind.value}_{int(now)}_{digest_suffix}"
+             all_ev: set[str] = set()
+             for r in grp_records:
+                 all_ev.update(r.evidence_ids)
+@@ -2135,41 +2168,91 @@
+             digest_record = MemoryRecord.create(
+                 kind=grp_kind,
+                 scope=out_scope,
++                scope_id=grp_scope_id if out_scope == grp_scope else "",
+                 key=digest_key,
+                 value=digest_value,
+                 confidence=round(avg_conf, 3),
++                provenance=dict(grp_records[0].provenance),
+                 status=MemoryStatus.CONFIRMED if out_scope != grp_scope else MemoryStatus.ACTIVE,
+                 source="memory_compactor",
+                 evidence_ids=tuple(sorted(all_ev)),
+             )
+ 
+-            self._save_record(digest_record)
++            pending_events: list[AgentEvent] = []
++            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
++            try:
++                with self.state_store.ordered_event_publication(con) as publish:
++                    con.execute("BEGIN IMMEDIATE")
++                    try:
++                        self._save_record_row(con, digest_record)
++                        for src_rec in grp_records:
++                            superseded_rec = src_rec.with_superseded_by(digest_record.record_id)
++                            self._save_record_row(con, superseded_rec)
++                            relation_id = f"rel_{uuid.uuid4().hex[:12]}"
++                            relation_now = time.time()
++                            con.execute(
++                                """
++                                INSERT INTO agent_entity_relations (
++                                    relation_id, source_entity, relation, target_entity,
++                                    weight, metadata, created_at, updated_at
++                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
++                                """,
++                                (
++                                    relation_id,
++                                    src_rec.record_id,
++                                    "compacted_into",
++                                    digest_record.record_id,
++                                    1.0,
++                                    json_dumps({}),
++                                    relation_now,
++                                    relation_now,
++                                ),
++                            )
++                            relation_event = AgentEvent.create(
++                                stream_id=f"relation:{src_rec.record_id}:{digest_record.record_id}",
++                                kind="relation.recorded",
++                                payload={
++                                    "relation_id": relation_id,
++                                    "source": src_rec.record_id,
++                                    "relation": "compacted_into",
++                                    "target": digest_record.record_id,
++                                    "weight": 1.0,
++                                },
++                                actor=actor,
++                            )
++                            appended_relation = self.state_store.append_in_transaction(
++                                con, relation_event, strict_idempotency=False
++                            )
++                            pending_events.append(appended_relation.event)
++                            total_compacted += 1
++
++                        compact_event = AgentEvent.create(
++                            stream_id=_memory_event_stream_id(
++                                out_scope, digest_record.scope_id, digest_key
++                            ),
++                            kind="memory.compacted",
++                            payload={
++                                "digest_record_id": digest_record.record_id,
++                                "compacted_count": len(grp_records),
++                                "source_record_ids": [r.record_id for r in grp_records],
++                            },
++                            idempotency_key=f"compact_{digest_record.record_id}",
++                            actor=actor,
++                        )
++                        appended_compact = self.state_store.append_in_transaction(
++                            con, compact_event, strict_idempotency=False
++                        )
++                        pending_events.append(appended_compact.event)
++                        con.execute("COMMIT")
++                    except BaseException:
++                        if bool(getattr(con, "in_transaction", False)):
++                            con.execute("ROLLBACK")
++                        raise
++                    publish(pending_events)
++            finally:
++                con.close()
++
+             self._auto_link_record(digest_record, actor=actor)
+-
+-            for src_rec in grp_records:
+-                superseded_rec = src_rec.with_superseded_by(digest_record.record_id)
+-                self._save_record(superseded_rec)
+-                self.record_relation(
+-                    source=src_rec.record_id,
+-                    relation="compacted_into",
+-                    target=digest_record.record_id,
+-                    weight=1.0,
+-                    actor=actor,
+-                )
+-                total_compacted += 1
+-
+-            event = AgentEvent.create(
+-                stream_id=f"memory:{out_scope.value}:{digest_key}",
+-                kind="memory.compacted",
+-                payload={
+-                    "digest_record_id": digest_record.record_id,
+-                    "compacted_count": len(grp_records),
+-                    "source_record_ids": [r.record_id for r in grp_records],
+-                },
+-                idempotency_key=f"compact_{digest_record.record_id}",
+-                actor=actor,
+-            )
+-            self.state_store.append(event)
+             created_records.append(digest_record.to_dict())
+ 
+         return {
+--- a/tests/test_agent_crash_recovery.py
++++ b/tests/test_agent_crash_recovery.py
+@@ -5,7 +5,7 @@
+ import sys
+ from contextlib import closing
+ from pathlib import Path
+-from types import ModuleType, SimpleNamespace
++from types import SimpleNamespace
+ 
+ import pytest
+ 
+@@ -328,12 +328,16 @@
+         if key in supported:
+             receipt_kwargs[key] = value
+     verifications.record(VerificationReceipt.create(task_id, "tests", **receipt_kwargs))
+-    project_config = ModuleType("local_ai_hub.project_config")
+-    project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
+-        settings=SimpleNamespace(verification_rules={}, commands={}),
+-        config_digest="cfg-test",
+-    )
+-    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
++    from local_ai_hub import project_config
++
++    monkeypatch.setattr(
++        project_config,
++        "resolve_project_context",
++        lambda root, state_dir: SimpleNamespace(
++            settings=SimpleNamespace(verification_rules={}, commands={}),
++            config_digest="cfg-test",
++        ),
++    )
+     tasks.transition(
+         task_id,
+         TaskStatus.ACTIVE,
+@@ -732,14 +736,17 @@
+         status=MemoryStatus.SUPERSEDED,
+     )
+     assert len(active) == 1 and active[0].key.startswith("compacted_fact_")
+-    assert len(superseded) == 2
++    assert active[0].scope_id == "task-restart-compact"
++    assert active[0].provenance == {}
++    assert {item.key for item in superseded} == {"source-0", "source-1"}
++    assert all(item.status is MemoryStatus.SUPERSEDED for item in superseded)
+     assert all(item.supersedes_record_id == active[0].record_id for item in superseded)
+     with closing(sqlite3.connect(db_path)) as con:
+         assert con.execute(
+             "SELECT COUNT(*) FROM agent_entity_relations WHERE relation = 'compacted_into'"
+         ).fetchone()[0] == 2
+     compact_events = restarted_store.events(
+-        f"memory:{active[0].scope.value}:{active[0].key}"
++        _memory_event_stream_id(active[0].scope, active[0].scope_id, active[0].key)
+     )
+     assert any(event.kind == "memory.compacted" for event in compact_events)
+     assert restarted_memory.compact(min_records=2)["compacted_groups"] == 0
+@@ -794,6 +801,11 @@
+     assert compacted["compacted_groups"] == 2
+     digests = compacted["created_records"]
+     assert len({record["key"] for record in digests}) == 2
++    assert {record["scope_id"] for record in digests} == {"task-same-scope-id"}
++    assert {record["provenance"]["root"] for record in digests} == {
++        "C:/repo/one",
++        "C:/repo/two",
++    }
+     assert {record["provenance"]["root"] for record in digests} == {
+         "C:/repo/one",
+         "C:/repo/two",

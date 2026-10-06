@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "task": "T01",
+  "purpose": "static operation mapping for root-current acceptance batch",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "master_plan_sha256": "567F3FF40AE8E7ADD5131EB80B8C55AEB2C55183657D19E185C1035711C337BD",
+  "selector_batch": {
+    "path": "handoff/T01-root-current-acceptance-selectors-20261002.txt",
+    "sha256": "57610EC4E0B5BFA5BF1B5A36F44A28EB713144A0881C5CBBECB4F64B590BAE70",
+    "count": 123
+  },
+  "selector_operation_map": {
+    "json_path": "handoff/T01-root-acceptance-selector-operation-links-20261002.json",
+    "json_sha256": "5FF085617F2F53CA4B97B2707387CB18D68F231C0FC4B7C74426D34D4577A1D5",
+    "csv_path": "handoff/T01-root-acceptance-selector-operation-links-20261002.csv",
+    "csv_sha256": "4CA8361154006C740E5BC22FC5730DDA163EFC24269598BEFD5229E7ED37506A",
+    "selectors_mapped": 123,
+    "selectors_unmapped": 0,
+    "unique_operation_ids": 128,
+    "surface_counts": {
+      "CLI operation": 9,
+      "HTTP GET": 9,
+      "HTTP POST": 1,
+      "HubClient method": 9,
+      "HubClient target": 9,
+      "MCP action alias local_ai_coord": 12,
+      "MCP action local_ai_command": 9,
+      "MCP action local_ai_coord": 51,
+      "MCP action local_ai_rag": 7,
+      "MCP action schema gap local_ai_command": 1,
+      "MCP action schema gap local_ai_coord": 7,
+      "MCP tool": 4
+    }
+  },
+  "historical_gaps": {
+    "map_json_path": "handoff/T01-gap-operation-node-map-20261002.json",
+    "map_json_sha256": "D10D49FCE365260595CA94AACD70D5381A3E4E2C012BC2D65B8B27DF688DAD77",
+    "total": 446,
+    "with_targeted_candidate_selector": 58,
+    "without_behavior_selector_or_owner_receipt": 387,
+    "owner_receipt_only": [
+      {
+        "operation_id": "op-65970ac00a0a",
+        "surface": "HTTP POST",
+        "name": "/api/task/transcribe",
+        "owner_task": "T13",
+        "owner_receipt_selector": "tests/test_transcription_contract.py::test_http_transcribe_route_preserves_requested_model",
+        "owner_receipt_task": "T17",
+        "owner_receipt_status": "T17 candidate selector and temporary root-source overlay passed; integrated root run pending"
+      }
+    ]
+  },
+  "explicit_uncovered_examples": [
+    {
+      "operation_id": "op-a991c9e8b941",
+      "surface": "HTTP GET",
+      "name": "/api/context/pack",
+      "owner_task": "T01",
+      "note": "/api/context/pack; explicitly excluded by T01 scope"
+    },
+    {
+      "operation_id": "op-f954480234c9",
+      "surface": "HTTP GET",
+      "name": "/api/agent-state/events/stream",
+      "owner_task": "T08",
+      "note": "GET /api/agent-state/events/stream"
+    },
+    {
+      "operation_id": "op-d50cc5e721fb",
+      "surface": "HTTP GET",
+      "name": "/api/agent-state/memory",
+      "owner_task": "T05",
+      "note": "GET /api/agent-state/memory"
+    },
+    {
+      "operation_id": "op-b86b72558569",
+      "surface": "HTTP GET",
+      "name": "/api/code/ast_outline",
+      "owner_task": "T10",
+      "note": "GET /api/code/ast_outline"
+    },
+    {
+      "operation_id": "op-411b0d6c8d7d",
+      "surface": "HTTP GET",
+      "name": "/api/db/query",
+      "owner_task": "T18",
+      "note": "GET /api/db/query"
+    }
+  ],
+  "mcp_coord_schema_gap_rows": [
+    {
+      "operation_id": "op-db688a5eedb4",
+      "name": "claim_batch",
+      "owner_task": "T03",
+      "candidate_selector": "tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_schema_gap_claim_batch_forwards_owned_paths",
+      "root_green": "false"
+    },
+    {
+      "operation_id": "op-dad19ce3e476",
+      "name": "curate_training_dataset",
+      "owner_task": "T03",
+      "candidate_selector": "tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_schema_gap_curate_training_dataset_forwards_policy",
+      "root_green": "false"
+    },
+    {
+      "operation_id": "op-b0d3c8bd69ad",
+      "name": "delete",
+      "owner_task": "T03",
+      "candidate_selector": "tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_schema_gap_delete_is_rejected_without_dispatch",
+      "root_green": "false"
+    },
+    {
+      "operation_id": "op-9205ce46f2ca",
+      "name": "get",
+      "owner_task": "T03",
+      "candidate_selector": "tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_schema_gap_get_is_rejected_without_dispatch",
+      "root_green": "false"
+    },
+    {
+      "operation_id": "op-ce44f3483a73",
+      "name": "lease_renew",
+      "owner_task": "T03",
+      "candidate_selector": "tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_schema_gap_lease_renew_forwards_lease_and_ttl",
+      "root_green": "false"
+    },
+    {
+      "operation_id": "op-b1cb625a2e0c",
+      "name": "list",
+      "owner_task": "T03",
+      "candidate_selector": "tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_schema_gap_list_is_rejected_without_dispatch",
+      "root_green": "false"
+    },
+    {
+      "operation_id": "op-4ae1b9fe51e3",
+      "name": "merge",
+      "owner_task": "T03",
+      "candidate_selector": "tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_schema_gap_merge_is_rejected_without_dispatch",
+      "root_green": "false"
+    }
+  ],
+  "evidence_limit": "Static exact asserted-call mapping only; selector batch unrun in root; linked operations remain root_green=false.",
+  "scope": "No pytest, no root edits, /api/context/pack explicitly excluded.",
+  "uncovered_owner_test_plan": {
+    "json_path": "handoff/T01-uncovered-operation-owner-test-plan-20261002.json",
+    "json_sha256": "5835CC1A2AE5220E1813C3B6D3E7DE13836253606D04FE4000D8E4CA22ECE1F4",
+    "markdown_path": "handoff/T01-uncovered-operation-owner-test-plan-20261002.md",
+    "markdown_sha256": "28355F3565DDA50851E43FB831ED76517A86445A448F65EE82532426B2238568",
+    "uncovered_rows": 387,
+    "owner_groups": 20,
+    "unassigned_rows": 0,
+    "surface_counts": {
+      "Generated manifest": 1,
+      "HTTP GET": 52,
+      "HTTP POST": 206,
+      "HubClient method": 3,
+      "HubClient target": 6,
+      "MCP action alias local_ai_command": 4,
+      "MCP action alias local_ai_repo": 4,
+      "MCP action alias local_ai_task": 3,
+      "MCP action local_ai_artifact": 2,
+      "MCP action local_ai_command": 16,
+      "MCP action local_ai_repo": 74,
+      "MCP action local_ai_status": 5,
+      "MCP action local_ai_task": 1,
+      "MCP action schema gap local_ai_repo": 3,
+      "MCP action schema gap local_ai_status": 4,
+      "MCP detail local_ai_status": 3
+    }
+  }
+}

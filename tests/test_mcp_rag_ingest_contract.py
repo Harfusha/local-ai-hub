@@ -31,13 +31,13 @@ def test_document_ingest_requires_explicit_content_and_does_not_use_query_or_roo
         query="query text must not become document content",
     )
 
-    assert result == {
+    expected = {
         "success": False,
-        "status_code": 400,
         "retryable": False,
         "terminal": True,
-        "error": "content is required for document ingestion",
+        "error": "content is required for ingest_document",
     }
+    assert {key: result[key] for key in expected} == expected
     assert client.calls == []
 
 

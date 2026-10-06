@@ -1,0 +1,790 @@
+--- a/src/local_ai_hub/agent_events.py
++++ b/src/local_ai_hub/agent_events.py
+@@ -2,6 +2,7 @@
+ 
+ from .json_utils import dumps as json_dumps
+ 
++from contextlib import contextmanager
+ import json
+ import os
+ import queue
+@@ -11,7 +12,7 @@
+ import uuid
+ from dataclasses import dataclass
+ from pathlib import Path
+-from typing import Any, Mapping
++from typing import Any, Callable, Iterator, Mapping, Sequence
+ 
+ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
+ 
+@@ -163,6 +164,7 @@
+                 "correlation_id", "actor", "created_at",
+             ]
+             expected_snapshots = ["snapshot_id", "stream_id", "seq", "state", "created_at"]
++            expected_cursors = ["stream_id", "last_seq", "first_retained_seq"]
+ 
+             def _setup() -> None:
+                 con = connect_sqlite(self.db_path)
+@@ -176,6 +178,10 @@
+                         current = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_events)")] == expected_events
+                     if current and "agent_snapshots" in existing:
+                         current = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_snapshots)")] == expected_snapshots
++                    if "agent_event_cursors" in existing:
++                        cursor_columns = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_event_cursors)")]
++                        if cursor_columns != expected_cursors:
++                            raise RuntimeError("agent event cursor schema mismatch; refusing to alter durable database")
+                     if not current or (version == self._SCHEMA_VERSION and not {"agent_events", "agent_snapshots"}.issubset(existing)):
+                         raise RuntimeError(
+                             "agent state schema mismatch; refusing to delete or recreate durable database"
+@@ -211,6 +217,18 @@
+                         );
+                         """)
+                         con.execute("CREATE INDEX IF NOT EXISTS idx_agent_snapshots_stream ON agent_snapshots (stream_id, seq DESC)")
++                        con.execute("""
++                        CREATE TABLE IF NOT EXISTS agent_event_cursors (
++                            stream_id TEXT PRIMARY KEY,
++                            last_seq INTEGER NOT NULL,
++                            first_retained_seq INTEGER NOT NULL
++                        );
++                        """)
++                        if "agent_event_cursors" not in existing:
++                            con.execute("""
++                            INSERT INTO agent_event_cursors (stream_id, last_seq, first_retained_seq)
++                            SELECT stream_id, MAX(seq), MIN(seq) FROM agent_events GROUP BY stream_id
++                            """)
+                         con.execute(f"PRAGMA user_version={self._SCHEMA_VERSION}")
+                 finally:
+                     con.close()
+@@ -246,65 +264,194 @@
+         destination.close()
+         return backup_path
+ 
+-    def append(self, event: AgentEvent) -> AppendResult:
++    def append_in_transaction(
++        self,
++        con: Any,
++        event: AgentEvent,
++        *,
++        strict_idempotency: bool = False,
++    ) -> AppendResult:
++        """Append event and advance durable sequence cursor in caller transaction."""
++        if not self.enabled:
++            raise RuntimeError("agent_state is disabled")
++        if not bool(getattr(con, "in_transaction", False)):
++            raise RuntimeError("append_in_transaction requires a caller-owned transaction")
++        payload = json_dumps(event.payload, separators=(",", ":"))
++        payload_bytes = payload.encode("utf-8")
++        if len(payload_bytes) > self.max_payload_bytes:
++            raise ValueError(
++                f"payload exceeds maximum allowed {self.max_payload_bytes} bytes (got {len(payload_bytes)})"
++            )
++        existing = con.execute(
++            """
++            SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
++            FROM agent_events WHERE stream_id = ? AND idempotency_key = ?
++            """,
++            (event.stream_id, event.idempotency_key),
++        ).fetchone()
++        if existing:
++            stored = AgentEvent.from_row(existing)
++            if strict_idempotency and (
++                stored.kind != event.kind
++                or dict(stored.payload) != dict(event.payload)
++                or stored.actor != event.actor
++                or stored.correlation_id != event.correlation_id
++            ):
++                raise ValueError(
++                    "idempotency key was already used for a different event payload"
++                )
++            bounds = con.execute(
++                "SELECT MIN(seq), MAX(seq) FROM agent_events WHERE stream_id = ?",
++                (event.stream_id,),
++            ).fetchone()
++            cursor = con.execute(
++                "SELECT last_seq, first_retained_seq FROM agent_event_cursors WHERE stream_id = ?",
++                (event.stream_id,),
++            ).fetchone()
++            retained = int(bounds[0]) if bounds and bounds[0] is not None else (stored.seq or 1)
++            stream_high_water = int(bounds[1]) if bounds and bounds[1] is not None else 0
++            high_water = max(
++                int(cursor[0]) if cursor else 0,
++                stream_high_water,
++                int(stored.seq or 0),
++            )
++            first_retained = min(int(cursor[1]), retained) if cursor else retained
++            con.execute(
++                """
++                INSERT INTO agent_event_cursors (stream_id, last_seq, first_retained_seq)
++                VALUES (?, ?, ?)
++                ON CONFLICT(stream_id) DO UPDATE SET
++                    last_seq = MAX(agent_event_cursors.last_seq, excluded.last_seq),
++                    first_retained_seq = MIN(agent_event_cursors.first_retained_seq, excluded.first_retained_seq)
++                """,
++                (event.stream_id, high_water, first_retained),
++            )
++            return AppendResult(seq=stored.seq or 0, duplicate=True, event=stored)
++
++        cursor = con.execute(
++            "SELECT last_seq, first_retained_seq FROM agent_event_cursors WHERE stream_id = ?",
++            (event.stream_id,),
++        ).fetchone()
++        if cursor is None:
++            bounds = con.execute(
++                "SELECT MIN(seq), MAX(seq) FROM agent_events WHERE stream_id = ?",
++                (event.stream_id,),
++            ).fetchone()
++            if bounds and bounds[1] is not None:
++                last_seq = int(bounds[1])
++                first_retained = int(bounds[0])
++            else:
++                last_seq = 0
++                first_retained = 1
++            con.execute(
++                "INSERT INTO agent_event_cursors (stream_id, last_seq, first_retained_seq) VALUES (?, ?, ?)",
++                (event.stream_id, last_seq, first_retained),
++            )
++        else:
++            last_seq, first_retained = int(cursor[0]), int(cursor[1])
++
++        new_seq = last_seq + 1
++        if first_retained > last_seq:
++            first_retained = new_seq
++        persisted = event.with_seq(new_seq)
++        con.execute(
++            """
++            INSERT INTO agent_events (
++                stream_id, seq, event_id, kind, payload, idempotency_key,
++                correlation_id, actor, created_at
++            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
++            """,
++            (
++                event.stream_id,
++                new_seq,
++                event.event_id,
++                event.kind,
++                payload,
++                event.idempotency_key,
++                event.correlation_id,
++                event.actor,
++                event.created_at,
++            ),
++        )
++        con.execute(
++            "UPDATE agent_event_cursors SET last_seq = ?, first_retained_seq = ? WHERE stream_id = ?",
++            (new_seq, first_retained, event.stream_id),
++        )
++        return AppendResult(seq=new_seq, duplicate=False, event=persisted)
++
++    def ordered_event_publication(
++        self, con: Any
++    ) -> Iterator[Callable[[Sequence[AgentEvent]], None]]:
++        """Serialize a caller-owned commit with publication to live subscribers.
++
++        Enter before the caller starts its transaction. The caller retains ownership
++        of BEGIN, COMMIT, and ROLLBACK; call the yielded publisher only after COMMIT.
++        The publisher verifies committed rows before emitting any event. A rollback
++        therefore cannot produce a live event, even if the caller mistakenly tries
++        to publish its pending result.
++        """
++        if not self.enabled:
++            raise RuntimeError("agent_state is disabled")
++        if bool(getattr(con, "in_transaction", False)):
++            raise RuntimeError(
++                "ordered_event_publication must be entered before caller transaction begins"
++            )
++        with self._append_publish_lock:
++            scope_active = True
++
++            def publish_committed(events: Sequence[AgentEvent]) -> None:
++                if not scope_active:
++                    raise RuntimeError("ordered event publication scope is closed")
++                if bool(getattr(con, "in_transaction", False)):
++                    raise RuntimeError("caller transaction is still open")
++                committed: list[AgentEvent] = []
++                last_seq_by_stream: dict[str, int] = {}
++                for event in events:
++                    if event.seq is None:
++                        raise RuntimeError("event is not committed")
++                    prior_seq = last_seq_by_stream.get(event.stream_id)
++                    if prior_seq is not None and event.seq <= prior_seq:
++                        raise ValueError("committed events must be supplied in stream sequence order")
++                    last_seq_by_stream[event.stream_id] = event.seq
++                    row = con.execute(
++                        """
++                        SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
++                               correlation_id, actor, created_at
++                        FROM agent_events
++                        WHERE stream_id = ? AND seq = ? AND event_id = ?
++                        """,
++                        (event.stream_id, event.seq, event.event_id),
++                    ).fetchone()
++                    if row is None or AgentEvent.from_row(row) != event:
++                        raise RuntimeError("event is not committed")
++                    committed.append(event)
++                for event in committed:
++                    self._publish(event)
++
++            try:
++                yield publish_committed
++            finally:
++                scope_active = False
++
++    def append(self, event: AgentEvent, *, strict_idempotency: bool = False) -> AppendResult:
+         if not self.enabled:
+             return AppendResult(seq=0, duplicate=False, error="agent_state is disabled")
+-
+         payload_bytes = json_dumps(event.payload, separators=(",", ":")).encode("utf-8")
+         if len(payload_bytes) > self.max_payload_bytes:
+             raise ValueError(
+                 f"payload exceeds maximum allowed {self.max_payload_bytes} bytes (got {len(payload_bytes)})"
+             )
+-
+         self._ensure_schema()
+ 
+         def _do_append() -> AppendResult:
+-            # Keep each busy wait short; retry_busy provides bounded recovery for
+-            # transient locks, while persistent locks must return retryable quickly.
+             con = connect_sqlite(self.db_path, isolation_level=None, timeout_seconds=0.25)
+             try:
+                 con.execute("BEGIN IMMEDIATE")
+-                existing = con.execute(
+-                    """
+-                    SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
+-                    FROM agent_events
+-                    WHERE stream_id = ? AND idempotency_key = ?
+-                    """,
+-                    (event.stream_id, event.idempotency_key),
+-                ).fetchone()
+-                if existing:
+-                    con.execute("COMMIT")
+-                    existing_ev = AgentEvent.from_row(existing)
+-                    return AppendResult(seq=existing_ev.seq or 0, duplicate=True, event=existing_ev)
+-
+-                row = con.execute(
+-                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
+-                    (event.stream_id,),
+-                ).fetchone()
+-                new_seq = int(row[0]) if row else 1
+-
+-                con.execute(
+-                    """
+-                    INSERT INTO agent_events (
+-                        stream_id, seq, event_id, kind, payload, idempotency_key,
+-                        correlation_id, actor, created_at
+-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+-                    """,
+-                    (
+-                        event.stream_id,
+-                        new_seq,
+-                        event.event_id,
+-                        event.kind,
+-                        payload_bytes.decode("utf-8"),
+-                        event.idempotency_key,
+-                        event.correlation_id,
+-                        event.actor,
+-                        event.created_at,
+-                    ),
++                result = self.append_in_transaction(
++                    con, event, strict_idempotency=strict_idempotency
+                 )
+                 con.execute("COMMIT")
+-                persisted = event.with_seq(new_seq)
+-                return AppendResult(seq=new_seq, duplicate=False, event=persisted)
++                return result
+             except Exception as exc:
+                 try:
+                     con.execute("ROLLBACK")
+@@ -318,10 +465,10 @@
+ 
+         try:
+             with self._append_publish_lock:
+-                res = retry_busy(_do_append, retries=5, base_delay_seconds=0.02)
+-                if not res.duplicate and res.event is not None:
+-                    self._publish(res.event)
+-                return res
++                result = retry_busy(_do_append, retries=5, base_delay_seconds=0.02)
++                if not result.duplicate and result.event is not None:
++                    self._publish(result.event)
++                return result
+         except Exception as exc:
+             if is_busy_error(exc):
+                 return AppendResult(seq=0, duplicate=False, retryable=True, error=str(exc))
+@@ -364,6 +511,147 @@
+                 for q in dead_queues:
+                     if q in self._subscribers:
+                         self._subscribers.remove(q)
++
++    def event_page(
++        self,
++        stream_id: str,
++        after_seq: int = 0,
++        limit: int = 1000,
++        through_seq: int | None = None,
++    ) -> dict[str, Any]:
++        """Read a bounded sequence page and report replay gaps explicitly."""
++        try:
++            requested_after = max(0, int(after_seq))
++        except (TypeError, ValueError, OverflowError):
++            requested_after = 0
++            return self._event_page_error(requested_after)
++        try:
++            page_limit = max(1, min(int(limit), 10000))
++        except (TypeError, ValueError, OverflowError):
++            return self._event_page_error(requested_after)
++        try:
++            requested_through = (
++                None if through_seq is None else max(0, int(through_seq))
++            )
++        except (TypeError, ValueError, OverflowError):
++            return self._event_page_error(requested_after)
++        if not self.enabled or not self.db_path.exists():
++            return {
++                "success": True,
++                "events": [],
++                "next_seq": requested_after,
++                "first_retained_seq": None,
++                "last_seq": 0,
++                "has_more": False,
++                "gap_ranges": [],
++                "cursor_reset": False,
++            }
++        con: sqlite3.Connection | None = None
++        try:
++            self._ensure_schema()
++            con = connect_sqlite(self.db_path, isolation_level=None)
++            con.execute("BEGIN")
++            cursor = con.execute(
++                "SELECT last_seq, first_retained_seq FROM agent_event_cursors WHERE stream_id = ?",
++                (stream_id,),
++            ).fetchone()
++            bounds = con.execute(
++                "SELECT MIN(seq), MAX(seq) FROM agent_events WHERE stream_id = ?",
++                (stream_id,),
++            ).fetchone()
++            if cursor is None:
++                if bounds and bounds[1] is not None:
++                    current_last_seq = int(bounds[1])
++                else:
++                    current_last_seq = 0
++            else:
++                current_last_seq = max(
++                    int(cursor[0]),
++                    int(bounds[1]) if bounds and bounds[1] is not None else 0,
++                )
++            last_seq = (
++                current_last_seq
++                if requested_through is None
++                else min(current_last_seq, requested_through)
++            )
++            first_retained = int(bounds[0]) if bounds and bounds[0] is not None else None
++            cursor_reset = requested_after > current_last_seq
++            effective_after = requested_after
++            if cursor_reset:
++                effective_after = (
++                    max(0, first_retained - 1)
++                    if first_retained is not None
++                    else current_last_seq
++                )
++            rows = con.execute(
++                """
++                SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
++                FROM agent_events
++                WHERE stream_id = ? AND seq > ? AND seq <= ?
++                ORDER BY seq ASC
++                LIMIT ?
++                """,
++                (stream_id, effective_after, last_seq, page_limit + 1),
++            ).fetchall()
++            has_more = len(rows) > page_limit
++            events = [AgentEvent.from_row(row) for row in rows[:page_limit]]
++            next_seq = events[-1].seq if events else effective_after
++            gap_ranges: list[dict[str, int]] = []
++            expected_seq = effective_after + 1
++            for event in events:
++                if event.seq > expected_seq:
++                    gap_ranges.append({"from_seq": expected_seq, "to_seq": event.seq - 1})
++                expected_seq = event.seq + 1
++            if not has_more and expected_seq <= last_seq:
++                trailing_gap = {"from_seq": expected_seq, "to_seq": last_seq}
++                gap_ranges.append(trailing_gap)
++                next_seq = trailing_gap["to_seq"]
++            result = {
++                "success": True,
++                "events": events,
++                "next_seq": next_seq,
++                "first_retained_seq": first_retained,
++                "last_seq": last_seq,
++                "has_more": has_more,
++                "gap_ranges": gap_ranges,
++                "cursor_reset": cursor_reset,
++            }
++            con.execute("COMMIT")
++            return result
++        except Exception as exc:
++            if con is not None:
++                try:
++                    con.execute("ROLLBACK")
++                except Exception:
++                    pass
++            detail = (
++                str(exc)
++                if isinstance(exc, (TimeoutError,))
++                else None
++            )
++            return self._event_page_error(requested_after, detail)
++        finally:
++            if con is not None:
++                try:
++                    con.close()
++                except Exception:
++                    pass
++
++    def _event_page_error(next_seq: int, message: str | None = None) -> dict[str, Any]:
++        return {
++            "success": False,
++            "events": [],
++            "next_seq": next_seq,
++            "first_retained_seq": None,
++            "last_seq": 0,
++            "has_more": False,
++            "gap_ranges": [],
++            "cursor_reset": False,
++            "error": {
++                "code": "event_page_unavailable",
++                "message": message or "Event page could not be read.",
++            },
++        }
+ 
+     def events(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> list[AgentEvent]:
+         if not self.enabled or not self.db_path.exists():
+@@ -464,6 +752,13 @@
+                 con.execute("BEGIN IMMEDIATE")
+                 cur_ev = con.execute("DELETE FROM agent_events WHERE created_at < ?", (cutoff,))
+                 deleted_events = cur_ev.rowcount if cur_ev else 0
++                con.execute("""
++                    UPDATE agent_event_cursors
++                    SET first_retained_seq = COALESCE(
++                        (SELECT MIN(seq) FROM agent_events WHERE stream_id = agent_event_cursors.stream_id),
++                        last_seq + 1
++                    )
++                """)
+                 cur_snap = con.execute("DELETE FROM agent_snapshots WHERE created_at < ?", (cutoff,))
+                 deleted_snaps = cur_snap.rowcount if cur_snap else 0
+                 con.execute("COMMIT")
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -504,6 +504,87 @@
+             actor="verifier",
+         )
+         return self._commit_update(current, updated, event)
++
++    def add_verification_receipt_in_transaction(
++        self,
++        con: sqlite3.Connection,
++        task_id: str,
++        criterion: str,
++        receipt_id: str,
++    ) -> tuple[TaskState | None, AgentEvent | None]:
++        """Update task receipt projection and event using caller's SQLite transaction."""
++        if not bool(getattr(con, "in_transaction", False)):
++            raise RuntimeError(
++                "add_verification_receipt_in_transaction requires a caller-owned transaction"
++            )
++        row = con.execute(
++            "SELECT * FROM agent_tasks_projection WHERE task_id = ?",
++            (task_id,),
++        ).fetchone()
++        if not row:
++            return None, None
++        current = self._row_to_state(row)
++        event = AgentEvent.create(
++            stream_id=f"task:{task_id}",
++            kind="task.verified",
++            payload={"criterion": criterion, "receipt_id": receipt_id},
++            idempotency_key=f"ver_{task_id}_{criterion}_{receipt_id}",
++            actor="verifier",
++        )
++        existing = con.execute(
++            "SELECT seq FROM agent_events WHERE stream_id = ? AND idempotency_key = ?",
++            (event.stream_id, event.idempotency_key),
++        ).fetchone()
++        current_receipt = current.verification_receipts.get(criterion)
++        if existing and current_receipt not in (None, receipt_id):
++            appended = self.state_store.append_in_transaction(con, event, strict_idempotency=True)
++            if appended.error or appended.event is None:
++                raise RuntimeError(appended.error or "task receipt replay returned no persisted event")
++            return current, None
++        if current_receipt == receipt_id:
++            appended = self.state_store.append_in_transaction(con, event, strict_idempotency=True)
++            if appended.error or appended.event is None:
++                raise RuntimeError(appended.error or "task receipt append returned no persisted event")
++            return current, appended.event if not appended.duplicate else None
++
++        updated_receipts = dict(current.verification_receipts)
++        updated_receipts[criterion] = receipt_id
++        updated_at = time.time()
++        cur = con.execute(
++            """
++            UPDATE agent_tasks_projection
++            SET receipts = ?, updated_at = ?
++            WHERE task_id = ? AND receipts = ? AND updated_at = ?
++            """,
++            (
++                json_dumps(updated_receipts),
++                updated_at,
++                current.task_id,
++                json_dumps(current.verification_receipts),
++                current.updated_at,
++            ),
++        )
++        if cur.rowcount != 1:
++            raise ConcurrentTaskUpdateError(
++                f"Task {task_id} changed while recording verification receipt"
++            )
++        appended = self.state_store.append_in_transaction(con, event, strict_idempotency=True)
++        if appended.error or appended.event is None:
++            raise RuntimeError(appended.error or "task receipt append returned no persisted event")
++        updated = TaskState(
++            task_id=current.task_id,
++            status=current.status,
++            contract=current.contract,
++            context=current.context,
++            owner=current.owner,
++            lease_id=current.lease_id,
++            created_at=current.created_at,
++            updated_at=updated_at,
++            heartbeat_expires_at=current.heartbeat_expires_at,
++            checkpoint=current.checkpoint,
++            verification_receipts=updated_receipts,
++        )
++        return updated, appended.event if not appended.duplicate else None
+ 
+     def _verify_completion(self, task: TaskState) -> None:
+         if not task.contract.acceptance_criteria:
+@@ -1153,16 +1234,10 @@
+         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+ 
+     def _commit_create(self, state: TaskState, event: AgentEvent) -> TaskState:
+-        """Atomically create initial projection and task.created event."""
++        """Atomically create initial projection, sequence cursor, and task event."""
+         if not self.state_store.enabled:
+             return state
+         self._init_projection_table()
+-        payload = json_dumps(event.payload, separators=(",", ":"))
+-        payload_bytes = payload.encode("utf-8")
+-        if len(payload_bytes) > self.state_store.max_payload_bytes:
+-            raise ValueError(
+-                f"payload exceeds maximum allowed {self.state_store.max_payload_bytes} bytes (got {len(payload_bytes)})"
+-            )
+         context = json_dumps({
+             "repository_id": state.context.repository_id,
+             "clone_id": state.context.clone_id,
+@@ -1171,16 +1246,34 @@
+             "task_id": state.context.task_id,
+             "session_id": state.context.session_id,
+         })
+-
+-        def _do_commit() -> None:
++        published: list[AgentEvent] = []
++
++        def _do_commit() -> TaskState:
+             con = connect_sqlite(self.state_store.db_path, isolation_level=None, timeout_seconds=0.25)
+             try:
+                 con.execute("BEGIN IMMEDIATE")
+-                seq_row = con.execute(
+-                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
+-                    (event.stream_id,),
++                existing = con.execute(
++                    """
++                    SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
++                           correlation_id, actor, created_at
++                    FROM agent_events WHERE stream_id = ? AND idempotency_key = ?
++                    """,
++                    (event.stream_id, event.idempotency_key),
+                 ).fetchone()
+-                seq = int(seq_row[0]) if seq_row else 1
++                if existing:
++                    existing_event = AgentEvent.from_row(existing)
++                    if existing_event.kind != event.kind or dict(existing_event.payload) != dict(event.payload):
++                        raise RuntimeError("task create idempotency key conflicts with a different event")
++                    current = con.execute(
++                        "SELECT * FROM agent_tasks_projection WHERE task_id = ?",
++                        (state.task_id,),
++                    ).fetchone()
++                    if current:
++                        con.execute("COMMIT")
++                        return self._row_to_state(current)
++                    if str(existing_event.payload.get("task_id", "")) != state.task_id:
++                        raise RuntimeError("task create event conflicts with requested task identity")
++
+                 con.execute(
+                     """
+                     INSERT INTO agent_tasks_projection (
+@@ -1202,26 +1295,18 @@
+                         state.updated_at,
+                     ),
+                 )
+-                con.execute(
+-                    """
+-                    INSERT INTO agent_events (
+-                        stream_id, seq, event_id, kind, payload, idempotency_key,
+-                        correlation_id, actor, created_at
+-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+-                    """,
+-                    (
+-                        event.stream_id,
+-                        seq,
+-                        event.event_id,
+-                        event.kind,
+-                        payload,
+-                        event.idempotency_key,
+-                        event.correlation_id,
+-                        event.actor,
+-                        event.created_at,
+-                    ),
+-                )
++                if not existing:
++                    appended = self.state_store.append_in_transaction(
++                        con, event, strict_idempotency=True
++                    )
++                    if appended.error or appended.event is None:
++                        raise RuntimeError(appended.error or "task creation append returned no persisted event")
++                    if appended.duplicate:
++                        raise RuntimeError("task projection/event idempotency mismatch")
++                    if appended.event:
++                        published.append(appended.event)
+                 con.execute("COMMIT")
++                return state
+             except Exception:
+                 try:
+                     con.execute("ROLLBACK")
+@@ -1230,10 +1315,12 @@
+                 raise
+             finally:
+                 con.close()
+-            self.state_store._publish(event.with_seq(seq))
+-
+-        retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
+-        return state
++
++        with self.state_store._append_publish_lock:
++            saved = retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
++            for persisted in published:
++                self.state_store._publish(persisted)
++        return saved
+ 
+     def _commit_update(
+         self,
+@@ -1241,16 +1328,17 @@
+         updated: TaskState,
+         event: AgentEvent,
+     ) -> TaskState:
+-        """Atomically compare task version, append event, and update projection."""
++        """CAS-update projection and append its event/cursor in one transaction."""
+         if not self._db_path_available():
+             raise RuntimeError("agent task storage is unavailable")
+-        payload = json_dumps(event.payload, separators=(",", ":"))
+-        payload_bytes = payload.encode("utf-8")
+-        if len(payload_bytes) > self.state_store.max_payload_bytes:
+-            raise ValueError(
+-                f"payload exceeds maximum allowed {self.state_store.max_payload_bytes} bytes (got {len(payload_bytes)})"
+-            )
+-
++        expected_context = json_dumps({
++            "repository_id": current.context.repository_id,
++            "clone_id": current.context.clone_id,
++            "worktree_id": current.context.worktree_id,
++            "branch": current.context.branch,
++            "task_id": current.context.task_id,
++            "session_id": current.context.session_id,
++        })
+         context = json_dumps({
+             "repository_id": updated.context.repository_id,
+             "clone_id": updated.context.clone_id,
+@@ -1258,14 +1346,6 @@
+             "branch": updated.context.branch,
+             "task_id": updated.context.task_id,
+             "session_id": updated.context.session_id,
+-        })
+-        expected_context = json_dumps({
+-            "repository_id": current.context.repository_id,
+-            "clone_id": current.context.clone_id,
+-            "worktree_id": current.context.worktree_id,
+-            "branch": current.context.branch,
+-            "task_id": current.context.task_id,
+-            "session_id": current.context.session_id,
+         })
+         values = (
+             updated.status.value,
+@@ -1290,6 +1370,7 @@
+             current.heartbeat_expires_at,
+             current.updated_at,
+         )
++        published: list[AgentEvent] = []
+         committed: list[TaskState] = []
+ 
+         def _do_commit() -> None:
+@@ -1324,6 +1405,7 @@
+                         committed.append(self._row_to_state(current_row))
+                         con.execute("COMMIT")
+                         return
++
+                 con.execute(
+                     """
+                     UPDATE agent_tasks_projection SET
+@@ -1339,31 +1421,17 @@
+                     raise ConcurrentTaskUpdateError(
+                         f"Task {current.task_id} changed during transition; reload and retry"
+                     )
+-                seq_row = con.execute(
+-                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
+-                    (event.stream_id,),
+-                ).fetchone()
+-                seq = int(seq_row[0]) if seq_row else 1
+-                con.execute(
+-                    """
+-                    INSERT INTO agent_events (
+-                        stream_id, seq, event_id, kind, payload, idempotency_key,
+-                        correlation_id, actor, created_at
+-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+-                    """,
+-                    (
+-                        event.stream_id,
+-                        seq,
+-                        event.event_id,
+-                        event.kind,
+-                        payload,
+-                        event.idempotency_key,
+-                        event.correlation_id,
+-                        event.actor,
+-                        event.created_at,
+-                    ),
++                appended = self.state_store.append_in_transaction(
++                    con, event, strict_idempotency=True
+                 )
++                if appended.error or appended.event is None:
++                    raise RuntimeError(appended.error or "task transition append returned no persisted event")
++                if appended.duplicate:
++                    raise RuntimeError("task projection/event idempotency mismatch")
++                if appended.event:
++                    published.append(appended.event)
+                 con.execute("COMMIT")
++                committed.append(updated)
+             except Exception:
+                 try:
+                     con.execute("ROLLBACK")
+@@ -1372,9 +1440,11 @@
+                 raise
+             finally:
+                 con.close()
+-            self.state_store._publish(event.with_seq(seq))
+-
+-        retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
++
++        with self.state_store._append_publish_lock:
++            retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
++            for persisted in published:
++                self.state_store._publish(persisted)
+         return committed[0] if committed else updated
+ 
+     def _row_to_state(self, row: tuple[Any, ...]) -> TaskState:

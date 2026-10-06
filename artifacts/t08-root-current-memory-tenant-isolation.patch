@@ -1,0 +1,375 @@
+diff --git a/src/local_ai_hub/agent_memory.py b/src/local_ai_hub/agent_memory.py
+--- a/src/local_ai_hub/agent_memory.py
++++ b/src/local_ai_hub/agent_memory.py
+@@ -179,30 +179,58 @@
+     worktree_id: str,
+     branch: str,
+ ) -> tuple[str, list[Any]]:
+-    clauses = ["scope = ?"]
++    root = str(root or "").strip()
++    tenant = str(tenant or "").strip()
++    canonical_root = _normalise_scope_root(root) if root else ""
++    provenance_tenant = (
++        "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
++        "'$.tenant')"
++    )
++    global_conditions = ["scope = ?"]
+     params: list[Any] = [AgentScope.GLOBAL.value]
+-    canonical_root = _normalise_scope_root(root) if root else ""
+-    if root:
+-        clauses.append(f"(scope = ? AND {_CONTEXT_ROOT_SQL} = ?)")
+-        params.extend([AgentScope.REPOSITORY.value, canonical_root])
++    if tenant:
++        global_conditions.append(
++            f"({provenance_tenant} IS NULL OR {provenance_tenant} = '' OR {provenance_tenant} = ?)"
++        )
++        params.append(tenant)
+     else:
+-        clauses.append(f"(scope = ? AND {_CONTEXT_ROOT_SQL} = '')")
+-        params.append(AgentScope.REPOSITORY.value)
+-    if task_id:
+-        clauses.append("(scope = ? AND scope_id = ?)")
+-        params.extend([AgentScope.TASK.value, task_id])
+-    if tenant:
+-        clauses.append("(scope = ? AND scope_id = ?)")
+-        params.extend([AgentScope.SESSION.value, tenant])
+-    if clone_id:
+-        clauses.append("(scope = ? AND scope_id = ?)")
+-        params.extend([AgentScope.CLONE.value, clone_id])
+-    if worktree_id:
+-        clauses.append("(scope = ? AND scope_id = ?)")
+-        params.extend([AgentScope.WORKTREE.value, worktree_id])
+-    if branch:
+-        clauses.append("(scope = ? AND scope_id = ?)")
+-        params.extend([AgentScope.BRANCH.value, branch])
++        global_conditions.append(f"({provenance_tenant} IS NULL OR {provenance_tenant} = '')")
++    clauses = ["(" + " AND ".join(global_conditions) + ")"]
++
++    def add_scoped_identity(scope_value: str, identity_value: str = "") -> None:
++        identity_value = str(identity_value or "").strip()
++        if scope_value != AgentScope.REPOSITORY.value and not identity_value:
++            return
++        conditions = ["scope = ?"]
++        identity_params: list[Any] = [scope_value]
++        if scope_value == AgentScope.REPOSITORY.value:
++            if root:
++                conditions.append(f"{_CONTEXT_ROOT_SQL} = ?")
++                identity_params.append(canonical_root)
++            else:
++                conditions.append(f"{_CONTEXT_ROOT_SQL} = ''")
++        else:
++            conditions.append("scope_id = ?")
++            identity_params.append(identity_value)
++            if root:
++                conditions.append(f"{_CONTEXT_ROOT_SQL} = ?")
++                identity_params.append(canonical_root)
++            else:
++                conditions.append(f"{_CONTEXT_ROOT_SQL} = ''")
++        if tenant:
++            conditions.append(f"{provenance_tenant} = ?")
++            identity_params.append(tenant)
++        else:
++            conditions.append(f"({provenance_tenant} IS NULL OR {provenance_tenant} = '')")
++        clauses.append("(" + " AND ".join(conditions) + ")")
++        params.extend(identity_params)
++
++    add_scoped_identity(AgentScope.REPOSITORY.value)
++    add_scoped_identity(AgentScope.TASK.value, task_id)
++    add_scoped_identity(AgentScope.SESSION.value, tenant)
++    add_scoped_identity(AgentScope.CLONE.value, clone_id)
++    add_scoped_identity(AgentScope.WORKTREE.value, worktree_id)
++    add_scoped_identity(AgentScope.BRANCH.value, branch)
+     return "(" + " OR ".join(clauses) + ")", params
+ 
+ 
+diff --git a/tests/test_agent_memory_context_tenant_isolation.py b/tests/test_agent_memory_context_tenant_isolation.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_agent_memory_context_tenant_isolation.py
+@@ -0,0 +1,150 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++from local_ai_hub import trace_context
++from local_ai_hub.agent_context import ContextCompiler, ContextRequest
++from local_ai_hub.agent_events import AgentStateStore
++from local_ai_hub.agent_identity import AgentScope, ScopeContext
++from local_ai_hub.agent_incidents import IncidentStore
++from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
++from local_ai_hub.agent_tasks import GoalContract, TaskStatus, TaskStore
++
++
++def _record(
++    *,
++    scope: AgentScope,
++    scope_id: str = "",
++    root: Path | None = None,
++    tenant: str = "",
++    key: str,
++) -> MemoryRecord:
++    provenance = {}
++    if root is not None:
++        provenance["root"] = str(root)
++    if tenant:
++        provenance["tenant"] = tenant
++    return MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=scope,
++        scope_id=scope_id,
++        key=key,
++        value=key,
++        status=MemoryStatus.CONFIRMED,
++        source="user",
++        provenance=provenance,
++    )
++
++
++def _ids(records: list[MemoryRecord]) -> set[str]:
++    return {record.record_id for record in records}
++
++
++def test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_global(tmp_path: Path):
++    state = AgentStateStore(tmp_path / "agent_state.sqlite3")
++    memory = MemoryStore(state)
++    root = tmp_path / "repo"
++    root.mkdir()
++    records = {
++        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", key="repo-current"),
++        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-b", key="repo-foreign"),
++        "repo_tenantless": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, key="repo-tenantless"),
++        "task_current": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-a", key="task-current"),
++        "task_foreign": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-b", key="task-foreign"),
++        "global_current": _record(scope=AgentScope.GLOBAL, tenant="tenant-a", key="global-current"),
++        "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
++        "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
++    }
++    for record in records.values():
++        memory.record(record, actor="user")
++
++    found = memory.find_for_context(root=str(root), task_id="shared-task", tenant="tenant-a")
++
++    assert _ids(found) == {
++        records["repo_current"].record_id,
++        records["task_current"].record_id,
++        records["global_current"].record_id,
++        records["global_tenantless"].record_id,
++    }
++
++
++def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_path: Path):
++    state = AgentStateStore(tmp_path / "agent_state.sqlite3")
++    memory = MemoryStore(state)
++    root = tmp_path / "repo"
++    root.mkdir()
++    records = {
++        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", key="repo-current"),
++        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-b", key="repo-foreign"),
++        "task_current": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-a", key="task-current"),
++        "task_foreign": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-b", key="task-foreign"),
++        "global_current": _record(scope=AgentScope.GLOBAL, tenant="tenant-a", key="global-current"),
++        "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
++        "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
++    }
++    for record in records.values():
++        memory.record(record, actor="user")
++    compiler = ContextCompiler(state, memory_store=memory)
++
++    compiled = compiler.compile(
++        ContextRequest(task_id="shared-task", root=str(root), tenant="tenant-a")
++    )
++
++    memory_ids = {
++        element.element_id
++        for element in compiled.elements
++        if element.source_kind == "memory_record"
++    }
++    assert memory_ids == {
++        records["repo_current"].record_id,
++        records["task_current"].record_id,
++        records["global_current"].record_id,
++        records["global_tenantless"].record_id,
++    }
++
++
++def test_task_create_and_resume_exclude_same_root_foreign_tenant_memory(tmp_path: Path):
++    state = AgentStateStore(tmp_path / "agent_state.sqlite3")
++    tasks = TaskStore(state)
++    memory = MemoryStore(state)
++    incidents = IncidentStore(state)
++    tasks.set_memory_adoption(
++        memory_store=memory,
++        context_compiler=ContextCompiler(state, task_store=tasks, memory_store=memory),
++        incident_store=incidents,
++    )
++    root = tmp_path / "repo"
++    root.mkdir()
++    records = {
++        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", key="repo-current"),
++        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-b", key="repo-foreign"),
++        "global_current": _record(scope=AgentScope.GLOBAL, tenant="tenant-a", key="global-current"),
++        "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
++        "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
++    }
++    for record in records.values():
++        memory.record(record, actor="user")
++    expected = {
++        records["repo_current"].record_id,
++        records["global_current"].record_id,
++        records["global_tenantless"].record_id,
++    }
++
++    token = trace_context.set_context(tenant="tenant-a")
++    try:
++        task = tasks.create(
++            GoalContract(goal="scoped task"),
++            ScopeContext(branch="main", task_id="memory-task"),
++            task_id="memory-task",
++            repo_root=str(root),
++        )
++        created_ids = {item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]}
++        tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="test", idempotency_key="tenant-start")
++        tasks.transition(task.task_id, TaskStatus.BLOCKED, reason="wait", actor="test", idempotency_key="tenant-block")
++        resumed = tasks.resume(task.task_id, actor="test", idempotency_key="tenant-resume")
++    finally:
++        trace_context.reset_context(token)
++
++    resumed_ids = {item["id"] for item in resumed.checkpoint.state_data["memory_context"]["items"]}
++    assert created_ids == expected
++    assert resumed_ids == expected
+
+--- a/src/local_ai_hub/agent_context.py
++++ b/src/local_ai_hub/agent_context.py
+@@ -167,6 +167,24 @@
+ 
+ def _estimate_tokens(text: str) -> int:
+     return max(1, len(text.strip()) // 4)
++
++
++def _memory_record_matches_tenant(record: Any, tenant: str) -> bool:
++    """Enforce the memory store tenant contract at the context consumer boundary."""
++    provenance = getattr(record, "provenance", None)
++    record_tenant = (
++        str(provenance.get("tenant") or "").strip()
++        if isinstance(provenance, Mapping)
++        else ""
++    )
++    requested_tenant = str(tenant or "").strip()
++    scope = getattr(record, "scope", None)
++    scope_value = str(getattr(scope, "value", scope) or "").strip().lower()
++    if scope_value == "global" and not record_tenant:
++        return True
++    if not requested_tenant:
++        return not record_tenant
++    return bool(record_tenant) and record_tenant == requested_tenant
+ 
+ 
+ class ContextCompiler:
+@@ -525,6 +543,13 @@
+                     )
+                 except TypeError:
+                     records = find_for_context(root=request.root, task_id=request.task_id, limit=max_memory)
++                records = [
++                    record
++                    for record in records
++                    if _memory_record_matches_tenant(
++                        record, request.tenant or request.session_id
++                    )
++                ]
+                 for record in records[:max_memory]:
+                     content = f"[{record.kind.value.upper()}] {record.key}: {record.value}"
+                     evidence_ids = tuple(record.evidence_ids)
+@@ -763,6 +788,11 @@
+                 # filtering before its limit. Omit memory rather than allowing
+                 # unrelated records to crowd out matching context.
+                 records = []
++            records = [
++                record
++                for record in records
++                if _memory_record_matches_tenant(record, context_tenant)
++            ]
+             excluded_memory: dict[str, dict[str, Any]] = {
+                 status: {"count": 0, "ids": []}
+                 for status in (
+--- a/tests/test_agent_task_memory_adoption.py
++++ b/tests/test_agent_task_memory_adoption.py
+@@ -24,7 +24,7 @@
+     sys.modules["local_ai_hub.agent_tasks"] = _agent_tasks_module
+     _agent_tasks_spec.loader.exec_module(_agent_tasks_module)
+ 
+-from local_ai_hub.agent_context import ContextCompiler
++from local_ai_hub.agent_context import ContextCompiler, ContextRequest
+ from local_ai_hub.agent_events import AgentEvent, AgentStateStore
+ from local_ai_hub.agent_incidents import IncidentStore, ToolOutcome
+ from local_ai_hub.agent_identity import AgentScope, ScopeContext
+@@ -271,6 +271,70 @@
+     assert str(root_a) not in str(current[0])
+     assert "tenant-a" not in str(current[0])
+ 
++
++def test_task_memory_consumer_filters_foreign_tenant_from_leaky_store_results(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++):
++    tasks, memory, _ = build_task_store(tmp_path)
++    root = tmp_path / "repo"
++    root.mkdir()
++    current = add_memory(memory, root=root, tenant="tenant-a", text="current fact")
++    foreign = add_memory(memory, root=root, tenant="tenant-b", text="foreign fact")
++    tenantless = add_memory(memory, root=root, tenant="", text="unowned repository fact")
++    task_id = "memory-consumer-tenant-filter"
++    scoped_records = memory.find_for_context(
++        root=str(root), task_id=task_id, tenant="tenant-a"
++    )
++    assert {record.record_id for record in scoped_records} == {current.record_id}
++    compiler = ContextCompiler(
++        tasks.state_store,
++        memory_store=memory,
++        config={"context": {"preloads": {"memory_kinds": [MemoryKind.FACT.value]}}},
++    )
++    tasks.set_memory_adoption(memory_store=memory, context_compiler=compiler)
++    find_for_context = memory.find_for_context
++
++    def leaky_find_for_context(**kwargs):
++        records = find_for_context(**kwargs)
++        if kwargs.get("tenant") == "tenant-a":
++            return [*records, foreign]
++        return records
++
++    monkeypatch.setattr(memory, "find_for_context", leaky_find_for_context)
++    context = ScopeContext(repository_id=str(root), branch="main", task_id=task_id)
++    token = with_tenant("tenant-a")
++    try:
++        task = tasks.create(
++            GoalContract(goal="filter foreign tenant memory"),
++            context,
++            task_id=task_id,
++            repo_root=str(root),
++        )
++        tasks.transition(
++            task_id, TaskStatus.ACTIVE, reason="start", actor="test", idempotency_key="tenant-start"
++        )
++        tasks.transition(
++            task_id, TaskStatus.BLOCKED, reason="wait", actor="test", idempotency_key="tenant-block"
++        )
++        resumed = tasks.resume(task_id, actor="test", idempotency_key="tenant-resume")
++        compiled = compiler.compile(
++            ContextRequest(task_id=task_id, root=str(root), tenant="tenant-a", repository_id=str(root))
++        )
++    finally:
++        trace_context.reset_context(token)
++
++    compiled_ids = {
++        item.provenance["record_id"]
++        for item in compiled.elements
++        if item.provenance and item.provenance.get("record_id")
++    }
++    assert compiled_ids == {current.record_id}
++    for state in (task, resumed):
++        item_ids = {
++            item["id"]
++            for item in state.checkpoint.state_data["memory_context"]["items"]
++        }
++        assert item_ids == {current.record_id}
+ 
+ def test_resume_refreshes_memory_and_checkpoint_keeps_audit_bundle(tmp_path: Path):
+     tasks, memory, _ = build_task_store(tmp_path)

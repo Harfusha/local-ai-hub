@@ -60,6 +60,56 @@ def run(cmd: list[str], *, check: bool = True, timeout: int | None = 120, captur
     )
 
 
+def verify_source_revision(expected_revision: str, *, source_root: Path = SOURCE_ROOT) -> str:
+    """Require an exact, clean source checkout before copying files into the install."""
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", expected_revision or ""):
+        raise ValueError("--expected-revision must be a 40-character commit SHA")
+    resolved = run(
+        ["git", "-C", str(source_root), "rev-parse", "--verify", "HEAD"],
+        check=False, timeout=15, capture=True,
+    )
+    if resolved.returncode != 0:
+        raise RuntimeError(f"Could not resolve source checkout revision at {source_root}")
+    actual_revision = (resolved.stdout or "").strip().lower()
+    if actual_revision != expected_revision.lower():
+        raise RuntimeError(
+            f"Source checkout {actual_revision or '<unknown>'} does not match expected verified commit {expected_revision}"
+        )
+    status = run(
+        ["git", "-C", str(source_root), "status", "--porcelain=v1", "--untracked-files=all"],
+        check=False, timeout=15, capture=True,
+    )
+    if status.returncode != 0:
+        raise RuntimeError(f"Could not inspect source checkout status at {source_root}")
+    if (status.stdout or "").strip():
+        raise RuntimeError(f"source checkout is dirty; refusing install from {source_root}")
+    return actual_revision
+
+
+def install_persistent_service(python: Path, install_dir: Path) -> bool:
+    """Install the user service and accept only a successful persistent mode."""
+    try:
+        result = run(
+            [str(python), str(install_dir / "tools" / "service.py"), "install"],
+            check=False, timeout=45, capture=True,
+        )
+    except Exception as exc:
+        log(f"ERROR: service registration failed: {exc}")
+        return False
+    mode = (result.stdout or "").strip().splitlines()[-1].strip() if (result.stdout or "").strip() else ""
+    persistent_modes = {
+        "windows-logon-task", "windows-user-startup", "existing-service", "launchd", "systemd-user",
+    }
+    if result.returncode != 0 or mode not in persistent_modes:
+        detail = f" (mode={mode or 'unknown'}, exit={result.returncode})"
+        if result.stderr:
+            detail += f": {result.stderr.strip()}"
+        log("ERROR: service registration did not establish a persistent user service" + detail)
+        return False
+    log(f"Persistent user service registered: {mode}")
+    return True
+
+
 def expand(value: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(value))).resolve()
 
@@ -704,7 +754,15 @@ def main() -> int:
     parser.add_argument("--skip-token-economy", action="store_true", help="Do not install token economy packages or probe external CLI tools")
     parser.add_argument("--skip-companion-skills", action="store_true", help="Do not install companion skills (token-economizer, caveman, tool-orchestration, ollama-quality-routing)")
     parser.add_argument("--generate-only", action="store_true", help="Generate dynamic skill, instructions, MCP manifests, and schemas without re-installing dependencies or service.")
+    parser.add_argument("--expected-revision", help="Exact verified 40-character source commit required for install/update.")
     args = parser.parse_args()
+
+    if not args.generate_only and args.expected_revision:
+        try:
+            verified_revision = verify_source_revision(args.expected_revision)
+        except (ValueError, RuntimeError) as exc:
+            parser.error(str(exc))
+        log(f"Verified clean source commit: {verified_revision}")
 
     config_source, cfg, install_dir = select_config_source(args.config)
     include_companion = not args.skip_companion_skills and bool(cfg.get("setup", {}).get("install_companion_skills", True))
@@ -840,17 +898,11 @@ def main() -> int:
     pull_ollama_models(cfg)
     ensure_llama_cpp_for_setup(cfg)
 
-    should_install_service = (
-        not args.skip_service
-        and bool(setup_cfg.get("install_service", True))
-        and cfg.get("headless", {}).get("enabled", True)
-    )
-    if should_install_service:
-        try:
-            run([str(hub_python), str(install_dir / "tools" / "service.py"), "install"], check=False, timeout=45)
-        except Exception as exc:
-            log(f"WARNING: service install failed: {exc}")
-    elif not args.skip_service:
+    service_required = not args.skip_service and bool(setup_cfg.get("install_service", True)) and cfg.get("headless", {}).get("enabled", True)
+    service_ok = True
+    if service_required:
+        service_ok = install_persistent_service(hub_python, install_dir)
+    else:
         try:
             run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=False, timeout=30)
         except Exception:
@@ -860,6 +912,10 @@ def main() -> int:
         run([str(hub_python), str(install_dir / "tools" / "doctor.py")], check=False, timeout=60)
     except Exception as exc:
         log(f"WARNING: doctor could not complete: {exc}")
+
+    if service_required and not service_ok:
+        log("Setup incomplete: service registration failed. Review service-manager output, then rerun install/update with the same verified commit.")
+        return 1
 
     hw = cfg.get("_hardware", {})
     log(f"Setup complete. Detected profile: {hw.get('profile', 'unknown')} ({hw.get('os', '')}/{hw.get('arch', '')}).")

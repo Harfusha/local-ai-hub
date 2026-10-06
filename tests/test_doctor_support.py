@@ -126,7 +126,8 @@ def test_doctor_text_report_shows_local_tool_presence_when_hub_is_offline():
         "optional_component_lines": optional_component_lines,
         "sys": sys,
     }
-    exec(compile(ast.Module(body=[formatter], type_ignores=[]), str(doctor_path), "exec"), namespace)
+    helpers = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_optional_component_lines"]
+    exec(compile(ast.Module(body=[*helpers, formatter], type_ignores=[]), str(doctor_path), "exec"), namespace)
     output = namespace["format_doctor_report"]({
         "runtime": {
             "hub_online": False,
@@ -184,11 +185,17 @@ def test_doctor_text_report_states_presence_without_claiming_fallbacks():
         "optional_component_lines": optional_component_lines,
         "sys": sys,
     }
-    exec(compile(ast.Module(body=[formatter], type_ignores=[]), str(doctor_path), "exec"), namespace)
+    helpers = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_optional_component_lines"]
+    exec(compile(ast.Module(body=[*helpers, formatter], type_ignores=[]), str(doctor_path), "exec"), namespace)
 
     output = namespace["format_doctor_report"]({
         "runtime": {
-            "optional_components": {"tree_sitter": False, "whisper_cli": False},
+            "optional_components": {
+                "tree_sitter": {"installed": False},
+                "whisper": {"installed": False},
+                "openvino": {"installed": False, "requested": False},
+                "serena": {"enabled": True, "installed": False, "state": "missing"},
+            },
             "openvino": {"installed": False},
             "code_intelligence": {
                 "serena": {"enabled": True, "installed": False, "state": "missing"},
@@ -201,10 +208,10 @@ def test_doctor_text_report_states_presence_without_claiming_fallbacks():
     lines = output.splitlines()
     optional_lines = [line for line in lines if "Tree-sitter:" in line or "Whisper CLI:" in line]
     assert optional_lines == [
-        "  - Tree-sitter:        Not installed",
-        "  - Whisper CLI:        Not installed",
+        "  [ERR] Tree-sitter:     Missing",
+        "  [ERR] Whisper CLI:     Missing",
     ]
-    assert "  - OpenVINO:           Not installed" in lines
+    assert "  [--] OpenVINO:        Optional accelerator not installed" in lines
     assert any(line.startswith("  [ERR] serena") and "missing" in line for line in lines)
     assert not any("codegraph" in line.lower() for line in lines)
 

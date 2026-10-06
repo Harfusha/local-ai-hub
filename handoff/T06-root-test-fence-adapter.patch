@@ -1,0 +1,54 @@
+diff --git a/tests/conftest.py b/tests/conftest.py
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -7,3 +7,23 @@
+ SRC = ROOT / "src"
+ if str(SRC) not in sys.path:
+     sys.path.insert(0, str(SRC))
++
++
++import pytest
++
++
++@pytest.fixture(autouse=True)
++def _test_owned_mutation_fence(request, monkeypatch):
++    if request.module.__name__ not in {"test_command_rollback", "test_command_transaction_snapshot"}:
++        return
++
++    from local_ai_hub.commands import CommandBroker
++    from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
++
++    original_init = CommandBroker.__init__
++
++    def init_with_test_fence(self, *args, **kwargs):
++        original_init(self, *args, **kwargs)
++        install_test_work_attempt_fence(self, FakeFencingLeaseStore())
++
++    monkeypatch.setattr(CommandBroker, "__init__", init_with_test_fence)
+diff --git a/tests/fencing_lease_support.py b/tests/fencing_lease_support.py
+--- a/tests/fencing_lease_support.py
++++ b/tests/fencing_lease_support.py
+@@ -168,10 +168,21 @@
+         original = getattr(broker, method_name)
+ 
+         def invoke(*args, **kwargs):
+-            if kwargs.get("_work_attempt_fence") is None:
++            task_id = kwargs.get("task_id")
++            if kwargs.get("_work_attempt_fence") is None and isinstance(task_id, str) and task_id:
++                if method_name == "run":
++                    command = args[0] if args else kwargs.get("command", "")
++                    classification = broker.classify(command)
++                    declared_mutation = bool(
++                        kwargs.get("rollback_on_failure")
++                        or kwargs.get("rollback_paths")
++                        or kwargs.get("paths")
++                    )
++                    if classification.get("class") != "mutating" and not declared_mutation:
++                        return original(*args, **kwargs)
+                 root = str(root_getter(args, kwargs))
+                 resource = str(Path(root).resolve())
+-                current_work_id = str(kwargs.get("task_id") or work_id)
++                current_work_id = str(task_id)
+                 key = (resource, current_work_id)
+                 attempt = attempts.get(key)
+                 if attempt is None:

@@ -224,6 +224,7 @@ def test_setup_supports_explicit_generic_mcp_config_paths(tmp_path: Path):
     assert json.loads(generic.read_text(encoding="utf-8"))["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT"] == "generic"
     assert json.loads(vscode.read_text(encoding="utf-8"))["servers"]["local-ai"]["type"] == "stdio"
     assert (install / "generated" / "agent-policy.md").read_text(encoding="utf-8") == setup.GLOBAL_POLICY + "\n"
+    assert (install / "generated" / "token-economy-policy.md").read_text(encoding="utf-8") == setup.generate_token_economy_policy(cfg) + "\n"
     generated = json.loads((install / "generated" / "mcp-servers.json").read_text(encoding="utf-8"))
     assert generated["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT_PROFILE"] == "generic"
     assert generated["mcpServers"]["local-ai"]["args"] == ["-m", "local_ai_hub.mcp_server"]
@@ -381,7 +382,9 @@ def test_singleflight_waiter_returns_retryable_in_progress_quickly():
 
 def test_recovery_journal_waiter_replays_completed_owner_response(tmp_path: Path):
     journal = RecoveryJournal(tmp_path / "state")
-    journal.begin("request-1", "tenant", "/api/search")
+    payload = {"query": "needle"}
+    identity = "agent-a"
+    journal.begin("request-1", "tenant", "/api/search", identity=identity, payload=payload)
 
     def finish() -> None:
         time.sleep(0.02)
@@ -389,7 +392,14 @@ def test_recovery_journal_waiter_replays_completed_owner_response(tmp_path: Path
 
     worker = threading.Thread(target=finish)
     worker.start()
-    result = journal.wait_for("request-1", "tenant", "/api/search", timeout_seconds=0.5)
+    result = journal.wait_for(
+        "request-1",
+        "tenant",
+        "/api/search",
+        timeout_seconds=0.5,
+        identity=identity,
+        payload_fingerprint=journal.fingerprint_payload(payload),
+    )
     worker.join(1)
 
     assert result == {"state": "done", "status_code": 200, "response": {"success": True, "value": "reused"}}
@@ -462,7 +472,7 @@ def test_ollama_interruptible_stream_exists_and_aggregates(tmp_path: Path, monke
                 b'{"response":"lo","done":true,"eval_count":2}\n',
             ])
 
-    monkeypatch.setattr(ollama_module, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(ollama_module, "_open_interruptible_response", lambda *_args, **_kwargs: Response())
     runtime = OllamaRuntime(_ollama_config(tmp_path))
     result = runtime.request_interruptible("/api/generate", {"model": "x"}, lambda: False, timeout=1)
     assert result["response"] == "hello"
@@ -715,17 +725,27 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
         assert phrase in skill
 
 
-def test_mcp_tools_have_use_when_and_skip_when_cues():
-    source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
+def test_mcp_tools_have_use_when_and_skip_when_cues(monkeypatch):
+    from local_ai_hub import mcp_server
+
+    tool_manager = getattr(mcp_server.mcp, "_tool_manager", None)
+    assert tool_manager is not None, "FastMCP tool manager is unavailable"
+    registered_tools = getattr(tool_manager, "_tools", {})
     for tool in (
         "local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag",
         "local_ai_command", "local_ai_coord", "local_ai_artifact",
     ):
-        start = source.index(f"def {tool}(")
-        end = source.find("\n\n@mcp.tool()", start)
-        block = source[start:] if end < 0 else source[start:end]
-        assert "Use when:" in block, f"{tool}: missing 'Use when:' in docstring"
-        assert "Skip when:" in block, f"{tool}: missing 'Skip when:' in docstring"
+        registered = registered_tools.get(tool)
+        assert registered is not None, f"{tool}: missing from registered MCP tools"
+        description = registered.description or ""
+        assert "Use when:" in description, f"{tool}: missing 'Use when:' in MCP description"
+        assert "Skip when:" in description, f"{tool}: missing 'Skip when:' in MCP description"
+
+    for lean_schemas in (True, False):
+        monkeypatch.setattr(mcp_server, "LEAN_SCHEMAS", lean_schemas)
+        description = mcp_server._desc_artifact()
+        assert "Use when:" in description
+        assert "Skip when:" in description
 
 
 def test_agent_policy_has_default_delegation_triggers():

@@ -1,0 +1,28 @@
+# T05 root identity/shared-memory receipt — 2026-10-01
+
+Root checkout: `C:\Users\Adam\.local-ai-hub`
+Root HEAD before and after: `98a9a1a7611af574caf20a88620c4aa3eb2e918a`
+Command (exact argv):
+
+```text
+python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_memory.py::test_find_filters_global_and_repository_rows_by_tenant_and_root tests/test_agent_memory.py::test_find_skips_corrupt_rows_without_aborting_scoped_read tests/test_agent_memory.py::test_memory_write_redacts_private_fields_and_blocks_sensitive_records tests/test_agent_memory.py::test_memory_correction_lineage_and_delete_survive_reopen tests/test_agent_memory.py::test_global_memory_delete_ignores_transport_tenant_but_keeps_scope tests/test_agent_memory.py::test_scoped_memory_delete_still_enforces_tenant tests/test_agent_memory.py::test_memory_find_enforces_root_repository_and_tenant_identity tests/test_agent_memory.py::test_memory_write_failure_rolls_back_record_event_and_cursor tests/test_identity_contracts.py::test_workspace_memos_report_shared_scope_and_isolate_repositories tests/test_identity_contracts.py::test_workspace_memo_rejects_malformed_key_value_or_tenant tests/test_identity_contracts.py::test_repository_memory_foreign_id_requires_matching_repository tests/test_identity_contracts.py::test_global_memory_store_requires_approval_marker_and_then_is_shared tests/test_identity_contracts.py::test_tenant_label_does_not_authenticate_http_request tests/test_identity_contracts.py::test_mixed_memory_identity_context_is_rejected tests/test_identity_contracts.py::test_worktree_memory_idempotency_isolated_by_scope_id tests/test_identity_contracts.py::test_worktree_memory_idempotency_stream_key_is_unambiguous tests/test_identity_contracts.py::test_memory_delete_requires_matching_scope_identity tests/test_evidence_contract.py::test_current_evidence_identity_requires_current_source_and_stored_row
+```
+Result: **24 passed in 4.34s**, exit code 0. No pytest process remains. Test slot released to T02.
+
+## Selectors
+
+- `tests/test_agent_memory.py`: `test_find_filters_global_and_repository_rows_by_tenant_and_root`, `test_find_skips_corrupt_rows_without_aborting_scoped_read`, `test_memory_write_redacts_private_fields_and_blocks_sensitive_records`, `test_memory_correction_lineage_and_delete_survive_reopen`, `test_global_memory_delete_ignores_transport_tenant_but_keeps_scope`, `test_scoped_memory_delete_still_enforces_tenant`, `test_memory_find_enforces_root_repository_and_tenant_identity`, `test_memory_write_failure_rolls_back_record_event_and_cursor`.
+- `tests/test_identity_contracts.py`: `test_workspace_memos_report_shared_scope_and_isolate_repositories`, `test_workspace_memo_rejects_malformed_key_value_or_tenant`, `test_repository_memory_foreign_id_requires_matching_repository`, `test_global_memory_store_requires_approval_marker_and_then_is_shared`, `test_tenant_label_does_not_authenticate_http_request`, `test_mixed_memory_identity_context_is_rejected`, `test_worktree_memory_idempotency_isolated_by_scope_id`, `test_worktree_memory_idempotency_stream_key_is_unambiguous`, `test_memory_delete_requires_matching_scope_identity`.
+- `tests/test_evidence_contract.py`: `test_current_evidence_identity_requires_current_source_and_stored_row`.
+
+## Root fingerprints
+
+- `src/local_ai_hub/agent_memory.py`: `352C974FE41FF1065B2017DEDD34053794AB550958909A29E1BED3EF033E6FAC`
+- `src/local_ai_hub/agent_events.py`: `7BBA75A0A335A1BEF0370F636D65F36477BF0638261723A1778E4DC06BB8B949`
+- `src/local_ai_hub/evidence.py`: `8050048407BEFAE57FB13159DA11E98A4E1D48E418652C6E817DD465957FE033`
+- `src/local_ai_hub/http_server.py`: `2797956835473315EFDCE8D1571D86A766C6A8B1765DA2443CFE319F01D9855E`
+- `tests/test_agent_memory.py`: `F4F12E52C105D23E88A6F0F69A6D5AC2C23580BF9515E5DD1EA5C1EC6206E29C`
+- `tests/test_identity_contracts.py`: `C4FD7340F6AC649022908851CAB9DFD81536077EE0E33B6EC179FF4610CE4993`
+- `tests/test_evidence_contract.py`: `50794A86A3381A8EE0504DE466A7A69FB1C77AB0B305A3280CD1F308263A14B0`
+
+No root files were written by this run. This receipt covers only these identity/shared-memory selectors; it does not claim broader cache, migration, benchmark, runtime, or complete T05 acceptance.

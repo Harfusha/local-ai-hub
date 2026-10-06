@@ -1,0 +1,958 @@
+{
+  "schema_version": 1,
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\t03-contracts-resume\\.local-ai-hub",
+  "pinned_master": "f8ba97fe9eafa38810dbbbc3c4184800da7bafcd",
+  "byte_capture_boundary": "Original remaining artifacts as observed at preservation clarification; pre-merge source history remains in earlier checkpoint commits",
+  "archive": "handoff/T03-preservation-20261006.zip",
+  "archive_sha256": "35C03B3420AABCCBF1EBB4466A15C75C2C34213FF5CB0492E79ABFDB3381D594",
+  "included": [
+    {
+      "path": ".t03-main-preflight-overlay/base/src/local_ai_hub/mcp_server.py",
+      "bytes": 166294,
+      "sha256": "94CDE8488BE5A39245533CC11200483540A76D5B24E82230BB2EED82D77E674D",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-main-preflight-overlay/base/tests/test_mcp_live_wire_schema.py",
+      "bytes": 11558,
+      "sha256": "959B2E4ADE37E01A079CEABAE06E0E5225A0053FEFA86ACF425A01182B5FAE31",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-main-preflight-overlay/candidate/src/local_ai_hub/__init__.py",
+      "bytes": 91,
+      "sha256": "90EA73DA243ACA67AF512F31395AAC420F6B30CF0FFB39A7DA6714AB0E2113DE",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-main-preflight-overlay/candidate/src/local_ai_hub/mcp_server.py",
+      "bytes": 166294,
+      "sha256": "94CDE8488BE5A39245533CC11200483540A76D5B24E82230BB2EED82D77E674D",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-main-preflight-overlay/candidate/tests/test_mcp_live_wire_schema.py",
+      "bytes": 12114,
+      "sha256": "03C9C6B147DD321BA9E4124C13BD315ADB286A46956829BB8BB0B7B6E70842B1",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/base/src/local_ai_hub/operation_contracts.py",
+      "bytes": 61295,
+      "sha256": "28DD0FF31AE5F4163BC439768F2C76B513ED3D2A1CF41AF432520D54A9AF7C83",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/base/tests/test_mcp_contract_dispatch.py",
+      "bytes": 4559,
+      "sha256": "3A77B0D4690BCB2835EC8FCD88A129EDE4431E5D4B15400047399307557825CD",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/base/tests/test_operation_contracts.py",
+      "bytes": 46704,
+      "sha256": "48BD4FBA25C7E4C0568D9762DCF067263349D5051E3BA6C9E13E690DB80BBB97",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/COMMIT_EDITMSG",
+      "bytes": 9,
+      "sha256": "4B654BD1437066B13498661F3CA14774DAF1066D072036BEFFAF06F0C014250E",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/config",
+      "bytes": 130,
+      "sha256": "05BECDB83BB897F6103C8D91439E2E9092144EDF5B3955A746FCE4975C12BFDC",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/description",
+      "bytes": 73,
+      "sha256": "85AB6C163D43A17EA9CF7788308BCA1466F1B0A8D1CC92E26E9BF63DA4062AEE",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/HEAD",
+      "bytes": 23,
+      "sha256": "F6F2B945F6C411B02BA3DA9C7ACE88DCF71B6AF65BA2E0D89AA82900042B5A10",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/applypatch-msg.sample",
+      "bytes": 478,
+      "sha256": "0223497A0B8B033AA58A3A521B8629869386CF7AB0E2F101963D328AA62193F7",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/commit-msg.sample",
+      "bytes": 896,
+      "sha256": "1F74D5E9292979B573EBD59741D46CB93FF391ACDD083D340B94370753D92437",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/fsmonitor-watchman.sample",
+      "bytes": 4726,
+      "sha256": "E0549964E93897B519BD8E333C037E51FFF0F88BA13E086A331592BF801FA1D0",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/post-update.sample",
+      "bytes": 189,
+      "sha256": "81765AF2DAEF323061DCBC5E61FC16481CB74B3BAC9AD8A174B186523586F6C5",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/pre-applypatch.sample",
+      "bytes": 424,
+      "sha256": "E15C5B469EA3E0A695BEA6F2C82BCF8E62821074939DDD85B77E0007FF165475",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/pre-commit.sample",
+      "bytes": 1649,
+      "sha256": "57185B7B9F05239D7AB52DB045F5B89EB31348D7B2177EAB214F5EB872E1971B",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/pre-merge-commit.sample",
+      "bytes": 416,
+      "sha256": "D3825A70337940EBBD0A5C072984E13245920CDF8898BD225C8D27A6DFC9CB53",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/pre-push.sample",
+      "bytes": 1374,
+      "sha256": "ECCE9C7E04D3F5DD9D8ADA81753DD1D549A9634B26770042B58DDA00217D086A",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/pre-rebase.sample",
+      "bytes": 4898,
+      "sha256": "4FEBCE867790052338076F4E66CC47EFB14879D18097D1D61C8261859EAAA7B3",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/pre-receive.sample",
+      "bytes": 544,
+      "sha256": "A4C3D2B9C7BB3FD8D1441C31BD4EE71A595D66B44FCF49DDB310252320169989",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/prepare-commit-msg.sample",
+      "bytes": 1492,
+      "sha256": "E9DDCAA4189FDDD25ED97FC8C789ECA7B6CA16390B2392AE3276F0C8E1AA4619",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/push-to-checkout.sample",
+      "bytes": 2783,
+      "sha256": "A53D0741798B287C6DD7AFA64AEE473F305E65D3F49463BB9D7408EC3B12BF5F",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/sendemail-validate.sample",
+      "bytes": 2308,
+      "sha256": "44EBFC923DC5466BC009602F0ECF067B9C65459ABFE8868DDC49B78E6CED7A92",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/hooks/update.sample",
+      "bytes": 3650,
+      "sha256": "8D5F2FA83E103CF08B57EAA67521DF9194F45CBDBCB37DA52AD586097A14D106",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/index",
+      "bytes": 360,
+      "sha256": "3DC9BEB23B62375472D16587B82CD86B8EDC9355D340D854BF71777BE8241F6C",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/info/exclude",
+      "bytes": 240,
+      "sha256": "6671FE83B7A07C8932EE89164D1F2793B2318058EB8B98DC5C06EE0A5A3B0EC1",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/logs/HEAD",
+      "bytes": 174,
+      "sha256": "7410D7575D3EDA63FB604FA9816A028AFD8AC5B00B076A9B02C9B92F95656632",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/logs/refs/heads/master",
+      "bytes": 174,
+      "sha256": "7410D7575D3EDA63FB604FA9816A028AFD8AC5B00B076A9B02C9B92F95656632",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/objects/24/517154b772928b979013448bba7984491874fd",
+      "bytes": 73,
+      "sha256": "D8906E7F674E7502F0AE29F578317FF2905C3C2110B10E5A835429B4B928D37E",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/objects/39/4f14e64c85b49e4f100595bf38210cdb5aef76",
+      "bytes": 11294,
+      "sha256": "3AE375E6E44CFAE6944972246EE1CF7D1700A00955023C78BCCE11549CCC27F8",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/objects/a5/460f2b45e4d11d6d69885a5ec5ddb4ec5c7993",
+      "bytes": 72,
+      "sha256": "856501D424CC6B583BFDF7FBD0D5D04BB50D566B7D8DDDBF4620E1344EB53C23",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/objects/d1/0b055d9b13041c10919cfb3c44af7ee02bec6b",
+      "bytes": 14569,
+      "sha256": "DB0B3C26B73CF8E420A0164C5DBE4165D32F8EDD61B72837E06C2388BDCA7891",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/objects/e5/5f3e106285b47b01363912520f2601465f53eb",
+      "bytes": 54,
+      "sha256": "C47071929F0A4C6BA7B5BEBEA7A0D491788FA0D278E2A94A4D3DFA2135FF8883",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/objects/ef/1a329e4774366b42cf9547440619830e3cdd1a",
+      "bytes": 137,
+      "sha256": "339F9C037ADF567B9C2A88F30EB52D3BE444073B9A2198D08850EC9D9D0094FD",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/objects/f5/959186283d2f87201a8c3c961220e1e303fab0",
+      "bytes": 67,
+      "sha256": "A6FB5DC8D9B767F375467DF8A04620E8D714D8839A7DFC94BAF78BD838B30DFD",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/.git/refs/heads/master",
+      "bytes": 41,
+      "sha256": "13116F18F466695077850E18EA1199A3FD9C26F35BF0DF169CBEEFD31E03DEB0",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/src/local_ai_hub/operation_contracts.py",
+      "bytes": 63749,
+      "sha256": "1CB6942E888506897F4C994062654D08524D546CE93A12707EE1C08D99A783BB",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/bugbot-20261001/tests/test_operation_contracts.py",
+      "bytes": 49737,
+      "sha256": "692F45DEA3C4F3A1D3C04D317355E8A6057F28C3C355EA665AC5F7F758DBFCC8",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/candidate/src/local_ai_hub/__init__.py",
+      "bytes": 91,
+      "sha256": "90EA73DA243ACA67AF512F31395AAC420F6B30CF0FFB39A7DA6714AB0E2113DE",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/candidate/src/local_ai_hub/operation_contracts.py",
+      "bytes": 61343,
+      "sha256": "EA9250A37DC21286B6D194CB3AC3B96BC62356ECDE5C8094D3A4EEE7F1B4F330",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/candidate/tests/test_mcp_contract_dispatch.py",
+      "bytes": 5513,
+      "sha256": "D8DEEBDE26C4D751769134992BD5F65A10ED9684EFAA7F44370DA9787266126F",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/candidate/tests/test_operation_contracts.py",
+      "bytes": 47698,
+      "sha256": "B0D2CCE62F5F3FB0BABB145A8933E8254236D3D61DB31ABE57008FBFCEA28AAF",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/config",
+      "bytes": 130,
+      "sha256": "05BECDB83BB897F6103C8D91439E2E9092144EDF5B3955A746FCE4975C12BFDC",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/description",
+      "bytes": 73,
+      "sha256": "85AB6C163D43A17EA9CF7788308BCA1466F1B0A8D1CC92E26E9BF63DA4062AEE",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/HEAD",
+      "bytes": 23,
+      "sha256": "F6F2B945F6C411B02BA3DA9C7ACE88DCF71B6AF65BA2E0D89AA82900042B5A10",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/applypatch-msg.sample",
+      "bytes": 478,
+      "sha256": "0223497A0B8B033AA58A3A521B8629869386CF7AB0E2F101963D328AA62193F7",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/commit-msg.sample",
+      "bytes": 896,
+      "sha256": "1F74D5E9292979B573EBD59741D46CB93FF391ACDD083D340B94370753D92437",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/fsmonitor-watchman.sample",
+      "bytes": 4726,
+      "sha256": "E0549964E93897B519BD8E333C037E51FFF0F88BA13E086A331592BF801FA1D0",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/post-update.sample",
+      "bytes": 189,
+      "sha256": "81765AF2DAEF323061DCBC5E61FC16481CB74B3BAC9AD8A174B186523586F6C5",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/pre-applypatch.sample",
+      "bytes": 424,
+      "sha256": "E15C5B469EA3E0A695BEA6F2C82BCF8E62821074939DDD85B77E0007FF165475",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/pre-commit.sample",
+      "bytes": 1649,
+      "sha256": "57185B7B9F05239D7AB52DB045F5B89EB31348D7B2177EAB214F5EB872E1971B",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/pre-merge-commit.sample",
+      "bytes": 416,
+      "sha256": "D3825A70337940EBBD0A5C072984E13245920CDF8898BD225C8D27A6DFC9CB53",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/pre-push.sample",
+      "bytes": 1374,
+      "sha256": "ECCE9C7E04D3F5DD9D8ADA81753DD1D549A9634B26770042B58DDA00217D086A",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/pre-rebase.sample",
+      "bytes": 4898,
+      "sha256": "4FEBCE867790052338076F4E66CC47EFB14879D18097D1D61C8261859EAAA7B3",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/pre-receive.sample",
+      "bytes": 544,
+      "sha256": "A4C3D2B9C7BB3FD8D1441C31BD4EE71A595D66B44FCF49DDB310252320169989",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/prepare-commit-msg.sample",
+      "bytes": 1492,
+      "sha256": "E9DDCAA4189FDDD25ED97FC8C789ECA7B6CA16390B2392AE3276F0C8E1AA4619",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/push-to-checkout.sample",
+      "bytes": 2783,
+      "sha256": "A53D0741798B287C6DD7AFA64AEE473F305E65D3F49463BB9D7408EC3B12BF5F",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/sendemail-validate.sample",
+      "bytes": 2308,
+      "sha256": "44EBFC923DC5466BC009602F0ECF067B9C65459ABFE8868DDC49B78E6CED7A92",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/hooks/update.sample",
+      "bytes": 3650,
+      "sha256": "8D5F2FA83E103CF08B57EAA67521DF9194F45CBDBCB37DA52AD586097A14D106",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/index",
+      "bytes": 232,
+      "sha256": "10FC0B2300087BB6FB5E214D7158D3B47D7C8F7969FD396D0D9210A580096598",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/info/exclude",
+      "bytes": 240,
+      "sha256": "6671FE83B7A07C8932EE89164D1F2793B2318058EB8B98DC5C06EE0A5A3B0EC1",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/objects/39/4f14e64c85b49e4f100595bf38210cdb5aef76",
+      "bytes": 11294,
+      "sha256": "3AE375E6E44CFAE6944972246EE1CF7D1700A00955023C78BCCE11549CCC27F8",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/.git/objects/d1/0b055d9b13041c10919cfb3c44af7ee02bec6b",
+      "bytes": 14569,
+      "sha256": "DB0B3C26B73CF8E420A0164C5DBE4165D32F8EDD61B72837E06C2388BDCA7891",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/src/local_ai_hub/operation_contracts.py",
+      "bytes": 63749,
+      "sha256": "1CB6942E888506897F4C994062654D08524D546CE93A12707EE1C08D99A783BB",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/tests/test_operation_contracts.py",
+      "bytes": 49737,
+      "sha256": "692F45DEA3C4F3A1D3C04D317355E8A6057F28C3C355EA665AC5F7F758DBFCC8",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/current-20261001/tests/test_operation_contracts.py.rej",
+      "bytes": 2340,
+      "sha256": "78386F4FC0A2F7C888E5BD41972535EE7FBE6D59C565ADAD1FD3905A2ED5E30A",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/COMMIT_EDITMSG",
+      "bytes": 9,
+      "sha256": "4B654BD1437066B13498661F3CA14774DAF1066D072036BEFFAF06F0C014250E",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/config",
+      "bytes": 130,
+      "sha256": "05BECDB83BB897F6103C8D91439E2E9092144EDF5B3955A746FCE4975C12BFDC",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/description",
+      "bytes": 73,
+      "sha256": "85AB6C163D43A17EA9CF7788308BCA1466F1B0A8D1CC92E26E9BF63DA4062AEE",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/HEAD",
+      "bytes": 23,
+      "sha256": "F6F2B945F6C411B02BA3DA9C7ACE88DCF71B6AF65BA2E0D89AA82900042B5A10",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/applypatch-msg.sample",
+      "bytes": 478,
+      "sha256": "0223497A0B8B033AA58A3A521B8629869386CF7AB0E2F101963D328AA62193F7",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/commit-msg.sample",
+      "bytes": 896,
+      "sha256": "1F74D5E9292979B573EBD59741D46CB93FF391ACDD083D340B94370753D92437",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/fsmonitor-watchman.sample",
+      "bytes": 4726,
+      "sha256": "E0549964E93897B519BD8E333C037E51FFF0F88BA13E086A331592BF801FA1D0",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/post-update.sample",
+      "bytes": 189,
+      "sha256": "81765AF2DAEF323061DCBC5E61FC16481CB74B3BAC9AD8A174B186523586F6C5",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/pre-applypatch.sample",
+      "bytes": 424,
+      "sha256": "E15C5B469EA3E0A695BEA6F2C82BCF8E62821074939DDD85B77E0007FF165475",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/pre-commit.sample",
+      "bytes": 1649,
+      "sha256": "57185B7B9F05239D7AB52DB045F5B89EB31348D7B2177EAB214F5EB872E1971B",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/pre-merge-commit.sample",
+      "bytes": 416,
+      "sha256": "D3825A70337940EBBD0A5C072984E13245920CDF8898BD225C8D27A6DFC9CB53",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/pre-push.sample",
+      "bytes": 1374,
+      "sha256": "ECCE9C7E04D3F5DD9D8ADA81753DD1D549A9634B26770042B58DDA00217D086A",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/pre-rebase.sample",
+      "bytes": 4898,
+      "sha256": "4FEBCE867790052338076F4E66CC47EFB14879D18097D1D61C8261859EAAA7B3",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/pre-receive.sample",
+      "bytes": 544,
+      "sha256": "A4C3D2B9C7BB3FD8D1441C31BD4EE71A595D66B44FCF49DDB310252320169989",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/prepare-commit-msg.sample",
+      "bytes": 1492,
+      "sha256": "E9DDCAA4189FDDD25ED97FC8C789ECA7B6CA16390B2392AE3276F0C8E1AA4619",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/push-to-checkout.sample",
+      "bytes": 2783,
+      "sha256": "A53D0741798B287C6DD7AFA64AEE473F305E65D3F49463BB9D7408EC3B12BF5F",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/sendemail-validate.sample",
+      "bytes": 2308,
+      "sha256": "44EBFC923DC5466BC009602F0ECF067B9C65459ABFE8868DDC49B78E6CED7A92",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/hooks/update.sample",
+      "bytes": 3650,
+      "sha256": "8D5F2FA83E103CF08B57EAA67521DF9194F45CBDBCB37DA52AD586097A14D106",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/index",
+      "bytes": 360,
+      "sha256": "17D2B7491B070CDC58BB47EB142D4367AC128A02222C2EC813E40A882B7F65CC",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/info/exclude",
+      "bytes": 240,
+      "sha256": "6671FE83B7A07C8932EE89164D1F2793B2318058EB8B98DC5C06EE0A5A3B0EC1",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/logs/HEAD",
+      "bytes": 174,
+      "sha256": "938D4080D2A0526B4614AE9786D6558827F06D324B0B3BACAE539A4DB499482C",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/logs/refs/heads/master",
+      "bytes": 174,
+      "sha256": "938D4080D2A0526B4614AE9786D6558827F06D324B0B3BACAE539A4DB499482C",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/objects/24/517154b772928b979013448bba7984491874fd",
+      "bytes": 73,
+      "sha256": "D8906E7F674E7502F0AE29F578317FF2905C3C2110B10E5A835429B4B928D37E",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/objects/39/4f14e64c85b49e4f100595bf38210cdb5aef76",
+      "bytes": 11294,
+      "sha256": "3AE375E6E44CFAE6944972246EE1CF7D1700A00955023C78BCCE11549CCC27F8",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/objects/82/280bef38f456d32ad45e19a27dd9d763cd7a45",
+      "bytes": 137,
+      "sha256": "691DD78AA6DBBD0A3E13B0644FA0200147F29341F8A00302CF20E2628357C752",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/objects/a5/460f2b45e4d11d6d69885a5ec5ddb4ec5c7993",
+      "bytes": 72,
+      "sha256": "856501D424CC6B583BFDF7FBD0D5D04BB50D566B7D8DDDBF4620E1344EB53C23",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/objects/d1/0b055d9b13041c10919cfb3c44af7ee02bec6b",
+      "bytes": 14569,
+      "sha256": "DB0B3C26B73CF8E420A0164C5DBE4165D32F8EDD61B72837E06C2388BDCA7891",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/objects/e5/5f3e106285b47b01363912520f2601465f53eb",
+      "bytes": 54,
+      "sha256": "C47071929F0A4C6BA7B5BEBEA7A0D491788FA0D278E2A94A4D3DFA2135FF8883",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/objects/f5/959186283d2f87201a8c3c961220e1e303fab0",
+      "bytes": 67,
+      "sha256": "A6FB5DC8D9B767F375467DF8A04620E8D714D8839A7DFC94BAF78BD838B30DFD",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/.git/refs/heads/master",
+      "bytes": 41,
+      "sha256": "F7AC086B0CBF731C64AB301CABD01F162C6B5A47938579C0070025E0890EB58F",
+      "storage": "archive-only nested Git snapshot metadata"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/src/local_ai_hub/operation_contracts.py",
+      "bytes": 61343,
+      "sha256": "EA9250A37DC21286B6D194CB3AC3B96BC62356ECDE5C8094D3A4EEE7F1B4F330",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/final-check-20261001/tests/test_operation_contracts.py",
+      "bytes": 47698,
+      "sha256": "B0D2CCE62F5F3FB0BABB145A8933E8254236D3D61DB31ABE57008FBFCEA28AAF",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/preimplementation/src/local_ai_hub/__init__.py",
+      "bytes": 91,
+      "sha256": "90EA73DA243ACA67AF512F31395AAC420F6B30CF0FFB39A7DA6714AB0E2113DE",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/preimplementation/src/local_ai_hub/operation_contracts.py",
+      "bytes": 61295,
+      "sha256": "28DD0FF31AE5F4163BC439768F2C76B513ED3D2A1CF41AF432520D54A9AF7C83",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/preimplementation/tests/test_mcp_contract_dispatch.py",
+      "bytes": 5513,
+      "sha256": "D8DEEBDE26C4D751769134992BD5F65A10ED9684EFAA7F44370DA9787266126F",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-root-current-overlay/preimplementation/tests/test_operation_contracts.py",
+      "bytes": 47698,
+      "sha256": "B0D2CCE62F5F3FB0BABB145A8933E8254236D3D61DB31ABE57008FBFCEA28AAF",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-sync-checks/check.py",
+      "bytes": 1919,
+      "sha256": "22CD33834119DFE66E42F444FB50996043D774BDC909AC75BF909660EA56462B",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": ".t03-sync-checks/pytest.log",
+      "bytes": 11091,
+      "sha256": "457F61E9F0AA7F82364E95997768C6DDD94A479EFF00A11EE7D5332E15822F90",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-acceptance-current.md",
+      "bytes": 13167,
+      "sha256": "E0D7C51D209A6CAB39F1F9F6B8735D5A649758019BDF9DDF030AB54E28444440",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-action-output-schemas-20261002.receipt.md",
+      "bytes": 9901,
+      "sha256": "3BA327C4FA3B8156BE08A933F68BBA966E245B58020AA78B9D028EC8126DED25",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-artifact-slice-bounds-root-current-recheck.receipt.md",
+      "bytes": 1956,
+      "sha256": "FF8126E39F52FC56A7C3DC30DD63A7A1C408FC70DF168FA02B5CD0CC5B3EC039",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-artifact-slice-bounds-root-current.patch",
+      "bytes": 3924,
+      "sha256": "57A77497B5B596DA80D4A3CF688B344AF50F79FEBCE28909D0A312395CFFA44D",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-artifact-slice-bounds-root-current.receipt.md",
+      "bytes": 3604,
+      "sha256": "D5A39F9FF862C613B7A0DF7067D359AFB1F5C6B7BBCDCB9F3F5D32E9F852D99B",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/t03-batch-schema.patch",
+      "bytes": 2269,
+      "sha256": "40FF450FC723660CF895E1E4F83F3B0D1F8ABC04BD0E5D6B22363208CA894F26",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/t03-compat-root-824c-prompts.patch",
+      "bytes": 3959,
+      "sha256": "DEFBF5DA80C53B7C2DDB38EA50ADD1F09B8E8BEFB71DC158289F79070430A476",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/t03-compat-root-824c.patch",
+      "bytes": 42228,
+      "sha256": "FB589FA3979CF6B7076A05AA5C186EEFE2B8417591E0CD3AB85AC0138CD5CE55",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/t03-contract-validation-20260929.patch",
+      "bytes": 67215,
+      "sha256": "04AAF0F18F6AF5C4B651BFAAA852CFC16E5D7E93020AC6488DC50F5AC7D866C9",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/t03-contract-validation-r2-20260929.patch",
+      "bytes": 71996,
+      "sha256": "EB1D67A5E4FF78B483266640B89CCB2915A04E93249EE5AE00141D9F7EB6B7FF",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/t03-contract-validation-r3-20260929.patch",
+      "bytes": 74974,
+      "sha256": "3E44B0D512C50BABCB046B1237BE052EF6D6E7F67227BFD08689DFA9C2F00941",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-full-status-output-contracts-20261001.patch",
+      "bytes": 5240,
+      "sha256": "5817B597F680A069760706816728842483FBE9C346AD7D8AD915D45254910204",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-live-wire-coldstart-receipt.md",
+      "bytes": 2647,
+      "sha256": "5A57C384169EB949A4BEF9DFF3D802DD620583075DF4FF6E9A9C8CB60E86E113",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-live-wire-handshake.receipt.md",
+      "bytes": 1757,
+      "sha256": "46485780104B066C8C76447D02246BE5B15B8AF8932C6C41B611C9CF1F100488",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-live-wire-root-current.patch",
+      "bytes": 12055,
+      "sha256": "AE3961E3A5C4F1A28CB45D719200679876CF63A325D0890151BC6186D90491FE",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-live-wire-root-current.receipt.md",
+      "bytes": 1101,
+      "sha256": "6358521941B208DF3AC234749A9AAF38991615F8D3B4026337E424CF96753B8E",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-live-wire-test-only.patch",
+      "bytes": 1465,
+      "sha256": "59E85684AD621AE3AF4BA386EB9341BA7B78F569EE725CD375DC5C4DC462CF6B",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-live-wire-test-only.receipt.md",
+      "bytes": 2138,
+      "sha256": "DBDC3D61F7CD842052F2BBC62F20B9BB7EE23208FE2D7592B897F9DFE115E6F9",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-main-preflight-root-current.patch",
+      "bytes": 2256,
+      "sha256": "5D34111B48FF27506F3ABE9899430F25A88F140A8211D3FFD299B1D5E591E70B",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-main-preflight-root-current.receipt.md",
+      "bytes": 3658,
+      "sha256": "CC7FF1BE66E2EAB9861E0232CFCAAC1EE279F3745AA1D149F301DDE0532EC6D0",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-master-base-test-boundary-20261006.md",
+      "bytes": 1555,
+      "sha256": "87893116A26D52687496A4895725C2CA9E315DD2C8C62C97CC4D63E37E7503C8",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-mcp-architecture-gate-20261001.md",
+      "bytes": 3104,
+      "sha256": "5FDF05B900D17B1E601F28D93B0789274F281A3E2092324470CEAD155437C5ED",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-mcp-http-daemon-acceptance-20261003.md",
+      "bytes": 2540,
+      "sha256": "ADBE3443C2A0616F803AA5C34F955F64D7EC72D44A65E6C0DD12BB961ED62632",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-mcp-inprocess-accounting-root-current.patch",
+      "bytes": 2853,
+      "sha256": "F003C671E7B4939E8B62F862DF1E8EFF45F5E8C6209C4D0E6897DC5631052AA3",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-mcp-inprocess-continuation-20261002.receipt.md",
+      "bytes": 4657,
+      "sha256": "2A1CA0AB9A96A6411AB4FB5041A794BF8DAB11673F7EF5F606A40BAE408A7AC1",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-mcp-inprocess-root-current.patch",
+      "bytes": 14358,
+      "sha256": "1FAB58261313CF8A8B3B264A08A6C750465FCAE26744B5F875A9AA892813D690",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-mcp-inprocess-root-current.receipt.md",
+      "bytes": 2169,
+      "sha256": "4C05EE8F854AF35B5969302ADF26969F8F2E82D127653A4C112F7A88B70BF6C1",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-operational-mode-classifier-root-current-20261002.patch",
+      "bytes": 2517,
+      "sha256": "27977D121A84BBB6E99006F446C5F9CE041EE240089555DEBA2615A1F3E23704",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-operational-mode-classifier-root-current-20261002.receipt.md",
+      "bytes": 2300,
+      "sha256": "25D957BFC8E8CD3F9BE5005B950886B467686C5F4C5C7931722807083304BAA3",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/t03-owned.patch",
+      "bytes": 200877,
+      "sha256": "00960273A50E811412BBE8172667337C2DD3F1B972E528EFD13AA9592B63D54A",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-owner-only-mcp-contract-dispatch-20261004.md",
+      "bytes": 3849,
+      "sha256": "805A54775490D2B0E5905E1072951B7D2D29A4A576E2AAB7EA28FFF7E5BA98D2",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-path-hints-contract-manifest-20261004.md",
+      "bytes": 3284,
+      "sha256": "26A322652342110A031A9496B0F98B7A0F2447F52008859C7BCB1A608A233F83",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-path-hints-keyword-end2end-20261006.md",
+      "bytes": 4590,
+      "sha256": "F3376580F8868CFAD33D13E45C3EDD8D641082B9E42405C0BD1B70E67E3252E1",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-path-hints-keyword-source-test-20261006.patch",
+      "bytes": 2270,
+      "sha256": "6E516F2C3A507CCE9935E4B9D419FA2D47083EC13C4A71C58FFB26A7C9071BA5",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-path-hints-release-20261006.json",
+      "bytes": 4536,
+      "sha256": "2B580824566BD8A23E199A6B0BFC3CCE7105FBC5D3D06FAED6222AFE118D2D48",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-path-hints-telemetry-owner-handoff-20261006.json",
+      "bytes": 3663,
+      "sha256": "2A3ED0653FA3ECC8EC0E322F43588198B110C4747D233E819519C29672355E03",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/t03-request-id.patch",
+      "bytes": 1916,
+      "sha256": "5D03C689EC0FC7C891E04A2876FBCEECEA157780F706455062C6ACEC4FC6A427",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-root-autostart-fake-regression-20261004.md",
+      "bytes": 2234,
+      "sha256": "582B8E6086EC055C89D3B9DA7113EC904C2B4FD0154FD9BFEA778CFDBA9A3084",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/t03-root-contracts.patch",
+      "bytes": 24518,
+      "sha256": "51258761A2B7181F2317BD32BD627B73477A13FC4141D577B0DB2FB8A4630B62",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-root-current-autostart-test-manifest-20261004.md",
+      "bytes": 2162,
+      "sha256": "9DCB280D8A70F66160E8D37BDEA98E9958A9A0219B2DF3F5C513460368E40CCA",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-root-current-autostart-test.patch",
+      "bytes": 1685,
+      "sha256": "EDDEE31394305BA595E6D82F683BCA7DBFA038033AB2CFAC534260826DCE8560",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-root-current-full-status-output-20261001.patch",
+      "bytes": 5442,
+      "sha256": "A5CA8543CA462B67D12C75343A794E23B1B225ADC796B2C44965125C572F04E6",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-root-current-full-status-output-20261001.receipt.md",
+      "bytes": 5973,
+      "sha256": "94366079F6E8A53490CD85C4F2B335559C19F59E94C9312A9AFC8C10A28C5E35",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-root-current-path-hints-client-keyword-20261006.md",
+      "bytes": 3598,
+      "sha256": "D202A0BBEA537E9AE3FCDE6FBB263B6BAB8C31AC47A563854E3DA31D3049669F",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-root-current-path-hints-client-keyword-20261006.patch",
+      "bytes": 1338,
+      "sha256": "FD5C877B598CAD4929AADCB92E2ABB0A384B1B9F6477B22CFA881AAC9D175500",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-root-current-path-hints-client-keyword-postfix-20261006.patch",
+      "bytes": 1513,
+      "sha256": "BC0528D86F7F965476E996765B41B6EB661D239D3B8BDA5A84D4C993F79726B4",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-root-current-path-hints-wrapper-test-20261006.md",
+      "bytes": 4363,
+      "sha256": "7F71B3868C26ED2B17C880D49EFF9E8390FD332DE65C8B0F93D20DB53731880F",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-root-current-path-hints-wrapper-test-20261006.patch",
+      "bytes": 1327,
+      "sha256": "5F3031B776C4A7C77DEA76E7B0D07679CDC2CC8C1B2B08356B314AED1B912697",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-root-current-path-hints-wrapper-test.patch",
+      "bytes": 1244,
+      "sha256": "B6103C2B8479444A460E903E7A6BA8A263AF15848DA79047ED14D85C0CE72536",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-root-current-path-hints-wrapper-test.receipt.md",
+      "bytes": 2805,
+      "sha256": "CCBBFF62CD125D0D09774BF09380A08C37153DE7526FA2DC3A8C238C9C35C5C6",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/t03-root.patch",
+      "bytes": 2282,
+      "sha256": "FB1E04267F79614A1435018D7C771DF92F1D156AB4C0660FAA3C831D01720145",
+      "storage": "ordinary Git path plus exact-byte archive"
+    },
+    {
+      "path": "handoff/T03-sync-integration-20261006.md",
+      "bytes": 9428,
+      "sha256": "BF0137F2C98F13D76744A65FEC5A3DF42467453B5A808D4008DB3CC42511E2DA",
+      "storage": "ordinary Git path plus exact-byte archive"
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -12,7 +12,7 @@
+ import unicodedata
+ import uuid
+ from contextlib import closing
+-from dataclasses import dataclass, field
++from dataclasses import dataclass, field, replace
+ from enum import Enum
+ from pathlib import Path
+ from typing import Any, Mapping
+@@ -1448,6 +1448,10 @@
+             idempotency_key=idempotency_key,
+             actor=actor,
+         )
++        if _allow_server_memory_refresh:
++            return self._commit_update(
++                current, updated, event, allow_server_memory_refresh=True
++            )
+         return self._commit_update(current, updated, event)
+ 
+     def _replay_same_status_transition(
+@@ -2161,8 +2165,17 @@
+         current: TaskState,
+         updated: TaskState,
+         event: AgentEvent,
++        *,
++        allow_server_memory_refresh: bool = False,
+     ) -> TaskState:
+         """CAS-update projection and append its event/cursor in one transaction."""
++        checkpoint = _preserve_checkpoint_memory_state(
++            current.checkpoint.state_data,
++            updated.checkpoint,
++            allow_server_memory_refresh=allow_server_memory_refresh,
++        )
++        if checkpoint != updated.checkpoint:
++            updated = replace(updated, checkpoint=checkpoint)
+         if not self._db_path_available():
+             raise RuntimeError("agent task storage is unavailable")
+         expected_context = json_dumps({
+--- a/tests/test_agent_task_memory_adoption.py
++++ b/tests/test_agent_task_memory_adoption.py
+@@ -25,7 +25,7 @@
+     _agent_tasks_spec.loader.exec_module(_agent_tasks_module)
+ 
+ from local_ai_hub.agent_context import ContextCompiler
+-from local_ai_hub.agent_events import AgentStateStore
++from local_ai_hub.agent_events import AgentEvent, AgentStateStore
+ from local_ai_hub.agent_incidents import IncidentStore, ToolOutcome
+ from local_ai_hub.agent_identity import AgentScope, ScopeContext
+ from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
+@@ -672,3 +672,63 @@
+         assert completed.checkpoint.state_data["memory_audit"]["used_ids"] == []
+     finally:
+         trace_context.reset_context(token)
++
++
++def test_shared_task_update_preserves_and_rejects_memory_context_changes(tmp_path: Path):
++    tasks, memory, _ = build_task_store(tmp_path)
++    root = tmp_path / "repo"
++    root.mkdir()
++    add_memory(memory, root=root, tenant="tenant-a", text="authoritative fact")
++    token = with_tenant("tenant-a")
++    task_id = "shared-update-memory-invariant"
++    try:
++        current = tasks.create(
++            GoalContract(goal="shared task updates preserve server memory"),
++            task_context(root),
++            task_id=task_id,
++            repo_root=str(root),
++        )
++        authoritative = current.checkpoint.state_data["memory_context"]
++        before_events = tasks.state_store.events(f"task:{task_id}")
++        forged = dict(authoritative)
++        forged["items"] = []
++        for index, memory_context in enumerate((forged, None)):
++            updated = replace(
++                current,
++                checkpoint=TaskCheckpoint(
++                    phase="forged",
++                    state_data={"memory_context": memory_context},
++                ),
++            )
++            event = AgentEvent.create(
++                stream_id=f"task:{task_id}",
++                kind="task.transitioned",
++                payload={"attempt": index},
++                idempotency_key=f"shared-update-forged-{index}",
++                actor="test",
++            )
++            with pytest.raises(CompletionGateError, match="memory_context is server-managed"):
++                tasks._commit_update(current, updated, event)
++            assert tasks.get(task_id) == current
++            assert tasks.state_store.events(f"task:{task_id}") == before_events
++
++        omitted = replace(
++            current,
++            checkpoint=TaskCheckpoint(
++                phase="work",
++                state_data={"note": "server fields omitted"},
++            ),
++        )
++        event = AgentEvent.create(
++            stream_id=f"task:{task_id}",
++            kind="task.transitioned",
++            payload={"note": "server fields omitted"},
++            idempotency_key="shared-update-omission",
++            actor="test",
++        )
++        saved = tasks._commit_update(current, omitted, event)
++        assert saved.checkpoint.state_data["memory_context"] == authoritative
++        assert saved.checkpoint.state_data["note"] == "server fields omitted"
++        assert tasks.get(task_id) == saved
++    finally:
++        trace_context.reset_context(token)
