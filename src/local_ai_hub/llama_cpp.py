@@ -240,7 +240,7 @@ class LlamaCppRouter:
             "details": {"architecture": architecture},
         }
 
-    def unload_model(self, model: str) -> bool:
+    def unload_model(self, model: str, *, timeout: float | None = None) -> bool:
         selected = self._entry(model)
         if not selected:
             return False
@@ -249,7 +249,8 @@ class LlamaCppRouter:
         try:
             body = json_dumps({"model": alias}).encode("utf-8")
             req = Request(f"{url}/models/unload", data=body, headers={"Content-Type": "application/json"})
-            with urlopen(req, timeout=5.0) as response:
+            request_timeout = 5.0 if timeout is None else max(0.05, float(timeout))
+            with urlopen(req, timeout=request_timeout) as response:
                 result = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
             self._models.pop(url, None)
             return bool(isinstance(result, dict) and result.get("success", False))

@@ -232,6 +232,14 @@ class ProjectPreprocessor:
         self._cpu_wakeup.set()
         self._gpu_wakeup.set()
 
+    @staticmethod
+    def _worker_mode_recheck_seconds(poll: float) -> float:
+        return min(max(0.01, float(poll)), 0.1)
+
+    def _wait_for_worker_wakeup(self, wakeup: threading.Event, poll: float) -> None:
+        wakeup.wait(self._worker_mode_recheck_seconds(poll))
+        wakeup.clear()
+
     def _project_step_lock(self, root: str) -> threading.Lock:
         with self._step_locks_guard:
             lock = self._step_locks.get(root)
@@ -247,15 +255,29 @@ class ProjectPreprocessor:
         retry later; this is contention, not a foreground-yield or an error.
         """
         root = str(row.get("root", ""))
+        if self._paused.is_set() or self._operational_mode_paused():
+            return False
         lock = self._project_step_lock(root)
         if not lock.acquire(blocking=False):
             with self._stats_lock:
                 self._stats["project_step_contention"] += 1
             return None
         try:
+            if self._paused.is_set() or self._operational_mode_paused():
+                return False
             return self._step(row)
         finally:
             lock.release()
+
+    def _operational_mode_paused(self) -> bool:
+        try:
+            from .operational_mode import load_operational_mode
+
+            snapshot = load_operational_mode(self.state_dir)
+            return bool(snapshot.degraded or snapshot.mode != "active")
+        except Exception:
+            # A missing or unreadable mode state must stop background indexing.
+            return True
 
     def _forget_project_runtime(self, root: str) -> None:
         with self._dirty_lock:
@@ -1152,10 +1174,11 @@ class ProjectPreprocessor:
     def status(self, root: str | None = None) -> dict[str, Any]:
         now_mono = time.monotonic()
         key = str(root or "__all__")
+        mode_paused = self._operational_mode_paused()
         if not hasattr(self, "_status_cache"):
             self._status_cache = {}
         cached = self._status_cache.get(key)
-        if cached and now_mono - cached["time"] < 0.5:
+        if cached and cached.get("mode_paused") == mode_paused and now_mono - cached["time"] < 0.5:
             return dict(cached["data"])
         with closing(self._connect()) as con:
             if root is not None:
@@ -1433,7 +1456,7 @@ class ProjectPreprocessor:
         global_diagnostic = ""
         if not self.enabled:
             global_diagnostic = "Preprocessing is disabled in config (preprocessing.enabled = false)."
-        elif self._paused.is_set():
+        elif self._paused.is_set() or mode_paused:
             global_diagnostic = "Preprocessing is GLOBALLY PAUSED."
         elif not projects:
             global_diagnostic = "No projects registered. Register a repository path to start background preprocessing."
@@ -1448,13 +1471,13 @@ class ProjectPreprocessor:
             global_diagnostic = "Background preprocessing is actively running."
 
         res = {
-            "success": True, "enabled": self.enabled, "paused": self._paused.is_set(),
+            "success": True, "enabled": self.enabled, "paused": self._paused.is_set() or mode_paused,
             "phases": list(self.PHASES), "projects": projects,
             "scheduler_background_allowed": bg_allowed,
             "global_diagnostic": global_diagnostic,
             "ingestion_reuse_rate": self.ingestion_reuse_rate(),
         }
-        self._status_cache[key] = {"time": now_mono, "data": dict(res)}
+        self._status_cache[key] = {"time": now_mono, "data": dict(res), "mode_paused": mode_paused}
         return res
 
     _PROJECT_COLUMNS = frozenset({
@@ -1558,25 +1581,21 @@ class ProjectPreprocessor:
         while not self._stop.is_set():
             with self._stats_lock:
                 self._stats["loops"] += 1
-            if self._paused.is_set():
-                self._cpu_wakeup.wait(poll)
-                self._cpu_wakeup.clear()
+            if self._paused.is_set() or self._operational_mode_paused():
+                self._wait_for_worker_wakeup(self._cpu_wakeup, poll)
                 continue
             if not self.cpu_runs_during_foreground and not self.scheduler.background_allowed():
-                self._cpu_wakeup.wait(poll)
-                self._cpu_wakeup.clear()
+                self._wait_for_worker_wakeup(self._cpu_wakeup, poll)
                 continue
             row = self._next_cpu_project()
             if row is None:
-                self._cpu_wakeup.wait(poll)
-                self._cpu_wakeup.clear()
+                self._wait_for_worker_wakeup(self._cpu_wakeup, poll)
                 continue
             root = str(row["root"])
             try:
                 progressed = self._run_project_step(dict(row))
                 if progressed is None:
-                    self._cpu_wakeup.wait(min(0.1, poll))
-                    self._cpu_wakeup.clear()
+                    self._wait_for_worker_wakeup(self._cpu_wakeup, poll)
                     continue
                 self._mark_step_recovered(root)
                 if progressed:
@@ -1586,7 +1605,7 @@ class ProjectPreprocessor:
                     with self._stats_lock:
                         self._stats["yields"] += 1
                     self.scheduler.note_background_yield()
-                    self._stop.wait(min(0.5, poll))
+                    self._stop.wait(self._worker_mode_recheck_seconds(poll))
             except Exception as exc:
                 with self._stats_lock:
                     self._stats["errors"] += 1
@@ -1612,25 +1631,21 @@ class ProjectPreprocessor:
     def _gpu_loop(self) -> None:
         poll = max(0.2, float(self.cfg.get("poll_seconds", 1.0)))
         while not self._stop.is_set():
-            if self._paused.is_set():
-                self._gpu_wakeup.wait(poll)
-                self._gpu_wakeup.clear()
+            if self._paused.is_set() or self._operational_mode_paused():
+                self._wait_for_worker_wakeup(self._gpu_wakeup, poll)
                 continue
             if self.background_gpu is None or not self.background_gpu.ready():
-                self._gpu_wakeup.wait(poll)
-                self._gpu_wakeup.clear()
+                self._wait_for_worker_wakeup(self._gpu_wakeup, poll)
                 continue
             row = self._next_gpu_project()
             if row is None:
-                self._gpu_wakeup.wait(poll)
-                self._gpu_wakeup.clear()
+                self._wait_for_worker_wakeup(self._gpu_wakeup, poll)
                 continue
             root = str(row["root"])
             try:
                 progressed = self._run_project_step(dict(row))
                 if progressed is None:
-                    self._gpu_wakeup.wait(min(0.1, poll))
-                    self._gpu_wakeup.clear()
+                    self._wait_for_worker_wakeup(self._gpu_wakeup, poll)
                     continue
                 self._mark_step_recovered(root)
                 if progressed:
@@ -1638,21 +1653,26 @@ class ProjectPreprocessor:
                         self._stats["gpu_card_steps"] = self._stats.get("gpu_card_steps", 0) + 1
                     self._gpu_wakeup.set()
                 else:
-                    self._stop.wait(min(0.5, poll))
+                    self._stop.wait(self._worker_mode_recheck_seconds(poll))
             except Exception:
                 with self._stats_lock:
                     self._stats["errors"] += 1
-                self._stop.wait(1.0)
+                self._stop.wait(self._worker_mode_recheck_seconds(poll))
 
     def _yield(self) -> bool:
-        if self._stop.is_set():
+        if self._stop.is_set() or self._paused.is_set() or self._operational_mode_paused():
             return True
         if self.cpu_runs_during_foreground:
             return False
         return bool(self.scheduler.foreground_busy())
 
     def _gpu_yield(self) -> bool:
-        return self._stop.is_set() or self.scheduler.foreground_busy()
+        return (
+            self._stop.is_set()
+            or self._paused.is_set()
+            or self._operational_mode_paused()
+            or self.scheduler.foreground_busy()
+        )
 
     def _fs_watcher_loop(self) -> None:
         """Keep one bounded watchdog observer synchronized with active projects.
@@ -2761,6 +2781,15 @@ class ProjectPreprocessor:
                 role="background", input_tokens=max(1, (len(prompt) + len(system)) // 4),
                 output_tokens=int(max_tokens), background=True, preserve_explicit_think=False,
             )
+            # The scheduler can hold this closure until after gaming or
+            # maintenance becomes active. Recheck before the runtime handoff.
+            if self._operational_mode_paused():
+                return {
+                    "success": False,
+                    "preempted": True,
+                    "error_code": "operational_mode_paused",
+                    "error": "background inference start blocked by operational mode",
+                }
             response = self.runtime.request_interruptible(
                 "/api/generate", payload, self.scheduler.foreground_busy,
                 timeout=float(self.cfg.get("background_request_timeout_seconds", 300)),

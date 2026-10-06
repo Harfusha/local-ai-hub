@@ -263,6 +263,7 @@ class LocalAIApp:
             verification_store=self.agent_verification,
             telemetry=self.telemetry,
         )
+        self._bind_service_inference_admission()
         self.speculative_lint = SpeculativeLintQueue(self.async_jobs, self.config)
         self.async_jobs.recover()
         self.commands = CommandBroker(self.config, self.artifacts, self.repo_state)
@@ -420,30 +421,76 @@ class LocalAIApp:
         self._watchdog_thread = threading.Thread(target=self._watchdog_loop, name="local-ai-watchdog", daemon=True)
         self._watchdog_thread.start()
 
+    def _bind_service_inference_admission(self) -> None:
+        """Expose manager admission for service-level generation-boundary checks."""
+        self.services.inference_admission = self.async_jobs.inference_admission
+
     def _execute_async_task(self, action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
-        async_payload = dict(payload)
-        async_payload["priority"] = 1
-        if action == "delegate":
-            return self.services.delegate(async_payload, tenant)
-        if action == "reason":
-            return self.services.reason({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1}, tenant)
-        if action == "review":
-            return self.services.review({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1}, tenant)
-        if action == "review_diff":
-            review_payload = dict(async_payload)
-            review_payload["_async_job"] = True
-            return self.services.review_diff(review_payload, tenant)
-        if action == "second_opinion":
-            return self.services.second_opinion({"question": async_payload.get("task", ""), "candidate": async_payload.get("candidate", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1100), "priority": 1}, tenant)
-        if action == "compress":
-            return self.services.compress({"text": async_payload.get("context", ""), "instruction": async_payload.get("task", "Compress while preserving facts."), "target_tokens": async_payload.get("max_tokens", 650), "priority": 1}, tenant)
-        if action == "route":
-            return self.services.route_context({"text": async_payload.get("context", ""), "query": async_payload.get("task", "")}, tenant)
-        if action == "batch":
-            return self.services.batch_delegate({"tasks": async_payload.get("tasks", []), "priority": 1}, tenant)
-        if action == "speculative_lint":
-            return self.services.speculative_lint(async_payload, tenant)
-        return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}
+        with self.async_jobs.inference_admission(action) as rejection:
+            if rejection is not None:
+                return rejection
+            async_payload = dict(payload)
+            async_payload["priority"] = 1
+            for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
+                async_payload.pop(untrusted_context, None)
+            if action == "delegate":
+                return self.services.delegate(async_payload, tenant)
+            if action == "reason":
+                reason_payload = dict(async_payload)
+                reason_payload.update({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1})
+                return self.services.reason(reason_payload, tenant)
+            if action == "review":
+                review_payload = dict(async_payload)
+                review_payload.update({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1})
+                return self.services.review(review_payload, tenant)
+            if action == "review_diff":
+                review_payload = dict(async_payload)
+                review_payload["_async_job"] = True
+                return self.services.review_diff(review_payload, tenant)
+            if action == "second_opinion":
+                opinion_payload = dict(async_payload)
+                opinion_payload.update({"question": async_payload.get("task", ""), "candidate": async_payload.get("candidate", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1100), "priority": 1})
+                return self.services.second_opinion(opinion_payload, tenant)
+            if action == "compress":
+                compress_payload = dict(async_payload)
+                compress_payload.update({"text": async_payload.get("context", ""), "instruction": async_payload.get("task", "Compress while preserving facts."), "target_tokens": async_payload.get("max_tokens", 650), "priority": 1})
+                return self.services.compress(compress_payload, tenant)
+            if action == "route":
+                route_payload = dict(async_payload)
+                route_payload.update({"text": async_payload.get("context", ""), "query": async_payload.get("task", "")})
+                return self.services.route_context(route_payload, tenant)
+            if action == "batch":
+                raw_tasks = async_payload.get("tasks")
+                if not isinstance(raw_tasks, list) or not raw_tasks:
+                    return {
+                        "success": False,
+                        "error": "tasks must be a non-empty array",
+                        "terminal": True,
+                        "retryable": False,
+                    }
+                inherited_context = {
+                    key: async_payload[key]
+                    for key in ("root", "cwd")
+                    if key in async_payload
+                }
+                tasks = []
+                for raw_task in raw_tasks:
+                    task_payload = dict(raw_task) if isinstance(raw_task, dict) else {"task": str(raw_task)}
+                    for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
+                        task_payload.pop(untrusted_context, None)
+                    child_has_workspace = any(
+                        str(task_payload.get(key) or "").strip()
+                        for key in ("root", "cwd")
+                    )
+                    if not child_has_workspace:
+                        for key, value in inherited_context.items():
+                            if str(value or "").strip():
+                                task_payload[key] = value
+                    tasks.append(task_payload)
+                return self.services.batch_delegate({"tasks": tasks, "priority": 1}, tenant)
+            if action == "speculative_lint":
+                return self.services.speculative_lint(async_payload, tenant)
+            return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}
 
     def capabilities(self) -> dict[str, Any]:
         from .features import FeatureSet
@@ -575,8 +622,26 @@ class LocalAIApp:
             from .features import FeatureSet
             fs = FeatureSet.from_config(self.config)
             observability = self.telemetry.realtime_summary(scope=scope)
+            try:
+                from .operational_mode import load_operational_mode
+
+                mode_snapshot = load_operational_mode(self.config["server"]["state_dir"])
+                operational_mode = {
+                    "mode": mode_snapshot.mode,
+                    "revision": mode_snapshot.revision,
+                    "degraded": mode_snapshot.degraded,
+                    "error": mode_snapshot.error,
+                }
+            except Exception as exc:
+                operational_mode = {
+                    "mode": "maintenance",
+                    "revision": -1,
+                    "degraded": True,
+                    "error": str(exc)[:180],
+                }
             result = {
                 "success": True, "hub_online": True, "version": __version__,
+                "operational_mode": operational_mode,
                 "uptime_seconds": max(0, int(time.time() - self.started_at)),
                 "features": {
                     "status": fs.status,
@@ -618,7 +683,7 @@ class LocalAIApp:
                     **(prep_status if isinstance(prep_status, dict) else {}),
                     **prep_stats,
                     "projects": projects,
-                    "paused": bool(prep_status.get("paused", False)) if isinstance(prep_status, dict) else False,
+                    "paused": (bool(prep_status.get("paused", False)) if isinstance(prep_status, dict) else False) or operational_mode["mode"] != "active",
                     "global_diagnostic": str(prep_status.get("global_diagnostic", "")) if isinstance(prep_status, dict) else "",
                     "scheduler_background_allowed": prep_status.get("scheduler_background_allowed", True) if isinstance(prep_status, dict) else True,
                     "query_hit_rate": observability.get("preprocessed_query_hit_rate", 0.0),
@@ -704,8 +769,26 @@ class LocalAIApp:
             code_intelligence = read("code_intelligence", self.external_tools.status, {})
             debug_traces = read("debug_traces", self.debug_traces.stats, {})
             agent_state = read("agent_state", self._agent_state_summary, {"enabled": False})
+            try:
+                from .operational_mode import load_operational_mode
+
+                mode_snapshot = load_operational_mode(self.config["server"]["state_dir"])
+                operational_mode = {
+                    "mode": mode_snapshot.mode,
+                    "revision": mode_snapshot.revision,
+                    "degraded": mode_snapshot.degraded,
+                    "error": mode_snapshot.error,
+                }
+            except Exception as exc:
+                operational_mode = {
+                    "mode": "maintenance",
+                    "revision": -1,
+                    "degraded": True,
+                    "error": str(exc)[:180],
+                }
             res = {
                 "success": not degraded, "hub_pid": os.getpid(), "hub_online": True, "version": __version__,
+                "operational_mode": operational_mode,
                 "ollama_online": online, "online": online, "ollama_version": version,
                 "installed_models": installed, "loaded_models": loaded, "loaded_model_details": loaded_details, "models": dict(self.config["models"]),
                 "model_execution": model_execution, "ollama_profile": ollama_profile,

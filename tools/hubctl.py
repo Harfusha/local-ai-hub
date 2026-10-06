@@ -117,7 +117,8 @@ def start(verbose: bool = True) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "memory", "doctor", "logs"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "pause", "resume", "mode", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "memory", "doctor", "logs"])
+    parser.add_argument("operational_mode", nargs="?", choices=["active", "gaming", "maintenance"], help="Operational mode for the mode action")
     parser.add_argument("--config", type=Path, default=None, help="Path to config.toml")
     parser.add_argument("--install", action="store_true", help="Also deploy generated skill/instructions to configured agents")
     parser.add_argument("--task-id", type=str, default="", help="Task ID for task lookup")
@@ -135,6 +136,46 @@ def main() -> int:
     parser.add_argument("-f", "--follow", action="store_true", help="Stream log output continuously (like tail -f)")
     parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
+    if args.action in {"pause", "resume", "mode"}:
+        from local_ai_hub.operational_mode import set_operational_mode
+
+        if args.action == "mode" and args.operational_mode is None:
+            parser.error("mode action requires active, gaming, or maintenance")
+        if args.action != "mode" and args.operational_mode is not None:
+            parser.error("a mode value is only valid with the mode action")
+        mode = args.operational_mode if args.action == "mode" else "maintenance" if args.action == "pause" else "active"
+        try:
+            cfg = load_config(_config_arg(args.config))
+            state_dir = Path(cfg.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser().resolve()
+            mode_client = HubClient(
+                tenant="hubctl", config_path=_config_arg(args.config), auto_start=False,
+            )
+            if mode_client._online():
+                result = mode_client.post("/api/mode", {"mode": mode}, timeout=15.0)
+                result["offline"] = False
+            else:
+                snapshot = set_operational_mode(state_dir, mode)
+                result = {
+                    "success": True,
+                    "offline": True,
+                    "mode": snapshot.mode,
+                    "revision": snapshot.revision,
+                }
+            if args.raw_json:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            elif result.get("success") is True:
+                qualifier = "locally " if result.get("offline") else ""
+                print(f"Hub {qualifier}set to {result.get('mode', mode)} (revision {result.get('revision', '?')}).")
+            else:
+                print(f"Could not change Hub mode: {result.get('error', 'transition failed')}", file=sys.stderr)
+            return 0 if result.get("success") is True else 1
+        except Exception as exc:
+            result = {"success": False, "offline": True, "error": str(exc)[:240]}
+            if args.raw_json:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print(f"Could not change local mode: {result['error']}", file=sys.stderr)
+            return 1
     if args.action == "generate":
         cfg = load_config(_config_arg(args.config))
         from local_ai_hub.generator import write_all_generated

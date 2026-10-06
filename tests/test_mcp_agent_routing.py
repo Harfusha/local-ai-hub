@@ -10,6 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from local_ai_hub import mcp_server as local_ai_mcp  # noqa: E402
+from local_ai_hub import operational_mode  # noqa: E402
 from local_ai_hub.features import FeatureSet  # noqa: E402
 from local_ai_hub.routing import semantic_handoff_hint  # noqa: E402
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore  # noqa: E402
@@ -469,6 +470,62 @@ def test_invalid_task_action_excludes_orchestration() -> None:
     assert "peer subagents" in result["error"]
 
 
+def test_safe_task_job_actions_block_in_maintenance_before_backend_transport(tmp_path, monkeypatch):
+    operational_mode.set_operational_mode(tmp_path, "maintenance")
+    monkeypatch.setattr(local_ai_mcp, "configured_state_dir", lambda _config, create=False: tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        local_ai_mcp.CLIENT,
+        "post",
+        lambda path, payload, **kwargs: calls.append((path, payload)) or {"success": True},
+    )
+
+    results = [
+        local_ai_mcp.local_ai_task(action=action, job_id="job-1", timeout_seconds=0)
+        for action in ("status", "wait", "result", "cancel", "evaluation_report")
+    ]
+
+    assert all(result.get("error_code") == "operational_mode_blocked" for result in results)
+    assert all(result.get("operational_mode") == "maintenance" for result in results)
+    assert calls == []
+
+
+def test_safe_task_job_actions_remain_available_in_gaming(tmp_path, monkeypatch):
+    operational_mode.set_operational_mode(tmp_path, "gaming")
+    monkeypatch.setattr(local_ai_mcp, "configured_state_dir", lambda _config, create=False: tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        local_ai_mcp.CLIENT,
+        "post",
+        lambda path, payload, **kwargs: calls.append((path, payload)) or {"success": True},
+    )
+
+    results = [
+        local_ai_mcp.local_ai_task(action=action, job_id="job-1", timeout_seconds=0)
+        for action in ("status", "wait", "result", "cancel", "evaluation_report")
+    ]
+
+    assert all(result.get("success") is True for result in results)
+    assert len(calls) == 5
+
+
+def test_other_agent_mcp_tools_block_in_maintenance_before_transport(tmp_path, monkeypatch):
+    operational_mode.set_operational_mode(tmp_path, "maintenance")
+    monkeypatch.setattr(local_ai_mcp, "configured_state_dir", lambda _config, create=False: tmp_path)
+    calls = []
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *args, **kwargs: calls.append(args))
+    def reject_accounting(*_args, **_kwargs):
+        raise AssertionError("maintenance tool call attempted accounting write")
+    monkeypatch.setattr(local_ai_mcp.CONTEXT_LEDGER, "record", reject_accounting)
+    monkeypatch.setattr(local_ai_mcp._ACCOUNTING_REPORTER, "record", reject_accounting)
+
+    result = local_ai_mcp.local_ai_repo(action="search", root=str(ROOT), query="symbol")
+
+    assert result.get("error_code") == "operational_mode_blocked"
+    assert result.get("operational_mode") == "maintenance"
+    assert calls == []
+
+
 def test_eval_suite_forwards_bounded_cases_and_model(monkeypatch) -> None:
     calls = {}
 
@@ -684,6 +741,48 @@ def test_async_job_controls_bypass_model_execution_gate(monkeypatch):
     assert captured["payload"] == {"action": "status", "job_id": "job-123"}
 
 
+def test_mcp_gaming_defers_inference_with_bounded_retry(tmp_path, monkeypatch):
+    from local_ai_hub.operational_mode import set_operational_mode
+
+    set_operational_mode(tmp_path, "gaming")
+    monkeypatch.setattr(local_ai_mcp, "CFG", {"server": {"state_dir": str(tmp_path)}})
+    calls = []
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *args, **kwargs: calls.append(args))
+
+    result = local_ai_mcp.local_ai_task(action="delegate", task="summarize")
+
+    assert result["success"] is False
+    assert result["terminal"] is False
+    assert result["retryable"] is True
+    assert 0 < result["retry_after_seconds"] <= 10
+    assert calls == []
+
+
+def test_mcp_maintenance_blocks_agent_action_and_job_status_before_transport(tmp_path, monkeypatch):
+    from local_ai_hub.operational_mode import set_operational_mode
+
+    set_operational_mode(tmp_path, "maintenance")
+    monkeypatch.setattr(local_ai_mcp, "CFG", {"server": {"state_dir": str(tmp_path)}})
+    calls = []
+    monkeypatch.setattr(
+        local_ai_mcp.CLIENT,
+        "post",
+        lambda path, payload, **kwargs: calls.append((path, payload))
+        or {"success": True, "state": "completed", "job_id": payload["job_id"]},
+    )
+
+    blocked = local_ai_mcp.local_ai_task(action="reason", task="do work")
+    status = local_ai_mcp.local_ai_task(action="status", job_id="existing-job")
+
+    assert blocked["success"] is False
+    assert blocked["terminal"] is False
+    assert blocked["retryable"] is True
+    assert status["success"] is False
+    assert status["error_code"] == "operational_mode_blocked"
+    assert status["operational_mode"] == "maintenance"
+    assert calls == []
+
+
 def test_async_job_wait_transport_deadline_covers_capped_wait(monkeypatch):
     from types import SimpleNamespace
 
@@ -751,3 +850,89 @@ def test_async_job_submit_rejects_conversation_before_http(monkeypatch):
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert calls == []
+
+
+def test_mcp_repo_solve_defers_in_gaming_with_bounded_retry(tmp_path, monkeypatch):
+    from local_ai_hub.operational_mode import set_operational_mode
+
+    set_operational_mode(tmp_path, "gaming")
+    monkeypatch.setattr(local_ai_mcp, "CFG", {"server": {"state_dir": str(tmp_path)}})
+    calls = []
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *args, **kwargs: calls.append(args))
+
+    result = local_ai_mcp.local_ai_repo(action="solve", root=str(tmp_path), task="solve this")
+
+    assert result["success"] is False
+    assert result["terminal"] is False
+    assert result["retryable"] is True
+    assert 0 < result["retry_after_seconds"] <= 10
+    assert calls == []
+
+
+def test_mcp_repo_deterministic_read_passes_in_gaming(tmp_path, monkeypatch):
+    from local_ai_hub.operational_mode import set_operational_mode
+
+    set_operational_mode(tmp_path, "gaming")
+    monkeypatch.setattr(local_ai_mcp, "CFG", {"server": {"state_dir": str(tmp_path)}})
+    calls = []
+
+    def fake_post(path, payload, **_kwargs):
+        calls.append((path, payload))
+        return {"success": True, "items": []}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
+
+    result = local_ai_mcp.local_ai_repo(
+        action="deterministic", root=str(tmp_path), query="read symbols"
+    )
+
+    assert result["success"] is True
+    assert calls == [(
+        "/api/repo/deterministic",
+        {"root": str(tmp_path), "query": "read symbols", "limit": 30},
+    )]
+
+
+@pytest.mark.parametrize("mode", ["gaming", "maintenance"])
+def test_mcp_repo_adaptive_context_defers_in_restricted_modes(tmp_path, monkeypatch, mode):
+    from local_ai_hub.operational_mode import set_operational_mode
+
+    set_operational_mode(tmp_path, mode)
+    monkeypatch.setattr(local_ai_mcp, "CFG", {"server": {"state_dir": str(tmp_path)}})
+    calls = []
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *args, **kwargs: calls.append(args))
+
+    result = local_ai_mcp.local_ai_repo(
+        action="context", root=str(tmp_path), task="review changes"
+    )
+
+    assert result["error_code"] == "operational_mode_blocked"
+    assert result["retryable"] is True
+    assert calls == []
+
+
+def test_mcp_rag_index_defers_in_gaming_but_workspace_list_passes(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from local_ai_hub.operational_mode import set_operational_mode
+
+    set_operational_mode(tmp_path, "gaming")
+    monkeypatch.setattr(local_ai_mcp, "CFG", {"server": {"state_dir": str(tmp_path)}})
+    monkeypatch.setattr(
+        local_ai_mcp, "FEATURES",
+        SimpleNamespace(rag=True, tasks=False, has_any_model=lambda: False, status=True),
+    )
+    calls = []
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *args, **kwargs: calls.append(("post", args)))
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "get", lambda *args, **kwargs: calls.append(("get", args)) or {"success": True, "workspaces": []})
+    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, *_args, **_kwargs: value)
+
+    deferred = local_ai_mcp.local_ai_rag(action="index", root=str(tmp_path))
+    listed = local_ai_mcp.local_ai_rag(action="list")
+
+    assert deferred["success"] is False
+    assert deferred["retryable"] is True
+    assert deferred["terminal"] is False
+    assert listed["success"] is True
+    assert calls == [("get", ("/api/rag/workspaces",))]

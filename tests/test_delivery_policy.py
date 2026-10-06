@@ -23,6 +23,24 @@ def test_async_delivery_docs_match_supported_actions_and_cold_start_rules():
     assert "`cold_start_review_diff`" in docs
 
 
+def test_http_api_docs_cover_delivery_and_conversation_lifecycle():
+    docs_path = Path(__file__).resolve().parents[1] / "docs" / "HTTP_API.md"
+    docs = docs_path.read_text(encoding="utf-8")
+
+    for phrase in (
+        "fewer than five telemetry samples",
+        "`cold_start_review_diff`",
+        "delivery=\"sync\"",
+        "tenant against the conversation owner",
+        "Only one turn can be active",
+        "model_conversations.max_prompt_tokens",
+        "900 seconds idle TTL",
+        "1,800 seconds active TTL",
+        "not recovered after restart",
+    ):
+        assert phrase in docs
+
+
 def test_install_and_update_prompts_cover_async_and_conversation_contracts():
     root = Path(__file__).resolve().parents[1]
     prompt_docs = [

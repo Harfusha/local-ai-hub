@@ -5123,7 +5123,7 @@ async function pollStatus(isCurrent=()=>document.visibilityState!=='hidden'){
     if(!current())return false;
     const changed=shouldRefreshDashboardStatus(s);
     if(changed)render(s);
-    hasLiveStatus=true;$('conn').textContent='live';$('conn').className='pill ok';if(changed)$('updated').textContent='updated '+new Date().toLocaleTimeString();
+    hasLiveStatus=true;const mode=s.operational_mode||{},modeName=mode.mode||'active',conn=$('conn');if(conn){conn.textContent=`live · ${modeName}`;conn.className=`pill ${mode.degraded?'bad-t':modeName==='active'?'ok':'warn-t'}`;conn.title=`Operational mode: ${modeName} · revision ${mode.revision??0}${mode.error?` · ${mode.error}`:''}`;}if(changed)$('updated').textContent='updated '+new Date().toLocaleTimeString();
     if(changed||hardwareRefreshPending)try{
       const hardwareOpts={cache:'no-store'};if(controller)hardwareOpts.signal=controller.signal;
       const gr=await apiFetch('/api/hardware/system',hardwareOpts);
