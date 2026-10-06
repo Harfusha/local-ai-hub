@@ -938,26 +938,33 @@ class AgentStateStore:
         identity = (info.st_dev, info.st_ino)
         try:
             if os.name == "nt":
+                from .process_utils import run_hidden
+
                 try:
-                    account = os.environ.get("USERNAME")
-                    if not account:
-                        account = subprocess.run(
-                            ["whoami"],
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=1.0,
-                        ).stdout.strip()
-                    if account:
-                        subprocess.run(
-                            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"],
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=1.0,
-                        )
-                except Exception:
-                    pass
+                    # USERNAME is caller-controlled, not proof of the process account.
+                    account = run_hidden(
+                        ["whoami"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=1.0,
+                    ).stdout.strip()
+                    if (
+                        not account
+                        or len(account.split("\\")) != 2
+                        or not all(account.split("\\"))
+                        or any(character in account for character in "\r\n\x00")
+                    ):
+                        raise PermissionError("agent_state backup process account is unknown")
+                    run_hidden(
+                        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=1.0,
+                    )
+                except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+                    raise PermissionError("agent_state backup permissions could not be secured") from exc
             else:
                 os.fchmod(descriptor, 0o600)
                 if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o600:
