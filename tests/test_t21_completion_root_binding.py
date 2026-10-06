@@ -1,0 +1,166 @@
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+
+from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.agent_identity import ScopeContext
+from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint, TaskStore
+from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
+from local_ai_hub.artifacts import ArtifactStore
+from local_ai_hub.project_config import resolve_project_context
+from local_ai_hub.verification_rules import (
+    complete_task_with_project_rules,
+    evaluate_project_completion,
+    project_command_environment_sha256,
+)
+
+
+def _task_with_test_receipt(tmp_path: Path, *, opaque_id: bool = False, require_lint: bool = True):
+    project = tmp_path / "task-project"
+    project.mkdir()
+    aliases = '[commands]\ntest = "python -m pytest -q"\n'
+    if require_lint:
+        aliases += 'lint = "python -m ruff check src"\n'
+    rules = 'test = ["test", "lint"]' if require_lint else 'test = ["test"]'
+    (project / ".local-ai.toml").write_text(
+        aliases + "[verification_rules]\n" + rules + "\n", encoding="utf-8"
+    )
+    state_dir = tmp_path / "state"
+    artifacts = ArtifactStore(state_dir)
+    state = AgentStateStore(state_dir / "agent_state.sqlite3")
+    tasks = TaskStore(state)
+    verifier = VerificationStore(state, task_store=tasks, artifact_store=artifacts)
+    task_id = "root-bound-task"
+    owner = "task-owner"
+    revision = "current-source-revision"
+    task = tasks.create(
+        GoalContract(goal="complete within the task project", acceptance_criteria=("test",)),
+        ScopeContext(
+            repository_id="opaque-repository-identity" if opaque_id else str(project),
+            task_id=task_id,
+        ),
+        task_id=task_id,
+        actor=owner,
+        repo_root=str(project),
+    )
+    tasks.checkpoint(
+        task_id,
+        TaskCheckpoint(
+            phase="verification",
+            state_data={
+                **task.checkpoint.state_data,
+                "repository_revision": revision,
+                "memory_audit": {
+                    "used_ids": [],
+                    "not_used_reason": "memory unavailable in this receipt-boundary fixture",
+                },
+            },
+        ),
+        actor=owner,
+    )
+    context = resolve_project_context(project, state_dir)
+    actual_command = str(context.settings.commands["test"])
+    command_sha256 = hashlib.sha256(actual_command.encode("utf-8")).hexdigest()
+    configured_command_sha256 = command_sha256
+    caller_arguments_sha256 = hashlib.sha256(b"[]").hexdigest()
+    project_env_sha256 = project_command_environment_sha256(context.settings, "test")
+    binding_fields = {
+        "project_alias": "test",
+        "project_config_digest": context.config_digest,
+        "configured_command_sha256": configured_command_sha256,
+        "caller_arguments_sha256": caller_arguments_sha256,
+        "command_sha256": command_sha256,
+        "project_environment_sha256": project_env_sha256,
+    }
+    binding_sha256 = hashlib.sha256(
+        json.dumps(binding_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    proof_id = artifacts.put_json(
+        {
+            "kind": "work_command_verification",
+            "passed": True,
+            "task_id": task_id,
+            "owner": owner,
+            "repository_revision": revision,
+            "mutation_generation": 0,
+            "criterion": "test",
+            "command_id": "test-command",
+            "command_classification": "test",
+            "command": actual_command,
+            "project_alias": "test",
+            "project_config_digest": context.config_digest,
+            "project_environment_sha256": project_env_sha256,
+            "configured_command_sha256": configured_command_sha256,
+            "caller_arguments_sha256": caller_arguments_sha256,
+            "project_execution_binding_sha256": binding_sha256,
+            "command_sha256": command_sha256,
+            "exit_code": 0,
+            "result": {"success": True, "exit_code": 0},
+        },
+        owner,
+        "command_verification",
+    )
+    verifier.record(
+        VerificationReceipt.create(
+            task_id,
+            "test",
+            owner=owner,
+            evidence_id=proof_id,
+            command_id="test-command",
+            repository_revision=revision,
+            evidence_type="test",
+        )
+    )
+    return project, state_dir, tasks, verifier, task_id, owner, revision
+
+
+@pytest.mark.parametrize("opaque_id", [False, True])
+def test_completion_cannot_replace_task_project_to_bypass_verification_rules(tmp_path, opaque_id):
+    project, state_dir, tasks, verifier, task_id, owner, revision = _task_with_test_receipt(
+        tmp_path, opaque_id=opaque_id
+    )
+    foreign = tmp_path / "foreign-project-without-rules"
+    foreign.mkdir()
+    settings = resolve_project_context(project, state_dir).settings
+    original_gate = evaluate_project_completion(
+        verifier, settings, task_id=task_id, repository_revision=revision
+    )
+    assert original_gate.complete is False
+    assert "lint" in original_gate.unsatisfied_criteria
+
+    with pytest.raises(CompletionGateError, match="root|project"):
+        complete_task_with_project_rules(
+            tasks,
+            verifier,
+            task_id,
+            root=foreign,
+            state_dir=state_dir,
+            current_revision=revision,
+            actor=owner,
+        )
+
+    stored = tasks.get(task_id)
+    assert stored is not None
+    assert stored.status.value != "completed"
+    assert stored.checkpoint.state_data["repo_root"] == str(project)
+
+
+def test_completion_accepts_canonical_alias_of_the_bound_task_root(tmp_path):
+    project, state_dir, tasks, verifier, task_id, owner, revision = _task_with_test_receipt(
+        tmp_path, require_lint=False
+    )
+    child = project / "child"
+    child.mkdir()
+    completed = complete_task_with_project_rules(
+        tasks,
+        verifier,
+        task_id,
+        root=child / "..",
+        state_dir=state_dir,
+        current_revision=revision,
+        actor=owner,
+    )
+    assert completed.status.value == "completed"
+    assert completed.checkpoint.state_data["repo_root"] == str(project.resolve())

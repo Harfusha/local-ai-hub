@@ -194,23 +194,26 @@ class FencingLeaseStore:
                     lease_columns = {
                         str(row[1]) for row in con.execute("PRAGMA table_info(writer_fence_leases)")
                     }
-                    if not {"attempt_id", "attempt_token", "scope_id"}.issubset(lease_columns):
-                        con.execute("DROP TABLE writer_fence_leases")
-                        con.execute(
-                            """CREATE TABLE writer_fence_leases (
-                                lease_id TEXT PRIMARY KEY,
-                                resource TEXT NOT NULL,
-                                work_id TEXT NOT NULL,
-                                owner_id TEXT NOT NULL,
-                                fencing_token INTEGER NOT NULL CHECK(fencing_token > 0),
-                                expires_at REAL NOT NULL,
-                                paths_json TEXT NOT NULL,
-                                attempt_id TEXT NOT NULL DEFAULT '',
-                                attempt_token INTEGER NOT NULL DEFAULT 0,
-                                scope_id TEXT NOT NULL DEFAULT '',
-                                active INTEGER NOT NULL CHECK(active IN (0, 1))
-                            )"""
-                        )
+                    if "work_id" not in lease_columns:
+                        try:
+                            con.execute("ALTER TABLE writer_fence_leases ADD COLUMN work_id TEXT NOT NULL DEFAULT ''")
+                        except sqlite3.OperationalError:
+                            pass
+                    if "attempt_id" not in lease_columns:
+                        try:
+                            con.execute("ALTER TABLE writer_fence_leases ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''")
+                        except sqlite3.OperationalError:
+                            pass
+                    if "attempt_token" not in lease_columns:
+                        try:
+                            con.execute("ALTER TABLE writer_fence_leases ADD COLUMN attempt_token INTEGER NOT NULL DEFAULT 0")
+                        except sqlite3.OperationalError:
+                            pass
+                    if "scope_id" not in lease_columns:
+                        try:
+                            con.execute("ALTER TABLE writer_fence_leases ADD COLUMN scope_id TEXT NOT NULL DEFAULT ''")
+                        except sqlite3.OperationalError:
+                            pass
                     con.execute("UPDATE writer_fence_leases SET scope_id=resource WHERE scope_id='' ")
                     con.execute(
                         """CREATE TABLE IF NOT EXISTS writer_fence_attempts (
@@ -229,20 +232,10 @@ class FencingLeaseStore:
                         str(row[1]) for row in con.execute("PRAGMA table_info(writer_fence_attempts)")
                     }
                     if "scope_id" not in attempt_columns:
-                        con.execute("DROP TABLE writer_fence_attempts")
-                        con.execute(
-                            """CREATE TABLE writer_fence_attempts (
-                                attempt_id TEXT PRIMARY KEY,
-                                resource TEXT NOT NULL,
-                                scope_id TEXT NOT NULL DEFAULT '',
-                                work_id TEXT NOT NULL,
-                                owner_id TEXT NOT NULL,
-                                fencing_token INTEGER NOT NULL CHECK(fencing_token > 0),
-                                expires_at REAL NOT NULL,
-                                active INTEGER NOT NULL CHECK(active IN (0, 1)),
-                                UNIQUE(resource, work_id, fencing_token)
-                            )"""
-                        )
+                        try:
+                            con.execute("ALTER TABLE writer_fence_attempts ADD COLUMN scope_id TEXT NOT NULL DEFAULT ''")
+                        except sqlite3.OperationalError:
+                            pass
                     con.execute("UPDATE writer_fence_attempts SET scope_id=resource WHERE scope_id='' ")
                     con.execute(
                         "CREATE INDEX IF NOT EXISTS idx_writer_attempt_scope "
