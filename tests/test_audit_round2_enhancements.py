@@ -95,8 +95,20 @@ def test_memory_cascade_delete_and_compact_linking(tmp_path: Path):
     store = MemoryStore(state_store=state_store)
 
     # Record two memory items with relations
-    rec1 = store.record(MemoryRecord.create(kind=MemoryKind.DECISION, scope=AgentScope.SESSION, key="key1", value="val1"))
-    rec2 = store.record(MemoryRecord.create(kind=MemoryKind.DECISION, scope=AgentScope.SESSION, key="key2", value="val2"))
+    rec1 = store.record(MemoryRecord.create(
+        kind=MemoryKind.DECISION,
+        scope=AgentScope.SESSION,
+        scope_id="session-cascade",
+        key="key1",
+        value="val1",
+    ))
+    rec2 = store.record(MemoryRecord.create(
+        kind=MemoryKind.DECISION,
+        scope=AgentScope.SESSION,
+        scope_id="session-cascade",
+        key="key2",
+        value="val2",
+    ))
     store.record_relation(rec1.record_id, "relates_to", rec2.record_id)
 
     # Check relation exists
@@ -104,7 +116,11 @@ def test_memory_cascade_delete_and_compact_linking(tmp_path: Path):
     assert len(relations) >= 1
 
     # Delete rec1 -> relation must be cleaned
-    deleted = store.delete(rec1.record_id)
+    deleted = store.delete(
+        rec1.record_id,
+        scope=AgentScope.SESSION,
+        scope_id="session-cascade",
+    )
     assert deleted is True
     relations_after = store.find_relations(source_entity=rec1.record_id)
     assert len(relations_after) == 0
@@ -128,6 +144,7 @@ def test_task_completion_gate_checks_receipt_freshness(tmp_path: Path):
         task_id=task.task_id,
         criterion="all_passed",
         passed=True,
+        evidence_id="ev_expired",
         expires_at=time.time() - 100.0,
     )
     verif_store.record(expired_rcpt)

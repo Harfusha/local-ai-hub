@@ -26,12 +26,37 @@ def _init_treesitter() -> bool:
         return bool(_PARSERS)
     _INIT_ATTEMPTED = True
 
-    # The bundled native Tree-sitter wheels currently access-violate on Windows
-    # with Python 3.13 while walking some Unity/Go syntax trees. All callers have
-    # safe language-specific fallbacks, so keep the Hub process stable here.
+    # Do not import native Tree-sitter bindings on Windows Python 3.13+; the
+    # language-pack wheels can access-violate while walking otherwise valid trees.
+    # The deterministic Python AST and language-specific fallbacks remain available.
     if os.name == "nt" and sys.version_info >= (3, 13):
         logger.warning("Tree-sitter disabled on Windows Python 3.13+; using safe fallbacks")
         return False
+
+    try:
+        import tree_sitter_language_pack as tslp
+        mapping = {
+            "csharp": "c_sharp",
+            "typescript": "typescript",
+            "tsx": "tsx",
+            "javascript": "javascript",
+            "python": "python",
+            "go": "go",
+            "rust": "rust",
+            "java": "java",
+            "cpp": "cpp",
+        }
+        for internal_key, tslp_key in mapping.items():
+            try:
+                if tslp.has_language(tslp_key):
+                    _LANGUAGES[internal_key] = tslp.get_language(tslp_key)
+                    _PARSERS[internal_key] = tslp.get_parser(tslp_key)
+            except Exception as e:
+                logger.debug("Failed loading %s via tree_sitter_language_pack: %s", tslp_key, e)
+        if _PARSERS:
+            return True
+    except Exception as exc:
+        logger.debug("tree_sitter_language_pack unavailable: %s", exc)
 
     try:
         from tree_sitter import Language, Parser
@@ -116,6 +141,10 @@ def is_treesitter_available(lang: str) -> bool:
         return "go" in _PARSERS
     if norm in ("rs", "rust"):
         return "rust" in _PARSERS
+    if norm == "java":
+        return "java" in _PARSERS
+    if norm in ("cpp", "c++"):
+        return "cpp" in _PARSERS
     return False
 
 
@@ -141,6 +170,8 @@ def parse_treesitter(
         "py": "python", "python": "python",
         "go": "go", "golang": "go",
         "rs": "rust", "rust": "rust",
+        "java": "java",
+        "cpp": "cpp", "c++": "cpp",
     }.get(norm)
 
     if not key or key not in _PARSERS:
@@ -148,28 +179,31 @@ def parse_treesitter(
 
     parser = _PARSERS[key]
     source_bytes = text.encode("utf-8", errors="replace")
+    lines = text.splitlines()
     try:
-        # Parser instances are mutable in the native Tree-sitter bindings and are
-        # shared per language. Serialize calls so concurrent preprocessing cannot
-        # corrupt parser state and crash the Python process.
+        # Parser instances and their native tree nodes are shared with concurrent
+        # indexing workers. Keep parse and node traversal in one critical section:
+        # reusing a parser before its returned tree has been walked can invalidate
+        # native node state in some Windows bindings.
         with _PARSER_LOCK:
             tree = parser.parse(source_bytes)
+            if key == "csharp":
+                return _extract_csharp(tree.root_node, lines, source_bytes)
+            elif key in ("typescript", "tsx", "javascript"):
+                return _extract_js_ts(tree.root_node, lines, source_bytes)
+            elif key == "python":
+                return _extract_python(tree.root_node, lines, source_bytes)
+            elif key == "go":
+                return _extract_go(tree.root_node, lines, source_bytes)
+            elif key == "rust":
+                return _extract_rust(tree.root_node, lines, source_bytes)
+            elif key == "java":
+                return _extract_java(tree.root_node, lines, source_bytes)
+            elif key == "cpp":
+                return _extract_cpp(tree.root_node, lines, source_bytes)
     except Exception as exc:
-        logger.debug("Tree-sitter parse failed for %s: %s", language, exc)
+        logger.debug("Tree-sitter parse or extraction failed for %s: %s", language, exc)
         return None
-
-    lines = text.splitlines()
-
-    if key == "csharp":
-        return _extract_csharp(tree.root_node, lines, source_bytes)
-    elif key in ("typescript", "tsx", "javascript"):
-        return _extract_js_ts(tree.root_node, lines, source_bytes)
-    elif key == "python":
-        return _extract_python(tree.root_node, lines, source_bytes)
-    elif key == "go":
-        return _extract_go(tree.root_node, lines, source_bytes)
-    elif key == "rust":
-        return _extract_rust(tree.root_node, lines, source_bytes)
 
     return None
 
@@ -295,6 +329,11 @@ def _extract_csharp(
                     "access": "public",
                     "docstring": "",
                 })
+                stack.append(name)
+                for child in node.children:
+                    visit(child)
+                stack.pop()
+                return
 
         if ntype == "property_declaration":
             name_node = node.child_by_field_name("name")
@@ -326,6 +365,13 @@ def _extract_csharp(
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
                         "kind": "call",
+                    })
+                    curr_scope = "/".join(filter(None, [curr_namespace] + stack)) or "<module>"
+                    edges.append({
+                        "src": curr_scope,
+                        "dst": leaf_name,
+                        "kind": "calls",
+                        "line": node.start_point.row + 1,
                     })
 
         for child in node.children:
@@ -403,6 +449,30 @@ def _extract_js_ts(
                 stack.pop()
                 return
 
+        if ntype == "variable_declarator":
+            name_node = node.child_by_field_name("name")
+            value_node = node.child_by_field_name("value")
+            name = _node_text(name_node, source_bytes) if name_node else ""
+            if name and value_node and value_node.type == "arrow_function":
+                container = "/".join(stack)
+                name_path = f"{container}/{name}" if container else name
+                syms.append({
+                    "name": name,
+                    "kind": "method" if stack else "function",
+                    "line": node.start_point.row + 1,
+                    "end_line": node.end_point.row + 1,
+                    "container": container,
+                    "name_path": name_path,
+                    "signature": _first_line_sig(node, lines),
+                    "access": "public",
+                    "docstring": "",
+                })
+                stack.append(name)
+                for child in value_node.children:
+                    visit(child)
+                stack.pop()
+                return
+
         if ntype in ("function_declaration", "method_definition"):
             name_node = node.child_by_field_name("name")
             name = _node_text(name_node, source_bytes) if name_node else ""
@@ -422,6 +492,11 @@ def _extract_js_ts(
                     "access": "public",
                     "docstring": "",
                 })
+                stack.append(name)
+                for child in node.children:
+                    visit(child)
+                stack.pop()
+                return
 
         if ntype == "call_expression":
             fn_node = node.child_by_field_name("function")
@@ -433,6 +508,12 @@ def _extract_js_ts(
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
                         "kind": "call",
+                    })
+                    edges.append({
+                        "src": "/".join(stack) or "<module>",
+                        "dst": leaf_name,
+                        "kind": "calls",
+                        "line": node.start_point.row + 1,
                     })
 
         for child in node.children:
@@ -448,9 +529,10 @@ def _extract_python(
     syms: list[dict[str, Any]] = []
     refs: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
-    stack: list[str] = []
+    pending: list[tuple[Any, tuple[str, ...]]] = [(root, ())]
 
-    def visit(node: Any) -> None:
+    while pending:
+        node, scope = pending.pop()
         ntype = node.type
 
         if ntype in ("import_statement", "import_from_statement"):
@@ -471,13 +553,15 @@ def _extract_python(
                     "kind": "imports",
                     "line": node.start_point.row + 1,
                 })
-            return
+            continue
+
+        child_scope = scope
 
         if ntype == "class_definition":
             name_node = node.child_by_field_name("name")
             name = _node_text(name_node, source_bytes) if name_node else ""
             if name:
-                container = "/".join(stack)
+                container = "/".join(scope)
                 name_path = f"{container}/{name}" if container else name
                 sig = _first_line_sig(node, lines)
 
@@ -506,24 +590,19 @@ def _extract_python(
                     "access": "public" if not name.startswith("_") else "private",
                     "docstring": "",
                 })
-
-                stack.append(name)
-                for child in node.children:
-                    visit(child)
-                stack.pop()
-                return
+                child_scope = (*scope, name)
 
         if ntype == "function_definition":
             name_node = node.child_by_field_name("name")
             name = _node_text(name_node, source_bytes) if name_node else ""
             if name:
-                container = "/".join(stack)
+                container = "/".join(scope)
                 name_path = f"{container}/{name}" if container else name
                 sig = _first_line_sig(node, lines)
 
                 syms.append({
                     "name": name,
-                    "kind": "method" if stack else "function",
+                    "kind": "method" if scope else "function",
                     "line": node.start_point.row + 1,
                     "end_line": node.end_point.row + 1,
                     "container": container,
@@ -532,6 +611,7 @@ def _extract_python(
                     "access": "public" if not name.startswith("_") else "private",
                     "docstring": "",
                 })
+                child_scope = (*scope, name)
 
         if ntype == "call":
             fn_node = node.child_by_field_name("function")
@@ -544,11 +624,15 @@ def _extract_python(
                         "line": node.start_point.row + 1,
                         "kind": "call",
                     })
+                    edges.append({
+                        "src": "/".join(scope) or "<module>",
+                        "dst": leaf_name,
+                        "kind": "calls",
+                        "line": node.start_point.row + 1,
+                    })
 
-        for child in node.children:
-            visit(child)
+        pending.extend((child, child_scope) for child in reversed(node.children))
 
-    visit(root)
     return syms, refs, edges
 
 
@@ -559,9 +643,10 @@ def _extract_go(
     refs: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     curr_pkg = ""
+    curr_func = ""
 
     def visit(node: Any) -> None:
-        nonlocal curr_pkg
+        nonlocal curr_pkg, curr_func
         ntype = node.type
 
         if ntype == "package_clause":
@@ -625,6 +710,12 @@ def _extract_go(
                     "access": "public" if name[0].isupper() else "private",
                     "docstring": "",
                 })
+                old_func = curr_func
+                curr_func = name_path
+                for child in node.children:
+                    visit(child)
+                curr_func = old_func
+                return
 
         if ntype == "method_declaration":
             name_node = node.child_by_field_name("name")
@@ -647,6 +738,12 @@ def _extract_go(
                     "access": "public" if name[0].isupper() else "private",
                     "docstring": "",
                 })
+                old_func = curr_func
+                curr_func = name_path
+                for child in node.children:
+                    visit(child)
+                curr_func = old_func
+                return
 
         if ntype == "call_expression":
             fn_node = node.child_by_field_name("function")
@@ -658,6 +755,12 @@ def _extract_go(
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
                         "kind": "call",
+                    })
+                    edges.append({
+                        "src": curr_func or "<module>",
+                        "dst": leaf_name,
+                        "kind": "calls",
+                        "line": node.start_point.row + 1,
                     })
 
         for child in node.children:
@@ -674,9 +777,10 @@ def _extract_rust(
     refs: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     curr_impl = ""
+    curr_func = ""
 
     def visit(node: Any) -> None:
-        nonlocal curr_impl
+        nonlocal curr_impl, curr_func
         ntype = node.type
 
         if ntype in ("struct_item", "enum_item", "trait_item", "type_item"):
@@ -734,6 +838,12 @@ def _extract_rust(
                     "access": "public" if "pub" in sig.split()[:2] else "private",
                     "docstring": "",
                 })
+                old_func = curr_func
+                curr_func = name_path
+                for child in node.children:
+                    visit(child)
+                curr_func = old_func
+                return
 
         if ntype in ("call_expression", "macro_invocation"):
             fn_node = node.child_by_field_name("function") or node.child_by_field_name("macro")
@@ -746,6 +856,203 @@ def _extract_rust(
                         "line": node.start_point.row + 1,
                         "kind": "call",
                     })
+                    edges.append({
+                        "src": curr_func or "<module>",
+                        "dst": leaf_name,
+                        "kind": "calls",
+                        "line": node.start_point.row + 1,
+                    })
+
+        for child in node.children:
+            visit(child)
+
+    visit(root)
+    return syms, refs, edges
+
+def _extract_java(
+    root: Any, lines: list[str], source_bytes: bytes
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    syms: list[dict[str, Any]] = []
+    refs: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    containers: list[str] = []
+    current_function = ""
+    type_kinds = {
+        "class_declaration": "class",
+        "interface_declaration": "interface",
+        "enum_declaration": "enum",
+        "record_declaration": "record",
+    }
+
+    def visit(node: Any) -> None:
+        nonlocal current_function
+        ntype = node.type
+
+        if ntype in type_kinds:
+            name_node = node.child_by_field_name("name")
+            name = _node_text(name_node, source_bytes) if name_node else ""
+            if name:
+                container = "/".join(containers)
+                name_path = f"{container}/{name}" if container else name
+                syms.append({
+                    "name": name,
+                    "kind": type_kinds[ntype],
+                    "line": node.start_point.row + 1,
+                    "end_line": node.end_point.row + 1,
+                    "container": container,
+                    "name_path": name_path,
+                    "signature": _first_line_sig(node, lines),
+                    "access": "public",
+                    "docstring": "",
+                })
+                containers.append(name)
+                for child in node.children:
+                    visit(child)
+                containers.pop()
+                return
+
+        if ntype in ("method_declaration", "constructor_declaration"):
+            name_node = node.child_by_field_name("name")
+            name = _node_text(name_node, source_bytes) if name_node else ""
+            if name:
+                container = "/".join(containers)
+                name_path = f"{container}/{name}" if container else name
+                syms.append({
+                    "name": name,
+                    "kind": "constructor" if ntype == "constructor_declaration" else "method",
+                    "line": node.start_point.row + 1,
+                    "end_line": node.end_point.row + 1,
+                    "container": container,
+                    "name_path": name_path,
+                    "signature": _first_line_sig(node, lines),
+                    "access": "public",
+                    "docstring": "",
+                })
+                previous_function = current_function
+                current_function = name_path
+                for child in node.children:
+                    visit(child)
+                current_function = previous_function
+                return
+
+        if ntype == "method_invocation":
+            name_node = node.child_by_field_name("name")
+            name = _node_text(name_node, source_bytes) if name_node else ""
+            if name and re.fullmatch(r"[A-Za-z_$][\w$]*", name):
+                refs.append({"name": name, "line": node.start_point.row + 1, "kind": "call"})
+                edges.append({
+                    "src": current_function or "<module>",
+                    "dst": name,
+                    "kind": "calls",
+                    "line": node.start_point.row + 1,
+                })
+
+        for child in node.children:
+            visit(child)
+
+    visit(root)
+    return syms, refs, edges
+
+
+def _cpp_declarator_name(node: Any, source_bytes: bytes) -> str:
+    if node.type in ("identifier", "field_identifier", "operator_name"):
+        return _node_text(node, source_bytes)
+    if node.type == "qualified_identifier":
+        name_node = node.child_by_field_name("name")
+        return _cpp_declarator_name(name_node, source_bytes) if name_node else _node_text(node, source_bytes).split("::")[-1]
+    declarator = node.child_by_field_name("declarator")
+    if declarator:
+        return _cpp_declarator_name(declarator, source_bytes)
+    for child in node.children:
+        name = _cpp_declarator_name(child, source_bytes)
+        if name:
+            return name
+    return ""
+
+
+def _extract_cpp(
+    root: Any, lines: list[str], source_bytes: bytes
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    syms: list[dict[str, Any]] = []
+    refs: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    containers: list[str] = []
+    class_containers: list[str] = []
+    current_function = ""
+    container_kinds = {
+        "namespace_definition": "namespace",
+        "class_specifier": "class",
+        "struct_specifier": "struct",
+        "enum_specifier": "enum",
+    }
+
+    def visit(node: Any) -> None:
+        nonlocal current_function
+        ntype = node.type
+
+        if ntype in container_kinds:
+            name_node = node.child_by_field_name("name")
+            name = _node_text(name_node, source_bytes) if name_node else ""
+            if name:
+                container = "::".join(containers)
+                name_path = f"{container}::{name}" if container else name
+                syms.append({
+                    "name": name,
+                    "kind": container_kinds[ntype],
+                    "line": node.start_point.row + 1,
+                    "end_line": node.end_point.row + 1,
+                    "container": container,
+                    "name_path": name_path,
+                    "signature": _first_line_sig(node, lines),
+                    "access": "public",
+                    "docstring": "",
+                })
+                containers.append(name)
+                if ntype in ("class_specifier", "struct_specifier"):
+                    class_containers.append(name)
+                for child in node.children:
+                    visit(child)
+                if ntype in ("class_specifier", "struct_specifier"):
+                    class_containers.pop()
+                containers.pop()
+                return
+
+        if ntype == "function_definition":
+            declarator = node.child_by_field_name("declarator")
+            name = _cpp_declarator_name(declarator, source_bytes) if declarator else ""
+            if name:
+                container = "::".join(containers)
+                name_path = f"{container}::{name}" if container else name
+                syms.append({
+                    "name": name,
+                    "kind": "method" if class_containers else "function",
+                    "line": node.start_point.row + 1,
+                    "end_line": node.end_point.row + 1,
+                    "container": container,
+                    "name_path": name_path,
+                    "signature": _first_line_sig(node, lines),
+                    "access": "public",
+                    "docstring": "",
+                })
+                previous_function = current_function
+                current_function = name_path
+                for child in node.children:
+                    visit(child)
+                current_function = previous_function
+                return
+
+        if ntype == "call_expression":
+            function_node = node.child_by_field_name("function")
+            call_text = _node_text(function_node, source_bytes) if function_node else ""
+            name = re.split(r"::|->|\.", call_text)[-1]
+            if name and re.fullmatch(r"[A-Za-z_][\w]*", name):
+                refs.append({"name": name, "line": node.start_point.row + 1, "kind": "call"})
+                edges.append({
+                    "src": current_function or "<module>",
+                    "dst": name,
+                    "kind": "calls",
+                    "line": node.start_point.row + 1,
+                })
 
         for child in node.children:
             visit(child)

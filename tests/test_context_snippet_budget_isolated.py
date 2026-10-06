@@ -56,6 +56,60 @@ def test_targeted_context_uses_ranked_whole_snippets_with_provenance_budget(tmp_
     assert estimate_tokens(json.dumps(result, ensure_ascii=False)) <= budget
 
 
+def test_snippet_merge_harmony_preserves_ranked_prefix_and_transport_budget():
+    from local_ai_hub.response_budget import budget_response
+    from local_ai_hub.token_accounting import json_tokens
+
+    tools = RepositoryTools({})
+    candidates = [
+        {
+            "path": path, "start_line": 1, "end_line": 1,
+            "score": float(3 - index), "file_sha256": f"hash-{index}",
+            "text": text,
+        }
+        for index, (path, text) in enumerate((
+            ("src/high.py", "HIGH_WHOLE_SNIPPET " + "a" * 850),
+            ("src/middle.py", "MIDDLE_TOO_LARGE " + "b" * 5000),
+            ("src/low.py", "LOW_MUST_NOT_SKIP_MIDDLE"),
+        ))
+    ]
+    budget = 512
+    packed = tools._pack_ranked_context(
+        {"root": ".", "results": candidates, "scanned_files": 3},
+        "ranked prefix", budget, targeted=True,
+    )
+
+    # Preserve whole snippets and aligned provenance from the isolated branch,
+    # plus master's rule that a smaller lower-ranked item cannot jump the queue.
+    assert packed["success"] is True
+    assert packed["targeted"] is True
+    assert [item["path"] for item in packed["evidence"]] == ["src/high.py"]
+    assert packed["evidence"][0]["raw"] == candidates[0]["text"]
+    assert packed["context"] == _rendered_from_evidence(packed["evidence"])
+    assert "[snippet truncated]" not in packed["context"]
+    assert packed["estimated_tokens"] <= budget
+    assert estimate_tokens(json.dumps(packed, ensure_ascii=False)) > budget
+
+    # The repository's context budget and the public serialized response budget
+    # are distinct. Exercise the existing transport limiter without changing it.
+    evidence_id = "E0123456789abcdef0123"
+    envelope = {
+        **packed, "context_id": "ctx-snippet-harmony", "repo_revision": "rev-harmony",
+        "evidence_ids": [evidence_id],
+        "evidence": [{**packed["evidence"][0], "evidence_id": evidence_id}],
+    }
+    bounded = budget_response(
+        envelope, max_tokens=budget, profile="compact",
+        protected_keys=("success", "context_id", "repo_revision", "evidence_ids"),
+    )
+    assert bounded["success"] is True
+    assert bounded["context_id"] == envelope["context_id"]
+    assert bounded["repo_revision"] == envelope["repo_revision"]
+    assert bounded["evidence_ids"] == [evidence_id]
+    assert bounded["response_budget"]["original_tokens"] > budget
+    assert bounded["response_budget"]["returned_tokens"] == json_tokens(bounded) <= budget
+
+
 def test_general_context_keeps_deterministic_order_and_exclusions(tmp_path: Path, monkeypatch):
     root = tmp_path / "repo"
     (root / "src").mkdir(parents=True)
