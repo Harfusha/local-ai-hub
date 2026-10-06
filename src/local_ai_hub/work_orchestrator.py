@@ -295,6 +295,28 @@ class _JournalEntry:
     attempt_token: int = 0
 
 
+def _safe_work_target(root: Path, relative: str) -> Path:
+    root = root.resolve()
+    rel = Path(relative)
+    if rel.is_absolute() or any(part in {"..", ""} for part in rel.parts):
+        raise ValueError("unsafe work journal path")
+    target = root
+    for part in rel.parts:
+        target = target / part
+        try:
+            metadata = target.lstat()
+        except FileNotFoundError:
+            continue
+        reparse = bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
+        if stat.S_ISLNK(metadata.st_mode) or reparse:
+            raise ValueError(f"refusing symlink or reparse path: {relative}")
+    try:
+        target.resolve(strict=False).relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"work journal path escapes repository: {relative}") from exc
+    return target
+
+
 class WorkOrchestrator:
     """Durable, serial whole-task executor for local coding work.
 
@@ -1264,15 +1286,7 @@ class WorkOrchestrator:
         root = root.resolve()
         entries=[]
         for rel in paths:
-            raw_path = root / rel
-            cursor = root
-            for part in Path(rel).parts:
-                cursor = cursor / part
-                if cursor.is_symlink():
-                    raise ValueError(f"refusing to edit symlink path: {rel}")
-            p=raw_path.resolve(strict=False)
-            try: p.relative_to(root)
-            except ValueError: raise ValueError("patch path escapes repository")
+            p = _safe_work_target(root, rel)
             if p.exists() and p.is_dir(): raise ValueError(f"refusing to patch directory: {rel}")
             data=p.read_bytes() if p.exists() else b""
             if b"\x00" in data[:8192]: raise ValueError(f"refusing to edit binary file: {rel}")
