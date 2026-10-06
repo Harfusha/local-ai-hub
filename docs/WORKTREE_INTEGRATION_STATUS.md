@@ -247,6 +247,24 @@ remain preserved. Generated runtime/cache data is not committed.
 
 ### Preservation rule
 
+T16 orchestration-recovery `75b8917f` is integrated as `f99619a4`.
+Reviewed production delta: import layout and blank-line-only differences;
+current fencing, private transaction and safe rollback behavior retained.
+Original checkpoint `49ced58f` preserves all 87 ordinary untracked files and
+the historical dirty work. Fresh root command `python -B -m pytest -q -p
+no:cacheprovider tests/test_work_fencing.py --tb=short --maxfail=3`: 12 passed,
+1 skipped in 4.33 seconds (Windows symlink privilege unavailable).
+Owner's rollback/command-policy/legacy lease-fixture failures remain open.
+Details: `handoff/T16-recovery-sync-20261006-integration.md`.
+
+Current Git ancestry inventory after these integrations: 60 registered
+worktrees, 55 HEADs reachable from master, five unique HEADs pending integration.
+Those five are owned by active workers: hub-audit-repairs, T13 lifecycle,
+T17 multimodal resume, T18 status dashboard and T17 browser flow. Reachability
+does not mean final fast-forward synchronization, clean runtime state or release
+acceptance. Remaining historical stashes still require coverage reconciliation;
+no stash was dropped, checkpoint ref deleted or worktree removed in this run.
+
 T15 command-config `fdbf3ec3` is integrated as `fcbb1d6f`. Active runtime is
 identical to owner's pinned master; 44 original source/test/tool/handoff files
 are preserved, including benchmark source-pin and fixture tools. Fresh root:
