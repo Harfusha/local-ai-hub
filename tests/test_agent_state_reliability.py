@@ -24,6 +24,8 @@ from local_ai_hub.rag import RAGStore
 from local_ai_hub.scheduler import QueueFullError
 
 
+from local_ai_hub import trace_context
+
 def test_memory_expiration_and_reap(tmp_path: Path) -> None:
     db = tmp_path / "state.sqlite3"
     state_store = AgentStateStore(db)
@@ -33,14 +35,14 @@ def test_memory_expiration_and_reap(tmp_path: Path) -> None:
     # 1. Normal record (no expiry)
     rec1 = MemoryRecord.create(
         kind=MemoryKind.FACT,
-        scope=AgentScope.TASK,
+        scope=AgentScope.GLOBAL,
         key="normal_key",
         value="normal_val",
     )
     # 2. Expired record
     rec2 = MemoryRecord.create(
         kind=MemoryKind.FACT,
-        scope=AgentScope.TASK,
+        scope=AgentScope.GLOBAL,
         key="expired_key",
         value="expired_val",
         expires_at=now - 50.0,
@@ -48,7 +50,7 @@ def test_memory_expiration_and_reap(tmp_path: Path) -> None:
     # 3. Future expiring record
     rec3 = MemoryRecord.create(
         kind=MemoryKind.FACT,
-        scope=AgentScope.TASK,
+        scope=AgentScope.GLOBAL,
         key="future_key",
         value="future_val",
         expires_at=now + 500.0,
@@ -114,6 +116,8 @@ def test_task_heartbeat_and_extended_reap(tmp_path: Path) -> None:
     t_blocked = task_store.create(contract, context, task_id="task_block", repo_root=str(tmp_path))
     task_store.transition(t_blocked.task_id, TaskStatus.ACTIVE, reason="act", actor="agent", idempotency_key="act_b")
     task_store.transition(t_blocked.task_id, TaskStatus.BLOCKED, reason="block", actor="agent", idempotency_key="block_b")
+    trace_context.reset_context(tenant_token)
+
     trace_context.reset_context(tenant_token)
 
     # Manually backdate heartbeats after transitions complete

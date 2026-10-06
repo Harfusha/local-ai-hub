@@ -1,20 +1,25 @@
 from __future__ import annotations
 
-from contextlib import closing, contextmanager
+from .json_utils import dumps as json_dumps
+
+from contextlib import contextmanager
+from contextlib import closing
 import hashlib
+import stat
+import subprocess
+import tempfile
 import json
 import os
 import queue
 import sqlite3
-import stat
-import subprocess
-import tempfile
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
+
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
 
 from .json_utils import dumps as json_dumps
 from .sqlite_support import (
@@ -204,9 +209,31 @@ class AgentStateStore:
         ("table", "agent_memory_records", "agent_memory_records"): "5cd8a7e88151416c741554d667ef08dfd8469b645870f26ccadc436cfddc25c0",
         ("table", "agent_outcomes", "agent_outcomes"): "624b2b6c004fe2d59814db6d948d1bd043a73dfc10a9d83127e7450a05d90144",
         ("table", "agent_snapshots", "agent_snapshots"): "323b038ec2305f3aa746737408a3a024da0f222285101d5e0bea9729cf5fdb69",
+        ("table", "agent_swarms", "agent_swarms"): "c92f1fff4b1f91185a32b0233eb3838875f62ef22f0df6d7fbea9a4bfa93c220",
         ("table", "agent_tasks_projection", "agent_tasks_projection"): "d4283f29e8560ff94ae0877f38c1fdd8020a2d8e2fc6c66aa01a58dca6339cc4",
         ("table", "agent_verification_receipts", "agent_verification_receipts"): "6aeb2ffafd9572d5325f56e99f7c62455989c3d44772bd83d3e47b6f3abe953a",
+    }
+    _EXPECTED_OBJECT_SQL_HASHES.update({
+        ("index", "idx_agent_incidents_scope", "agent_incidents"): "fcddf0dcdaa939754d8826b199dc730bfee46c1e3f9f1dc7742757a26b324fc3",
+        ("index", "idx_agent_task_search_grams_gram", "agent_task_search_grams"): "47289e8fa6b5eb7e6837a56d77ad684e26fbc466f43f0f7af252e77fb8af5e0a",
+        ("index", "idx_agent_verif_task_outbox_pending", "agent_verification_task_outbox"): "50dff1b755ee28d10c80d199270f9f6b12fb2ca958b4a8948cb59ac6ff751f48",
         ("table", "agent_event_cursors", "agent_event_cursors"): "0ecf2e08637aef9d2f4a9167feb61de083e1a9d9b8b927f79ae7a58e74b2ef71",
+        ("table", "agent_incidents", "agent_incidents"): "a2be58a71724133b64d9a7a773680a193488f64414ee245e378b06973454e420",
+        ("table", "agent_task_search_documents", "agent_task_search_documents"): "a291a7122e95c8b2f3f6b9a9a73269489b1794ceea3f4378d9ff6155fd900f93",
+        ("table", "agent_task_search_grams", "agent_task_search_grams"): "d2f7c3b733bc0ffcee4d9ee72804edc3fedc36f73f7ceca5ce18662941a13b78",
+        ("table", "agent_verification_task_outbox", "agent_verification_task_outbox"): "2f17423836ca86bf09a701a71a27ead55a2c458d02bb9f29e1445a0c0fc11d17",
+    })
+    _ALTERNATE_OBJECT_SQL_HASHES = {
+        ("table", "agent_incidents", "agent_incidents"): (
+            "6ea9770af294cd83e1fd6dcc80a0c7950bc93d142c27d40996c5acf5a0b478d4",
+            "43c461c1906a1c11a5558889e2c49478942b940c3e98d0a926848ead3010a63e",
+            "b3f8fa5c1723ab3addf421e28c3e9e07d232a7734cc95c247aed04224f3856b0",
+        ),
+        # T08 adds root/version columns to the T05 swarm projection. Both layouts
+        # are known; present definitions still require an exact fingerprint.
+        ("table", "agent_swarms", "agent_swarms"): (
+            "5ccda29c6b858caae83c2ca78296c4ff939f7ae41cdab14054e67bf374592a81",
+        ),
     }
     _LEGACY_EVENTS_SQL_HASH = "80bc39dfa4ff6ca36c421c6160678bb6b1721d15753298b7c7bd2cfc4887eb65"
     _MIGRATION_HISTORY_SQL_HASH = "3a1338feacda1c31e65c7e4fe16f49b4e14f699b7c0d7a4672deca39fbca4c33"
@@ -214,19 +241,15 @@ class AgentStateStore:
         ("index", "idx_agent_events_created", "agent_events"): "0c060f3923ffc6874a55f975a4a5b5ae2257fe99d3adfd783c3bcc18e763f510",
         ("index", "idx_agent_events_kind", "agent_events"): "77d2e2a836ce41786c2710ad9b46a9ff484aac89a3fc28461dcd46c5f85a9299",
     }
-    _ALTERNATE_OBJECT_SQL_HASHES = {
+    _ALTERNATE_OBJECT_SQL_HASHES.update({
         ("table", "lease_waits", "lease_waits"): {
             "a866368052df7b9433b7a44d47dc262c5a76a06058b878e0249ccee791dfb17c",
-        },
-        ("table", "agent_incidents", "agent_incidents"): {
-            "a2be58a71724133b64d9a7a773680a193488f64414ee245e378b06973454e420",
-            "43c461c1906a1c11a5558889e2c49478942b940c3e98d0a926848ead3010a63e",
-            "b3f8fa5c1723ab3addf421e28c3e9e07d232a7734cc95c247aed04224f3856b0",
+            "e9a38812fd120d00228269c2e5f28f02172702355abd9127562ccf78a5c93612",
         },
         ("table", "leases", "leases"): {
             "f7a165f4f68106fb33b5855d0a66532e63fde78b2675380b67fe8112096f8edd",
         },
-    }
+    })
 
     def __init__(
         self,
@@ -238,6 +261,11 @@ class AgentStateStore:
         self.db_path = Path(db_path)
         self.enabled = bool(enabled)
         self.max_payload_bytes = int(max_payload_bytes)
+        lock_key = os.path.normcase(str(self.db_path.resolve()))
+        with self._append_publish_locks_guard:
+            self._append_publish_lock = self._append_publish_locks.setdefault(
+                lock_key, threading.RLock()
+            )
         self._lock = threading.RLock()
         lock_key = os.path.normcase(str(self.db_path.resolve()))
         with self._append_publish_locks_guard:
@@ -376,10 +404,36 @@ class AgentStateStore:
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
+    def _verified_migration_backup(self, source: sqlite3.Connection) -> Path:
+        """Create and verify a snapshot before changing a legacy durable database."""
+        backup_path = self.db_path.with_name(
+            f"{self.db_path.name}.migration-v0-v1-{time.time_ns()}.bak"
+        )
+        with backup_path.open("xb"):
+            pass
+        destination = sqlite3.connect(backup_path)
+        try:
+            source.backup(destination)
+            quick_check = destination.execute("PRAGMA quick_check").fetchone()
+            if not quick_check or str(quick_check[0]).lower() != "ok":
+                raise sqlite3.DatabaseError("agent state migration backup failed quick_check")
+            source_schema = source.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+            ).fetchall()
+            backup_schema = destination.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+            ).fetchall()
+            if source_schema != backup_schema:
+                raise sqlite3.DatabaseError("agent state migration backup schema mismatch")
+        except Exception:
+            destination.close()
+            backup_path.unlink(missing_ok=True)
+            raise
+        destination.close()
+        return backup_path
+
     def _preflight_schema_read_only(self) -> None:
         deadline = time.monotonic() + self._SCHEMA_PREFLIGHT_TIMEOUT_SECONDS
-        # SHM is a transient WAL index. Another initializer may update it while
-        # this read-only file snapshot is checked; durable DB/WAL/journal changes matter.
         suffixes = ("", "-wal", "-journal")
         original_paths = [Path(f"{self.db_path}{suffix}") for suffix in suffixes]
 
@@ -398,7 +452,7 @@ class AgentStateStore:
         with tempfile.TemporaryDirectory(prefix="agent-state-preflight-") as temporary:
             snapshot_db = Path(temporary) / self.db_path.name
             for suffix, present in zip(suffixes, before):
-                if not present[0]:
+                if not present[0] or suffix == "-shm":
                     continue
                 source_path = Path(f"{self.db_path}{suffix}")
                 destination_path = Path(f"{snapshot_db}{suffix}")
@@ -454,7 +508,7 @@ class AgentStateStore:
             except sqlite3.DatabaseError as exc:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("agent_state schema preflight time limit exceeded") from exc
-                raise RuntimeError("unsupported agent_state database") from exc
+                raise
             if time.monotonic() >= deadline:
                 raise TimeoutError("agent_state schema preflight time limit exceeded")
             if signatures() != before:
@@ -494,8 +548,10 @@ class AgentStateStore:
             actual_hash = hashlib.sha256(sql.encode("utf-8")).hexdigest()
             if expected_hash is None:
                 raise RuntimeError(f"unsupported agent_state schema object: {object_type} {name}")
-            accepted_hashes = {expected_hash, *cls._ALTERNATE_OBJECT_SQL_HASHES.get(key, set())}
-            if actual_hash not in accepted_hashes:
+            if (
+                actual_hash != expected_hash
+                and actual_hash not in cls._ALTERNATE_OBJECT_SQL_HASHES.get(key, ())
+            ):
                 raise RuntimeError(f"unsupported agent_state schema object definition: {object_type} {name}")
             objects.append((object_type, name, table, sql))
         objects = tuple(objects)
@@ -505,29 +561,41 @@ class AgentStateStore:
         if version == cls._SCHEMA_VERSION:
             if event_columns != cls._EVENT_COLUMNS or snapshot_columns != cls._SNAPSHOT_COLUMNS:
                 raise RuntimeError("unsupported agent_state schema layout")
-            if cls._columns(con, "agent_event_schema_versions") != [
-                "stream_id", "seq", "schema_version",
-            ]:
+            event_version_columns = cls._columns(con, "agent_event_schema_versions")
+            if event_version_columns == ["stream_id", "seq", "schema_version"]:
+                if "agent_schema_migrations" in tables:
+                    markers = [int(row[0]) for row in con.execute(
+                        "SELECT version FROM agent_schema_migrations ORDER BY version"
+                    )]
+                    if markers != [1]:
+                        raise RuntimeError("unsupported agent_state schema migration history")
+                layout = "current"
+            elif not event_version_columns:
+                layout = "current-unversioned"
+            else:
                 raise RuntimeError("unsupported agent_state schema layout")
-            if "agent_schema_migrations" in tables:
+        else:
+            auxiliary_only_tables = {
+                "agent_state_migrations", "agent_state_schema_versions",
+                "leases", "lease_waits",
+            }
+            is_empty = (
+                not event_columns and not snapshot_columns
+                and tables.issubset(auxiliary_only_tables)
+            )
+            is_current_unversioned = (
+                version == 0
+                and event_columns == cls._EVENT_COLUMNS
+                and snapshot_columns == cls._SNAPSHOT_COLUMNS
+                and cls._columns(con, "agent_event_schema_versions")
+                == ["stream_id", "seq", "schema_version"]
+            )
+            if is_current_unversioned and "agent_schema_migrations" in tables:
                 markers = [int(row[0]) for row in con.execute(
                     "SELECT version FROM agent_schema_migrations ORDER BY version"
                 )]
                 if markers != [1]:
                     raise RuntimeError("unsupported agent_state schema migration history")
-            layout = "current"
-        else:
-            auxiliary_only_tables = {
-                "agent_state_migrations",
-                "agent_state_schema_versions",
-                "leases",
-                "lease_waits",
-            }
-            is_empty = (
-                not event_columns
-                and not snapshot_columns
-                and tables.issubset(auxiliary_only_tables)
-            )
             is_current_v0 = (
                 event_columns == cls._EVENT_COLUMNS
                 and snapshot_columns == cls._SNAPSHOT_COLUMNS
@@ -549,6 +617,9 @@ class AgentStateStore:
                     raise RuntimeError("unsupported agent_state schema migration history")
             if is_empty:
                 layout = "empty"
+            elif is_current_unversioned:
+                # Existing current event metadata is preserved; _ensure_schema owns the v0->v1 backup/write.
+                layout = "current"
             elif is_current_v0:
                 layout = "current-v0"
             elif is_historical_v0:
@@ -556,21 +627,25 @@ class AgentStateStore:
             else:
                 raise RuntimeError("unsupported agent_state schema layout")
 
-        present_objects = {(object_type, name, table) for object_type, name, table, _ in objects}
+        # Module-owned tables and indexes are optional until their stores are used.
+        # Validate every object that is present above, but require only the core
+        # event schema here so partial subsystem initialization survives restart.
         required_objects = {
             ("table", "agent_events", "agent_events"),
             ("table", "agent_snapshots", "agent_snapshots"),
         }
         migration_history = ("table", "agent_schema_migrations", "agent_schema_migrations")
         event_versions = ("table", "agent_event_schema_versions", "agent_event_schema_versions")
-        event_cursors = ("table", "agent_event_cursors", "agent_event_cursors")
         if layout == "current":
-            required_objects.update({event_versions, event_cursors})
+            required_objects.add(event_versions)
+        elif layout in {"current-v0", "current-unversioned"}:
+            pass
         elif layout == "historical-v0":
             required_objects.add(migration_history)
         elif layout == "empty":
             required_objects.clear()
 
+        present_objects = {(object_type, name, table) for object_type, name, table, _ in objects}
         task_profile_tables = {
             "agent_tasks_projection",
             "agent_verification_receipts",
@@ -582,9 +657,7 @@ class AgentStateStore:
             "SELECT 1 FROM agent_events WHERE kind LIKE 'task.%' "
             "AND kind != 'task.updated' LIMIT 1"
         ).fetchone() is not None
-        if layout != "empty" and (
-            bool(tables & task_profile_tables) or has_task_events
-        ):
+        if layout != "empty" and (bool(tables & task_profile_tables) or has_task_events):
             required_objects.add(("table", "agent_tasks_projection", "agent_tasks_projection"))
 
         missing_objects = sorted(required_objects - present_objects)
@@ -982,6 +1055,7 @@ class AgentStateStore:
             raise RuntimeError("agent_state migration backup path unavailable")
         return backup_path
 
+
     def append_in_transaction(
         self,
         con: Any,
@@ -1310,12 +1384,27 @@ class AgentStateStore:
             )
         except (TypeError, ValueError, OverflowError):
             return self._event_page_error(requested_after)
-        if not self.enabled or not self.db_path.exists():
+        if not self.enabled:
+            return {
+                "success": False,
+                "events": [],
+                "next_seq": requested_after,
+                "first_retained_seq": 0,
+                "last_seq": 0,
+                "has_more": False,
+                "gap_ranges": [],
+                "cursor_reset": False,
+                "error": {
+                    "code": "agent_state_disabled",
+                    "message": "agent state is disabled",
+                },
+            }
+        if not self.db_path.exists():
             return {
                 "success": True,
                 "events": [],
                 "next_seq": requested_after,
-                "first_retained_seq": None,
+                "first_retained_seq": 0,
                 "last_seq": 0,
                 "has_more": False,
                 "gap_ranges": [],
@@ -1383,7 +1472,7 @@ class AgentStateStore:
                 next_seq = trailing_gap["to_seq"]
             result = {
                 "success": True,
-                "events": events,
+                "events": [event.to_dict() for event in events],
                 "next_seq": next_seq,
                 "first_retained_seq": first_retained,
                 "last_seq": last_seq,
@@ -1401,7 +1490,7 @@ class AgentStateStore:
                     pass
             detail = (
                 str(exc)
-                if isinstance(exc, (DurableSchemaMismatchError, TimeoutError))
+                if isinstance(exc, (TimeoutError,))
                 else None
             )
             return self._event_page_error(requested_after, detail)
@@ -1429,6 +1518,8 @@ class AgentStateStore:
             },
         }
 
+
+
     def events(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> list[AgentEvent]:
         page = self.event_page(stream_id, after_seq=after_seq, limit=limit)
         if page["success"] is not True:
@@ -1437,7 +1528,7 @@ class AgentStateStore:
             if "time limit exceeded" in message.casefold():
                 raise TimeoutError(message)
             raise RuntimeError(f"{error['code']}: {message}")
-        return page["events"]
+        return [AgentEvent.from_dict(event) for event in page["events"]]
 
     def snapshot(self, stream_id: str, state: Mapping[str, Any], seq: int | None = None) -> int:
         if not self.enabled:

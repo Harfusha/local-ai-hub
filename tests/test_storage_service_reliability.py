@@ -39,6 +39,8 @@ from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.process_utils import canonical_root
 
 
+from local_ai_hub import trace_context
+
 def test_service_hubctl_timeout_alignment():
     """Verify service.py run() timeout is 12s and hubctl _service timeout is 35s."""
     import tools.service as service
@@ -133,8 +135,11 @@ def test_verification_store_indexes_and_retry(tmp_path: Path):
 
     comp = vstore.completion("t-123")
     assert comp.task_id == "t-123"
-    assert comp.complete is True
-    assert "test_pass" in comp.satisfied_criteria
+    # The store has no task owner or artifact-backed proof in this fixture, so
+    # the persisted receipt is not sufficient to authorize task completion.
+    assert comp.complete is False
+    assert "test_pass" in comp.unsatisfied_criteria
+    assert len(comp.receipts) == 1
 
 
 def test_incident_store_compound_index_and_repeated_event(tmp_path: Path):
@@ -207,12 +212,14 @@ def test_task_store_lock_and_retry(tmp_path: Path):
     assert isinstance(tstore._lock, type(threading.RLock()))
 
     tenant_token = trace_context.set_context(tenant="tenant-a")
-    task = tstore.create(
-        contract=GoalContract(goal="test goal", acceptance_criteria=("crit1",)),
-        context=ScopeContext(repository_id="repo1"),
-        repo_root=str(tmp_path),
-    )
-    trace_context.reset_context(tenant_token)
+    try:
+        task = tstore.create(
+            contract=GoalContract(goal="test goal", acceptance_criteria=("crit1",)),
+            context=ScopeContext(repository_id="repo1"),
+            repo_root=str(tmp_path),
+        )
+    finally:
+        trace_context.reset_context(tenant_token)
 
     assert tstore.count() == 1
     assert tstore.count(TaskStatus.PLANNED) == 1
@@ -230,9 +237,7 @@ def test_task_store_lock_and_retry(tmp_path: Path):
     tstore.heartbeat(task.task_id, ttl_seconds=10.0)
 
     # Advance time to expire heartbeat
-    reaped = tstore.reap_expired_heartbeats(
-        now=time.time() + 100.0, repo_root=tmp_path, tenant="tenant-a"
-    )
+    reaped = tstore.reap_expired_heartbeats(now=time.time() + 100.0, repo_root=tmp_path, tenant="tenant-a")
     assert task.task_id in reaped
 
     after_reap = tstore.get(task.task_id)

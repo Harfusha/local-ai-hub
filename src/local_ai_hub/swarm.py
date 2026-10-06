@@ -617,7 +617,7 @@ class SwarmCoordinator:
             })
 
             if receipt_id and self.verifications is not None:
-                _, receipt_events = self.verifications.record_in_transaction(con, receipt)
+                receipt_events = self.verifications.record_in_transaction(con, receipt)
                 published.extend(receipt_events)
 
             next_version = current_version + 1

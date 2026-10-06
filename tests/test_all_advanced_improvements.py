@@ -19,6 +19,8 @@ from local_ai_hub.deterministic import DeterministicEngine
 
 # ── Area 1: Agent OS & Swarm Coordination Tests ──────────────────────────────
 
+from local_ai_hub import trace_context
+
 def test_event_delta_sync_export_import(tmp_path: Path) -> None:
     source_db = tmp_path / "source_state.sqlite3"
     target_db = tmp_path / "target_state.sqlite3"
@@ -58,8 +60,10 @@ def test_zombie_task_watchdog_and_recovery(tmp_path: Path) -> None:
     contract = GoalContract(goal="work", acceptance_criteria=["c1"])
     context = ScopeContext(repository_id="repo1")
     tenant_token = trace_context.set_context(tenant="tenant-a")
-    task = tasks.create(contract, context, repo_root=str(tmp_path))
-    trace_context.reset_context(tenant_token)
+    try:
+        task = tasks.create(contract, context, repo_root=str(tmp_path))
+    finally:
+        trace_context.reset_context(tenant_token)
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="t1")
 
     # Set heartbeat
@@ -67,9 +71,7 @@ def test_zombie_task_watchdog_and_recovery(tmp_path: Path) -> None:
     future_time = time.time() + 1000.0
 
     # Reap with recovery at future time
-    reaped = tasks.reap_expired_heartbeats(
-        now=future_time, auto_recover=True, repo_root=tmp_path, tenant="tenant-a"
-    )
+    reaped = tasks.reap_expired_heartbeats(now=future_time, auto_recover=True, repo_root=tmp_path, tenant="tenant-a")
     assert task.task_id in reaped
 
     # Status should be WAITING
@@ -105,7 +107,7 @@ def test_auto_worktree_task_lifecycle(tmp_path: Path) -> None:
     assert (wt_path / "README.md").exists()
 
     # Clean up worktree
-    cleanup_res = tasks.cleanup_worktree(task.task_id, delete_branch=True)
+    cleanup_res = tasks.cleanup_worktree(task.task_id, delete_branch=True, actor=task.owner)
     assert cleanup_res["success"] is True
     assert cleanup_res["had_worktree"] is True
     assert not wt_path.exists()

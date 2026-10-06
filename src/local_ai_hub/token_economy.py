@@ -93,7 +93,6 @@ def tokcount_main(argv: list[str] | None = None) -> int:
         content = sys.stdin.read()
         lines, words, chars, o200k, cl100k = count_tokens(content)
         if args.json:
-            import json
             print(json_dumps({"source": "stdin", "lines": lines, "words": words, "chars": chars, "tokens_o200k": o200k, "tokens_cl100k": cl100k}, indent=2))
         elif args.quiet:
             print(o200k)
@@ -145,7 +144,6 @@ def tokcount_main(argv: list[str] | None = None) -> int:
                         pass
 
     if args.json:
-        import json
         print(json_dumps({
             "total_files": file_count,
             "lines": total_lines,

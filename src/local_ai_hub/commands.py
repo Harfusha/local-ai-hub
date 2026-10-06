@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 import ast
+import base64
+import codecs
+from contextlib import contextmanager
 import getpass
 import hashlib
+import http.client
+import io
+import ipaddress
+import inspect
 import json
+import math
 import os
 import re
 import ntpath
+import queue
 import shlex
 import shutil
+import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -16,13 +27,22 @@ import tempfile
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from functools import wraps
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from .cache import SQLiteCache, TieredCache, stable_hash
+from .command_transactions import (
+    create_private_transaction_snapshot_with_manifest,
+    validate_transaction_output,
+    verify_transaction_source_unchanged,
+)
+from .leases import ScopeLeaseStore
+from .work_fencing import WorkAttemptFence
 from .features import rollout_feature_enabled
 from .process_utils import (
     _resume_suspended_process,
@@ -39,17 +59,112 @@ from .state_paths import configured_state_dir
 from .json_utils import dumps as json_dumps
 
 _GLOBAL_WINDOWS_JOB = create_job_object_kill_on_close() if os.name == "nt" else None
+_PROJECT_COMMAND_ALIAS_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+_PROJECT_COMMAND_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PROJECT_COMMAND_ENV_BLOCKED = {
+    "BASH_ENV",
+    "COMSPEC",
+    "ENV",
+    "GIT_COMMON_DIR",
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_PREFIX",
+    "GIT_WORK_TREE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "DYLD_FRAMEWORK_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "PATH",
+    "PATHEXT",
+    "SHELL",
+}
+
+
+def _is_unsafe_project_command_env_key(key: str) -> bool:
+    normalized = key.upper()
+    return normalized in _PROJECT_COMMAND_ENV_BLOCKED or normalized.startswith("GIT_CONFIG_")
+_MAX_PROJECT_COMMAND_ARGS = 128
+_MAX_PROJECT_COMMAND_ENV_ENTRIES = 128
+_MAX_PROJECT_COMMAND_ENV_BYTES = 65_536
+_COMMAND_LOG_QUEUE_MAX_CHUNKS = 256
+
+_NETWORK_RESPONSE_HEADER_ALLOWLIST = {
+    "cache-control",
+    "content-length",
+    "content-type",
+    "date",
+}
+_NETWORK_SECRET_RE = re.compile(
+    r'''(?i)(["']?(?:access[_-]?token|api[_-]?key|authorization|client[_-]?secret|password|refresh[_-]?token|secret|token)["']?\s*[:=]\s*["']?)([^"'\s,;}\]]+)'''
+)
+_NETWORK_AUTH_RE = re.compile(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+")
+_NETWORK_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_CASSETTE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_DNS_RESOLVER_SLOTS = threading.BoundedSemaphore(4)
+_MAX_CASSETTE_BYTES = 1_048_576
+
+
+def _process_group_liveness(process_group_id: int) -> bool | None:
+    """Return True/False only when POSIX can establish process-group liveness."""
+    if (
+        os.name != "posix"
+        or isinstance(process_group_id, bool)
+        or not isinstance(process_group_id, int)
+        or process_group_id <= 1
+    ):
+        return None
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError, ValueError):
+        return None
+    return True
+
+
+def _process_leader_exited(pid: int) -> bool:
+    """Prove leader absence; permission and platform uncertainty are not absence."""
+    if os.name != "posix" or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError, ValueError):
+        return False
+    return False
 
 
 class _RecoveredDaemonProcess:
     """Minimal poll/wait/kill facade for a daemon verified after a Hub restart."""
 
-    def __init__(self, pid: int, identity: dict[str, Any]):
+    def __init__(
+        self, pid: int, identity: dict[str, Any], process_group_id: int | None = None,
+        job_handle: int | None = None,
+    ):
         self.pid = pid
         self.identity = identity
+        self.process_group_id = process_group_id
+        self._local_ai_job_handle = job_handle
 
     def poll(self) -> int | None:
-        return None if process_identity(self.pid) == self.identity else 0
+        if os.name == "nt" and self._local_ai_job_handle:
+            return 0 if _windows_job_has_processes(self._local_ai_job_handle) is False else None
+        current_identity = process_identity(self.pid)
+        if current_identity == self.identity:
+            return None
+        if (
+            current_identity is None
+            and self.process_group_id == self.pid
+            and _process_leader_exited(self.pid)
+            and _process_group_liveness(self.process_group_id) is True
+        ):
+            return None
+        return 0
 
     def wait(self, timeout: float | None = None) -> int:
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -60,8 +175,7 @@ class _RecoveredDaemonProcess:
         return 0
 
     def kill(self) -> None:
-        if self.poll() is None:
-            terminate_tree(self.pid, grace_seconds=0.1)
+        raise OSError("recovered daemon has no stable process-tree ownership handle")
 
 _SECRET_PATTERNS = [
     re.compile(r"(?i)(--?(?:password|token|secret|api[-_]?key)\s*[= ]\s*)([^\s]+)"),
@@ -85,6 +199,438 @@ _MAX_ROLLBACK_TOTAL_BYTES = 64 * 1024 * 1024
 _MAX_ROLLBACK_METADATA_BYTES = 1024 * 1024
 
 
+def _daemon_job_name(daemon_id: str) -> str:
+    return f"Local\\LocalAIHubDaemon-{daemon_id.removeprefix('dmn_')}"
+
+
+def _set_windows_job_kill_on_close(job_handle: int) -> bool:
+    if os.name != "nt" or not job_handle:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+        )]
+
+    class _BasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _BasicLimitInformation), ("IoInfo", _IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryLimit", ctypes.c_size_t), ("PeakJobMemoryLimit", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    info = _ExtendedLimitInformation()
+    info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    return bool(kernel32.SetInformationJobObject(
+        wintypes.HANDLE(job_handle), 9, ctypes.byref(info), ctypes.sizeof(info)
+    ))
+
+
+def _create_named_daemon_job(daemon_id: str) -> int:
+    """Create a persistent named Job Object, rejecting pre-existing names."""
+    if os.name != "nt":
+        raise OSError("named daemon Job Objects are Windows-only")
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_job = kernel32.CreateJobObjectW
+    create_job.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    create_job.restype = wintypes.HANDLE
+    ctypes.set_last_error(0)
+    handle = create_job(None, _daemon_job_name(daemon_id))
+    if not handle:
+        raise OSError(ctypes.get_last_error(), "unable to create named daemon Job Object")
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        close_job_object(int(handle))
+        raise OSError("named daemon Job Object already exists")
+    if not _set_windows_job_kill_on_close(int(handle)):
+        error = ctypes.get_last_error()
+        close_job_object(int(handle))
+        raise OSError(error, "unable to enable kill-on-close for named daemon Job Object")
+    return int(handle)
+
+
+def _open_named_daemon_job(name: str) -> int | None:
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_job = kernel32.OpenJobObjectW
+    open_job.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    open_job.restype = wintypes.HANDLE
+    handle = open_job(0x0008 | 0x0004 | 0x00100000, False, name)  # terminate, query, synchronize
+    return int(handle) if handle else None
+
+
+def _duplicate_job_handle_into_process(job_handle: int, process: subprocess.Popen[Any]) -> bool:
+    """Keep a named Job Object open in its suspended daemon until that process exits."""
+    if os.name != "nt" or not job_handle or not isinstance(process.pid, int):
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.DuplicateHandle.argtypes = [
+        wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+    ]
+    kernel32.DuplicateHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    target = kernel32.OpenProcess(0x0040, False, process.pid)  # PROCESS_DUP_HANDLE
+    if not target:
+        return False
+    try:
+        remote_handle = wintypes.HANDLE()
+        return bool(kernel32.DuplicateHandle(
+            kernel32.GetCurrentProcess(), wintypes.HANDLE(job_handle), target,
+            ctypes.byref(remote_handle), 0x00100000, False, 0,  # SYNCHRONIZE only; non-inheritable keeper
+        ))
+    finally:
+        kernel32.CloseHandle(target)
+
+
+def _windows_job_contains_process(job_handle: int, pid: int, identity: dict[str, Any]) -> bool:
+    """Bind PID identity and Job membership to one retained process handle."""
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    class _FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(_FileTime), ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime), ctypes.POINTER(_FileTime),
+    ]
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+    kernel32.IsProcessInJob.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    process = kernel32.OpenProcess(0x1000 | 0x00100000, False, pid)
+    if not process:
+        return False
+    try:
+        creation, exited, kernel, user = (_FileTime() for _ in range(4))
+        if not kernel32.GetProcessTimes(
+            process, ctypes.byref(creation), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)
+        ):
+            return False
+        creation_id = (int(creation.high) << 32) | int(creation.low)
+        if identity.get("creation_identity") != creation_id or identity.get("pid") != pid:
+            return False
+        in_job = wintypes.BOOL()
+        return bool(kernel32.IsProcessInJob(process, wintypes.HANDLE(job_handle), ctypes.byref(in_job)) and in_job.value)
+    finally:
+        kernel32.CloseHandle(process)
+
+
+def _windows_job_has_processes(job_handle: int) -> bool | None:
+    if os.name != "nt" or not job_handle:
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    result = int(kernel32.WaitForSingleObject(wintypes.HANDLE(job_handle), 0))
+    if result == 0x102:  # WAIT_TIMEOUT
+        return True
+    if result == 0:  # WAIT_OBJECT_0
+        return False
+    return None
+
+
+@dataclass(frozen=True)
+class _NetworkPolicyError(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        object.__setattr__(self, "code", code)
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host: str, port: int, address: str, timeout: float):
+        super().__init__(host, port, timeout=timeout)
+        self._pinned_address = address
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection(
+            (self._pinned_address, self.port), self.timeout, self.source_address
+        )
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host: str, port: int, address: str, timeout: float):
+        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+        self._pinned_address = address
+
+    def connect(self) -> None:
+        raw_socket = socket.create_connection(
+            (self._pinned_address, self.port), self.timeout, self.source_address
+        )
+        self.sock = self._context.wrap_socket(raw_socket, server_hostname=self.host)
+def _network_config(config: dict[str, Any]) -> dict[str, Any]:
+    value = config.get("network", {})
+    return value if isinstance(value, dict) else {}
+def _network_limit(network: dict[str, Any], name: str, default: int, maximum: int) -> int:
+    try:
+        value = int(network.get(name, default))
+    except (TypeError, ValueError, OverflowError):
+        value = default
+    return min(maximum, max(1, value))
+def _redirect_limit(network: dict[str, Any]) -> int:
+    try:
+        value = int(network.get("max_redirects", 3))
+    except (TypeError, ValueError, OverflowError):
+        value = 3
+    return min(5, max(0, value))
+def _private_network_allowed(host: str, address: ipaddress.IPv4Address | ipaddress.IPv6Address, scopes: Any) -> bool:
+    if isinstance(scopes, str):
+        scopes = [scopes]
+    if not isinstance(scopes, (list, tuple, set)):
+        return False
+    normalized_host = host.rstrip(".").lower()
+    for raw_scope in scopes:
+        if not isinstance(raw_scope, str):
+            continue
+        scope = raw_scope.strip()
+        if not scope:
+            continue
+        if scope.rstrip(".").lower() == normalized_host:
+            return True
+        try:
+            network = ipaddress.ip_network(scope, strict=False)
+        except ValueError:
+            continue
+        if address in network:
+            return True
+    return False
+def _bounded_getaddrinfo(host: str, port: int, timeout: float) -> list[tuple[Any, ...]]:
+    deadline = time.monotonic() + max(0.0, timeout)
+    if not _DNS_RESOLVER_SLOTS.acquire(timeout=max(0.0, timeout)):
+        raise _NetworkPolicyError("network_timeout", "Network name resolution timed out")
+    outcome: dict[str, Any] = {}
+    completed = threading.Event()
+
+    def resolve() -> None:
+        try:
+            outcome["addresses"] = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except BaseException as exc:
+            outcome["error"] = exc
+        finally:
+            _DNS_RESOLVER_SLOTS.release()
+            completed.set()
+
+    worker = threading.Thread(target=resolve, name="local-ai-network-dns", daemon=True)
+    try:
+        worker.start()
+    except RuntimeError as exc:
+        _DNS_RESOLVER_SLOTS.release()
+        raise _NetworkPolicyError("network_dns_failed", "Network target could not be resolved") from exc
+    if not completed.wait(max(0.0, deadline - time.monotonic())):
+        raise _NetworkPolicyError("network_timeout", "Network name resolution timed out")
+    error = outcome.get("error")
+    if error is not None:
+        raise error
+    return outcome.get("addresses", [])
+
+def _resolve_network_target(
+    config: dict[str, Any], url: str, timeout: float
+) -> tuple[str, str, int, str, str, str]:
+    network = _network_config(config)
+    if not isinstance(url, str) or len(url) > 8192:
+        raise _NetworkPolicyError("invalid_network_url", "URL is invalid or exceeds its size limit")
+    try:
+        parsed = urlsplit(url.strip())
+        scheme = parsed.scheme.lower()
+        hostname = parsed.hostname
+        explicit_port = parsed.port
+        port = explicit_port if explicit_port is not None else (443 if scheme == "https" else 80)
+    except ValueError:
+        raise _NetworkPolicyError("invalid_network_url", "URL is invalid") from None
+    if scheme not in {"http", "https"} or not hostname or parsed.username is not None or parsed.password is not None:
+        raise _NetworkPolicyError("invalid_network_url", "Only credential-free HTTP and HTTPS URLs are allowed")
+    if not 1 <= port <= 65535 or "%" in hostname:
+        raise _NetworkPolicyError("invalid_network_url", "URL host or port is invalid")
+    try:
+        host = hostname.encode("idna").decode("ascii").rstrip(".").lower()
+        addresses = _bounded_getaddrinfo(host, port, timeout)
+    except _NetworkPolicyError:
+        raise
+    except (UnicodeError, OSError, ValueError):
+        raise _NetworkPolicyError("network_dns_failed", "Network target could not be resolved") from None
+    resolved: list[str] = []
+    scopes = network.get("allow_private_hosts", [])
+    for family, _socktype, _proto, _canonname, sockaddr in addresses:
+        if family not in {socket.AF_INET, socket.AF_INET6}:
+            continue
+        raw_address = str(sockaddr[0])
+        if "%" in raw_address:
+            raise _NetworkPolicyError("network_scope_denied", "Scoped IPv6 targets are not allowed")
+        try:
+            address = ipaddress.ip_address(raw_address)
+        except ValueError:
+            raise _NetworkPolicyError("network_dns_failed", "Network target returned an invalid address") from None
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        if not address.is_global and not _private_network_allowed(host, address, scopes):
+            raise _NetworkPolicyError("network_scope_denied", "Private network target is outside configured scope")
+        candidate = str(address)
+        if candidate not in resolved:
+            resolved.append(candidate)
+    if not resolved:
+        raise _NetworkPolicyError("network_dns_failed", "Network target returned no usable addresses")
+    path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    return scheme, host, port, resolved[0], path, parsed.geturl()
+def _validated_network_headers(headers: Any) -> dict[str, str]:
+    if headers is None:
+        return {"User-Agent": "LocalAIHub/1.0", "Connection": "close"}
+    if not isinstance(headers, Mapping) or len(headers) > 64:
+        raise _NetworkPolicyError("invalid_network_headers", "Request headers must be a small object")
+    result: dict[str, str] = {"Connection": "close"}
+    total = 0
+    forbidden = {"connection", "content-length", "host", "proxy-authorization", "transfer-encoding"}
+    for raw_name, raw_value in headers.items():
+        if not isinstance(raw_name, str) or not _NETWORK_HEADER_NAME_RE.fullmatch(raw_name):
+            raise _NetworkPolicyError("invalid_network_headers", "Request header name is invalid")
+        name = raw_name.strip()
+        value = str(raw_value)
+        if name.lower() in forbidden or any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise _NetworkPolicyError("invalid_network_headers", "Request header is not allowed")
+        total += len(name.encode("ascii")) + len(value.encode("utf-8"))
+        if len(value) > 8192 or total > 16384:
+            raise _NetworkPolicyError("invalid_network_headers", "Request headers exceed configured bounds")
+        result[name] = value
+    return result
+def _redact_network_text(value: str) -> str:
+    redacted = _NETWORK_SECRET_RE.sub(r"\1[redacted]", value)
+    return _NETWORK_AUTH_RE.sub(r"\1 [redacted]", redacted)
+def _safe_network_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        port = parsed.port
+        authority = host if port is None else f"{host}:{port}"
+        return urlunsplit((parsed.scheme.lower(), authority, parsed.path, "", ""))[:2048]
+    except (TypeError, ValueError):
+        return ""
+
+
+def _safe_response_headers(headers: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        str(name).lower(): str(value)[:1024]
+        for name, value in headers.items()
+        if str(name).lower() in _NETWORK_RESPONSE_HEADER_ALLOWLIST
+    }
+def _perform_network_request(
+    config: dict[str, Any],
+    url: str,
+    *,
+    method: str,
+    headers: Mapping[str, str],
+    body: bytes | None,
+    timeout: float,
+    max_response_bytes: int,
+    follow_redirects: bool,
+) -> tuple[int, dict[str, str], bytes]:
+    network = _network_config(config)
+    max_redirects = _redirect_limit(network)
+    deadline = time.monotonic() + max(0.0, timeout)
+    try:
+        initial_scheme = urlsplit(url).scheme.lower()
+    except ValueError:
+        raise _NetworkPolicyError("invalid_network_url", "URL is invalid") from None
+    current_url = url
+    redirects = 0
+    previous_origin: tuple[str, str, int] | None = None
+    request_headers = dict(headers)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _NetworkPolicyError("network_timeout", "Network request timed out")
+        scheme, host, port, address, path, _ = _resolve_network_target(config, current_url, remaining)
+        if initial_scheme == "https" and scheme != "https":
+            raise _NetworkPolicyError("network_redirect_downgrade", "HTTPS redirects cannot downgrade to HTTP")
+        origin = (scheme, host, port)
+        if previous_origin is not None and origin != previous_origin:
+            request_headers = {"Connection": "close"}
+        connection_type = _PinnedHTTPSConnection if scheme == "https" else _PinnedHTTPConnection
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _NetworkPolicyError("network_timeout", "Network request timed out")
+        connection = connection_type(host, port, address, remaining)
+        timed_out = threading.Event()
+
+        def abort_request() -> None:
+            timed_out.set()
+            sock = connection.sock
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+        timer = threading.Timer(remaining, abort_request)
+        timer.daemon = True
+        timer.start()
+        try:
+            connection.request(method, path, body=body, headers=request_headers)
+            response = connection.getresponse()
+            status = int(response.status)
+            response_headers = {str(name).lower(): str(value) for name, value in response.getheaders()}
+            location = response_headers.get("location", "")
+            if follow_redirects and method == "GET" and status in {301, 302, 303, 307, 308} and location:
+                if redirects >= max_redirects:
+                    raise _NetworkPolicyError("network_redirect_limit", "Network redirect limit reached")
+                current_url = urljoin(current_url, location)
+                redirects += 1
+                previous_origin = origin
+                continue
+            response_body = response.read(max_response_bytes + 1)
+            if timed_out.is_set() or time.monotonic() >= deadline:
+                raise _NetworkPolicyError("network_timeout", "Network request timed out")
+            return status, response_headers, response_body
+        except _NetworkPolicyError:
+            raise
+        except Exception as exc:
+            if timed_out.is_set() or isinstance(exc, (TimeoutError, socket.timeout)) or time.monotonic() >= deadline:
+                raise _NetworkPolicyError("network_timeout", "Network request timed out") from None
+            raise
+        finally:
+            timer.cancel()
+            connection.close()
+
 @dataclass(frozen=True)
 class RollbackFileSnapshot:
     content: bytes | None
@@ -101,6 +647,14 @@ class RollbackSnapshot:
     root_identity: tuple[int, int]
     files: dict[str, RollbackFileSnapshot]
     root_guard: int
+    postimages: dict[str, "RollbackPostimage"] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RollbackPostimage:
+    safe: bool
+    fingerprint: tuple[int, int, int, int, int, int, str, str] | None
+    reason: str = ""
 
 
 def _get_windows_dacl(fd: int) -> bytes:
@@ -130,25 +684,135 @@ def _get_windows_dacl(fd: int) -> bytes:
         kernel32.LocalFree(descriptor)
 
 
-def _set_windows_dacl(path: str, descriptor: bytes) -> None:
+def _set_windows_dacl(fd: int, descriptor: bytes) -> None:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.SetKernelObjectSecurity.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p]
+    advapi32.SetKernelObjectSecurity.restype = wintypes.BOOL
+    security_descriptor = ctypes.create_string_buffer(descriptor)
+    if not advapi32.SetKernelObjectSecurity(msvcrt.get_osfhandle(fd), 0x4, security_descriptor):
+        raise OSError(ctypes.get_last_error(), "cannot restore rollback target DACL")
+
+
+def _restore_windows_file_attributes(fd: int, mode: int | None) -> None:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class FileBasicInfo(ctypes.Structure):
+        _fields_ = [
+            ("creation_time", ctypes.c_int64),
+            ("last_access_time", ctypes.c_int64),
+            ("last_write_time", ctypes.c_int64),
+            ("change_time", ctypes.c_int64),
+            ("file_attributes", wintypes.DWORD),
+        ]
+
+    set_information = ctypes.WinDLL("kernel32", use_last_error=True).SetFileInformationByHandle
+    set_information.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    set_information.restype = wintypes.BOOL
+    attributes = 0x00000001 if mode is not None and not mode & stat.S_IWRITE else 0x00000080
+    basic_info = FileBasicInfo(0, 0, 0, 0, attributes)
+    handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))
+    if not set_information(handle, 0, ctypes.byref(basic_info), ctypes.sizeof(basic_info)):
+        raise OSError(ctypes.get_last_error(), "cannot restore rollback target attributes")
+
+
+def _restore_windows_file_times(fd: int, atime_ns: int | None, mtime_ns: int | None) -> None:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    def to_filetime(value: int | None) -> FileTime | None:
+        if value is None:
+            return None
+        ticks = (int(value) + 11644473600 * 1_000_000_000) // 100
+        return FileTime(ticks & 0xFFFFFFFF, ticks >> 32)
+
+    access_time, write_time = to_filetime(atime_ns), to_filetime(mtime_ns)
+    set_file_time = ctypes.WinDLL("kernel32", use_last_error=True).SetFileTime
+    set_file_time.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(FileTime),
+        ctypes.POINTER(FileTime),
+        ctypes.POINTER(FileTime),
+    ]
+    set_file_time.restype = wintypes.BOOL
+    if not set_file_time(
+        msvcrt.get_osfhandle(fd), None,
+        ctypes.byref(access_time) if access_time is not None else None,
+        ctypes.byref(write_time) if write_time is not None else None,
+    ):
+        raise OSError(ctypes.get_last_error(), "cannot restore rollback target file times")
+
+
+def _delete_windows_handle(handle: int) -> None:
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    handle = kernel32.CreateFileW(path, 0x00040000, 0x1 | 0x2, None, 3, 0x80, None)
-    if handle == wintypes.HANDLE(-1).value:
-        raise OSError(ctypes.get_last_error(), "cannot open rollback temp file for DACL restore")
-    try:
-        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-        advapi32.SetKernelObjectSecurity.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p]
-        advapi32.SetKernelObjectSecurity.restype = wintypes.BOOL
-        security_descriptor = ctypes.create_string_buffer(descriptor)
-        if not advapi32.SetKernelObjectSecurity(handle, 0x4, security_descriptor):
-            raise OSError(ctypes.get_last_error(), "cannot restore rollback target DACL")
-    finally:
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        kernel32.CloseHandle(handle)
+    set_information = ctypes.WinDLL("kernel32", use_last_error=True).SetFileInformationByHandle
+    set_information.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    set_information.restype = wintypes.BOOL
+    delete = ctypes.c_ubyte(1)
+    if not set_information(wintypes.HANDLE(handle), 4, ctypes.byref(delete), ctypes.sizeof(delete)):
+        raise OSError(ctypes.get_last_error(), "cannot remove rollback target by handle")
+
+
+def _rename_windows_handle(
+    handle: int, parent_handle: int, name: str, *, replace_if_exists: bool = True
+) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    class RenameFlags(ctypes.Union):
+        _fields_ = [("replace_if_exists", wintypes.BOOLEAN), ("flags", wintypes.DWORD)]
+
+    class FileRenameInfo(ctypes.Structure):
+        _fields_ = [
+            ("rename_flags", RenameFlags),
+            ("replace_if_exists_legacy", wintypes.BOOLEAN),
+            ("root_directory", wintypes.HANDLE),
+            ("file_name_length", wintypes.DWORD),
+            ("file_name", wintypes.WCHAR * 1),
+        ]
+
+    encoded_name = name.encode("utf-16-le")
+    info_size = ctypes.sizeof(FileRenameInfo) + len(encoded_name)
+    info_buffer = ctypes.create_string_buffer(info_size)
+    info = ctypes.cast(info_buffer, ctypes.POINTER(FileRenameInfo)).contents
+    replace_flag = 1 if replace_if_exists else 0
+    info.rename_flags.replace_if_exists = replace_flag
+    info.replace_if_exists_legacy = replace_flag
+    info.root_directory = wintypes.HANDLE(parent_handle)
+    info.file_name_length = len(encoded_name)
+    ctypes.memmove(ctypes.addressof(info_buffer) + FileRenameInfo.file_name.offset, encoded_name, len(encoded_name))
+
+    class IoStatusBlock(ctypes.Structure):
+        _fields_ = [("status", ctypes.c_void_p), ("information", ctypes.c_size_t)]
+
+    ntdll = ctypes.WinDLL("ntdll")
+    set_information = ntdll.NtSetInformationFile
+    set_information.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(IoStatusBlock),
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        wintypes.ULONG,
+    ]
+    set_information.restype = wintypes.LONG
+    io_status = IoStatusBlock()
+    status = int(set_information(wintypes.HANDLE(handle), ctypes.byref(io_status), info_buffer, info_size, 10))
+    if status < 0:
+        status_to_error = ntdll.RtlNtStatusToDosError
+        status_to_error.argtypes = [wintypes.LONG]
+        status_to_error.restype = wintypes.ULONG
+        raise OSError(int(status_to_error(status)), "cannot install rollback target by handle")
 
 
 def _windows_dacl_bytes(descriptor: bytes) -> bytes:
@@ -179,11 +843,62 @@ def _acquire_rollback_root(root: Path) -> int:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
         kernel32.CreateFileW.restype = wintypes.HANDLE
-        handle = kernel32.CreateFileW(str(root), 0x80, 0x1 | 0x2, None, 3, 0x02000000, None)
+        root_access = 0x0001 | 0x0080 | 0x00100000
+        if len(root.parts) == 1:
+            root_access |= 0x0002 | 0x0040
+        handle = kernel32.CreateFileW(
+            str(root.anchor),
+            root_access,
+            0x1 | 0x2,  # share read/write; omit delete sharing to pin the root
+            None,
+            3,
+            0x02000000 | 0x00200000,
+            None,
+        )
         if handle == wintypes.HANDLE(-1).value:
-            raise OSError(ctypes.get_last_error(), "cannot lock rollback root against rename")
-        return int(handle)
-    return os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
+            raise OSError(ctypes.get_last_error(), "cannot pin rollback volume root")
+        current = int(handle)
+        try:
+            attributes, _reparse_tag = _windows_handle_attributes(current)
+            if attributes & 0x400:
+                raise ValueError("rollback volume root cannot be a reparse point")
+            if not attributes & 0x10:
+                raise ValueError("rollback volume root is not a directory")
+            components = root.parts[1:]
+            for index, component in enumerate(components):
+                child = _open_rollback_relative_handle(
+                    current,
+                    component,
+                    directory=True,
+                    mutation=index == len(components) - 1,
+                )
+                if child is None:
+                    raise FileNotFoundError(f"rollback root component is missing: {component}")
+                try:
+                    _close_rollback_root(current)
+                except BaseException:
+                    _close_rollback_root(child)
+                    raise
+                current = child
+            return current
+        except BaseException:
+            try:
+                _close_rollback_root(current)
+            except OSError:
+                pass
+            raise
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise OSError("safe rollback-root acquisition requires O_NOFOLLOW support")
+    anchor_fd = os.open(
+        root.anchor,
+        os.O_RDONLY | nofollow | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        root_handle, _owned = _open_rollback_parent_handle(anchor_fd, list(root.parts[1:]))
+        return root_handle
+    finally:
+        os.close(anchor_fd)
 
 
 def _close_rollback_root(handle: int) -> None:
@@ -207,8 +922,237 @@ def _rollback_snapshot_open_flags() -> int:
     return flags
 
 
-def _restore_windows_atime(fd: int, path: Path, atime_ns: int) -> None:
-    """Restore access time through a path-pinned handle matching the snapshotted file."""
+def _rollback_root_identity(handle: int) -> tuple[int, int]:
+    if os.name == "nt":
+        return _windows_handle_identity(handle)
+    root_stat = os.fstat(handle)
+    return root_stat.st_dev, root_stat.st_ino
+
+
+def _windows_handle_attributes(handle: int) -> tuple[int, int]:
+    import ctypes
+    from ctypes import wintypes
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = [("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_info = kernel32.GetFileInformationByHandleEx
+    get_info.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    get_info.restype = wintypes.BOOL
+    tag_info = FileAttributeTagInfo()
+    if not get_info(handle, 9, ctypes.byref(tag_info), ctypes.sizeof(tag_info)):
+        raise OSError(ctypes.get_last_error(), "cannot inspect rollback handle attributes")
+    return int(tag_info.FileAttributes), int(tag_info.ReparseTag)
+
+
+def _windows_handle_identity(handle: int) -> tuple[int, int]:
+    import ctypes
+    from ctypes import wintypes
+
+    class FileInfo(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation_low", wintypes.DWORD), ("creation_high", wintypes.DWORD),
+            ("access_low", wintypes.DWORD), ("access_high", wintypes.DWORD),
+            ("write_low", wintypes.DWORD), ("write_high", wintypes.DWORD),
+            ("volume", wintypes.DWORD),
+            ("size_high", wintypes.DWORD), ("size_low", wintypes.DWORD),
+            ("links", wintypes.DWORD),
+            ("index_high", wintypes.DWORD), ("index_low", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_info = kernel32.GetFileInformationByHandle
+    get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(FileInfo)]
+    get_info.restype = wintypes.BOOL
+    info = FileInfo()
+    if not get_info(handle, ctypes.byref(info)):
+        raise OSError(ctypes.get_last_error(), "cannot verify pinned rollback root identity")
+    index = (int(info.index_high) << 32) | int(info.index_low)
+    return int(info.volume), index
+
+
+def _open_rollback_relative_handle(
+    root_handle: int,
+    name: str,
+    *,
+    directory: bool,
+    mutation: bool = False,
+    create: bool = False,
+) -> int | None:
+    """Open one root-relative child without following reparse points."""
+    import ctypes
+    from ctypes import wintypes
+
+    class UnicodeString(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.USHORT),
+            ("MaximumLength", wintypes.USHORT),
+            ("Buffer", wintypes.LPWSTR),
+        ]
+
+    class ObjectAttributes(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.ULONG),
+            ("RootDirectory", wintypes.HANDLE),
+            ("ObjectName", ctypes.POINTER(UnicodeString)),
+            ("Attributes", wintypes.ULONG),
+            ("SecurityDescriptor", wintypes.LPVOID),
+            ("SecurityQualityOfService", wintypes.LPVOID),
+        ]
+
+    class IoStatusBlock(ctypes.Structure):
+        _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
+
+    name_buffer = ctypes.create_unicode_buffer(name)
+    name_bytes = len(name.encode("utf-16-le"))
+    unicode_name = UnicodeString(name_bytes, name_bytes + 2, ctypes.cast(name_buffer, wintypes.LPWSTR))
+    object_attributes = ObjectAttributes(
+        ctypes.sizeof(ObjectAttributes),
+        wintypes.HANDLE(root_handle),
+        ctypes.pointer(unicode_name),
+        0x40,  # OBJ_CASE_INSENSITIVE
+        None,
+        None,
+    )
+    io_status = IoStatusBlock()
+    handle = wintypes.HANDLE()
+    ntdll = ctypes.WinDLL("ntdll")
+    nt_create_file = ntdll.NtCreateFile
+    nt_create_file.argtypes = [
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.ULONG,
+        ctypes.POINTER(ObjectAttributes),
+        ctypes.POINTER(IoStatusBlock),
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        ctypes.c_void_p,
+        wintypes.ULONG,
+    ]
+    nt_create_file.restype = wintypes.LONG
+    desired_access = (
+        0x0001 | 0x0020 | 0x0080 | 0x00100000
+        if directory
+        else 0x0001 | 0x0080 | 0x0100 | 0x00020000 | 0x00100000
+    )
+    if mutation:
+        desired_access |= (0x0002 | 0x0040) if directory else (0x00010000 | 0x00040000)
+    if create and not directory:
+        desired_access |= 0x0002
+    create_options = 0x20 | 0x00200000 | (0x1 if directory else 0)
+    status = int(
+        nt_create_file(
+            ctypes.byref(handle), desired_access, ctypes.byref(object_attributes),
+            ctypes.byref(io_status), None, 0, 0x1 | 0x2, 2 if create else 1, create_options, None, 0,
+        )
+    )
+    status_code = status & 0xFFFFFFFF
+    if status_code in {0xC0000034, 0xC000003A}:
+        return None
+    if create and status_code == 0xC0000035:
+        raise FileExistsError(f"rollback temporary path already exists: {name[:160]}")
+    if status < 0:
+        status_to_error = ntdll.RtlNtStatusToDosError
+        status_to_error.argtypes = [wintypes.LONG]
+        status_to_error.restype = wintypes.ULONG
+        raise OSError(int(status_to_error(status)), "cannot open rollback path relative to pinned root")
+
+    raw_handle = int(handle.value)
+    try:
+        attributes, _reparse_tag = _windows_handle_attributes(raw_handle)
+        if attributes & 0x400:
+            raise ValueError("rollback paths cannot be reparse points")
+        if directory and not attributes & 0x10:
+            raise ValueError("rollback root path component is not a directory")
+        if not directory and attributes & 0x10:
+            raise ValueError("rollback target is a directory")
+        return raw_handle
+    except BaseException:
+        _close_rollback_root(raw_handle)
+        raise
+
+
+def _open_rollback_parent_handle(
+    root_handle: int,
+    components: list[str],
+    *,
+    mutation: bool = False,
+) -> tuple[int, bool]:
+    """Open parent directory by walking each component from a pinned root."""
+    if os.name == "nt":
+        current = root_handle
+        owned = False
+        try:
+            for index, component in enumerate(components):
+                child = _open_rollback_relative_handle(
+                    current,
+                    component,
+                    directory=True,
+                    mutation=mutation and index == len(components) - 1,
+                )
+                if child is None:
+                    raise FileNotFoundError(f"rollback parent component is missing: {component}")
+                if owned:
+                    try:
+                        _close_rollback_root(current)
+                    except BaseException:
+                        _close_rollback_root(child)
+                        raise
+                current = child
+                owned = True
+            return current, owned
+        except BaseException:
+            if owned:
+                try:
+                    _close_rollback_root(current)
+                except OSError:
+                    pass
+            raise
+
+    current = os.dup(root_handle)
+    try:
+        for component in components:
+            nofollow = getattr(os, "O_NOFOLLOW", None)
+            if nofollow is None:
+                raise OSError("safe nested rollback paths require O_NOFOLLOW support")
+            flags = os.O_RDONLY | nofollow | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+            child = os.open(component, flags, dir_fd=current)
+            try:
+                child_stat = os.fstat(child)
+            except BaseException:
+                os.close(child)
+                raise
+            if not stat.S_ISDIR(child_stat.st_mode):
+                os.close(child)
+                raise ValueError("rollback parent component is not a directory")
+            os.close(current)
+            current = child
+        return current, True
+    except BaseException:
+        try:
+            os.close(current)
+        except OSError:
+            pass
+        raise
+
+
+def _open_rollback_snapshot_file(root_handle: int, name: str) -> int | None:
+    import msvcrt
+
+    raw_handle = _open_rollback_relative_handle(root_handle, name, directory=False)
+    if raw_handle is None:
+        return None
+    try:
+        return msvcrt.open_osfhandle(raw_handle, os.O_RDONLY | os.O_BINARY)
+    except BaseException:
+        _close_rollback_root(raw_handle)
+        raise
+def _restore_windows_atime(fd: int, atime_ns: int) -> None:
+    """Restore access time through the already pinned snapshot handle."""
     import ctypes
     import msvcrt
     from ctypes import wintypes
@@ -216,60 +1160,16 @@ def _restore_windows_atime(fd: int, path: Path, atime_ns: int) -> None:
     class _FileTime(ctypes.Structure):
         _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
 
-    class _FileInfo(ctypes.Structure):
-        _fields_ = [
-            ("attributes", wintypes.DWORD),
-            ("creation", _FileTime),
-            ("access", _FileTime),
-            ("write", _FileTime),
-            ("volume", wintypes.DWORD),
-            ("size_high", wintypes.DWORD),
-            ("size_low", wintypes.DWORD),
-            ("links", wintypes.DWORD),
-            ("index_high", wintypes.DWORD),
-            ("index_low", wintypes.DWORD),
-        ]
-
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
-        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
-    ]
-    kernel32.CreateFileW.restype = wintypes.HANDLE
-    kernel32.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(_FileInfo)]
-    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
     kernel32.SetFileTime.argtypes = [
         wintypes.HANDLE, ctypes.POINTER(_FileTime), ctypes.POINTER(_FileTime), ctypes.POINTER(_FileTime),
     ]
     kernel32.SetFileTime.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
-    handle = kernel32.CreateFileW(
-        str(path), 0x80 | 0x100, 0x1 | 0x2, None, 3, 0x00200000, None,
-    )
-    if handle == wintypes.HANDLE(-1).value:
-        raise OSError(ctypes.get_last_error(), "cannot safely open rollback target to preserve access time")
-    try:
-        original = _FileInfo()
-        pinned = _FileInfo()
-        original_handle = msvcrt.get_osfhandle(fd)
-        if not kernel32.GetFileInformationByHandle(original_handle, ctypes.byref(original)):
-            raise OSError(ctypes.get_last_error(), "cannot inspect rollback snapshot handle")
-        if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(pinned)):
-            raise OSError(ctypes.get_last_error(), "cannot inspect pinned rollback handle")
-        original_id = (original.volume, original.index_high, original.index_low)
-        pinned_id = (pinned.volume, pinned.index_high, pinned.index_low)
-        if original_id != pinned_id:
-            raise ValueError("rollback target changed before access time preservation")
-
-        windows_epoch_ns = 11644473600 * 1_000_000_000
-        filetime_value = (int(atime_ns) + windows_epoch_ns) // 100
-        access_time = _FileTime(filetime_value & 0xFFFFFFFF, filetime_value >> 32)
-        if not kernel32.SetFileTime(handle, None, ctypes.byref(access_time), None):
-            raise OSError(ctypes.get_last_error(), "cannot restore rollback target access time")
-    finally:
-        kernel32.CloseHandle(handle)
+    windows_epoch_ns = 11644473600 * 1_000_000_000
+    filetime_value = (int(atime_ns) + windows_epoch_ns) // 100
+    access_time = _FileTime(filetime_value & 0xFFFFFFFF, filetime_value >> 32)
+    if not kernel32.SetFileTime(msvcrt.get_osfhandle(fd), None, ctypes.byref(access_time), None):
+        raise OSError(ctypes.get_last_error(), "cannot restore rollback target access time")
 
 
 def _wait_windows_job_empty(job_handle: Any, timeout_ms: int = 2500) -> bool:
@@ -286,12 +1186,16 @@ def _wait_windows_job_empty(job_handle: Any, timeout_ms: int = 2500) -> bool:
 
 
 def _stop_daemon_tree(info: dict[str, Any]) -> bool:
-    """Stop the owned daemon tree without signaling a recycled Windows PID."""
+    """Stop a daemon tree through its live owner handle or process group."""
     process = info["process"]
+    if os.name != "nt" and isinstance(process, _RecoveredDaemonProcess):
+        # PID/start-time metadata cannot pin a POSIX group across restart.
+        return False
     job_handle = getattr(process, "_local_ai_job_handle", None)
     if os.name == "nt" and isinstance(job_handle, int) and not isinstance(job_handle, bool):
         try:
-            terminate_job_object(job_handle)
+            if not terminate_job_object(job_handle):
+                return False
             if not _wait_windows_job_empty(job_handle):
                 return False
             if not close_job_object(job_handle):
@@ -300,17 +1204,14 @@ def _stop_daemon_tree(info: dict[str, Any]) -> bool:
             return True
         except Exception:
             return False
-    if os.name == "nt":
-        expected = info.get("identity")
-        current = process_identity(int(info["pid"]))
-        if current is None:
-            return True
-        if expected and current != expected:
-            return False
-    try:
-        return bool(terminate_tree(int(info["pid"]), grace_seconds=1.5))
-    except Exception:
-        return False
+    # A live Popen record owns the session created at spawn. Recovered records
+    # are rejected above because their persisted group ID is not a live handle.
+    if os.name != "nt":
+        pid = info.get("pid")
+        group_id = info.get("process_group_id")
+        if isinstance(pid, int) and not isinstance(pid, bool) and group_id == pid:
+            return terminate_tree(pid, grace_seconds=1.5)
+    return False
 
 
 def _snapshot_rollback_scope(
@@ -322,13 +1223,15 @@ def _snapshot_rollback_scope(
     if not isinstance(paths, list) or len(paths) > _MAX_ROLLBACK_PATHS:
         return None, "rollback paths must be a list of at most 128 files"
     root_guard: int | None = None
+    parent_handles: list[int] = []
     try:
         root = Path(cwd).resolve(strict=True)
         if not root.is_dir():
             return None, "rollback root must be a directory"
         root_guard = _acquire_rollback_root(root)
-        root_stat = os.fstat(root_guard) if os.name != "nt" else root.stat()
+        root_identity = _rollback_root_identity(root_guard)
         state: dict[str, RollbackFileSnapshot] = {}
+        seen_paths: set[str] = set()
         total_bytes = 0
         for raw in paths:
             entry_stat = None
@@ -337,44 +1240,66 @@ def _snapshot_rollback_scope(
             portable = raw.replace("\\", "/")
             drive, _ = ntpath.splitdrive(raw)
             parts = portable.split("/")
-            if drive or ntpath.isabs(raw) or portable.startswith("/") or len(parts) != 1 or any(p in {"", ".", ".."} for p in parts):
+            if drive or ntpath.isabs(raw) or portable.startswith("/") or any(p in {"", ".", ".."} for p in parts):
                 raise ValueError(f"invalid rollback path: {raw[:160]}")
-            basename = parts[0].split(".", 1)[0].rstrip(" .").upper()
             reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10)), "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"}
-            if ":" in raw or raw.endswith((".", " ")) or basename in reserved:
+            if any(
+                ":" in part
+                or part.endswith((".", " "))
+                or part.split(".", 1)[0].rstrip(" .").upper() in reserved
+                for part in parts
+            ):
                 raise ValueError(f"invalid platform-specific rollback path: {raw[:160]}")
-            candidate = root.joinpath(*parts)
+            key = Path(*parts).as_posix()
+            comparison_key = key.casefold() if os.name == "nt" else key
+            if comparison_key in seen_paths:
+                raise ValueError(f"duplicate rollback path: {raw[:160]}")
+            seen_paths.add(comparison_key)
+            parent_guard, parent_owned = _open_rollback_parent_handle(root_guard, parts[:-1])
+            if parent_owned:
+                parent_handles.append(parent_guard)
+            leaf = parts[-1]
+            snapshot_fd: int | None = None
             if os.name != "nt":
                 try:
-                    entry_stat = os.stat(parts[0], dir_fd=root_guard, follow_symlinks=False)
+                    entry_stat = os.stat(leaf, dir_fd=parent_guard, follow_symlinks=False)
                 except FileNotFoundError:
                     entry_stat = None
                 if entry_stat is not None and stat.S_ISLNK(entry_stat.st_mode):
                     raise ValueError(f"rollback paths cannot be symlinks: {raw[:160]}")
-            else:
-                resolved = candidate.resolve(strict=False)
-                if not resolved.is_relative_to(root) or resolved == root or os.path.normcase(str(resolved)) != os.path.normcase(str(candidate)):
-                    raise ValueError(f"rollback path escapes root: {raw[:160]}")
-            key = Path(*parts).as_posix()
-            if key in state:
-                raise ValueError(f"duplicate rollback path: {raw[:160]}")
-            if os.name != "nt":
-                pass
-            else:
-                entry_stat = candidate.stat() if candidate.exists() else None
+            if os.name == "nt":
+                snapshot_fd = _open_rollback_snapshot_file(parent_guard, leaf)
+                if snapshot_fd is not None:
+                    try:
+                        entry_stat = os.fstat(snapshot_fd)
+                    except BaseException:
+                        fd_to_close = snapshot_fd
+                        snapshot_fd = None
+                        try:
+                            os.close(fd_to_close)
+                        except OSError:
+                            pass
+                        raise
             if entry_stat is not None:
-                if not stat.S_ISREG(entry_stat.st_mode):
-                    raise ValueError(f"rollback path must be a regular file: {raw[:160]}")
-                if entry_stat.st_nlink > 1:
-                    raise ValueError(f"rollback does not accept multiply-linked files: {raw[:160]}")
-                size = entry_stat.st_size
-                if size > _MAX_ROLLBACK_FILE_BYTES or total_bytes + size > _MAX_ROLLBACK_TOTAL_BYTES:
-                    raise ValueError("rollback snapshot exceeds the 16 MiB per-file or 64 MiB total limit")
-                open_flags = _rollback_snapshot_open_flags()
-                fd = os.open(parts[0] if os.name != "nt" else candidate, open_flags, **({"dir_fd": root_guard} if os.name != "nt" else {}))
                 try:
+                    if not stat.S_ISREG(entry_stat.st_mode):
+                        raise ValueError(f"rollback path must be a regular file: {raw[:160]}")
+                    if entry_stat.st_nlink > 1:
+                        raise ValueError(f"rollback does not accept multiply-linked files: {raw[:160]}")
+                    size = entry_stat.st_size
+                    if size > _MAX_ROLLBACK_FILE_BYTES or total_bytes + size > _MAX_ROLLBACK_TOTAL_BYTES:
+                        raise ValueError("rollback snapshot exceeds the 16 MiB per-file or 64 MiB total limit")
+                    if os.name != "nt":
+                        open_flags = _rollback_snapshot_open_flags()
+                        snapshot_fd = os.open(leaf, open_flags, dir_fd=parent_guard)
+                    if snapshot_fd is None:
+                        raise ValueError(f"rollback target disappeared during snapshot: {raw[:160]}")
+                    fd = snapshot_fd
                     opened_stat = os.fstat(fd)
-                    if (opened_stat.st_dev, opened_stat.st_ino) != (entry_stat.st_dev, entry_stat.st_ino) or opened_stat.st_nlink > 1:
+                    if (
+                        (os.name != "nt" and (opened_stat.st_dev, opened_stat.st_ino) != (entry_stat.st_dev, entry_stat.st_ino))
+                        or opened_stat.st_nlink > 1
+                    ):
                         raise ValueError(f"rollback target changed during snapshot: {raw[:160]}")
                     with os.fdopen(fd, "rb", closefd=False) as source:
                         content = source.read(_MAX_ROLLBACK_FILE_BYTES + 1)
@@ -389,7 +1314,7 @@ def _snapshot_rollback_scope(
                         except (OSError, TypeError, ValueError) as exc:
                             raise ValueError("cannot preserve file access time during rollback snapshot") from exc
                     elif os.name == "nt":
-                        _restore_windows_atime(fd, candidate, opened_stat.st_atime_ns)
+                        _restore_windows_atime(fd, opened_stat.st_atime_ns)
                     xattrs: dict[str, bytes] = {}
                     metadata_size = 0
                     if os.name != "nt" and hasattr(os, "listxattr"):
@@ -401,7 +1326,9 @@ def _snapshot_rollback_scope(
                             xattrs[attr_name] = attr_value
                     windows_dacl = _get_windows_dacl(fd) if os.name == "nt" else None
                 finally:
-                    os.close(fd)
+                    if snapshot_fd is not None:
+                        os.close(snapshot_fd)
+                        snapshot_fd = None
                 if total_bytes + len(content) > _MAX_ROLLBACK_TOTAL_BYTES:
                     raise ValueError("rollback snapshot exceeds the 64 MiB total limit")
                 total_bytes += len(content)
@@ -410,8 +1337,16 @@ def _snapshot_rollback_scope(
             else:
                 file_snapshot = RollbackFileSnapshot(None, None, {}, None, None, None)
             state[key] = file_snapshot
-        return RollbackSnapshot(root, (root_stat.st_dev, root_stat.st_ino), state, root_guard), None
+            if parent_owned:
+                _close_rollback_root(parent_guard)
+                parent_handles.remove(parent_guard)
+        return RollbackSnapshot(root, root_identity, state, root_guard), None
     except (OSError, ValueError, TypeError) as exc:
+        for parent_handle in parent_handles:
+            try:
+                _close_rollback_root(parent_handle)
+            except OSError:
+                pass
         if root_guard is not None:
             try:
                 _close_rollback_root(root_guard)
@@ -420,80 +1355,442 @@ def _snapshot_rollback_scope(
         return None, f"cannot snapshot rollback scope: {str(exc)[:256]}"
 
 
+def _rollback_postimage_at(parent_handle: int, leaf: str) -> RollbackPostimage:
+    fd: int | None = None
+    try:
+        if os.name == "nt":
+            fd = _open_rollback_snapshot_file(parent_handle, leaf)
+            if fd is None:
+                return RollbackPostimage(True, None)
+            opened_stat = os.fstat(fd)
+        else:
+            try:
+                entry_stat = os.stat(leaf, dir_fd=parent_handle, follow_symlinks=False)
+            except FileNotFoundError:
+                return RollbackPostimage(True, None)
+            if stat.S_ISLNK(entry_stat.st_mode):
+                return RollbackPostimage(False, None, "symlink postimage")
+            if not stat.S_ISREG(entry_stat.st_mode):
+                return RollbackPostimage(False, None, "non-file postimage")
+            if entry_stat.st_nlink != 1:
+                return RollbackPostimage(False, None, "external aliases")
+            fd = os.open(leaf, _rollback_snapshot_open_flags(), dir_fd=parent_handle)
+            opened_stat = os.fstat(fd)
+            if (opened_stat.st_dev, opened_stat.st_ino) != (entry_stat.st_dev, entry_stat.st_ino):
+                return RollbackPostimage(False, None, "postimage changed while opening")
+        if not stat.S_ISREG(opened_stat.st_mode):
+            return RollbackPostimage(False, None, "non-file postimage")
+        if opened_stat.st_nlink != 1:
+            return RollbackPostimage(False, None, "external aliases")
+        with os.fdopen(fd, "rb", closefd=False) as source:
+            content = source.read(_MAX_ROLLBACK_FILE_BYTES + 1)
+        final_stat = os.fstat(fd)
+        identity = (opened_stat.st_dev, opened_stat.st_ino)
+        stable_before = (
+            identity,
+            opened_stat.st_size,
+            opened_stat.st_mtime_ns,
+            opened_stat.st_ctime_ns,
+            stat.S_IMODE(opened_stat.st_mode),
+            opened_stat.st_nlink,
+        )
+        stable_after = (
+            (final_stat.st_dev, final_stat.st_ino),
+            final_stat.st_size,
+            final_stat.st_mtime_ns,
+            final_stat.st_ctime_ns,
+            stat.S_IMODE(final_stat.st_mode),
+            final_stat.st_nlink,
+        )
+        if len(content) > _MAX_ROLLBACK_FILE_BYTES or stable_before != stable_after:
+            return RollbackPostimage(False, None, "postimage changed while reading")
+        metadata_digest = hashlib.sha256()
+        metadata_size = 0
+        if os.name != "nt" and hasattr(os, "listxattr"):
+            for attr_name in sorted(os.listxattr(fd)):
+                name_bytes = attr_name.encode("utf-8", errors="surrogateescape")
+                attr_value = os.getxattr(fd, attr_name)
+                metadata_size += len(name_bytes) + len(attr_value)
+                if metadata_size > _MAX_ROLLBACK_METADATA_BYTES:
+                    return RollbackPostimage(False, None, "postimage metadata exceeds limit")
+                metadata_digest.update(len(name_bytes).to_bytes(4, "big"))
+                metadata_digest.update(name_bytes)
+                metadata_digest.update(len(attr_value).to_bytes(4, "big"))
+                metadata_digest.update(attr_value)
+        elif os.name == "nt":
+            dacl = _get_windows_dacl(fd)
+            if dacl is not None:
+                metadata_digest.update(dacl)
+        final_stat = os.fstat(fd)
+        stable_after = (
+            (final_stat.st_dev, final_stat.st_ino),
+            final_stat.st_size,
+            final_stat.st_mtime_ns,
+            final_stat.st_ctime_ns,
+            stat.S_IMODE(final_stat.st_mode),
+            final_stat.st_nlink,
+        )
+        if stable_before != stable_after:
+            return RollbackPostimage(False, None, "postimage changed while reading")
+        return RollbackPostimage(
+            True,
+            (*identity, final_stat.st_size, final_stat.st_mtime_ns, final_stat.st_ctime_ns,
+             stat.S_IMODE(final_stat.st_mode), hashlib.sha256(content).hexdigest(),
+             metadata_digest.hexdigest()),
+        )
+    except (OSError, ValueError) as exc:
+        reason = "external aliases" if "reparse" in str(exc).lower() else f"unverifiable postimage: {exc}"
+        return RollbackPostimage(False, None, reason[:160])
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+class _RollbackPostimageChanged(OSError):
+    def __init__(self, message: str, *, preserve_temporary: bool = False) -> None:
+        super().__init__(message)
+        self.preserve_temporary = preserve_temporary
+
+
+def _rename_exchange_at(parent_handle: int, left: str, right: str) -> None:
+    """Atomically exchange two directory entries, failing closed if unsupported."""
+    import ctypes
+    import errno
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        exchange = getattr(libc, "renameatx_np", None)
+        flags = 0x00000002  # RENAME_SWAP
+    else:
+        exchange = getattr(libc, "renameat2", None)
+        flags = 0x00000002  # RENAME_EXCHANGE
+    if exchange is None:
+        unsupported = getattr(errno, "ENOTSUP", errno.EOPNOTSUPP)
+        raise OSError(unsupported, "atomic rollback exchange is unavailable", left)
+    exchange.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    exchange.restype = ctypes.c_int
+    result = exchange(
+        parent_handle, os.fsencode(left), parent_handle, os.fsencode(right), flags
+    )
+    if result != 0:
+        error_code = ctypes.get_errno()
+        raise OSError(error_code, os.strerror(error_code), f"{left} <-> {right}")
+
+
+def _restore_existing_rollback_leaf(
+    parent_handle: int,
+    temporary_name: str,
+    leaf: str,
+    expected_postimage: RollbackPostimage,
+) -> None:
+    """Replace an existing leaf by exchange, then verify displaced postimage."""
+    staged_postimage = _rollback_postimage_at(parent_handle, temporary_name)
+    current_postimage = _rollback_postimage_at(parent_handle, leaf)
+    if (
+        not expected_postimage.safe
+        or expected_postimage.fingerprint is None
+        or not staged_postimage.safe
+        or staged_postimage.fingerprint is None
+        or not current_postimage.safe
+        or current_postimage.fingerprint != expected_postimage.fingerprint
+    ):
+        raise _RollbackPostimageChanged("rollback postimage changed before atomic exchange")
+
+    _rename_exchange_at(parent_handle, temporary_name, leaf)
+    displaced_postimage = _rollback_postimage_at(parent_handle, temporary_name)
+    if (
+        displaced_postimage.safe
+        and displaced_postimage.fingerprint == expected_postimage.fingerprint
+    ):
+        os.unlink(temporary_name, dir_fd=parent_handle)
+        return
+
+    replacement_at_leaf = _rollback_postimage_at(parent_handle, leaf)
+    if replacement_at_leaf.safe and replacement_at_leaf.fingerprint == staged_postimage.fingerprint:
+        _rename_exchange_at(parent_handle, temporary_name, leaf)
+        returned_stage = _rollback_postimage_at(parent_handle, temporary_name)
+        if returned_stage.safe and returned_stage.fingerprint == staged_postimage.fingerprint:
+            raise _RollbackPostimageChanged(
+                "rollback postimage changed during atomic exchange"
+            )
+
+    raise _RollbackPostimageChanged(
+        f"rollback postimage changed during atomic exchange; preserved entry at {temporary_name}",
+        preserve_temporary=True,
+    )
+
+
+def _capture_rollback_postimages(snapshot: RollbackSnapshot) -> None:
+    """Record stable after-images only for the caller-declared rollback paths."""
+    for relative in snapshot.files:
+        parts = relative.split("/")
+        try:
+            parent_handle, parent_owned = _open_rollback_parent_handle(
+                snapshot.root_guard,
+                parts[:-1],
+            )
+        except (OSError, ValueError) as exc:
+            snapshot.postimages[relative] = RollbackPostimage(
+                False, None, f"unverifiable postimage parent: {exc}"[:160]
+            )
+            continue
+        try:
+            snapshot.postimages[relative] = _rollback_postimage_at(parent_handle, parts[-1])
+        finally:
+            if parent_owned:
+                _close_rollback_root(parent_handle)
+
+
 def _restore_rollback_scope(
     cwd: str,
     snapshot: RollbackSnapshot,
 ) -> None:
     root = Path(cwd).resolve(strict=True)
-    root_stat = os.fstat(snapshot.root_guard) if os.name != "nt" else root.stat()
-    if (root_stat.st_dev, root_stat.st_ino) != snapshot.root_identity or root != snapshot.root:
+    # POSIX cannot atomically bind this path check to later dirfd writes. After
+    # the check, every mutation stays relative to the snapshot's pinned root.
+    current_root_handle = _acquire_rollback_root(root)
+    try:
+        current_root_identity = _rollback_root_identity(current_root_handle)
+    finally:
+        _close_rollback_root(current_root_handle)
+    root_identity = _rollback_root_identity(snapshot.root_guard)
+    if (
+        root_identity != snapshot.root_identity
+        or current_root_identity != snapshot.root_identity
+        or root != snapshot.root
+    ):
         raise OSError("rollback root changed since snapshot")
+    if set(snapshot.postimages) != set(snapshot.files):
+        raise OSError("rollback postimages were not captured for the complete write set")
     incomplete: list[str] = []
     for relative, file_snapshot in snapshot.files.items():
         content, mode = file_snapshot.content, file_snapshot.mode
-        if os.name != "nt":
-            try:
-                current_stat = os.stat(relative, dir_fd=snapshot.root_guard, follow_symlinks=False)
-            except FileNotFoundError:
-                current_stat = None
-            if current_stat is not None and stat.S_ISDIR(current_stat.st_mode):
-                raise OSError(f"refusing to remove rollback directory: {relative}")
-            if current_stat is not None and (stat.S_ISLNK(current_stat.st_mode) or current_stat.st_nlink > 1):
+        parts = relative.split("/")
+        parent_handle, parent_owned = _open_rollback_parent_handle(
+            snapshot.root_guard,
+            parts[:-1],
+            mutation=True,
+        )
+        leaf = parts[-1]
+        try:
+            expected_postimage = snapshot.postimages.get(relative)
+            current_postimage = _rollback_postimage_at(parent_handle, leaf)
+            if (
+                expected_postimage is None
+                or not expected_postimage.safe
+                or not current_postimage.safe
+                or expected_postimage.fingerprint != current_postimage.fingerprint
+            ):
                 incomplete.append(relative)
-            if content is None:
-                if current_stat is not None:
-                    os.unlink(relative, dir_fd=snapshot.root_guard)
                 continue
+
+            def postimage_still_matches() -> bool:
+                latest = _rollback_postimage_at(parent_handle, leaf)
+                return (
+                    expected_postimage.safe
+                    and latest.safe
+                    and expected_postimage.fingerprint == latest.fingerprint
+                )
+
+            if os.name != "nt":
+                try:
+                    current_stat = os.stat(leaf, dir_fd=parent_handle, follow_symlinks=False)
+                except FileNotFoundError:
+                    current_stat = None
+                if current_stat is not None and stat.S_ISDIR(current_stat.st_mode):
+                    raise OSError(f"refusing to replace rollback directory: {relative}")
+                if current_stat is not None and (stat.S_ISLNK(current_stat.st_mode) or current_stat.st_nlink > 1):
+                    incomplete.append(relative)
+                    continue
+                if content is None:
+                    if current_stat is not None:
+                        if not postimage_still_matches():
+                            incomplete.append(relative)
+                            continue
+                        os.unlink(leaf, dir_fd=parent_handle)
+                    continue
+                temp_name = f".local-ai-rollback-{uuid.uuid4().hex}"
+                fd = os.open(
+                    temp_name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+                    0o600,
+                    dir_fd=parent_handle,
+                )
+                preserve_temp = False
+                try:
+                    with os.fdopen(fd, "wb", closefd=False) as temp_file:
+                        temp_file.write(content)
+                        temp_file.flush()
+                        os.fsync(temp_file.fileno())
+                    if mode is not None:
+                        os.fchmod(fd, mode)
+                    for attr_name, attr_value in file_snapshot.xattrs.items():
+                        os.setxattr(fd, attr_name, attr_value)
+                    if file_snapshot.atime_ns is not None and file_snapshot.mtime_ns is not None:
+                        os.utime(fd, ns=(file_snapshot.atime_ns, file_snapshot.mtime_ns))
+                    if not postimage_still_matches():
+                        incomplete.append(relative)
+                        continue
+                    if expected_postimage.fingerprint is None:
+                        # linkat-style creation is atomic and fails if a foreign
+                        # writer creates the previously absent leaf after our check.
+                        os.link(
+                            temp_name,
+                            leaf,
+                            src_dir_fd=parent_handle,
+                            dst_dir_fd=parent_handle,
+                            follow_symlinks=False,
+                        )
+                        os.unlink(temp_name, dir_fd=parent_handle)
+                    else:
+                        try:
+                            _restore_existing_rollback_leaf(
+                                parent_handle, temp_name, leaf, expected_postimage
+                            )
+                        except _RollbackPostimageChanged as exc:
+                            preserve_temp = exc.preserve_temporary
+                            raise
+                finally:
+                    os.close(fd)
+                    if not preserve_temp:
+                        try:
+                            os.unlink(temp_name, dir_fd=parent_handle)
+                        except FileNotFoundError:
+                            pass
+                continue
+
+            import msvcrt
+
+            if content is None and not postimage_still_matches():
+                incomplete.append(relative)
+                continue
+            target_handle = _open_rollback_relative_handle(
+                parent_handle,
+                leaf,
+                directory=False,
+                mutation=True,
+            )
+            target_fd: int | None = None
+            if target_handle is not None:
+                try:
+                    target_fd = msvcrt.open_osfhandle(target_handle, os.O_RDONLY | os.O_BINARY)
+                except BaseException:
+                    _close_rollback_root(target_handle)
+                    raise
+                try:
+                    current_stat = os.fstat(target_fd)
+                except BaseException:
+                    os.close(target_fd)
+                    raise
+                if content is None and expected_postimage.fingerprint is not None:
+                    expected_fields = expected_postimage.fingerprint[:6]
+                    observed_fields = (
+                        current_stat.st_dev,
+                        current_stat.st_ino,
+                        current_stat.st_size,
+                        current_stat.st_mtime_ns,
+                        current_stat.st_ctime_ns,
+                        stat.S_IMODE(current_stat.st_mode),
+                    )
+                    if expected_fields != observed_fields:
+                        incomplete.append(relative)
+                        os.close(target_fd)
+                        target_fd = None
+                        continue
+                if current_stat.st_nlink > 1:
+                    incomplete.append(relative)
+                    if target_fd is not None:
+                        os.close(target_fd)
+                        target_fd = None
+                    continue
+            else:
+                current_stat = None
+            if content is None:
+                if target_fd is not None:
+                    if current_stat is not None and current_stat.st_nlink > 1:
+                        os.close(target_fd)
+                        continue
+                    try:
+                        _delete_windows_handle(msvcrt.get_osfhandle(target_fd))
+                    finally:
+                        os.close(target_fd)
+                continue
+            if target_fd is not None:
+                os.close(target_fd)
+
             temp_name = f".local-ai-rollback-{uuid.uuid4().hex}"
-            fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0), 0o600, dir_fd=snapshot.root_guard)
+            temp_handle = _open_rollback_relative_handle(
+                parent_handle,
+                temp_name,
+                directory=False,
+                mutation=True,
+                create=True,
+            )
+            if temp_handle is None:
+                raise OSError("cannot create rollback temporary file")
             try:
-                with os.fdopen(fd, "wb", closefd=False) as temp_file:
+                temp_fd = msvcrt.open_osfhandle(temp_handle, os.O_RDWR | os.O_BINARY)
+            except BaseException:
+                _close_rollback_root(temp_handle)
+                raise
+            renamed = False
+            try:
+                with os.fdopen(temp_fd, "wb", closefd=False) as temp_file:
                     temp_file.write(content)
                     temp_file.flush()
                     os.fsync(temp_file.fileno())
-                if mode is not None:
-                    os.fchmod(fd, mode)
-                for attr_name, attr_value in file_snapshot.xattrs.items():
-                    os.setxattr(fd, attr_name, attr_value)
-                if file_snapshot.atime_ns is not None and file_snapshot.mtime_ns is not None:
-                    os.utime(fd, ns=(file_snapshot.atime_ns, file_snapshot.mtime_ns))
-                os.replace(temp_name, relative, src_dir_fd=snapshot.root_guard, dst_dir_fd=snapshot.root_guard)
+                _restore_windows_file_attributes(temp_fd, mode)
+                _restore_windows_file_times(temp_fd, file_snapshot.atime_ns, file_snapshot.mtime_ns)
+                if file_snapshot.windows_dacl is not None:
+                    _set_windows_dacl(temp_fd, file_snapshot.windows_dacl)
+                if not postimage_still_matches():
+                    incomplete.append(relative)
+                    continue
+                _rename_windows_handle(
+                    msvcrt.get_osfhandle(temp_fd),
+                    parent_handle,
+                    leaf,
+                    replace_if_exists=expected_postimage.fingerprint is not None,
+                )
+                renamed = True
             finally:
-                os.close(fd)
+                import sys
+
+                pending_error = sys.exc_info()[1]
                 try:
-                    os.unlink(temp_name, dir_fd=snapshot.root_guard)
-                except FileNotFoundError:
-                    pass
-            continue
-        candidate = root / relative
-        if candidate.is_dir() and not candidate.is_symlink():
-            raise OSError(f"refusing to replace rollback directory: {relative}")
-        current_stat = candidate.stat() if candidate.exists() else None
-        if candidate.is_symlink() or (current_stat is not None and current_stat.st_nlink > 1):
-            incomplete.append(relative)
-        if content is None:
-            if candidate.exists() or candidate.is_symlink():
-                candidate.unlink()
-            continue
-        fd, temp_name = tempfile.mkstemp(prefix=".local-ai-rollback-", dir=str(candidate.parent))
-        try:
-            with os.fdopen(fd, "wb") as temp_file:
-                temp_file.write(content)
-                temp_file.flush()
-                os.fsync(temp_file.fileno())
-            if mode is not None:
-                os.chmod(temp_name, mode)
-            if file_snapshot.windows_dacl is not None:
-                _set_windows_dacl(temp_name, file_snapshot.windows_dacl)
-            os.replace(temp_name, candidate)
+                    if not renamed:
+                        temp_os_handle = msvcrt.get_osfhandle(temp_fd)
+                        try:
+                            _delete_windows_handle(temp_os_handle)
+                        except OSError as first_delete_error:
+                            try:
+                                _delete_windows_handle(temp_os_handle)
+                            except OSError as retry_delete_error:
+                                detail = (
+                                    f"rollback temporary cleanup failed for {relative}: "
+                                    f"{retry_delete_error} (first attempt: {first_delete_error})"
+                                )
+                                if pending_error is not None:
+                                    if hasattr(pending_error, "add_note"):
+                                        pending_error.add_note(detail)
+                                    else:
+                                        pending_error.args = (*pending_error.args, detail)
+                                else:
+                                    raise OSError(detail) from retry_delete_error
+                finally:
+                    os.close(temp_fd)
         finally:
-            try:
-                os.unlink(temp_name)
-            except FileNotFoundError:
-                pass
+            if parent_owned:
+                _close_rollback_root(parent_handle)
     if incomplete:
         names = ", ".join(incomplete[:8])
-        raise OSError(f"rollback restored declared paths but cannot verify external aliases for: {names}")
+        raise OSError(
+            "rollback skipped changed postimages or paths with external aliases for: "
+            f"{names}"
+        )
 
 
 @dataclass(frozen=True)
@@ -503,6 +1800,253 @@ class CommandInvocation:
     argv: list[str]
     cwd: str | None = None
     shell: bool = False
+
+
+@dataclass(frozen=True)
+class _ResolvedProjectCommand:
+    alias: str
+    command: str | CommandInvocation
+    environment: dict[str, str]
+    config_digest: str
+    cache_context: str
+    configured_command: str | CommandInvocation
+    caller_arguments: tuple[str, ...]
+
+
+
+def _project_config_cache_key(root: Path, state_dir: Path) -> str | None:
+    """Fingerprint project config files and the exact Git HEAD without storing paths."""
+    try:
+        project_root = root.expanduser().resolve(strict=True)
+        root_identity = hashlib.sha256(os.fsencode(str(project_root))).hexdigest()
+
+        git_marker: Path | None = None
+        for parent in (project_root, *project_root.parents):
+            marker = parent / ".git"
+            if marker.exists() or marker.is_symlink():
+                git_marker = marker
+                break
+
+        common_dir: Path | None = None
+        git_dir: Path | None = None
+        git_revision: str | None = None
+        git_signatures: list[tuple[str, tuple[Any, ...]]] = []
+        primary_root: Path | None = None
+        if git_marker is not None:
+            marker_signature = _project_file_signature(git_marker)
+            if marker_signature is None:
+                return None
+            git_signatures.append(("git-marker", marker_signature))
+            if git_marker.is_dir():
+                git_dir = git_marker.resolve(strict=True)
+            elif git_marker.is_file():
+                marker_text = git_marker.read_text(encoding="utf-8", errors="replace")[:4096]
+                prefix, separator, raw_git_dir = marker_text.partition(":")
+                if prefix.strip().lower() != "gitdir" or not separator:
+                    return None
+                git_dir = Path(raw_git_dir.strip())
+                if not git_dir.is_absolute():
+                    git_dir = git_marker.parent / git_dir
+                git_dir = git_dir.resolve(strict=True)
+            else:
+                return None
+
+            common_file = git_dir / "commondir"
+            if common_file.exists():
+                common_signature = _project_file_signature(common_file)
+                if common_signature is None:
+                    return None
+                git_signatures.append(("git-common-dir", common_signature))
+                raw_common_dir = common_file.read_text(
+                    encoding="utf-8", errors="replace"
+                )[:4096].strip()
+                common_dir = Path(raw_common_dir)
+                if not common_dir.is_absolute():
+                    common_dir = git_dir / common_dir
+                common_dir = common_dir.resolve(strict=True)
+            else:
+                common_dir = git_dir
+            if common_dir.name.lower() != ".git":
+                return None
+            primary_root = common_dir.parent
+            primary_marker = primary_root / ".git"
+            if not primary_marker.is_dir() or primary_marker.resolve(strict=True) != common_dir:
+                return None
+
+            head_file = git_dir / "HEAD"
+            head_signature = _project_file_signature(head_file)
+            if head_signature is None:
+                return None
+            git_signatures.append(("git-head", head_signature))
+            head_value = head_file.read_text(encoding="ascii", errors="replace")[:4096].strip()
+            if head_value.startswith("ref: "):
+                ref_name = head_value[5:].strip()
+                parts = ref_name.split("/")
+                if not ref_name.startswith("refs/") or any(part in {"", ".", ".."} for part in parts):
+                    return None
+                ref_file: Path | None = None
+                for base in (git_dir, common_dir):
+                    candidate = base.joinpath(*parts)
+                    try:
+                        resolved_ref = candidate.resolve(strict=True)
+                        resolved_ref.relative_to(base.resolve(strict=True))
+                        ref_file = resolved_ref
+                        break
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                if ref_file is not None:
+                    ref_signature = _project_file_signature(ref_file)
+                    if ref_signature is None:
+                        return None
+                    git_signatures.append(("git-ref", ref_signature))
+                    git_revision = ref_file.read_text(encoding="ascii", errors="replace")[:128].strip()
+                else:
+                    packed_refs = common_dir / "packed-refs"
+                    packed_signature = _project_file_signature(packed_refs)
+                    if packed_signature is None:
+                        return None
+                    if packed_refs.stat().st_size > 4 * 1024 * 1024:
+                        return None
+                    git_signatures.append(("git-packed-refs", packed_signature))
+                    packed_text = packed_refs.read_text(encoding="ascii", errors="replace")
+                    for line in packed_text.splitlines():
+                        fields = line.split(" ", 1)
+                        if len(fields) == 2 and fields[1] == ref_name:
+                            git_revision = fields[0]
+                            break
+            else:
+                git_revision = head_value
+            if not isinstance(git_revision, str) or not re.fullmatch(
+                r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", git_revision
+            ):
+                return None
+
+        config_paths = [
+            ("project", project_root / ".local-ai.toml"),
+            ("worktree", project_root / ".local-ai.worktree.toml"),
+        ]
+        if primary_root is not None and primary_root != project_root:
+            config_paths.append(("primary", primary_root / ".local-ai.toml"))
+        if common_dir is not None:
+            config_paths.append(("machine", common_dir / "info" / "local-ai.toml"))
+        config_signatures: list[tuple[str, tuple[Any, ...]]] = []
+        for label, path in config_paths:
+            signature = _project_file_signature(path, missing_ok=True)
+            if signature is None:
+                return None
+            config_signatures.append((label, signature))
+        state_identity = hashlib.sha256(
+            os.fsencode(str(state_dir.expanduser().resolve(strict=False)))
+        ).hexdigest()
+        payload = {
+            "root": root_identity,
+            "state_dir": state_identity,
+            "git_revision": git_revision,
+            "git_signatures": git_signatures,
+            "config_signatures": config_signatures,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    except (OSError, RuntimeError, ValueError, UnicodeError):
+        return None
+
+
+def _project_file_signature(
+    path: Path, *, missing_ok: bool = False
+) -> tuple[Any, ...] | None:
+    try:
+        link_info = path.lstat()
+    except FileNotFoundError:
+        return ("missing",) if missing_ok else None
+    except OSError:
+        return None
+    try:
+        resolved = path.resolve(strict=True)
+        target_info = resolved.stat()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return (
+        "file",
+        link_info.st_dev,
+        link_info.st_ino,
+        link_info.st_size,
+        link_info.st_mtime_ns,
+        link_info.st_ctime_ns,
+        link_info.st_mode,
+        hashlib.sha256(os.fsencode(str(resolved))).hexdigest(),
+        target_info.st_dev,
+        target_info.st_ino,
+        target_info.st_size,
+        target_info.st_mtime_ns,
+        target_info.st_ctime_ns,
+        target_info.st_mode,
+    )
+
+
+def _patch_write_paths(root: Path, patch: bytes, timeout: float) -> list[str]:
+    """Return patch paths only after rejecting escapes and symlink traversal."""
+    result = subprocess.run(
+        ["git", "apply", "--numstat", "-z"],
+        input=patch,
+        cwd=str(root),
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+        **hidden_run_kwargs(),
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(detail or "patch write set could not be inspected")
+
+    records = result.stdout.split(b"\0")
+    paths: list[str] = []
+    index = 0
+    while index < len(records) - 1:
+        fields = records[index].split(b"\t", 2)
+        index += 1
+        if len(fields) != 3:
+            raise ValueError("patch write set is malformed")
+        if fields[2]:
+            candidates = [os.fsdecode(fields[2])]
+        else:
+            if index + 1 >= len(records) - 1:
+                raise ValueError("patch rename write set is malformed")
+            candidates = [os.fsdecode(records[index]), os.fsdecode(records[index + 1])]
+            index += 2
+        paths.extend(candidates)
+
+    if not paths or len(paths) > 512:
+        raise ValueError("patch write set must contain 1 to 512 paths")
+    root = root.resolve(strict=True)
+    safe_paths: list[str] = []
+    for raw in paths:
+        drive, _ = ntpath.splitdrive(raw)
+        parts = raw.split("/")
+        if (
+            not raw
+            or drive
+            or raw.startswith(("/", "\\"))
+            or "\\" in raw
+            or ":" in raw
+            or any(part in {"", ".", ".."} for part in parts)
+            or any(ord(char) < 32 for char in raw)
+        ):
+            raise ValueError("patch write path is not a safe relative path")
+        candidate = root
+        for part in parts:
+            candidate = candidate / part
+            if candidate.is_symlink() or (
+                callable(getattr(candidate, "is_junction", None)) and candidate.is_junction()
+            ):
+                raise ValueError("patch write path cannot traverse a symlink or junction")
+            resolved = candidate.resolve(strict=False)
+            try:
+                resolved.relative_to(root)
+            except ValueError as exc:
+                raise ValueError("patch write path escapes the worktree") from exc
+        safe_paths.append("/".join(parts))
+    return list(dict.fromkeys(safe_paths))
 
 
 def _invocation_error(reason: str, error: str) -> dict[str, Any]:
@@ -684,6 +2228,24 @@ def _is_interactive_prompt(text: str) -> bool:
     return any(p.search(tail) for p in _INTERACTIVE_PATTERNS)
 
 
+def _stable_rollback_status(method: Any) -> Any:
+    @wraps(method)
+    def wrapped(self: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        result = method(self, *args, **kwargs)
+        rollback_key = "auto_rollback" if method.__name__ == "patch_and_verify" else "rollback_on_failure"
+        rollback_default = method.__name__ == "patch_and_verify"
+        if kwargs.get(rollback_key, rollback_default) and isinstance(result, dict):
+            result.setdefault("rolled_back", False)
+        return result
+    return wrapped
+
+
+class _CommandSingleflightEvent(threading.Event):
+    def __init__(self) -> None:
+        super().__init__()
+        self.owner_result: dict[str, Any] | None = None
+
+
 class CommandBroker:
     """Safe shared command runner with repo-state-aware cache and single-flight."""
 
@@ -720,6 +2282,8 @@ class CommandBroker:
     def __init__(self, config: dict[str, Any], artifacts: Any = None, repo_state: Any = None):
         self.config = config
         self.artifacts = artifacts
+        self._project_command_context_cache: OrderedDict[str, Any] = OrderedDict()
+        self._project_command_context_cache_lock = threading.Lock()
         if repo_state is None:
             from .repo_state import RepoStateTracker
             repo_state = RepoStateTracker(config)
@@ -740,12 +2304,61 @@ class CommandBroker:
         workspace_cache = config.get("workspace_cache", {})
         self.git_snapshot_timeout = max(0.5, float(workspace_cache.get("git_status_timeout_seconds", 2.5)))
         state_dir = configured_state_dir(config)
+        self._transaction_state_dir = state_dir / "command-transactions"
+        self._transaction_leases = ScopeLeaseStore(state_dir)
+        self._active_transaction_roots: dict[str, Path] = {}
+        self._transaction_roots_lock = threading.RLock()
         self._daemon_state_dir = state_dir / "daemons"
         self._daemon_registry_path = self._daemon_state_dir / "registry.json"
         l1_entries = int(cfg.get("l1_entries", 128))
-        self.success_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite", "command:success", int(cfg.get("success_ttl_seconds", 43200)), int(cfg.get("max_entries", 5000))), l1_entries, int(cfg.get("l1_ttl_seconds", 900)))
-        self.failure_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite", "command:failure", int(cfg.get("failure_ttl_seconds", 180)), int(cfg.get("max_failure_entries", 1000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
-        self.suppression_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite", "command:suppression", int(cfg.get("suppression_ttl_seconds", 900)), int(cfg.get("max_suppression_entries", 2000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
+        configured_l1_ttl = max(0, int(cfg.get("l1_ttl_seconds", 900)))
+
+        def effective_l1_ttl(
+            persistent_ttl: int, *, max_l1_ttl: int | None = None
+        ) -> int:
+            l1_ttl = configured_l1_ttl
+            if max_l1_ttl is not None:
+                l1_ttl = min(l1_ttl, max_l1_ttl)
+            persistent_ttl = max(0, int(persistent_ttl))
+            if persistent_ttl == 0:
+                return l1_ttl
+            if l1_ttl == 0:
+                return persistent_ttl
+            return min(l1_ttl, persistent_ttl)
+
+        success_ttl = max(0, int(cfg.get("success_ttl_seconds", 43200)))
+        failure_ttl = max(0, int(cfg.get("failure_ttl_seconds", 180)))
+        suppression_ttl = max(0, int(cfg.get("suppression_ttl_seconds", 900)))
+        self.success_cache = TieredCache(
+            SQLiteCache(
+                state_dir / "cache.sqlite3",
+                "command:success",
+                success_ttl,
+                int(cfg.get("max_entries", 5000)),
+            ),
+            l1_entries,
+            effective_l1_ttl(success_ttl),
+        )
+        self.failure_cache = TieredCache(
+            SQLiteCache(
+                state_dir / "cache.sqlite3",
+                "command:failure",
+                failure_ttl,
+                int(cfg.get("max_failure_entries", 1000)),
+            ),
+            max(32, l1_entries // 2),
+            effective_l1_ttl(failure_ttl, max_l1_ttl=300),
+        )
+        self.suppression_cache = TieredCache(
+            SQLiteCache(
+                state_dir / "cache.sqlite3",
+                "command:suppression",
+                suppression_ttl,
+                int(cfg.get("max_suppression_entries", 2000)),
+            ),
+            max(32, l1_entries // 2),
+            effective_l1_ttl(suppression_ttl, max_l1_ttl=300),
+        )
         self._lock = threading.Lock()
         self._inflight: dict[str, threading.Event] = {}
         self._last: dict[str, dict[str, Any]] = {}
@@ -768,16 +2381,510 @@ class CommandBroker:
         self.incident_store: Any = None
         self.verification_store: Any = None
         self.policy_engine: Any = None
+        self.task_store: Any = None
+        self.fencing_lease_store: Any = None
         self.error_distiller: Any = None
 
     def set_policy_engine(self, policy_engine: Any) -> None:
         self.policy_engine = policy_engine
+
+    def set_task_store(self, task_store: Any) -> None:
+        self.task_store = task_store
+
+    def set_fencing_lease_store(self, fencing_lease_store: Any) -> None:
+        self.fencing_lease_store = fencing_lease_store
+
+    @staticmethod
+    def _work_attempt_fence_payload(work_attempt_fence: WorkAttemptFence) -> dict[str, Any]:
+        if not isinstance(work_attempt_fence, WorkAttemptFence):
+            raise ValueError("work attempt fence has an invalid type")
+        fields = {
+            "resource": work_attempt_fence.resource,
+            "work_id": work_attempt_fence.work_id,
+            "attempt_id": work_attempt_fence.attempt_id,
+            "owner_id": work_attempt_fence.owner_id,
+            "fencing_token": work_attempt_fence.fencing_token,
+            "expires_at": work_attempt_fence.expires_at,
+        }
+        if (
+            any(not isinstance(fields[name], str) or not fields[name] for name in (
+                "resource", "work_id", "attempt_id", "owner_id",
+            ))
+            or type(fields["fencing_token"]) is not int
+            or fields["fencing_token"] <= 0
+            or not isinstance(fields["expires_at"], (int, float))
+            or not math.isfinite(float(fields["expires_at"]))
+        ):
+            raise ValueError("work attempt fence is malformed")
+        return fields
+
+    def _assert_work_attempt_fence(
+        self,
+        work_attempt_fence: WorkAttemptFence | None,
+        *,
+        task_id: str,
+        resource: str | Path,
+    ) -> dict[str, Any]:
+        payload = self._work_attempt_fence_payload(work_attempt_fence)
+        if payload["work_id"] != task_id:
+            raise ValueError("work attempt fence does not belong to this task")
+        registered_root = Path(payload["resource"]).expanduser().resolve(strict=True)
+        requested_root = Path(resource).expanduser().resolve(strict=True)
+        if os.path.normcase(str(registered_root)) != os.path.normcase(str(requested_root)):
+            raise ValueError("work attempt fence resource does not match command worktree")
+        store = self.fencing_lease_store
+        if not callable(getattr(store, "assert_attempt_current", None)):
+            raise ValueError("authoritative work attempt fence store is unavailable")
+        store.assert_attempt_current(work_attempt_fence)
+        return payload
+
+    def _transaction_namespace_kwargs(self, source: Path, fencing_store: Any) -> dict[str, str]:
+        lease_claim = self._transaction_leases.claim
+        fence_acquire = fencing_store.acquire
+        lease_supports_namespace = "coordination_id" in inspect.signature(lease_claim).parameters
+        fence_supports_namespace = "coordination_id" in inspect.signature(fence_acquire).parameters
+        if not lease_supports_namespace and not fence_supports_namespace:
+            return {}
+        if not lease_supports_namespace or not fence_supports_namespace:
+            raise RuntimeError("transaction lease and mutation fence namespace APIs do not match")
+        try:
+            from .project_config import resolve_project_context
+
+            coordination_id = resolve_project_context(
+                source, configured_state_dir(self.config)
+            ).coordination_id
+        except Exception as exc:
+            raise RuntimeError("project coordination namespace could not be resolved") from exc
+        if not isinstance(coordination_id, str) or not coordination_id.strip():
+            raise RuntimeError("project coordination namespace is required")
+        return {"coordination_id": coordination_id}
+
+    @contextmanager
+    def _fenced_transaction_commit(
+        self,
+        work_attempt_fence: WorkAttemptFence,
+        *,
+        task_id: str,
+        source: Path,
+        paths: list[str],
+        owner_id: str,
+        namespace_kwargs: dict[str, str] | None = None,
+    ):
+        payload = self._assert_work_attempt_fence(
+            work_attempt_fence, task_id=task_id, resource=source
+        )
+        store = self.fencing_lease_store
+        lease = store.acquire(
+            str(source), owner_id, paths, ttl_seconds=300.0,
+            attempt=work_attempt_fence,
+            **(namespace_kwargs or {}),
+        )
+        try:
+            with store.commit_guard(lease, paths):
+                store.assert_current(lease, actual_paths=paths)
+                yield lease, payload
+        finally:
+            try:
+                store.release(lease)
+            except Exception:
+                pass
+
+    def authorize_auxiliary_action(self, action: str, *, endpoint: str = "", task_id: str = "") -> dict[str, Any]:
+        """Authorize auxiliary process actions at their final broker boundary."""
+        from .agent_policy import AUXILIARY_ACTION_POLICIES, ActionRequest, CapabilityGrant, RiskClass
+
+        action_name = str(action or "").strip().lower().replace("-", "_")
+        policy_config = self.config.get("agent_policy", {})
+        policy_enabled = isinstance(policy_config, dict) and bool(policy_config.get("enabled", True))
+        developer_authorized = (
+            policy_enabled
+            and isinstance(policy_config, dict)
+            and bool(policy_config.get("allow_developer_authorized_mutations", False))
+        )
+        engine = self.policy_engine
+        if engine is None or not callable(getattr(engine, "authorize", None)):
+            return {
+                "success": False,
+                "allowed": False,
+                "requires_approval": True,
+                "reason": "auxiliary action policy engine unavailable",
+                "owner": "agent_policy",
+                "side_effect_class": AUXILIARY_ACTION_POLICIES.get(action_name, (None, "unknown"))[1],
+                "terminal": True,
+                "retryable": False,
+            }
+        if action_name not in AUXILIARY_ACTION_POLICIES:
+            return {
+                "success": False,
+                "allowed": False,
+                "reason": f"unknown auxiliary action '{action_name}' denied",
+                "owner": "agent_policy",
+                "side_effect_class": "unknown",
+                "terminal": True,
+                "retryable": False,
+            }
+
+        task = None
+        if task_id:
+            if self.task_store is None:
+                return {
+                    "success": False,
+                    "allowed": False,
+                    "reason": "task context unavailable for auxiliary action",
+                    "owner": "agent_policy",
+                    "side_effect_class": AUXILIARY_ACTION_POLICIES[action_name][1],
+                    "terminal": True,
+                    "retryable": False,
+                }
+            try:
+                task = self.task_store.get(task_id)
+            except Exception:
+                task = None
+            if task is None or str(getattr(task, "task_id", "")) != task_id:
+                return {
+                    "success": False,
+                    "allowed": False,
+                    "reason": "task context missing or mismatched for auxiliary action",
+                    "owner": "agent_policy",
+                    "side_effect_class": AUXILIARY_ACTION_POLICIES[action_name][1],
+                    "terminal": True,
+                    "retryable": False,
+                }
+
+        grant = None
+        if developer_authorized:
+            grant = CapabilityGrant(
+                grant_id="configured-local-development-policy",
+                allowed=frozenset({action_name}),
+            )
+        decision = engine.authorize(
+            ActionRequest(
+                action=action_name,
+                risk_class=RiskClass.READ,
+                details={
+                    "auxiliary_action": True,
+                    "policy_enabled": policy_enabled,
+                    "endpoint": str(endpoint),
+                },
+            ),
+            task=task,
+            grant=grant,
+        )
+        result = decision.to_dict()
+        result.update({
+            "success": bool(decision.allowed),
+            "allowed": bool(decision.allowed),
+            "terminal": not bool(decision.allowed),
+            "retryable": False,
+        })
+        if not decision.allowed:
+            result["error"] = decision.reason
+        return result
+
+    def _require_task_worktree(
+        self,
+        task_id: str,
+        cwd: str | Path,
+        command: str | CommandInvocation | None = None,
+        *,
+        require_git_identity: bool = False,
+    ) -> str | None:
+        if not task_id or self.task_store is None:
+            return "mutating commands require a registered task-owned worktree"
+        try:
+            task = self.task_store.get(task_id)
+            checkpoint = getattr(task, "checkpoint", None)
+            state_data = getattr(checkpoint, "state_data", {})
+            worktree = state_data.get("worktree") if isinstance(state_data, Mapping) else None
+            registered_path = worktree.get("worktree_path") if isinstance(worktree, Mapping) else None
+            if not registered_path or worktree.get("success") is not True:
+                return "mutating commands require a registered task-owned worktree"
+            requested = Path(cwd).expanduser().resolve(strict=True)
+            if isinstance(command, CommandInvocation) and command.cwd:
+                invocation_cwd = Path(command.cwd).expanduser().resolve(strict=True)
+                if os.path.normcase(str(invocation_cwd)) != os.path.normcase(str(requested)):
+                    return "structured command cwd must match the broker cwd"
+                requested = invocation_cwd
+            registered = Path(str(registered_path)).expanduser().resolve(strict=True)
+            if not requested.is_dir() or not registered.is_dir():
+                return "registered task worktree is unavailable"
+            common = os.path.commonpath([str(requested), str(registered)])
+            if os.path.normcase(common) != os.path.normcase(str(registered)):
+                return "mutating command cwd must be inside the registered task-owned worktree"
+            override_error = self._reject_git_worktree_overrides(command, requested, registered)
+            if override_error:
+                return override_error
+            if require_git_identity:
+                identity_error = self._validate_registered_git_worktree(registered, worktree)
+                if identity_error:
+                    return identity_error
+            return None
+        except Exception:
+            return "registered task worktree could not be verified"
+
+    def _validate_registered_git_worktree(
+        self,
+        registered: Path,
+        worktree: Mapping[str, Any],
+    ) -> str | None:
+        repo_root_value = worktree.get("repo_root")
+        expected_branch = worktree.get("branch")
+        if not isinstance(repo_root_value, str) or not repo_root_value or not isinstance(expected_branch, str) or not expected_branch:
+            return "registered task worktree identity metadata is unavailable"
+
+        repo_root = Path(repo_root_value).expanduser().resolve(strict=True)
+        clean_env = {
+            key: value for key, value in os.environ.items()
+            if not key.upper().startswith("GIT_")
+        }
+
+        def git_output(cwd: Path, *args: str) -> str | None:
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(cwd), *args],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    env=clean_env,
+                    check=False,
+                    **hidden_run_kwargs(),
+                )
+            except (OSError, subprocess.SubprocessError):
+                return None
+            return result.stdout.strip() if result.returncode == 0 else None
+
+        registered_top = git_output(registered, "rev-parse", "--show-toplevel")
+        registered_common = git_output(registered, "rev-parse", "--git-common-dir")
+        registered_branch = git_output(registered, "symbolic-ref", "--quiet", "--short", "HEAD")
+        expected_top = git_output(repo_root, "rev-parse", "--show-toplevel")
+        expected_common = git_output(repo_root, "rev-parse", "--git-common-dir")
+        worktrees = git_output(repo_root, "worktree", "list", "--porcelain")
+        if not all((registered_top, registered_common, registered_branch, expected_top, expected_common, worktrees)):
+            return "registered task worktree Git identity could not be verified"
+
+        def resolve_git_path(value: str, base: Path) -> Path:
+            path = Path(value)
+            return (path if path.is_absolute() else base / path).resolve(strict=True)
+
+        registered_top_path = Path(registered_top).resolve(strict=True)
+        expected_top_path = Path(expected_top).resolve(strict=True)
+        registered_common_path = resolve_git_path(registered_common, registered)
+        expected_common_path = resolve_git_path(expected_common, repo_root)
+        if (
+            os.path.normcase(str(registered_top_path)) != os.path.normcase(str(registered))
+            or os.path.normcase(str(expected_top_path)) != os.path.normcase(str(repo_root))
+            or os.path.normcase(str(registered_common_path)) != os.path.normcase(str(expected_common_path))
+            or registered_branch != expected_branch
+        ):
+            return "registered task worktree Git identity changed"
+
+        current: dict[str, str] = {}
+        for line in (*worktrees.splitlines(), ""):
+            if not line:
+                if (
+                    current.get("worktree")
+                    and os.path.normcase(str(Path(current["worktree"]).resolve(strict=False)))
+                    == os.path.normcase(str(registered))
+                    and current.get("branch") == f"refs/heads/{expected_branch}"
+                ):
+                    return None
+                current = {}
+            elif line.startswith("worktree "):
+                current["worktree"] = line[len("worktree "):]
+            elif line.startswith("branch "):
+                current["branch"] = line[len("branch "):]
+        return "registered task worktree is not present in its source Git worktree registry"
+
+
+    def _reject_git_worktree_overrides(
+        self,
+        command: str | CommandInvocation | None,
+        cwd: Path,
+        registered: Path,
+    ) -> str | None:
+        git_path_keys = {
+            "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        }
+
+        def is_git_override(key: str) -> bool:
+            normalized = key.upper()
+            return normalized in git_path_keys or normalized.startswith("GIT_CONFIG_")
+
+        if command is None:
+            return None
+        if isinstance(command, CommandInvocation):
+            tokens = list(command.argv)
+            if any(is_git_override(key) for key in (getattr(command, "env", None) or {})):
+                return "mutating Git command cannot override repository paths"
+            token_groups = [tokens]
+        elif isinstance(command, str):
+            assignment = re.compile(
+                r"(?i)(?:^|[\s;&|])(?:(?:export|set)\s+)?(?:\$env:)?"
+                r"(GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR|GIT_OBJECT_DIRECTORY|"
+                r"GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_CONFIG_[A-Z0-9_]+)"
+                r"\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s;&|]+)"
+            )
+            if assignment.search(command):
+                return "mutating Git command cannot override repository paths"
+            segments = [command]
+            for delimiter in (";", "&&", "||", "|"):
+                segments = [
+                    part
+                    for segment in segments
+                    for _found, part in self._split_outside_quotes(segment, (delimiter,))
+                ]
+            token_groups = [self._tokens(segment) for segment in segments]
+        else:
+            return "mutating command could not be checked against its task worktree"
+
+        for tokens in token_groups:
+            if not tokens:
+                continue
+            if any(
+                re.fullmatch(r"(?i)GIT_[A-Z0-9_]+=.+", token)
+                for token in tokens
+            ):
+                return "mutating Git command cannot override repository paths"
+            executable = ntpath.basename(tokens[0].strip('"').replace("/", "\\")).lower()
+            if re.sub(r"\.(exe|cmd|bat|ps1|sh)$", "", executable) != "git":
+                continue
+            index = 1
+            while index < len(tokens):
+                argument = tokens[index]
+                lowered = argument.lower()
+                if lowered in {"--git-dir", "--work-tree", "--separate-git-dir"} or any(
+                    lowered.startswith(f"{option}=")
+                    for option in ("--git-dir", "--work-tree", "--separate-git-dir")
+                ):
+                    return "mutating Git command cannot override repository paths"
+                if lowered.startswith("--config-env=") and lowered.split("=", 2)[1] in {
+                    "core.worktree", "core.indexfile",
+                }:
+                    return "mutating Git command cannot override repository paths"
+                if lowered == "--config-env" and index + 1 < len(tokens):
+                    setting = tokens[index + 1].split("=", 1)[0].lower()
+                    if setting in {"core.worktree", "core.indexfile"}:
+                        return "mutating Git command cannot override repository paths"
+                    index += 2
+                    continue
+                if argument == "-c" and index + 1 < len(tokens):
+                    setting = tokens[index + 1].split("=", 1)[0].lower()
+                    if setting in {"core.worktree", "core.indexfile"}:
+                        return "mutating Git command cannot override repository paths"
+                    index += 2
+                    continue
+                if argument == "-c":
+                    return "mutating Git command has an incomplete configuration override"
+                if argument.startswith("-c") and len(argument) > 2:
+                    setting = argument[2:].split("=", 1)[0].lower()
+                    if setting in {"core.worktree", "core.indexfile"}:
+                        return "mutating Git command cannot override repository paths"
+                    index += 1
+                    continue
+                target_value = ""
+                if argument == "-C":
+                    if index + 1 >= len(tokens):
+                        return "mutating Git command has an incomplete worktree override"
+                    target_value = tokens[index + 1]
+                    index += 2
+                elif argument.startswith("-C") and len(argument) > 2:
+                    target_value = argument[2:]
+                    index += 1
+                else:
+                    index += 1
+                    continue
+                target = Path(target_value).expanduser()
+                if not target.is_absolute():
+                    target = cwd / target
+                resolved = target.resolve(strict=False)
+                common = os.path.commonpath([str(resolved), str(registered)])
+                if os.path.normcase(common) != os.path.normcase(str(registered)):
+                    return "mutating Git command cannot target paths outside the registered task worktree"
+        return None
 
     def set_incident_store(self, incident_store: Any) -> None:
         self.incident_store = incident_store
 
     def set_verification_store(self, verification_store: Any) -> None:
         self.verification_store = verification_store
+
+    def _command_execution_record_path(self, command_id: str, *, create: bool = False) -> Path:
+        if not isinstance(command_id, str) or len(command_id) != 32 or any(
+            character not in "0123456789abcdef" for character in command_id
+        ):
+            raise ValueError("invalid broker command id")
+        transaction_dir = self._transaction_state_dir.resolve(strict=False)
+        record_dir = self._transaction_state_dir / "execution-records"
+        if record_dir.exists() and record_dir.is_symlink():
+            raise ValueError("execution record directory cannot be a symlink")
+        if create:
+            record_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        elif not record_dir.is_dir():
+            raise FileNotFoundError("execution record directory is unavailable")
+        resolved_dir = record_dir.resolve(strict=True)
+        if os.path.normcase(str(resolved_dir.parent)) != os.path.normcase(str(transaction_dir)):
+            raise ValueError("execution record directory escaped transaction state")
+        return resolved_dir / f"{hashlib.sha256(command_id.encode('ascii')).hexdigest()}.json"
+
+    def _persist_command_execution_record(self, command_id: str, payload: dict[str, Any]) -> None:
+        path = self._command_execution_record_path(command_id, create=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+        try:
+            self._persist_transaction_journal(path, payload)
+        except Exception:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            raise
+
+    def _get_server_command_execution_record(self, command_id: str) -> dict[str, Any] | None:
+        """Read a checksum-verified record through the T09 internal consumer seam."""
+        try:
+            path = self._command_execution_record_path(command_id)
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 64 * 1024:
+                return None
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("schema") != "command_execution_record.v1":
+                return None
+            record_digest = payload.pop("record_sha256", None)
+            canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            if not isinstance(record_digest, str) or record_digest != hashlib.sha256(canonical).hexdigest():
+                return None
+            if (
+                payload.get("command_id") != command_id
+                or payload.get("exit_code") != 0
+                or payload.get("cached") is not False
+            ):
+                return None
+            payload["record_sha256"] = record_digest
+            return dict(payload)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    def get_command_execution_record(
+        self,
+        command_id: str,
+        *,
+        tenant: str,
+        task_id: str,
+        repository_root: str,
+    ) -> dict[str, Any] | None:
+        """Return broker provenance only when tenant, task, and canonical root match."""
+        payload = self._get_server_command_execution_record(command_id)
+        if payload is None:
+            return None
+        expected_root = str(Path(repository_root).expanduser().resolve(strict=False))
+        if (
+            payload.get("tenant_identity") != self._tenant_identity(tenant)
+            or payload.get("task_id") != task_id
+            or payload.get("repository_root") != expected_root
+            or payload.get("repository_root_sha256") != hashlib.sha256(expected_root.encode("utf-8")).hexdigest()
+        ):
+            return None
+        return payload
 
     def _record_command_verification(
         self,
@@ -786,34 +2893,146 @@ class CommandBroker:
         tenant: str,
         task_id: str,
         criterion: str,
+        command: str,
         command_id: str,
         command_digest: str,
         repository_revision: str,
         duration_ms: float,
         cached: bool = False,
+        project_alias: str = "",
+        project_config_digest: str = "",
+        project_environment_sha256: str = "",
+        configured_command_sha256: str = "",
+        caller_arguments_sha256: str = "",
+        project_alias_required: bool = False,
+        repository_root: str = "",
     ) -> None:
-        if not result.get("success") or not task_id or self.verification_store is None:
+        if (
+            not result.get("success") or not task_id or self.verification_store is None
+            or cached or result.get("cache_hit") or result.get("coalesced")
+            or len(command_id) != 32 or any(character not in "0123456789abcdef" for character in command_id)
+        ):
             return
         try:
             if self.artifacts is None:
                 raise RuntimeError("artifact store unavailable")
-            from .agent_verification import VerificationReceipt
+            from .agent_verification import (
+                VerificationReceipt,
+                classify_verification_command,
+                criterion_evidence_type,
+            )
+
+            evidence_type = classify_verification_command(command)
+            if evidence_type not in {"test", "benchmark", "source_review"}:
+                return
+            project_bound = any((
+                project_alias, project_config_digest, project_environment_sha256,
+                configured_command_sha256, caller_arguments_sha256,
+            ))
+            if project_bound and (
+                not project_alias
+                or project_alias != criterion
+                or not project_config_digest
+                or not project_environment_sha256
+                or not configured_command_sha256
+                or not caller_arguments_sha256
+            ):
+                return
+            if not project_bound and (project_alias_required or evidence_type == "source_review"):
+                return
+            if criterion_evidence_type(criterion) != evidence_type:
+                return
+            raw_tokens = shlex.split(command, posix=(os.name != "nt"))
+            tokens = [token.lower() for token in raw_tokens]
+            no_execution_options = {
+                "-h", "--help", "--version", "-version", "-V",
+                "--collect-only", "--co", "--fixtures", "--fixtures-per-test",
+                "--list-tests", "--dry-run",
+            }
+            effective_raw_tokens = list(raw_tokens)
+            for index, token in enumerate(raw_tokens):
+                lower_token = token.lower()
+                override = ""
+                if lower_token in {"-o", "--override-ini"} and index + 1 < len(raw_tokens):
+                    override = raw_tokens[index + 1]
+                elif lower_token.startswith("--override-ini="):
+                    override = token.split("=", 1)[1]
+                if override.lower().startswith("addopts="):
+                    effective_raw_tokens.extend(
+                        shlex.split(override.split("=", 1)[1], posix=(os.name != "nt"))
+                    )
+            if any(token in no_execution_options for token in effective_raw_tokens) or any(
+                token.lower().startswith(("--help=", "--version="))
+                for token in effective_raw_tokens
+            ) or any(token in {";", "&&", "||", "|", ">", "<"} for token in tokens):
+                return
+            executable = Path(tokens[0].strip("\"'")).stem.lower() if tokens else ""
+            invoked_tools = {executable}
+            if (executable.startswith("python") or executable in {"pythonw", "py"}) and "-m" in tokens:
+                module_index = tokens.index("-m") + 1
+                if module_index < len(tokens):
+                    invoked_tools.add(tokens[module_index].split(".", 1)[0])
+            if executable in {"npm", "pnpm", "yarn", "dotnet", "cargo", "go"} and len(tokens) > 1:
+                invoked_tools.add(tokens[1])
+                invoked_tools.update(tokens[2:4])
+            test_subcommand = executable in {"npm", "pnpm", "yarn", "dotnet", "cargo", "go"} and "test" in tokens[1:5]
+            test_runners = {
+                "pytest", "py.test", "unittest", "jest", "vitest", "mocha",
+                "phpunit", "pester", "tox", "nox", "ctest", "hyperfine",
+            }
+            if evidence_type in {"test", "benchmark"} and not (invoked_tools.intersection(test_runners) or test_subcommand):
+                return
+            if evidence_type == "source_review":
+                validator_tools = {
+                    "ruff", "pyflakes", "flake8", "mypy", "pylint", "eslint",
+                    "tsc", "bandit", "shellcheck", "yamllint", "markdownlint",
+                    "biome", "phpstan", "phpcs", "clippy",
+                }
+                if not invoked_tools.intersection(validator_tools):
+                    return
+            task_store = self.task_store or getattr(self.verification_store, "task_store", None)
+            task = task_store.get(task_id) if task_store is not None else None
+            verified_owner = str(getattr(task, "owner", "") or tenant).strip()
+            state_data = getattr(getattr(task, "checkpoint", None), "state_data", {}) or {}
+            mutation_generation = int(state_data.get("mutation_generation", 0) or 0)
+            exit_code = result.get("exit_code")
+            if type(exit_code) is not int or exit_code != 0 or not verified_owner:
+                return
 
             proof = {
-                "kind": "command_verification",
+                "kind": "work_command_verification",
                 "task_id": task_id,
+                "owner": verified_owner,
                 "criterion": criterion,
                 "command_id": command_id,
+                "command_classification": evidence_type,
                 "command_sha256": command_digest,
-                "exit_code": int(result.get("exit_code", 0)),
+                "exit_code": exit_code,
                 "repository_revision": repository_revision,
+                "mutation_generation": mutation_generation,
+                "passed": True,
+                "result": {"success": result.get("success") is True, "exit_code": exit_code},
                 "duration_ms": max(0.0, float(duration_ms or 0)),
                 "cached": cached,
             }
+            if project_bound:
+                proof["command"] = command
+                binding = {
+                    "project_alias": project_alias,
+                    "project_config_digest": project_config_digest,
+                    "configured_command_sha256": configured_command_sha256,
+                    "caller_arguments_sha256": caller_arguments_sha256,
+                    "command_sha256": command_digest,
+                    "project_environment_sha256": project_environment_sha256,
+                }
+                proof.update(binding)
+                proof["project_execution_binding_sha256"] = hashlib.sha256(
+                    json.dumps(binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
             if hasattr(self.artifacts, "put_json"):
-                evidence_id = self.artifacts.put_json(proof, tenant, "command_verification")
+                evidence_id = self.artifacts.put_json(proof, verified_owner, "command_verification")
             elif hasattr(self.artifacts, "put"):
-                evidence_id = self.artifacts.put(json_dumps(proof), tenant, "command_verification", "application/json")
+                evidence_id = self.artifacts.put(json_dumps(proof), verified_owner, "command_verification", "application/json")
             else:
                 evidence_id = ""
             if not evidence_id:
@@ -825,6 +3044,9 @@ class CommandBroker:
                 command_id=command_id,
                 evidence_id=str(evidence_id),
                 repository_revision=repository_revision,
+                owner=verified_owner,
+                mutation_generation=mutation_generation,
+                evidence_type=evidence_type,
                 details={
                     "exit_code": proof["exit_code"],
                     "duration_ms": proof["duration_ms"],
@@ -832,8 +3054,40 @@ class CommandBroker:
                 },
             )
             self.verification_store.record(receipt)
-            result["verification_receipt"] = receipt.to_dict()
+            receipt_data = receipt.to_dict()
+            result["verification_receipt"] = receipt_data
             result["verification_evidence_id"] = str(evidence_id)
+            canonical_root = str(Path(repository_root or ".").expanduser().resolve(strict=False))
+            record = {
+                "schema": "command_execution_record.v1",
+                "command_id": command_id,
+                "tenant_identity": self._tenant_identity(tenant),
+                "task_id": task_id,
+                "owner": verified_owner,
+                "criterion": criterion,
+                "command_sha256": command_digest,
+                "evidence_type": evidence_type,
+                "repository_root": canonical_root,
+                "repository_root_sha256": hashlib.sha256(canonical_root.encode("utf-8")).hexdigest(),
+                "repository_revision": repository_revision,
+                "mutation_generation": mutation_generation,
+                "evidence_id": str(evidence_id),
+                "receipt_sha256": hashlib.sha256(
+                    json.dumps(receipt_data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest(),
+                "exit_code": exit_code,
+                "cached": False,
+                "project_alias": project_alias,
+                "project_config_digest": project_config_digest,
+                "project_environment_sha256": project_environment_sha256,
+                "configured_command_sha256": configured_command_sha256,
+                "caller_arguments_sha256": caller_arguments_sha256,
+                "project_execution_binding_sha256": proof.get("project_execution_binding_sha256", ""),
+                "created_at_unix": time.time(),
+            }
+            encoded_record = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            record["record_sha256"] = hashlib.sha256(encoded_record).hexdigest()
+            self._persist_command_execution_record(command_id, record)
         except Exception:
             result["verification_receipt_warning"] = (
                 "command succeeded but durable verification evidence was unavailable"
@@ -868,6 +3122,12 @@ class CommandBroker:
         for key, value in extra.items():
             if not isinstance(key, str) or not key_pattern.fullmatch(key):
                 raise ValueError("daemon environment contains an invalid variable name")
+            normalized_key = key.upper()
+            if normalized_key in {
+                "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+                "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            } or normalized_key.startswith("GIT_CONFIG_"):
+                raise ValueError("daemon environment cannot override Git repository paths")
             if not isinstance(value, str) or "\x00" in value:
                 raise ValueError(f"daemon environment value for {key} must be a NUL-free string")
             total_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8"))
@@ -956,7 +3216,7 @@ class CommandBroker:
 
     def _expire_daemon(self, daemon_id: str) -> None:
         for attempt in range(3):
-            result = self.stop_daemon(daemon_id)
+            result = self._stop_daemon(daemon_id)
             if result.get("process_tree_stopped") is True or result.get("status") == "not_found":
                 return
             if attempt < 2:
@@ -990,7 +3250,14 @@ class CommandBroker:
                 payload = json.load(stream)
         except (OSError, ValueError, TypeError):
             return
-        if not isinstance(payload, dict) or payload.get("version") != 2:
+        if not isinstance(payload, dict):
+            return
+        registry_version = payload.get("version")
+        if type(registry_version) is not int or registry_version not in (2, 3, 4):
+            return
+        if os.name == "nt" and registry_version != 4:
+            return  # Legacy Windows rows have no stable tree owner.
+        if os.name != "nt" and registry_version == 4:
             return
         rows = payload.get("daemons")
         if not isinstance(rows, list):
@@ -1002,6 +3269,7 @@ class CommandBroker:
             daemon_id = row.get("daemon_id")
             pid = row.get("pid")
             identity = row.get("identity")
+            process_group_id = row.get("process_group_id")
             if (
                 not isinstance(daemon_id, str)
                 or not re.fullmatch(r"dmn_[0-9a-f]{32}", daemon_id)
@@ -1010,19 +3278,56 @@ class CommandBroker:
                 or not isinstance(identity, dict)
                 or identity.get("pid") != pid
                 or row.get("owner_id") != self._daemon_owner_id
-                or process_identity(pid) != identity
             ):
                 continue
+            if registry_version == 2 and process_group_id is None:
+                # Version 2 was emitted only after start_new_session/new_group.
+                process_group_id = pid
+            if (
+                isinstance(process_group_id, bool)
+                or not isinstance(process_group_id, int)
+                or process_group_id != pid
+            ):
+                continue
+            current_identity = process_identity(pid)
+            leader_matches = current_identity == identity
+            orphan_group_verified = (
+                registry_version == 3
+                and current_identity is None
+                and _process_leader_exited(pid)
+                and _process_group_liveness(process_group_id) is True
+            )
+            job_handle = None
+            if os.name == "nt":
+                job_name = row.get("job_name")
+                if not isinstance(job_name, str) or job_name != _daemon_job_name(daemon_id):
+                    continue
+                job_handle = _open_named_daemon_job(job_name)
+                if not job_handle:
+                    continue
+                if leader_matches:
+                    tree_verified = _windows_job_contains_process(job_handle, pid, identity)
+                else:
+                    # A missing leader is acceptable only while the named Job
+                    # Object itself still proves live owned members.
+                    tree_verified = current_identity is None and _windows_job_has_processes(job_handle)
+                if not tree_verified:
+                    close_job_object(job_handle)
+                    continue
+            elif not (leader_matches or orphan_group_verified):
+                continue
             if not self._daemon_slots.acquire(blocking=False):
-                try:
-                    terminate_tree(pid, grace_seconds=self.terminate_grace_seconds)
-                except Exception:
-                    pass
+                # A persisted PID is not a stable process-tree handle. Do not
+                # signal it when this broker cannot adopt it.
+                if job_handle:
+                    close_job_object(job_handle)
                 continue
             log_path = self._daemon_state_dir / f"{daemon_id}.log"
             try:
                 if log_path.is_symlink() or log_path.resolve(strict=False).parent != expected_dir:
                     self._daemon_slots.release()
+                    if job_handle:
+                        close_job_object(job_handle)
                     continue
                 log_fh = log_path.open("r+b")
                 log_fh.seek(0, os.SEEK_END)
@@ -1031,6 +3336,8 @@ class CommandBroker:
                 log_buffer = bytearray(log_fh.read(self.daemon_log_max_bytes))
             except OSError:
                 self._daemon_slots.release()
+                if job_handle:
+                    close_job_object(job_handle)
                 continue
             try:
                 started_at = float(row.get("started_at"))
@@ -1038,19 +3345,27 @@ class CommandBroker:
             except (TypeError, ValueError, OverflowError):
                 log_fh.close()
                 self._daemon_slots.release()
+                if job_handle:
+                    close_job_object(job_handle)
                 continue
             if not (0 < started_at < float("inf") and started_at <= expires_at < float("inf")):
                 log_fh.close()
                 self._daemon_slots.release()
+                if job_handle:
+                    close_job_object(job_handle)
                 continue
             name = row.get("name")
             command = row.get("command")
             info = {
                 "daemon_id": daemon_id,
-                "process": _RecoveredDaemonProcess(pid, identity),
+                "process": _RecoveredDaemonProcess(pid, identity, process_group_id, job_handle),
                 "pid": pid,
+                "process_group_id": process_group_id,
+                "job_name": row.get("job_name") if os.name == "nt" else None,
+                "tree_control_capability": "named_job_object" if os.name == "nt" else "unsupported",
                 "identity": identity,
                 "owner_id": self._daemon_owner_id,
+                "task_id": row.get("task_id") if isinstance(row.get("task_id"), str) else "",
                 "name": self._safe_label(name) if isinstance(name, str) else daemon_id,
                 "command": self._safe_label(command) if isinstance(command, str) else "",
                 "cwd": "",
@@ -1071,7 +3386,6 @@ class CommandBroker:
                 self._schedule_daemon_expiry(info)
             except RuntimeError:
                 info["ttl_timer"] = None
-
     def _persist_daemon_registry(self) -> bool:
         """Atomically persist bounded, secret-redacted daemon identity metadata."""
         try:
@@ -1087,12 +3401,27 @@ class CommandBroker:
                 identity = info.get("identity")
                 if not isinstance(identity, dict) or identity.get("pid") != int(info["pid"]):
                     continue
+                process_group_id = info.get("process_group_id")
+                if (
+                    isinstance(process_group_id, bool)
+                    or not isinstance(process_group_id, int)
+                    or process_group_id != int(info["pid"])
+                ):
+                    continue
+                job_name = info.get("job_name")
+                if os.name == "nt" and (
+                    not isinstance(job_name, str) or job_name != _daemon_job_name(daemon_id)
+                ):
+                    continue
                 rows.append(
                     {
                         "daemon_id": daemon_id,
                         "pid": int(info["pid"]),
+                        "process_group_id": process_group_id,
+                        **({"job_name": job_name} if os.name == "nt" else {}),
                         "identity": identity,
                         "owner_id": info["owner_id"],
+                        "task_id": str(info.get("task_id", "")),
                         "name": self._safe_label(str(info.get("name", daemon_id)))[:128],
                         "command": self._safe_label(str(info.get("command", ""))),
                         "started_at": float(info["started_at"]),
@@ -1101,7 +3430,10 @@ class CommandBroker:
                 )
                 if len(rows) >= 50:
                     break
-            payload = json.dumps({"version": 2, "daemons": rows}, ensure_ascii=True, separators=(",", ":"))
+            payload = json.dumps(
+                {"version": 4 if os.name == "nt" else 3, "daemons": rows},
+                ensure_ascii=True, separators=(",", ":")
+            )
             temp_path = registry.with_name(f"registry.{os.getpid()}.{uuid.uuid4().hex}.tmp")
             fd = os.open(temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             try:
@@ -1119,7 +3451,6 @@ class CommandBroker:
             return True
         except (OSError, TypeError, ValueError, OverflowError):
             return False
-
     @staticmethod
     def _flush_daemon_log(info: dict[str, Any]) -> None:
         log_fh = info.get("log_fh")
@@ -1256,16 +3587,26 @@ class CommandBroker:
         # Compound sequences (; or &&) outside quotes
         seq_parts = self._split_outside_quotes(trimmed, (";", "&&"))
         if len(seq_parts) > 1:
-            classes = []
+            classifications = []
             for _, subcmd in seq_parts:
                 sub_res = self.classify(subcmd)
                 if not sub_res.get("allowed"):
                     return sub_res
-                classes.append(sub_res.get("class", "unknown"))
+                classifications.append(sub_res)
+            classes = [result.get("class", "unknown") for result in classifications]
             order = ["dangerous", "unknown", "mutating", "build", "validation", "read"]
             for o in order:
                 if o in classes:
-                    return {"class": o, "cacheable": False, "allowed": bool(cfg.get(f"allow_{o}", o in {"read", "validation", "build"})), "reason": f"compound sequence ({o})"}
+                    return {
+                        "class": o,
+                        "cacheable": False,
+                        "allowed": bool(cfg.get(f"allow_{o}", o in {"read", "validation", "build"})),
+                        "replay_safe": o == "validation" and all(
+                            bool(result.get("replay_safe", result.get("class") == "read"))
+                            for result in classifications
+                        ),
+                        "reason": f"compound sequence ({o})",
+                    }
             return {"class": "read", "cacheable": False, "allowed": True, "reason": "compound sequence"}
 
         # Pipelines (|) outside quotes
@@ -1283,7 +3624,13 @@ class CommandBroker:
                 sexe_base = re.sub(r"\.(exe|cmd|bat|ps1|sh)$", "", sexe)
                 if sexe_base not in self.READ_FILTERS and sexe_base not in self.READ_ONLY:
                     return {"class": "unknown", "cacheable": False, "allowed": False, "reason": f"pipeline filter {sexe_base} not allowed"}
-            return {"class": first_res.get("class", "read"), "cacheable": False, "allowed": True, "reason": "pipeline with safe filters"}
+            return {
+                "class": first_res.get("class", "read"),
+                "cacheable": False,
+                "allowed": True,
+                "replay_safe": bool(first_res.get("replay_safe", False)),
+                "reason": "pipeline with safe filters",
+            }
 
         return self._classify_single(trimmed)
 
@@ -1302,7 +3649,7 @@ class CommandBroker:
 
         extra_allowed = set(str(x).strip().lower() for x in cfg.get("extra_allowed_tools", []))
         if exe_base in extra_allowed:
-            return {"class": "validation", "cacheable": True, "allowed": True, "reason": f"user-whitelisted tool: {exe_base}"}
+            return {"class": "validation", "cacheable": True, "allowed": True, "replay_safe": False, "reason": f"user-whitelisted tool: {exe_base}"}
 
         # PowerShell commands or script blocks
         if self._is_powershell_command(command) or exe_base in {"pwsh", "powershell"}:
@@ -1324,9 +3671,11 @@ class CommandBroker:
             if any(m in cmd_lower for m in ps_mutating):
                 return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "mutating powershell command"}
 
-            validation_keywords = {"test", "validate", "check", "audit", "-runtests", "pester"} | extra_allowed
+            validation_keywords = {"test", "validate", "check", "audit", "-runtests", "pester"}
             if any(w in cmd_lower for w in validation_keywords):
-                return {"class": "validation", "cacheable": False, "allowed": bool(cfg.get("allow_validation", True)), "reason": "powershell validation command"}
+                return {"class": "validation", "cacheable": False, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "powershell validation command"}
+            if any(w in cmd_lower for w in extra_allowed):
+                return {"class": "validation", "cacheable": False, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": False, "reason": "user-whitelisted powershell tool"}
 
             ps_read_prefixes = ("get-", "select-", "measure-", "format-", "test-path", "where-", "out-string", "compare-", "convertfrom-", "convertto-")
             first_word = command.strip().split()[0].lower() if command.strip() else ""
@@ -1420,7 +3769,7 @@ class CommandBroker:
                     "pylint", "bandit", "coverage", "tox", "nox", "pre_commit", "pre-commit",
                 }
                 if dash_m in validation_modules:
-                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"python -m {dash_m} validation"}
+                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"python -m {dash_m} validation"}
                 if dash_m in {"build", "wheel", "setuptools", "flit"}:
                     return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"python -m {dash_m} packaging"}
                 if dash_m in {"local_ai_hub", "local_ai_hub.generator"}:
@@ -1436,7 +3785,7 @@ class CommandBroker:
                     return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": f"python -m {dash_m} inspection"}
                 if dash_m in {"black", "isort"}:
                     if any(f in lower for f in {"--check", "--diff"}):
-                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"python -m {dash_m} validation"}
+                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"python -m {dash_m} validation"}
                     return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"python -m {dash_m} format without --check"}
 
             dash_c = None
@@ -1457,6 +3806,19 @@ class CommandBroker:
                 is_validation = False
                 try:
                     tree = ast.parse(dash_c)
+
+                    def _literal_only(node: ast.AST) -> bool:
+                        if isinstance(node, ast.Constant):
+                            return True
+                        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+                            return all(_literal_only(item) for item in node.elts)
+                        if isinstance(node, ast.Dict):
+                            return all(
+                                key is not None and _literal_only(key) and _literal_only(value)
+                                for key, value in zip(node.keys, node.values)
+                            )
+                        return False
+
                     for node in ast.walk(tree):
                         if isinstance(node, ast.Call):
                             func_name = ""
@@ -1466,6 +3828,27 @@ class CommandBroker:
                                 func_name = node.func.attr
                             if func_name in {"exec", "eval", "compile"}:
                                 return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code contains dangerous call: {func_name}"}
+                            if func_name == "open":
+                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code accesses files with unknown side effects"}
+                            if func_name in {"write_text", "write_bytes", "touch", "unlink", "mkdir", "rmdir", "rename", "replace"}:
+                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code may mutate files: {func_name}"}
+                            safe_builtin_calls = {
+                                "abs", "all", "any", "bool", "dict", "enumerate", "float", "int",
+                                "len", "list", "max", "min", "print", "range", "repr", "round",
+                                "set", "sorted", "str", "sum", "tuple", "zip",
+                            }
+                            if (
+                                not isinstance(node.func, ast.Name)
+                                or func_name not in safe_builtin_calls
+                                or not all(_literal_only(arg) for arg in node.args)
+                                or not all(_literal_only(keyword.value) for keyword in node.keywords)
+                            ):
+                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code has unverified call: {func_name or 'dynamic'}"}
+                        elif isinstance(node, ast.Import):
+                            if any(alias.name != "sys" for alias in node.names):
+                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code imports module with unknown side effects"}
+                        elif isinstance(node, ast.ImportFrom):
+                            return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code imports module with unknown side effects"}
                         elif isinstance(node, ast.Assert):
                             is_validation = True
                 except SyntaxError:
@@ -1478,7 +3861,7 @@ class CommandBroker:
                         is_validation = True
 
                 if is_validation:
-                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "python inline validation"}
+                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "python inline validation"}
                 return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "python inline read"}
 
             non_flag_args = [t for t in tokens[1:] if not t.startswith("-")]
@@ -1491,9 +3874,9 @@ class CommandBroker:
                         is_mutating = any(t in lower for t in {"--complete", "--fail"})
                         if is_mutating:
                             return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "hubctl tasks status mutation"}
-                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "hubctl tasks status check"}
+                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "hubctl tasks status check"}
                     if sub in {"status", "service-status", "agent-state", "dashboard", "watch", "memory", "doctor", "logs"}:
-                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"hubctl {sub} status check"}
+                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"hubctl {sub} status check"}
                     if sub == "generate":
                         return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "hubctl generate dynamic artifacts"}
                     if sub in {"start", "stop", "restart", "cleanup"}:
@@ -1501,12 +3884,30 @@ class CommandBroker:
                 if script_name in {"setup.py", "setup"}:
                     if any(t in lower for t in {"--generate-only", "--help", "-h"}):
                         return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "setup.py generate dynamic artifacts"}
-                if any(f in arg.lower() for arg in non_flag_args for f in ("test", "validate", "check", "flow", "status", "audit", "doctor", "selftest", "report", "bench", "benchmark", "inspect", "diagnose", "eval", "summary")):
-                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "python validation script"}
+                script_path = non_flag_args[0].replace("\\", "/").lower()
+                is_builtin_tool = (
+                    script_path.startswith("tools/")
+                    or script_path.startswith("./tools/")
+                    or script_path.startswith("src/")
+                )
+                if script_name in {
+                    "doctor.py",
+                    "selftest.py",
+                    "telemetry_report.py",
+                    "benchmark.py",
+                    "show_summary.py",
+                    "release_check.py",
+                    "check_contracts.py",
+                } or (is_builtin_tool and any(k in script_name for k in ("test", "validate", "check", "audit", "verify", "lint"))):
+                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "python validation script"}
                 if any(f in script_name for f in ("generate", "build", "compile", "bundle")):
                     return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "python build/generate script"}
-                if not any(token.lower() in self.MUTATING_WORDS for token in non_flag_args[1:]):
-                    return {"class": "read", "cacheable": False, "allowed": bool(cfg.get("allow_read", True)), "reason": "python read script"}
+                return {
+                    "class": "mutating",
+                    "cacheable": False,
+                    "allowed": bool(cfg.get("allow_mutating", False)),
+                    "reason": "unclassified Python script may have side effects",
+                }
 
         if exe_base == "hubctl":
             sub = lower[0] if lower else ""
@@ -1514,9 +3915,9 @@ class CommandBroker:
                 is_mutating = any(t in lower for t in {"--complete", "--fail"})
                 if is_mutating:
                     return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "hubctl tasks status mutation"}
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "hubctl tasks status check"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "hubctl tasks status check"}
             if sub in {"status", "service-status", "agent-state", "dashboard", "watch", "memory", "doctor", "logs"}:
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"hubctl {sub} status check"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"hubctl {sub} status check"}
             if sub == "generate":
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "hubctl generate dynamic artifacts"}
             if sub in {"start", "stop", "restart", "cleanup"}:
@@ -1525,15 +3926,15 @@ class CommandBroker:
         if exe_base == "php" and lower:
             php_target = ntpath.basename(lower[0].replace("/", "\\"))
             if any(name in php_target for name in ("phpunit", "phpstan", "pest")):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "PHP validation tool"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "PHP validation tool"}
 
         if exe_base in {"black", "isort"}:
             if any(f in lower for f in {"--check", "--diff"}):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"{exe_base} check"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} check"}
             return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"{exe_base} format without --check"}
 
         if exe_base in self.PURE_VALIDATORS or any(name in exe_base for name in ("phpunit", "phpstan", "pytest", "pest", "flake8", "pylint", "shellcheck", "yamllint")):
-            return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"{exe_base} validation tool"}
+            return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} validation tool"}
 
         positional_verbs = [t.lower() for t in tokens[1:] if not t.startswith(("-", "/"))]
         primary_verb = positional_verbs[0] if positional_verbs else ""
@@ -1543,12 +3944,12 @@ class CommandBroker:
             if any(f in lower for f in flag_info) and not any(v in lower for v in ("build", "test", "run", "clean", "publish")):
                 return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "read-only dotnet inspection"}
             if primary_verb in {"test", "vstest"}:
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "dotnet test"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "dotnet test"}
             if primary_verb in {"build", "compile", "pack", "restore", "clean", "run", "msbuild"}:
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"dotnet {primary_verb}"}
             if primary_verb == "format":
                 if any(f in lower for f in {"--verify-no-changes", "--check"}):
-                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "dotnet format check"}
+                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "dotnet format check"}
                 return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "dotnet format changes source without --verify-no-changes"}
 
         package_tools = {"npm", "pnpm", "yarn", "bun"}
@@ -1564,7 +3965,7 @@ class CommandBroker:
             safe_validation = {"test", "lint", "check", "typecheck", "type-check", "analyse", "analyze", "audit"}
             safe_build = {"build", "compile"}
             if script in safe_validation:
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"{exe_base} safe validation script"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} safe validation script"}
             if script in safe_build:
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"{exe_base} safe build script"}
             return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"{exe_base} script is not in the safe validation/build allowlist"}
@@ -1573,7 +3974,7 @@ class CommandBroker:
             if primary_verb in {"install", "update", "upgrade", "remove", "require", "create-project", "dump-autoload", "global"}:
                 return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"composer {primary_verb} may change dependencies or generated files"}
             if primary_verb in {"validate", "audit", "test", "phpunit", "phpstan", "analyse", "analyze", "check"}:
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "composer validation command"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "composer validation command"}
             return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "composer command is not in the safe validation allowlist"}
 
         if exe_base == "make":
@@ -1582,7 +3983,7 @@ class CommandBroker:
             safe_validation = {"test", "tests", "check", "lint", "validate", "verify", "typecheck"}
             safe_build = {"build", "compile", "all"}
             if positional_verbs and all(v in safe_validation for v in positional_verbs):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "make validation target"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "make validation target"}
             if positional_verbs and all(v in safe_build for v in positional_verbs):
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "make build target"}
             return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "make target is not in the safe validation/build allowlist"}
@@ -1591,7 +3992,7 @@ class CommandBroker:
             if primary_verb in {"fmt"} and "--check" not in lower:
                 return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "cargo fmt changes source without --check"}
             if primary_verb in {"test", "check", "clippy", "bench"} or (primary_verb == "fmt" and "--check" in lower):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "cargo validation command"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "cargo validation command"}
             if primary_verb == "build":
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "cargo build"}
             return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "cargo command is not in the safe validation/build allowlist"}
@@ -1602,7 +4003,7 @@ class CommandBroker:
             validation_words = {"test", "tests", "check", "verify", "lint", "vet", "clippy", "ctest"}
             build_words = {"build", "compile", "package", "assemble"}
             if exe_base == "ctest" or any(v in validation_words for v in positional_verbs):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"{exe_base} validation command"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} validation command"}
             if exe_base == "cmake" or any(v in build_words for v in positional_verbs):
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"{exe_base} build command"}
             return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"{exe_base} command is not in the safe validation/build allowlist"}
@@ -1612,7 +4013,7 @@ class CommandBroker:
                 return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"mutating verb {primary_verb}"}
             if any(x in positional_verbs for x in ("build", "compile")):
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "build command"}
-            return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "validation/test command"}
+            return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "validation/test command"}
 
         return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "command not in safe broker allowlist"}
 
@@ -1660,24 +4061,136 @@ class CommandBroker:
         except Exception:
             return {"path": str(resolved)}
 
-    def _key(self, command: str, cwd: str, classification: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    def _key(
+        self,
+        command: str,
+        cwd: str,
+        classification: dict[str, Any],
+        *,
+        cache_context: str = "",
+    ) -> tuple[str, dict[str, Any]]:
         state = self.repo_state.fingerprint(cwd)
-        env_keys = self.config.get("commands", {}).get("environment_keys", ["CI", "NODE_ENV", "APP_ENV", "PYTHONPATH"])
+        commands_config = self.config.get("commands", {})
+        env_keys = commands_config.get("environment_keys", ["CI", "NODE_ENV", "APP_ENV", "PYTHONPATH"])
         env = {str(k): os.environ.get(str(k), "") for k in env_keys}
-        key = stable_hash({
+        payload = {
             "command": command.strip(), "cwd": str(Path(cwd).resolve()), "class": classification.get("class"),
             "repo": state.get("fingerprint"), "env": env, "python": sys.version_info[:3], "tool": self._tool_identity(command, cwd),
-        })
+            "policy": {
+                "blocking": self.policy_blocking,
+                "allow_read": bool(commands_config.get("allow_read", True)),
+                "allow_validation": bool(commands_config.get("allow_validation", True)),
+                "allow_build": bool(commands_config.get("allow_build", True)),
+                "allow_mutating": bool(commands_config.get("allow_mutating", False)),
+                "allow_unknown": bool(commands_config.get("allow_unknown", False)),
+                "extra_allowed_tools": sorted(
+                    str(tool).strip().lower()
+                    for tool in commands_config.get("extra_allowed_tools", [])
+                ),
+            },
+        }
+        if cache_context:
+            payload["context"] = cache_context
+        key = stable_hash(payload)
         return key, state
 
-    def _attempt_key(self, command: str, cwd: str) -> str:
+    def _attempt_key(self, command: str, cwd: str, *, cache_context: str = "") -> str:
         tokens = self._tokens(command)
         cmd_str = " ".join(tokens) if tokens else command.strip()
-        return stable_hash({
+        commands_config = self.config.get("commands", {})
+        payload = {
             "command": cmd_str,
             "cwd": str(Path(cwd).resolve()),
             "tool": self._tool_identity(command, cwd),
+            "policy": {
+                "blocking": self.policy_blocking,
+                "allow_read": bool(commands_config.get("allow_read", True)),
+                "allow_validation": bool(commands_config.get("allow_validation", True)),
+                "allow_build": bool(commands_config.get("allow_build", True)),
+                "allow_mutating": bool(commands_config.get("allow_mutating", False)),
+                "allow_unknown": bool(commands_config.get("allow_unknown", False)),
+                "extra_allowed_tools": sorted(
+                    str(tool).strip().lower()
+                    for tool in commands_config.get("extra_allowed_tools", [])
+                ),
+            },
+        }
+        if cache_context:
+            payload["context"] = cache_context
+        return stable_hash(payload)
+
+    def _mark_rollback_outcome_unknown(
+        self,
+        result: dict[str, Any],
+        *,
+        command_key: str,
+        attempt_key: str,
+        error: BaseException,
+        rollback_paths: Sequence[str] | None = None,
+    ) -> None:
+        result.update({
+            "rolled_back": False,
+            "rollback_paths": list(rollback_paths or ()),
+            "rollback_error": str(error)[:512],
+            "outcome_unknown": True,
+            "fail_closed": True,
+            "incident_required": True,
+            "cache_hit": False,
+            "coalesced": False,
+            "retryable": False,
         })
+        invalidation_errors: list[str] = []
+        for cache, cache_key in (
+            (self.success_cache, command_key),
+            (self.failure_cache, command_key),
+            (self.suppression_cache, attempt_key),
+        ):
+            try:
+                deleted = cache.delete(cache_key)
+                if deleted is False:
+                    invalidation_errors.append("cache delete reported failure")
+            except Exception as cache_exc:
+                invalidation_errors.append(str(cache_exc)[:160])
+        with self._lock:
+            self._last.pop(command_key, None)
+        if invalidation_errors:
+            result["cache_invalidation_failed"] = True
+            result["cache_invalidation_errors"] = invalidation_errors
+
+
+    def _capture_rollback_unknown_incident(
+        self,
+        result: dict[str, Any],
+        *,
+        command: str,
+        repository_revision: str = "",
+        affected_paths: Sequence[str] | None = None,
+    ) -> None:
+        if self.incident_store is None:
+            return
+        try:
+            from .agent_incidents import ToolOutcome
+
+            incident = self.incident_store.capture(ToolOutcome(
+                tool_name="command",
+                command=command,
+                error=f"rollback failed; command filesystem outcome is unknown: {result.get('rollback_error', '')}",
+                exit_code=int(result.get("exit_code", 1) or 1),
+                state_revision=repository_revision,
+                timed_out=bool(result.get("timed_out")),
+                cancelled=bool(result.get("cancelled")),
+                metadata={"outcome_unknown": True, "rollback_error": result.get("rollback_error", "")},
+                affected_paths=tuple(
+                    affected_paths
+                    if affected_paths is not None
+                    else result.get("rollback_paths", ())
+                ),
+            ))
+            if incident:
+                result["incident_id"] = incident.incident_id
+                result["incident_recorded"] = True
+        except Exception:
+            pass
 
     def _unavailable_executable(self, command: str, cwd: str) -> str | None:
         if self._needs_shell(command):
@@ -1725,15 +4238,31 @@ class CommandBroker:
 
     def _execute(
         self,
-        command: str,
+        command: str | Sequence[str],
         cwd: str,
         timeout: int,
         cancel_event: threading.Event | None = None,
         log_callback: Any | None = None,
+        *,
+        argv_override: Sequence[str] | None = None,
+        environment_overrides: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        tokens = self._tokens(command)
+        if isinstance(command, str):
+            tokens = self._tokens(command)
+            needs_shell = self._needs_shell(command)
+        else:
+            tokens = list(command)
+            if not tokens or any(not isinstance(token, str) or "\x00" in token for token in tokens):
+                return {
+                    "success": False, "exit_code": 2, "timed_out": False,
+                    "stdout": "", "stderr": "argv must be a non-empty list of null-free strings",
+                    "error": "invalid process argv",
+                }
+            needs_shell = False
         started = time.perf_counter()
-        if self._needs_shell(command):
+        if argv_override is not None:
+            argv = list(argv_override)
+        elif needs_shell:
             if os.name == "nt":
                 shell_bin = shutil.which("pwsh") or shutil.which("powershell") or "powershell.exe"
                 argv = [shell_bin, "-NoProfile", "-NonInteractive", "-Command", command]
@@ -1760,10 +4289,11 @@ class CommandBroker:
         proc_env = os.environ.copy()
         proc_env["PYTHONDONTWRITEBYTECODE"] = "1"
         proc_env["PYTHONIOENCODING"] = "utf-8"
+        if environment_overrides:
+            proc_env.update(environment_overrides)
         kwargs: dict[str, Any] = {
             "cwd": str(Path(cwd).resolve()), "stdin": subprocess.DEVNULL,
             "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
-            "text": True, "encoding": "utf-8", "errors": "replace",
             "env": proc_env,
         }
         if os.name == "nt":
@@ -1786,44 +4316,96 @@ class CommandBroker:
 
         out_buf = _BoundedStreamBuffer(self.max_output_chars)
         err_buf = _BoundedStreamBuffer(self.max_output_chars)
+        callback_queue: queue.Queue[tuple[str, str]] | None = (
+            queue.Queue(maxsize=_COMMAND_LOG_QUEUE_MAX_CHUNKS)
+            if log_callback is not None
+            else None
+        )
+        callback_dropped = 0
+        callback_drop_lock = threading.Lock()
+        readers_remaining = 2
+        readers_lock = threading.Lock()
+        readers_done = threading.Event()
+
+        def _dispatch_logs() -> None:
+            assert callback_queue is not None and log_callback is not None
+            while True:
+                try:
+                    item = callback_queue.get(timeout=0.05)
+                except queue.Empty:
+                    if readers_done.is_set():
+                        return
+                    continue
+                try:
+                    log_callback(*item)
+                except Exception:
+                    pass
+                finally:
+                    callback_queue.task_done()
+
+        log_dispatcher = (
+            threading.Thread(target=_dispatch_logs, name="command-log-dispatch", daemon=True)
+            if callback_queue is not None
+            else None
+        )
+        if log_dispatcher is not None:
+            log_dispatcher.start()
+
+        def _publish_log(stream_name: str, text: str) -> None:
+            nonlocal callback_dropped
+            if callback_queue is None:
+                return
+            try:
+                callback_queue.put_nowait((stream_name, text))
+            except queue.Full:
+                with callback_drop_lock:
+                    callback_dropped += 1
 
         def _reader(stream: Any, buf: _BoundedStreamBuffer, stream_name: str) -> None:
             last_callback_time = 0.0
             callback_min_interval = 0.005  # Max ~200 callbacks/sec to prevent downstream lock/choking
             pending_batch: list[str] = []
+            decoder = io.IncrementalNewlineDecoder(
+                codecs.getincrementaldecoder("utf-8")(errors="replace"),
+                translate=True,
+            )
+            read_chunk = (
+                getattr(stream, "read1", None)
+                or getattr(stream, "read", None)
+                or getattr(stream, "readline")
+            )
             try:
-                for line in iter(lambda: stream.readline(65536), ""):
-                    if not line:
+                while True:
+                    raw_chunk = read_chunk(65536)
+                    if not raw_chunk:
                         break
-                    buf.append(line)
+                    chunk = raw_chunk if isinstance(raw_chunk, str) else decoder.decode(raw_chunk)
+                    if not chunk:
+                        continue
+                    buf.append(chunk)
                     if log_callback:
                         now = time.monotonic()
                         if now - last_callback_time >= callback_min_interval:
                             if pending_batch:
-                                text = "".join(pending_batch) + line
+                                text = "".join(pending_batch) + chunk
                                 pending_batch.clear()
                             else:
-                                text = line
+                                text = chunk
                             last_callback_time = now
-                            try:
-                                log_callback(stream_name, text)
-                            except Exception:
-                                pass
+                            _publish_log(stream_name, text)
                         else:
-                            pending_batch.append(line)
+                            pending_batch.append(chunk)
                             if len(pending_batch) >= 50:
                                 text = "".join(pending_batch)
                                 pending_batch.clear()
                                 last_callback_time = now
-                                try:
-                                    log_callback(stream_name, text)
-                                except Exception:
-                                    pass
+                                _publish_log(stream_name, text)
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    buf.append(tail)
+                    pending_batch.append(tail)
                 if log_callback and pending_batch:
-                    try:
-                        log_callback(stream_name, "".join(pending_batch))
-                    except Exception:
-                        pass
+                    _publish_log(stream_name, "".join(pending_batch))
             except Exception:
                 pass
             finally:
@@ -1831,6 +4413,11 @@ class CommandBroker:
                     stream.close()
                 except Exception:
                     pass
+                nonlocal readers_remaining
+                with readers_lock:
+                    readers_remaining -= 1
+                    if readers_remaining == 0:
+                        readers_done.set()
 
         t_out = threading.Thread(target=_reader, args=(process.stdout, out_buf, "stdout"), daemon=True)
         t_err = threading.Thread(target=_reader, args=(process.stderr, err_buf, "stderr"), daemon=True)
@@ -1856,24 +4443,22 @@ class CommandBroker:
             time.sleep(0.02)
 
         if timed_out or cancelled or aborted_interactive:
+            cleanup_confirmed = False
             try:
-                terminate_tree(process.pid, grace_seconds=self.terminate_grace_seconds)
+                cleanup_confirmed = bool(terminate_tree(process.pid, grace_seconds=self.terminate_grace_seconds))
             except Exception:
-                pass
-            try:
-                process.kill()
-            except Exception:
-                pass
-            try:
-                process.wait(timeout=max(2.0, self.terminate_grace_seconds))
-            except Exception:
-                pass
-            if process.poll() is None:
-                try:
-                    process.kill()
-                    process.wait(timeout=1.0)
-                except Exception:
-                    pass
+                cleanup_confirmed = False
+            if not cleanup_confirmed:
+                self.executed += 1
+                return {
+                    "success": False, "exit_code": -9, "timed_out": timed_out,
+                    "cancelled": cancelled, "aborted_interactive": aborted_interactive,
+                    "cleanup_unconfirmed": True, "outcome_unknown": True,
+                    "fail_closed": True, "retryable": False,
+                    "error": "process-tree cleanup could not be confirmed; command outcome is unknown",
+                    "stdout": out_buf.getvalue(), "stderr": err_buf.getvalue(),
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+                }
 
         # A successful child can exit before the reader/callback threads finish
         # publishing their last SSE/event chunks.  Keep the drain bounded, but
@@ -1883,6 +4468,8 @@ class CommandBroker:
         drain_deadline = time.monotonic() + drain_seconds
         t_out.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         t_err.join(timeout=max(0.0, drain_deadline - time.monotonic()))
+        if log_dispatcher is not None:
+            log_dispatcher.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         try:
             if process.stdout and not process.stdout.closed:
                 process.stdout.close()
@@ -1906,6 +4493,8 @@ class CommandBroker:
             "exit_code": -9 if (timed_out or cancelled or aborted_interactive) else int(process.returncode or 0),
             "timed_out": timed_out, "cancelled": cancelled, "aborted_interactive": aborted_interactive,
             "stdout": stdout, "stderr": stderr,
+            "log_chunks_dropped": callback_dropped,
+            "log_dispatch_incomplete": bool(log_dispatcher and log_dispatcher.is_alive()),
             "duration_ms": round((time.perf_counter() - started) * 1000, 1),
             **({"error": "interactive_prompt_detected: command aborted because it requested interactive input"} if aborted_interactive else {"error": "command cancelled"} if cancelled else {"error": f"command timed out after {timeout}s"} if timed_out else {}),
         }
@@ -2082,6 +4671,996 @@ class CommandBroker:
         text = (str(result.get("stderr", "")) + "\n" + str(result.get("stdout", ""))).strip()
         return bool(text)
 
+    @staticmethod
+    def _transaction_docker_argv(
+        transaction_id: str,
+        transaction_root: Path,
+        command: str,
+        image: str,
+        *,
+        read_only_mount: bool = False,
+    ) -> list[str]:
+        mount_mode = "ro" if read_only_mount else "rw"
+        return [
+            "docker", "run", "--rm", "--init", "--name", f"local-ai-{transaction_id}",
+            "--network=none", "--read-only", "--cap-drop=ALL",
+            "--security-opt=no-new-privileges", "--pids-limit=256", "--memory=2g",
+            "--cpus=2", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m",
+            "--env", "HOME=/tmp", "--env", "PYTHONDONTWRITEBYTECODE=1",
+            "--env", "PYTEST_ADDOPTS=-p no:cacheprovider",
+            "--env", "GIT_CONFIG_GLOBAL=/workspace/.git/transaction-global-config",
+            "--env", "GIT_CONFIG_SYSTEM=/dev/null", "--env", "GIT_CONFIG_NOSYSTEM=1",
+            "--volume", f"{transaction_root}:/workspace:{mount_mode}", "--workdir", "/workspace",
+            image, "/bin/sh", "-lc", command,
+        ]
+
+    @staticmethod
+    def _transaction_docker_ready() -> tuple[bool, str]:
+        executable = shutil.which("docker")
+        if not executable:
+            return False, "docker executable not found for private command transaction"
+        try:
+            probe = subprocess.run(
+                [executable, "info", "--format", "{{.ServerVersion}}"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=8,
+                **hidden_run_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"Docker engine unavailable for private command transaction: {str(exc)[:240]}"
+        if probe.returncode != 0 or not probe.stdout.strip():
+            detail = (probe.stderr or probe.stdout or "Docker engine unavailable").strip()[:240]
+            return False, f"Docker engine unavailable for private command transaction: {detail}"
+        return True, ""
+
+    @staticmethod
+    def _transaction_stop_container(transaction_id: str) -> bool:
+        executable = shutil.which("docker")
+        if not executable:
+            return False
+        name = f"local-ai-{transaction_id}"
+        try:
+            probe = subprocess.run(
+                [executable, "info", "--format", "{{.ServerVersion}}"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=8,
+                **hidden_run_kwargs(),
+            )
+            if probe.returncode != 0 or not probe.stdout.strip():
+                return False
+            subprocess.run(
+                [executable, "rm", "--force", name],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=20,
+                **hidden_run_kwargs(),
+            )
+            remaining = subprocess.run(
+                [executable, "inspect", name],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=8,
+                **hidden_run_kwargs(),
+            )
+            return remaining.returncode != 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    def _transaction_root_for_context(self, transaction_id: str) -> Path:
+        with self._transaction_roots_lock:
+            active = self._active_transaction_roots.get(transaction_id)
+        return active if active is not None else (self._transaction_state_dir / transaction_id)
+
+    @staticmethod
+    def _transaction_file_matches(left: RollbackFileSnapshot, right: RollbackFileSnapshot) -> bool:
+        return (
+            left.content == right.content
+            and left.mode == right.mode
+            and left.xattrs == right.xattrs
+            and left.mtime_ns == right.mtime_ns
+        )
+
+    def _recover_partial_transaction_import(
+        self,
+        source: Path,
+        source_snapshot: RollbackSnapshot,
+        transaction_snapshot: RollbackSnapshot,
+        paths: list[str],
+    ) -> bool:
+        current, error = _snapshot_rollback_scope(str(source), paths)
+        if error or current is None:
+            return False
+        try:
+            _capture_rollback_postimages(current)
+            restore_paths: list[str] = []
+            for path in paths:
+                observed = current.files[path]
+                before = source_snapshot.files[path]
+                after = transaction_snapshot.files[path]
+                if self._transaction_file_matches(observed, before):
+                    continue
+                if not self._transaction_file_matches(observed, after):
+                    return False
+                source_snapshot.postimages[path] = current.postimages[path]
+                restore_paths.append(path)
+            if restore_paths:
+                rollback = RollbackSnapshot(
+                    root=source_snapshot.root,
+                    root_identity=source_snapshot.root_identity,
+                    files={path: source_snapshot.files[path] for path in restore_paths},
+                    root_guard=source_snapshot.root_guard,
+                    postimages={path: source_snapshot.postimages[path] for path in restore_paths},
+                )
+                _restore_rollback_scope(str(source), rollback)
+            verified, verify_error = _snapshot_rollback_scope(str(source), paths)
+            if verify_error or verified is None:
+                return False
+            try:
+                return all(
+                    self._transaction_file_matches(verified.files[path], source_snapshot.files[path])
+                    for path in paths
+                )
+            finally:
+                _close_rollback_root(verified.root_guard)
+        except (OSError, ValueError):
+            return False
+        finally:
+            _close_rollback_root(current.root_guard)
+
+    @staticmethod
+    def _transaction_file_payload(snapshot: RollbackFileSnapshot) -> dict[str, Any]:
+        return {
+            "content": base64.b64encode(snapshot.content).decode("ascii") if snapshot.content is not None else None,
+            "mode": snapshot.mode,
+            "xattrs": {
+                name: base64.b64encode(value).decode("ascii")
+                for name, value in snapshot.xattrs.items()
+            },
+            "windows_dacl": base64.b64encode(snapshot.windows_dacl).decode("ascii")
+            if snapshot.windows_dacl is not None else None,
+            "atime_ns": snapshot.atime_ns,
+            "mtime_ns": snapshot.mtime_ns,
+        }
+
+    @staticmethod
+    def _transaction_file_from_payload(payload: Any) -> RollbackFileSnapshot:
+        if not isinstance(payload, dict):
+            raise ValueError("transaction journal file entry is invalid")
+        encoded_content = payload.get("content")
+        content = base64.b64decode(encoded_content, validate=True) if encoded_content is not None else None
+        raw_xattrs = payload.get("xattrs", {})
+        if not isinstance(raw_xattrs, dict) or len(raw_xattrs) > 256:
+            raise ValueError("transaction journal metadata is invalid")
+        xattrs = {
+            str(name): base64.b64decode(value, validate=True)
+            for name, value in raw_xattrs.items()
+        }
+        encoded_dacl = payload.get("windows_dacl")
+        windows_dacl = base64.b64decode(encoded_dacl, validate=True) if encoded_dacl is not None else None
+        mode = payload.get("mode")
+        atime_ns = payload.get("atime_ns")
+        mtime_ns = payload.get("mtime_ns")
+        if mode is not None and not isinstance(mode, int):
+            raise ValueError("transaction journal mode is invalid")
+        if atime_ns is not None and not isinstance(atime_ns, int):
+            raise ValueError("transaction journal atime is invalid")
+        if mtime_ns is not None and not isinstance(mtime_ns, int):
+            raise ValueError("transaction journal mtime is invalid")
+        return RollbackFileSnapshot(content, mode, xattrs, windows_dacl, atime_ns, mtime_ns)
+
+    @staticmethod
+    def _fsync_transaction_directory(path: Path) -> bool:
+        """Sync directory entries where supported; Windows has no portable directory fsync."""
+        if os.name == "nt":
+            return False
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return True
+
+    @staticmethod
+    def _fsync_rollback_directories(root: Path, paths: Sequence[str]) -> bool:
+        """Sync directories containing write-set entries, including created parents."""
+        if os.name == "nt":
+            return False
+        root = root.resolve(strict=True)
+        directories = {root}
+        for relative in paths:
+            parent = (root / relative).parent
+            while parent == root or root in parent.parents:
+                if parent.exists():
+                    directories.add(parent)
+                if parent == root:
+                    break
+                parent = parent.parent
+        supported = True
+        for directory in sorted(directories, key=lambda item: (len(item.parts), str(item))):
+            supported = CommandBroker._fsync_transaction_directory(directory) and supported
+        return supported
+
+    @staticmethod
+    def _remove_transaction_journal(path: Path, payload: dict[str, Any]) -> bool:
+        path.unlink(missing_ok=True)
+        try:
+            return CommandBroker._fsync_transaction_directory(path.parent)
+        except OSError:
+            try:
+                CommandBroker._persist_transaction_journal(path, payload)
+            except OSError:
+                pass
+            raise
+
+
+    @staticmethod
+    def _persist_transaction_journal(path: Path, payload: dict[str, Any]) -> bool:
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                fd = -1
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            return CommandBroker._fsync_transaction_directory(path.parent)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _recover_transaction_journals(
+        self,
+        source: Path,
+        task_id: str,
+        transaction_parent: Path,
+        lease_tenant: str,
+        work_attempt_fence: WorkAttemptFence,
+        namespace_kwargs: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        self._assert_work_attempt_fence(
+            work_attempt_fence, task_id=task_id, resource=source
+        )
+        journal_paths = sorted(transaction_parent.glob("*.journal.json"))
+        if not journal_paths:
+            return None
+        if namespace_kwargs is None:
+            try:
+                namespace_kwargs = self._transaction_namespace_kwargs(
+                    source, self.fencing_lease_store
+                )
+            except Exception as exc:
+                return {
+                    "success": False, "transaction_status": "recovery_required",
+                    "failure_kind": "mutation_namespace_unavailable",
+                    "outcome_unknown": True, "terminal": True, "retryable": False,
+                    "error": str(exc)[:512],
+                }
+        directory_fsync_supported = True
+        for journal_path in journal_paths:
+            lease: dict[str, Any] | None = None
+            journal: dict[str, Any] = {}
+            try:
+                if journal_path.stat().st_size > 96 * 1024 * 1024:
+                    raise ValueError("transaction journal exceeds size limit")
+                journal = json.loads(journal_path.read_text(encoding="utf-8"))
+                if not isinstance(journal, dict):
+                    raise ValueError("transaction journal is invalid")
+                if journal.get("schema") != 1:
+                    raise ValueError("transaction journal schema is unsupported")
+                if journal.get("source_root") != str(source) or journal.get("task_id") != task_id:
+                    continue
+                files = journal.get("files")
+                paths = journal.get("paths")
+                if (
+                    not isinstance(files, dict)
+                    or not isinstance(paths, list)
+                    or len(paths) != len(set(paths))
+                    or set(paths) != set(files)
+                ):
+                    raise ValueError("transaction journal write set is invalid")
+                if any(not isinstance(path, str) or not isinstance(entries, dict) for path, entries in files.items()):
+                    raise ValueError("transaction journal file entry is invalid")
+                if any(
+                    not isinstance(path, str)
+                    or not path
+                    or Path(path).is_absolute()
+                    or ".." in Path(path).parts
+                    for path in paths
+                ):
+                    raise ValueError("transaction journal path is invalid")
+                before = {path: self._transaction_file_from_payload(files[path].get("before")) for path in paths}
+                after = {path: self._transaction_file_from_payload(files[path].get("after")) for path in paths}
+                lease = self._transaction_leases.claim(
+                    tenant=lease_tenant,
+                    root=str(source),
+                    paths=list(paths),
+                    ttl_seconds=300,
+                    purpose=f"recover command transaction {journal.get('transaction_id', '')}",
+                    **namespace_kwargs,
+                )
+                if not lease.get("success"):
+                    return {
+                        "success": False,
+                        "transaction_id": str(journal.get("transaction_id", "")),
+                        "transaction_status": "recovery_required",
+                        "failure_kind": "destination_conflict",
+                        "outcome_unknown": True,
+                        "retryable": False,
+                        "terminal": True,
+                        "error": str(lease.get("error") or "transaction recovery lease denied")[:512],
+                    }
+                original_fencing = journal.get("fencing")
+                original_attempt = journal.get("attempt_fence")
+                if not isinstance(original_fencing, dict) or not isinstance(original_attempt, dict):
+                    raise ValueError("transaction journal lacks mutation fence identity")
+                original_fence_token = original_attempt.get("fencing_token")
+                original_work_id = original_attempt.get("work_id")
+                original_resource = original_attempt.get("resource")
+                if (
+                    type(original_fence_token) is not int
+                    or original_fence_token <= 0
+                    or original_work_id != task_id
+                    or not isinstance(original_resource, str)
+                    or os.path.normcase(str(Path(original_resource).resolve(strict=True)))
+                    != os.path.normcase(str(source))
+                    or work_attempt_fence.fencing_token <= original_fence_token
+                ):
+                    raise ValueError("transaction recovery attempt is stale or mismatched")
+                original_writer_token = original_fencing.get("fencing_token")
+                prior_recovery = journal.get("recovery_fencing")
+                prior_recovery_token = (
+                    prior_recovery.get("fencing_token")
+                    if isinstance(prior_recovery, dict) else 0
+                )
+                if (
+                    type(original_writer_token) is not int or original_writer_token <= 0
+                    or type(prior_recovery_token) is not int or prior_recovery_token < 0
+                ):
+                    raise ValueError("transaction journal fencing token is invalid")
+                highest_writer_token = max(original_writer_token, prior_recovery_token)
+                with self._fenced_transaction_commit(
+                    work_attempt_fence,
+                    task_id=task_id,
+                    source=source,
+                    paths=list(paths),
+                    owner_id=f"command-recovery:{task_id}:{journal.get('transaction_id', '')}:{uuid.uuid4().hex}",
+                    namespace_kwargs=namespace_kwargs,
+                ) as (fencing_lease, recovery_attempt_payload):
+                    if fencing_lease.fencing_token <= highest_writer_token:
+                        raise ValueError("transaction recovery writer fence is stale")
+                    journal["recovery_fencing"] = {
+                        "lease_id": fencing_lease.lease_id,
+                        "fencing_token": fencing_lease.fencing_token,
+                    }
+                    journal["recovery_attempt_fence"] = recovery_attempt_payload
+                    directory_fsync_supported = (
+                        self._persist_transaction_journal(journal_path, journal)
+                        and directory_fsync_supported
+                    )
+                    current, scope_error = _snapshot_rollback_scope(str(source), list(paths))
+                    if scope_error or current is None:
+                        raise OSError(scope_error or "cannot inspect transaction recovery targets")
+                    try:
+                        _capture_rollback_postimages(current)
+                        pending: list[str] = []
+                        for path in paths:
+                            observed = current.files[path]
+                            if self._transaction_file_matches(observed, after[path]):
+                                continue
+                            if not self._transaction_file_matches(observed, before[path]):
+                                raise OSError(f"transaction recovery conflict at {path}")
+                            pending.append(path)
+                        if pending:
+                            import_files = {
+                                path: RollbackFileSnapshot(
+                                    after[path].content,
+                                    after[path].mode,
+                                    after[path].xattrs,
+                                    current.files[path].windows_dacl,
+                                    after[path].atime_ns,
+                                    after[path].mtime_ns,
+                                )
+                                for path in pending
+                            }
+                            import_snapshot = RollbackSnapshot(
+                                current.root,
+                                current.root_identity,
+                                import_files,
+                                current.root_guard,
+                                {path: current.postimages[path] for path in pending},
+                            )
+                            _restore_rollback_scope(str(source), import_snapshot)
+                        verified, verify_error = _snapshot_rollback_scope(str(source), list(paths))
+                        if verify_error or verified is None:
+                            raise OSError(verify_error or "cannot verify recovered transaction outputs")
+                        try:
+                            if not all(
+                                self._transaction_file_matches(verified.files[path], after[path])
+                                for path in paths
+                            ):
+                                raise OSError("transaction recovery postimages did not verify")
+                        finally:
+                            _close_rollback_root(verified.root_guard)
+                    finally:
+                        _close_rollback_root(current.root_guard)
+                    directory_fsync_supported = (
+                        self._fsync_rollback_directories(source, list(paths))
+                        and directory_fsync_supported
+                    )
+                    directory_fsync_supported = (
+                        self._remove_transaction_journal(journal_path, journal)
+                        and directory_fsync_supported
+                    )
+                transaction_root_value = journal.get("transaction_root")
+                if isinstance(transaction_root_value, str):
+                    transaction_root = Path(transaction_root_value).resolve(strict=False)
+                    try:
+                        transaction_relative = transaction_root.relative_to(
+                            transaction_parent.resolve(strict=True)
+                        )
+                    except ValueError:
+                        pass
+                    else:
+                        if transaction_relative.parts:
+                            shutil.rmtree(transaction_root, ignore_errors=True)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                return {
+                    "success": False,
+                    "transaction_id": str(journal.get("transaction_id", "")),
+                    "transaction_status": "recovery_required",
+                    "failure_kind": "destination_conflict",
+                    "outcome_unknown": True,
+                    "retryable": False,
+                    "terminal": True,
+                    "error": str(exc)[:512],
+                }
+            finally:
+                if lease is not None and lease.get("success"):
+                    self._transaction_leases.release(lease_tenant, str(lease.get("lease_id") or ""))
+        if not directory_fsync_supported:
+            return {
+                "success": True,
+                "transaction_status": "recovered",
+                "rollback_paths": list(paths),
+                "command_not_run": True,
+                "directory_fsync_supported": False,
+                "durability_warning": "filesystem directory fsync is unsupported; crash durability is not guaranteed",
+            }
+        return None
+
+    def _run_private_transaction(
+        self,
+        command: str,
+        source_root: str | Path,
+        tenant: str,
+        *,
+        task_id: str,
+        paths: list[str],
+        timeout: int,
+        docker_image: str,
+        work_attempt_fence: WorkAttemptFence | None = None,
+        cancel_event: threading.Event | None = None,
+        log_callback: Any | None = None,
+        operation: Any | None = None,
+        command_key: str = "",
+        attempt_key: str = "",
+    ) -> dict[str, Any]:
+        transaction_id = uuid.uuid4().hex
+        if not isinstance(docker_image, str) or not docker_image.strip() or "\x00" in docker_image:
+            return {
+                "success": False, "transaction_id": transaction_id,
+                "transaction_status": "discarded", "failure_kind": "sandbox_unavailable",
+                "error": "invalid Docker image for private command transaction",
+                "terminal": True, "retryable": False,
+            }
+        ready, ready_error = self._transaction_docker_ready()
+        if not ready:
+            return {
+                "success": False, "transaction_id": transaction_id,
+                "transaction_status": "discarded", "failure_kind": "sandbox_unavailable",
+                "error": ready_error, "mutation_sandbox_required": True,
+                "terminal": True, "retryable": False,
+            }
+
+        source = Path(canonical_root(source_root)).resolve(strict=True)
+        try:
+            attempt_payload = self._assert_work_attempt_fence(
+                work_attempt_fence, task_id=task_id, resource=source
+            )
+        except (AttributeError, OSError, TypeError, ValueError, RuntimeError) as exc:
+            return {
+                "success": False,
+                "transaction_id": transaction_id,
+                "transaction_status": "discarded",
+                "failure_kind": "work_attempt_fence_invalid",
+                "mutation_fence_required": True,
+                "outcome_unknown": False,
+                "terminal": True,
+                "retryable": False,
+                "error": str(exc)[:512],
+            }
+        if not attempt_key:
+            attempt_key = self._attempt_key(command, str(source))
+        if not command_key:
+            try:
+                command_key, _transaction_state = self._key(
+                    command, str(source), self.classify(command)
+                )
+            except (OSError, ValueError, RuntimeError):
+                command_key = ""
+        transaction_name = f"command-transaction:{transaction_id}"
+        transaction_parent = self._transaction_state_dir
+        source_resolved = source.resolve(strict=True)
+        transaction_parent_resolved = transaction_parent.resolve(strict=False)
+        try:
+            transaction_parent_resolved.relative_to(source_resolved)
+            overlaps_source = True
+        except ValueError:
+            try:
+                source_resolved.relative_to(transaction_parent_resolved)
+                overlaps_source = True
+            except ValueError:
+                overlaps_source = False
+        if overlaps_source:
+            fallback = Path(tempfile.gettempdir()) / "local-ai-hub-command-transactions"
+            state_key = hashlib.sha256(str(self._transaction_state_dir.resolve()).encode("utf-8")).hexdigest()[:20]
+            transaction_parent = fallback / state_key
+        transaction_parent.mkdir(parents=True, exist_ok=True)
+        try:
+            namespace_kwargs = self._transaction_namespace_kwargs(
+                source, self.fencing_lease_store
+            )
+        except Exception as exc:
+            return {
+                "success": False, "transaction_id": transaction_id,
+                "transaction_status": "recovery_required",
+                "failure_kind": "mutation_namespace_unavailable",
+                "outcome_unknown": True, "terminal": True, "retryable": False,
+                "error": str(exc)[:512],
+            }
+        try:
+            recovery = self._recover_transaction_journals(
+                source, task_id, transaction_parent,
+                f"recovery:{task_id}:{hashlib.sha256(str(source).encode()).hexdigest()[:16]}",
+                work_attempt_fence, namespace_kwargs,
+            )
+        except OSError as exc:
+            return {
+                "success": False,
+                "transaction_id": transaction_id,
+                "transaction_status": "recovery_required",
+                "failure_kind": "destination_conflict",
+                "outcome_unknown": True,
+                "retryable": False,
+                "terminal": True,
+                "error": str(exc)[:512],
+            }
+        if recovery is not None:
+            recovery.setdefault("transaction_id", transaction_id)
+            if recovery.get("outcome_unknown"):
+                recovery_paths = recovery.get("rollback_paths", paths)
+                if not isinstance(recovery_paths, list):
+                    recovery_paths = paths
+                recovery_error = RuntimeError(str(recovery.get("error") or "transaction recovery outcome is unknown"))
+                self._mark_rollback_outcome_unknown(
+                    recovery,
+                    command_key=command_key,
+                    attempt_key=attempt_key,
+                    error=recovery_error,
+                    rollback_paths=recovery_paths,
+                )
+                self._capture_rollback_unknown_incident(
+                    recovery, command=command, affected_paths=recovery_paths
+                )
+            return recovery
+        lease = self._transaction_leases.claim(
+            tenant=transaction_name,
+            root=str(source),
+            paths=paths,
+            ttl_seconds=min(7200, max(30, int(timeout) + 60)),
+            purpose=f"command transaction task={task_id}",
+            **namespace_kwargs,
+        )
+        if not lease.get("success"):
+            return {
+                "success": False, "transaction_id": transaction_id,
+                "transaction_status": "discarded", "failure_kind": "destination_conflict",
+                "error": str(lease.get("error") or "transaction write-set lease denied")[:512],
+                "terminal": True, "retryable": False,
+            }
+
+        transaction_root = transaction_parent / transaction_id
+        source_snapshot: RollbackSnapshot | None = None
+        transaction_snapshot: RollbackSnapshot | None = None
+        retain_transaction = False
+        retain_lease = False
+        result: dict[str, Any] = {
+            "success": False, "transaction_id": transaction_id,
+            "transaction_status": "discarded", "failure_kind": "command_failed",
+            "terminal": True, "retryable": False,
+        }
+        directory_fsync_supported = True
+        try:
+            source_snapshot, scope_error = _snapshot_rollback_scope(str(source), paths)
+            if scope_error or source_snapshot is None:
+                result.update({
+                    "error": scope_error or "cannot snapshot transaction write set",
+                    "failure_kind": "destination_conflict",
+                })
+                return result
+            _capture_rollback_postimages(source_snapshot)
+            if any(not entry.safe for entry in source_snapshot.postimages.values()):
+                result.update({
+                    "error": "transaction source write set could not be verified",
+                    "failure_kind": "destination_conflict",
+                })
+                return result
+
+            transaction_parent.mkdir(parents=True, exist_ok=True)
+            transaction_root, baseline = create_private_transaction_snapshot_with_manifest(
+                source, transaction_root
+            )
+            with self._transaction_roots_lock:
+                self._active_transaction_roots[transaction_id] = transaction_root.resolve(strict=True)
+            if callable(operation):
+                try:
+                    execution = operation(transaction_root, transaction_id)
+                except subprocess.TimeoutExpired as exc:
+                    execution = {
+                        "success": False,
+                        "exit_code": -1,
+                        "timed_out": True,
+                        "cleanup_unconfirmed": True,
+                        "error": f"transaction operation timed out: {exc}",
+                        "stdout": "",
+                        "stderr": "",
+                    }
+            else:
+                argv = self._transaction_docker_argv(
+                    transaction_id, transaction_root, command, docker_image
+                )
+                try:
+                    execution = self._execute(
+                        argv, str(transaction_root), timeout, cancel_event,
+                        log_callback=log_callback,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    execution = {
+                        "success": False,
+                        "exit_code": -1,
+                        "timed_out": True,
+                        "cleanup_unconfirmed": True,
+                        "error": f"transaction command timed out: {exc}",
+                        "stdout": "",
+                        "stderr": "",
+                    }
+            result.update(execution)
+            result["transaction_id"] = transaction_id
+
+            cleanup_confirmed = not bool(execution.get("cleanup_unconfirmed"))
+            if execution.get("timed_out") or execution.get("cancelled") or not cleanup_confirmed:
+                cleanup_confirmed = self._transaction_stop_container(transaction_id)
+            if not cleanup_confirmed:
+                retain_transaction = True
+                retain_lease = True
+                self._mark_rollback_outcome_unknown(
+                    result,
+                    command_key=command_key,
+                    attempt_key=attempt_key,
+                    error=OSError("transaction container termination could not be confirmed"),
+                    rollback_paths=paths,
+                )
+                self._capture_rollback_unknown_incident(
+                    result, command=command, affected_paths=paths
+                )
+                result.update({
+                    "success": False,
+                    "transaction_status": "recovery_required",
+                    "failure_kind": "child_termination_unconfirmed",
+                    "outcome_unknown": True,
+                    "retryable": False,
+                    "terminal": True,
+                    "error": "transaction container termination could not be confirmed",
+                })
+                return result
+            if execution.get("cleanup_unconfirmed"):
+                execution["cleanup_unconfirmed"] = False
+                result["cleanup_unconfirmed"] = False
+
+            if not execution.get("success"):
+                try:
+                    verify_transaction_source_unchanged(source, baseline, paths)
+                except (OSError, ValueError) as exc:
+                    retain_transaction = True
+                    retain_lease = True
+                    self._mark_rollback_outcome_unknown(
+                        result,
+                        command_key=command_key,
+                        attempt_key=attempt_key,
+                        error=exc,
+                        rollback_paths=paths,
+                    )
+                    self._capture_rollback_unknown_incident(
+                        result, command=command, affected_paths=paths
+                    )
+                    result.update({
+                        "success": False,
+                        "transaction_status": "recovery_required",
+                        "failure_kind": "destination_conflict",
+                        "rolled_back": False,
+                        "fail_closed": True,
+                        "incident_required": True,
+                        "rollback_paths": list(paths),
+                        "outcome_unknown": True,
+                        "retryable": False,
+                        "terminal": True,
+                        "error": str(exc)[:512],
+                    })
+                    return result
+                if execution.get("outcome_unknown") or execution.get("cleanup_unconfirmed"):
+                    if not result.get("incident_required"):
+                        self._mark_rollback_outcome_unknown(
+                            result,
+                            command_key=command_key,
+                            attempt_key=attempt_key,
+                            error=OSError(str(result.get("error") or "transaction outcome is unknown")),
+                            rollback_paths=paths,
+                        )
+                        self._capture_rollback_unknown_incident(
+                            result, command=command, affected_paths=paths
+                        )
+                    result.update({
+                        "success": False,
+                        "transaction_status": "discarded",
+                        "failure_kind": "command_outcome_unknown",
+                        "rolled_back": bool(result.get("rolled_back", True)),
+                        "source_unchanged": True,
+                        "outcome_unknown": True,
+                        "fail_closed": True,
+                        "incident_required": True,
+                        "retryable": False,
+                        "terminal": True,
+                    })
+                    return result
+                result.update({
+                    "success": False,
+                    "transaction_status": "discarded",
+                    "failure_kind": (
+                        "timeout" if execution.get("timed_out") else
+                        "cancelled" if execution.get("cancelled") else "command_failed"
+                    ),
+                    "outcome_unknown": False,
+                    "rolled_back": True,
+                    "source_unchanged": True,
+                    "retryable": False,
+                    "terminal": True,
+                })
+                return result
+
+            try:
+                verify_transaction_source_unchanged(source, baseline, paths)
+                changes = validate_transaction_output(baseline, transaction_root, paths)
+            except (OSError, ValueError) as exc:
+                source_conflict = "source path changed while command was running" in str(exc)
+                if source_conflict:
+                    retain_transaction = True
+                    retain_lease = True
+                    self._mark_rollback_outcome_unknown(
+                        result,
+                        command_key=command_key,
+                        attempt_key=attempt_key,
+                        error=exc,
+                        rollback_paths=paths,
+                    )
+                    self._capture_rollback_unknown_incident(
+                        result, command=command, affected_paths=paths
+                    )
+                result.update({
+                    "success": False,
+                    "transaction_status": "recovery_required" if source_conflict else "discarded",
+                    "failure_kind": (
+                        "undeclared_output" if "undeclared transaction output" in str(exc)
+                        else "destination_conflict" if source_conflict
+                        else "import_failed"
+                    ),
+                    "outcome_unknown": source_conflict,
+                    "rolled_back": not source_conflict,
+                    "source_unchanged": not source_conflict,
+                    "retryable": False,
+                    "terminal": True,
+                    "error": str(exc)[:512],
+                })
+                return result
+
+            changed_paths = list(changes)
+            try:
+                if changed_paths:
+                    transaction_snapshot, output_error = _snapshot_rollback_scope(
+                        str(transaction_root), changed_paths
+                    )
+                    if output_error or transaction_snapshot is None:
+                        raise OSError(output_error or "cannot snapshot transaction outputs")
+                    expected_preimages = {
+                        path: source_snapshot.postimages[path]
+                        for path in changed_paths
+                    }
+                    imported_files = {
+                        path: RollbackFileSnapshot(
+                            content=transaction_snapshot.files[path].content,
+                            mode=transaction_snapshot.files[path].mode,
+                            xattrs=transaction_snapshot.files[path].xattrs,
+                            windows_dacl=source_snapshot.files[path].windows_dacl,
+                            atime_ns=transaction_snapshot.files[path].atime_ns,
+                            mtime_ns=transaction_snapshot.files[path].mtime_ns,
+                        )
+                        for path in changed_paths
+                    }
+                    import_snapshot = RollbackSnapshot(
+                        root=source_snapshot.root,
+                        root_identity=source_snapshot.root_identity,
+                        files=imported_files,
+                        root_guard=source_snapshot.root_guard,
+                        postimages=expected_preimages,
+                    )
+                    journal_path = transaction_parent / f"{transaction_id}.journal.json"
+                    journal_payload = {
+                        "schema": 1,
+                        "transaction_id": transaction_id,
+                        "task_id": task_id,
+                        "attempt_fence": attempt_payload,
+                        "source_root": str(source),
+                        "transaction_root": str(transaction_root),
+                        "paths": changed_paths,
+                        "files": {
+                            path: {
+                                "before": self._transaction_file_payload(source_snapshot.files[path]),
+                                "after": self._transaction_file_payload(imported_files[path]),
+                            }
+                            for path in changed_paths
+                        },
+                    }
+                    with self._fenced_transaction_commit(
+                        work_attempt_fence,
+                        task_id=task_id,
+                        source=source,
+                        paths=changed_paths,
+                        owner_id=f"command-import:{task_id}:{transaction_id}:{uuid.uuid4().hex}",
+                        namespace_kwargs=namespace_kwargs,
+                    ) as (fencing_lease, commit_attempt_payload):
+                        journal_payload["attempt_fence"] = commit_attempt_payload
+                        journal_payload["fencing"] = {
+                            "lease_id": fencing_lease.lease_id,
+                            "fencing_token": fencing_lease.fencing_token,
+                        }
+                        directory_fsync_supported = self._persist_transaction_journal(
+                            journal_path, journal_payload
+                        )
+                        try:
+                            _restore_rollback_scope(str(source), import_snapshot)
+                        except Exception as import_error:
+                            restored = self._recover_partial_transaction_import(
+                                source, source_snapshot, transaction_snapshot, changed_paths
+                            )
+                            if restored:
+                                directory_fsync_supported = (
+                                    self._fsync_rollback_directories(source, changed_paths)
+                                    and directory_fsync_supported
+                                )
+                                self._remove_transaction_journal(journal_path, journal_payload)
+                                result.update({
+                                    "success": False,
+                                    "transaction_status": "discarded",
+                                    "failure_kind": "import_failed",
+                                    "outcome_unknown": False,
+                                    "retryable": False,
+                                    "terminal": True,
+                                    "rolled_back": True,
+                                    "error": f"transaction output import failed; source restored: {str(import_error)[:384]}",
+                                })
+                                return result
+                            raise OSError(f"transaction output import failed: {str(import_error)[:384]}") from import_error
+
+                        verify_snapshot, verify_error = _snapshot_rollback_scope(
+                            str(source), changed_paths
+                        )
+                        if verify_error or verify_snapshot is None:
+                            raise OSError(verify_error or "cannot verify imported transaction outputs")
+                        try:
+                            for path in changed_paths:
+                                if not self._transaction_file_matches(
+                                    verify_snapshot.files[path], transaction_snapshot.files[path]
+                                ):
+                                    raise OSError(f"imported transaction output changed: {path}")
+                        finally:
+                            _close_rollback_root(verify_snapshot.root_guard)
+                        directory_fsync_supported = (
+                            self._fsync_rollback_directories(source, changed_paths)
+                            and directory_fsync_supported
+                        )
+                        directory_fsync_supported = (
+                            self._remove_transaction_journal(journal_path, journal_payload)
+                            and directory_fsync_supported
+                        )
+                result.update({
+                    "success": True,
+                    "transaction_status": "committed",
+                    "failure_kind": "",
+                    "outcome_unknown": False,
+                    "retryable": False,
+                    "terminal": True,
+                    "imported_paths": changed_paths if 'changed_paths' in locals() else [],
+                    "directory_fsync_supported": directory_fsync_supported,
+                })
+                if not directory_fsync_supported:
+                    result["durability_warning"] = (
+                        "Directory fsync is unsupported on Windows; transaction crash durability is not guaranteed."
+                    )
+            except Exception as exc:
+                retain_transaction = True
+                retain_lease = True
+                self._mark_rollback_outcome_unknown(
+                    result,
+                    command_key=command_key,
+                    attempt_key=attempt_key,
+                    error=exc,
+                    rollback_paths=paths,
+                )
+                self._capture_rollback_unknown_incident(
+                    result, command=command, affected_paths=paths
+                )
+                result.update({
+                    "success": False,
+                    "transaction_status": "recovery_required",
+                    "failure_kind": "durability_sync_failed" if "sync" in str(exc).lower() else "import_failed",
+                    "outcome_unknown": True,
+                    "fail_closed": True,
+                    "incident_required": True,
+                    "retryable": False,
+                    "terminal": True,
+                    "error": str(exc)[:512],
+                })
+            return result
+        except Exception as exc:
+            result.update({
+                "success": False,
+                "transaction_status": "discarded",
+                "failure_kind": "command_failed",
+                "error": str(exc)[:512],
+                "retryable": False,
+                "terminal": True,
+            })
+            return result
+        finally:
+            if transaction_snapshot is not None:
+                try:
+                    _close_rollback_root(transaction_snapshot.root_guard)
+                except OSError:
+                    pass
+            if source_snapshot is not None:
+                try:
+                    _close_rollback_root(source_snapshot.root_guard)
+                except OSError:
+                    pass
+            if not retain_transaction:
+                shutil.rmtree(transaction_root, ignore_errors=True)
+            with self._transaction_roots_lock:
+                self._active_transaction_roots.pop(transaction_id, None)
+            if not retain_lease:
+                self._transaction_leases.release(transaction_name, str(lease.get("lease_id") or ""))
+
+
     def _distill_error_with_model(self, result: dict[str, Any]) -> str:
         if not callable(self.error_distiller):
             return ""
@@ -2098,9 +5677,223 @@ class CommandBroker:
             distilled = distilled.get("text", distilled.get("summary", ""))
         return str(distilled or "").strip()[:300]
 
+    def _cached_project_command_context(self, root: str, state_dir: Path) -> Any:
+        from .project_config import resolve_project_context
+
+        cache_key = _project_config_cache_key(Path(root), state_dir)
+        if cache_key is not None:
+            with self._project_command_context_cache_lock:
+                context = self._project_command_context_cache.get(cache_key)
+                if context is not None:
+                    self._project_command_context_cache.move_to_end(cache_key)
+                    return context
+
+        context = resolve_project_context(root, state_dir)
+        if cache_key is not None and _project_config_cache_key(Path(root), state_dir) == cache_key:
+            with self._project_command_context_cache_lock:
+                self._project_command_context_cache[cache_key] = context
+                self._project_command_context_cache.move_to_end(cache_key)
+                while len(self._project_command_context_cache) > 64:
+                    self._project_command_context_cache.popitem(last=False)
+        return context
+
+    def _resolve_project_command(
+        self,
+        alias: str,
+        cwd: str,
+        *,
+        args: Sequence[str] = (),
+    ) -> _ResolvedProjectCommand:
+        """Resolve one explicit project alias without invoking a process."""
+        from .project_config import (
+            CommandDefinition,
+            ProjectConfigError,
+        )
+
+        if not isinstance(alias, str) or not _PROJECT_COMMAND_ALIAS_RE.fullmatch(alias):
+            raise ProjectConfigError("invalid_command_alias")
+        if isinstance(args, (str, bytes)) or not isinstance(args, (list, tuple)):
+            raise ProjectConfigError("invalid_command_arguments")
+        if len(args) > _MAX_PROJECT_COMMAND_ARGS or any(
+            not isinstance(item, str) or len(item) > 4096 or "\x00" in item
+            for item in args
+        ):
+            raise ProjectConfigError("invalid_command_arguments")
+
+        context = self._cached_project_command_context(
+            cwd, configured_state_dir(self.config)
+        )
+        command_root = Path(cwd).expanduser().resolve(strict=True)
+        try:
+            command_root.relative_to(context.root)
+        except ValueError:
+            raise ProjectConfigError("command_outside_project") from None
+
+        if not isinstance(context.config_digest, str) or not context.config_digest:
+            raise ProjectConfigError("invalid_config")
+        definition = context.settings.commands.get(alias)
+        if definition is None:
+            raise ProjectConfigError("command_alias_not_found")
+
+        command_env_references = dict(context.settings.env_references)
+        if isinstance(definition, str):
+            if args:
+                raise ProjectConfigError("string_command_does_not_accept_arguments")
+            command: str | CommandInvocation = definition
+            configured_command: str | CommandInvocation = definition
+        elif isinstance(definition, CommandDefinition):
+            command_env_references.update(definition.env_references)
+            configured_command = CommandInvocation(
+                argv=list(definition.argv),
+                cwd=str(command_root),
+                shell=False,
+            )
+            invocation = CommandInvocation(
+                argv=[*definition.argv, *args],
+                cwd=str(command_root),
+                shell=False,
+            )
+            invocation_result = validate_invocation(invocation)
+            if not invocation_result.get("safe"):
+                raise ProjectConfigError("invalid_command_definition")
+            command = invocation
+        else:
+            raise ProjectConfigError("invalid_command_definition")
+
+        project_environment = dict(context.settings.env)
+        if len(project_environment) + len(command_env_references) > _MAX_PROJECT_COMMAND_ENV_ENTRIES:
+            raise ProjectConfigError("invalid_command_environment")
+        environment: dict[str, str] = {}
+        environment_size = 0
+        for target_name, value in project_environment.items():
+            if (
+                not isinstance(target_name, str)
+                or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(target_name)
+                or _is_unsafe_project_command_env_key(target_name)
+                or not isinstance(value, str)
+                or "\x00" in value
+            ):
+                raise ProjectConfigError("invalid_command_environment")
+            environment_size += len(target_name.encode("utf-8")) + len(value.encode("utf-8"))
+            if environment_size > _MAX_PROJECT_COMMAND_ENV_BYTES:
+                raise ProjectConfigError("command_environment_too_large")
+            environment[target_name] = value
+
+        for target_name, source_name in command_env_references.items():
+            if (
+                not isinstance(target_name, str)
+                or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(target_name)
+                or _is_unsafe_project_command_env_key(target_name)
+                or not isinstance(source_name, str)
+                or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(source_name)
+            ):
+                raise ProjectConfigError("invalid_command_environment")
+            if source_name not in os.environ:
+                raise ProjectConfigError("command_environment_unavailable")
+            value = os.environ[source_name]
+            if not isinstance(value, str) or "\x00" in value:
+                raise ProjectConfigError("invalid_command_environment")
+            environment_size += len(target_name.encode("utf-8")) + len(value.encode("utf-8"))
+            if environment_size > _MAX_PROJECT_COMMAND_ENV_BYTES:
+                raise ProjectConfigError("command_environment_too_large")
+            environment[target_name] = value
+
+        cache_context = stable_hash(
+            {
+                "alias": alias,
+                "config_digest": context.config_digest,
+                "environment": environment,
+            }
+        )
+        return _ResolvedProjectCommand(
+            alias=alias,
+            command=command,
+            environment=environment,
+            config_digest=context.config_digest,
+            cache_context=cache_context,
+            configured_command=configured_command,
+            caller_arguments=tuple(args),
+        )
+
+    def run_project_command(
+        self,
+        alias: str,
+        cwd: str,
+        tenant: str = "agent",
+        *,
+        args: Sequence[str] = (),
+        timeout: int | None = None,
+        force: bool = False,
+        task_id: str = "",
+        criterion: str = "",
+        log_callback: Any | None = None,
+        snapshot: bool = False,
+        rollback_on_failure: bool = False,
+        rollback_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Run an explicit project command alias through normal broker policy."""
+        from .project_config import ProjectConfigError
+
+        try:
+            resolved = self._resolve_project_command(alias, cwd, args=args)
+        except ProjectConfigError as exc:
+            return {
+                "success": False,
+                "error": f"project command unavailable: {exc.code}",
+                "project_command_error": exc.code,
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return {
+                "success": False,
+                "error": "project command configuration could not be resolved",
+                "project_command_error": "configuration_resolution_failed",
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+
+        return self.run(
+            resolved.command,
+            cwd,
+            tenant,
+            timeout=timeout,
+            force=force,
+            task_id=task_id,
+            criterion=criterion,
+            log_callback=log_callback,
+            snapshot=snapshot,
+            rollback_on_failure=rollback_on_failure,
+            rollback_paths=rollback_paths,
+            _environment_overrides=resolved.environment,
+            _cache_context=resolved.cache_context,
+            _project_command_context=resolved,
+        )
+
+    @staticmethod
+    def _read_cache_entry(cache: Any, key: str) -> tuple[Any | None, bool]:
+        checked = getattr(cache, "get_checked", None)
+        if callable(checked):
+            value, healthy = checked(key)
+            return (value if healthy else None), healthy
+        return cache.get(key), True
+
+    @classmethod
+    def _read_cached_command_result(cls, success_cache: Any, failure_cache: Any, key: str) -> Any | None:
+        value, healthy = cls._read_cache_entry(success_cache, key)
+        if not healthy:
+            return None
+        if value is not None:
+            return value
+        value, healthy = cls._read_cache_entry(failure_cache, key)
+        return value if healthy else None
+
+    @_stable_rollback_status
     def run(
         self,
-        command: str,
+        command: str | CommandInvocation,
         cwd: str,
         tenant: str = "agent",
         *,
@@ -2108,6 +5901,7 @@ class CommandBroker:
         force: bool = False,
         task_id: str = "",
         criterion: str = "",
+        record_verification: bool = True,
         auto_fix: bool = False,
         fix_generator: Any | None = None,
         max_repair_attempts: int = 3,
@@ -2117,28 +5911,231 @@ class CommandBroker:
         sandbox: str = "local",
         docker_image: str = "python:3.11-slim",
         bypass_cache: bool = False,
+        paths: list[str] | None = None,
         rollback_paths: list[str] | None = None,
+        _environment_overrides: Mapping[str, str] | None = None,
+        _cache_context: str = "",
+        _transaction_context: str = "",
+        _work_attempt_fence: WorkAttemptFence | None = None,
+        _project_command_context: _ResolvedProjectCommand | None = None,
     ) -> dict[str, Any]:
+        project_alias = ""
+        project_config_digest = ""
+        project_environment_sha256 = ""
+        configured_command_sha256 = ""
+        caller_arguments_sha256 = ""
+        if (
+            isinstance(_project_command_context, _ResolvedProjectCommand)
+            and _project_command_context.command == command
+        ):
+            project_alias = _project_command_context.alias
+            project_config_digest = _project_command_context.config_digest
+            project_environment_sha256 = hashlib.sha256(
+                json.dumps(
+                    _project_command_context.environment,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            configured = _project_command_context.configured_command
+            if isinstance(configured, CommandInvocation):
+                configured_text = json.dumps(
+                    {
+                        "argv": configured.argv,
+                        "cwd": configured.cwd,
+                        "shell": configured.shell,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            else:
+                configured_text = configured
+            configured_command_sha256 = hashlib.sha256(
+                configured_text.encode("utf-8")
+            ).hexdigest()
+            caller_arguments_sha256 = hashlib.sha256(
+                json.dumps(
+                    list(_project_command_context.caller_arguments),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
-        if rollback_on_failure and auto_fix:
-            return {"success": False, "error": "rollback_on_failure is supported only for direct run actions", "rollback_unsupported_action": True, "terminal": True, "retryable": False}
-        rollback_state: RollbackSnapshot | None = None
-        if rollback_on_failure:
-            rollback_state, scope_error = _snapshot_rollback_scope(cwd, rollback_paths)
-            if scope_error:
-                key = "rollback_scope_required" if scope_error == "rollback paths are required" else "rollback_scope_invalid"
+        project_alias_required = False
+        if record_verification and task_id and criterion and _project_command_context is None:
+            try:
+                project_context = self._cached_project_command_context(
+                    cwd, configured_state_dir(self.config)
+                )
+                if project_context.resolution.error_codes:
+                    project_alias_required = True
+                else:
+                    project_alias_required = criterion.strip() in project_context.settings.verification_rules
+            except Exception:
+                project_alias_required = True
+        argv_override: list[str] | None = None
+        if isinstance(command, CommandInvocation):
+            invocation_result = validate_invocation(command)
+            if not invocation_result.get("safe"):
+                return {**invocation_result, "success": False, "preflight": True}
+            argv_override = list(invocation_result["argv"])
+            invocation_cwd = invocation_result.get("cwd")
+            if invocation_cwd is not None:
+                try:
+                    if Path(invocation_cwd).resolve(strict=False) != Path(cwd).resolve(strict=False):
+                        return {
+                            "success": False,
+                            "error": "structured invocation working directory does not match command working directory",
+                            "preflight": True,
+                            "terminal": True,
+                            "retryable": False,
+                        }
+                except (OSError, TypeError, ValueError):
+                    return {
+                        "success": False,
+                        "error": "structured invocation working directory is invalid",
+                        "preflight": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }
+            command = shlex.join(argv_override)
+        if not isinstance(command, str):
+            return {
+                "success": False,
+                "error": "command must be a string or validated argv invocation",
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        transaction_cwd: Path | None = None
+        if _transaction_context:
+            if not re.fullmatch(r"[0-9a-f]{32}", _transaction_context):
+                return {"success": False, "error": "invalid private transaction context", "terminal": True, "retryable": False}
+            try:
+                transaction_cwd = self._transaction_root_for_context(_transaction_context).resolve(strict=True)
+                requested_cwd = Path(cwd).resolve(strict=True)
+                if transaction_cwd != requested_cwd or not transaction_cwd.is_dir():
+                    raise ValueError("private transaction cwd does not match transaction context")
+            except (OSError, ValueError) as exc:
+                return {"success": False, "error": str(exc)[:256], "terminal": True, "retryable": False}
+        if not isinstance(_cache_context, str):
+            return {
+                "success": False,
+                "error": "project command cache context is invalid",
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        if _environment_overrides is not None:
+            if not isinstance(_environment_overrides, Mapping) or len(_environment_overrides) > _MAX_PROJECT_COMMAND_ENV_ENTRIES:
                 return {
                     "success": False,
-                    "error": scope_error,
-                    key: True,
+                    "error": "project command environment is invalid",
+                    "preflight": True,
                     "terminal": True,
                     "retryable": False,
                 }
+            environment_size = 0
+            for name, value in _environment_overrides.items():
+                if (
+                    not isinstance(name, str)
+                    or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(name)
+                    or name.upper() in _PROJECT_COMMAND_ENV_BLOCKED
+                    or not isinstance(value, str)
+                    or "\x00" in value
+                ):
+                    return {
+                        "success": False,
+                        "error": "project command environment is invalid",
+                        "preflight": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }
+                environment_size += len(name.encode("utf-8")) + len(value.encode("utf-8"))
+                if environment_size > _MAX_PROJECT_COMMAND_ENV_BYTES:
+                    return {
+                        "success": False,
+                        "error": "project command environment is too large",
+                        "preflight": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }
+        if rollback_on_failure and auto_fix:
+            return {"success": False, "error": "rollback_on_failure is supported only for direct run actions", "rollback_unsupported_action": True, "terminal": True, "retryable": False}
+        rollback_state: RollbackSnapshot | None = None
         original_command = command
         classification = self.classify(original_command)
         is_mutating = classification.get("class") == "mutating"
-        if sandbox == "docker":
+        attempt_key = (
+            self._attempt_key(command, cwd, cache_context=_cache_context)
+            if _cache_context
+            else self._attempt_key(command, cwd)
+        )
+        if not force and not bypass_cache and not is_mutating and not _transaction_context:
+            suppressed, suppression_cache_healthy = self._read_cache_entry(self.suppression_cache, attempt_key)
+            if suppression_cache_healthy and isinstance(suppressed, dict):
+                self.suppressed += 1
+                result = dict(suppressed)
+                result.update({"suppression_cache_hit": True, "classification": classification})
+                return self._compact(result, tenant, command)
+        is_dangerous = classification.get("class") == "dangerous"
+        if is_dangerous or (not classification["allowed"] and self.policy_blocking):
+            with self._lock:
+                self.blocked += 1
+                reason = str(classification.get("reason", "policy"))[:120]
+                self._blocked_by_reason[reason] = self._blocked_by_reason.get(reason, 0) + 1
+            result = {
+                "success": False, "error": f"command blocked: {classification['reason']}",
+                "classification": classification, "policy_blocked": True, "terminal": True, "retryable": False,
+            }
+            if not force and not bypass_cache and not is_mutating:
+                self.suppression_cache.set(attempt_key, result)
+            return result
+        if (is_mutating or auto_fix or rollback_on_failure) and not _transaction_context:
+            worktree_error = self._require_task_worktree(task_id, cwd, original_command, require_git_identity=True)
+            if worktree_error:
+                return {
+                    "success": False,
+                    "error": worktree_error,
+                    "mutation_worktree_required": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+        declared_paths = paths if paths is not None else rollback_paths
+        if (is_mutating or auto_fix) and not declared_paths and not _transaction_context:
+            return {"success": False, "error": "mutating command requires an explicit non-empty paths write set", "mutation_write_set_required": True, "terminal": True, "retryable": False}
+        if rollback_on_failure and paths is not None and rollback_paths is not None:
+            if {value.replace(chr(92), "/") for value in paths} != {value.replace(chr(92), "/") for value in rollback_paths}:
+                return {"success": False, "error": "paths and rollback_paths must describe the same write set", "mutation_write_set_invalid": True, "terminal": True, "retryable": False}
+        if (is_mutating or rollback_on_failure) and _environment_overrides:
+            return {"success": False, "error": "mutating transaction does not accept project environment overrides", "terminal": True, "retryable": False}
+        fence_required = is_mutating or auto_fix or (
+            rollback_on_failure and classification.get("class") == "unknown"
+        )
+        if fence_required and _work_attempt_fence is None:
+            return {
+                "success": False,
+                "error": "mutating transaction requires a current work attempt fence",
+                "mutation_fence_required": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        if _work_attempt_fence is not None:
+            try:
+                self._assert_work_attempt_fence(
+                    _work_attempt_fence, task_id=task_id, resource=cwd
+                )
+            except (AttributeError, OSError, TypeError, ValueError, RuntimeError) as exc:
+                return {
+                    "success": False,
+                    "error": str(exc)[:512],
+                    "failure_kind": "work_attempt_fence_invalid",
+                    "mutation_fence_required": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+        if sandbox == "docker" and not is_mutating and not _transaction_context:
             if not shutil.which("docker"):
                 return {
                     "success": False,
@@ -2158,27 +6155,6 @@ class CommandBroker:
                     "retryable": False,
                     "budget_exhausted": True,
                 }
-        attempt_key = self._attempt_key(command, cwd)
-        if not force and not bypass_cache and not is_mutating:
-            suppressed = self.suppression_cache.get(attempt_key)
-            if isinstance(suppressed, dict):
-                self.suppressed += 1
-                result = dict(suppressed)
-                result.update({"suppression_cache_hit": True, "classification": classification})
-                return self._compact(result, tenant, command)
-        is_dangerous = classification.get("class") == "dangerous"
-        if is_dangerous or (not classification["allowed"] and self.policy_blocking):
-            with self._lock:
-                self.blocked += 1
-                reason = str(classification.get("reason", "policy"))[:120]
-                self._blocked_by_reason[reason] = self._blocked_by_reason.get(reason, 0) + 1
-            result = {
-                "success": False, "error": f"command blocked: {classification['reason']}",
-                "classification": classification, "policy_blocked": True, "terminal": True, "retryable": False,
-            }
-            if not force and not is_mutating:
-                self.suppression_cache.set(attempt_key, result)
-            return result
         cwd_path = Path(cwd).expanduser().resolve(strict=False)
         if not cwd_path.is_dir():
             result = {
@@ -2188,16 +6164,16 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return result
-        unavailable = self._unavailable_executable(command, cwd)
+        unavailable = None if _transaction_context else self._unavailable_executable(command, cwd)
         if unavailable:
             result = {
                 "success": False, "error": f"command executable is unavailable: {unavailable}",
                 "exit_code": 127, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         if not Path(cwd).is_dir():
@@ -2205,11 +6181,16 @@ class CommandBroker:
                 "success": False, "error": f"working directory does not exist: {cwd}",
                 "exit_code": 1, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         try:
-            key, state = self._key(command, cwd, classification)
+            if _cache_context:
+                key, state = self._key(
+                    command, cwd, classification, cache_context=_cache_context
+                )
+            else:
+                key, state = self._key(command, cwd, classification)
         except ValueError as exc:
             result = {
                 "success": False,
@@ -2219,12 +6200,29 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
-        cacheable = bool(classification["cacheable"]) and not is_mutating
-        if cacheable and not force:
-            cached = self.success_cache.get(key) or self.failure_cache.get(key)
+        cacheable = bool(classification["cacheable"]) and not is_mutating and not _transaction_context
+        if cacheable and not force and not bypass_cache:
+            cached = self._read_cached_command_result(self.success_cache, self.failure_cache, key)
+            if isinstance(cached, dict):
+                stale_key = key
+                invalidate_repo_state = getattr(self.repo_state, "invalidate", None)
+                if callable(invalidate_repo_state):
+                    invalidate_repo_state(cwd)
+                try:
+                    if _cache_context:
+                        key, state = self._key(
+                            command, cwd, classification, cache_context=_cache_context
+                        )
+                    else:
+                        key, state = self._key(command, cwd, classification)
+                except ValueError:
+                    cached = None
+                else:
+                    if key != stale_key:
+                        cached = self._read_cached_command_result(self.success_cache, self.failure_cache, key)
             if isinstance(cached, dict):
                 self.hits += 1
                 result = dict(cached)
@@ -2234,23 +6232,56 @@ class CommandBroker:
                     tenant=tenant,
                     task_id=task_id,
                     criterion=criterion or f"command:{self._safe_label(command)}",
+                    command=command,
                     command_id=f"cache_{uuid.uuid4().hex}",
                     command_digest=hashlib.sha256(command.encode("utf-8")).hexdigest(),
                     repository_revision=str(state.get("fingerprint", "")),
                     duration_ms=float(result.get("duration_ms", 0) or 0),
                     cached=True,
+                    project_alias=project_alias,
+                    project_config_digest=project_config_digest,
+                    project_environment_sha256=project_environment_sha256,
+                    configured_command_sha256=configured_command_sha256,
+                    caller_arguments_sha256=caller_arguments_sha256,
+                    project_alias_required=project_alias_required,
+                    repository_root=str(state.get("root") or cwd),
                 )
                 return self._compact(result, tenant, command)
 
-        singleflight = not is_mutating and not bypass_cache
+        singleflight = not is_mutating and not bypass_cache and not _transaction_context
         event: threading.Event | None = None
+        owner = False
         if singleflight:
-            with self._lock:
-                event = self._inflight.get(key)
-                if event is None:
-                    event = threading.Event(); self._inflight[key] = event; owner = True
-                else:
-                    owner = False; self.coalesced += 1
+            refreshed_for_inflight = False
+            while True:
+                with self._lock:
+                    event = self._inflight.get(key)
+                    if event is None:
+                        event = _CommandSingleflightEvent(); self._inflight[key] = event; owner = True
+                        break
+                    if refreshed_for_inflight:
+                        owner = False; self.coalesced += 1
+                        break
+                invalidate_repo_state = getattr(self.repo_state, "invalidate", None)
+                if not callable(invalidate_repo_state):
+                    refreshed_for_inflight = True
+                    continue
+                invalidate_repo_state(cwd)
+                try:
+                    if _cache_context:
+                        key, state = self._key(command, cwd, classification, cache_context=_cache_context)
+                    else:
+                        key, state = self._key(command, cwd, classification)
+                except ValueError as exc:
+                    return self._compact({
+                        "success": False,
+                        "error": str(exc),
+                        "classification": classification,
+                        "preflight": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }, tenant, command)
+                refreshed_for_inflight = True
         if singleflight and not owner:
             # A second agent should benefit from single-flight without being trapped
             # behind a very long build/test command. The owner keeps running and will
@@ -2266,9 +6297,48 @@ class CommandBroker:
                     "classification": classification, "repo_state": state, "active": active,
                 }
             with self._lock:
-                result = dict(self._last.get(key, {"success": False, "error": "coalesced command failed"}))
+                last_result = self._last.get(key)
+            if last_result is None:
+                owner_result = getattr(event, "owner_result", None)
+                waiter_result = {
+                    "success": False,
+                    "error": "command ended without a definitive cacheable result",
+                    "outcome_unknown": True,
+                    "fail_closed": True,
+                    "retryable": False,
+                    "cache_hit": False,
+                    "coalesced": True,
+                    "classification": classification,
+                    "repo_state": state,
+                }
+                if isinstance(owner_result, Mapping):
+                    if owner_result.get("error"):
+                        waiter_result["error"] = str(owner_result["error"])
+                    for flag in ("timed_out", "cancelled", "aborted_interactive", "cleanup_unconfirmed"):
+                        if owner_result.get(flag):
+                            waiter_result[flag] = True
+                return self._compact(waiter_result, tenant, command)
+            result = dict(last_result)
             result.update({"cache_hit": True, "coalesced": True, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
             return self._compact(result, tenant, command)
+
+        # Acquire rollback handles only after every preflight and early-return path.
+        # Otherwise a rejected task can retain the root directory handle on Windows.
+        scope_paths = declared_paths
+        if scope_paths is not None:
+            scope_snapshot, scope_error = _snapshot_rollback_scope(cwd, scope_paths)
+            if scope_error:
+                key = "rollback_scope_required" if scope_error == "rollback paths are required" else "rollback_scope_invalid"
+                return {"success": False, "error": scope_error, key: True, "terminal": True, "retryable": False}
+            if rollback_on_failure and (_transaction_context or not is_mutating):
+                rollback_state = scope_snapshot
+            elif scope_snapshot is not None:
+                _close_rollback_root(scope_snapshot.root_guard)
+        elif rollback_on_failure:
+            rollback_state, scope_error = _snapshot_rollback_scope(cwd, rollback_paths)
+            if scope_error:
+                key = "rollback_scope_required" if scope_error == "rollback paths are required" else "rollback_scope_invalid"
+                return {"success": False, "error": scope_error, key: True, "terminal": True, "retryable": False}
 
         self.misses += 1
         started_wall = time.time()
@@ -2306,7 +6376,41 @@ class CommandBroker:
             except Exception:
                 pass
         try:
-            result = self._execute(command, cwd, int(timeout or self.timeout), cancel_event, log_callback=log_callback)
+            if (
+                is_mutating
+                or auto_fix
+                or (rollback_on_failure and classification.get("class") == "unknown")
+            ) and not _transaction_context:
+                result = self._run_private_transaction(
+                    command, cwd, tenant, task_id=task_id, paths=list(declared_paths or []),
+                    timeout=int(timeout or self.timeout), docker_image=docker_image,
+                    cancel_event=cancel_event, log_callback=log_callback,
+                    command_key=key, attempt_key=attempt_key,
+                    work_attempt_fence=_work_attempt_fence,
+                )
+            elif _transaction_context:
+                transaction_cwd = transaction_cwd or Path(cwd).resolve(strict=True)
+                argv = self._transaction_docker_argv(
+                    _transaction_context, transaction_cwd, original_command, docker_image,
+                    read_only_mount=False,
+                )
+                result = self._execute(
+                    argv, str(transaction_cwd), int(timeout or self.timeout),
+                    cancel_event, log_callback=log_callback,
+                )
+                if result.get("timed_out") or result.get("cancelled") or result.get("cleanup_unconfirmed"):
+                    if not self._transaction_stop_container(_transaction_context):
+                        result.update({"success": False, "cleanup_unconfirmed": True, "outcome_unknown": True, "fail_closed": True, "retryable": False, "terminal": True})
+            else:
+                result = self._execute(
+                    command,
+                    cwd,
+                    int(timeout or self.timeout),
+                    cancel_event,
+                    log_callback=log_callback,
+                    argv_override=argv_override,
+                    environment_overrides=_environment_overrides,
+                )
             # CPython compileall reports missing targets as a diagnostic while
             # still exiting 0. A green exit code must not hide that no target
             # was compiled.
@@ -2322,11 +6426,14 @@ class CommandBroker:
                 })
             if rollback_state is not None and rollback_on_failure and not result.get("success"):
                 try:
+                    _capture_rollback_postimages(rollback_state)
                     _restore_rollback_scope(cwd, rollback_state)
                     result["rolled_back"] = True
                 except Exception as rb_exc:
-                    result["rollback_error"] = str(rb_exc)[:512]
-                    result["rolled_back"] = False
+                    self._mark_rollback_outcome_unknown(
+                        result, command_key=key, attempt_key=attempt_key, error=rb_exc,
+                        rollback_paths=rollback_paths,
+                    )
             elif snapshot and git_snapshot:
                 result["snapshot_taken"] = True
             result["diagnostics"] = self._extract_diagnostics(result)
@@ -2339,21 +6446,35 @@ class CommandBroker:
                         result["error_distillation"] = model_distillation
                         result["error_distillation_source"] = "local_model"
             diag_paths = [d["path"] for d in result.get("diagnostics", []) if d.get("path")]
-            if not result.get("success") and not result.get("cancelled") and self.incident_store is not None:
+            if (
+                not result.get("success")
+                and (not result.get("cancelled") or result.get("outcome_unknown"))
+                and self.incident_store is not None
+            ):
                 try:
                     from .agent_incidents import ToolOutcome
                     inc = self.incident_store.capture(ToolOutcome(
                         tool_name="command",
                         command=command,
-                        error=str(result.get("error") or result.get("stderr") or ("exit code " + str(result.get("exit_code", 1)))),
+                        error=(
+                            f"rollback failed; filesystem outcome unknown: {result.get('rollback_error', '')}"
+                            if result.get("outcome_unknown")
+                            else str(result.get("error") or result.get("stderr") or ("exit code " + str(result.get("exit_code", 1))))
+                        ),
                         exit_code=int(result.get("exit_code", 1)),
                         state_revision=str(state.get("fingerprint", "")),
                         repository_root=cwd,
                         tenant=tenant,
                         timed_out=bool(result.get("timed_out")),
                         cancelled=bool(result.get("cancelled")),
-                        affected_paths=tuple(set(diag_paths)),
+                        metadata={"outcome_unknown": True, "rollback_error": result.get("rollback_error", "")} if result.get("outcome_unknown") else {},
+                        affected_paths=tuple(
+                            scope_paths or result.get("rollback_paths") or set(diag_paths)
+                        ),
                     ))
+                    if inc and result.get("outcome_unknown"):
+                        result["incident_id"] = inc.incident_id
+                        result["incident_recorded"] = True
                     if inc and (inc.root_cause or inc.verified_fix):
                         result["remediation"] = {
                             "incident_id": inc.incident_id,
@@ -2392,19 +6513,32 @@ class CommandBroker:
                     pass
 
             raw = dict(result)
-            if cacheable and not result.get("cancelled"):
-                (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)
-            self._record_command_verification(
-                result,
-                tenant=tenant,
-                task_id=task_id,
-                criterion=criterion or f"command:{self._safe_label(command)}",
-                command_id=execution_id,
-                command_digest=hashlib.sha256(command.encode("utf-8")).hexdigest(),
-                repository_revision=str(state.get("fingerprint", "")),
-                duration_ms=float(result.get("duration_ms", 0) or 0),
+            uncertain_outcome = any(
+                bool(result.get(flag))
+                for flag in ("timed_out", "cancelled", "aborted_interactive", "outcome_unknown", "in_progress")
             )
-            if not force and not is_mutating and self._non_retryable_failure(raw):
+            if cacheable and not bypass_cache and not uncertain_outcome:
+                (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)
+            if not result.get("outcome_unknown"):
+                self._record_command_verification(
+                    result,
+                    tenant=tenant,
+                    task_id=task_id,
+                    criterion=criterion or f"command:{self._safe_label(command)}",
+                    command=command,
+                    command_id=execution_id,
+                    command_digest=hashlib.sha256(command.encode("utf-8")).hexdigest(),
+                    repository_revision=str(state.get("fingerprint", "")),
+                    duration_ms=float(result.get("duration_ms", 0) or 0),
+                    project_alias=project_alias,
+                    project_config_digest=project_config_digest,
+                    project_environment_sha256=project_environment_sha256,
+                    configured_command_sha256=configured_command_sha256,
+                    caller_arguments_sha256=caller_arguments_sha256,
+                    project_alias_required=project_alias_required,
+                    repository_root=str(state.get("root") or cwd),
+                )
+            if not force and not bypass_cache and not is_mutating and not uncertain_outcome and self._non_retryable_failure(raw):
                 raw.update({"terminal": True, "retryable": False})
                 self.suppression_cache.set(attempt_key, raw)
             if singleflight:
@@ -2413,7 +6547,10 @@ class CommandBroker:
                         old_keys = list(self._last.keys())[:64]
                         for k in old_keys:
                             self._last.pop(k, None)
-                    self._last[key] = raw
+                    if uncertain_outcome:
+                        self._last.pop(key, None)
+                    else:
+                        self._last[key] = raw
             result.update({"cache_hit": False, "coalesced": False, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
         except subprocess.TimeoutExpired:
             timeout_result = {"success": False, "error": "command timed out", "timed_out": True, "classification": classification, "cache_hit": False}
@@ -2422,8 +6559,13 @@ class CommandBroker:
                     _restore_rollback_scope(cwd, rollback_state)
                     timeout_result["rolled_back"] = True
                 except Exception as rb_exc:
-                    timeout_result["rollback_error"] = str(rb_exc)[:512]
-                    timeout_result["rolled_back"] = False
+                    self._mark_rollback_outcome_unknown(
+                        timeout_result, command_key=key, attempt_key=attempt_key, error=rb_exc,
+                    )
+                    self._capture_rollback_unknown_incident(
+                        timeout_result, command=command,
+                        repository_revision=str(state.get("fingerprint", "")),
+                    )
             return timeout_result
         finally:
             if rollback_state is not None:
@@ -2438,6 +6580,11 @@ class CommandBroker:
                 self._cancel_events.pop(execution_key, None)
                 self._active_cancel_keys.pop(execution_key, None)
                 if event is not None:
+                    completed_result = locals().get("result")
+                    if not isinstance(completed_result, dict):
+                        completed_result = locals().get("timeout_result")
+                    if isinstance(event, _CommandSingleflightEvent) and isinstance(completed_result, dict):
+                        event.owner_result = dict(completed_result)
                     event.set()
 
         if task_id and self.policy_engine:
@@ -2463,6 +6610,7 @@ class CommandBroker:
             return repaired
         return compacted
 
+    @_stable_rollback_status
     def patch_and_verify(
         self,
         patch: str,
@@ -2472,27 +6620,114 @@ class CommandBroker:
         command: str = "",
         criterion: str = "",
         task_id: str = "",
+        record_verification: bool = True,
         timeout: int | None = None,
         auto_rollback: bool = True,
         log_callback: Any | None = None,
+        docker_image: str = "python:3.11-slim",
+        _transaction_context: str = "",
+        _work_attempt_fence: WorkAttemptFence | None = None,
     ) -> dict[str, Any]:
         """Apply a unified diff, run verification tests, and auto-rollback on failure."""
-        cwd_path = Path(canonical_root(cwd))
+        cwd_path = Path(cwd).resolve(strict=True) if _transaction_context else Path(canonical_root(cwd))
         if not patch or not patch.strip():
             return {"success": False, "error": "patch text is empty", "terminal": True, "retryable": False}
+        if _transaction_context:
+            transaction_root = self._transaction_root_for_context(_transaction_context).resolve(strict=True)
+            if cwd_path != transaction_root:
+                return {"success": False, "error": "private transaction cwd does not match transaction context", "terminal": True, "retryable": False}
+        else:
+            worktree_error = self._require_task_worktree(task_id, cwd_path)
+            if worktree_error:
+                return {
+                    "success": False,
+                    "error": worktree_error,
+                    "mutation_worktree_required": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+        patch_bytes = patch.encode("utf-8")
+        try:
+            write_paths = _patch_write_paths(cwd_path, patch_bytes, self.git_snapshot_timeout)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            return {
+                "success": False,
+                "applied": False,
+                "rolled_back": False,
+                "error": f"Patch write set rejected: {str(exc)[:512]}",
+                "terminal": True,
+                "retryable": False,
+            }
+        if not _transaction_context:
+            return self._run_private_transaction(
+                command=command or criterion or "patch verification",
+                source_root=cwd_path,
+                tenant=tenant,
+                task_id=task_id,
+                paths=write_paths,
+                timeout=int(timeout or self.timeout),
+                docker_image=docker_image,
+                work_attempt_fence=_work_attempt_fence,
+                log_callback=log_callback,
+                operation=lambda transaction_root, transaction_id: self.patch_and_verify(
+                    patch, transaction_root, tenant,
+                    command=command, criterion=criterion, task_id=task_id,
+                    record_verification=record_verification, timeout=timeout,
+                    auto_rollback=auto_rollback, log_callback=log_callback,
+                    docker_image=docker_image, _transaction_context=transaction_id,
+                ),
+            )
 
-        # 1. Capture snapshot
-        cp_untracked = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=str(cwd_path), capture_output=True, text=True, check=False,
-            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
-        )
-        initial_untracked = set(cp_untracked.stdout.splitlines()) if cp_untracked.returncode == 0 else set()
+        def _mark_patch_rollback_unknown(
+            failure: dict[str, Any],
+            rollback_error: str,
+            *,
+            incident_command: str,
+            repository_revision: str = "",
+        ) -> None:
+            failure.update({
+                "rollback_error": rollback_error[:512],
+                "rollback_paths": list(write_paths),
+                "outcome_unknown": True,
+                "fail_closed": True,
+                "incident_required": True,
+                "cache_hit": False,
+                "coalesced": False,
+                "retryable": False,
+                "terminal": True,
+            })
+            cache_invalidation_errors: list[str] = []
+            try:
+                classification = self.classify(incident_command)
+                command_key, _state = self._key(incident_command, str(cwd_path), classification)
+                attempt_key = self._attempt_key(incident_command, str(cwd_path))
+                for cache, key in (
+                    (self.success_cache, command_key),
+                    (self.failure_cache, command_key),
+                    (self.suppression_cache, attempt_key),
+                ):
+                    try:
+                        if cache.delete(key) is False:
+                            cache_invalidation_errors.append("cache delete reported failure")
+                    except Exception as cache_exc:
+                        cache_invalidation_errors.append(str(cache_exc)[:160])
+                with self._lock:
+                    self._last.pop(command_key, None)
+            except Exception as cache_exc:
+                cache_invalidation_errors.append(str(cache_exc)[:160])
+            if cache_invalidation_errors:
+                failure["cache_invalidation_failed"] = True
+                failure["cache_invalidation_errors"] = cache_invalidation_errors
+            self._capture_rollback_unknown_incident(
+                failure,
+                command=incident_command,
+                repository_revision=repository_revision,
+            )
 
         # 2. Check if patch applies cleanly
         check_proc = subprocess.run(
             ["git", "apply", "--check", "--whitespace=nowarn"],
-            input=patch.encode("utf-8"),
+            input=patch_bytes,
             cwd=str(cwd_path), capture_output=True, check=False,
             timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
         )
@@ -2508,12 +6743,26 @@ class CommandBroker:
             }
 
         # 3. Apply patch
-        apply_proc = subprocess.run(
-            ["git", "apply", "--whitespace=nowarn"],
-            input=patch.encode("utf-8"),
-            cwd=str(cwd_path), capture_output=True, check=False,
-            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
-        )
+        try:
+            apply_proc = subprocess.run(
+                ["git", "apply", "--whitespace=nowarn"],
+                input=patch_bytes,
+                cwd=str(cwd_path), capture_output=True, check=False,
+                timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+            )
+        except subprocess.TimeoutExpired as exc:
+            failure = {
+                "success": False,
+                "applied": False,
+                "rolled_back": False,
+                "error": "Patch application timed out; filesystem outcome is unknown",
+            }
+            _mark_patch_rollback_unknown(
+                failure,
+                str(exc),
+                incident_command=command or criterion or "patch apply",
+            )
+            return failure
         if apply_proc.returncode != 0:
             err_msg = apply_proc.stderr.decode("utf-8", errors="replace")
             return {
@@ -2526,57 +6775,76 @@ class CommandBroker:
             }
 
         # 4. Helper rollback closure
-        def _do_rollback() -> None:
-            subprocess.run(
-                ["git", "checkout", "--", "."],
-                cwd=str(cwd_path), capture_output=True, check=False,
-                timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
-            )
-            cp_after = subprocess.run(
-                ["git", "ls-files", "--others", "--exclude-standard"],
-                cwd=str(cwd_path), capture_output=True, text=True, check=False,
-                timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
-            )
-            if cp_after.returncode == 0:
-                new_files = set(cp_after.stdout.splitlines()) - initial_untracked
-                for nf in new_files:
-                    target_file = (cwd_path / nf).resolve()
-                    if target_file.is_file():
-                        target_file.unlink(missing_ok=True)
+        def _do_rollback() -> tuple[bool, str | None]:
+            try:
+                _patch_write_paths(cwd_path, patch_bytes, self.git_snapshot_timeout)
+                reverse_check = subprocess.run(
+                    ["git", "apply", "--reverse", "--check", "--whitespace=nowarn"],
+                    input=patch_bytes,
+                    cwd=str(cwd_path), capture_output=True, check=False,
+                    timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+                )
+                if reverse_check.returncode != 0:
+                    forward_check = subprocess.run(
+                        ["git", "apply", "--check", "--whitespace=nowarn"],
+                        input=patch_bytes,
+                        cwd=str(cwd_path), capture_output=True, check=False,
+                        timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+                    )
+                    if forward_check.returncode == 0:
+                        return False, "rollback patch removal could not be confirmed after concurrent changes"
+                    detail = reverse_check.stderr.decode("utf-8", errors="replace").strip()
+                    return False, detail or "rollback patch conflicts with concurrent changes"
+                reverse_apply = subprocess.run(
+                    ["git", "apply", "--reverse", "--whitespace=nowarn"],
+                    input=patch_bytes,
+                    cwd=str(cwd_path), capture_output=True, check=False,
+                    timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+                )
+                if reverse_apply.returncode == 0:
+                    return True, None
+                detail = reverse_apply.stderr.decode("utf-8", errors="replace").strip()
+                return False, detail or "rollback patch could not be applied"
+            except Exception as exc:
+                return False, f"{type(exc).__name__}: {exc}"
 
         # 5. Syntax pre-flight check on modified Python files
-        diff_lines = patch.splitlines()
-        modified_py_files: list[Path] = []
-        for line in diff_lines:
-            if line.startswith("+++ b/"):
-                rel_p = line[6:].strip()
-                if rel_p.endswith(".py"):
-                    modified_py_files.append(cwd_path / rel_p)
+        modified_py_files = [
+            cwd_path.joinpath(*path.split("/"))
+            for path in write_paths
+            if path.endswith(".py")
+        ]
 
-        import py_compile
         for py_file in modified_py_files:
             if py_file.is_file():
                 try:
-                    py_compile.compile(str(py_file), doraise=True)
-                except py_compile.PyCompileError as syn_err:
+                    compile(py_file.read_bytes(), str(py_file), "exec")
+                except SyntaxError as syn_err:
+                    rolled_back = False
+                    rollback_error = None
                     if auto_rollback:
-                        _do_rollback()
-                    return {
+                        rolled_back, rollback_error = _do_rollback()
+                    failure = {
                         "success": False,
                         "applied": False,
-                        "rolled_back": auto_rollback,
+                        "rolled_back": rolled_back,
                         "error": f"Syntax error in modified file {py_file.name}: {syn_err.msg}",
                         "diagnostics": [{"path": str(py_file.relative_to(cwd_path)), "message": syn_err.msg}],
                     }
+                    if rollback_error:
+                        _mark_patch_rollback_unknown(
+                            failure,
+                            rollback_error,
+                            incident_command=command or criterion or "patch validation",
+                        )
+                    return failure
 
         # 6. Determine test command
         test_cmd = command.strip() or criterion.strip()
         auto_detected_tests: list[str] = []
         if test_cmd.lower() == "auto":
             all_modified: list[str] = []
-            for line in diff_lines:
-                if line.startswith("+++ b/"):
-                    all_modified.append(line[6:].strip())
+            all_modified.extend(write_paths)
 
             try:
                 from .repo_tools import RepositoryTools
@@ -2613,14 +6881,26 @@ class CommandBroker:
         run_res = self.run(
             test_cmd, str(cwd_path), tenant,
             timeout=timeout, force=True, task_id=task_id, criterion=criterion,
+            paths=write_paths,
+            record_verification=record_verification,
+            rollback_on_failure=auto_rollback, rollback_paths=write_paths,
             log_callback=log_callback,
+            docker_image=docker_image,
+            _transaction_context=_transaction_context,
         )
 
-        if run_res.get("success"):
+        run_outcome_unknown = bool(
+            run_res.get("outcome_unknown") or run_res.get("cleanup_unconfirmed")
+        )
+        if run_res.get("success") and not run_outcome_unknown:
             rcpt_data = run_res.get("verification_receipt")
-            if not rcpt_data and task_id and self.verification_store is not None:
+            if (
+                record_verification
+                and not rcpt_data
+                and task_id
+                and self.verification_store is not None
+            ):
                 try:
-                    import uuid
                     from .agent_verification import VerificationReceipt
                     rcpt = VerificationReceipt.create(
                         task_id=task_id,
@@ -2647,13 +6927,19 @@ class CommandBroker:
                 "message": "Patch applied and verified successfully",
             }
         else:
-            if auto_rollback:
-                _do_rollback()
-            return {
+            rolled_back = False
+            rollback_error = None
+            if auto_rollback and not run_res.get("cleanup_unconfirmed"):
+                rolled_back, rollback_error = _do_rollback()
+            failure = {
                 "success": False,
                 "applied": False,
-                "rolled_back": auto_rollback,
-                "error": "Validation command failed after applying patch",
+                "rolled_back": rolled_back,
+                "error": (
+                    "Validation outcome is unknown after applying patch"
+                    if run_outcome_unknown
+                    else "Validation command failed after applying patch"
+                ),
                 "command": test_cmd,
                 "affected_tests_run": auto_detected_tests,
                 "exit_code": run_res.get("exit_code"),
@@ -2662,6 +6948,15 @@ class CommandBroker:
                 "diagnostics": run_res.get("diagnostics", []),
                 "remediation": run_res.get("remediation"),
             }
+            if rollback_error or run_outcome_unknown:
+                _mark_patch_rollback_unknown(
+                    failure,
+                    rollback_error
+                    or str(run_res.get("rollback_error") or "validation outcome is unknown"),
+                    incident_command=test_cmd,
+                    repository_revision=str(run_res.get("repository_revision") or ""),
+                )
+            return failure
 
     def preflight(
         self,
@@ -2706,15 +7001,14 @@ class CommandBroker:
 
         if py_files:
             checker = "py_compile"
-            import py_compile
             for pf in py_files:
                 p_path = cwd_path / pf
                 try:
-                    py_compile.compile(str(p_path), doraise=True)
-                except py_compile.PyCompileError as err:
+                    compile(p_path.read_bytes(), str(p_path), "exec")
+                except SyntaxError as err:
                     errors.append({
                         "file": pf,
-                        "line": getattr(err, "lineno", 1) or 1,
+                        "line": err.lineno or 1,
                         "message": str(err.msg),
                         "level": "syntax_error",
                     })
@@ -2784,6 +7078,23 @@ class CommandBroker:
                 "attempts": 0,
                 "result": initial,
                 "message": "command passed without repair",
+            }
+
+        classification = self.classify(command)
+        replay_safe = bool(
+            classification.get("replay_safe", False)
+        )
+        uncertain = bool(initial.get("outcome_unknown") or initial.get("timed_out") or initial.get("in_progress"))
+        unsafe_class = classification.get("class") in {"mutating", "dangerous"}
+        if uncertain or unsafe_class or not replay_safe:
+            return {
+                "success": False,
+                "repaired": False,
+                "repair_skipped": True,
+                "outcome_unknown": bool(uncertain or unsafe_class or not replay_safe),
+                "attempts": 0,
+                "result": initial,
+                "message": "repair skipped because command outcome or side effects are unsafe to replay",
             }
 
         original_files: dict[Path, str | None] = {}
@@ -3077,11 +7388,52 @@ class CommandBroker:
         cwd: str,
         name: str = "",
         env: dict[str, str] | None = None,
+        *,
+        task_id: str = "",
     ) -> dict[str, Any]:
         """Spawn a detached background daemon process with bounded logging and lifecycle tracking."""
         argv, command_label, command_error = self._daemon_argv(command)
-        if command_error:
-            return {"success": False, "error": command_error}
+        if command_error or argv is None:
+            return {"success": False, "error": command_error or "daemon command could not be parsed"}
+        authorization = self.authorize_auxiliary_action(
+            "spawn_daemon", endpoint="commands.spawn_daemon", task_id=task_id
+        )
+        if not authorization.get("allowed", False):
+            return {
+                "success": False,
+                "error": authorization.get("reason", "daemon action denied by policy"),
+                "policy": authorization,
+                "policy_blocked": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        invocation: str | CommandInvocation = (
+            command
+            if isinstance(command, str)
+            else CommandInvocation(argv=argv, cwd=cwd, shell=False)
+        )
+        worktree_error = self._require_task_worktree(task_id, cwd, invocation)
+        if worktree_error:
+            return {
+                "success": False,
+                "error": worktree_error,
+                "mutation_worktree_required": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        classification_command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+        classification = self.classify(classification_command)
+        if classification.get("class") == "dangerous" or (
+            not classification.get("allowed", False)
+        ):
+            return {
+                "success": False,
+                "error": f"daemon command blocked: {classification.get('reason', 'policy')}",
+                "classification": classification,
+                "policy_blocked": True,
+                "terminal": True,
+                "retryable": False,
+            }
         if not isinstance(name, str) or len(name) > 128 or any(ord(ch) < 32 for ch in name):
             return {"success": False, "error": "daemon name must be a control-free string of at most 128 characters"}
         resolved_cwd = Path(cwd).expanduser().resolve(strict=False)
@@ -3124,25 +7476,152 @@ class CommandBroker:
 
         job_handle = None
         process = None
+        job_name = _daemon_job_name(daemon_id) if os.name == "nt" else None
         try:
             if os.name == "nt":
-                job_handle = create_job_object_kill_on_close()
+                job_handle = _create_named_daemon_job(daemon_id)
                 if not job_handle:
-                    raise OSError("unable to create a kill-on-close daemon Job Object")
+                    raise OSError("unable to create a named daemon Job Object")
             read_fd, write_fd = os.pipe()
             read_fh = os.fdopen(read_fd, "rb", buffering=0)
             write_fh = os.fdopen(write_fd, "wb", buffering=0)
             kwargs["stdout"] = write_fh
+            launch_authorization = self.authorize_auxiliary_action(
+                "spawn_daemon", endpoint="commands.spawn_daemon", task_id=task_id
+            )
+            if not launch_authorization.get("allowed", False):
+                if job_handle:
+                    close_job_object(job_handle)
+                for handle in (read_fh, write_fh):
+                    if handle is not None:
+                        try:
+                            handle.close()
+                        except OSError:
+                            pass
+                log_fh.close()
+                self._daemon_slots.release()
+                try:
+                    log_path.unlink()
+                except OSError:
+                    pass
+                return {
+                    "success": False,
+                    "error": launch_authorization.get("reason", "daemon action denied by policy"),
+                    "policy": launch_authorization,
+                    "policy_blocked": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+            launch_worktree_error = self._require_task_worktree(
+                task_id, resolved_cwd, invocation
+            )
+            if launch_worktree_error:
+                raise OSError(
+                    "registered task worktree changed before daemon launch: "
+                    f"{launch_worktree_error}"
+                )
             process = subprocess.Popen(argv, **kwargs)
+            started_at = time.time()
+            info = {
+                "daemon_id": daemon_id,
+                "process": process,
+                "pid": process.pid,
+                "process_group_id": process.pid,
+                "identity": process_identity(process.pid),
+                "job_name": job_name,
+                "tree_control_capability": "named_job_object" if os.name == "nt" else "process_group",
+                "owner_id": self._daemon_owner_id,
+                "task_id": str(task_id),
+                "name": name or daemon_id,
+                "command": command_label,
+                "cwd": str(resolved_cwd),
+                "log_path": str(log_path),
+                "log_fh": log_fh,
+                "log_buffer": bytearray(),
+                "log_lock": threading.Lock(),
+                "_log_closed": False,
+                "started_at": started_at,
+                "expires_at": started_at + self.daemon_ttl_seconds,
+                "_slot_acquired": True,
+                "_slot_released": False,
+                "reader_thread": None,
+            }
             if job_handle:
                 process._local_ai_job_handle = job_handle
                 if not assign_process_to_job(job_handle, process.pid):
                     raise OSError("unable to assign suspended daemon to its Job Object")
+                resume_authorization = self.authorize_auxiliary_action(
+                    "spawn_daemon", endpoint="commands.spawn_daemon.resume", task_id=task_id
+                )
+                if not resume_authorization.get("allowed", False):
+                    try:
+                        cleanup_confirmed = _stop_daemon_tree(info)
+                    except Exception:
+                        cleanup_confirmed = False
+                    if cleanup_confirmed:
+                        try:
+                            process.wait(timeout=2.0)
+                            cleanup_confirmed = process.poll() is not None
+                        except Exception:
+                            cleanup_confirmed = False
+                    for handle in (read_fh, write_fh):
+                        if handle is not None:
+                            try:
+                                handle.close()
+                            except OSError:
+                                pass
+                    if cleanup_confirmed:
+                        self._close_daemon_log(info)
+                        self._daemon_slots.release()
+                        try:
+                            log_path.unlink()
+                        except OSError:
+                            pass
+                    else:
+                        info["cleanup_unconfirmed"] = True
+                        self._close_daemon_log(info)
+                        with self._daemons_lock:
+                            self._daemons[daemon_id] = info
+                            self._persist_daemon_registry()
+                        try:
+                            self._schedule_daemon_expiry(info)
+                        except RuntimeError:
+                            info["ttl_stop_failed"] = True
+                    return {
+                        "success": False,
+                        "error": resume_authorization.get("reason", "daemon action denied by policy"),
+                        "policy": resume_authorization,
+                        "policy_blocked": True,
+                        "daemon_id": daemon_id if not cleanup_confirmed else None,
+                        "cleanup_unconfirmed": not cleanup_confirmed,
+                        "outcome_unknown": not cleanup_confirmed,
+                        "terminal": True,
+                        "retryable": False,
+                    }
+                if not isinstance(info.get("identity"), dict):
+                    raise OSError("unable to establish daemon process identity before resume")
+                with self._daemons_lock:
+                    self._daemons[daemon_id] = info
+                    if not self._persist_daemon_registry():
+                        self._daemons.pop(daemon_id, None)
+                        raise OSError("unable to persist daemon Job Object ownership before resume")
+                if not _duplicate_job_handle_into_process(job_handle, process):
+                    raise OSError("unable to anchor named daemon Job Object in daemon process")
+                resume_worktree_error = self._require_task_worktree(
+                    task_id, resolved_cwd, invocation
+                )
+                if resume_worktree_error:
+                    raise OSError(
+                        "registered task worktree changed before daemon resume: "
+                        f"{resume_worktree_error}"
+                    )
                 if not _resume_suspended_process(process):
                     raise OSError("unable to resume suspended daemon process")
             write_fh.close()
             write_fh = None
         except (OSError, ValueError) as exc:
+            if job_handle:
+                terminate_job_object(job_handle)
             if process is not None:
                 try:
                     process.kill()
@@ -3154,6 +7633,9 @@ class CommandBroker:
                     pass
             if job_handle:
                 close_job_object(job_handle)
+            with self._daemons_lock:
+                self._daemons.pop(daemon_id, None)
+                self._persist_daemon_registry()
             for handle in (read_fh, write_fh):
                 if handle is not None:
                     try:
@@ -3164,26 +7646,6 @@ class CommandBroker:
             self._daemon_slots.release()
             return {"success": False, "error": f"failed to spawn daemon: {exc}"}
 
-        started_at = time.time()
-        info = {
-            "daemon_id": daemon_id,
-            "process": process,
-            "pid": process.pid,
-            "identity": process_identity(process.pid),
-            "owner_id": self._daemon_owner_id,
-            "name": name or daemon_id,
-            "command": command_label,
-            "cwd": str(resolved_cwd),
-            "log_path": str(log_path),
-            "log_fh": log_fh,
-            "log_buffer": bytearray(),
-            "log_lock": threading.Lock(),
-            "_log_closed": False,
-            "started_at": started_at,
-            "expires_at": started_at + self.daemon_ttl_seconds,
-            "_slot_acquired": True,
-            "_slot_released": False,
-        }
         reader = threading.Thread(
             target=self._capture_daemon_output,
             args=(read_fh, info, self.daemon_log_max_bytes),
@@ -3204,15 +7666,38 @@ class CommandBroker:
             reader.start()
         except RuntimeError as exc:
             try:
-                _stop_daemon_tree(info)
-                process.wait(timeout=2.0)
+                tree_stopped = _stop_daemon_tree(info)
             except Exception:
-                pass
+                tree_stopped = False
+            if tree_stopped:
+                try:
+                    process.wait(timeout=2.0)
+                    tree_stopped = process.poll() is not None
+                except Exception:
+                    tree_stopped = False
             try:
                 read_fh.close()
             except OSError:
                 pass
+            info["reader_thread"] = None
             self._close_daemon_log(info)
+            if not tree_stopped:
+                info["cleanup_unconfirmed"] = True
+                with self._daemons_lock:
+                    self._persist_daemon_registry()
+                try:
+                    self._schedule_daemon_expiry(info)
+                except RuntimeError:
+                    info["ttl_stop_failed"] = True
+                return {
+                    "success": False,
+                    "error": f"failed to start daemon log reader and process cleanup is unconfirmed: {exc}",
+                    "daemon_id": daemon_id,
+                    "cleanup_unconfirmed": True,
+                    "outcome_unknown": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
             with self._daemons_lock:
                 self._daemons.pop(daemon_id, None)
             self._release_daemon_slot(info)
@@ -3220,7 +7705,7 @@ class CommandBroker:
         try:
             self._schedule_daemon_expiry(info)
         except RuntimeError as exc:
-            stopped = self.stop_daemon(daemon_id)
+            stopped = self._stop_daemon(daemon_id)
             return {
                 "success": False,
                 "error": f"failed to schedule daemon TTL cleanup: {exc}",
@@ -3237,7 +7722,7 @@ class CommandBroker:
         try:
             watcher.start()
         except RuntimeError as exc:
-            stopped = self.stop_daemon(daemon_id)
+            stopped = self._stop_daemon(daemon_id)
             return {
                 "success": False,
                 "error": f"failed to start daemon lifecycle watcher: {exc}",
@@ -3246,7 +7731,7 @@ class CommandBroker:
         with self._daemons_lock:
             registry_saved = self._persist_daemon_registry()
         if not registry_saved:
-            stopped = self.stop_daemon(daemon_id)
+            stopped = self._stop_daemon(daemon_id)
             return {
                 "success": False,
                 "error": "daemon registry could not be written; newly started process was stopped",
@@ -3263,8 +7748,8 @@ class CommandBroker:
             "log_path": str(log_path),
             "owner_id": self._daemon_owner_id,
             "ttl_seconds": self.daemon_ttl_seconds,
+            "tree_control_capability": info.get("tree_control_capability", "unsupported"),
         }
-
     def daemon_status(self, daemon_id: str | None = None) -> dict[str, Any]:
         """Check status of one or all background daemons."""
         now = time.time()
@@ -3354,12 +7839,41 @@ class CommandBroker:
                 self._persist_daemon_registry()
             return {"success": True, "daemons": items, "count": len(items)}
 
-    def stop_daemon(self, daemon_id: str) -> dict[str, Any]:
+    def stop_daemon(self, daemon_id: str, *, task_id: str = "") -> dict[str, Any]:
+        authorization = self.authorize_auxiliary_action(
+            "stop_daemon", endpoint="commands.stop_daemon", task_id=task_id
+        )
+        if not authorization.get("allowed", False):
+            return {
+                "success": False,
+                "error": authorization.get("reason", "daemon action denied by policy"),
+                "policy": authorization,
+                "policy_blocked": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        return self._stop_daemon(daemon_id, expected_task_id=task_id)
+
+    def _stop_daemon(
+        self, daemon_id: str, *, expected_task_id: str | None = None
+    ) -> dict[str, Any]:
         """Terminate a background daemon process tree cleanly."""
         with self._daemons_lock:
             info = self._daemons.get(daemon_id)
             if not info:
                 return {"success": False, "error": f"daemon not found: {daemon_id}"}
+            if expected_task_id is not None and (
+                not expected_task_id
+                or not info.get("task_id")
+                or info.get("task_id") != expected_task_id
+            ):
+                return {
+                    "success": False,
+                    "error": "daemon belongs to a different or unknown task",
+                    "policy_blocked": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
             proc = info["process"]
             tree_stopped = info.get("process_tree_stopped") is True
             if not tree_stopped:
@@ -3433,6 +7947,292 @@ class CommandBroker:
                 "exit_code": proc.poll(),
             }
 
+    def _cassette_paths(
+        self, cassette_name: str, state_dir: str | None = None, *, create: bool = False
+    ) -> tuple[Path, Path] | _NetworkPolicyError:
+        if (
+            not isinstance(cassette_name, str)
+            or not _CASSETTE_NAME_RE.fullmatch(cassette_name)
+            or cassette_name in {".", ".."}
+        ):
+            return _NetworkPolicyError("invalid_cassette_name", "Cassette name must be a safe filename")
+        configured_root = configured_state_dir(self.config).resolve(strict=False)
+        try:
+            requested_root = Path(state_dir).expanduser().resolve(strict=False) if state_dir else configured_root
+        except (OSError, TypeError, ValueError):
+            return _NetworkPolicyError("invalid_cassette_root", "Cassette directory is invalid")
+        if not requested_root.is_relative_to(configured_root):
+            return _NetworkPolicyError("invalid_cassette_root", "Cassette directory must stay under configured state root")
+        cassette_dir = requested_root / "cassettes"
+        if cassette_dir.is_symlink():
+            return _NetworkPolicyError("invalid_cassette_root", "Cassette directory cannot be a symlink")
+        if create:
+            try:
+                cassette_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                return _NetworkPolicyError("invalid_cassette_root", "Cassette directory is unavailable")
+        try:
+            resolved_dir = cassette_dir.resolve(strict=create)
+        except OSError:
+            return _NetworkPolicyError("invalid_cassette_root", "Cassette directory is unavailable")
+        if not resolved_dir.is_relative_to(configured_root):
+            return _NetworkPolicyError("invalid_cassette_root", "Cassette directory escaped configured state root")
+        cassette_file = resolved_dir / f"{cassette_name}.json"
+        if cassette_file.is_symlink():
+            return _NetworkPolicyError("invalid_cassette_path", "Cassette file cannot be a symlink")
+        return resolved_dir, cassette_file
+
+    @staticmethod
+    def _write_cassette_atomic(
+        cassette_dir: Path, cassette_name: str, content: str
+    ) -> None:
+        """Atomically write a cassette without following a swapped directory link."""
+        temp_name = f".{Path(cassette_name).stem}.{uuid.uuid4().hex}.tmp"
+        if os.name != "nt":
+            import stat
+
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
+            if not nofollow:
+                raise OSError("no-follow cassette write is unavailable")
+            directory_flags = (
+                os.O_RDONLY
+                | nofollow
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            directory_fd = os.open(cassette_dir, directory_flags)
+            temp_created = False
+            temp_fd = -1
+            try:
+                opened_stat = os.fstat(directory_fd)
+                path_stat = os.stat(cassette_dir, follow_symlinks=False)
+                if (
+                    not stat.S_ISDIR(opened_stat.st_mode)
+                    or not stat.S_ISDIR(path_stat.st_mode)
+                    or (opened_stat.st_dev, opened_stat.st_ino)
+                    != (path_stat.st_dev, path_stat.st_ino)
+                ):
+                    raise OSError("cassette directory changed during validation")
+                file_flags = (
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | nofollow
+                    | getattr(os, "O_CLOEXEC", 0)
+                )
+                temp_fd = os.open(
+                    temp_name,
+                    file_flags,
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+                temp_created = True
+                stream = os.fdopen(temp_fd, "w", encoding="utf-8")
+                temp_fd = -1
+                with stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(
+                    temp_name,
+                    cassette_name,
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                )
+            finally:
+                if temp_fd >= 0:
+                    os.close(temp_fd)
+                if temp_created:
+                    try:
+                        os.unlink(temp_name, dir_fd=directory_fd)
+                    except FileNotFoundError:
+                        pass
+                os.close(directory_fd)
+            return
+
+        import ctypes
+        from ctypes import wintypes
+
+        class _FileTime(ctypes.Structure):
+            _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+        class _FileInfo(ctypes.Structure):
+            _fields_ = [
+                ("attributes", wintypes.DWORD),
+                ("creation", _FileTime),
+                ("access", _FileTime),
+                ("write", _FileTime),
+                ("volume", wintypes.DWORD),
+                ("size_high", wintypes.DWORD),
+                ("size_low", wintypes.DWORD),
+                ("links", wintypes.DWORD),
+                ("index_high", wintypes.DWORD),
+                ("index_low", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+        get_info = kernel32.GetFileInformationByHandle
+        get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(_FileInfo)]
+        get_info.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+
+        invalid_handle = wintypes.HANDLE(-1).value
+        directory_handle = create_file(
+            str(cassette_dir),
+            0x80,
+            0x1 | 0x2,
+            None,
+            3,
+            0x02200000,
+            None,
+        )
+        if directory_handle in (None, invalid_handle):
+            raise OSError(ctypes.get_last_error(), "cannot safely open cassette directory")
+        temp_file = cassette_dir / temp_name
+        try:
+            info = _FileInfo()
+            if not get_info(directory_handle, ctypes.byref(info)):
+                raise OSError(ctypes.get_last_error(), "cannot inspect cassette directory")
+            if not info.attributes & 0x10 or info.attributes & 0x400:
+                raise OSError("cassette directory is not a regular directory")
+            with temp_file.open("x", encoding="utf-8") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_file, cassette_dir / cassette_name)
+        finally:
+            try:
+                temp_file.unlink()
+            except FileNotFoundError:
+                pass
+            close_handle(directory_handle)
+
+    @staticmethod
+    def _open_cassette_replay_file(cassette_dir: Path, cassette_name: str) -> int:
+        if os.name != "nt":
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
+            if not nofollow:
+                raise OSError("no-follow cassette open is unavailable")
+            directory_flags = (
+                os.O_RDONLY
+                | nofollow
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            directory_fd = os.open(cassette_dir, directory_flags)
+            try:
+                file_flags = os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0)
+                return os.open(cassette_name, file_flags, dir_fd=directory_fd)
+            finally:
+                os.close(directory_fd)
+
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        class _FileTime(ctypes.Structure):
+            _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+        class _FileInfo(ctypes.Structure):
+            _fields_ = [
+                ("attributes", wintypes.DWORD),
+                ("creation", _FileTime),
+                ("access", _FileTime),
+                ("write", _FileTime),
+                ("volume", wintypes.DWORD),
+                ("size_high", wintypes.DWORD),
+                ("size_low", wintypes.DWORD),
+                ("links", wintypes.DWORD),
+                ("index_high", wintypes.DWORD),
+                ("index_low", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+        get_info = kernel32.GetFileInformationByHandle
+        get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(_FileInfo)]
+        get_info.restype = wintypes.BOOL
+        get_file_type = kernel32.GetFileType
+        get_file_type.argtypes = [wintypes.HANDLE]
+        get_file_type.restype = wintypes.DWORD
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+
+        invalid_handle = wintypes.HANDLE(-1).value
+        directory_handle = invalid_handle
+        file_handle = invalid_handle
+
+        def attributes(handle: Any) -> int:
+            info = _FileInfo()
+            if not get_info(handle, ctypes.byref(info)):
+                raise OSError(ctypes.get_last_error(), "cannot inspect cassette handle")
+            return int(info.attributes)
+
+        try:
+            directory_handle = create_file(
+                str(cassette_dir),
+                0x80,
+                0x1 | 0x2,
+                None,
+                3,
+                0x02200000,
+                None,
+            )
+            if directory_handle in (None, invalid_handle):
+                raise OSError(ctypes.get_last_error(), "cannot safely open cassette directory")
+            directory_attributes = attributes(directory_handle)
+            if not directory_attributes & 0x10 or directory_attributes & 0x400:
+                raise OSError("cassette directory is not a regular directory")
+
+            file_handle = create_file(
+                str(cassette_dir / cassette_name),
+                0x80000000,
+                0x1 | 0x2 | 0x4,
+                None,
+                3,
+                0x00200080,
+                None,
+            )
+            if file_handle in (None, invalid_handle):
+                raise OSError(ctypes.get_last_error(), "cannot safely open cassette file")
+            file_attributes = attributes(file_handle)
+            if file_attributes & (0x10 | 0x400) or get_file_type(file_handle) != 1:
+                raise OSError("cassette file is not a regular file")
+            descriptor = msvcrt.open_osfhandle(
+                int(file_handle), os.O_RDONLY | os.O_BINARY
+            )
+            file_handle = invalid_handle
+            return descriptor
+        finally:
+            if file_handle not in (None, invalid_handle):
+                close_handle(file_handle)
+            if directory_handle not in (None, invalid_handle):
+                close_handle(directory_handle)
+
     def http_probe(
         self,
         url: str,
@@ -3442,34 +8242,57 @@ class CommandBroker:
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Execute a fast, bounded headless HTTP/API endpoint probe."""
-        import urllib.request
-        import urllib.error
-        import json
-        clean_url = url.strip()
-        if not (clean_url.startswith("http://") or clean_url.startswith("https://")):
-            return {"success": False, "error": f"invalid HTTP URL: {url}"}
-
-        req = urllib.request.Request(clean_url, headers=headers or {"User-Agent": "LocalAIHub-Probe/1.0"})
-        t0 = time.perf_counter()
         try:
-            with urllib.request.urlopen(req, timeout=max(0.1, float(timeout))) as resp:
-                elapsed = time.perf_counter() - t0
-                status_code = int(resp.status)
-                body_bytes = resp.read(65536)
-                body_text = body_bytes.decode("utf-8", errors="replace")
-                resp_headers = dict(resp.headers)
-        except urllib.error.HTTPError as exc:
+            network = _network_config(self.config)
+            response_limit = _network_limit(network, "max_response_bytes", 65536, 4 * 1024 * 1024)
+            configured_timeout = float(network.get("timeout_seconds", 10.0))
+            requested_timeout = float(timeout)
+            if not math.isfinite(configured_timeout) or not math.isfinite(requested_timeout):
+                raise _NetworkPolicyError("invalid_network_timeout", "Network timeout is invalid")
+            bounded_timeout = max(0.1, min(60.0, configured_timeout, requested_timeout))
+            request_headers = _validated_network_headers(headers or None)
+            t0 = time.perf_counter()
+            status_code, response_headers, body_bytes = _perform_network_request(
+                self.config,
+                url.strip(),
+                method="GET",
+                headers=request_headers,
+                body=None,
+                timeout=bounded_timeout,
+                max_response_bytes=response_limit,
+                follow_redirects=True,
+            )
             elapsed = time.perf_counter() - t0
-            status_code = int(exc.code)
-            body_bytes = exc.read(65536) if hasattr(exc, "read") else b""
+            safe_headers = _safe_response_headers(response_headers)
+            if len(body_bytes) > response_limit:
+                return {
+                    "success": False,
+                    "status_code": status_code,
+                    "expected_status": expected_status,
+                    "error_code": "response_too_large",
+                    "error": "HTTP response exceeds configured byte limit",
+                    "body_length": response_limit + 1,
+                    "body_truncated": True,
+                    "latency_ms": round(elapsed * 1000, 1),
+                    "headers": safe_headers,
+                }
             body_text = body_bytes.decode("utf-8", errors="replace")
-            resp_headers = dict(exc.headers) if hasattr(exc, "headers") else {}
-        except Exception as exc:
-            elapsed = time.perf_counter() - t0
+        except _NetworkPolicyError as exc:
+            elapsed = time.perf_counter() - t0 if "t0" in locals() else 0.0
             return {
                 "success": False,
                 "status_code": 0,
-                "error": f"request failed: {exc}",
+                "error_code": exc.code,
+                "error": str(exc),
+                "latency_ms": round(elapsed * 1000, 1),
+            }
+        except Exception as exc:
+            elapsed = time.perf_counter() - t0 if "t0" in locals() else 0.0
+            return {
+                "success": False,
+                "status_code": 0,
+                "error_code": "network_request_failed",
+                "error": f"request failed: {type(exc).__name__}",
                 "latency_ms": round(elapsed * 1000, 1),
             }
 
@@ -3493,16 +8316,31 @@ class CommandBroker:
             "status_code": status_code,
             "expected_status": expected_status,
             "latency_ms": round(elapsed * 1000, 1),
-            "body_preview": body_text[:500],
-            "body_length": len(body_text),
+            "body_preview": _redact_network_text(body_text)[:500],
+            "body_length": len(body_bytes),
             "json_matched": json_match,
-            "headers": {k.lower(): v for k, v in list(resp_headers.items())[:12]},
+            "headers": safe_headers,
         }
 
-    def stash_save(self, cwd: str, message: str = "local_ai_hub_stash") -> dict[str, Any]:
+    def stash_save(
+        self,
+        cwd: str,
+        message: str = "local_ai_hub_stash",
+        *,
+        task_id: str = "",
+    ) -> dict[str, Any]:
         """Save dirty working tree state to Git stash."""
         resolved = str(Path(cwd).resolve())
-        cmd = f'git stash push -u -m "{message}"'
+        cmd = ["git", "stash", "push", "-u", "-m", message]
+        worktree_error = self._require_task_worktree(task_id, resolved, require_git_identity=True)
+        if worktree_error:
+            return {
+                "success": False,
+                "error": worktree_error,
+                "mutation_worktree_required": True,
+                "terminal": True,
+                "retryable": False,
+            }
         res = self._execute(cmd, resolved, timeout=30)
         return {
             "success": res.get("success", False),
@@ -3510,10 +8348,19 @@ class CommandBroker:
             "stashed": "Saved working directory" in res.get("stdout", "") or "No local changes" in res.get("stdout", ""),
         }
 
-    def stash_restore(self, cwd: str) -> dict[str, Any]:
+    def stash_restore(self, cwd: str, *, task_id: str = "") -> dict[str, Any]:
         """Restore most recent Git stash."""
         resolved = str(Path(cwd).resolve())
-        cmd = "git stash pop"
+        cmd = ["git", "stash", "pop"]
+        worktree_error = self._require_task_worktree(task_id, resolved, require_git_identity=True)
+        if worktree_error:
+            return {
+                "success": False,
+                "error": worktree_error,
+                "mutation_worktree_required": True,
+                "terminal": True,
+                "retryable": False,
+            }
         res = self._execute(cmd, resolved, timeout=30)
         return {
             "success": res.get("success", False),
@@ -3523,47 +8370,104 @@ class CommandBroker:
 
     def record_mock(self, url: str, cassette_name: str, state_dir: str | None = None) -> dict[str, Any]:
         """Record an HTTP request/response as an offline mock cassette."""
+        paths = self._cassette_paths(cassette_name, state_dir, create=True)
+        if isinstance(paths, _NetworkPolicyError):
+            return {"success": False, "error_code": paths.code, "error": str(paths)}
+        cassette_dir, cassette_file = paths
         probe = self.http_probe(url, timeout=10.0)
         if not probe.get("success"):
-            return {"success": False, "error": f"failed to fetch URL: {probe.get('error')}"}
-        s_dir = Path(state_dir or self.config.get("server", {}).get("state_dir", ".local-ai-hub")) / "cassettes"
-        s_dir.mkdir(parents=True, exist_ok=True)
-        cassette_file = s_dir / f"{cassette_name}.json"
+            return {
+                "success": False,
+                "error_code": probe.get("error_code", "network_request_failed"),
+                "error": "failed to fetch URL",
+        }
         data = {
-            "url": url,
+            "url": _safe_network_url(url),
             "recorded_at": time.time(),
             "status_code": probe["status_code"],
             "headers": probe.get("headers", {}),
             "body": probe.get("body_preview", ""),
             "body_length": probe.get("body_length", 0),
         }
-        cassette_file.write_text(json_dumps(data, indent=2), encoding="utf-8")
-        return {"success": True, "cassette": str(cassette_file), "url": url, "status_code": probe["status_code"]}
+        try:
+            self._write_cassette_atomic(
+                cassette_dir,
+                cassette_file.name,
+                json_dumps(data, indent=2),
+            )
+        except OSError:
+            return {
+                "success": False,
+                "error_code": "cassette_write_failed",
+                "error": "failed to write cassette",
+            }
+        return {
+            "success": True,
+            "cassette": str(cassette_file),
+            "url": _safe_network_url(url),
+            "status_code": probe["status_code"],
+        }
 
     def replay_mock(self, cassette_name: str, state_dir: str | None = None) -> dict[str, Any]:
         """Replay an offline mock cassette."""
-        s_dir = Path(state_dir or self.config.get("server", {}).get("state_dir", ".local-ai-hub")) / "cassettes"
-        cassette_file = s_dir / f"{cassette_name}.json"
+        paths = self._cassette_paths(cassette_name, state_dir)
+        if isinstance(paths, _NetworkPolicyError):
+            return {"success": False, "error_code": paths.code, "error": str(paths)}
+        cassette_dir, cassette_file = paths
         if not cassette_file.is_file():
             return {"success": False, "error": f"cassette not found: {cassette_name}"}
         try:
-            data = json.loads(cassette_file.read_text(encoding="utf-8"))
+            if cassette_file.is_symlink():
+                return {"success": False, "error_code": "invalid_cassette_path", "error": "Cassette file cannot be a symlink"}
+            try:
+                descriptor = self._open_cassette_replay_file(cassette_dir, cassette_file.name)
+            except (OSError, _NetworkPolicyError):
+                return {
+                    "success": False,
+                    "error_code": "invalid_cassette_path",
+                    "error": "Cassette could not be opened safely",
+                }
+            with os.fdopen(descriptor, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    return {"success": False, "error_code": "invalid_cassette_path", "error": "Cassette must be a regular file"}
+                if os.fstat(stream.fileno()).st_size > _MAX_CASSETTE_BYTES:
+                    return {"success": False, "error_code": "cassette_too_large", "error": "Cassette exceeds the 1 MiB limit"}
+                raw = stream.read(_MAX_CASSETTE_BYTES + 1)
+            if len(raw) > _MAX_CASSETTE_BYTES:
+                return {"success": False, "error_code": "cassette_too_large", "error": "Cassette exceeds the 1 MiB limit"}
+            data = json.loads(raw.decode("utf-8"))
+            if not isinstance(data, dict):
+                return {"success": False, "error": "cassette must contain a JSON object"}
+            if isinstance(data.get("url"), str):
+                data["url"] = _safe_network_url(data["url"])
+            if isinstance(data.get("headers"), Mapping):
+                data["headers"] = _safe_response_headers(data["headers"])
+            if isinstance(data.get("body"), str):
+                data["body"] = _redact_network_text(data["body"])
             return {"success": True, "replayed": True, **data}
         except Exception as exc:
             return {"success": False, "error": f"failed to read cassette: {exc}"}
 
-    def diff_hunk_stage(self, cwd: str, patch: str) -> dict[str, Any]:
+    def diff_hunk_stage(self, cwd: str, patch: str, *, task_id: str = "") -> dict[str, Any]:
         """Apply and stage a diff hunk directly to the git index using git apply --cached."""
         resolved = str(Path(cwd).resolve())
         if not patch or not patch.strip():
             return {"success": False, "error": "patch content must not be empty"}
+        worktree_error = self._require_task_worktree(task_id, resolved, require_git_identity=True)
+        if worktree_error:
+            return {
+                "success": False,
+                "error": worktree_error,
+                "mutation_worktree_required": True,
+                "terminal": True,
+                "retryable": False,
+            }
         if not shutil.which("git"):
             return {"success": False, "error": "git executable not found"}
         try:
             proc = subprocess.run(
                 ["git", "apply", "--cached", "--whitespace=nowarn", "-"],
-                input=patch,
-                text=True,
+                input=patch.encode("utf-8"),
                 capture_output=True,
                 cwd=resolved,
                 check=False,
@@ -3574,8 +8478,8 @@ class CommandBroker:
             return {
                 "success": clean,
                 "exit_code": proc.returncode,
-                "stdout": proc.stdout.strip(),
-                "stderr": proc.stderr.strip() if not clean else "",
+                "stdout": proc.stdout.decode("utf-8", errors="replace").strip(),
+                "stderr": proc.stderr.decode("utf-8", errors="replace").strip() if not clean else "",
                 "staged": clean,
             }
         except Exception as exc:
@@ -3622,6 +8526,107 @@ class CommandBroker:
             "runs": results,
         }
 
+    @staticmethod
+    def _webhook_payload_preflight(payload: dict[str, Any], byte_limit: int) -> str | None:
+        minimum_bytes = 0
+        active_containers: set[int] = set()
+
+        def json_string_size(value: str) -> int | None:
+            size = 2
+            for character in value:
+                codepoint = ord(character)
+                if codepoint in (0x22, 0x5C):
+                    size += 2
+                elif codepoint < 0x20:
+                    size += 2 if codepoint in (0x08, 0x09, 0x0A, 0x0C, 0x0D) else 6
+                elif 0xD800 <= codepoint <= 0xDFFF:
+                    return None
+                elif codepoint < 0x80:
+                    size += 1
+                elif codepoint < 0x800:
+                    size += 2
+                elif codepoint < 0x10000:
+                    size += 3
+                else:
+                    size += 4
+                if size > byte_limit:
+                    return size
+            return size
+
+        def dictionary_items(value: dict[Any, Any]):
+            for key, item in value.items():
+                yield key, True
+                yield item, False
+
+        stack: list[tuple[Any, int | None]] = [(iter(((payload, False),)), None)]
+        while stack:
+            iterator, container_id = stack[-1]
+            try:
+                value, is_key = next(iterator)
+            except StopIteration:
+                stack.pop()
+                if container_id is not None:
+                    active_containers.discard(container_id)
+                continue
+
+            if is_key and type(value) is not str:
+                return "invalid_webhook_payload"
+            if type(value) is str:
+                string_size = json_string_size(value)
+                if string_size is None:
+                    return "invalid_webhook_payload"
+                minimum_bytes += string_size
+            elif type(value) is dict:
+                if is_key:
+                    return "invalid_webhook_payload"
+                identity = id(value)
+                if identity in active_containers:
+                    return "invalid_webhook_payload"
+                active_containers.add(identity)
+                count = len(value)
+                minimum_bytes += 2 + (2 * count - 1 if count else 0)
+                stack.append((iter(dictionary_items(value)), identity))
+            elif type(value) in (list, tuple):
+                if is_key:
+                    return "invalid_webhook_payload"
+                identity = id(value)
+                if identity in active_containers:
+                    return "invalid_webhook_payload"
+                active_containers.add(identity)
+                count = len(value)
+                minimum_bytes += 2 + (count - 1 if count else 0)
+                stack.append((iter((item, False) for item in value), identity))
+            elif value is None:
+                minimum_bytes += 6 if is_key else 4
+            elif type(value) is bool:
+                minimum_bytes += (6 if value else 7) if is_key else (4 if value else 5)
+            elif type(value) is int:
+                bits = abs(value).bit_length()
+                upper_digits = (
+                    1
+                    if value == 0
+                    else (bits * 30103 + 99999) // 100000 + (1 if value < 0 else 0)
+                )
+                key_quotes = 2 if is_key else 0
+                remaining_bytes = byte_limit - minimum_bytes - key_quotes
+                if upper_digits > remaining_bytes + 1:
+                    return "payload_too_large"
+                try:
+                    minimum_bytes += len(str(value)) + key_quotes
+                except (ValueError, OverflowError):
+                    return "invalid_webhook_payload"
+            elif type(value) is float:
+                # Float spellings vary by the active JSON backend (notably for
+                # non-finite values), so size the scalar with that backend.
+                minimum_bytes += len(json_dumps(value).encode("utf-8"))
+            else:
+                return "invalid_webhook_payload"
+
+            if minimum_bytes > byte_limit:
+                return "payload_too_large"
+            if len(stack) > 900:
+                return "invalid_webhook_payload"
+        return None
     def webhook_replay(
         self,
         url: str,
@@ -3632,46 +8637,114 @@ class CommandBroker:
     ) -> dict[str, Any]:
         """Deliver a mock webhook payload with HMAC-SHA256 signature to a target endpoint."""
         import hmac
-        import hashlib
-        from urllib.request import Request, urlopen
-        from urllib.error import HTTPError, URLError
 
-        body_str = json_dumps(payload) if isinstance(payload, dict) else str(payload)
-        body_bytes = body_str.encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "LocalAIHub-WebhookReplay/3.0",
-        }
-        if secret:
-            sig = hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
-            headers[signature_header] = f"sha256={sig}"
-
-        req = Request(url, data=body_bytes, headers=headers, method="POST")
-        started = time.perf_counter()
         try:
-            with urlopen(req, timeout=max(0.1, float(timeout))) as resp:
-                resp_body = resp.read(65_536).decode("utf-8", errors="replace")
-                dur = round((time.perf_counter() - started) * 1000, 1)
+            network = _network_config(self.config)
+            payload_limit = _network_limit(network, "max_payload_bytes", 1_048_576, 4 * 1024 * 1024)
+            response_limit = _network_limit(network, "max_response_bytes", 65536, 4 * 1024 * 1024)
+            if isinstance(payload, dict):
+                preflight_error = self._webhook_payload_preflight(payload, payload_limit)
+                if preflight_error is not None:
+                    return {
+                        "success": False,
+                        "error_code": preflight_error,
+                        "error": "Webhook payload exceeds the configured limit or contains unsupported values",
+                    }
+                body_bytes = json_dumps(payload).encode("utf-8")
+            else:
+                if len(payload) > payload_limit:
+                    return {
+                        "success": False,
+                        "error_code": "payload_too_large",
+                        "error": "Webhook payload exceeds configured byte limit",
+                    }
+                body_bytes = str.encode(payload, "utf-8")
+            if len(body_bytes) > payload_limit:
                 return {
-                    "success": True,
-                    "status_code": resp.status,
-                    "duration_ms": dur,
-                    "body_preview": resp_body[:500],
-                    "headers": {k.lower(): v for k, v in list(resp.headers.items())[:10]},
+                    "success": False,
+                    "error_code": "payload_too_large",
+                    "error": "Webhook payload exceeds configured byte limit",
                 }
-        except HTTPError as exc:
-            resp_body = exc.read(65_536).decode("utf-8", errors="replace")
+            if (
+                not isinstance(signature_header, str)
+                or not _NETWORK_HEADER_NAME_RE.fullmatch(signature_header)
+                or signature_header.lower() in {"connection", "content-length", "host", "transfer-encoding"}
+            ):
+                raise _NetworkPolicyError("invalid_network_headers", "Signature header name is invalid")
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "LocalAIHub-WebhookReplay/3.0",
+            }
+            if secret:
+                signature = hmac.new(str(secret).encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+                headers[signature_header] = f"sha256={signature}"
+            request_headers = _validated_network_headers(headers)
+            configured_timeout = float(network.get("timeout_seconds", 10.0))
+            requested_timeout = float(timeout)
+            if not math.isfinite(configured_timeout) or not math.isfinite(requested_timeout):
+                raise _NetworkPolicyError("invalid_network_timeout", "Network timeout is invalid")
+            bounded_timeout = max(0.1, min(60.0, configured_timeout, requested_timeout))
+            started = time.perf_counter()
+            status, response_headers, response_body = _perform_network_request(
+                self.config,
+                url,
+                method="POST",
+                headers=request_headers,
+                body=body_bytes,
+                timeout=bounded_timeout,
+                max_response_bytes=response_limit,
+                follow_redirects=False,
+            )
+            duration = round((time.perf_counter() - started) * 1000, 1)
+            safe_headers = _safe_response_headers(response_headers)
+            if status in {301, 302, 303, 307, 308}:
+                return {
+                    "success": False,
+                    "status_code": status,
+                    "duration_ms": duration,
+                    "error_code": "network_redirect_blocked",
+                    "error": "Webhook redirects are disabled",
+                    "headers": safe_headers,
+                }
+            if len(response_body) > response_limit:
+                return {
+                    "success": False,
+                    "status_code": status,
+                    "duration_ms": duration,
+                    "error_code": "response_too_large",
+                    "error": "HTTP response exceeds configured byte limit",
+                    "body_length": response_limit + 1,
+                    "body_truncated": True,
+                    "headers": safe_headers,
+                }
+            response_text = response_body.decode("utf-8", errors="replace")
+            return {
+                "success": 200 <= status < 300,
+                "status_code": status,
+                "duration_ms": duration,
+                "body_preview": _redact_network_text(response_text)[:500],
+                "body_length": len(response_body),
+                "headers": safe_headers,
+            }
+        except _NetworkPolicyError as exc:
+            duration = round((time.perf_counter() - started) * 1000, 1) if "started" in locals() else 0.0
+            return {"success": False, "error_code": exc.code, "error": str(exc), "duration_ms": duration}
+        except (TimeoutError, socket.timeout):
+            duration = round((time.perf_counter() - started) * 1000, 1) if "started" in locals() else 0.0
             return {
                 "success": False,
-                "status_code": exc.code,
-                "duration_ms": round((time.perf_counter() - started) * 1000, 1),
-                "error": f"HTTP {exc.code}",
-                "body_preview": resp_body[:500],
+                "error_code": "network_timeout",
+                "error": "Network request timed out",
+                "duration_ms": duration,
             }
-        except URLError as exc:
-            return {"success": False, "error": str(exc.reason)}
         except Exception as exc:
-            return {"success": False, "error": str(exc)}
+            duration = round((time.perf_counter() - started) * 1000, 1) if "started" in locals() else 0.0
+            return {
+                "success": False,
+                "error_code": "network_request_failed",
+                "error": f"request failed: {type(exc).__name__}",
+                "duration_ms": duration,
+            }
 
     def mock_server_start(
         self,
@@ -3723,9 +8796,26 @@ class CommandBroker:
         if not endpoints:
             endpoints = [{"method": "GET", "path": "/api/health", "summary": "Health check"}]
 
+        raw_cors_origins = _network_config(self.config).get("mock_server_cors_origins", [])
+        if isinstance(raw_cors_origins, str):
+            raw_cors_origins = [raw_cors_origins]
+        cors_origins = {
+            str(origin).strip()
+            for origin in raw_cors_origins
+            if isinstance(origin, str) and origin.strip() and origin.strip() != "*"
+        } if isinstance(raw_cors_origins, (list, tuple, set)) else set()
+
         class MockHandler(http.server.BaseHTTPRequestHandler):
             def log_message(self, format, *args):
                 pass
+
+            def _send_cors_headers(self):
+                origin = self.headers.get("Origin", "")
+                self.send_header("Vary", "Origin")
+                if origin in cors_origins:
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                    self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+                    self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
             def do_GET(self):
                 self._handle("GET")
@@ -3738,6 +8828,11 @@ class CommandBroker:
 
             def do_DELETE(self):
                 self._handle("DELETE")
+
+            def do_OPTIONS(self):
+                self.send_response(204)
+                self._send_cors_headers()
+                self.end_headers()
 
             def _handle(self, method: str):
                 path_only = self.path.split("?", 1)[0]
@@ -3752,7 +8847,7 @@ class CommandBroker:
 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
-                self.send_header("Access-Control-Allow-Origin", "*")
+                self._send_cors_headers()
                 self.end_headers()
                 resp = {
                     "mock": True,

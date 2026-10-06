@@ -82,4 +82,4 @@ def test_command_broker_skips_unscoped_known_pitfalls(tmp_path: Path):
     cb.classify = lambda *args, **kwargs: {"class": "validation", "cacheable": False, "allowed": True}
 
     res = cb.run("pytest tests/test_broken.py", str(tmp_path))
-    assert "known_pitfalls" not in res
+    assert 'known_pitfalls' not in res

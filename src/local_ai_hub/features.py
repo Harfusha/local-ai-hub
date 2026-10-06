@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from local_ai_hub.operation_contracts import OPERATION_CONTRACTS, operation_actions, operation_enabled
+
 
 def rollout_feature_enabled(config: dict[str, Any], name: str) -> bool:
     """Enable a rollout capability only for an explicit TOML boolean true."""
@@ -122,135 +124,47 @@ class FeatureSet:
     @property
     def enabled_tools(self) -> list[str]:
         """List of MCP tools that are enabled in this configuration."""
-        tools: list[str] = []
-        if self.status:
-            tools.append("local_ai_status")
-        if self.repo:
-            tools.append("local_ai_repo")
-        if self.tasks and self.has_any_model():
-            tools.append("local_ai_task")
-        if self.rag:
-            tools.append("local_ai_rag")
-        if self.commands:
-            tools.append("local_ai_command")
-        if self.coord:
-            tools.append("local_ai_coord")
-        if self.artifacts:
-            tools.append("local_ai_artifact")
-        if self.work_orchestrator:
-            tools.append("local_ai_work")
-        return tools
+        return [tool for tool in OPERATION_CONTRACTS if operation_enabled(self, tool)]
 
     @property
     def disabled_tools(self) -> list[str]:
         """List of standard MCP tools that are disabled in this configuration."""
-        all_tools = [
-            "local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_rag",
-            "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_work",
-        ]
+        all_tools = list(OPERATION_CONTRACTS)
         active = set(self.enabled_tools)
         return [t for t in all_tools if t not in active]
 
     def supported_repo_actions(self) -> list[str]:
         """Return list of valid local_ai_repo actions supported by active backends."""
-        if not self.repo:
-            return []
-        actions = [
-            "profile", "search", "map", "code_index", "deterministic", "context",
-            "route", "delegate", "solve", "review_diff", "impact", "refactor_impact",
-            "resolve_imports", "generate_tests", "validate_patch", "audit_dependencies",
-            "ast_outline", "test_matrix", "security_audit", "git_status", "repo_state",
-            "synthesize_commit", "verify", "affected_tests", "topology", "ast_refactor",
-            "generate_mocks", "split_changes", "synthesize_rules", "code_invariants",
-            "generate_dataset", "profile_digest", "callers", "dead_code", "secret_scan",
-            "schema_inspect", "explain_query", "env_compat", "circular_dependencies",
-            "generate_types", "complexity", "api_spec", "dependency_slice",
-            "migration_drift", "package_audit", "structural_search", "context_budget",
-            "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
-            "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize",
-            "investigate", "diagnose", "briefing",
-        ]
-        if self.batch_replacement:
-            actions.append("batch_replace")
-        if self.serena:
-            actions.append("semantic")
-        if self.has_semantic():
-            actions.append("intelligence")
-        actions.append("pipeline")
-        if self.preprocessing:
-            actions.extend([
-                "preprocess", "preprocess_status", "preprocess_refresh",
-                "preprocess_pause", "preprocess_resume", "preprocess_cancel",
-                "preprocess_unregister",
-            ])
-        if self.agent_os:
-            actions.extend([
-                "context_compile", "verify_receipt", "verify_completion",
-                "call_graph_diff", "semantic_diff",
-                "cross_project_graph", "cross_project_symbols", "cross_project_impact",
-                "cross_repo_graph", "cross_repo_symbols", "cross_repo_impact",
-            ])
-        return actions
+        return list(operation_actions("local_ai_repo", self)) if operation_enabled(self, "local_ai_repo") else []
 
     def supported_task_actions(self) -> list[str]:
         """Return list of valid local_ai_task actions supported by active backends."""
-        if not self.tasks or not self.has_any_model():
-            return []
-        actions = [
-            "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress",
-            "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report",
-            "submit", "status", "wait", "result", "cancel", "candidate_create",
-            "candidate_promote", "speculative_draft", "transcribe",
-            "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold",
-        ]
-        if self.vision:
-            actions.insert(actions.index("transcribe"), "vision")
-        return actions
+        return list(operation_actions("local_ai_task", self)) if operation_enabled(self, "local_ai_task") else []
 
     def supported_coord_actions(self) -> list[str]:
         """Return list of valid local_ai_coord actions supported by active backends."""
-        if not self.coord:
-            return []
-        actions = [
-            "claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
-        ]
-        if self.agent_os:
-            actions.extend([
-                "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition",
-                "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",
-                "memory_record", "memory_get", "memory_find", "memory_promote", "memory_reap",
-                "relation_record", "relation_find", "relation_traverse",
-                "context_compile", "verify_receipt", "verify_completion",
-                "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
-                "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge",
-                "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel",
-                "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge",
-                "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree",
-            ])
-        return actions
+        return list(operation_actions("local_ai_coord", self)) if operation_enabled(self, "local_ai_coord") else []
 
     def supported_rag_actions(self) -> list[str]:
         """Return list of valid local_ai_rag actions supported by active backends."""
-        if not self.rag:
-            return []
-        return ["index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"]
+        return list(operation_actions("local_ai_rag", self)) if operation_enabled(self, "local_ai_rag") else []
 
 
     def supported_command_actions(self) -> list[str]:
         """Return list of valid local_ai_command actions supported by active broker."""
-        if not self.commands:
-            return []
-        actions = [
-            "run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix",
-            "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon",
-            "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock",
-            "diff_hunk_stage", "flaky_detect", "webhook_replay",
-            "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status",
-            "patch_and_verify", "preflight",
-        ]
-        if self.speculative_lint:
-            actions.append("speculative_lint")
-        return actions
+        return list(operation_actions("local_ai_command", self)) if operation_enabled(self, "local_ai_command") else []
+
+    def supported_status_actions(self) -> list[str]:
+        """Return status detail values from the shared operation registry."""
+        return list(operation_actions("local_ai_status", self)) if operation_enabled(self, "local_ai_status") else []
+
+    def supported_work_actions(self) -> list[str]:
+        """Return work-order actions from the shared operation registry."""
+        return list(operation_actions("local_ai_work", self)) if operation_enabled(self, "local_ai_work") else []
+
+    def supported_artifact_actions(self) -> list[str]:
+        """Return artifact actions when their feature gate is active."""
+        return list(operation_actions("local_ai_artifact", self)) if operation_enabled(self, "local_ai_artifact") else []
 
     def semantic_hint(self) -> str:
         """Short label for the semantic action(s) available."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ntpath
 import os
 import sqlite3
 import threading
@@ -17,6 +18,8 @@ from .sqlite_support import (
     retry_busy,
     validate_durable_schema,
 )
+
+_COORDINATION_ID_UNSET = object()
 from .process_utils import canonical_root
 
 
@@ -225,6 +228,16 @@ class ScopeLeaseStore:
                                         ("root_id", "TEXT", 1, 0), ("requested_path", "TEXT", 1, 3),
                                         ("updated_at", "REAL", 1, 0)],
                     }
+                    wait_columns = con.execute("PRAGMA table_info(lease_waits)").fetchall()
+                    root_is_keyed = any(str(row[1]) == "root_id" and int(row[5]) > 0 for row in wait_columns)
+                    wait_key = ("tenant", "blocked_by", "requested_path")
+                    if root_is_keyed:
+                        expected["lease_waits"] = [
+                            ("tenant", "TEXT", 1, 2), ("blocked_by", "TEXT", 1, 3),
+                            ("root_id", "TEXT", 1, 1), ("requested_path", "TEXT", 1, 4),
+                            ("updated_at", "REAL", 1, 0),
+                        ]
+                        wait_key = ("root_id", "tenant", "blocked_by", "requested_path")
                     validate_durable_schema(
                         con,
                         self.path,
@@ -232,7 +245,7 @@ class ScopeLeaseStore:
                         complete_groups=(tuple(expected),),
                         required_unique={
                             "leases": (("lease_id", "path"),),
-                            "lease_waits": (("tenant", "blocked_by", "requested_path"),),
+                            "lease_waits": (wait_key,),
                         },
                     )
                     initialize_wal(con)
@@ -250,33 +263,59 @@ class ScopeLeaseStore:
                         )"""
                     )
                     con.execute("CREATE INDEX IF NOT EXISTS idx_leases_root ON leases(root_id, expires_at)")
-                    con.execute(
-                        """CREATE TABLE IF NOT EXISTS lease_waits (
-                            tenant TEXT NOT NULL,
-                            blocked_by TEXT NOT NULL,
-                            root_id TEXT NOT NULL,
-                            requested_path TEXT NOT NULL,
-                            updated_at REAL NOT NULL,
-                            PRIMARY KEY(tenant, blocked_by, requested_path)
-                        )"""
-                    )
-                    con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_tenant ON lease_waits(tenant)")
-                    con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_blocked ON lease_waits(blocked_by)")
-                    con.execute(
-                        """CREATE TABLE IF NOT EXISTS agent_state_schema_versions (
-                               component TEXT PRIMARY KEY, version INTEGER NOT NULL, updated_at REAL NOT NULL)"""
-                    )
-                    version = con.execute(
-                        "SELECT version FROM agent_state_schema_versions WHERE component = 'leases'"
-                    ).fetchone()
-                    if version and int(version[0]) > _LEASE_SCHEMA_VERSION:
-                        raise sqlite3.DatabaseError("unsupported newer leases schema version")
-                    con.execute(
-                        """INSERT INTO agent_state_schema_versions(component, version, updated_at)
-                           VALUES ('leases', ?, ?) ON CONFLICT(component) DO UPDATE SET
-                           version = excluded.version, updated_at = excluded.updated_at""",
-                        (_LEASE_SCHEMA_VERSION, time.time()),
-                    )
+                    con.execute("BEGIN IMMEDIATE")
+                    try:
+                        con.execute(
+                            """CREATE TABLE IF NOT EXISTS lease_waits (
+                                tenant TEXT NOT NULL,
+                                blocked_by TEXT NOT NULL,
+                                root_id TEXT NOT NULL,
+                                requested_path TEXT NOT NULL,
+                                updated_at REAL NOT NULL,
+                                PRIMARY KEY(root_id, tenant, blocked_by, requested_path)
+                            )"""
+                        )
+                        wait_columns = con.execute("PRAGMA table_info(lease_waits)").fetchall()
+                        root_is_keyed = any(str(row[1]) == "root_id" and int(row[5]) > 0 for row in wait_columns)
+                        if not root_is_keyed:
+                            con.execute(
+                                """CREATE TABLE IF NOT EXISTS lease_waits_new (
+                                    tenant TEXT NOT NULL,
+                                    blocked_by TEXT NOT NULL,
+                                    root_id TEXT NOT NULL,
+                                    requested_path TEXT NOT NULL,
+                                    updated_at REAL NOT NULL,
+                                    PRIMARY KEY(root_id, tenant, blocked_by, requested_path)
+                                )"""
+                            )
+                            con.execute(
+                                """INSERT OR IGNORE INTO lease_waits_new (tenant, blocked_by, root_id, requested_path, updated_at)
+                                SELECT tenant, blocked_by, root_id, requested_path, updated_at FROM lease_waits"""
+                            )
+                            con.execute("DROP TABLE lease_waits")
+                            con.execute("ALTER TABLE lease_waits_new RENAME TO lease_waits")
+                        con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_tenant ON lease_waits(tenant)")
+                        con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_blocked ON lease_waits(blocked_by)")
+                        con.execute(
+                            """CREATE TABLE IF NOT EXISTS agent_state_schema_versions (
+                                   component TEXT PRIMARY KEY, version INTEGER NOT NULL, updated_at REAL NOT NULL)"""
+                        )
+                        version = con.execute(
+                            "SELECT version FROM agent_state_schema_versions WHERE component = 'leases'"
+                        ).fetchone()
+                        if version and int(version[0]) > _LEASE_SCHEMA_VERSION:
+                            raise sqlite3.DatabaseError("unsupported newer leases schema version")
+                        con.execute(
+                            """INSERT INTO agent_state_schema_versions(component, version, updated_at)
+                               VALUES ('leases', ?, ?) ON CONFLICT(component) DO UPDATE SET
+                               version = excluded.version, updated_at = excluded.updated_at""",
+                            (_LEASE_SCHEMA_VERSION, time.time()),
+                        )
+                        con.execute("COMMIT")
+                    except BaseException:
+                        if con.in_transaction:
+                            con.execute("ROLLBACK")
+                        raise
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
@@ -287,10 +326,24 @@ class ScopeLeaseStore:
             resolved = str(windows_root)
         else:
             resolved = canonical_root(root)
-        root_id = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:20]
+        root_identity = (
+            ntpath.normcase(ntpath.normpath(resolved))
+            if os.name == "nt" or windows_root.is_absolute()
+            else resolved
+        )
+        root_id = hashlib.sha256(root_identity.encode("utf-8")).hexdigest()[:20]
         return resolved, root_id
 
-    def claim(self, tenant: str, root: str, paths: list[str], ttl_seconds: int = 900, purpose: str = "agent edit") -> dict[str, Any]:
+    def claim(
+        self,
+        tenant: str,
+        root: str,
+        paths: list[str],
+        ttl_seconds: int = 900,
+        purpose: str = "agent edit",
+        *,
+        coordination_id: str | None | object = _COORDINATION_ID_UNSET,
+    ) -> dict[str, Any]:
         if not paths:
             return {"success": False, "error": "paths must not be empty"}
         if (not root or root == ".") and paths:
@@ -304,7 +357,16 @@ class ScopeLeaseStore:
                             break
                 except Exception:
                     pass
-        root_path, root_id = self._root(root)
+        root_path, physical_root_id = self._root(root)
+        if coordination_id is None:
+            return {"success": False, "error": "project coordination id is required"}
+        if coordination_id is _COORDINATION_ID_UNSET:
+            root_id = physical_root_id
+        else:
+            namespace = str(coordination_id).strip()
+            if not namespace or "\x00" in namespace or len(namespace) > 512:
+                return {"success": False, "error": "invalid project coordination id"}
+            root_id = f"project:{namespace}"
         rels = sorted({_norm_rel(str(p), root=root_path) for p in paths})
         now = time.time()
         expires = now + max(30, min(int(ttl_seconds), 7200))
@@ -315,10 +377,17 @@ class ScopeLeaseStore:
                 con.execute("BEGIN IMMEDIATE")
                 con.execute("DELETE FROM leases WHERE expires_at <= ?", (now,))
                 con.execute("DELETE FROM lease_waits WHERE updated_at <= ?", (now - 7200,))
-                existing = con.execute(
-                    "SELECT lease_id,tenant,path,purpose,expires_at FROM leases WHERE root_id=? AND tenant<>?",
-                    (root_id, tenant),
-                ).fetchall()
+                if coordination_id is _COORDINATION_ID_UNSET:
+                    existing = con.execute(
+                        "SELECT lease_id,tenant,path,purpose,expires_at FROM leases WHERE root_id=? AND tenant<>?",
+                        (root_id, tenant),
+                    ).fetchall()
+                else:
+                    existing = con.execute(
+                        "SELECT lease_id,tenant,path,purpose,expires_at FROM leases "
+                        "WHERE tenant<>? AND (root_id=? OR (root_id=? AND root_path=?))",
+                        (tenant, root_id, physical_root_id, root_path),
+                    ).fetchall()
                 conflicts = []
                 for requested in rels:
                     for row in existing:
@@ -388,7 +457,7 @@ class ScopeLeaseStore:
                     }
 
                 # Successfully acquire all requested paths atomically
-                con.execute("DELETE FROM lease_waits WHERE tenant=?", (tenant,))
+                con.execute("DELETE FROM lease_waits WHERE tenant=? AND root_id=?", (tenant, root_id))
                 con.executemany(
                     "INSERT INTO leases(lease_id,tenant,root_id,root_path,path,purpose,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
                     [(lease_id, tenant, root_id, root_path, p, purpose[:300], now, expires) for p in rels],
@@ -398,38 +467,61 @@ class ScopeLeaseStore:
 
         return retry_busy(write, retries=4)
 
-    def claim_batch(self, tenant: str, root: str, paths: list[str], ttl_seconds: int = 900, purpose: str = "agent edit") -> dict[str, Any]:
+    def claim_batch(
+        self,
+        tenant: str,
+        root: str,
+        paths: list[str],
+        ttl_seconds: int = 900,
+        purpose: str = "agent edit",
+        *,
+        coordination_id: str | None | object = _COORDINATION_ID_UNSET,
+    ) -> dict[str, Any]:
         """Atomic multi-path batch lease claim with rollback and cycle detection."""
-        return self.claim(tenant=tenant, root=root, paths=paths, ttl_seconds=ttl_seconds, purpose=purpose)
+        return self.claim(
+            tenant=tenant,
+            root=root,
+            paths=paths,
+            ttl_seconds=ttl_seconds,
+            purpose=purpose,
+            coordination_id=coordination_id,
+        )
 
     def release(self, tenant: str, lease_id: str = "") -> dict[str, Any]:
         def write() -> int:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
-                paths_released: list[str] = []
+                released_scopes: list[tuple[str, str]] = []
                 if lease_id:
                     p_rows = con.execute(
-                        "SELECT path FROM leases WHERE lease_id=? AND tenant=?",
+                        "SELECT root_id,path FROM leases WHERE lease_id=? AND tenant=?",
                         (lease_id, tenant),
                     ).fetchall()
-                    paths_released = [r[0] for r in p_rows]
+                    released_scopes = [(str(r[0]), str(r[1])) for r in p_rows]
                     cur = con.execute(
                         "DELETE FROM leases WHERE lease_id=? AND tenant=?",
                         (lease_id, tenant),
                     )
                 else:
+                    p_rows = con.execute(
+                        "SELECT DISTINCT root_id,path FROM leases WHERE tenant=?",
+                        (tenant,),
+                    ).fetchall()
+                    released_scopes = [(str(r[0]), str(r[1])) for r in p_rows]
                     cur = con.execute("DELETE FROM leases WHERE tenant=?", (tenant,))
                 count = int(cur.rowcount or 0)
-                # Clear wait dependencies involving this tenant when releasing leases
-                if tenant:
-                    if lease_id and paths_released:
-                        placeholders = ",".join("?" for _ in paths_released)
-                        con.execute(
-                            f"DELETE FROM lease_waits WHERE blocked_by=? AND requested_path IN ({placeholders})",
-                            (tenant, *paths_released),
-                        )
-                    elif not lease_id:
-                        con.execute("DELETE FROM lease_waits WHERE tenant=? OR blocked_by=?", (tenant, tenant))
+                # Keep wait dependencies scoped to the released project namespace.
+                roots = {scope_id for scope_id, _ in released_scopes}
+                for scope_id in roots:
+                    con.execute(
+                        "DELETE FROM lease_waits WHERE tenant=? AND root_id=?",
+                        (tenant, scope_id),
+                    )
+                for scope_id, path in released_scopes:
+                    con.execute(
+                        "DELETE FROM lease_waits WHERE blocked_by=? AND root_id=? AND requested_path=?",
+                        (tenant, scope_id, path),
+                    )
                 con.execute("COMMIT")
                 return count
         return {"success": True, "released_rows": retry_busy(write, retries=4)}
@@ -461,15 +553,39 @@ class ScopeLeaseStore:
 
         return retry_busy(write, retries=4)
 
-    def list(self, root: str = "") -> list[dict[str, Any]]:
+    def list(
+        self,
+        root: str = "",
+        *,
+        coordination_id: str | None | object = _COORDINATION_ID_UNSET,
+    ) -> list[dict[str, Any]]:
         now = time.time()
         def read():
             with closing(self._connect()) as con:
+                if coordination_id is None:
+                    return []
                 if root:
-                    _, root_id = self._root(root)
+                    root_path, physical_root_id = self._root(root)
+                    if coordination_id is _COORDINATION_ID_UNSET:
+                        return con.execute(
+                            "SELECT lease_id,tenant,root_path,path,purpose,expires_at FROM leases "
+                            "WHERE (root_id=? OR root_path=?) AND expires_at>? ORDER BY expires_at",
+                            (physical_root_id, root_path, now),
+                        ).fetchall()
+                    root_id = f"project:{str(coordination_id).strip()}"
                     return con.execute(
-                        "SELECT lease_id,tenant,root_path,path,purpose,expires_at FROM leases WHERE root_id=? AND expires_at>? ORDER BY expires_at",
-                        (root_id, now),
+                        "SELECT lease_id,tenant,root_path,path,purpose,expires_at FROM leases "
+                        "WHERE (root_id=? OR (root_id=? AND root_path=?)) AND expires_at>? ORDER BY expires_at",
+                        (root_id, physical_root_id, root_path, now),
+                    ).fetchall()
+                if coordination_id is not _COORDINATION_ID_UNSET:
+                    namespace = str(coordination_id).strip()
+                    if not namespace or "\x00" in namespace or len(namespace) > 512:
+                        return []
+                    return con.execute(
+                        "SELECT lease_id,tenant,root_path,path,purpose,expires_at FROM leases "
+                        "WHERE root_id=? AND expires_at>? ORDER BY expires_at",
+                        (f"project:{namespace}", now),
                     ).fetchall()
                 return con.execute(
                     "SELECT lease_id,tenant,root_path,path,purpose,expires_at FROM leases WHERE expires_at>? ORDER BY expires_at",
@@ -481,15 +597,40 @@ class ScopeLeaseStore:
             for r in rows
         ]
 
-    def waits(self, root: str = "") -> list[dict[str, Any]]:
+    def waits(
+        self,
+        root: str = "",
+        *,
+        coordination_id: str | None | object = _COORDINATION_ID_UNSET,
+    ) -> list[dict[str, Any]]:
         now = time.time()
         def read():
             with closing(self._connect()) as con:
+                if coordination_id is None:
+                    return []
                 if root:
-                    _, root_id = self._root(root)
+                    _, physical_root_id = self._root(root)
+                    if coordination_id is _COORDINATION_ID_UNSET:
+                        root_ids = (physical_root_id,)
+                    else:
+                        namespace = str(coordination_id).strip()
+                        if not namespace or "\x00" in namespace or len(namespace) > 512:
+                            return []
+                        root_ids = (f"project:{namespace}", physical_root_id)
+                    placeholders = ",".join("?" for _ in root_ids)
                     return con.execute(
-                        "SELECT tenant, blocked_by, requested_path, updated_at FROM lease_waits WHERE root_id=? AND updated_at>? ORDER BY updated_at DESC",
-                        (root_id, now - 3600),
+                        f"SELECT tenant, blocked_by, requested_path, updated_at FROM lease_waits "
+                        f"WHERE root_id IN ({placeholders}) AND updated_at>? ORDER BY updated_at DESC",
+                        (*root_ids, now - 3600),
+                    ).fetchall()
+                if coordination_id is not _COORDINATION_ID_UNSET:
+                    namespace = str(coordination_id).strip()
+                    if not namespace or "\x00" in namespace or len(namespace) > 512:
+                        return []
+                    return con.execute(
+                        "SELECT tenant, blocked_by, requested_path, updated_at FROM lease_waits "
+                        "WHERE root_id=? AND updated_at>? ORDER BY updated_at DESC",
+                        (f"project:{namespace}", now - 3600),
                     ).fetchall()
                 return con.execute(
                     "SELECT tenant, blocked_by, requested_path, updated_at FROM lease_waits WHERE updated_at>? ORDER BY updated_at DESC",

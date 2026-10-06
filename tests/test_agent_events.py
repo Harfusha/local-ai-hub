@@ -1,9 +1,44 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 import pytest
 
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore, AppendResult
+
+
+def test_schema_drift_fails_closed_without_deleting_durable_database(tmp_path: Path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("""
+            CREATE TABLE agent_events (
+                stream_id TEXT NOT NULL, seq INTEGER NOT NULL, event_id TEXT NOT NULL,
+                kind TEXT NOT NULL, payload TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+                correlation_id TEXT NOT NULL, actor TEXT NOT NULL, created_at REAL NOT NULL,
+                future_field TEXT, PRIMARY KEY (stream_id, seq), UNIQUE (stream_id, idempotency_key)
+            )
+        """)
+        con.execute(
+            "INSERT INTO agent_events VALUES ('task-1',1,'event-1','task.created','{}','key-1','','test',1.0,NULL)"
+        )
+        con.execute("CREATE TABLE durable_sentinel (value TEXT NOT NULL)")
+        con.execute("INSERT INTO durable_sentinel (value) VALUES ('preserve')")
+        con.commit()
+    finally:
+        con.close()
+    original_bytes = db_path.read_bytes()
+
+    with pytest.raises(RuntimeError, match="schema mismatch"):
+        AgentStateStore(db_path)._ensure_schema()
+
+    assert db_path.read_bytes() == original_bytes
+    con = sqlite3.connect(db_path)
+    try:
+        assert con.execute("SELECT value FROM durable_sentinel").fetchone() == ("preserve",)
+        assert con.execute("SELECT event_id FROM agent_events").fetchone() == ("event-1",)
+    finally:
+        con.close()
 
 
 def test_append_returns_existing_sequence_for_same_idempotency_key(tmp_path: Path):
