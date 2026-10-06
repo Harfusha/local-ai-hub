@@ -224,6 +224,7 @@ def test_setup_supports_explicit_generic_mcp_config_paths(tmp_path: Path):
     assert json.loads(generic.read_text(encoding="utf-8"))["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT"] == "generic"
     assert json.loads(vscode.read_text(encoding="utf-8"))["servers"]["local-ai"]["type"] == "stdio"
     assert (install / "generated" / "agent-policy.md").read_text(encoding="utf-8") == setup.GLOBAL_POLICY + "\n"
+    assert (install / "generated" / "token-economy-policy.md").read_text(encoding="utf-8") == setup.generate_token_economy_policy(cfg) + "\n"
     generated = json.loads((install / "generated" / "mcp-servers.json").read_text(encoding="utf-8"))
     assert generated["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT_PROFILE"] == "generic"
     assert generated["mcpServers"]["local-ai"]["args"] == ["-m", "local_ai_hub.mcp_server"]
@@ -471,7 +472,7 @@ def test_ollama_interruptible_stream_exists_and_aggregates(tmp_path: Path, monke
                 b'{"response":"lo","done":true,"eval_count":2}\n',
             ])
 
-    monkeypatch.setattr(ollama_module, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(ollama_module, "_open_interruptible_response", lambda *_args, **_kwargs: Response())
     runtime = OllamaRuntime(_ollama_config(tmp_path))
     result = runtime.request_interruptible("/api/generate", {"model": "x"}, lambda: False, timeout=1)
     assert result["response"] == "hello"

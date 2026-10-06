@@ -1,0 +1,26 @@
+diff --git a/src/local_ai_hub/generator.py b/src/local_ai_hub/generator.py
+--- a/src/local_ai_hub/generator.py
++++ b/src/local_ai_hub/generator.py
+@@ -580,1 +580,3 @@
+-            " Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`."
++            " Treat profile/default model names as routing targets only. Check installed-model inventory before live inference;"
++            " do not infer runtime availability, output quality, or performance from a configured mapping."
++            " Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`."
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -69 +69 @@
+-Local model policy: `qwen2.5-coder:1.5b` is preprocessing-only; `qwen2.5-coder:3b` handles quick/simple tasks; `qwen2.5-coder:7b` handles ordinary and more-involved tasks; `qwen3.5:9b` handles hardest or highest-risk reasoning. For other work, select the configured model role for the active hardware profile and task; overrides must preserve the configured role and quality floor. Profile/default model names are routing targets only. Check installed-model inventory before live inference; do not infer runtime availability, output quality, or performance from a configured mapping. Keep deterministic/indexed Hub actions authoritative for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and semantic compression.
++Local model policy: `qwen2.5-coder:0.5b` is preprocessing-only, `qwen2.5-coder:1.5b` handles quick/simple tasks, `qwen2.5-coder:3b` handles ordinary tasks, `qwen2.5-coder:3b` handles more involved work, and the configured hardest-reasoning tier handles the hardest or highest-risk reasoning. Treat profile/default model names as routing targets only. Check installed-model inventory before live inference; do not infer runtime availability, output quality, or performance from a configured mapping. Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`.
+diff --git a/docs/INSTALL_PROMPT.md b/docs/INSTALL_PROMPT.md
+--- a/docs/INSTALL_PROMPT.md
++++ b/docs/INSTALL_PROMPT.md
+@@ -173 +173 @@
+-Local model policy: `qwen2.5-coder:0.5b` is preprocessing-only, `qwen2.5-coder:1.5b` handles quick/simple tasks, `qwen2.5-coder:3b` handles ordinary tasks, `qwen2.5-coder:3b` handles more involved work, and the configured hardest-reasoning tier handles the hardest or highest-risk reasoning. Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`.
++Local model policy: `qwen2.5-coder:0.5b` is preprocessing-only, `qwen2.5-coder:1.5b` handles quick/simple tasks, `qwen2.5-coder:3b` handles ordinary tasks, `qwen2.5-coder:3b` handles more involved work, and the configured hardest-reasoning tier handles the hardest or highest-risk reasoning. Treat profile/default model names as routing targets only. Check installed-model inventory before live inference; do not infer runtime availability, output quality, or performance from a configured mapping. Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`.
+diff --git a/docs/UPDATE_PROMPT.md b/docs/UPDATE_PROMPT.md
+--- a/docs/UPDATE_PROMPT.md
++++ b/docs/UPDATE_PROMPT.md
+@@ -209 +209 @@
+-Local model policy: `qwen2.5-coder:0.5b` is preprocessing-only, `qwen2.5-coder:1.5b` handles quick/simple tasks, `qwen2.5-coder:3b` handles ordinary tasks, `qwen2.5-coder:3b` handles more involved work, and the configured hardest-reasoning tier handles the hardest or highest-risk reasoning. Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`.
++Local model policy: `qwen2.5-coder:0.5b` is preprocessing-only, `qwen2.5-coder:1.5b` handles quick/simple tasks, `qwen2.5-coder:3b` handles ordinary tasks, `qwen2.5-coder:3b` handles more involved work, and the configured hardest-reasoning tier handles the hardest or highest-risk reasoning. Treat profile/default model names as routing targets only. Check installed-model inventory before live inference; do not infer runtime availability, output quality, or performance from a configured mapping. Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`.

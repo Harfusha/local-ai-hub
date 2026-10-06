@@ -235,7 +235,7 @@ class ModelExecutionPolicy:
                 return settings.get(name, default)
             return getattr(settings, name, default)
 
-        profile_name = str(setting("model_profile", "balanced") or "balanced").strip().lower()
+        profile_name = str(setting("model_profile") or "").strip().lower()
         role_key = {
             "background": "background_code",
             "background_code": "background_code",

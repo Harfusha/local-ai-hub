@@ -20,7 +20,7 @@ _ORIGINAL_URLOPEN = urlopen
 
 from . import model_quality
 from .llama_cpp import LlamaCppRouter, _cancel_response_on_stop, _open_interruptible_response, _read_response_body, _set_response_timeout, _stop_requested
-from .llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_managed_selected
+from .llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_backend_selection, llama_cpp_managed_selected
 from .json_utils import dumps as json_dumps
 
 
@@ -263,9 +263,13 @@ class OllamaRuntime:
                     return {"error": "llama.cpp SYCL router unavailable"}
                 return {"models": [{"name": model} for model in models]}
             if endpoint == "/api/ps":
+                try:
+                    rows = self.llama_cpp.loaded_model_details()
+                except Exception:
+                    return {"error": "llama.cpp model inventory unavailable"}
                 return {"models": [
                     {"name": row["name"], "model": row["name"], "context_length": row.get("context_length", 0), "size": 0, "size_vram": 0, "details": {"quantization_level": row.get("quantization", "GGUF")}}
-                    for row in self.llama_cpp.loaded_model_details()
+                    for row in rows
                 ]}
             return {"error": "Ollama is not the selected backend and this endpoint is not provided by llama.cpp"}
         if should_stop is not None or deadline is not None:
@@ -2133,12 +2137,143 @@ class OllamaRuntime:
             self._invalidate_loaded_cache()
         return ok
 
+    def loaded_model_inventory(
+        self,
+        *,
+        should_stop: Any | None = None,
+        deadline: float | None = None,
+        force_refresh: bool = True,
+        include_llama: bool = True,
+    ) -> dict[str, Any]:
+        """Read fresh, endpoint-identified inventory without empty-on-error fallback."""
+        backends: dict[str, dict[str, Any]] = {}
+        rows: list[dict[str, Any]] = []
+        errors: dict[str, str] = {}
+        if bool(self.config.get("ollama", {}).get("enabled", False)):
+            endpoint_id = self.base_url
+            endpoint_status = "unknown"
+            endpoint_rows: list[dict[str, Any]] = []
+            try:
+                if _stop_requested(should_stop):
+                    raise InterruptedError("inventory cancelled")
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError("inventory deadline exceeded")
+                response = self.request(
+                    "/api/ps",
+                    timeout=None if deadline is None else max(0.0, deadline - time.monotonic()),
+                    should_stop=should_stop,
+                    deadline=deadline,
+                )
+                if not isinstance(response, dict) or "error" in response or not isinstance(response.get("models"), list):
+                    raise RuntimeError("Ollama inventory unavailable or malformed")
+                malformed = False
+                for index, row in enumerate(response["models"]):
+                    if not isinstance(row, dict):
+                        errors[f"ollama:{endpoint_id}:row:{index}"] = "model row is not an object"
+                        malformed = True
+                        continue
+                    name = next(
+                        (value.strip() for field in ("name", "model") if isinstance((value := row.get(field)), str) and value.strip()),
+                        "",
+                    )
+                    if not name:
+                        errors[f"ollama:{endpoint_id}:row:{index}"] = "model row has no usable name or model"
+                        malformed = True
+                        continue
+                    endpoint_rows.append({**row, "name": name, "model": str(row.get("model") or name), "backend": "ollama", "endpoint_id": endpoint_id})
+                endpoint_status = "unknown" if malformed else "complete"
+                if malformed:
+                    raise ValueError("Ollama inventory contains malformed model rows")
+                rows.extend(endpoint_rows)
+            except Exception as exc:
+                errors.setdefault(f"ollama:{endpoint_id}", "cancelled" if _stop_requested(should_stop) else str(exc) or type(exc).__name__)
+            backends["ollama"] = {
+                "complete": endpoint_status == "complete",
+                "endpoints": {endpoint_id: endpoint_status},
+                "models": endpoint_rows,
+            }
+
+        llama_settings = self.config.get("llama_cpp", {})
+        llama_models = llama_settings.get("models", {}) if isinstance(llama_settings, dict) else {}
+        llama_mode = str(llama_settings.get("mode", "auto")).strip().lower() if isinstance(llama_settings, dict) else "off"
+        if include_llama and llama_mode in {"auto", "on"} and isinstance(llama_models, dict) and llama_models:
+            endpoint_status: dict[str, str] = {}
+            endpoint_rows: list[dict[str, Any]] = []
+            try:
+                snapshot = self.llama_cpp.loaded_model_inventory(
+                    should_stop=should_stop, deadline=deadline, force_refresh=force_refresh,
+                )
+                if not isinstance(snapshot, dict) or snapshot.get("complete") is not True or not isinstance(snapshot.get("models"), list):
+                    raise RuntimeError("llama.cpp inventory incomplete")
+                raw_endpoints = snapshot.get("endpoints")
+                if not isinstance(raw_endpoints, dict) or any(value != "complete" for value in raw_endpoints.values()):
+                    raise RuntimeError("llama.cpp endpoint inventory incomplete")
+                endpoint_status = {str(key): str(value) for key, value in raw_endpoints.items()}
+                for index, row in enumerate(snapshot["models"]):
+                    if not isinstance(row, dict):
+                        raise ValueError(f"llama.cpp model row {index} is not an object")
+                    name = next(
+                        (value.strip() for field in ("name", "model") if isinstance((value := row.get(field)), str) and value.strip()),
+                        "",
+                    )
+                    endpoint_id = str(row.get("endpoint_url", "")).strip()
+                    if not name or not endpoint_id or endpoint_status.get(endpoint_id) != "complete":
+                        raise ValueError(f"llama.cpp model row {index} has incomplete identity")
+                    endpoint_rows.append({**row, "name": name, "model": str(row.get("model") or name), "backend": "llama.cpp-sycl", "endpoint_id": endpoint_id})
+                rows.extend(endpoint_rows)
+            except Exception as exc:
+                errors["llama.cpp"] = "cancelled" if _stop_requested(should_stop) else str(exc) or type(exc).__name__
+                if not endpoint_status:
+                    endpoint_status = {"llama.cpp": "unknown"}
+            backends["llama_cpp"] = {
+                "complete": not any(value != "complete" for value in endpoint_status.values()) and "llama.cpp" not in errors,
+                "endpoints": endpoint_status,
+                "models": endpoint_rows,
+            }
+
+        return {
+            "complete": all(item["complete"] for item in backends.values()),
+            "backend_available": bool(backends) and any(item["complete"] for item in backends.values()),
+            "observed_at_monotonic": time.monotonic(),
+            "backends": backends,
+            "models": rows,
+            "errors": errors,
+        }
+
+    def unload_inventory_model(
+        self,
+        row: dict[str, Any],
+        *,
+        should_stop: Any | None = None,
+        deadline: float | None = None,
+    ) -> bool:
+        """Unload one inventory row through the backend and endpoint that owns it."""
+        name = str(row.get("name") or row.get("model") or "").strip()
+        if not name:
+            return False
+        backend = str(row.get("backend", ""))
+        if backend == "ollama":
+            response = self.request(
+                "/api/generate", {"model": name, "prompt": "", "keep_alive": 0},
+                timeout=None if deadline is None else max(0.0, deadline - time.monotonic()),
+                should_stop=should_stop, deadline=deadline,
+            )
+            ok = isinstance(response, dict) and "error" not in response and response.get("done_reason") == "unload"
+            if ok:
+                self._invalidate_loaded_cache()
+            return ok
+        endpoint_url = str(row.get("endpoint_id") or row.get("endpoint_url") or "").strip()
+        if backend == "llama.cpp-sycl" and endpoint_url:
+            return bool(self.llama_cpp.unload_model(name, endpoint_url=endpoint_url, should_stop=should_stop, deadline=deadline))
+        return False
+
     def unload_configured_models(
         self,
         *,
         timeout_seconds: float = 3.0,
         should_stop: Any | None = None,
         deadline: float | None = None,
+        include_llama: bool = True,
     ) -> dict[str, Any]:
         """Request bounded unload and verify the resulting loaded-model state.
 
@@ -2199,7 +2334,7 @@ class OllamaRuntime:
         llama_configured = llama_mode in {"auto", "on"} and isinstance(llama_models, dict) and bool(llama_models)
         # Pause checks every configured auto/on endpoint. A failed or empty
         # convenience probe cannot distinguish an empty inventory from failure.
-        llama_active = llama_configured
+        llama_active = include_llama and llama_configured
 
         backend_names = (["ollama"] if ollama_enabled else []) + (["llama_cpp"] if llama_active else [])
         if not backend_names:
@@ -2212,6 +2347,7 @@ class OllamaRuntime:
             }
 
         last_llama_endpoint_status: dict[str, str] = {}
+        last_llama_urls: dict[str, str] = {}
 
         def read_llama_inventory() -> tuple[list[dict[str, Any]], dict[str, str]]:
             inventory_reader = getattr(self.llama_cpp, "loaded_model_inventory", None)
@@ -2229,6 +2365,11 @@ class OllamaRuntime:
                     raise RuntimeError("llama.cpp endpoint status unavailable")
                 last_llama_endpoint_status.clear()
                 last_llama_endpoint_status.update({str(key): str(value) for key, value in endpoint_status.items()})
+                endpoints = snapshot.get("endpoints", {})
+                if not isinstance(endpoints, dict):
+                    raise RuntimeError("llama.cpp endpoint receipts unavailable")
+                last_llama_urls.clear()
+                last_llama_urls.update({str(key): str(value) for key, value in endpoints.items()})
                 if snapshot.get("complete") is not True:
                     raise RuntimeError("llama.cpp inventory incomplete")
                 return rows, dict(last_llama_endpoint_status)
@@ -2275,11 +2416,20 @@ class OllamaRuntime:
                 )
 
         loaded_by_backend: dict[str, list[str]] = {name: [] for name in backend_names}
-        llama_endpoint_by_model: dict[str, str] = {}
+        loaded_targets_by_backend: dict[str, list[tuple[str, str]]] = {name: [] for name in backend_names}
+        requested_by_endpoint: dict[str, list[str]] = {}
+        remaining_by_endpoint: dict[str, list[str] | None] = {}
+        if "ollama" in backend_names:
+            remaining_by_endpoint[f"ollama:{self.base_url}"] = None
+        for endpoint_url in last_llama_urls:
+            remaining_by_endpoint[f"llama_cpp:{endpoint_url}"] = None
         for backend, rows in loaded_rows_by_backend.items():
             for row_index, row in enumerate(rows):
                 if not isinstance(row, dict):
                     failed_by_backend[backend][f"model_row_{row_index}"] = "loaded model row is not an object"
+                    backend_inventory_ok[backend] = False
+                    if backend == "ollama":
+                        backend_inventory_status[backend] = {"ollama": "unknown"}
                     continue
                 model = next(
                     (value.strip() for field in ("name", "model") if isinstance((value := row.get(field)), str) and value.strip()),
@@ -2287,30 +2437,37 @@ class OllamaRuntime:
                 )
                 if not model:
                     failed_by_backend[backend][f"model_row_{row_index}"] = "loaded model row has no usable name or model"
+                    backend_inventory_ok[backend] = False
+                    if backend == "ollama":
+                        backend_inventory_status[backend] = {"ollama": "unknown"}
                     continue
-                if backend == "llama_cpp" and isinstance(row.get("endpoint_url"), str):
-                    endpoint_url = row["endpoint_url"]
-                    previous_endpoint = llama_endpoint_by_model.get(model)
-                    if previous_endpoint and previous_endpoint != endpoint_url:
-                        failed_by_backend[backend][model] = "served model ID is ambiguous across endpoints"
-                        continue
-                    llama_endpoint_by_model[model] = endpoint_url
+                endpoint_url = self.base_url if backend == "ollama" else str(row.get("endpoint_url", "")).strip()
+                if not endpoint_url:
+                    failed_by_backend[backend][f"model_row_{row_index}"] = "loaded llama.cpp row has no endpoint identity"
+                    backend_inventory_ok[backend] = False
+                    for known_endpoint in list(last_llama_urls):
+                        last_llama_urls[known_endpoint] = "unknown"
+                    continue
+                if (model, endpoint_url) not in loaded_targets_by_backend[backend]:
+                    loaded_targets_by_backend[backend].append((model, endpoint_url))
+                remaining_by_endpoint.setdefault(f"{backend}:{endpoint_url}", None)
                 if model not in loaded_by_backend[backend]:
                     loaded_by_backend[backend].append(model)
 
         cancelled = bool(_stop_requested(should_stop))
         requested_by_backend: dict[str, list[str]] = {name: [] for name in backend_names}
-        for backend, models in loaded_by_backend.items():
-            for model_index, model in enumerate(models):
+        for backend, targets in loaded_targets_by_backend.items():
+            for model_index, (model, endpoint_url) in enumerate(targets):
                 if _stop_requested(should_stop):
                     cancelled = True
-                    for pending in models[model_index:]:
+                    for pending, _endpoint in targets[model_index:]:
                         failed_by_backend[backend][pending] = "unload cancelled"
                     break
                 if time.monotonic() >= unload_deadline:
                     failed_by_backend[backend][model] = "unload deadline exceeded"
                     continue
                 requested_by_backend[backend].append(model)
+                requested_by_endpoint.setdefault(f"{backend}:{endpoint_url}", []).append(model)
                 try:
                     if backend == "ollama":
                         response = self.request(
@@ -2322,14 +2479,10 @@ class OllamaRuntime:
                         if ok:
                             self._invalidate_loaded_cache()
                     else:
-                        endpoint_url = llama_endpoint_by_model.get(model)
-                        if endpoint_url:
-                            ok = self.llama_cpp.unload_model(
-                                model, endpoint_url=endpoint_url,
-                                should_stop=should_stop, deadline=unload_deadline,
-                            )
-                        else:
-                            ok = self.llama_cpp.unload_model(model, should_stop=should_stop, deadline=unload_deadline)
+                        ok = self.llama_cpp.unload_model(
+                            model, endpoint_url=endpoint_url,
+                            should_stop=should_stop, deadline=unload_deadline,
+                        )
                 except Exception as exc:
                     ok = False
                     failed_by_backend[backend][model] = "unload cancelled" if _stop_requested(should_stop) else type(exc).__name__
@@ -2360,9 +2513,11 @@ class OllamaRuntime:
                         if not isinstance(response, dict) or "error" in response or not isinstance(response.get("models"), list):
                             raise RuntimeError("post-unload /api/ps unavailable")
                         rows = response["models"]
+                        endpoint_rows = {self.base_url: []}
                     else:
                         rows, post_endpoint_status = read_llama_inventory()
                         backend_inventory_status[backend] = post_endpoint_status
+                        endpoint_rows = {url: [] for url, state in last_llama_urls.items() if state == "complete"}
                     parsed: list[str] = []
                     for row_index, row in enumerate(rows):
                         if not isinstance(row, dict):
@@ -2373,6 +2528,10 @@ class OllamaRuntime:
                         )
                         if not name:
                             raise ValueError(f"post-unload model row {row_index} has no usable name or model")
+                        endpoint_url = self.base_url if backend == "ollama" else str(row.get("endpoint_url", "")).strip()
+                        if not endpoint_url or endpoint_url not in endpoint_rows:
+                            raise ValueError(f"post-unload model row {row_index} has unknown endpoint identity")
+                        endpoint_rows[endpoint_url].append(name)
                         if name not in parsed:
                             parsed.append(name)
                     if _stop_requested(should_stop):
@@ -2381,6 +2540,8 @@ class OllamaRuntime:
                     if time.monotonic() >= unload_deadline:
                         raise TimeoutError("unload deadline exceeded during verification")
                     remaining_by_backend[backend] = parsed
+                    for endpoint_url, endpoint_models in endpoint_rows.items():
+                        remaining_by_endpoint[f"{backend}:{endpoint_url}"] = endpoint_models
                 except Exception as exc:
                     if backend == "llama_cpp":
                         backend_inventory_status[backend] = dict(last_llama_endpoint_status) or {"llama.cpp": "unknown"}
@@ -2406,6 +2567,25 @@ class OllamaRuntime:
                 if name not in (remaining_by_backend[backend] or [])
             ]
         backend_available = bool(loaded_rows_by_backend)
+        endpoint_receipts: dict[str, dict[str, Any]] = {}
+        for backend in backend_names:
+            endpoints = (
+                {self.base_url: backend_inventory_status.get(backend, {}).get("ollama", "unknown")}
+                if backend == "ollama" else (last_llama_urls or {"llama.cpp": "unknown"})
+            )
+            for endpoint_id, endpoint_state in endpoints.items():
+                receipt_key = f"{backend}:{endpoint_id}"
+                requested_at_endpoint = requested_by_endpoint.get(receipt_key, [])
+                remaining_at_endpoint = remaining_by_endpoint.get(receipt_key)
+                receipt_state = endpoint_state if backend_inventory_ok.get(backend, False) else "unknown"
+                endpoint_receipts[f"{backend}:{endpoint_id}"] = {
+                    "backend": backend,
+                    "endpoint_id": endpoint_id,
+                    "inventory_status": receipt_state,
+                    "requested": requested_at_endpoint,
+                    "remaining": remaining_at_endpoint,
+                    "complete": receipt_state == "complete" and isinstance(remaining_at_endpoint, list),
+                }
         result = {
             "success": complete and not failed,
             "backend_available": backend_available,
@@ -2416,6 +2596,7 @@ class OllamaRuntime:
             "requested_by_backend": requested_by_backend,
             "remaining_by_backend": remaining_by_backend,
             "backend_inventory_status": backend_inventory_status,
+            "endpoint_receipts": endpoint_receipts,
             "verified": verified,
             "complete": complete,
             "unverified": remaining_models is None or not inventory_complete,

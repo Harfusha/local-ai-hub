@@ -845,6 +845,8 @@ class LocalAIServices:
     ) -> dict[str, Any]:
         trace_system = system if trace_system_override is None else str(trace_system_override)
         mode_pause_result: dict[str, Any] | None = None
+        if cancel_event is None:
+            cancel_event = threading.Event()
         if project_settings is not None:
             model, project_payload = self.model_policy.apply_project_settings(
                 model,
@@ -855,6 +857,9 @@ class LocalAIServices:
             system = str(project_payload.get("system", system))
         saving = self.config.get("token_saving", {})
         resilience = self.config.get("resilience", {})
+        default_request_timeout = float(self.config.get("server", {}).get("request_timeout_seconds", 300)) + 30.0
+        request_timeout = max(0.05, float(resilience.get("scheduler_wait_timeout_seconds", default_request_timeout)))
+        request_deadline = time.monotonic() + request_timeout
         max_tokens = max(64, min(int(max_tokens), int(saving.get("max_local_output_tokens", 8192))))
         role = source.rsplit(":", 1)[-1].lower()
         if source == "second-opinion":
@@ -952,11 +957,29 @@ class LocalAIServices:
                         "model": requested_model,
                     }
 
-            candidates = [requested_model] + self._fallback_models(requested_model)
+            tier_ranks = {"fast_code": 0, "general": 0, "heavy_code": 1, "reasoning": 2}
+
+            def model_tier_rank(candidate_model: str) -> int:
+                return max(
+                    (rank for role_name, rank in tier_ranks.items()
+                     if str(self.config.get("models", {}).get(role_name, "")) == str(candidate_model or "")),
+                    default=0,
+                )
+
+            requested_rank = model_tier_rank(requested_model)
+            # Runtime failover must keep the router's quality floor for this request.
+            candidates = [requested_model] + [
+                candidate
+                for candidate in self._fallback_models(requested_model)
+                if model_tier_rank(candidate) >= requested_rank
+            ]
             errors: list[str] = []
             attempt_failures: list[dict[str, Any]] = []
             retryable_error = False
             timeout_error = False
+            preempted_error = False
+            cancel_requested = False
+            scheduler_state = ""
 
             def record_attempt_failures(*, recovered: bool) -> None:
                 for failed in attempt_failures:
@@ -1043,11 +1066,27 @@ class LocalAIServices:
                         mode_pause_result = mode_rejection
                         return mode_rejection
                     def request_candidate() -> dict[str, Any]:
+                        stream = getattr(self.runtime, "request_stream", None)
+                        if callable(stream):
+                            if trace_observer is not None:
+                                trace_observer.model_request(trace_payload)
+                            return stream(
+                                "/api/generate", payload,
+                                trace_observer.output_delta if trace_observer is not None else (lambda _chunk: None),
+                                on_thinking=getattr(trace_observer, "thinking_delta", None) if trace_observer is not None else None,
+                                timeout=max(0.05, request_deadline - time.monotonic()),
+                                deadline=request_deadline,
+                                should_stop=cancel_event.is_set,
+                            )
                         interruptible = getattr(self.runtime, "request_interruptible", None)
                         if cancel_event is not None and callable(interruptible):
                             if trace_observer is not None:
                                 trace_observer.model_request(trace_payload)
-                            result = interruptible("/api/generate", payload, should_stop=cancel_event.is_set)
+                            result = interruptible(
+                                "/api/generate", payload, should_stop=cancel_event.is_set,
+                                timeout=max(0.05, request_deadline - time.monotonic()),
+                                deadline=request_deadline,
+                            )
                             if trace_observer is not None and result.get("response"):
                                 trace_observer.output_delta(str(result["response"]))
                             return result
@@ -1056,6 +1095,9 @@ class LocalAIServices:
                             return self.runtime.request_stream(
                                 "/api/generate", payload, trace_observer.output_delta,
                                 on_thinking=getattr(trace_observer, "thinking_delta", None),
+                                timeout=max(0.05, request_deadline - time.monotonic()),
+                                deadline=request_deadline,
+                                should_stop=cancel_event.is_set,
                             )
                         return self.runtime.request("/api/generate", payload)
 
@@ -1096,6 +1138,26 @@ class LocalAIServices:
                             "_lah_repetition_loop_detected": True,
                             "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
                         }
+                    if response.get("preempted"):
+                        return {
+                            "success": False,
+                            "error": str(response.get("error") or "model request cancelled"),
+                            "model": candidate_model,
+                            "preempted": True,
+                            "terminal": True,
+                            "retryable": False,
+                            "error_code": "model_request_cancelled",
+                        }
+                    if response.get("timed_out"):
+                        return {
+                            "success": False,
+                            "error": str(response.get("error") or "model request deadline exceeded"),
+                            "model": candidate_model,
+                            "timed_out": True,
+                            "terminal": False,
+                            "retryable": True,
+                            "error_code": "model_request_timeout",
+                        }
                     if "error" in response:
                         retryable = is_retryable_local_backend_error(response["error"])
                         return {
@@ -1125,11 +1187,13 @@ class LocalAIServices:
                 try:
                     result = self.scheduler.submit(
                         candidate, tenant, source if index == 0 else f"{source}:fallback", run, priority=priority,
-                        wait_timeout=float(resilience.get("scheduler_wait_timeout_seconds", self.config.get("server", {}).get("request_timeout_seconds", 300) + 30)),
+                        wait_timeout=max(0.05, request_deadline - time.monotonic()),
+                        cancel_event=cancel_event,
                     )
                 except TimeoutError as exc:
                     timeout_error = True
                     retryable_error = True
+                    cancel_event.set()
                     result = {
                         "success": False,
                         "error": str(exc),
@@ -1145,6 +1209,8 @@ class LocalAIServices:
                     state = getattr(exc, "state", "")
                     if state:
                         result["scheduler_state"] = str(state)
+                        scheduler_state = str(state)
+                    cancel_requested = True
                 except Exception as exc:
                     retryable = is_retryable_local_backend_error(exc)
                     result = {
@@ -1161,6 +1227,12 @@ class LocalAIServices:
                         self.fallback_count += 1
                     record_attempt_failures(recovered=True)
                     return result
+                if result.get("preempted"):
+                    preempted_error = True
+                    errors.append(f"{candidate}: {result.get('error') or 'model request cancelled'}")
+                    break
+                if result.get("timed_out"):
+                    timeout_error = True
                 self.breakers.failure(breaker_key)
                 attempt_error = str(result.get("error", "failed"))
                 attempt_retries = int(result.get("_lah_retry_count", 0) or 0)
@@ -1172,6 +1244,8 @@ class LocalAIServices:
                     "retryable": bool(result.get("retryable", True)),
                 })
                 errors.append(f"{candidate}: {attempt_error}")
+                if timeout_error:
+                    break
 
             # Same exact prompt may be served stale only as a resilience fallback.
             if use_cache and bool(resilience.get("serve_stale_on_error", True)):
@@ -1196,6 +1270,12 @@ class LocalAIServices:
                 failure.update({"terminal": False, "retryable": True})
             if timeout_error:
                 failure["error_code"] = "model_request_timeout"
+            if preempted_error:
+                failure.update({"terminal": True, "retryable": False, "preempted": True, "error_code": "model_request_cancelled"})
+            if cancel_requested:
+                failure["cancel_requested"] = True
+            if scheduler_state:
+                failure["scheduler_state"] = scheduler_state
             return failure
 
         def compute() -> dict[str, Any]:
