@@ -767,3 +767,19 @@ acceptance.
 - Root still has unrelated dirty `async_jobs.py`, `http_server.py`, and
   untracked `agent_state.sqlite`; untouched and unstaged. This is not release
   acceptance.
+
+## T18 Windows backup ACL follow-up
+
+- T18 owner commit `a9483085` was based on `8479e19b` and touched only
+  `src/local_ai_hub/agent_events.py` plus
+  `tests/test_t18_backup_reservation_acl.py`. Cherry-picked to master as
+  `df4021db`; root remained on `master` with the three unrelated dirty entries
+  listed above.
+- Root verification:
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_t18_backup_reservation_acl.py
+  tests/test_t05_agent_state_migrations.py::test_verified_backup_reserves_destination_and_only_cleans_its_file`
+  — **17 passed, 1 skipped in 0.74s**. POSIX permission-bit case skipped on
+  Windows. Live ACL/runtime recovery remains unverified.
+- T18 worktree has five untracked temporary/evidence paths; preserved, not
+  merged or deleted. Their contents still need owner-level classification.
