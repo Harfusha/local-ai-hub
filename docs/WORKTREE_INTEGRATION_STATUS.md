@@ -490,3 +490,23 @@ the assigned merge worker to commit; runtime state remains outside Git.
 | t19-docs-rollout | `974fed0d` |
 | t21-project-config | `b568928b` |
 | t17-browser-flow-20261004 | `fbe44e0c` |
+
+### Explicit unfinished-work commit policy (2026-10-06)
+
+The user explicitly requires committing relevant dirty source, tests, documentation,
+and ordinary untracked handoffs after reconciliation, even when acceptance remains
+unfinished. Preserve original checkpoints; record failing tests and remaining work
+in committed integration notes. A preservation or merge commit is not a completion
+receipt. Runtime databases, caches and test scratch remain preserved outside Git.
+
+T17 browser handoff `e3d27bb2` is integrated into master. Its net change against
+the pinned master is the integration note; original work remains in merge ancestry.
+Owner checks: 256 passed, 14 failed; unresolved acceptance is documented in
+`docs/integration/T17-BROWSER-FLOW-SYNC-20261006.md`.
+
+T13 lifecycle `04a93ca7` and T17 multimodal `0c571b61` have committed handoffs.
+Their integration remains pending review and resolution of concurrent, unowned
+root edits in `client.py` and `http_server.py`; these edits were not overwritten
+or included in an orchestrator commit. The existing temporary checkout
+`lah_wt_worktree_e64978b4714c` is assigned to the browser reconciliation worker
+to preserve and merge its render-performance dirty source and regression test.
