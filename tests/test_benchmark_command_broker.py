@@ -85,6 +85,49 @@ def test_cache_pairs_use_same_command_and_account_for_each_outcome(
     assert all(pair["miss_cache_hit"] is False for pair in result["pairs"])
 
 
+def test_concurrency_cache_seed_is_cold_and_warmed_for_reuse(
+    tmp_path, cache_pair_broker: _CachePairBroker
+) -> None:
+    benchmark._measure_cache_pairs(
+        cache_pair_broker,
+        str(tmp_path),
+        paired_runs=2,
+        order_seed=41,
+    )
+
+    class _ConcurrencySeedBroker:
+        def __init__(self) -> None:
+            self.seeded = False
+            self.calls = []
+
+        def run(self, command, root, *, tenant, force=False):
+            hit = self.seeded and not force
+            if not force:
+                self.seeded = True
+            self.calls.append((command, root, tenant, force, hit))
+            return {"success": True, "cache_hit": hit}
+
+    concurrency_broker = _ConcurrencySeedBroker()
+    seed_concurrency_cache = getattr(benchmark, "_seed_concurrency_cache", None)
+    assert callable(seed_concurrency_cache), "benchmark must create a fresh concurrency cache seed"
+    result = seed_concurrency_cache(concurrency_broker, str(tmp_path))
+    warm_result = concurrency_broker.run(
+        benchmark.COMMAND,
+        str(tmp_path),
+        tenant="t15-benchmark",
+    )
+
+    assert result["cache_hit"] is False
+    assert warm_result["cache_hit"] is True
+    assert concurrency_broker.calls[0] == (
+        benchmark.COMMAND,
+        str(tmp_path),
+        "t15-benchmark",
+        False,
+        False,
+    )
+
+
 def test_cache_pairs_reject_missing_cache_outcome(tmp_path) -> None:
     broker = _CachePairBroker()
     original_run = broker.run
