@@ -15,15 +15,16 @@ visible with `semantic_quality` and `quality_warning` metadata.
 
 ## Profile routing
 
-| Profile | Preprocessing | Fast/simple | Ordinary/involved | Hard reasoning | Extreme reasoning | Vision |
+| Profile | `background_code` | `fast_code` | `heavy_code` | `reasoning` | `general` | `vision` |
 | --- | --- | --- | --- | --- | --- | --- |
-| `integrated` | `qwen2.5-coder:0.5b` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | none | `qwen3-vl:4b` |
-| `balanced` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` |
-| `high` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` |
+| `integrated` | `qwen2.5-coder:0.5b` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:1.5b` | `qwen3-vl:4b` |
+| `balanced` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3.5:9b` |
+| `high` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` |
 | `max` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` |
 
-The integrated profile never selects `qwen3.5:9b`; the 9B model is reserved for
-the balanced profile's extreme reasoning and vision routes.
+These are profile routing targets from `hardware.py`. They do not prove a model
+is installed on a host, and profile selection does not pull models. Runtime
+availability must be checked separately.
 
 ## Static operation contracts
 

@@ -168,3 +168,23 @@ def test_startup_retry_cooldown_expires_while_owner_client_stays_alive(
     os.utime(lock, (stale, stale))
     assert second.ensure_server(timeout=0.1) is False
     assert calls["count"] == 2
+
+
+
+def test_spawn_failure_returns_false_and_releases_start_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_startup(monkeypatch)
+    config = _client_config(tmp_path)
+    client = HubClient(tenant="test", config_path=str(config), auto_start=True)
+    state_dir = Path(client.config["server"]["state_dir"])
+    monkeypatch.setattr(client, "_online", lambda *_args: False)
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
+
+    def fail_to_spawn(*_args, **_kwargs):
+        raise OSError("python executable unavailable")
+
+    monkeypatch.setattr(client_module.subprocess, "Popen", fail_to_spawn)
+
+    assert client.ensure_server(timeout=0.5) is False
+    assert not (state_dir / "hub.start.lock").exists()

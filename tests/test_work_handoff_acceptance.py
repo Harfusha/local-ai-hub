@@ -2,21 +2,39 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
+import textwrap
 import threading
 import time as _real_time
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
+source_root = Path(os.environ.get("LOCAL_AI_HUB_SOURCE_ROOT", Path(__file__).resolve().parents[1])).resolve()
+overlay_root = os.environ.get("LOCAL_AI_HUB_SOURCE_OVERLAY")
+if overlay_root:
+    sys.path.insert(0, str(source_root / "src"))
+    import local_ai_hub
+
+    local_ai_hub.__path__.insert(0, str(Path(overlay_root).resolve() / "src" / "local_ai_hub"))
+
 import pytest
 
+from local_ai_hub.commands import CommandBroker
+from local_ai_hub.repo_state import RepoStateTracker
+from local_ai_hub.services import LocalAIServices
+from local_ai_hub.work_fencing import FencingLeaseStore, LeaseLostError, canonical_resource
 from local_ai_hub.leases import ScopeLeaseStore
+from local_ai_hub.process_utils import run_hidden
+from local_ai_hub.project_config import resolve_project_context
 import local_ai_hub.work_orchestrator as work_orchestrator_module
 from local_ai_hub.work_orchestrator import WorkOrchestrator, _JournalEntry
 
 
 class _Leases:
-    def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose=""):
+    def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose="", *, coordination_id=None):
         return {"success": True, "lease_id": f"lease-{len(paths)}", "paths": paths}
 
     def release(self, tenant, lease_id=""):
@@ -230,24 +248,42 @@ def test_replayed_work_id_rejects_different_request(tmp_path: Path) -> None:
 
 
 def test_recovery_requeues_after_crash_between_journal_clear_and_state_update(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
+    now = [100.0]
     orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
+    fencing = FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0])
+    orchestrator.fencing_store = fencing
     work_id = "work-recover"
     target = root / "owned.txt"
     target.write_bytes(b"new\n")
     try:
         orchestrator.submit("tenant", _payload(root, work_id))
         orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
+        stale_attempt = fencing.claim_attempt(
+            str(root), work_id, "crashed-writer", ttl_seconds=5
+        )
+        stale = fencing.acquire(
+            str(root), work_id, ["owned.txt"], ttl_seconds=5, attempt=stale_attempt
+        )
         orchestrator._persist_journal(
             work_id,
             [
                 _JournalEntry(
                     "owned.txt", True, b"old\n", True,
                     hashlib.sha256(b"new\n").hexdigest(),
+                    stale.resource, stale.lease_id, stale.owner_id, stale.fencing_token,
+                    stale_attempt.attempt_id, stale_attempt.fencing_token,
                 )
             ],
         )
+        orchestrator._recover()
+        waiting_row = orchestrator._row(work_id, "tenant")
+        assert waiting_row is not None and waiting_row["state"] == "executing"
+        assert orchestrator._recovery_timer is not None
+        assert target.read_text(encoding="utf-8") == "new\n"
+        assert orchestrator._load_journal(work_id)
+        now[0] = 106.0
         clear_journal = orchestrator._clear_journal
 
         class SimulatedProcessCrash(BaseException):
@@ -264,6 +300,8 @@ def test_recovery_requeues_after_crash_between_journal_clear_and_state_update(
     finally:
         orchestrator.close()
 
+    now[0] = 1007.0  # the simulated crashed recovery epoch has a 900 second lease
+    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
     recovered = WorkOrchestrator(
         config,
         state_dir,
@@ -271,6 +309,7 @@ def test_recovery_requeues_after_crash_between_journal_clear_and_state_update(
         commands=object(),
         leases=_Leases(),
         artifacts=_Artifacts(),
+        fencing_store=FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0]),
     )
     try:
         row = recovered._row(work_id, "tenant")
@@ -283,7 +322,7 @@ def test_recovery_requeues_after_crash_between_journal_clear_and_state_update(
 
 
 def test_restart_rolls_back_patch_using_postimage_journaled_before_mutation(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ) -> None:
     orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
     work_id = "work-restart-during-patch-transaction"
@@ -300,6 +339,7 @@ def test_restart_rolls_back_patch_using_postimage_journaled_before_mutation(
     assert journal[0].postimage_sha256 == hashlib.sha256(target.read_bytes()).hexdigest()
     orchestrator.close()
 
+    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
     recovered = WorkOrchestrator(
         config,
         state_dir,
@@ -316,6 +356,106 @@ def test_restart_rolls_back_patch_using_postimage_journaled_before_mutation(
     finally:
         recovered.close()
 
+def test_process_crash_after_patch_write_recovers_from_persisted_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
+    target = root / "owned.txt"
+    target.write_text("old\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=T16", "-c", "user.email=t16@example.invalid", "add", "owned.txt"], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=T16", "-c", "user.email=t16@example.invalid", "commit", "--quiet", "-m", "seed"], check=True)
+
+    work_id = "work-process-crash-after-write"
+    now = [100.0]
+    fencing_path = state_dir / "work_fencing.sqlite3"
+    orchestrator.fencing_store = FencingLeaseStore(fencing_path, clock=lambda: now[0])
+    orchestrator.submit("tenant", _payload(root, work_id))
+    orchestrator.close()
+
+    script = textwrap.dedent(r"""
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, sys.argv[1])
+        import local_ai_hub.work_orchestrator as module
+        from local_ai_hub.work_fencing import FencingLeaseStore
+        from local_ai_hub.work_orchestrator import WorkOrchestrator
+
+        WorkOrchestrator._ensure_workers = lambda _self: None
+
+        class Leases:
+            def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose="", *, coordination_id=None):
+                return {"success": True, "lease_id": "child-lease", "paths": paths}
+            def release(self, tenant, lease_id=""):
+                return {"success": True}
+
+        class Artifacts:
+            def put(self, text, tenant, kind):
+                return f"artifact-{kind}"
+
+        root, state_dir, work_id = Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
+        config = {"work_orchestrator": {"enabled": True}}
+        orchestrator = WorkOrchestrator(
+            config, state_dir, services=object(), commands=object(),
+            leases=Leases(), artifacts=Artifacts(),
+            fencing_store=FencingLeaseStore(
+                state_dir / "work_fencing.sqlite3", clock=lambda: 100.0
+            ),
+        )
+        orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
+        run = subprocess.run
+
+        def exit_after_apply(*args, **kwargs):
+            result = run(*args, **kwargs)
+            command = args[0] if args else kwargs.get("args")
+            if (
+                isinstance(command, list)
+                and command[:4] == ["git", "-C", str(root), "apply"]
+                and "--check" not in command
+                and result.returncode == 0
+            ):
+                os._exit(73)
+            return result
+
+        module.subprocess.run = exit_after_apply
+        patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-old\n+new\n"
+        orchestrator._apply_patch(
+            root, patch, "tenant", work_id, [], lease_ttl_seconds=5
+        )
+        os._exit(74)
+    """)
+    project_src = Path(__file__).resolve().parents[1] / "src"
+    child = subprocess.run(
+        [sys.executable, "-B", "-c", script, str(project_src), str(root), str(state_dir), work_id],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    assert child.returncode == 73, child.stderr
+    assert target.read_text(encoding="utf-8") == "new\n"
+
+    now[0] = 106.0
+    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
+    recovered = WorkOrchestrator(
+        config,
+        state_dir,
+        services=object(),
+        commands=object(),
+        leases=_Leases(),
+        artifacts=_Artifacts(),
+        fencing_store=FencingLeaseStore(fencing_path, clock=lambda: now[0]),
+    )
+    try:
+        row = recovered._row(work_id, "tenant")
+        assert row is not None and row["state"] == "queued", dict(row) if row is not None else None
+        assert target.read_text(encoding="utf-8") == "old\n"
+        assert recovered._load_journal(work_id) == []
+    finally:
+        recovered.close()
 
 def test_recovery_rollback_failure_fails_closed_and_preserves_journal(
     tmp_path: Path, monkeypatch
@@ -324,7 +464,7 @@ def test_recovery_rollback_failure_fails_closed_and_preserves_journal(
     work_id = "work-recovery-fail-closed"
     target = root / "owned.txt"
     target.write_text("new\n", encoding="utf-8")
-    journal_entry = _JournalEntry("owned.txt", True, b"old\n")
+    journal_entry = _fenced_journal_entry(root, "owned.txt", b"old\n", b"new\n")
     orchestrator.submit("tenant", _payload(root, work_id))
     orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
     orchestrator._persist_journal(work_id, [journal_entry])
@@ -399,13 +539,11 @@ def test_rollback_accepts_chained_same_path_postimages(tmp_path: Path) -> None:
     target = root / "owned.txt"
     target.write_bytes(b"final\n")
     entries = [
-        _JournalEntry(
-            "owned.txt", True, b"original\n", True,
-            hashlib.sha256(b"middle\n").hexdigest(),
-        ),
-        _JournalEntry(
-            "owned.txt", True, b"middle\n", True,
-            hashlib.sha256(b"final\n").hexdigest(),
+        _fenced_journal_entry(root, "owned.txt", b"original\n", b"middle\n"),
+        _fenced_journal_entry(
+            root, "owned.txt", b"middle\n", b"final\n",
+            owner="later-owner", lease_id="later-lease", fencing_token=2,
+            attempt_id="later-attempt", attempt_token=2,
         ),
     ]
     try:
@@ -429,13 +567,11 @@ def test_crash_recovery_conflict_fails_closed_without_partial_restore(tmp_path: 
     target.write_text("orchestrator update\n", encoding="utf-8")
     other.write_text("other update\n", encoding="utf-8")
     entries = [
-        _JournalEntry(
-            "owned.txt", True, b"original\n", True,
-            hashlib.sha256(b"orchestrator update\n").hexdigest(),
+        _fenced_journal_entry(
+            root, "owned.txt", b"original\n", b"orchestrator update\n"
         ),
-        _JournalEntry(
-            "other.txt", True, b"other original\n", True,
-            hashlib.sha256(b"other update\n").hexdigest(),
+        _fenced_journal_entry(
+            root, "other.txt", b"other original\n", b"other update\n"
         ),
     ]
     orchestrator.submit("tenant", _payload(root, work_id))
@@ -622,3 +758,413 @@ def test_cancel_and_completion_race_has_one_durable_winner(tmp_path: Path) -> No
             assert row["cancel_requested"] == 1
     finally:
         orchestrator.close()
+
+def _fenced_journal_entry(
+    root: Path,
+    path: str,
+    before: bytes,
+    after: bytes,
+    *,
+    owner: str = "prior-owner",
+    lease_id: str = "prior-lease",
+    fencing_token: int = 1,
+    attempt_id: str = "prior-attempt",
+    attempt_token: int = 1,
+) -> _JournalEntry:
+    return _JournalEntry(
+        path,
+        True,
+        before,
+        True,
+        hashlib.sha256(after).hexdigest(),
+        canonical_resource(root),
+        lease_id,
+        owner,
+        fencing_token,
+        attempt_id,
+        attempt_token,
+    )
+
+def test_recovery_reacquires_fence_after_writer_ttl_and_rejects_stale_commit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    state_dir = tmp_path / "state"
+    now = [100.0]
+    fence_path = state_dir / "work_fencing.sqlite3"
+    old_store = FencingLeaseStore(fence_path, clock=lambda: now[0])
+    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
+    orchestrator = WorkOrchestrator(
+        {"work_orchestrator": {"enabled": True}}, state_dir,
+        services=object(), commands=object(), leases=_Leases(), artifacts=_Artifacts(),
+        fencing_store=old_store,
+    )
+    work_id = "work-fenced-recovery"
+    target = root / "owned.txt"
+    target.write_bytes(b"new\n")
+    try:
+        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
+        stale_attempt = old_store.claim_attempt(
+            str(root), work_id, "crashed-writer", ttl_seconds=5
+        )
+        stale = old_store.acquire(
+            str(root), work_id, ["owned.txt"], ttl_seconds=5, attempt=stale_attempt
+        )
+        orchestrator._persist_journal(
+            work_id,
+            [
+                _JournalEntry(
+                    "owned.txt", True, b"old\n", True,
+                    hashlib.sha256(b"new\n").hexdigest(),
+                    stale.resource, stale.lease_id, stale.owner_id, stale.fencing_token,
+                    stale_attempt.attempt_id, stale_attempt.fencing_token,
+                )
+            ],
+        )
+        now[0] = 106.0
+        recovered_store = FencingLeaseStore(fence_path, clock=lambda: now[0])
+        recovered = WorkOrchestrator(
+            {"work_orchestrator": {"enabled": True}}, state_dir,
+            services=object(), commands=object(), leases=_Leases(), artifacts=_Artifacts(),
+            fencing_store=recovered_store,
+        )
+        try:
+            row = recovered._row(work_id, "tenant")
+            assert row is not None and row["state"] == "queued"
+            assert target.read_text(encoding="utf-8") == "old\n"
+            assert recovered._load_journal(work_id) == []
+            with pytest.raises(LeaseLostError):
+                with recovered_store.commit_guard(stale, ["owned.txt"]):
+                    target.write_text("stale-after-recovery\n", encoding="utf-8")
+            assert target.read_text(encoding="utf-8") == "old\n"
+        finally:
+            recovered.close()
+    finally:
+        orchestrator.close()
+
+def test_stale_attempt_cannot_complete_or_clear_successor_journal(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    state_dir = tmp_path / "state"
+    now = [100.0]
+    fencing = FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0])
+    orchestrator = WorkOrchestrator(
+        {"work_orchestrator": {"enabled": True}}, state_dir,
+        services=object(), commands=object(), leases=_Leases(), artifacts=_Artifacts(),
+        fencing_store=fencing,
+    )
+    orchestrator._ensure_workers = lambda: None
+    work_id = "work-stale-completion"
+    target = root / "owned.txt"
+    target.write_bytes(b"successor\n")
+    try:
+        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator._set_state(work_id, "verifying", {"summary": "verification pending"})
+        stale_attempt = fencing.claim_attempt(
+            str(root), work_id, "old-execution", ttl_seconds=5
+        )
+        stale_lease = fencing.acquire(
+            str(root), "old-execution", ["owned.txt"], ttl_seconds=30,
+            attempt=stale_attempt,
+        )
+        stale_entry = _fenced_journal_entry(
+            root, "owned.txt", b"before\n", b"old-write\n",
+            owner=stale_lease.owner_id, lease_id=stale_lease.lease_id,
+            fencing_token=stale_lease.fencing_token,
+            attempt_id=stale_attempt.attempt_id,
+            attempt_token=stale_attempt.fencing_token,
+        )
+        orchestrator._persist_journal(work_id, [stale_entry])
+
+        now[0] = 106.0
+        successor_attempt = fencing.claim_attempt(
+            str(root), work_id, "successor-execution", ttl_seconds=30
+        )
+        successor_lease = fencing.acquire(
+            str(root), "successor-execution", ["owned.txt"], ttl_seconds=30,
+            attempt=successor_attempt,
+        )
+        successor_entry = _fenced_journal_entry(
+            root, "owned.txt", b"before\n", b"successor\n",
+            owner=successor_lease.owner_id, lease_id=successor_lease.lease_id,
+            fencing_token=successor_lease.fencing_token,
+            attempt_id=successor_attempt.attempt_id,
+            attempt_token=successor_attempt.fencing_token,
+        )
+        orchestrator._persist_journal(work_id, [successor_entry])
+
+        with pytest.raises(LeaseLostError):
+            orchestrator._set_state(
+                work_id, "complete", {"summary": "stale completion"},
+                attempt=stale_attempt,
+            )
+        with pytest.raises(LeaseLostError):
+            orchestrator._persist_handoff_receipts(
+                work_id, [], [], attempt=stale_attempt
+            )
+        with pytest.raises(LeaseLostError):
+            orchestrator._complete_if_not_cancelled(
+                work_id, {"summary": "stale completion"},
+                expected_state="verifying", attempt=stale_attempt,
+            )
+        with pytest.raises(LeaseLostError):
+            orchestrator._clear_journal(work_id, attempt=stale_attempt)
+
+        row = orchestrator._row(work_id, "tenant")
+        assert row is not None and row["state"] == "verifying"
+        assert orchestrator._load_journal(work_id) == [successor_entry]
+        assert target.read_bytes() == b"successor\n"
+    finally:
+        orchestrator.close()
+
+def test_rollback_refuses_hardlinked_postimage(tmp_path: Path) -> None:
+    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
+    target = root / "owned.txt"
+    external = tmp_path / "external-hardlink.txt"
+    target.write_bytes(b"postimage\n")
+    try:
+        try:
+            os.link(target, external)
+        except OSError as exc:
+            pytest.skip(f"hard links unavailable: {exc}")
+        entry = _fenced_journal_entry(root, "owned.txt", b"before\n", b"postimage\n")
+
+        with pytest.raises(RuntimeError, match="hardlinked postimage"):
+            orchestrator._rollback(root, [entry])
+
+        assert target.read_bytes() == b"postimage\n"
+        assert external.read_bytes() == b"postimage\n"
+    finally:
+        orchestrator.close()
+
+def test_recovery_defers_live_attempt_without_journal(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    state_dir = tmp_path / "state"
+    now = [100.0]
+    fencing = FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0])
+    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
+    orchestrator = WorkOrchestrator(
+        {"work_orchestrator": {"enabled": True}}, state_dir,
+        services=object(), commands=object(), leases=_Leases(), artifacts=_Artifacts(),
+        fencing_store=fencing,
+    )
+    work_id = "work-live-attempt-no-journal"
+    try:
+        orchestrator.submit("tenant", _payload(root, work_id))
+        orchestrator._set_state(work_id, "planning", {"summary": "still running"})
+        active = fencing.claim_attempt(str(root), work_id, "live-execution", ttl_seconds=5)
+
+        orchestrator._recover()
+
+        row = orchestrator._row(work_id, "tenant")
+        assert row is not None and row["state"] == "planning"
+        assert orchestrator._recovery_retry_requested is True
+        assert orchestrator._recovery_timer is not None
+
+        now[0] = 106.0
+        orchestrator._recover()
+        row = orchestrator._row(work_id, "tenant")
+        assert row is not None and row["state"] == "queued"
+    finally:
+        orchestrator.close()
+
+def test_invalid_patch_releases_advisory_lease(tmp_path: Path) -> None:
+    class RecordingLeases(_Leases):
+        def __init__(self):
+            self.released: list[tuple[str, str]] = []
+
+        def release(self, tenant, lease_id=""):
+            self.released.append((tenant, lease_id))
+            return super().release(tenant, lease_id)
+
+    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
+    leases = RecordingLeases()
+    orchestrator.leases = leases
+    target = root / "owned.txt"
+    target.write_bytes(b"original\n")
+    invalid_patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-wrong\n+changed\n"
+    try:
+        with pytest.raises(ValueError):
+            orchestrator._apply_patch(
+                root, invalid_patch, "tenant", "work-invalid-patch", []
+            )
+
+        assert leases.released == [("tenant", "lease-1")]
+        assert target.read_bytes() == b"original\n"
+    finally:
+        orchestrator.close()
+
+def test_real_command_broker_accepts_forwarded_work_attempt_fence(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    state_dir = tmp_path / "state"
+    config = {
+        "server": {"state_dir": str(state_dir)},
+        "commands": {"enabled": True, "allow_unknown": True},
+    }
+    broker = CommandBroker(config, _Artifacts(), RepoStateTracker(config))
+    now = [100.0]
+    fencing = FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0])
+    broker.set_fencing_lease_store(fencing)
+    attempt = fencing.claim_attempt(str(root), "work-real-broker", "acceptance", ttl_seconds=5)
+    services = object.__new__(LocalAIServices)
+    services.commands = broker
+    services.agent_state = None
+    command = f'"{sys.executable}" -B -c "print(123)"'
+
+    result = services.command(
+        {
+            "action": "run",
+            "command": command,
+            "cwd": str(root),
+            "task_id": "work-real-broker",
+            "criterion": "real command broker fence",
+            "record_verification": False,
+            "writer_fence": attempt,
+        },
+        "tenant",
+    )
+
+    assert result["success"] is True, result
+    assert "123" in result.get("stdout", "")
+
+    now[0] += 6
+    stale_result = services.command(
+        {
+            "action": "run",
+            "command": command,
+            "cwd": str(root),
+            "task_id": "work-real-broker",
+            "criterion": "stale real command broker fence",
+            "record_verification": False,
+            "writer_fence": attempt,
+        },
+        "tenant",
+    )
+
+    assert stale_result["success"] is False, stale_result
+    assert "123" not in stale_result.get("stdout", "")
+
+
+def test_root_current_command_broker_namespace_guard_commits_real_write(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".local-ai.toml").write_text('shared_namespace = "broker-test"\n', encoding="utf-8")
+    target = root / "owned.txt"
+    target.write_text("before\n", encoding="utf-8")
+
+    def git(*args: str) -> None:
+        result = run_hidden(
+            ["git", "-C", str(root), *args], capture_output=True, text=True, timeout=10
+        )
+        assert result.returncode == 0, result.stderr
+
+    initialized = run_hidden(
+        ["git", "init", "--quiet", str(root)], capture_output=True, text=True, timeout=10
+    )
+    assert initialized.returncode == 0, initialized.stderr
+    git("add", ".local-ai.toml", "owned.txt")
+    git(
+        "-c", "user.name=Broker Fence Test", "-c", "user.email=broker@example.invalid",
+        "commit", "--quiet", "-m", "broker fence fixture",
+    )
+
+    source_path = source_root / "src" / "local_ai_hub" / "commands.py"
+    module_path = Path(sys.modules[CommandBroker.__module__].__file__).resolve()
+    assert module_path == source_path.resolve()
+
+    state_dir = tmp_path / "state"
+    config = {"server": {"state_dir": str(state_dir)}, "commands": {"enabled": True}}
+    broker = CommandBroker(config, _Artifacts(), RepoStateTracker(config))
+    now = [100.0]
+    fencing = FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0])
+    broker.set_fencing_lease_store(fencing)
+    context = resolve_project_context(root, state_dir)
+    coordination_id = context.coordination_id
+    assert coordination_id
+    attempt = fencing.claim_attempt(
+        str(root), "work-broker-write", "broker-owner", ttl_seconds=5,
+        coordination_id=coordination_id,
+    )
+    physical_root = canonical_resource(root)
+    assert attempt.resource == physical_root
+    with broker._fenced_transaction_commit(
+        attempt,
+        task_id="work-broker-write",
+        source=root,
+        paths=["owned.txt"],
+        owner_id="broker-writer",
+    ) as (lease, payload):
+        assert lease.resource == physical_root
+        assert lease.scope_id == attempt.scope_id
+        assert payload["resource"] == physical_root
+        target.write_text("committed\n", encoding="utf-8")
+    assert target.read_text(encoding="utf-8") == "committed\n"
+    now[0] = 106.0
+    with pytest.raises(LeaseLostError):
+        with broker._fenced_transaction_commit(
+            attempt,
+            task_id="work-broker-write",
+            source=root,
+            paths=["owned.txt"],
+            owner_id="stale-broker-writer",
+        ):
+            target.write_text("stale\n", encoding="utf-8")
+    assert target.read_text(encoding="utf-8") == "committed\n"
+
+def test_recovery_retries_preimage_restore_after_crash_before_journal_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
+    work_id = "work-crash-after-preimage-restore"
+    target = root / "owned.txt"
+    target.write_text("old\n", encoding="utf-8")
+    git_cmd = ["git", "-C", str(root)]
+    identity = ["-c", "user.name=T16", "-c", "user.email=t16@example.invalid"]
+    subprocess.run([*git_cmd, "init", "--quiet"], check=True)
+    subprocess.run([*git_cmd, *identity, "add", "owned.txt"], check=True)
+    subprocess.run(
+        [*git_cmd, *identity, "commit", "--quiet", "-m", "seed"],
+        check=True,
+    )
+    now = [100.0]
+    fencing_path = state_dir / "work_fencing.sqlite3"
+    orchestrator.fencing_store = FencingLeaseStore(fencing_path, clock=lambda: now[0])
+    orchestrator.submit("tenant", _payload(root, work_id))
+    orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
+    journal: list[_JournalEntry] = []
+    patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-old\n+new\n"
+    orchestrator._apply_patch(root, patch, "tenant", work_id, journal)
+    assert target.read_text(encoding="utf-8") == "new\n"
+    rollback = orchestrator._rollback
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    def restore_then_crash(current_root: Path, entries: list[_JournalEntry]) -> None:
+        rollback(current_root, entries)
+        raise SimulatedProcessCrash()
+
+    orchestrator._rollback = restore_then_crash
+    try:
+        with pytest.raises(SimulatedProcessCrash):
+            orchestrator._recover()
+        assert target.read_text(encoding="utf-8") == "old\n"
+        assert orchestrator._load_journal(work_id) == journal
+    finally:
+        orchestrator.close()
+
+    now[0] = 1001.0
+    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
+    recovered = WorkOrchestrator(
+        config,
+        state_dir,
+        services=object(),
+        commands=object(),
+        leases=_Leases(),
+        artifacts=_Artifacts(),
+        fencing_store=FencingLeaseStore(fencing_path, clock=lambda: now[0]),
+    )

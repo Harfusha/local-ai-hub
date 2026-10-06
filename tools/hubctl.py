@@ -19,6 +19,7 @@ from local_ai_hub.llama_cpp_runtime import llama_cpp_backend_selection
 from local_ai_hub.process_utils import hidden_run_kwargs, terminate_tree
 
 ROOT_CONFIG = ROOT / "config.toml"
+ACTIVITY_MODES = ("active", "gaming", "maintenance")
 
 
 def _config_arg(explicit: Path | None = None) -> str | None:
@@ -31,8 +32,8 @@ def client() -> HubClient:
     return HubClient(tenant="hubctl", config_path=_config_arg())
 
 
-def status() -> dict:
-    c = client()
+def status(explicit_config: Path | None = None) -> dict:
+    c = HubClient(tenant="hubctl", config_path=_config_arg(explicit_config))
     if not c._online():
         return {"running": False}
     try:
@@ -43,6 +44,83 @@ def status() -> dict:
         data = {}
     data["running"] = True
     return data
+
+
+def _activity_mode_request(mode: str | None = None, *, config_path: str | None = None) -> dict[str, Any]:
+    """Read or change activity mode through the authenticated Hub API only."""
+    try:
+        c = HubClient(tenant="hubctl", config_path=config_path or _config_arg(), auto_start=False)
+        if not c._online():
+            config = load_config(config_path or _config_arg())
+            server = config.get("server", {})
+            state_dir = server.get("state_dir") if isinstance(server, dict) else None
+            if not state_dir:
+                return {"success": False, "server_status": "offline", "error": "operational mode state directory is not configured"}
+            from local_ai_hub.operational_mode import load_operational_mode, set_operational_mode
+
+            snapshot = (
+                load_operational_mode(state_dir)
+                if mode is None
+                else set_operational_mode(state_dir, mode)
+            )
+            if snapshot.degraded:
+                return {"success": False, "server_status": "offline", "error": snapshot.error}
+            result = {"success": True, **snapshot.to_dict(), "server_status": "offline"}
+            if mode == "gaming":
+                result["runtime_unload"] = {"success": False, "backend_available": False}
+            return result
+        if mode is None:
+            result = c.get("/api/mode", timeout=3.0)
+        else:
+            result = c.post("/api/admin/mode", {"mode": mode}, timeout=3.0)
+    except Exception as exc:
+        return {"success": False, "server_status": "offline", "error": str(exc)}
+
+    if not isinstance(result, dict):
+        return {"success": False, "error": "invalid response from mode API"}
+    if result.get("status_code") == 401:
+        return {**result, "success": False, "error": result.get("error") or "unauthorized"}
+    if result.get("server_status") == "offline":
+        return {**result, "success": False, "error": result.get("error") or "Local AI Hub is offline"}
+    if result.get("success") is not True:
+        return {**result, "success": False, "error": result.get("error") or "mode request failed"}
+
+    confirmed_mode = result.get("mode")
+    if confirmed_mode not in ACTIVITY_MODES:
+        return {"success": False, "error": f"invalid mode returned by server: {confirmed_mode!r}"}
+    if mode is not None and confirmed_mode != mode:
+        return {"success": False, "error": f"server returned mode {confirmed_mode!r} after requesting {mode!r}"}
+    return {**result, "success": True, "mode": confirmed_mode}
+
+
+def _activity_mode_error(result: dict[str, Any]) -> str:
+    status_code = result.get("status_code")
+    if status_code == 401:
+        return "unauthorized (HTTP 401); check the configured API token"
+    if result.get("server_status") == "offline":
+        return "Local AI Hub is offline or unreachable"
+    if status_code == 400:
+        return f"server rejected mode (HTTP 400): {result.get('error', 'invalid mode')}"
+    suffix = f" (HTTP {status_code})" if status_code else ""
+    return f"mode request failed{suffix}: {result.get('error', 'unknown error')}"
+
+
+def _activity_mode_transition_failures(result: dict[str, Any], requested_mode: str | None) -> list[str]:
+    failures: list[str] = []
+    if requested_mode == "gaming":
+        unload = result.get("runtime_unload")
+        if not isinstance(unload, dict) or unload.get("success") is not True:
+            failures.append("VRAM unload")
+        accelerator_release = result.get("accelerator_release")
+        if not isinstance(accelerator_release, dict) or accelerator_release.get("success") is not True:
+            failures.append("accelerator release")
+    if requested_mode in {"gaming", "maintenance"}:
+        job_cancellation = result.get("job_cancellation")
+        if "job_cancellation" in result and (
+            not isinstance(job_cancellation, dict) or job_cancellation.get("success") is not True
+        ):
+            failures.append("job cancellation")
+    return failures
 
 
 def _service(action: str) -> bool:
@@ -117,7 +195,8 @@ def start(verbose: bool = True) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "memory", "doctor", "logs"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "memory", "doctor", "logs", "pause", "resume", "mode"])
+    parser.add_argument("mode_value", nargs="?", choices=ACTIVITY_MODES, metavar="MODE")
     parser.add_argument("--config", type=Path, default=None, help="Path to config.toml")
     parser.add_argument("--install", action="store_true", help="Also deploy generated skill/instructions to configured agents")
     parser.add_argument("--task-id", type=str, default="", help="Task ID for task lookup")
@@ -135,6 +214,26 @@ def main() -> int:
     parser.add_argument("-f", "--follow", action="store_true", help="Stream log output continuously (like tail -f)")
     parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
+    if args.action != "mode" and args.mode_value is not None:
+        parser.error("MODE is only valid with the mode action")
+    if args.action in {"pause", "resume", "mode"}:
+        requested_mode = args.mode_value
+        if args.action == "pause":
+            requested_mode = "gaming"
+        elif args.action == "resume":
+            requested_mode = "active"
+        result = _activity_mode_request(requested_mode, config_path=_config_arg(args.config))
+        if result.get("success") is not True:
+            print(_activity_mode_error(result), file=sys.stderr)
+            return 1
+        mode = str(result["mode"])
+        transition_failures = _activity_mode_transition_failures(result, requested_mode)
+        if transition_failures:
+            print(f"Mode persisted as {mode}.")
+            print(f"Mode transition incomplete: {', '.join(transition_failures)}.", file=sys.stderr)
+            return 1
+        print(f"Activity mode: {mode}" if requested_mode is None else f"Mode set to {mode}")
+        return 0
     if args.action == "generate":
         cfg = load_config(_config_arg(args.config))
         from local_ai_hub.generator import write_all_generated
@@ -335,13 +434,24 @@ def main() -> int:
         except KeyboardInterrupt:
             return 0
     if args.action == "status":
-        st = status()
+        st = status(args.config)
         cfg = load_config(_config_arg(args.config))
+        mode_result = _activity_mode_request(config_path=_config_arg(args.config))
+        if st.get("running"):
+            st["activity_mode"] = mode_result.get("mode") if mode_result.get("success") is True else "unknown"
+            if mode_result.get("success") is not True:
+                st["activity_mode_error"] = _activity_mode_error(mode_result)
+        elif mode_result.get("success") is True:
+            st["activity_mode"] = mode_result["mode"]
         if args.raw_json:
             print(json.dumps(st, indent=2, ensure_ascii=False))
             return 0
         if not st.get("running"):
             print("Local AI Hub: Offline (stopped)")
+            if mode_result.get("success") is True:
+                print(f"Activity mode: {mode_result['mode']}")
+            else:
+                print(f"Activity mode: Unknown ({_activity_mode_error(mode_result)})")
             return 0
 
         pid = st.get("hub_pid", "N/A")
@@ -368,6 +478,10 @@ def main() -> int:
 
         print(f"Local AI Hub v{ver} - Online (PID: {pid})")
         print("=" * 55)
+        if mode_result and mode_result.get("success") is True:
+            print(f"Activity mode: {mode_result['mode']}")
+        else:
+            print(f"Activity mode: Unknown ({_activity_mode_error(mode_result or {})})")
         provider = llama_cpp_backend_selection(cfg)
         if provider == "ollama":
             ollama_state = 'Online' if ollama_ok else 'Offline'

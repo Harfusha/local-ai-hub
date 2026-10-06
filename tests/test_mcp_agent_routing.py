@@ -21,6 +21,8 @@ def isolated_profile_catalog(monkeypatch):
     monkeypatch.setattr(local_ai_mcp, 'PROFILE_CATALOG', local_ai_mcp.OllamaSubagentCatalog({}))
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    # Keep async accounting off: CLIENT.post spies in this module capture routing endpoints.
+    monkeypatch.setattr(local_ai_mcp._ACCOUNTING_REPORTER, "record", lambda _event: None)
 
 
 def test_vision_feature_toggle_removes_vision_action_and_hint() -> None:
@@ -186,6 +188,13 @@ def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
     assert "terminal=true and retryable=false" in descriptions["repo"]
     assert "terminal=true and retryable=false" in descriptions["command"]
     assert "Mutations never cache or single-flight" in descriptions["command"]
+
+
+def test_repo_surface_does_not_advertise_or_route_codegraph() -> None:
+    assert "CodeGraphContext" not in local_ai_mcp._desc_repo()
+    from local_ai_hub.operation_contracts import operation_actions
+
+    assert "graph" not in operation_actions("local_ai_repo")
 
 
 def test_mcp_descriptions_support_on_demand_semantic_delegation() -> None:
@@ -462,6 +471,28 @@ def test_local_ai_repo_enriches_search_when_source_requested(monkeypatch) -> Non
     assert captured["enrich"] is True
 
 
+@pytest.mark.parametrize("include_code", [False, True])
+def test_local_ai_repo_investigate_preserves_include_code(monkeypatch, include_code: bool) -> None:
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", FeatureSet({"features": {"repo": True}}))
+    captured = {}
+
+    def fake_post(endpoint, payload, **kwargs):
+        captured.update({"endpoint": endpoint, "payload": dict(payload)})
+        return {"success": True}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_repo(
+        action="investigate",
+        root=str(ROOT),
+        query="target symbol",
+        include_code=include_code,
+    )
+
+    assert result["success"] is True
+    assert captured["endpoint"] == "/api/repo/investigate"
+    assert captured["payload"]["include_code"] is include_code
+
+
 def test_invalid_task_action_excludes_orchestration() -> None:
     result = local_ai_mcp.local_ai_task(action="not_a_real_action")
     assert result["success"] is False
@@ -657,3 +688,35 @@ def test_named_profile_rejects_relative_repository_root() -> None:
     assert result["success"] is False
     assert result["unsupported"] is True
     assert "absolute" in result["error"]
+
+@pytest.mark.parametrize(
+    ("language", "expected_language"),
+    [("cs", "cs"), (" AUTO ", None)],
+)
+def test_local_ai_task_transcribe_forwards_only_explicit_language_hint(
+    monkeypatch, language: str, expected_language: str | None
+) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, "payload": payload, "kwargs": kwargs})
+        return {"success": True, "text": "recognized"}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+
+    result = local_ai_mcp.local_ai_task(
+        action="transcribe",
+        task="transcribe this recording",
+        candidate="recording.wav",
+        model="base",
+        language=language,
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/task/transcribe"
+    assert captured["payload"]["audio_path"] == "recording.wav"
+    assert captured["payload"]["model"] == "base"
+    if expected_language is None:
+        assert "language" not in captured["payload"]
+    else:
+        assert captured["payload"]["language"] == expected_language
