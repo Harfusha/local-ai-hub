@@ -312,6 +312,73 @@ def _git_common_dir(root: Path) -> Path | None:
         return None
 
 
+def _git_primary_worktree_root(root: Path, common_dir: Path | None) -> Path | None:
+    """Find primary worktree without assuming the Git directory layout."""
+    if common_dir is None:
+        return None
+
+    def _points_to_common_dir(worktree: Path) -> bool:
+        git_marker = worktree / ".git"
+        try:
+            if git_marker.is_dir():
+                return git_marker.resolve(strict=False) == common_dir
+            if git_marker.is_file():
+                marker = git_marker.read_text(encoding="utf-8", errors="replace")[:1024]
+                prefix, separator, raw_path = marker.partition(":")
+                if prefix.strip().lower() != "gitdir" or not separator:
+                    return False
+                git_dir = Path(raw_path.strip())
+                if not git_dir.is_absolute():
+                    git_dir = worktree / git_dir
+                return git_dir.resolve(strict=False) == common_dir
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return False
+
+    try:
+        resolved_root = root.resolve(strict=True)
+        if _points_to_common_dir(resolved_root):
+            return resolved_root
+    except (OSError, RuntimeError):
+        return None
+
+    if common_dir.name.lower() == ".git":
+        candidate = common_dir.parent
+        if _points_to_common_dir(candidate):
+            return candidate
+
+    kwargs: dict[str, Any] = {
+        "cwd": str(root),
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.DEVNULL,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": _GIT_TIMEOUT_SECONDS,
+        "check": False,
+    }
+    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if no_window:
+        kwargs["creationflags"] = no_window
+    try:
+        result = subprocess.run(["git", "worktree", "list", "--porcelain"], **kwargs)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        candidate = Path(line[len("worktree ") :].strip())
+        if _points_to_common_dir(candidate):
+            try:
+                return candidate.resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue
+    return None
+
+
 def _merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in override.items():
@@ -539,6 +606,14 @@ def _normalize(data: dict[str, Any]) -> ProjectSettings:
             rules[name] = tuple(item.strip() for item in rule)
         else:
             raise ProjectConfigError("invalid_config")
+    command_aliases = {
+        alias
+        for rule in rules.values()
+        if isinstance(rule, tuple)
+        for alias in rule
+    }
+    if not command_aliases.issubset(commands):
+        raise ProjectConfigError("invalid_config")
 
     weights = data.get("retrieval_weights", {})
     if not isinstance(weights, dict):
@@ -566,6 +641,8 @@ def _normalize(data: dict[str, Any]) -> ProjectSettings:
         raise ProjectConfigError("invalid_config")
     normalized_language_overrides: dict[str, dict[str, Any]] = {}
     for name, value in language_overrides.items():
+        if set(value) - {"text_extensions"}:
+            raise ProjectConfigError("invalid_config")
         override = _json_compatible(value)
         if "text_extensions" in value:
             override_extensions = _extensions(value["text_extensions"])
@@ -693,9 +770,15 @@ def _resolve_project_config(
     project_root: Path, common_dir: Path | None
 ) -> ProjectConfigResolution:
     project_path = project_root / _PROJECT_CONFIG
+    primary_root = _git_primary_worktree_root(project_root, common_dir)
     worktree_path = project_root / ".local-ai.worktree.toml"
     machine_path = common_dir / "info" / "local-ai.toml" if common_dir else None
-    layers: list[tuple[str, Path, Path]] = [("project", project_path, project_root)]
+    layers: list[tuple[str, Path, Path]] = []
+    if primary_root is not None and primary_root != project_root:
+        layers.append(
+            ("primary_project", primary_root / _PROJECT_CONFIG, primary_root)
+        )
+    layers.append(("project", project_path, project_root))
     if machine_path is not None and common_dir is not None:
         layers.append(("git_common", machine_path, common_dir))
     layers.append(("worktree", worktree_path, project_root))
@@ -931,13 +1014,12 @@ def path_is_allowed(
         resolved_relative, settings.exclude_paths
     ):
         return False
-    overrides = {
-        _path_override_for(path, settings.path_overrides)
-        for path in (lexical_relative, resolved_relative)
-    }
-    if "exclude" in overrides:
+    override = _path_override_for_candidates(
+        (lexical_relative, resolved_relative), settings.path_overrides
+    )
+    if override == "exclude":
         return False
-    if "include" in overrides:
+    if override == "include":
         return True
     if _matches_any(lexical_relative, settings.force_include_paths) or _matches_any(
         resolved_relative, settings.force_include_paths
@@ -1121,8 +1203,15 @@ def _matches_any(path: str, patterns: tuple[str, ...]) -> bool:
 
 
 def _path_override_for(path: str, overrides: Mapping[str, str]) -> str | None:
+    return _path_override_for_candidates((path,), overrides)
+
+
+def _path_override_for_candidates(
+    paths: tuple[str, ...], overrides: Mapping[str, str]
+) -> str | None:
     matched = [
         (_pattern_specificity(pattern), action)
+        for path in paths
         for pattern, action in overrides.items()
         if _path_glob_matches(path, pattern)
     ]
@@ -1253,8 +1342,20 @@ class ProjectPathHintStore:
         scope_value = f"{os.path.normcase(str(identity))}\0{shared_namespace or ''}"
         self.project_id = hashlib.sha256(scope_value.encode("utf-8")).hexdigest()
         self.database = Path(state_dir).expanduser() / "project-path-hints.sqlite3"
-        self.database.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as connection:
+
+    def _connect(
+        self, *, ensure_schema: bool = True, existing_only: bool = False
+    ) -> sqlite3.Connection:
+        if existing_only:
+            database_uri = f"{self.database.as_uri()}?mode=ro"
+            connection = sqlite3.connect(
+                database_uri, timeout=2.0, uri=True
+            )
+        else:
+            self.database.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(self.database, timeout=2.0)
+        connection.execute("PRAGMA busy_timeout = 2000")
+        if ensure_schema:
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS project_path_hints (
                     project_id TEXT NOT NULL,
@@ -1270,10 +1371,6 @@ class ProjectPathHintStore:
                 )"""
             )
             connection.commit()
-
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database, timeout=2.0)
-        connection.execute("PRAGMA busy_timeout = 2000")
         return connection
 
     def add(self, hint: PathHint) -> None:
@@ -1349,25 +1446,40 @@ class ProjectPathHintStore:
         repository_revision: str,
         config_digest: str,
     ) -> tuple[PathHint, ...]:
-        with closing(self._connect()) as connection:
-            now = datetime.now(timezone.utc).isoformat()
-            rows = connection.execute(
-                """SELECT path, purpose, scope, evidence_id, provenance,
-                          repository_revision, config_digest, expires_at
-                   FROM project_path_hints
-                   WHERE project_id = ? AND purpose = ? AND scope = ?
-                     AND repository_revision = ? AND config_digest = ?
-                     AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))
-                   ORDER BY path LIMIT 256""",
-                (
-                    self.project_id,
-                    purpose,
-                    scope,
-                    repository_revision,
-                    config_digest,
-                    now,
-                ),
-            ).fetchall()
+        if not self.database.is_file():
+            return ()
+        try:
+            with closing(
+                self._connect(ensure_schema=False, existing_only=True)
+            ) as connection:
+                table_exists = connection.execute(
+                    """SELECT 1 FROM sqlite_master
+                       WHERE type = 'table' AND name = 'project_path_hints'"""
+                ).fetchone()
+                if table_exists is None:
+                    return ()
+                now = datetime.now(timezone.utc).isoformat()
+                rows = connection.execute(
+                    """SELECT path, purpose, scope, evidence_id, provenance,
+                              repository_revision, config_digest, expires_at
+                       FROM project_path_hints
+                       WHERE project_id = ? AND purpose = ? AND scope = ?
+                         AND repository_revision = ? AND config_digest = ?
+                         AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))
+                       ORDER BY path LIMIT 256""",
+                    (
+                        self.project_id,
+                        purpose,
+                        scope,
+                        repository_revision,
+                        config_digest,
+                        now,
+                    ),
+                ).fetchall()
+        except sqlite3.OperationalError:
+            if not self.database.is_file():
+                return ()
+            raise
         result: list[PathHint] = []
         for row in rows:
             hint = PathHint(*row)
