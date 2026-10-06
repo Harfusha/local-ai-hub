@@ -81,7 +81,7 @@ def test_compact_agent_config_is_default(tmp_path: Path):
     install = tmp_path / "install"
     py = tmp_path / "python"
     serena = tmp_path / "serena"
-    cfg = {"code_intelligence": {"direct_agent_mcp": False, "serena_enabled": True, "codegraph_enabled": True}}
+    cfg = {"code_intelligence": {"direct_agent_mcp": False, "serena_enabled": True}}
     entries = setup.build_mcp_entries(install, py, serena, "codex", cfg)
     assert set(entries) == {"local-ai"}
     assert entries["local-ai"]["env"]["LOCAL_AI_AGENT"] == "codex"
@@ -125,7 +125,7 @@ def test_instruction_policy_blocks_match_generated_policy_sources(relative_path:
 
 
 def test_direct_serena_is_explicit_opt_in(tmp_path: Path):
-    cfg = {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True, "codegraph_enabled": True}}
+    cfg = {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True}}
     entries = setup.build_mcp_entries(tmp_path, tmp_path / "python", tmp_path / "serena", "codex", cfg)
     assert set(entries) == {"local-ai", "serena"}
     assert "--project-from-cwd" in entries["serena"]["args"]

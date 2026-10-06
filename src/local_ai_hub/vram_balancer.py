@@ -83,7 +83,7 @@ class VRAMBalancer:
                 self._condition.notify_all()
 
     def _sampling_timeout_fallback_locked(self) -> dict[str, Any]:
-        """Return conservative status when a telemetry probe stalls.
+        """Return conservative status when another telemetry probe stalls.
 
         Caller holds ``_condition``. Never start a duplicate probe after timeout.
         """

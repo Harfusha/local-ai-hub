@@ -174,7 +174,7 @@ def test_pause_unloads_every_loaded_model_without_loading_models(
         remaining=[], failed={}, verified=True, complete=True, unverified=False,
     )
     unloads = [(endpoint, payload) for endpoint, payload, _timeout, _deadline in requests if endpoint != "/api/ps"]
-    assert [endpoint for endpoint, _payload in unloads] == ["/api/generate"] * 3
+    assert [endpoint for endpoint, _payload in unloads] == ["/api/generate", "/api/generate", "/api/generate"]
     assert [payload["model"] for _endpoint, payload in unloads] == [
         "configured-fast", "configured-subagent", "unconfigured-external",
     ]

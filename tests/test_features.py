@@ -210,13 +210,16 @@ enabled = true
     def test_config_update_allows_feature_toggles(self, tmp_path):
         from local_ai_hub.http_server import Handler
         from local_ai_hub import http_server
+        from local_ai_hub.resilience import RecoveryJournal
 
         cfg_file = tmp_path / "config.toml"
         cfg_file.write_text("[features]\ncommands = true\n", encoding="utf-8")
+        journal = RecoveryJournal(tmp_path)
         old_app = http_server.APP
 
         class DummyApp:
             config = {"_config_path": str(cfg_file), "features": {"commands": True}}
+            recovery = journal
 
         try:
             http_server.APP = DummyApp()
@@ -226,10 +229,18 @@ enabled = true
             handler.headers = {}
             handler._read_json = lambda limit=None: {"action": "update", "settings": {"features.commands": False}}
             handler._require_authorized = lambda: True
-            handler._begin_trace = lambda path: None
+            handler._begin_trace = lambda path: setattr(handler, "_trace_request_id", "config-toggle-test")
+            handler._agent = lambda: "test-agent"
             handler._tenant = lambda: "test"
             sent = []
-            handler._send = lambda status, body: sent.append((status, body))
+
+            def send(status, body):
+                if getattr(handler, "_journal_request_id", None) and not getattr(handler, "_journal_finished", False):
+                    journal.finish(handler._journal_request_id, status < 400, status_code=status, response=body)
+                    handler._journal_finished = True
+                sent.append((status, body))
+
+            handler._send = send
 
             handler.do_POST()
             assert len(sent) == 1

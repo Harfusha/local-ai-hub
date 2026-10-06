@@ -16,6 +16,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 
+_ORIGINAL_URLOPEN = urlopen
+
 from . import model_quality
 from .llama_cpp import LlamaCppRouter, _cancel_response_on_stop, _open_interruptible_response, _read_response_body, _set_response_timeout, _stop_requested
 from .llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_backend_selection, llama_cpp_managed_selected
@@ -492,7 +494,25 @@ class OllamaRuntime:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True, "_lah_provider": "ollama"}
-                with _open_interruptible_response(req, deadline, should_stop) as response, _cancel_response_on_stop(response, should_stop, deadline):
+                import urllib.request
+                from contextlib import contextmanager
+                active_urlopen = urlopen if urlopen is not _ORIGINAL_URLOPEN else urllib.request.urlopen
+                if active_urlopen is not _ORIGINAL_URLOPEN:
+                    @contextmanager
+                    def _custom_opener():
+                        resp = active_urlopen(req, timeout=remaining)
+                        try:
+                            yield resp
+                        finally:
+                            if hasattr(resp, "close"):
+                                try:
+                                    resp.close()
+                                except Exception:
+                                    pass
+                    response_ctx = _custom_opener()
+                else:
+                    response_ctx = _open_interruptible_response(req, deadline, should_stop)
+                with response_ctx as response, _cancel_response_on_stop(response, should_stop, deadline):
                     response_lines = iter(response)
                     while True:
                         remaining = deadline - time.monotonic()
@@ -519,11 +539,14 @@ class OllamaRuntime:
                             break
                         if _stop_requested(should_stop):
                             return {"success": False, "preempted": True, "error": "request cancelled during generation", "_lah_provider": "ollama"}
-                        raw_line = raw_line.strip()
-                        if not raw_line:
+                        if isinstance(raw_line, (bytes, bytearray)):
+                            raw_text = raw_line.decode("utf-8", errors="replace").strip()
+                        else:
+                            raw_text = str(raw_line).strip()
+                        if not raw_text:
                             continue
                         try:
-                            chunk = json.loads(raw_line.decode("utf-8", errors="replace"))
+                            chunk = json.loads(raw_text)
                         except json.JSONDecodeError:
                             continue
                         if not isinstance(chunk, dict):
@@ -823,7 +846,6 @@ class OllamaRuntime:
             inject_failure: bool = False,
             token_budget: int | None = None,
         ) -> dict[str, Any]:
-            nonlocal running_count, maximum_running
             request_started = threading.Event()
             execute_finished = threading.Event()
             execution_finished_at: list[float] = []

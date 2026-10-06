@@ -488,7 +488,7 @@ class HardwareBenchmarkRunner:
                 expected if isinstance(expected, Mapping) else {},
             ))
             quality_paths_grounded = not bool(evaluation.get("hallucinated_paths"))
-        except Exception as exc:
+        except Exception:
             quality_score_pct = None
             quality_schema_pass = False
             quality_expected_match = False

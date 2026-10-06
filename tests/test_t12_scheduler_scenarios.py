@@ -825,3 +825,34 @@ def test_t12_active_cancel_keeps_worker_admission_until_child_exits() -> None:
         scheduler.close()
         first_caller.join(1)
         second_caller.join(1)
+
+
+def test_t12_cancelled_dispatched_job_does_not_start_execute() -> None:
+    import threading
+    from local_ai_hub.scheduler import Job
+
+    started: list[bool] = []
+    cancel = threading.Event()
+    cancel.set()
+    job = Job(
+        id=1,
+        model="fixture-model",
+        tenant="tenant-a",
+        source="test",
+        priority=5,
+        execute=lambda: (started.append(True) or {"success": True}),
+        cancel_event=cancel,
+    )
+    scheduler = AffinityScheduler.__new__(AffinityScheduler)
+    scheduler._cond = threading.Condition()
+    scheduler._stats = {"completed": 0, "failed": 0, "background_completed": 0, "background_failed": 0}
+    scheduler._inflight = 1
+    scheduler._inflight_jobs = {job.id: job}
+    scheduler._inflight_background = 0
+    scheduler._inflight_by_tenant = {job.tenant: 1}
+    scheduler._last_foreground_activity = 0.0
+
+    scheduler._run_job(job)
+
+    assert started == []
+    assert job.done.is_set()

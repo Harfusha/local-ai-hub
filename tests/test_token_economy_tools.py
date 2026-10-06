@@ -20,6 +20,7 @@ from local_ai_hub.token_economy import (
     repo_map_main,
 )
 from local_ai_hub.generator import (
+    context_economy_contract,
     generate_token_economy_policy,
     TOKEN_ECONOMIZER_SKILL_MD,
     write_all_generated,
@@ -125,35 +126,30 @@ def test_token_economy_policy_generation():
     assert all(trigger in instructions for instructions in (install_prompt, update_prompt, agents_file))
 
 
-def test_shared_agent_policy_blocks_match_canonical_prompts():
+def test_response_budget_and_fallback_contracts_match_all_agent_instructions():
     root = Path(__file__).resolve().parents[1]
-    files = ("AGENTS.md", "docs/INSTALL_PROMPT.md", "docs/UPDATE_PROMPT.md")
-    tool_blocks = []
-    economy_blocks = []
-    instruction_files = []
-    for relative in files:
-        instructions = (root / relative).read_text(encoding="utf-8")
-        instruction_files.append(instructions)
+    instructions = (
+        context_economy_contract(),
+        generate_token_economy_policy(),
+        TOKEN_ECONOMIZER_SKILL_MD,
+        (root / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8"),
+        (root / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8"),
+        (root / "AGENTS.md").read_text(encoding="utf-8"),
+        (root / "skills" / "tool-orchestration" / "SKILL.md").read_text(encoding="utf-8"),
+    )
+    budget_contract = (
+        "`response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.",
+        "Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.",
+        "Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.",
+        "Reject `max_response_tokens` below 128; never raise the request silently.",
+    )
+    fallback_contract = (
+        "Native fallback requires an explicit `terminal=true` and `retryable=false` result.",
+        "On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.",
+    )
 
-        def block(marker: str) -> str:
-            start = f"<!-- BEGIN {marker} -->"
-            end = f"<!-- END {marker} -->"
-            start_index = instructions.index(start)
-            end_index = instructions.index(end, start_index) + len(end)
-            return instructions[start_index:end_index]
-
-        tool_blocks.append(block("LOCAL AI HUB TOOL POLICY"))
-        economy_blocks.append(block("TOKEN ECONOMY POLICY"))
-
-    assert tool_blocks[0] == tool_blocks[1] == tool_blocks[2]
-    assert economy_blocks[0] == economy_blocks[1] == economy_blocks[2]
-    assert "`local_ai_status`" in tool_blocks[0]
-    assert "only heavy reasoning uses `reasoning`" in tool_blocks[0]
-    assert "balanced=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b" in tool_blocks[0]
-    assert "Before any repository task, load and follow the `token-economizer` skill" in economy_blocks[0]
-    assert all("ensure-tools.ps1" not in instructions for instructions in instruction_files)
-    update_prompt = (root / "docs/UPDATE_PROMPT.md").read_text(encoding="utf-8")
-    assert "Keep the `TOKEN ECONOMY POLICY` block identical" in update_prompt
+    for contract in (*budget_contract, *fallback_contract):
+        assert all(contract in text for text in instructions), contract
 
 
 def test_token_economizer_skill_md(tmp_path: Path):

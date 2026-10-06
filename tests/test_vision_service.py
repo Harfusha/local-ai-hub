@@ -12,7 +12,22 @@ from local_ai_hub.app import LocalAIApp
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.model_policy import ModelExecutionPolicy
 from local_ai_hub.services import LocalAIServices
+from local_ai_hub.vision_inputs import VisionInputs, prepare_vision_inputs
 from local_ai_hub.vision_contracts import VISION_MAX_IMAGE_BYTES, VISION_MAX_IMAGE_CHARS
+
+
+def test_prepare_vision_inputs_normalizes_data_url_without_runtime() -> None:
+    data_url = "data:image/png;base64,aW1hZ2U="
+    prepared = prepare_vision_inputs(
+        args={"image": data_url},
+        image_path=data_url,
+        prompt="review this page",
+        tenant="tenant-a",
+        artifacts=MagicMock(),
+    )
+    assert isinstance(prepared, VisionInputs)
+    assert prepared.images == ["aW1hZ2U="]
+    assert prepared.image_size is None
 
 
 def _services(tmp_path: Path, *, models: dict[str, str] | None = None):
@@ -53,6 +68,9 @@ def test_vision_defaults_to_qwen_model_and_requests_json(tmp_path: Path) -> None
     payload = runtime.request.call_args.args[1]
     assert payload["format"] == "json"
     assert payload["images"] == ["ZmFrZS1pbWFnZQ=="]
+    model_prompt = payload["prompt"]
+    assert '"bbox": [left, top, right, bottom] in image pixels or null' in model_prompt
+    assert '"bbox": [x, y, width, height]' not in model_prompt
 
 
 def test_vision_normalizes_data_url_to_provider_base64(tmp_path: Path) -> None:
@@ -283,6 +301,85 @@ def test_vision_returns_structured_findings_and_raw_artifact(tmp_path: Path) -> 
     assert result["review"]["findings"][0]["finding_id"] == "f-1"
     assert result["raw_output_artifact_id"] == "art_vision_raw"
     services.artifacts.put.assert_called_once()
+
+
+def test_vision_rejects_hallucinated_dom_and_out_of_image_region(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    runtime.request.return_value = {
+        "response": json.dumps(
+            {
+                "summary": "button issue",
+                "findings": [
+                    {
+                        "id": "f-1",
+                        "severity": "high",
+                        "category": "interaction",
+                        "problem": "submit control missing",
+                        "confidence": 0.7,
+                        "element_ids": ["submit-button"],
+                        "bbox": [489, 316, 652, 360],
+                        "evidence": ["<button>Submit</button>"],
+                    }
+                ],
+            }
+        )
+    }
+
+    result = services.vision({"image": str(image)}, "t")
+
+    assert result["success"] is False
+    assert result["degraded"] is True
+    assert result["error_code"] == "vision_output_invalid"
+
+
+def test_vision_rejects_dom_observation_fact_that_mismatches_supplied_source(
+    tmp_path: Path,
+) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    runtime.request.return_value = {
+        "response": json.dumps(
+            {
+                "summary": "button label review",
+                "findings": [
+                    {
+                        "id": "f-1",
+                        "severity": "medium",
+                        "category": "accessibility",
+                        "problem": "button label is unclear",
+                        "observed": "button text is Start",
+                        "hypothesized": "label may be vague",
+                        "uncertainty": ["task context not supplied"],
+                        "confidence": 0.8,
+                        "element_ids": ["button-1"],
+                        "observation_facts": [
+                            {
+                                "source": "dom",
+                                "element_id": "button-1",
+                                "field": "text",
+                                "value": "Start",
+                            }
+                        ],
+                        "evidence": ["model-generated DOM quote"],
+                    }
+                ],
+            }
+        )
+    }
+
+    result = services.vision(
+        {
+            "image": str(image),
+            "dom": {
+                "redaction": "none",
+                "elements": [{"element_id": "button-1", "tag": "button", "text": "Continue"}],
+            },
+        },
+        "t",
+    )
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["error_code"] == "vision_output_invalid"
 
 
 def test_vision_rejects_findings_without_cited_evidence(tmp_path: Path) -> None:

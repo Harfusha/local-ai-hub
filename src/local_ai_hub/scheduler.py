@@ -344,11 +344,11 @@ class AffinityScheduler:
             report: dict[str, Any] = {"success": True}
             metric_budget = [0, 0]
             missing_metrics: list[str] = []
-            for field in requested_fields:
-                if field not in metrics or metrics[field] is None:
-                    missing_metrics.append(field)
+            for metric_name in requested_fields:
+                if metric_name not in metrics or metrics[metric_name] is None:
+                    missing_metrics.append(metric_name)
                     continue
-                report[field] = _bounded_json_copy(metrics[field], metric_budget)
+                report[metric_name] = _bounded_json_copy(metrics[metric_name], metric_budget)
             if missing_metrics:
                 return {
                     "success": False,

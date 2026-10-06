@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from pathlib import Path
 import json
 import time
+import pytest
 
 import local_ai_hub.llama_cpp as llama_cpp_module
 from local_ai_hub.llama_cpp import LlamaCppRouter
@@ -72,6 +73,23 @@ def test_force_fresh_model_info_ignores_cached_empty_snapshot(monkeypatch) -> No
 
     assert "fresh-served-id" in models
     assert models["fresh-served-id"]["status"]["value"] == "loaded"
+
+
+def test_strict_model_inventory_raises_when_deadline_expires_before_http(monkeypatch) -> None:
+    url = "http://127.0.0.1:12438"
+    router = LlamaCppRouter(
+        {"llama_cpp": {"mode": "auto", "models": {"model": {"url": url}}}}
+    )
+    clock_values = iter((50.0, 51.0))
+    monkeypatch.setattr(llama_cpp_module.time, "monotonic", lambda: next(clock_values))
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "_open_interruptible_response",
+        lambda *_args, **_kwargs: pytest.fail("expired inventory must not start HTTP"),
+    )
+
+    with pytest.raises(TimeoutError, match="inventory deadline expired"):
+        router._model_info(url, force_refresh=True, strict=True, deadline=50.5)
 
 
 def test_unload_model_routes_unmapped_served_id_to_its_configured_endpoint(monkeypatch) -> None:
