@@ -261,6 +261,33 @@ def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) ->
     assert result["routing"]["semantic_handoff"] == semantic_handoff_hint("local_ai_repo", "search", True)
 
 
+def test_async_task_submit_reuses_explicit_request_id(monkeypatch) -> None:
+    assert "request_id" in inspect.signature(local_ai_mcp.local_ai_task).parameters
+    schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_task"].parameters["properties"]
+    assert "request_id" in schema
+    calls: list[tuple[str, dict, dict]] = []
+
+    def post(path: str, payload: dict, **kwargs) -> dict:
+        calls.append((path, payload, kwargs))
+        return {"success": True, "status": "submitted", "request_id": kwargs.get("request_id")}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", post)
+
+    first = local_ai_mcp.local_ai_task(
+        action="submit", task="bounded recovery task", request_id="stable-job-request"
+    )
+    retry = local_ai_mcp.local_ai_task(
+        action="submit", task="bounded recovery task", request_id="stable-job-request"
+    )
+
+    assert first["success"] is True
+    assert retry["success"] is True
+    assert [path for path, _, _ in calls] == ["/api/async-jobs", "/api/async-jobs"]
+    assert [options.get("request_id") for _, _, options in calls] == [
+        "stable-job-request", "stable-job-request"
+    ]
+
+
 def test_status_disabled_repo_evidence_omits_status_bypass_metadata(monkeypatch) -> None:
     monkeypatch.setattr(local_ai_mcp.FEATURES, "status", False)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
@@ -460,6 +487,28 @@ def test_local_ai_repo_enriches_search_when_source_requested(monkeypatch) -> Non
     assert captured["path"] == "/api/search"
     assert captured["query"] == "target symbol"
     assert captured["enrich"] is True
+
+
+@pytest.mark.parametrize("include_code", [False, True])
+def test_local_ai_repo_investigate_preserves_include_code(monkeypatch, include_code: bool) -> None:
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", FeatureSet({"features": {"repo": True}}))
+    captured = {}
+
+    def fake_post(endpoint, payload, **kwargs):
+        captured.update({"endpoint": endpoint, "payload": dict(payload)})
+        return {"success": True}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_repo(
+        action="investigate",
+        root=str(ROOT),
+        query="target symbol",
+        include_code=include_code,
+    )
+
+    assert result["success"] is True
+    assert captured["endpoint"] == "/api/repo/investigate"
+    assert captured["payload"]["include_code"] is include_code
 
 
 def test_invalid_task_action_excludes_orchestration() -> None:
