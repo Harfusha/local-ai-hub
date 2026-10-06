@@ -27,9 +27,10 @@ _PATH_RE = re.compile(r"(?:(?:[A-Za-z]:\\\\|/)(?:[^\s:'\"<>|]+[/\\\\])+[^\s:'\"<
 _LONG_TOKEN_RE = re.compile(r"\b(?:[A-Fa-f0-9]{24,}|[A-Za-z0-9_\-]{48,})\b")
 _WINDOWS_PATH_RE = re.compile(r"\b[A-Za-z]:[\\/][^\s<>|\"']+")
 _UNC_PATH_RE = re.compile(r"\\\\[^\\/\s]+\\[^\\/\s]+(?:\\[^\s<>|\"']*)?")
-_POSIX_PATH_RE = re.compile(
-    r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*|(?<![\w:])/(?:[^/\s/]*\.[^/\s/]+)"
-)
+_POSIX_PATH_RE = re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*")
+_POSIX_FILE_PATH_RE = re.compile(r"(?<![\w:])/[^\s/,;\"']+\.[A-Za-z0-9]{1,12}(?![\w-])")
+_POSIX_ROOT_PATH_RE = re.compile(r"(?<![\w:/])/(?!/)[^\s/\\,;\"']+(?![\w/])")
+_SAFE_HTTP_ROUTE_LABELS = frozenset({"/slow", "/median"})
 _SENSITIVE_METADATA_VALUE_RE = re.compile(
     r"(?i)[\"']?(prompt|source(?:_text)?|input(?:_text)?|completion|output(?:_text)?|"
     r"response(?:_body)?|request(?:_body)?|body|payload|content|api[_-]?key|token|"
@@ -242,7 +243,7 @@ def _error_fingerprint(error_type: str, component: str, operation: str, error_co
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def _safe_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH) -> str:
+def _safe_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH, *, preserve_route: bool = False) -> str:
     """Keep labels useful while excluding secrets, absolute paths, and long tokens."""
     text = str(value or "").replace("\r", " ").replace("\n", " ")
     text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [redacted]", text)
@@ -256,9 +257,18 @@ def _safe_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH) -> str:
 
     def redact_posix(match: re.Match[str]) -> str:
         candidate = match.group(0)
-        return candidate if candidate.startswith("/api/") else "<path>"
+        return candidate if preserve_route and candidate in _SAFE_HTTP_ROUTE_LABELS else "<path>"
 
     text = _POSIX_PATH_RE.sub(redact_posix, text)
+
+    def redact_posix_file(match: re.Match[str]) -> str:
+        candidate = match.group(0)
+        if preserve_route and candidate in _SAFE_HTTP_ROUTE_LABELS:
+            return candidate
+        return "<path>"
+
+    text = _POSIX_FILE_PATH_RE.sub(redact_posix_file, text)
+    text = _POSIX_ROOT_PATH_RE.sub(redact_posix_file, text)
     text = _LONG_TOKEN_RE.sub("<token>", text)
     return " ".join(text.split())[:limit]
 
@@ -625,18 +635,20 @@ class TelemetryStore:
     def _clean_event(event: dict[str, Any]) -> dict[str, Any]:
         created = float(event.get("created_at", time.time()))
         queue_wait_ms = _bounded_number(event.get("queue_wait_ms", 0))
+        event_type = _safe_metadata(event.get("event_type", "inference"), 40)
+        preserve_route = event_type.casefold() == "http"
         return {
             "created_at": created,
-            "event_type": _safe_metadata(event.get("event_type", "inference"), 40),
+            "event_type": event_type,
             "tenant": _safe_metadata(event.get("tenant", "default")),
             "agent": _safe_metadata(event.get("agent", ""), 80),
             "request_id": _safe_metadata(event.get("request_id", ""), 96),
             "trace_id": _safe_metadata(event.get("trace_id", ""), 96),
-            "action": _safe_metadata(event.get("action", "unknown")),
+            "action": _safe_metadata(event.get("action", "unknown"), preserve_route=preserve_route),
             "stage": _safe_metadata(event.get("stage", ""), 80),
             "task_type": _safe_metadata(event.get("task_type", ""), 80),
             "complexity": _safe_metadata(event.get("complexity", ""), 40),
-            "route": _safe_metadata(event.get("route", ""), 120),
+            "route": _safe_metadata(event.get("route", ""), 120, preserve_route=preserve_route),
             "model": _safe_metadata(event.get("model", "") or ""),
             "cache_hit": 1 if event.get("cache_hit") else 0,
             "coalesced": 1 if event.get("coalesced") else 0,
@@ -2151,16 +2163,22 @@ class TelemetryStore:
         values = [float(row[0] or 0.0) for row in rows]
         return {"samples": len(values), "p95_duration_ms": _percentile(values, 0.95)}
 
-    def get_timeline_page(self, limit: int = 100, *, before_id: int | None = None, _flush: bool = True) -> dict[str, Any]:
-        """Return a recent chronological page, with a cursor for older events."""
+    def get_timeline_page(
+        self,
+        limit: int = 100,
+        *,
+        before_id: int | None = None,
+        _flush: bool = True,
+    ) -> dict[str, Any]:
+        """Return a recent chronological page with a cursor for older events."""
         if not self.enabled:
             return {"timeline": [], "next_cursor": None, "has_more": False}
         if _flush:
             self.flush(0.2)
         try:
-            limit = max(1, min(int(limit), 500))
+            bounded_limit = max(1, min(int(limit), 500))
         except (TypeError, ValueError, OverflowError):
-            limit = 100
+            bounded_limit = 100
         try:
             cursor = min(2**63 - 1, max(0, int(before_id))) if before_id is not None else None
         except (TypeError, ValueError, OverflowError):
@@ -2173,9 +2191,12 @@ class TelemetryStore:
             if cursor is not None:
                 sql += " WHERE id < ?"
                 values = (cursor,)
-            rows = con.execute(sql + " ORDER BY id DESC LIMIT ?", (*values, limit + 1)).fetchall()
-        has_more = len(rows) > limit
-        page_rows = list(reversed(rows[:limit]))
+            rows = con.execute(
+                sql + " ORDER BY id DESC LIMIT ?",
+                (*values, bounded_limit + 1),
+            ).fetchall()
+        has_more = len(rows) > bounded_limit
+        page_rows = list(reversed(rows[:bounded_limit]))
         timeline = [
             {
                 "id": int(row[0]),

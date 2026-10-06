@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import inspect
 import ipaddress
+import inspect
 import json
 import math
 import os
@@ -44,7 +44,6 @@ from .operation_contracts import normalize_transport_error
 from .json_utils import dumps as json_dumps
 from .process_utils import process_owner_state
 
-_DB_QUERY_MAX_RESPONSE_BYTES = 256 * 1024
 from .browser_bridge import (
     abandon_staged_capture,
     capture_failure,
@@ -68,6 +67,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 APP: LocalAIApp | None = None
+_MODE_UNLOAD_STATUS_LOCK = threading.Lock()
 MAX_EVENT_SEQUENCE = (1 << 63) - 1
 _DB_QUERY_TIMEOUT_SECONDS = 0.5
 _DB_QUERY_MAX_ROWS = 100
@@ -316,7 +316,9 @@ def _invoke_cancellable_request(registry: _ActiveTranscriptionRegistry, callback
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
 MONITOR_PATHS = {
     "/health", "/ready", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
-    "/api/status", "/api/capabilities", "/api/metrics", "/api/adoption", "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/audit/tail", "/api/control",
+    "/api/status", "/api/mode", "/api/capabilities", "/api/metrics", "/api/adoption",
+    "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline",
+    "/api/audit/tail", "/api/control",
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
     "/api/mode", "/api/admin/mode",
     "/api/debug-traces",
@@ -334,6 +336,88 @@ READINESS_COMPONENTS = (
     "agent_learning",
     "async_jobs",
 )
+
+
+
+
+
+
+
+
+
+
+def _dashboard_html_with_trace_notice() -> str:
+    return DASHBOARD_HTML.replace(
+        "Agent debug traces · bounded prompt/output retention",
+        "Agent debug traces · sensitive full prompt/output · protected access · separate retention policy",
+        1,
+    )
+
+
+def _is_loopback_peer(handler: Any) -> bool:
+    """Trust the socket peer address, never a client-controlled Host header."""
+    peer = getattr(handler, "client_address", None)
+    if not isinstance(peer, tuple) or not peer:
+        return False
+    try:
+        address = ipaddress.ip_address(str(peer[0]))
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        return address.is_loopback
+    except ValueError:
+        return False
+
+
+
+
+
+
+def _query_int(query: Mapping[str, list[str]], name: str, default: int) -> int:
+    try:
+        return int((query.get(name) or [default])[0])
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+
+
+
+
+def _in_process_cuda_unload_blockers(app: Any) -> list[str]:
+    blockers: list[str] = []
+    for name in ("embeddings", "reranker"):
+        component = getattr(app, name, None)
+        model = getattr(component, "_model", None)
+        backend = str(getattr(component, "active_backend", "") or getattr(component, "backend", "")).strip().lower()
+        device = str(getattr(component, "active_device", "") or "").strip().lower()
+        if model is not None and backend != "ollama" and device.startswith("cuda"):
+            blockers.append(name)
+    return blockers
+
+
+def _public_gaming_unload_status(value: dict[str, Any]) -> dict[str, Any]:
+    allowed_states = {"pending", "complete", "partial", "deferred", "failed", "unknown", "not_applicable"}
+
+    def names(key: str) -> list[str] | None:
+        rows = value.get(key)
+        if not isinstance(rows, list):
+            return None
+        return [str(row)[:160] for row in rows[:64]]
+
+    state = str(value.get("state", "unknown"))
+    status = {
+        "success": value.get("success") is True,
+        "state": state if state in allowed_states else "unknown",
+        "reason": str(value.get("reason", ""))[:80],
+        "unloaded": names("unloaded") or [],
+        "remaining": names("remaining"),
+    }
+    blockers = names("unsupported_in_process_cuda")
+    if blockers:
+        status["unsupported_in_process_cuda"] = blockers
+    return status
+
+
 
 HTTP_MODE_OPERATOR_GET_PATHS = frozenset({
     "/api/adoption", "/api/audit/tail", "/api/capabilities", "/api/config",
@@ -632,11 +716,12 @@ def _json_bytes(data: Any) -> bytes:
 
 AGENT_EVENT_PAGE_MAX_BYTES = 1024 * 1024
 AGENT_EVENT_PAGE_MAX_LIMIT = 100
+DEBUG_TRACE_HTTP_MAX_BYTES = 8 * 1024 * 1024
 SSE_REPLAY_MAX_EVENTS = 10_000
 
 
 def _minimum_json_bytes(value: Any, ceiling: int) -> int:
-    """Return lower bound for UTF-8 JSON size without encoding huge strings."""
+    """Lower bound UTF-8 JSON size without encoding potentially huge event values."""
     if isinstance(value, str):
         return min(len(value) + 2, ceiling + 1)
     if value is None:
@@ -650,77 +735,88 @@ def _minimum_json_bytes(value: Any, ceiling: int) -> int:
             return min(len(json_dumps(value).encode("ascii")), ceiling + 1)
         except (OverflowError, ValueError):
             return ceiling + 1
+    total = 0
     if isinstance(value, dict):
         total = 2 + max(0, len(value) - 1)
+        if total > ceiling:
+            return ceiling + 1
         for key, item in value.items():
-            total += _minimum_json_bytes(key, max(0, ceiling - total)) + 1
-            total += _minimum_json_bytes(item, max(0, ceiling - total))
+            total += _minimum_json_bytes(key, ceiling - total)
             if total > ceiling:
                 return ceiling + 1
-        return total
-    if isinstance(value, (list, tuple)):
+            total += 1 + _minimum_json_bytes(item, ceiling - total)
+            if total > ceiling:
+                return ceiling + 1
+    elif isinstance(value, (list, tuple)):
         total = 2 + max(0, len(value) - 1)
+        if total > ceiling:
+            return ceiling + 1
         for item in value:
-            total += _minimum_json_bytes(item, max(0, ceiling - total))
+            total += _minimum_json_bytes(item, ceiling - total)
             if total > ceiling:
                 return ceiling + 1
-        return total
-    return 0
+    return total
 
 
 def _bound_agent_event_page(status: int, page: dict[str, Any], after_seq: Any) -> tuple[int, dict[str, Any]]:
-    """Bound event responses without advancing past rows omitted by the byte cap."""
+    """Bound serialized event pages while keeping the cursor on the last returned row."""
     try:
         cursor = max(0, int(after_seq))
     except (TypeError, ValueError, OverflowError):
         cursor = 0
-    events = list(page.get("events") or [])
-    if not events:
-        if len(_json_bytes(page)) <= AGENT_EVENT_PAGE_MAX_BYTES:
-            return status, page
-        return 413, {
-            **page,
-            "events": [],
-            "next_seq": cursor,
-            "error": {
-                "code": "agent_event_page_too_large",
-                "message": "event page metadata exceeds serialized response byte limit",
-                "max_bytes": AGENT_EVENT_PAGE_MAX_BYTES,
-            },
-        }
 
-    accepted: list[dict[str, Any]] = []
-    accepted_page: dict[str, Any] | None = None
-    for index, event in enumerate(events):
+    original_events = list(page.get("events") or [])
+    if not original_events:
+        return (status, page) if len(_json_bytes(page)) <= AGENT_EVENT_PAGE_MAX_BYTES else (
+            413,
+            {
+                "success": False, "events": [], "next_seq": cursor,
+                "first_retained_seq": max(0, int(page.get("first_retained_seq") or 0)),
+                "last_seq": max(0, int(page.get("last_seq") or 0)), "has_more": False,
+                "gap_ranges": [], "cursor_reset": bool(page.get("cursor_reset")),
+                "error": {"code": "agent_event_page_too_large", "message": "event page metadata exceeds serialized response byte limit", "max_bytes": AGENT_EVENT_PAGE_MAX_BYTES},
+            },
+        )
+
+    event_bytes = 0
+    best_page: dict[str, Any] | None = None
+    for index, event in enumerate(original_events):
+        candidate = dict(page)
         try:
-            next_seq = max(0, int(event.get("seq") or 0))
+            candidate["next_seq"] = max(0, int(event.get("seq") or 0))
         except (AttributeError, TypeError, ValueError, OverflowError):
             break
-        candidate = dict(page)
-        candidate["next_seq"] = next_seq
-        candidate["has_more"] = bool(page.get("has_more")) or index + 1 < len(events)
+        trimmed = index + 1 < len(original_events)
+        candidate["has_more"] = bool(page.get("has_more")) or trimmed
         candidate["gap_ranges"] = [
             gap for gap in (page.get("gap_ranges") or [])
-            if isinstance(gap, dict) and int(gap.get("to_seq") or 0) <= next_seq
+            if isinstance(gap, dict) and int(gap.get("to_seq") or 0) <= candidate["next_seq"]
         ]
         candidate["events"] = []
-        if _minimum_json_bytes(event, AGENT_EVENT_PAGE_MAX_BYTES) > AGENT_EVENT_PAGE_MAX_BYTES:
+        envelope_bytes = len(_json_bytes(candidate)) - 2  # Replace serialized empty event list.
+        separator_bytes = 1 if index else 0
+        if envelope_bytes + event_bytes + separator_bytes + _minimum_json_bytes(
+            event, AGENT_EVENT_PAGE_MAX_BYTES
+        ) > AGENT_EVENT_PAGE_MAX_BYTES:
             break
-        trial_events = [*accepted, event]
-        candidate["events"] = trial_events
-        if len(_json_bytes(candidate)) > AGENT_EVENT_PAGE_MAX_BYTES:
+        item_bytes = len(_json_bytes(event))
+        if envelope_bytes + event_bytes + separator_bytes + item_bytes > AGENT_EVENT_PAGE_MAX_BYTES:
             break
-        accepted = trial_events
-        accepted_page = candidate
-    if accepted_page is not None:
-        return status, accepted_page
+        event_bytes += item_bytes
+        candidate["events"] = original_events[:index + 1]
+        best_page = candidate
+    if best_page is not None:
+        return status, best_page
+
+    # A single event can exceed the budget through uncapped metadata fields.
+    # Keep the caller cursor unchanged so retry cannot silently skip that row.
     return 413, {
         "success": False,
         "events": [],
         "next_seq": cursor,
         "first_retained_seq": max(0, int(page.get("first_retained_seq") or 0)),
         "last_seq": max(0, int(page.get("last_seq") or 0)),
-        "has_more": bool(page.get("has_more")) or bool(events),
+        "has_more": bool(page.get("has_more")) or bool(original_events),
         "gap_ranges": [],
         "cursor_reset": bool(page.get("cursor_reset")),
         "error": {
@@ -729,6 +825,59 @@ def _bound_agent_event_page(status: int, page: dict[str, Any], after_seq: Any) -
             "max_bytes": AGENT_EVENT_PAGE_MAX_BYTES,
         },
     }
+
+
+def _event_page_supports_snapshot_bound(event_page: Any) -> bool:
+    try:
+        parameters = inspect.signature(event_page).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == "through_seq" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _apply_event_page_snapshot_bound(
+    page: dict[str, Any], *, through_seq: int, after_seq: Any
+) -> dict[str, Any]:
+    """Enforce the caller's snapshot when an older store lacks through_seq support."""
+    try:
+        cursor = max(0, int(after_seq))
+    except (TypeError, ValueError, OverflowError):
+        cursor = 0
+    try:
+        last_seq = max(0, int(page.get("last_seq") or 0))
+    except (TypeError, ValueError, OverflowError):
+        last_seq = 0
+    boundary = min(last_seq, max(0, int(through_seq)))
+    events = []
+    for event in page.get("events") or []:
+        try:
+            seq = int(event.get("seq") or 0)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            continue
+        if 0 < seq <= boundary:
+            events.append(event)
+
+    bounded = dict(page)
+    bounded["events"] = events
+    bounded["last_seq"] = boundary
+    bounded["next_seq"] = max(0, int(events[-1].get("seq") or 0)) if events else cursor
+    bounded["has_more"] = bool(events) and bool(page.get("has_more")) and bounded["next_seq"] < boundary
+    gaps = []
+    for gap in page.get("gap_ranges") or []:
+        if not isinstance(gap, dict):
+            continue
+        try:
+            first = max(0, int(gap.get("from_seq") or 0))
+            last = int(gap.get("to_seq") or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if first <= last and first <= boundary:
+            gaps.append({**gap, "from_seq": first, "to_seq": min(last, boundary)})
+    bounded["gap_ranges"] = gaps
+    return bounded
 
 
 def _resolve_memory_scope(
@@ -2597,6 +2746,11 @@ class Handler(BaseHTTPRequestHandler):
             status["http_concurrency"] = self.server.concurrency_stats()
         self._send(200, status)
 
+    def _handle_post_db_query(self, payload: Any) -> None:
+        db_name = str(payload.get("db", "agent_state"))
+        sql_q = str(payload.get("query", "SELECT name FROM sqlite_master WHERE type='table'"))
+        self._send(200, self._handle_db_query(db_name, sql_q))
+
     def _handle_post_telemetry_timeline(self, payload: Any) -> None:
         limit = payload.get("limit", 100) if isinstance(payload, dict) else 100
         before_id = payload.get("before_id") if isinstance(payload, dict) else None
@@ -3141,22 +3295,17 @@ class Handler(BaseHTTPRequestHandler):
         if APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
-        # The dashboard shell contains no runtime data. Keeping it public lets a
-        # remote deployment prompt for an API token client-side; every data/control
-        # endpoint remains authenticated.
-        loopback_mode_get = (
-            path == "/api/mode"
-            and _is_loopback_client_address(getattr(self, "client_address", None))
-        )
-        if (
-            path not in {"/", "/dashboard", "/favicon.ico"}
-            and not loopback_mode_get
-            and not self._require_authorized()
-        ):
+        # The shell is public so remote deployments can prompt for a token. The
+        # redacted mode snapshot is the only loopback auth exception; host/origin
+        # checks still apply, and mode mutation remains authenticated.
+        if path == "/api/mode" and _is_loopback_peer(self):
+            if not self._validate_host_and_origin():
+                return
+        elif path not in {"/", "/dashboard", "/favicon.ico"} and not self._require_authorized():
             return
-        mode_rejection = _http_mode_gate_error("GET", path)
-        if mode_rejection is not None:
-            self._send(503, mode_rejection)
+        mode_error = _http_mode_gate_error("GET", path)
+        if mode_error is not None:
+            self._send(503, mode_error)
             return
         self._begin_trace(path)
         query = parse_qs(parsed.query)
@@ -3194,35 +3343,45 @@ class Handler(BaseHTTPRequestHandler):
                 if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
                     self._send(404, {"error": "dashboard disabled"}); return
                 self._telemetry_finished = True
-                self._send_html(200, DASHBOARD_HTML); return
-            if path == "/api/mode":
-                api = _operational_mode_api()
-                app_cfg = getattr(APP, "config", None)
-                async_jobs = getattr(APP, "async_jobs", None)
-                jobs_path = getattr(async_jobs, "path", None)
-                if jobs_path is not None:
-                    state_dir = Path(jobs_path).parent
-                else:
-                    state_dir = app_cfg.get("server", {}).get("state_dir", "state") if isinstance(app_cfg, dict) else "state"
-                load_fn = getattr(api, "load_operational_mode", load_operational_mode)
-                try:
-                    snapshot = load_fn(state_dir=state_dir)
-                except TypeError:
-                    snapshot = load_fn(state_dir)
-                snap_dict = snapshot.to_dict() if hasattr(snapshot, "to_dict") else dict(snapshot.__dict__)
-                unload_info = _MODE_UNLOAD_STATUS.get(snapshot.revision)
-                if unload_info is not None:
-                    snap_dict["runtime_unload"] = unload_info
-                self._send(200, {"success": True, **snap_dict}); return
+                self._send_html(200, _dashboard_html_with_trace_notice()); return
             if path == "/favicon.ico":
                 self._telemetry_finished = True
                 self.send_response(204); self.end_headers(); return
+            if path == "/api/mode":
+                try:
+                    mode_api = _operational_mode_api()
+                    jobs_path = getattr(getattr(APP, "async_jobs", None), "path", None)
+                    config = getattr(APP, "config", {})
+                    state_dir = Path(jobs_path).parent if jobs_path is not None else config.get("server", {}).get("state_dir", "state")
+                    snapshot = mode_api.load_operational_mode(state_dir=state_dir)
+                except Exception:
+                    self._send(503, {"success": False, "error": "operational mode state unavailable", "retryable": True})
+                    return
+                response = {
+                    "success": True,
+                    "mode": str(getattr(snapshot, "mode", "maintenance")),
+                    "revision": int(getattr(snapshot, "revision", -1)),
+                    "degraded": bool(getattr(snapshot, "degraded", True)),
+                }
+                if response["mode"] == "gaming":
+                    with _MODE_UNLOAD_STATUS_LOCK:
+                        unload_status = _MODE_UNLOAD_STATUS.get(response["revision"])
+                    if unload_status is not None:
+                        response["runtime_unload"] = dict(unload_status)
+                if response["degraded"]:
+                    response["error"] = "operational mode state is invalid"
+                self._send(200, response); return
             if path == "/api/status":
                 detail = str((query.get("detail") or [""])[0]).strip().lower()
                 if detail == "agent_state":
                     self._send(403, {"success": False, "error": "agent_state status is unavailable without root scope", "terminal": True, "retryable": False}); return
                 scope = str((query.get("scope") or ["process"])[0])
-                status = APP.status(scope=scope)
+                if detail in {"summary", "light"}:
+                    status = APP.realtime_status(light=True, scope=scope)
+                    status["detail_level"] = "summary"
+                else:
+                    status = APP.status(scope=scope)
+                    status["detail_level"] = "full"
                 if isinstance(self.server, LocalAIHTTPServer):
                     status["http_concurrency"] = self.server.concurrency_stats()
                 self._send(200, status); return
@@ -3408,30 +3567,52 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
             if path == "/api/agent-state/events":
                 agent_state = getattr(APP, "agent_state", None)
-                if agent_state is None:
-                    self._send(503, {"success": False, "events": [], "next_seq": 0, "error": {"code": "event_page_unavailable", "message": "agent state is unavailable"}}); return
                 stream_id = (query.get("stream_id") or [""])[0]
-                after_seq = (query.get("after_seq") or ["0"])[0]
+                after_seq = (query.get("after_seq") or [0])[0]
+                through_seq = (query.get("through_seq") or [None])[0]
+                limit = (query.get("limit") or [100])[0]
+                if agent_state is None:
+                    self._send(403, {
+                        "success": False, "events": [], "next_seq": 0,
+                        "first_retained_seq": 0, "last_seq": 0, "has_more": False,
+                        "gap_ranges": [], "cursor_reset": False,
+                        "error": {"code": "agent_state_disabled", "message": "agent state is disabled"},
+                    }); return
                 try:
-                    int(after_seq)
-                except (TypeError, ValueError, OverflowError):
-                    after_seq = "0"
-                try:
-                    requested_limit = int((query.get("limit") or [100])[0])
+                    requested_limit = int(limit)
                 except (TypeError, ValueError, OverflowError):
                     requested_limit = 100
-                page_kwargs: dict[str, Any] = {
+                snapshot_bound = None
+                if through_seq is not None:
+                    try:
+                        snapshot_bound = int(through_seq)
+                        if snapshot_bound < 0:
+                            raise ValueError("through_seq cannot be negative")
+                    except (TypeError, ValueError, OverflowError):
+                        try:
+                            error_cursor = max(0, int(after_seq))
+                        except (TypeError, ValueError, OverflowError):
+                            error_cursor = 0
+                        self._send(400, {
+                            "success": False, "events": [], "next_seq": error_cursor,
+                            "first_retained_seq": 0, "last_seq": 0, "has_more": False,
+                            "gap_ranges": [], "cursor_reset": False,
+                            "error": {"code": "invalid_through_seq", "message": "through_seq must be a non-negative integer"},
+                        }); return
+                page_kwargs = {
                     "stream_id": stream_id,
                     "after_seq": after_seq,
                     "limit": max(1, min(requested_limit, AGENT_EVENT_PAGE_MAX_LIMIT)),
                 }
-                through_seq = (query.get("through_seq") or [None])[0]
-                if through_seq is not None:
+                if snapshot_bound is not None and _event_page_supports_snapshot_bound(agent_state.event_page):
                     page_kwargs["through_seq"] = through_seq
                 page = agent_state.event_page(**page_kwargs)
-                error = page.get("error") or {}
+                if snapshot_bound is not None:
+                    page = _apply_event_page_snapshot_bound(
+                        page, through_seq=snapshot_bound, after_seq=after_seq,
+                    )
                 status = 200 if page.get("success") is True else (
-                    403 if error.get("code") == "agent_state_disabled" else 503
+                    403 if (page.get("error") or {}).get("code") == "agent_state_disabled" else 503
                 )
                 status, page = _bound_agent_event_page(status, page, after_seq)
                 self._send(status, page); return
@@ -3474,15 +3655,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not getattr(APP, "benchmark_runner", None):
                     self._send(200, {"available": False}); return
                 self._send(200, APP.benchmark_runner.get_latest_summary()); return
-            if path == "/api/metrics":
-                days = int((query.get("days") or [30])[0])
-                scope = str((query.get("scope") or ["window"])[0])
-                self._send(200, {"success": True, "metrics": APP.telemetry.summary(days, scope=scope)}); return
             if path == "/api/adoption":
                 store = getattr(getattr(APP, "services", None), "adoption_metrics", None)
                 if store is None:
                     self._send(200, {"success": True, "available": False}); return
                 self._send(200, {"success": True, "available": True, "adoption": store.report(days=7)}); return
+            if path == "/api/metrics":
+                days = int((query.get("days") or [30])[0])
+                scope = str((query.get("scope") or ["window"])[0])
+                self._send(200, {"success": True, "metrics": APP.telemetry.summary(days, scope=scope)}); return
             if path == "/api/telemetry/report":
                 try:
                     days = int((query.get("days") or [30])[0])
@@ -3495,10 +3676,12 @@ class Handler(BaseHTTPRequestHandler):
                     }); return
                 scope = str((query.get("scope") or ["window"])[0])
                 try:
-                    recent_errors = int((query.get("recent_errors") or [25])[0])
+                    recent_errors = int((query.get("recent_errors") or query.get("error_limit") or [25])[0])
                     error_offset = int((query.get("error_offset") or [0])[0])
                     error_cursor_values = parse_qs(parsed.query, keep_blank_values=True).get("error_cursor")
                     error_cursor = error_cursor_values[0] if error_cursor_values else None
+                    if error_cursor_values is not None and "error_offset" in parse_qs(parsed.query, keep_blank_values=True):
+                        raise ValueError("error_offset cannot be combined with error_cursor")
                 except (TypeError, ValueError):
                     self._send(400, {
                         "success": False,
@@ -3529,20 +3712,43 @@ class Handler(BaseHTTPRequestHandler):
                     state=str((query.get("state") or [""])[0]),
                     agent=str((query.get("agent") or [""])[0]),
                     model=str((query.get("model") or [""])[0]),
-                    limit=int((query.get("limit") or [50])[0]),
-                    offset=int((query.get("offset") or [0])[0]),
+                    limit=_query_int(query, "limit", 50),
+                    offset=_query_int(query, "offset", 0),
                 )
                 for item in result.get("items", []):
                     self._reconcile_debug_trace(item)
                 self._send(200 if result.get("success") else 503 if result.get("retryable") else 400, result); return
             if path.startswith("/api/debug-traces/"):
                 trace_id = path.rsplit("/", 1)[-1]
-                since_seq = int((query.get("since_seq") or [0])[0])
-                result = APP.debug_traces.detail(trace_id, since_seq=max(0, since_seq))
+                detail_args = {
+                    "since_seq": _query_int(query, "since_seq", 0),
+                    "limit": _query_int(query, "limit", 100),
+                    "max_bytes": max(
+                        1024,
+                        min(
+                            _query_int(query, "max_bytes", DEBUG_TRACE_HTTP_MAX_BYTES),
+                            DEBUG_TRACE_HTTP_MAX_BYTES,
+                        ),
+                    ),
+                }
+                result = APP.debug_traces.detail(trace_id, **detail_args)
                 if result.get("error") == "trace not found":
                     self._send(404, result); return
+                if result.get("error_code") == "trace_detail_oversize":
+                    self._send(413, result); return
                 if result.get("success") and isinstance(result.get("session"), dict):
-                    session = self._reconcile_debug_trace(result["session"])
+                    session = result["session"]
+                    session_before = _json_bytes(session)
+                    session = self._reconcile_debug_trace(session)
+                    if _json_bytes(session) != session_before:
+                        # Rebuild page after reconciliation so response_bytes still
+                        # describes exact response, including refreshed session data.
+                        result = APP.debug_traces.detail(trace_id, **detail_args)
+                        if result.get("error_code") == "trace_detail_oversize":
+                            self._send(413, result); return
+                        if result.get("error") == "trace not found":
+                            self._send(404, result); return
+                        session = result.get("session", {})
                     result["terminal"] = session.get("state") in APP.debug_traces.TERMINAL_STATES
                 self._send(200, result); return
             if path == "/api/rag/workspaces":
@@ -4353,7 +4559,7 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "continue":
                     self._send(200, APP.work_orchestrator.continue_work(tenant, work_id, str(payload.get("answer", "")))); return
                 self._send(400, {"success": False, "error": "unknown work-order action", "terminal": True}); return
-            if path == "/api/config/update":
+            if 'post_config_update_1' in post_route_ids:
                 action = str(payload.get("action", "update")).strip().lower()
                 config_path = str(APP.config.get("_config_path", ""))
                 if not config_path:
@@ -4391,7 +4597,7 @@ class Handler(BaseHTTPRequestHandler):
                 except (ConfigError, OSError, ValueError) as exc:
                     self._send(400, {"success": False, "error": str(exc)}); return
                 self._send(200, {"success": True, "restart_required": True, "runtime_override_path": str(target), "settings": requested}); return
-            if path == "/api/control":
+            if 'post_control_1' in post_route_ids:
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 state_dir = Path(APP.config["server"]["state_dir"])
                 if action == "restart_hub":
@@ -4417,7 +4623,7 @@ class Handler(BaseHTTPRequestHandler):
                         os._exit(0)
                     threading.Thread(target=_graceful_stop, daemon=True).start(); return
                 self._send(400, {"success": False, "error": "unknown control action"}); return
-            if path == "/api/browser/capability":
+            if 'post_browser_capability_1' in post_route_ids:
                 if not APP.config.get("browser_bridge", {}).get("enabled", True):
                     self._send(501, capture_failure("unsupported")); return
                 origin = str(payload.get("origin", ""))
@@ -4436,7 +4642,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(status, {"success": False, "error": str(exc), "error_code": code, "terminal": True, "retryable": False}); return
                 ttl = int(APP.config.get("browser_bridge", {}).get("capability_ttl_seconds", 60))
                 self._send(200, {"success": True, "capability": capability, "one_use": True, "expires_in_seconds": ttl, "tab_id": payload.get("tab_id"), "window_id": payload.get("window_id")}); return
-            if path in {"/api/browser/capture/stage", "/api/browser/capture/commit", "/api/browser/capture/abandon"}:
+            if 'post_browser_capture_abandon_1' in post_route_ids:
                 request = {
                     "origin": self.headers.get("Origin", payload.get("origin", "")),
                     "tenant": tenant,
@@ -4454,7 +4660,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     result = abandon_staged_capture(capability, request, tenant=tenant)
                 self._send(int(result.get("status", 200 if result.get("success") else 400)), result); return
-            if path == "/api/browser/capture":
+            if 'post_browser_capture_1' in post_route_ids:
                 request = {
                     "origin": self.headers.get("Origin", payload.get("origin", "")),
                     "tenant": tenant,
@@ -4499,7 +4705,7 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "cancel":
                     self._send(200, APP.async_jobs.cancel(tenant, str(payload.get("job_id", "")))); return
                 self._send(400, {"success": False, "error": "unknown async job action", "terminal": True, "retryable": False}); return
-            if path in {"/api/speculative-lint", "/api/command/speculative-lint"}:
+            if 'post_command_speculative_lint_1' in post_route_ids:
                 action = str(payload.get("action", "submit")).strip().lower().replace("-", "_")
                 if action == "submit":
                     self._send(200, APP.speculative_lint.submit(
@@ -4512,7 +4718,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, APP.speculative_lint.status(tenant, str(payload.get("job_id", "")))); return
                 if action == "cancel":
                     self._send(200, APP.speculative_lint.cancel(tenant, str(payload.get("job_id", "")))); return
-            if path == "/api/agent-state/tasks":
+            if 'post_agent_state_tasks_1' in post_route_ids:
                 if not getattr(APP, "agent_tasks", None) or not APP.agent_tasks.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -4823,7 +5029,7 @@ class Handler(BaseHTTPRequestHandler):
                         response["query_truncated"] = True
                     self._send(200, response); return
                 self._send(400, {"success": False, "error": f"unknown task action '{action}'", "terminal": True, "retryable": False}); return
-            if path == "/api/agent-state/memory":
+            if 'post_agent_state_memory_1' in post_route_ids:
                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -5280,7 +5486,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "memory relations are unavailable through this endpoint", "terminal": True, "retryable": False}); return
                 self._send(400, {"success": False, "error": f"unknown memory action '{action}'", "terminal": True, "retryable": False}); return
 
-            if path == "/api/agent-state/incidents":
+            if 'post_agent_state_incidents_1' in post_route_ids:
                 if not getattr(APP, "agent_incidents", None) or not APP.agent_incidents.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -5359,7 +5565,7 @@ class Handler(BaseHTTPRequestHandler):
                     incidents = APP.agent_incidents.list_incidents(resolved=resolved_filter, limit=limit_val, status=status_filter)
                     self._send(200, {"success": True, "incidents": [i.to_dict() for i in incidents]}); return
                 self._send(400, {"success": False, "error": f"unknown incident action '{action}'", "terminal": True, "retryable": False}); return
-            if path == "/api/agent-state/verification":
+            if 'post_agent_state_verification_1' in post_route_ids:
                 if not getattr(APP, "agent_verification", None) or not APP.agent_verification.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -5425,7 +5631,7 @@ class Handler(BaseHTTPRequestHandler):
                         }); return
                     self._send(200, {"success": True, "completion": res.to_dict()}); return
                 self._send(400, {"success": False, "error": f"unknown verification action '{action}'", "terminal": True, "retryable": False}); return
-            if path == "/api/agent-state/context":
+            if 'post_agent_state_context_1' in post_route_ids:
                 if not getattr(APP, "agent_context", None) or not APP.agent_context.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -5567,7 +5773,7 @@ class Handler(BaseHTTPRequestHandler):
                         "warnings": task_context["warnings"],
                     }); return
                 self._send(400, {"success": False, "error": f"unknown context action '{action}'", "terminal": True, "retryable": False}); return
-            if path == "/api/agent-state/learning":
+            if 'post_agent_state_learning_1' in post_route_ids:
                 if not getattr(APP, "agent_learning", None) or not APP.agent_learning.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -5617,13 +5823,13 @@ class Handler(BaseHTTPRequestHandler):
                     candidates = APP.agent_learning.list_candidates(limit=limit_val)
                     self._send(200, {"success": True, "candidates": [c.to_dict() for c in candidates]}); return
                 self._send(400, {"success": False, "error": f"unknown learning action '{action}'", "terminal": True, "retryable": False}); return
-            if path == "/api/agent-state/cleanup":
+            if 'post_agent_state_cleanup_1' in post_route_ids:
                 if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 retention = int(payload.get("retention_days") or APP.config.get("agent_state", {}).get("retention_days", 30))
                 res = APP.agent_state.cleanup(retention_days=retention)
                 self._send(200, res); return
-            if path == "/api/agent-state/blackboard":
+            if 'post_agent_state_blackboard_1' in post_route_ids:
                 if not getattr(APP, "agent_blackboard", None):
                     self._send(503, {"success": False, "error": "blackboard unavailable"}); return
                 action = str(payload.get("action", "get")).strip().lower().replace("-", "_")
@@ -5653,7 +5859,7 @@ class Handler(BaseHTTPRequestHandler):
                     res = APP.agent_blackboard.delete(board_id, section=str(section) if section else None)
                     self._send(200, res); return
                 self._send(400, {"success": False, "error": f"unknown blackboard action '{action}'"}); return
-            if path == "/api/agent-state/swarm/dispatch":
+            if 'post_agent_state_swarm_dispatch_1' in post_route_ids:
                 if not getattr(APP, "swarm", None):
                     self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
                 goal = str(payload.get("goal", payload.get("task", "")))
@@ -5665,7 +5871,7 @@ class Handler(BaseHTTPRequestHandler):
                 root = str(payload.get("root", "."))
                 res = APP.swarm.dispatch(goal=goal, target_paths=target_paths, test_command=test_command, author=author, root=root)
                 self._send(200, res); return
-            if path == "/api/agent-state/swarm/step":
+            if 'post_agent_state_swarm_step_1' in post_route_ids:
                 if not getattr(APP, "swarm", None):
                     self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
                 swarm_id = str(payload.get("swarm_id", payload.get("task_id", "")))
@@ -5674,14 +5880,14 @@ class Handler(BaseHTTPRequestHandler):
                 step_payload = payload.get("payload", payload.get("content", {}))
                 res = APP.swarm.step(swarm_id=swarm_id, role=role, action=action, payload=step_payload)
                 self._send(200, res); return
-            if path == "/api/agent-state/swarm/cancel":
+            if 'post_agent_state_swarm_cancel_1' in post_route_ids:
                 if not getattr(APP, "swarm", None):
                     self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
                 swarm_id = str(payload.get("swarm_id", payload.get("task_id", "")))
                 reason = str(payload.get("reason", ""))
                 res = APP.swarm.cancel(swarm_id=swarm_id, reason=reason)
                 self._send(200, res); return
-            if path == "/api/benchmark/run":
+            if 'post_benchmark_run_1' in post_route_ids:
                 if not getattr(APP, "benchmark_runner", None):
                     self._send(503, {"success": False, "error": "benchmark runner unavailable"}); return
                 model = str(payload.get("model", ""))
@@ -5689,42 +5895,42 @@ class Handler(BaseHTTPRequestHandler):
                 num_tokens = int(payload.get("num_tokens", payload.get("max_tokens", 40)))
                 res = APP.benchmark_runner.run(model=model, prompt=prompt or "def test(): pass\n", num_tokens=num_tokens)
                 self._send(200, res); return
-            if path == "/api/delegate/repo":
+            if 'post_delegate_repo_1' in post_route_ids:
                 self._send(200, APP.services.delegate_repo(payload, tenant)); return
-            if path == "/api/solve/repo":
+            if 'post_solve_repo_1' in post_route_ids:
                 self._send(200, APP.services.solve_repo(payload, tenant)); return
-            if path == "/api/route":
+            if 'post_route_1' in post_route_ids:
                 self._send(200, APP.services.route_context(payload, tenant)); return
-            if path == "/api/delegate/batch":
+            if 'post_delegate_batch_1' in post_route_ids:
                 self._send(200, APP.services.batch_delegate(payload, tenant)); return
-            if path == "/api/review":
+            if 'post_review_1' in post_route_ids:
                 self._send(200, APP.services.review(payload, tenant)); return
-            if path == "/api/review/diff":
+            if 'post_review_diff_1' in post_route_ids:
                 self._send(200, APP.services.review_diff(payload, tenant)); return
-            if path == "/api/reason":
+            if 'post_reason_1' in post_route_ids:
                 self._send(200, APP.services.reason(payload, tenant)); return
-            if path == "/api/second-opinion":
+            if 'post_second_opinion_1' in post_route_ids:
                 self._send(200, APP.services.second_opinion(payload, tenant)); return
-            if path == "/api/compress":
+            if 'post_compress_1' in post_route_ids:
                 self._send(200, APP.services.compress(payload, tenant)); return
-            if path == "/api/generate_tests":
+            if 'post_generate_tests_1' in post_route_ids:
                 self._send(200, APP.services.generate_tests(payload, tenant))
                 return
-            if path == "/api/patch/validate":
+            if 'post_patch_validate_1' in post_route_ids:
                 self._send(200, APP.services.validate_patch(payload, tenant))
                 return
-            if path == "/api/query/expand":
+            if 'post_query_expand_1' in post_route_ids:
                 q = str(payload.get("query", ""))
                 self._send(200, {"success": True, "query": q, "expanded_terms": APP.services.expand_query(q, tenant)})
                 return
-            if path == "/api/audit_dependencies":
+            if 'post_audit_dependencies_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.audit_dependencies(root))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/refactor_impact":
+            if 'post_refactor_impact_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 file_param = str(payload.get("file", payload.get("path", "")))
                 symbol_param = payload.get("symbol")
@@ -5733,7 +5939,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/resolve_imports":
+            if 'post_resolve_imports_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 lang = str(payload.get("language", "auto"))
                 syms = payload.get("symbols", [payload.get("symbol")] if payload.get("symbol") else [])
@@ -5742,14 +5948,14 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/git/status":
+            if 'post_git_status_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.git_status(root))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/repo/state", "/api/repo_state"}:
+            if 'post_repo_state_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 tracker = getattr(APP, "repo_state", None) or (getattr(APP.services, "repo_state", None) if getattr(APP, "services", None) else None)
                 if tracker is not None:
@@ -5760,7 +5966,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "repo_state tracker unavailable"})
                 return
-            if path == "/api/git/diff":
+            if 'post_git_diff_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 p = payload.get("path")
                 staged = bool(payload.get("staged", False))
@@ -5770,7 +5976,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/git/history_search":
+            if 'post_git_history_search_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 q = str(payload.get("query", ""))
                 max_c = int(payload.get("max_commits", 20))
@@ -5779,7 +5985,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/repo/hotspots", "/api/hotspots"}:
+            if 'post_hotspots_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 days = int(payload.get("days", 30))
                 limit = int(payload.get("limit", 20))
@@ -5788,7 +5994,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/repo/generate_tests_for_diff", "/api/generate_tests_for_diff"}:
+            if 'post_generate_tests_for_diff_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 diff = payload.get("diff")
                 p = payload.get("path")
@@ -5797,7 +6003,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/repo/cross_repo_contract", "/api/cross_repo_contract"}:
+            if 'post_cross_repo_contract_1' in post_route_ids:
                 b_root = str(payload.get("backend_root", payload.get("root", ".")))
                 f_root = str(payload.get("frontend_root", payload.get("client_root", ".")))
                 if APP.deterministic is not None:
@@ -5805,7 +6011,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/git/synthesize_commit":
+            if 'post_git_synthesize_commit_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 hint = str(payload.get("hint", payload.get("message", "")))
                 task_id = str(payload.get("task_id", ""))
@@ -5814,14 +6020,14 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/test_matrix":
+            if 'post_test_matrix_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 if APP.deterministic is not None:
                     self._send(200, APP.services.test_matrix(root))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/repo/affected_tests", "/api/affected_tests"}:
+            if 'post_affected_tests_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 paths = payload.get("paths") or payload.get("changed_paths") or None
                 if APP.deterministic is not None:
@@ -5829,14 +6035,14 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/repo/topology", "/api/topology"}:
+            if 'post_repo_topology_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 if APP.deterministic is not None:
                     self._send(200, APP.services.repo_topology(root))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/code/ast_rename", "/api/ast_rename"}:
+            if 'post_ast_rename_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 target_file = str(payload.get("file", payload.get("path", "")))
                 old_sym = str(payload.get("old_symbol", payload.get("symbol", "")))
@@ -5847,7 +6053,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/code/generate_mocks", "/api/generate_mocks"}:
+            if 'post_code_generate_mocks_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 target_file = str(payload.get("file", payload.get("path", "")))
                 symbol = str(payload.get("symbol", ""))
@@ -5856,7 +6062,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/security_audit":
+            if 'post_security_audit_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 limit = int(payload.get("limit", 50))
                 if APP.deterministic is not None:
@@ -5864,7 +6070,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/code-intelligence/query":
+            if 'post_code_intelligence_query_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 self._send(200, APP.external_tools.query(
                     root, str(payload.get("query", "")),
@@ -5874,7 +6080,7 @@ class Handler(BaseHTTPRequestHandler):
                     limit=max(1, min(int(payload.get("limit", 20)), 50)),
                 ))
                 return
-            if path == "/api/code/ast_outline":
+            if 'post_code_ast_outline_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 path_param = str(payload.get("path", payload.get("file", "")))
                 if APP.deterministic is not None:
@@ -5882,31 +6088,31 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path in {"/api/code/batch_replace", "/api/repo/batch_replace"}:
+            if 'post_code_batch_replace_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 edits = payload.get("edits") or payload.get("replacements") or []
                 dry_run = bool(payload.get("dry_run", False))
                 self._send(200, APP.services.batch_replace(root, edits if isinstance(edits, list) else [], dry_run=dry_run))
                 return
-            if path == "/api/maintenance/optimize_db":
+            if 'post_maintenance_optimize_db_1' in post_route_ids:
                 self._send(200, APP.services.optimize_databases())
                 return
-            if path == "/api/maintenance/purge_cache":
+            if 'post_maintenance_purge_cache_1' in post_route_ids:
                 days = int(payload.get("days", 7))
                 self._send(200, APP.services.purge_stale_cache(days))
                 return
-            if path == "/api/maintenance/resolve_errors":
+            if 'post_maintenance_resolve_errors_1' in post_route_ids:
                 self._send(200, APP.services.resolve_all_errors())
                 return
-            if path == "/api/doctor":
+            if 'post_doctor_1' in post_route_ids:
                 self._send(200, APP.services.run_doctor())
                 return
-            if path == "/api/code/symbol":
+            if 'post_code_symbol_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 sym = str(payload.get("symbol", ""))
                 self._send(200, APP.services.code_inspect_symbol(root, sym))
                 return
-            if path == "/api/code/find_symbol":
+            if 'post_code_find_symbol_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 pat = str(payload.get("pattern") or payload.get("name_path_pattern") or "")
                 depth = int(payload.get("depth", 0))
@@ -5919,36 +6125,36 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int(payload.get("limit", 30))
                 self._send(200, APP.services.code_find_symbol(root, pat, depth=depth, include_body=include_body, include_info=include_info, relative_path=str(rel_path) if rel_path else None, limit=limit))
                 return
-            if path == "/api/code/find_declaration":
+            if 'post_code_find_declaration_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 sym = str(payload.get("symbol") or payload.get("name") or "")
                 rel_path = payload.get("path")
                 self._send(200, APP.services.code_find_declaration(root, sym, path=str(rel_path) if rel_path else None))
                 return
-            if path == "/api/code/find_implementations":
+            if 'post_code_find_implementations_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 sym = str(payload.get("symbol") or payload.get("name") or "")
                 rel_path = payload.get("path")
                 self._send(200, APP.services.code_find_implementations(root, sym, path=str(rel_path) if rel_path else None))
                 return
-            if path == "/api/code/find_referencing_symbols":
+            if 'post_code_find_referencing_symbols_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 sym = str(payload.get("symbol") or payload.get("name") or "")
                 rel_path = payload.get("path")
                 self._send(200, APP.services.code_find_referencing_symbols(root, sym, path=str(rel_path) if rel_path else None))
                 return
-            if path == "/api/code/symbols_overview":
+            if 'post_code_symbols_overview_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 fpath = str(payload.get("path", ""))
                 depth = int(payload.get("depth", 1))
                 self._send(200, APP.services.code_symbols_overview(root, fpath, depth=depth))
                 return
-            if path == "/api/code/diagnostics":
+            if 'post_code_diagnostics_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 fpath = str(payload.get("path", ""))
                 self._send(200, APP.services.code_diagnostics(root, fpath))
                 return
-            if path == "/api/code-intelligence/control":
+            if 'post_code_intelligence_control_1' in post_route_ids:
                 action = str(payload.get("action", "status")).strip().lower().replace("-", "_")
                 if action == "status":
                     self._send(200, {"success": True, **APP.external_tools.status()}); return
@@ -5957,23 +6163,23 @@ class Handler(BaseHTTPRequestHandler):
                 if action in {"reset", "reset_sessions"}:
                     self._send(200, APP.external_tools.reset_sessions(str(payload.get("backend", "all")), str(payload.get("root")) if payload.get("root") else None)); return
                 self._send(400, {"success": False, "error": f"unknown code-intelligence action: {action}"}); return
-            if path == "/api/complete":
+            if 'post_complete_1' in post_route_ids:
                 # FIM completion routed through APP.services with caching / APP.scheduler.submit
                 self._send(200, APP.services.complete_code(payload, tenant)); return
-            if path == "/api/preprocess":
+            if 'post_preprocess_1' in post_route_ids:
                 self._send(200, APP.services.preprocess(payload)); return
-            if path in {"/api/repo/dead_code", "/api/dead_code"}:
+            if 'post_dead_code_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 limit = int(payload.get("limit", 50))
                 self._send(200, APP.services.dead_code(root, limit))
                 return
-            if path == "/api/symbol_callgraph":
+            if 'post_symbol_callgraph_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 sym = payload.get("symbol")
                 limit = int(payload.get("limit", 50))
                 self._send(200, APP.services.symbol_callgraph(root, str(sym) if sym else None, limit))
                 return
-            if path == "/api/cross_project_graph":
+            if 'post_cross_project_graph_1' in post_route_ids:
                 roots = payload.get("roots")
                 if not isinstance(roots, list) or not roots:
                     roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
@@ -5982,7 +6188,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/cross_project_symbols":
+            if 'post_cross_project_symbols_1' in post_route_ids:
                 roots = payload.get("roots")
                 if not isinstance(roots, list) or not roots:
                     roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
@@ -5993,7 +6199,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/cross_project_impact":
+            if 'post_cross_project_impact_1' in post_route_ids:
                 roots = payload.get("roots")
                 if not isinstance(roots, list) or not roots:
                     roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
@@ -6004,7 +6210,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/repo/call_graph_diff":
+            if 'post_repo_call_graph_diff_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 diff = payload.get("diff")
                 if APP.deterministic is not None:
@@ -6012,7 +6218,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if path == "/api/bundle/export":
+            if 'post_bundle_export_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 try:
                     data = APP.export_bundle(root, tenant=self._tenant())
@@ -6027,17 +6233,17 @@ class Handler(BaseHTTPRequestHandler):
                     if not _is_client_disconnect(exc):
                         self._send(500, {"success": False, "error": str(exc)})
                 return
-            if path == "/api/benchmark":
+            if 'post_benchmark_1' in post_route_ids:
                 self._send(200, APP.services.benchmark(tenant)); return
-            if path == "/api/evaluation":
+            if 'post_evaluation_1' in post_route_ids:
                 self._send(200, APP.services.evaluation(payload)); return
-            if path == "/api/repo/profile":
+            if 'post_repo_profile_1' in post_route_ids:
                 self._send(200, APP.services.repo_profile(str(payload.get("root", ".")))); return
-            if path == "/api/repo/map":
+            if 'post_repo_map_1' in post_route_ids:
                 self._send(200, APP.services.repo_map(str(payload.get("root", ".")), int(payload.get("max_symbols", 120)))); return
-            if path == "/api/repo/code-index":
+            if 'post_repo_code_index_1' in post_route_ids:
                 self._send(200, APP.services.code_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 20)), bool(payload.get("include_code", False)))); return
-            if path == "/api/repo/investigate":
+            if 'post_repo_investigate_1' in post_route_ids:
                 self._send(200, APP.services.repo_investigate(
                     str(payload.get("root", ".")),
                     str(payload.get("query", "")),
@@ -6045,14 +6251,14 @@ class Handler(BaseHTTPRequestHandler):
                     bool(payload.get("include_code", True)),
                     int(payload.get("limit", 10)),
                 )); return
-            if path == "/api/repo/diagnose":
+            if 'post_repo_diagnose_1' in post_route_ids:
                 self._send(200, APP.services.repo_diagnose(
                     str(payload.get("root", ".")),
                     str(payload.get("text", payload.get("query", ""))),
                 )); return
-            if path == "/api/repo/briefing":
+            if 'post_repo_briefing_1' in post_route_ids:
                 self._send(200, APP.services.repo_briefing(str(payload.get("root", ".")))); return
-            if path == "/api/command/preflight":
+            if 'post_command_preflight_1' in post_route_ids:
                 raw_paths = payload.get("paths") or payload.get("files")
                 paths_list = [str(p) for p in raw_paths] if isinstance(raw_paths, list) else ([str(raw_paths)] if raw_paths else None)
                 self._send(200, APP.services.commands.preflight(
@@ -6061,15 +6267,15 @@ class Handler(BaseHTTPRequestHandler):
                     paths=paths_list,
                     timeout=int(payload.get("timeout", 10) or 10),
                 )); return
-            if path == "/api/repo/deterministic":
+            if 'post_repo_deterministic_1' in post_route_ids:
                 self._send(200, APP.services.deterministic_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 24)))); return
-            if path == "/api/repo/impact":
+            if 'post_repo_impact_1' in post_route_ids:
                 self._send(200, APP.services.repo_impact(
                     str(payload.get("root", ".")), str(payload.get("base", "HEAD")), bool(payload.get("staged", False)),
                     int(payload.get("max_symbols", APP.config.get("workflow", {}).get("impact_max_symbols", 48))),
                     int(payload.get("max_dependents", APP.config.get("workflow", {}).get("impact_max_dependents", 30))),
                 )); return
-            if path == "/api/search":
+            if 'post_search_1' in post_route_ids:
                 self._send(200, APP.services.repo_search(
                     str(payload.get("root", ".")),
                     str(payload.get("query", "")),
@@ -6381,36 +6587,36 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(result, dict):
                     result["delivery_mode"] = mode
                 self._send(200, result); return
-            if path == "/api/artifact/get":
+            if 'post_artifact_get_1' in post_route_ids:
                 artifact_id = str(payload.get("artifact_id", ""))
                 if bool(payload.get("binary", False)):
                     self._send(200, APP.artifacts.get_binary(artifact_id, tenant=tenant)); return
                 self._send(200, APP.artifacts.get(artifact_id, int(payload.get("offset", 0)), int(payload.get("max_chars", 6000)), str(payload.get("section", "")), tenant=tenant)); return
-            if path == "/api/artifact/list":
+            if 'post_artifact_list_1' in post_route_ids:
                 self._send(200, {"success": True, "artifacts": APP.artifacts.list(tenant=tenant, limit=int(payload.get("limit", 20)))}); return
-            if path == "/api/evidence/verify":
+            if 'post_evidence_verify_1' in post_route_ids:
                 evidence = payload.get("evidence", [])
                 self._send(200, APP.repo_tools.verify_evidence(str(payload.get("root", ".")), evidence if isinstance(evidence, list) else [])); return
-            if path == "/api/evidence/get":
+            if 'post_evidence_get_1' in post_route_ids:
                 self._send(200, APP.evidence.get(str(payload.get("evidence_id", "")), verify=bool(payload.get("verify", True)))); return
-            if path in ("/api/leases/claim", "/api/leases/claim_batch"):
+            if 'post_leases_claim_1' in post_route_ids:
                 paths = payload.get("paths", [])
                 root = str(payload.get("root", "."))
                 coordination_id = _lease_coordination_id(root)
                 self._send(200, APP.leases.claim_batch(tenant, root, [str(x) for x in paths] if isinstance(paths, list) else [], int(payload.get("ttl_seconds", 900)), str(payload.get("purpose", "agent edit")), coordination_id=coordination_id)); return
             if path == "/api/leases/release":
                 self._send(200, APP.leases.release(tenant, str(payload.get("lease_id", "")))); return
-            if path == "/api/leases/renew":
+            if 'post_leases_renew_1' in post_route_ids:
                 self._send(200, APP.leases.renew(tenant, str(payload.get("lease_id", "")), int(payload.get("ttl_seconds", 900)))); return
-            if path == "/api/memory/put":
+            if 'post_memory_put_1' in post_route_ids:
                 self._send(200, APP.memory.put(
                     str(payload.get("root", ".")), str(payload.get("key", "")), str(payload.get("value", "")), tenant,
                     ttl_seconds=payload.get("ttl_seconds"), metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
                     expected_version=payload.get("expected_version"),
                 )); return
-            if path == "/api/memory/get":
+            if 'post_memory_get_1' in post_route_ids:
                 self._send(200, APP.memory.get(str(payload.get("root", ".")), str(payload.get("key", "")))); return
-            if path == "/api/memory/search":
+            if 'post_memory_search_1' in post_route_ids:
                 self._send(200, APP.memory.search(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 12)))); return
             if path == "/api/memory/delete":
                 self._send(200, APP.memory.delete(
@@ -6426,36 +6632,32 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(texts, str):
                     texts = [texts]
                 self._send(200, APP.services.embed([str(x) for x in texts], tenant, query=bool(payload.get("query", False)))); return
-            if path == "/api/rerank":
+            if 'post_rerank_1' in post_route_ids:
                 docs = payload.get("documents", [])
                 self._send(200, APP.reranker.rerank(str(payload.get("query", "")), [str(x) for x in docs], payload.get("top_k"))); return
-            if path == "/api/rag/index":
+            if 'post_rag_index_1' in post_route_ids:
                 self._send(200, APP.rag.index(str(payload.get("root", ".")), tenant, payload.get("workspace"))); return
-            if path == "/api/rag/search":
+            if 'post_rag_search_1' in post_route_ids:
                 workspace = str(payload.get("workspace", ""))
                 if not workspace:
                     self._send(400, {"success": False, "error": "workspace is required"}); return
                 self._send(200, APP.rag.search(str(payload.get("query", "")), tenant, workspace, int(payload.get("top_k", 8)), bool(payload.get("use_reranker", True)))); return
-            if path in {"/api/task/speculative_draft", "/api/speculative_draft"}:
+            if 'post_speculative_draft_1' in post_route_ids:
                 self._send(200, APP.services.speculative_draft(payload, tenant)); return
-            if path in {"/api/task/scaffold", "/api/scaffold"}:
+            if 'post_scaffold_1' in post_route_ids:
                 self._send(200, APP.services.task_scaffold(payload, tenant)); return
-            if path in {"/api/db/query"}:
-                db_name = str(payload.get("db", "agent_state"))
-                sql_q = str(payload.get("query", "SELECT name FROM sqlite_master WHERE type='table'"))
-                self._send(200, self._handle_db_query(db_name, sql_q)); return
-            if path in {"/api/models/manage"}:
+            if 'post_models_manage_1' in post_route_ids:
                 action = str(payload.get("action", "list"))
                 model_name = str(payload.get("model", ""))
                 self._send(200, self._handle_models_action(action, model_name)); return
-            if path in {"/api/repo/reachability_dead_code", "/api/reachability_dead_code"}:
+            if 'post_reachability_dead_code_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 eps = payload.get("entrypoints")
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.reachability_dead_code(root, entrypoints=eps)); return
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"}); return
-            if path in {"/api/repo/mutation_test", "/api/mutation_test"}:
+            if 'post_mutation_test_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 tf = str(payload.get("file", payload.get("path", "")))
                 diff = payload.get("diff")
@@ -6463,21 +6665,21 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, APP.deterministic.ast_mutation_test(root, tf, diff=diff)); return
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"}); return
-            if path in {"/api/repo/type_stubs", "/api/type_stubs"}:
+            if 'post_repo_type_stubs_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 fp = str(payload.get("file", payload.get("path", "")))
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.generate_type_stubs(root, fp)); return
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"}); return
-            if path in {"/api/repo/skeletonize", "/api/skeletonize"}:
+            if 'post_repo_skeletonize_1' in post_route_ids:
                 code = str(payload.get("code", ""))
                 targets = payload.get("targets") or payload.get("target_symbols")
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.skeletonize_code(code, target_symbols=targets)); return
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"}); return
-            if path == "/api/agent-state/events/delta":
+            if 'post_agent_state_events_delta_1' in post_route_ids:
                 action = str(payload.get("action", "export"))
                 if action == "export":
                     stream_id = str(payload.get("stream_id", ""))
@@ -6487,21 +6689,21 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     events = list(payload.get("events", []))
                     self._send(200, APP.agent_state_store.import_delta(events)); return
-            if path in {"/api/task/vision", "/api/vision", "/api/vision/review"}:
+            if 'post_task_vision_1' in post_route_ids:
                 self._send(200, APP.services.vision(payload, tenant)); return
-            if path in {"/api/repo/split_changes", "/api/split_changes"}:
+            if 'post_repo_split_changes_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 paths = payload.get("paths", payload.get("changed_files"))
                 self._send(200, APP.services.split_changes(root, paths)); return
-            if path in {"/api/repo/synthesize_rules", "/api/synthesize_rules"}:
+            if 'post_repo_synthesize_rules_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 limit = int(payload.get("limit", 10))
                 self._send(200, APP.services.synthesize_rules(root, limit)); return
-            if path in {"/api/rag/docset/index", "/api/rag/docset_index"}:
+            if 'post_rag_docset_index_1' in post_route_ids:
                 name = str(payload.get("name", payload.get("docset", "")))
                 root = str(payload.get("root", payload.get("dir", ".")))
                 self._send(200, APP.rag.docset_index(name, root, tenant)); return
-            if path in {"/api/rag/docset/search", "/api/rag/docset_search"}:
+            if 'post_rag_docset_search_1' in post_route_ids:
                 name = str(payload.get("name", payload.get("docset", "")))
                 query = str(payload.get("query", ""))
                 top_k = int(payload.get("top_k", 8))
@@ -6529,20 +6731,20 @@ class Handler(BaseHTTPRequestHandler):
                         _ACTIVE_TRANSCRIPTIONS.finish(token, result)
             if path in {"/api/repo/code_invariants", "/api/code_invariants"}:
                 self._send(200, APP.services.code_invariants(str(payload.get("root", ".")), payload.get("path"))); return
-            if path in {"/api/repo/generate_dataset", "/api/generate_dataset"}:
+            if 'post_generate_dataset_1' in post_route_ids:
                 self._send(200, APP.services.generate_dataset(str(payload.get("root", ".")), payload.get("schema_or_model") or payload.get("schema"), count=int(payload.get("count", 10)), format=str(payload.get("format", "json")))); return
-            if path in {"/api/repo/profile_digest", "/api/profile_digest"}:
+            if 'post_profile_digest_1' in post_route_ids:
                 self._send(200, APP.services.profile_digest(str(payload.get("profile_path") or payload.get("path") or ""), top_n=int(payload.get("top_n", 15)))); return
-            if path in {"/api/coord/worktree_lease", "/api/worktree_lease"}:
+            if 'post_coord_worktree_lease_1' in post_route_ids:
                 self._send(200, APP.services.worktree_lease(str(payload.get("root", ".")), branch_name=payload.get("branch"))); return
             if path in {"/api/coord/worktree_release", "/api/worktree_release"}:
                 self._send(200, APP.services.worktree_release(str(payload.get("root", ".")), str(payload.get("worktree_path", "")), delete_branch=bool(payload.get("delete_branch", True)), branch_name=payload.get("branch"), worktree_id=str(payload.get("worktree_id", "")))); return
             if path in {"/api/coord/worktrees", "/api/worktrees"}:
                 self._send(200, APP.services.list_worktrees(str(payload.get("root", ".")))); return
-            if path in {"/api/coord/worktree_prune", "/api/worktree_prune"}:
+            if 'post_coord_worktree_prune_1' in post_route_ids:
                 self._send(200, APP.services.prune_worktrees(str(payload.get("root", ".")))); return
 
-            if path in {"/api/command/daemon", "/api/daemon"}:
+            if 'post_command_daemon_1' in post_route_ids:
                 act = str(payload.get("action", "status")).lower()
                 if act == "spawn":
                     self._send(200, APP.services.spawn_daemon(str(payload.get("command", "")), str(payload.get("cwd", ".")), name=str(payload.get("name", "")), env=payload.get("env"), task_id=str(payload.get("task_id", "")))); return
@@ -6554,56 +6756,56 @@ class Handler(BaseHTTPRequestHandler):
                     )); return
             if path in {"/api/command/lint_fix", "/api/lint_fix"}:
                 self._send(200, APP.services.lint_fix(str(payload.get("root", ".")), command=payload.get("command"), paths=payload.get("paths"), tenant=tenant, timeout=payload.get("timeout"))); return
-            if path in {"/api/command/http_probe", "/api/http_probe"}:
+            if 'post_command_http_probe_1' in post_route_ids:
                 self._send(200, APP.services.http_probe(str(payload.get("url", "")), expected_status=int(payload.get("expected_status", 200)), json_path=payload.get("json_path"), timeout=float(payload.get("timeout", 5.0)), headers=payload.get("headers"))); return
-            if path in {"/api/repo/callers", "/api/callers"}:
+            if 'post_callers_1' in post_route_ids:
                 self._send(200, APP.services.callers(str(payload.get("root", ".")), str(payload.get("symbol", "")), limit=int(payload.get("limit", 50)))); return
-            if path in {"/api/repo/secret_scan", "/api/secret_scan"}:
+            if 'post_repo_secret_scan_1' in post_route_ids:
                 self._send(200, APP.services.secret_scan(str(payload.get("root", ".")), payload.get("path"), scan_git_history=bool(payload.get("scan_git_history", payload.get("git_history", False))), commit_depth=int(payload.get("commit_depth", 20)))); return
-            if path in {"/api/repo/schema_inspect", "/api/schema_inspect"}:
+            if 'post_repo_schema_inspect_1' in post_route_ids:
                 self._send(200, APP.services.schema_inspect(str(payload.get("root", ".")), payload.get("db_path"))); return
-            if path in {"/api/repo/explain_query", "/api/explain_query"}:
+            if 'post_explain_query_1' in post_route_ids:
                 self._send(200, APP.services.explain_query(str(payload.get("root", ".")), str(payload.get("query", "")), payload.get("db_path"))); return
-            if path in {"/api/repo/env_compat", "/api/env_compat"}:
+            if 'post_env_compat_1' in post_route_ids:
                 self._send(200, APP.services.env_compat(str(payload.get("root", ".")))); return
-            if path in {"/api/coord/pubsub_publish", "/api/pubsub_publish"}:
+            if 'post_coord_pubsub_publish_1' in post_route_ids:
                 self._send(200, APP.services.pubsub_publish(str(payload.get("topic", "default")), payload.get("message", ""), sender=str(payload.get("publisher", payload.get("sender", "agent"))))); return
             if path in {"/api/coord/pubsub_poll", "/api/pubsub_poll"}:
                 self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), since_timestamp=float(payload.get("since_timestamp", 0.0)), limit=int(payload.get("limit", 50)), after_seq=int(payload.get("after_seq", 0)))); return
             if path in {"/api/coord/simulate_merge", "/api/simulate_merge"}:
                 self._send(200, APP.services.simulate_merge(str(payload.get("root", ".")), str(payload.get("source_branch", "")), target_branch=str(payload.get("target_branch", "HEAD")))); return
-            if path in {"/api/task/eval_suite", "/api/eval_suite"}:
+            if 'post_eval_suite_1' in post_route_ids:
                 self._send(200, APP.services.eval_suite(payload, tenant)); return
-            if path in {"/api/task/prompt_eval", "/api/prompt_eval"}:
+            if 'post_prompt_eval_1' in post_route_ids:
                 self._send(200, APP.services.prompt_eval(payload, tenant)); return
-            if path in {"/api/task/eval_drift", "/api/eval_drift"}:
+            if 'post_eval_drift_1' in post_route_ids:
                 self._send(200, APP.services.eval_drift(payload, tenant)); return
-            if path in {"/api/repo/circular_dependencies", "/api/circular_dependencies"}:
+            if 'post_circular_dependencies_1' in post_route_ids:
                 self._send(200, APP.services.circular_dependencies(str(payload.get("root", ".")), language=str(payload.get("language", "python")))); return
-            if path in {"/api/repo/generate_types", "/api/generate_types"}:
+            if 'post_generate_types_1' in post_route_ids:
                 self._send(200, APP.services.generate_types(str(payload.get("root", ".")), str(payload.get("file", payload.get("path", ""))), write_stub=bool(payload.get("write_stub", False)))); return
-            if path in {"/api/repo/complexity", "/api/complexity"}:
+            if 'post_complexity_1' in post_route_ids:
                 self._send(200, APP.services.code_complexity(
                     str(payload.get("root", ".")), path=payload.get("path"),
                     max_results=int(payload.get("max_results", 20)), include_tests=bool(payload.get("include_tests", False))
                 )); return
-            if path in {"/api/repo/api_spec", "/api/api_spec"}:
+            if 'post_api_spec_1' in post_route_ids:
                 self._send(200, APP.services.extract_api_spec(str(payload.get("root", ".")), framework=payload.get("framework"))); return
-            if path in {"/api/repo/dependency_slice", "/api/dependency_slice"}:
+            if 'post_dependency_slice_1' in post_route_ids:
                 self._send(200, APP.services.slice_dependency_graph(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"), depth=int(payload.get("depth", 2)))); return
-            if path in {"/api/repo/migration_drift", "/api/migration_drift"}:
+            if 'post_migration_drift_1' in post_route_ids:
                 self._send(200, APP.services.migration_drift(str(payload.get("root", ".")), db_path=payload.get("db_path"))); return
-            if path in {"/api/repo/package_audit", "/api/package_audit"}:
+            if 'post_package_audit_1' in post_route_ids:
                 self._send(200, APP.services.package_audit(str(payload.get("root", ".")), lockfile_path=payload.get("lockfile_path"))); return
-            if path in {"/api/repo/structural_search", "/api/structural_search"}:
+            if 'post_repo_structural_search_1' in post_route_ids:
                 self._send(200, APP.services.structural_search(str(payload.get("root", ".")), str(payload.get("pattern", "")), path=payload.get("path"), max_results=int(payload.get("max_results", 30)))); return
-            if path in {"/api/repo/context_budget", "/api/context_budget"}:
+            if 'post_context_budget_1' in post_route_ids:
                 self._send(200, APP.services.context_budget(str(payload.get("root", ".")), files=payload.get("files"), max_tokens=int(payload.get("max_tokens", 4000)))); return
-            if path in {"/api/rag/ingest_document", "/api/ingest_document"}:
+            if 'post_ingest_document_1' in post_route_ids:
                 self._send(200, APP.rag.ingest_document(str(payload.get("workspace", "default")), str(payload.get("content", "")), title=str(payload.get("title", "")), metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None, tenant=tenant)); return
-            if path in {"/api/rag/ingest_diagram", "/api/ingest_diagram"}:
+            if 'post_ingest_diagram_1' in post_route_ids:
                 self._send(200, APP.rag.ingest_diagram(str(payload.get("workspace", "default")), str(payload.get("image_path", payload.get("path", ""))), caption=str(payload.get("caption", "")), metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None, tenant=tenant)); return
-            if path in {"/api/command/mock_server", "/api/mock_server"}:
+            if 'post_command_mock_server_1' in post_route_ids:
                 act = str(payload.get("action", "status")).strip().lower()
                 port = int(payload.get("port", 11440))
                 if act == "start":
@@ -6613,7 +6815,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, APP.services.mock_server_status(port=port)); return
 
-            if path in {"/api/command/diff_hunk_stage", "/api/diff_hunk_stage"}:
+            if 'post_command_diff_hunk_stage_1' in post_route_ids:
                 self._send(200, APP.services.diff_hunk_stage(str(payload.get("root", payload.get("cwd", "."))), str(payload.get("patch", "")))); return
             if path in {"/api/command/flaky_detect", "/api/flaky_detect"}:
                 self._send(200, APP.services.test_flaky_detect(str(payload.get("root", payload.get("cwd", "."))), str(payload.get("command", "")), runs=int(payload.get("runs", 5)), timeout_per_run=int(payload.get("timeout", 30)))); return
@@ -6622,7 +6824,7 @@ class Handler(BaseHTTPRequestHandler):
 
             # Optional Ollama/OpenAI protocol proxy. Local AI applies
             # the same shared exact cache + single-flight before the Ollama queue.
-            if path in {"/api/generate", "/api/chat", "/api/embed"}:
+            if 'post_chat_1' in post_route_ids:
                 if payload.get("stream") is True:
                     self._send(400, {"error": "streaming is intentionally disabled through the affinity queue"}); return
                 result = APP.services.proxy_request(path, payload, tenant, f"proxy:{path}")
