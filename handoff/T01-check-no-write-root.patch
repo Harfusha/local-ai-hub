@@ -1,0 +1,44 @@
+--- a/tests/test_surface_inventory.py
++++ b/tests/test_surface_inventory.py
+@@ -901,3 +901,41 @@
+     contract = next(row["contract"] for row in rows if row["surface"] == "MCP tool" and row["name"] == "local_ai_repo")
+     assert contract["input_schema"]["properties"]["query"]["default"] == ""
+     assert contract["output_schema"]["properties"]["success"]["type"] == "boolean"
++
++
++def test_check_cli_preserves_coverage_until_explicit_write_doc(tmp_path):
++    make_repo(tmp_path)
++    task_id = "task-check-is-read-only"
++    coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
++    stale_coverage = b"# Stale coverage; check must not replace it.\n"
++    coverage_path.parent.mkdir(parents=True, exist_ok=True)
++    coverage_path.write_bytes(stale_coverage)
++    before_mtime = coverage_path.stat().st_mtime_ns
++    command = [sys.executable, str(ROOT / "tools" / "surface_inventory.py"), "--root", str(tmp_path)]
++
++    check = subprocess.run(
++        [*command, "--check"], cwd=ROOT, capture_output=True, text=True, check=False
++    )
++
++    assert check.returncode == 1
++    check_summary = json.loads(check.stdout)
++    assert check_summary["coverage_matches"] is False
++    assert "written" not in check_summary
++    assert coverage_path.read_bytes() == stale_coverage
++    assert coverage_path.stat().st_mtime_ns == before_mtime
++
++    write_doc = subprocess.run(
++        [*command, "--write-doc", "--task-id", task_id],
++        cwd=ROOT,
++        capture_output=True,
++        text=True,
++        check=False,
++    )
++
++    assert write_doc.returncode == 0, write_doc.stdout + write_doc.stderr
++    write_summary = json.loads(write_doc.stdout)
++    assert write_summary["written"] == "docs/API_COVERAGE.md"
++    assert coverage_path.read_text(encoding="utf-8") == MODULE.render_coverage(
++        MODULE.collect_inventory(tmp_path), task_id
++    )
++    assert coverage_path.read_bytes() != stale_coverage

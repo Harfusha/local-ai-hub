@@ -9,12 +9,14 @@ import threading
 import time
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from local_ai_hub.agent_events import AgentStateStore, SwarmPubSub
 from local_ai_hub.agent_memory import MemoryStore
+from local_ai_hub.agent_policy import PolicyEngine
 from local_ai_hub.commands import CommandBroker, _is_interactive_prompt, _BoundedStreamBuffer
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.doctor_support import install_git_precommit_hook, uninstall_git_precommit_hook
@@ -414,18 +416,52 @@ def test_12_git_precommit_hooks(tmp_path: Path):
 
 
 def test_13_mock_recorder_and_replayer(tmp_path: Path):
-    broker = CommandBroker(config={"server": {"state_dir": str(tmp_path)}})
-    with patch("urllib.request.urlopen") as mock_url:
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.headers = {"Content-Type": "application/json"}
-        mock_resp.read.return_value = b'{"mocked": true}'
-        mock_url.return_value.__enter__.return_value = mock_resp
+    task_id = "mock-recorder-test-task"
+    broker = CommandBroker(config={
+        "server": {"state_dir": str(tmp_path)},
+        "agent_policy": {
+            "enabled": True,
+            "allow_developer_authorized_mutations": True,
+        },
+    })
+    task = SimpleNamespace(
+        task_id=task_id,
+        checkpoint=SimpleNamespace(
+            state_data={"worktree": {"worktree_path": str(tmp_path), "success": True}}
+        ),
+    )
 
-        res_rec = broker.record_mock("http://example.com/api", "test_cassette")
+    class TaskStore:
+        def get(self, requested_task_id: str) -> object | None:
+            return task if requested_task_id == task_id else None
+
+    broker.set_task_store(TaskStore())
+    broker.set_policy_engine(PolicyEngine())
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.commands = broker
+    services.agent_state = None
+
+    with patch.object(
+        broker,
+        "http_probe",
+        return_value={
+            "success": True,
+            "status_code": 200,
+            "headers": {"content-type": "application/json"},
+            "body_preview": '{"mocked": true}',
+            "body_length": 16,
+        },
+    ):
+        res_rec = services.command(
+            {"action": "record_mock", "command": "http://example.com/api", "task_id": task_id},
+            "test-agent",
+        )
         assert res_rec["success"] is True
 
-        res_rep = broker.replay_mock("test_cassette")
+        res_rep = services.command(
+            {"action": "replay_mock", "command": task_id, "task_id": task_id},
+            "test-agent",
+        )
         assert res_rep["success"] is True
         assert res_rep["body"] == '{"mocked": true}'
 

@@ -80,22 +80,28 @@ def test_mcp_command_auto_fix_forwards_bounded_repair_policy(monkeypatch: Any, t
         auto_rollback=False,
     )
 
-    assert backend.calls == [
-        (
-            "/api/command",
-            _expected_payload(
-                "auto_fix",
-                root,
-                "pytest tests/test_parser.py",
-                task_id="task-1",
-                criterion="parser regression passes",
-                auto_fix=True,
-                max_attempts=2,
-                auto_rollback=False,
-            ),
-            {"timeout": 77.0},
-        )
-    ]
+    assert len(backend.calls) == 2
+    command_call, accounting_call = backend.calls
+    assert command_call == (
+        "/api/command",
+        _expected_payload(
+            "auto_fix",
+            root,
+            "pytest tests/test_parser.py",
+            task_id="task-1",
+            criterion="parser regression passes",
+            auto_fix=True,
+            max_attempts=2,
+            auto_rollback=False,
+        ),
+        {"timeout": 77.0},
+    )
+    accounting_path, accounting_payload, accounting_options = accounting_call
+    assert accounting_path == "/api/telemetry/tool-accounting"
+    assert isinstance(accounting_payload.get("batch_id"), str)
+    assert accounting_payload["batch_id"]
+    assert accounting_payload["events"] == []
+    assert accounting_options == {"timeout": 0.25}
     _assert_response_fields(result, response)
     assert result["success"] is True
 
@@ -309,6 +315,30 @@ def test_mcp_command_mock_server_start_uses_dedicated_endpoint_and_port(monkeypa
     assert result["success"] is True
 
 
+def test_mcp_command_stop_daemon_forwards_daemon_identity(monkeypatch: Any, tmp_path: Any) -> None:
+    response = {"success": True, "status": "stopped", "daemon_id": "daemon-17"}
+    backend = _CommandBackend(response)
+    _enable_command(monkeypatch, backend)
+    root = str(tmp_path)
+
+    result = mcp_server.local_ai_command(
+        action="stop_daemon",
+        command="daemon-17",
+        cwd=root,
+        timeout=25,
+    )
+
+    assert backend.calls == [
+        (
+            "/api/command",
+            _expected_payload("stop_daemon", root, "daemon-17"),
+            {"timeout": 77.0},
+        )
+    ]
+    _assert_response_fields(result, response)
+    assert result["success"] is True
+
+
 def test_mcp_command_speculative_lint_submits_bounded_paths_and_job_identity(
     monkeypatch: Any, tmp_path: Any
 ) -> None:
@@ -336,30 +366,6 @@ def test_mcp_command_speculative_lint_submits_bounded_paths_and_job_identity(
                 "command": "ruff check",
                 "job_id": "lint-job-7",
             },
-            {"timeout": 77.0},
-        )
-    ]
-    _assert_response_fields(result, response)
-    assert result["success"] is True
-
-
-def test_mcp_command_stop_daemon_forwards_daemon_identity(monkeypatch: Any, tmp_path: Any) -> None:
-    response = {"success": True, "status": "stopped", "daemon_id": "daemon-17"}
-    backend = _CommandBackend(response)
-    _enable_command(monkeypatch, backend)
-    root = str(tmp_path)
-
-    result = mcp_server.local_ai_command(
-        action="stop_daemon",
-        command="daemon-17",
-        cwd=root,
-        timeout=25,
-    )
-
-    assert backend.calls == [
-        (
-            "/api/command",
-            _expected_payload("stop_daemon", root, "daemon-17"),
             {"timeout": 77.0},
         )
     ]
