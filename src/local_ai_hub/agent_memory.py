@@ -107,15 +107,17 @@ def _memory_matches_request_scope(
         return requested_tenant == record_tenant
     if scope_value == AgentScope.TASK.value:
         if not isinstance(provenance, Mapping):
-            provenance = {}
+            return False
         record_root = str(provenance.get("root") or "").strip()
         record_tenant = str(provenance.get("tenant") or "").strip()
         requested_root = str(root or "").strip()
         requested_tenant = str(tenant or "").strip()
         requested_task_id = str(task_id or "").strip()
-        if not requested_task_id or str(scope_id or "").strip() != requested_task_id:
+        if not all((requested_root, requested_tenant, record_root, record_tenant, requested_task_id)):
             return False
-        if requested_root and record_root and _normalise_scope_root(record_root) != _normalise_scope_root(requested_root):
+        if str(scope_id or "").strip() != requested_task_id:
+            return False
+        if _normalise_scope_root(record_root) != _normalise_scope_root(requested_root):
             return False
         return requested_tenant == record_tenant
     if scope_value == AgentScope.SESSION.value:
@@ -225,7 +227,7 @@ def _context_scope_sql(
             return
         if scope_value == AgentScope.REPOSITORY.value and not root:
             return
-        if scope_value == AgentScope.TASK.value and not root:
+        if scope_value == AgentScope.TASK.value and not (root and tenant):
             return
         conditions = ["scope = ?"]
         identity_params: list[Any] = [scope_value]
@@ -1816,11 +1818,7 @@ class MemoryStore:
             if scope_val != AgentScope.GLOBAL.value:
                 raise ValueError("tenant-agnostic memory lookup is only valid for GLOBAL scope")
         elif tenant:
-            if scope_val == AgentScope.GLOBAL.value or (
-                record_id is not None
-                and scope_val == AgentScope.TASK.value
-                and (repository_id or root)
-            ):
+            if scope_val == AgentScope.GLOBAL.value:
                 sql += (
                     f" AND ({provenance_tenant} IS NULL OR "
                     f"{provenance_tenant} = '' OR {provenance_tenant} = ?)"
@@ -1836,8 +1834,14 @@ class MemoryStore:
         ):
             sql += " AND 0"
         if scope_val == AgentScope.TASK.value:
-            if (tenant and not (root or repository_id)) or (root and not (tenant or repository_id)) or not (task_id_val or scope_id_val):
+            # A task ID (or repository alias) cannot replace either trusted
+            # context identity. The SQL above matches both provenance fields.
+            if not (root and tenant and (task_id_val or scope_id_val)):
                 sql += " AND 0"
+        elif scope_val is None:
+            # Unscoped searches must not recover task rows by key or record ID.
+            sql += " AND scope != ?"
+            params.append(AgentScope.TASK.value)
         if scope_val == AgentScope.SESSION.value and (
             (tenant and not session_id_val)
             or (scope is not None and session_id_val and not tenant)
