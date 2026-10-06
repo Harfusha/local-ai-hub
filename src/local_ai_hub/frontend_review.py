@@ -69,7 +69,7 @@ class FrontendModelContext:
             source = getattr(self, source_name)
             if not isinstance(source, dict):
                 continue
-            elements = source.get("elements", source.get("nodes", []))
+            elements = source.get("elements", source.get("nodes"))
             indexed: dict[str, dict[str, Any]] = {}
             entries = (
                 ((None, element) for element in elements)
@@ -80,10 +80,16 @@ class FrontendModelContext:
                 if not isinstance(element, dict):
                     continue
                 element_id = element.get("element_id", element.get("id", source_id))
+                if isinstance(element_id, (int, float)) and not isinstance(element_id, bool):
+                    element_id = str(element_id)
                 if not isinstance(element_id, str) or not element_id:
                     continue
                 fields: dict[str, Any] = {}
                 for key, value in element.items():
+                    if not isinstance(key, str) or not key or key == "element_id":
+                        continue
+                    if isinstance(value, str) and not value.strip():
+                        continue
                     if isinstance(value, (str, bool, int)):
                         fields[key] = value
                     elif isinstance(value, float) and math.isfinite(value):
@@ -218,7 +224,11 @@ def project_live_dom(payload: dict[str, Any], *, max_chars: int) -> dict[str, An
             ).as_result()
         seen: set[str] = set()
         for element in elements:
-            if not isinstance(element, dict) or not str(element.get("element_id", "")).strip():
+            if (
+                not isinstance(element, dict)
+                or isinstance(element.get("element_id"), bool)
+                or not str(element.get("element_id", "")).strip()
+            ):
                 return FrontendReviewError(
                     "missing_dom_element_id", "every live DOM element requires a stable element_id"
                 ).as_result()
@@ -377,7 +387,10 @@ def build_coder_context(
     element_ids = {
         str(element.get("element_id"))
         for element in dom_elements
-        if isinstance(element, dict) and element.get("element_id")
+        if isinstance(element, dict)
+        and element.get("element_id") is not None
+        and not isinstance(element.get("element_id"), bool)
+        and str(element.get("element_id")) != ""
     }
     referenced = {
         str(element_id)
@@ -434,7 +447,10 @@ def build_coder_context(
     kept_ids = {
         str(element.get("element_id"))
         for element in base.get("dom", {}).get("elements", [])
-        if isinstance(element, dict) and element.get("element_id")
+        if isinstance(element, dict)
+        and element.get("element_id") is not None
+        and not isinstance(element.get("element_id"), bool)
+        and str(element.get("element_id")) != ""
     }
     accessibility = _relevant_mapping(
         accessibility_value,
