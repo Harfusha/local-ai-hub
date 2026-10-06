@@ -2834,6 +2834,34 @@ class LocalAIServices:
                 "terminal": True,
                 "retryable": False,
             }
+        if project_context.resolution.error_codes:
+            return {
+                "success": False,
+                "root": root,
+                "error": "project_policy_unavailable",
+                "results": [],
+                "terminal": True,
+                "retryable": False,
+            }
+        try:
+            hint_root = Path(root).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            hint_root = None
+        inventory_loader = getattr(self.repo_tools, "_git_files", None)
+        file_inventory = (
+            inventory_loader(hint_root)
+            if hint_root is not None and callable(inventory_loader)
+            else None
+        )
+        if hint_root is not None and (hint_root / ".git").exists() and file_inventory is None:
+            return {
+                "success": False,
+                "root": root,
+                "error": "git_inventory_unavailable",
+                "results": [],
+                "terminal": True,
+                "retryable": False,
+            }
         search_scope = scope if isinstance(scope, str) else "repository_search"
         request_hints: list[PathHint] = []
         allowed_hint_fields = {
@@ -2865,6 +2893,21 @@ class LocalAIServices:
                     )
                 ):
                     request_hints.append(hint)
+        try:
+            workspace_state = self._repo_cache_state(root) or {}
+        except Exception:
+            workspace_state = {}
+        repository_revision = (
+            str(workspace_state.get("fingerprint") or "")
+            if not workspace_state.get("stale") and not workspace_state.get("degraded")
+            else ""
+        )
+        saved_hints = project_context.path_hints(
+            purpose="repository_search",
+            scope=search_scope,
+            repository_revision=repository_revision,
+        )
+        effective_hints = [*saved_hints, *request_hints]
         request_hint_digest = stable_hash([
             {
                 "path": hint.path,
@@ -2876,17 +2919,8 @@ class LocalAIServices:
                 "config_digest": hint.config_digest,
                 "expires_at": hint.expires_at,
             }
-            for hint in request_hints
+            for hint in effective_hints
         ])
-        try:
-            workspace_state = self._repo_cache_state(root) or {}
-        except Exception:
-            workspace_state = {}
-        repository_revision = (
-            str(workspace_state.get("fingerprint") or "")
-            if not workspace_state.get("stale") and not workspace_state.get("degraded")
-            else ""
-        )
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
@@ -2918,17 +2952,12 @@ class LocalAIServices:
             if action == "include"
         )
         try:
-            hint_root = Path(root).expanduser().resolve(strict=True)
-            inventory_loader = getattr(self.repo_tools, "_git_files", None)
-            file_inventory = (
-                inventory_loader(hint_root) if callable(inventory_loader) else None
-            )
             extension_is_searchable = getattr(
                 self.repo_tools, "_path_extension_is_searchable", None
             )
             ignored_dirs = getattr(self.repo_tools, "ignore_dirs", set())
             seen_hint_paths: set[str] = set()
-            for hint in request_hints:
+            for hint in effective_hints:
                 target = validate_path_hint(
                     hint_root,
                     hint,
@@ -2999,6 +3028,7 @@ class LocalAIServices:
             full_result = self.repo_tools.search(
                 root, query, candidate_limit, context_lines=eff_ctx_lines,
                 project_settings=project_context.settings,
+                git_inventory=file_inventory,
             )
             if not isinstance(full_result, dict) or not full_result.get("success", True):
                 result = dict(full_result) if isinstance(full_result, dict) else {
@@ -3011,6 +3041,7 @@ class LocalAIServices:
             if paths:
                 try:
                     search_options = {"project_settings": project_context.settings}
+                    search_options["git_inventory"] = file_inventory
                     if hinted_force_include:
                         search_options["force_include_paths"] = list(force_include_patterns)
                     targeted = (
@@ -3105,6 +3136,10 @@ class LocalAIServices:
                 repository_revision=repository_revision,
                 config_digest=project_context.config_digest,
             )
+            hint_used = configured_usage.hint_used or request_usage.hint_used
+            hint_fallback_used = (
+                configured_usage.fallback_used or request_usage.fallback_used
+            ) and not hint_used
             path_rank = {path: rank for rank, path in enumerate(request_usage.paths)}
             allowed_results.sort(
                 key=lambda item: path_rank.get(str(item["path"]), len(path_rank))
@@ -3115,6 +3150,11 @@ class LocalAIServices:
                 paths
                 and any(str(item.get("path")) in set(paths) for item in allowed_results)
             )
+            result["path_hint_usage"] = {
+                "hint_used": hint_used,
+                "fallback_used": hint_fallback_used,
+                "hint_helped": None,
+            }
             if enrich:
                 result["enriched"] = True
                 for hit in result.get("results", [])[:top_k]:
