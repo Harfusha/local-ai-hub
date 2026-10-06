@@ -16,7 +16,7 @@ Runtime state and caches remain outside version control.
 | T01 inventory | integrated; unfinished | Popper the 2nd; t01-coverage-main-verify | `b9466d30` merged into master. Worker reported 821 passed, 11 failed; two context follow-up tests passed, nine failures remain. Final inventory regeneration and release acceptance follow source consolidation. |
 | T02 quality baseline | integrated; unfinished | Gibbs the 2nd; t02-quality-baseline-resume | Branch `codex/sync-t02-master-20261006`, head `673d1a0b`, merged into master. Checkpoint `codex/sync-t02-checkpoint-20261006` retains original dirty content. Targeted command in `handoff/T02-sync-integration-20261006.md`: 18 passed, 78 deselected. Runner still uses removed checkpoint/resume CLI flags; real-input baseline and historical intermittent test failure remain unresolved. Nine original untracked artifacts retained unchanged. |
 | T06 safe-command checkout | integrated; unfinished | Wegener the 2nd; t06-safe-commands | `dac22b98` merged into master; 166 changed paths against worker's pinned master. Final targeted checks: 48 passed, 5 failed; 27 Python files compiled in memory. Remaining POSIX rollback ctime issue, transaction/attempt fixtures, patch/import acceptance and generic provenance are in `handoff/T06-sync-master-integration-20261006.md`. Original tracked newline bytes are unverified; LF/CRLF variants and exact handoff bytes preserved. |
-| T05 identity / memory | active | Maxwell the 2nd; t05-identity-recovery | Manual merge; retain current master identity isolation and review older task hunks. |
+| T05 identity / memory | integrated; unfinished | Maxwell the 2nd; t05-identity-recovery | Final worker `b47246f7`, merged at `fc950005`. All ordinary dirty/untracked material committed; runtime exclusions enumerated in `artifacts/sync-t05-20261006/ordinary-preservation-manifest.json`. Worker reported 122 passed, 14 failed, 1 skipped. Root fresh two-test transport check: 1 passed, 1 failed, 15 deselected; worktree-scoped delete did not raise expected HTTP 403. Preserve assertion and repair isolation after consolidation. |
 | T03 contracts | integrated; unfinished | Einstein the 2nd; t03-contracts-resume | `32c5079b` merged into master. Original/dirty refs `codex/checkpoint-t03-original-20261006` and `codex/checkpoint-t03-dirty-20261006` preserve the old state. Focused follow-up: 169 passed, 3 failed. Schema parity, gaming/maintenance dispatch and earlier memory-scope HTTP 404 remain unresolved. Additional original untracked handoffs are being committed separately. |
 | T04 transport / startup | integrated; unfinished | Raman the 2nd; t04-integration and t04-lock-recovery | Both `8634b913` and `31de8a7a` merged; final merge `5e8424c4` retains both colliding integration documents. Worker checks: 113 passed, 5 failed, 1 skipped; follow-up 98 passed, 6 failed. Schema/fixture and removed-sidecar acceptance remain unresolved. |
 | T26 preprocessing argv | synchronized and integrated; acceptance partial | orchestrator; t26-preprocess-argv-5361 | Original dirty content committed at `e2f7e296`, retained by `codex/checkpoint-t26-dirty-20261006`. The dirty addition was an exact duplicate of the existing test; deduplicated at `9e7df358`. Merge into master has identical final tree and preserves both commits. No new T26 test run in this phase. |
@@ -39,6 +39,92 @@ Additional integration on 2026-10-06:
   ordinary untracked material; T08 is reconciling its dirty Agent OS state.
 - Commits preserve unfinished work, not acceptance. Do not tag a release
   until consolidated tests and outstanding safety findings are resolved.
+
+Further preservation:
+
+- T03 `3fb39f83` integrated: all original ordinary untracked handoffs committed.
+  Manifest preserves 885 runtime-excluded files in the original checkout.
+- T20 plan checkpoint `67fe2dd7`, merge `7e6f2715`, integrated. Original
+  unfinished 347-line plan is explicitly historical; the consolidated master
+  plan remains under the authoritative section. Later plan deduplication
+  must preserve all still-open acceptance items.
+- Root T05 test command: `python -B -m pytest -q -p no:cacheprovider
+  tests/test_agent_state_transport.py -k
+  'test_http_verification_route_rejects_passed_receipt_without_evidence or
+  test_http_memory_delete_requires_verified_worktree_scope' --tb=short`.
+  Result: **1 passed, 1 failed, 15 deselected in 9.10s**.
+- `fefe`: all seven original ordinary handoffs committed at `ddd3594d`.
+  Master merge is currently being resolved; code-index/deterministic hunks
+  preserve conservative graph completeness and master lazy indexing.
+  Broker/process-control/test conflicts remain; not integrated or accepted.
+
+- T09 `31c6214d` integrated: production source identical to consolidated
+  master; original receipt test and 24 handoff files preserved. Worker reports
+  final 98 passed, broader 121 passed / 4 failed. Runtime manifest records
+  781 excluded files. Cleanup tests created fixture worktrees; scope deviation
+  explicitly recorded in `handoff/t09-sync-integration-20261006.md`.
+- Live context benchmark: original two untracked files checkpoint-committed
+  at `deaa4005` on `codex/sync-live-context-benchmark-20261006`, pinned by
+  `codex/checkpoint-live-context-benchmark-dirty-20261006`. Source reconciliation
+  against the newer master benchmark is still pending; not integrated.
+- Active independent merge owners: T08 Socrates; T12 Kant (`4816`);
+  T13 Nietzsche (`t13-operational-mode`); T14 Schrodinger
+  (`t14-context-budget-recovery`); historical `fefe` Ohm. The orchestrator
+  handed the partially resolved `fefe` merge to Ohm and no longer edits it.
+- All 45 historical stash snapshots remain untouched. Inspection confirms
+  missing T11 handoff files remain recoverable in stash `4b54e7af`'s third
+  parent. Their restoration/integration and missing-checkout inventory remain
+  pending; do not drop any stash until content coverage is verified.
+
+T11 missing-checkout recovery: all eleven ordinary handoff files from the
+third parent of stash `4b54e7af` restored into master after checking none of
+their paths existed. This stash contains no tracked source delta versus its
+first parent. The 179023-byte owner patch is preserved as historical evidence,
+not applied blindly. Historical receipts do not prove fresh acceptance.
+The stash remains intact. Missing checkout registration/provenance still
+requires reconciliation; source integration coverage of the archived patch
+must be checked before cleanup.
+
+Recovered T11 patch coverage check: `git apply --reverse --check
+--whitespace=nowarn handoff/t11-master-b947d76f-owned.patch` returned exit 1
+with mismatches in all eight owned paths. This is not proof that changes are
+missing: current master can contain newer overlapping changes. A hunk-level
+comparison remains required; no archived source was blindly applied.
+
+Additional original untracked content checkpointed, not yet integrated:
+
+| Checkout | Preservation commit | Content |
+| --- | --- | --- |
+| t16-orchestration-resume | `22f116cd` | Two original patches, work_fencing source, junction recovery test |
+| t14-render-order | `ed6b2dbe` | Original render-order regression test |
+| t14-snippet-isolated | `ee8ba503` | Original isolated snippet-budget test |
+| t13-operational-mode-resume-20261004 | `b0ade36a` | Original operational_mode source and test |
+| t17-vision-refactor | `fad072f3` | Original vision decomposition preimage map |
+| t06-write-set-resume | `1145d19d` | Original durability regression note and patch |
+
+These commits preserve unfinished work without product edits. Each still
+needs its manually reconciled master merge and later acceptance; no claim of
+functional completion follows from preservation.
+
+T14 context-budget reconciliation: `fcdc58a7` integrated. Complete original
+checkpoint `dd07cfe0` retains source/tests/handoffs before merge. Incremental
+production changes are limited to MCP context projection and response-budget
+citation retention. Worker: 98 passed / 7 failed; final affected rerun
+26 passed / 2 failed. In-memory AST and scoped whitespace passed. Outstanding
+128-token error truncation, rollback status fields, older scope/path fixtures
+and strict CodeGraph substring assertion remain in
+`handoff/T14-SYNC-INTEGRATION-20261006.md`. Long citation/identity truncation
+also needs acceptance review before release; no broad completion claim.
+T14 render-order checkout now assigned to Anscombe independently.
+
+Fresh integrated-root budget regression:
+`python -B -m pytest -q -p no:cacheprovider tests/test_mcp_response_budget.py
+tests/test_response_budget.py --tb=short`: **23 passed, 3 failed in 2.77s**.
+Two command rollback tests received `operational_mode_blocked` with gaming
+mode instead of reaching their fake transport; investigate test/runtime
+state isolation without changing the user's live mode. The third test
+confirms a protected error string is truncated at the 128-token budget.
+No test expectation weakened and no repeat of this command was launched.
 
 ## Rules for the remainder
 

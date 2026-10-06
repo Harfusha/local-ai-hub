@@ -1,0 +1,25 @@
+{
+  "task": "T05 root-current memory patch",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "root_preimage_sha256": {
+    "src/local_ai_hub/agent_memory.py": "C68A8C70386BA5155C23D48AE23735E3E0344C3E72F021F0D76DEF708AF2B838",
+    "tests/test_agent_memory.py": "F4F12E52C105D23E88A6F0F69A6D5AC2C23580BF9515E5DD1EA5C1EC6206E29C"
+  },
+  "root_http_identity_test_sha256": "FB721E8CAF6E2394A73DED286D6EDAA64DE1BD891DE915BBA569521B0269E321",
+  "root_http_identity_fix_already_present": true,
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "candidate_agent_memory_sha256": "784116FF1ADA548979126F9639C4B795016540AF5ED85D1897C6963DFA6AC73E",
+  "candidate_memory_test_sha256": "623B443B72360D5BAB0FAA450DCFCF19AB4AB6B4EAC82A8F7E92ED7E15CF88DB",
+  "patch": "artifacts/t05-root-current-memory-v1.patch",
+  "patch_sha256": "F7B2F7761E72755A8AB7ACF889DEAF02CB7AD413C15E0AC1CC287A87344DCB19",
+  "patch_paths": [
+    "src/local_ai_hub/agent_memory.py",
+    "tests/test_agent_memory.py"
+  ],
+  "isolated_current_preimage_apply_check": "PASS",
+  "isolated_postimage_reverse_check": "PASS",
+  "root_patch_applied": false,
+  "root_status_for_scoped_paths": " M src/local_ai_hub/agent_memory.py; M tests/test_agent_memory.py;?? tests/test_agent_memory_http_identity.py",
+  "remaining_dependency": "Seven migration selectors remain blocked by T08/root agent_events.py rejecting agent_incidents; no T08 file changed.",
+  "tests_run_for_patch_check": "NONE"
+}

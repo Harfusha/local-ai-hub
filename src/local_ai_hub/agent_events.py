@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from .json_utils import dumps as json_dumps
-
 from contextlib import contextmanager
 from contextlib import closing
 import hashlib
@@ -19,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
+from .json_utils import dumps as json_dumps
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
 
 
