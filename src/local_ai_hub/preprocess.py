@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import copy
 import json
 import os
+import shlex
 import sqlite3
 import tempfile
 import threading
@@ -16,6 +17,12 @@ from typing import Any
 
 from . import __version__
 from .cache import stable_hash
+from .project_config import (
+    path_is_allowed,
+    phase_is_allowed,
+    resolve_project_config,
+    resolve_project_context,
+)
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
 from .worktrees import discover_worktree_roots
 from .process_utils import canonical_root, set_current_thread_priority
@@ -64,6 +71,40 @@ PROJECT_SCHEMA = {
     },
     "required": ["architecture", "entry_points", "hot_paths", "testing", "configuration", "data_flow", "security", "concurrency", "risks"],
 }
+
+
+def _project_git_identity(root: str) -> tuple[str, bool]:
+    """Return a local Git common-dir identity without guessing from path names."""
+    try:
+        resolved_root = Path(root).resolve(strict=False)
+        marker = resolved_root / ".git"
+        if marker.is_dir():
+            return str(marker.resolve(strict=False)), False
+        if not marker.is_file():
+            return str(resolved_root), False
+
+        marker_text = marker.read_text(encoding="utf-8", errors="replace")[:1024]
+        prefix, separator, raw_git_dir = marker_text.partition(":")
+        if prefix.strip().casefold() != "gitdir" or not separator or not raw_git_dir.strip():
+            return str(resolved_root), False
+        git_dir = Path(raw_git_dir.strip())
+        if not git_dir.is_absolute():
+            git_dir = resolved_root / git_dir
+        git_dir = git_dir.resolve(strict=False)
+
+        common_dir_file = git_dir / "commondir"
+        if not common_dir_file.is_file():
+            return str(git_dir), False
+        raw_common_dir = common_dir_file.read_text(encoding="utf-8", errors="replace")[:1024].strip()
+        if not raw_common_dir:
+            return str(resolved_root), False
+        common_dir = Path(raw_common_dir)
+        if not common_dir.is_absolute():
+            common_dir = git_dir / common_dir
+        common_dir = common_dir.resolve(strict=False)
+        return str(common_dir), common_dir != git_dir
+    except (OSError, RuntimeError, ValueError):
+        return str(root), False
 
 
 class ProjectPreprocessor:
@@ -246,6 +287,8 @@ class ProjectPreprocessor:
         ``None`` means another loop already owns this project. Callers should simply
         retry later; this is contention, not a foreground-yield or an error.
         """
+        if self._paused.is_set() or not self._background_work_allowed():
+            return None
         root = str(row.get("root", ""))
         lock = self._project_step_lock(root)
         if not lock.acquire(blocking=False):
@@ -649,8 +692,29 @@ class ProjectPreprocessor:
         if any(part.lower() in self.repo_tools.ignore_dirs for part in rel_path.parts[:-1]):
             return None
         name = rel_path.name.lower()
+        if name in {".local-ai.toml", ".local-ai.worktree.toml"}:
+            return str(rel_path).replace("\\", "/")
         suffix = rel_path.suffix.lower()
-        if self.repo_tools.extensions and suffix not in self.repo_tools.extensions and name not in self.repo_tools.special_filenames:
+        project_extensions: set[str] = set()
+        _api, project_context = self._project_config_context(str(root))
+        if project_context is not None:
+            settings = project_context.settings
+            project_extensions.update(
+                str(value).lower() for value in getattr(settings, "text_extensions", ())
+            )
+            for override in getattr(settings, "language_overrides", {}).values():
+                project_extensions.update(
+                    str(value).lower() for value in override.get("text_extensions", ())
+                )
+            project_extensions.difference_update(
+                str(value).lower() for value in getattr(settings, "binary_extensions", ())
+            )
+        if (
+            self.repo_tools.extensions
+            and suffix not in self.repo_tools.extensions
+            and suffix not in project_extensions
+            and name not in self.repo_tools.special_filenames
+        ):
             return None
         return str(rel_path).replace("\\", "/")
 
@@ -658,8 +722,78 @@ class ProjectPreprocessor:
         with self._dirty_lock:
             return self._dirty_paths.pop(root, set())
 
+    def _project_config_context(self, root: str) -> tuple[Any | None, Any | None]:
+        """Resolve optional project policy lazily for the owning repository."""
+        try:
+            from importlib import import_module
+
+            api = import_module("local_ai_hub.project_config")
+        except ModuleNotFoundError as exc:
+            if exc.name == "local_ai_hub.project_config":
+                return None, None
+            raise
+        state_dir = self.config.get("server", {}).get("state_dir", "state")
+        return api, api.resolve_project_context(root, state_dir)
+
+    def _project_profile(self, root: str, profile: Any) -> Any:
+        _api, context = self._project_config_context(root)
+        if context is None or not isinstance(profile, dict):
+            return profile
+        profile = dict(profile)
+        settings = context.settings
+        for name in ("project_type", "solution_path"):
+            value = getattr(settings, name, None)
+            if value:
+                profile[name] = value
+        return profile
+
+    def _add_project_text_extensions(self, root: str, files: dict[str, dict[str, Any]], api: Any | None, context: Any | None) -> None:
+        if api is None or context is None:
+            return
+        settings = context.settings
+        extensions = {str(value).lower() for value in getattr(settings, "text_extensions", ())}
+        for override in getattr(settings, "language_overrides", {}).values():
+            extensions.update(str(value).lower() for value in override.get("text_extensions", ()))
+        extensions.difference_update(str(value).lower() for value in getattr(settings, "binary_extensions", ()))
+        extensions.difference_update(str(value).lower() for value in getattr(self.repo_tools, "extensions", ()))
+        if not extensions:
+            return
+        base = Path(root)
+        ignored = {str(value).lower() for value in getattr(self.repo_tools, "ignore_dirs", ())}
+        may_descend = getattr(api, "may_descend", None)
+        for current, directories, filenames in os.walk(base, followlinks=False):
+            current_path = Path(current)
+            retained = []
+            for name in directories:
+                child = current_path / name
+                if name.lower() in ignored or (callable(may_descend) and not may_descend(
+                    base, child, settings, phase="preprocess", hard_denied=False,
+                )):
+                    continue
+                retained.append(name)
+            directories[:] = retained
+            for name in filenames:
+                candidate = current_path / name
+                if candidate.suffix.lower() not in extensions:
+                    continue
+                try:
+                    stat = candidate.stat()
+                    relative = candidate.relative_to(base).as_posix()
+                except (OSError, ValueError):
+                    continue
+                if int(stat.st_size) > int(getattr(self.repo_tools, "max_file_bytes", stat.st_size)) or not self._project_path_allowed(
+                    root, relative, settings, phase="preprocess", size_bytes=int(stat.st_size),
+                ):
+                    continue
+                files.setdefault(relative, {
+                    "path": relative, "size": int(stat.st_size),
+                    "mtime_ns": int(stat.st_mtime_ns), "extension": candidate.suffix.lower(),
+                })
+
     def notify_path_changed(self, changed_path: str) -> bool:
         """Coalesce watcher events and queue only the owning registered project."""
+        if not self._background_work_allowed():
+            return False
         try:
             changed = Path(changed_path).resolve(strict=False)
         except Exception:
@@ -731,16 +865,19 @@ class ProjectPreprocessor:
                 watch_revision = int(self._watch_revisions.get(resolved, 0))
                 dirty_paths = sorted(self._dirty_paths.get(resolved, set()))[:256]
                 dirty_count = len(self._dirty_paths.get(resolved, set()))
+            _api, project_context = self._project_config_context(resolved)
+            config_digest = str(getattr(project_context, "config_digest", ""))
             fp = stable_hash({
                 "root": resolved, "generation": int(row["generation"] or 0),
                 "inventory": row["inventory_hash"], "structure": row["structural_hash"],
-                "watch_revision": watch_revision,
+                "watch_revision": watch_revision, "project_config": config_digest,
             })
             return {
                 "success": True, "root": resolved, "kind": "preprocessed-watcher",
                 "fingerprint": fp, "dirty": dirty_count > 0, "changed_files": dirty_count,
                 "changed_paths": dirty_paths, "status": str(row["status"]),
-                "phase": str(row["phase"]), "created_at": time.time(),
+                "phase": str(row["phase"]), "project_config_digest": config_digest,
+                "created_at": time.time(),
             }
         except Exception:
             return None
@@ -841,40 +978,116 @@ class ProjectPreprocessor:
 
         # 1. Seed file_refs & source_index from preprocess.sqlite3
         try:
-            with self._db_lock, closing(self._connect()) as con:
+            with closing(self._connect()) as con:
                 p_rows = con.execute(
-                    "SELECT path, size, mtime_ns, content_hash, card_key, rag_hash FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>''",
+                    "SELECT path, size, content_hash FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>''",
                     (parent_resolved,),
                 ).fetchall()
-                candidates_to_insert = []
-                for r in p_rows:
-                    rel = str(r["path"])
-                    p_file = (base / rel).resolve(strict=False)
-                    if p_file.is_file():
+            try:
+                clean_git_hashes = self.repo_tools.git_blob_map(resolved)
+            except Exception:
+                clean_git_hashes = {}
+
+            candidates: list[tuple[str, str, int, int, tuple[int, ...]]] = []
+            stale_candidates: list[tuple[str, str]] = []
+            for row in p_rows:
+                rel = str(row["path"]).replace("\\", "/")
+                parent_hash = str(row["content_hash"] or "")
+                child_file = (base / rel).resolve(strict=False)
+                if not child_file.is_file():
+                    continue
+                try:
+                    before = child_file.stat()
+                    child_size = int(before.st_size)
+                    if child_size != int(row["size"]):
+                        stale_candidates.append((rel, parent_hash))
+                        continue
+                    if parent_hash.startswith("git:"):
+                        child_hash = str(clean_git_hashes.get(rel) or "")
+                    else:
+                        child_hash = str(self.repo_tools._hash_file_only(child_file) or "")
+                    after = child_file.stat()
+                    identity_before = (
+                        int(before.st_size), int(before.st_mtime_ns),
+                        int(getattr(before, "st_ctime_ns", 0)), int(getattr(before, "st_ino", 0)),
+                        int(getattr(before, "st_dev", 0)),
+                    )
+                    identity_after = (
+                        int(after.st_size), int(after.st_mtime_ns),
+                        int(getattr(after, "st_ctime_ns", 0)), int(getattr(after, "st_ino", 0)),
+                        int(getattr(after, "st_dev", 0)),
+                    )
+                    if not child_hash or child_hash != parent_hash or identity_before != identity_after:
+                        stale_candidates.append((rel, parent_hash))
+                        continue
+                    candidates.append((rel, parent_hash, child_size, int(after.st_mtime_ns), identity_after))
+                except OSError:
+                    stale_candidates.append((rel, parent_hash))
+
+            if candidates or stale_candidates:
+                with self._db_lock, closing(self._connect()) as con:
+                    con.execute("BEGIN IMMEDIATE")
+                    for rel, parent_hash in stale_candidates:
+                        con.execute(
+                            """UPDATE file_refs
+                               SET content_hash='',needs_hash=1,rag_hash=NULL,card_key=NULL,updated_at=?
+                               WHERE root=? AND path=? AND content_hash=? AND needs_hash=0
+                                 AND EXISTS (
+                                     SELECT 1 FROM file_refs p
+                                     WHERE p.root=? AND p.path=? AND p.content_hash=? AND p.needs_hash=0
+                                 )""",
+                            (now, resolved, rel, parent_hash, parent_resolved, rel, parent_hash),
+                        )
+                        con.execute(
+                            """DELETE FROM source_index
+                               WHERE root=? AND path=? AND content_hash=?
+                                 AND EXISTS (
+                                     SELECT 1 FROM file_refs p
+                                     WHERE p.root=? AND p.path=? AND p.content_hash=? AND p.needs_hash=0
+                                 )""",
+                            (resolved, rel, parent_hash, parent_resolved, rel, parent_hash),
+                        )
+                    for rel, parent_hash, size, mtime_ns, identity in candidates:
+                        child_file = (base / rel).resolve(strict=False)
                         try:
-                            st = p_file.stat()
-                            if int(st.st_size) == int(r["size"]):
-                                candidates_to_insert.append((
-                                    resolved, rel, str(r["content_hash"]), int(st.st_size), int(st.st_mtime_ns),
-                                    0, str(r["rag_hash"] or ""), now, 1, str(r["card_key"] or ""), now,
-                                ))
+                            st = child_file.stat()
                         except OSError:
                             continue
-                if candidates_to_insert:
-                    con.executemany(
-                        """INSERT OR REPLACE INTO file_refs(
-                            root, path, content_hash, size, mtime_ns, needs_hash,
-                            rag_hash, last_accessed_at, generation, card_key, updated_at
-                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                        candidates_to_insert,
-                    )
-                    con.execute(
-                        """INSERT OR IGNORE INTO source_index(root, path, content_hash, text, updated_at)
-                           SELECT ?, path, content_hash, text, ? FROM source_index WHERE root=?""",
-                        (resolved, now, parent_resolved),
-                    )
+                        current_identity = (
+                            int(st.st_size), int(st.st_mtime_ns),
+                            int(getattr(st, "st_ctime_ns", 0)), int(getattr(st, "st_ino", 0)),
+                            int(getattr(st, "st_dev", 0)),
+                        )
+                        if current_identity != identity:
+                            continue
+                        parent = con.execute(
+                            """SELECT card_key FROM file_refs
+                               WHERE root=? AND path=? AND content_hash=? AND size=? AND needs_hash=0""",
+                            (parent_resolved, rel, parent_hash, size),
+                        ).fetchone()
+                        if parent is None:
+                            continue
+                        inserted = con.execute(
+                            """INSERT OR IGNORE INTO file_refs(
+                                root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,
+                                last_accessed_at,generation,card_key,updated_at
+                            ) VALUES(?,?,?,?,?,0,NULL,?,1,?,?)""",
+                            (resolved, rel, parent_hash, size, mtime_ns, now, parent["card_key"], now),
+                        )
+                        if inserted.rowcount > 0:
+                            stats["file_refs"] += 1
+                        child = con.execute(
+                            "SELECT content_hash,needs_hash FROM file_refs WHERE root=? AND path=?",
+                            (resolved, rel),
+                        ).fetchone()
+                        if child is not None and str(child["content_hash"] or "") == parent_hash and int(child["needs_hash"] or 0) == 0:
+                            con.execute(
+                                """INSERT OR IGNORE INTO source_index(root,path,content_hash,text,updated_at)
+                                   SELECT ?,path,content_hash,text,? FROM source_index
+                                   WHERE root=? AND path=? AND content_hash=?""",
+                                (resolved, now, parent_resolved, rel, parent_hash),
+                            )
                     con.commit()
-                    stats["file_refs"] = len(candidates_to_insert)
         except Exception:
             pass
 
@@ -1141,6 +1354,88 @@ class ProjectPreprocessor:
         with self._db_lock, closing(self._connect()) as con:
             return con.execute("SELECT * FROM projects WHERE root=?", (self._root(root),)).fetchone()
 
+    def _project_settings(self, root: str) -> Any:
+        return resolve_project_config(root).settings
+
+    def _project_path_allowed(
+        self,
+        root: str,
+        relative: str,
+        settings: Any,
+        *,
+        phase: str,
+        size_bytes: int,
+    ) -> bool:
+        parts = Path(relative).parts
+        ignored_dirs = getattr(self.repo_tools, "ignore_dirs", set())
+        hard_dirs = {".git", ".svn", ".hg", ".serena", ".local-ai-hub"}
+        hard_denied = any(part.lower() in hard_dirs for part in parts[:-1])
+        ignore_extensions = getattr(self.repo_tools, "ignore_extensions", set())
+        hard_denied = hard_denied or Path(relative).suffix.lower() in ignore_extensions
+        extensions = getattr(self.repo_tools, "extensions", set())
+        project_extensions = {str(value).lower() for value in getattr(settings, "text_extensions", ())}
+        for override in getattr(settings, "language_overrides", {}).values():
+            project_extensions.update(str(value).lower() for value in override.get("text_extensions", ()))
+        binary_extensions = {str(value).lower() for value in getattr(settings, "binary_extensions", ())}
+        project_extensions.difference_update(binary_extensions)
+        hard_denied = hard_denied or Path(relative).suffix.lower() in binary_extensions
+        special_filenames = getattr(self.repo_tools, "special_filenames", set())
+        if extensions and Path(relative).suffix.lower() not in extensions and Path(relative).suffix.lower() not in project_extensions and Path(relative).name.lower() not in special_filenames:
+            hard_denied = True
+        return path_is_allowed(
+            root,
+            relative,
+            settings,
+            phase=phase,
+            soft_ignored=any(part.lower() in ignored_dirs for part in parts[:-1]),
+            hard_denied=hard_denied,
+            size_bytes=size_bytes,
+        )
+
+    def _forced_preprocess_files(self, root: str, settings: Any) -> dict[str, dict[str, Any]]:
+        base = Path(root).resolve(strict=True)
+        patterns = list(settings.force_include_paths)
+        patterns.extend(
+            pattern
+            for pattern, action in settings.path_overrides.items()
+            if action == "include"
+        )
+        maximum = max(1, int(getattr(self.repo_tools, "max_files", 8000)))
+        files: dict[str, dict[str, Any]] = {}
+        visited = 0
+        for pattern in patterns:
+            try:
+                candidates = base.glob(pattern)
+                for candidate in candidates:
+                    visited += 1
+                    if visited > maximum * 4:
+                        return files
+                    if not candidate.is_file():
+                        continue
+                    resolved = candidate.resolve(strict=True)
+                    if not resolved.is_relative_to(base):
+                        continue
+                    relative = resolved.relative_to(base).as_posix()
+                    stat = resolved.stat()
+                    size = int(stat.st_size)
+                    if size > int(getattr(self.repo_tools, "max_file_bytes", size)):
+                        continue
+                    if not self._project_path_allowed(
+                        str(base), relative, settings, phase="preprocess", size_bytes=size
+                    ):
+                        continue
+                    files[relative] = {
+                        "path": relative,
+                        "size": size,
+                        "mtime_ns": int(stat.st_mtime_ns),
+                        "extension": resolved.suffix.lower(),
+                    }
+                    if len(files) >= maximum:
+                        return files
+            except (OSError, RuntimeError, ValueError):
+                continue
+        return files
+
     def _record_progress(self, root: str, count: int = 1) -> None:
         now = time.time()
         with self._stats_lock:
@@ -1152,10 +1447,11 @@ class ProjectPreprocessor:
     def status(self, root: str | None = None) -> dict[str, Any]:
         now_mono = time.monotonic()
         key = str(root or "__all__")
+        mode_paused = not self._background_work_allowed()
         if not hasattr(self, "_status_cache"):
             self._status_cache = {}
         cached = self._status_cache.get(key)
-        if cached and now_mono - cached["time"] < 0.5:
+        if cached and cached.get("mode_paused") == mode_paused and now_mono - cached["time"] < 0.5:
             return dict(cached["data"])
         with closing(self._connect()) as con:
             if root is not None:
@@ -1164,6 +1460,7 @@ class ProjectPreprocessor:
                 rows = con.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
             projects: list[dict[str, Any]] = []
             for row in rows:
+                git_common_dir, is_worktree = _project_git_identity(str(row["root"]))
                 status_str = str(row["status"] or "queued")
                 phase_str = "complete" if status_str == "complete" else str(row["phase"] or "inventory")
                 total_phases = len(self.PHASES)
@@ -1387,11 +1684,6 @@ class ProjectPreprocessor:
                     s_st = ext.get("status", "running")
                     reason = f": {ext.get('error')}" if s_st in {"unavailable", "skipped", "degraded"} and ext.get("error") else ""
                     active_detail = f"Serena LSP project indexing ({s_st}{reason})"
-                elif phase_str == "codegraph":
-                    ext = {}
-                    cg_st = ext.get("status", "running")
-                    reason = f": {ext.get('error')}" if cg_st in {"unavailable", "skipped", "degraded"} and ext.get("error") else ""
-                    active_detail = "Serena LSP"
                 elif phase_str == "lexical":
                     active_detail = f"FTS5 full-text indexing: {source_count}/{total_files} files ({phase_pct}%)"
                 elif phase_str == "rag":
@@ -1418,6 +1710,7 @@ class ProjectPreprocessor:
                     project_stats = {}
                 projects.append({
                     "root": row["root"], "project": Path(row["root"]).name, "workspace": row["workspace"],
+                    "git_common_dir": git_common_dir, "is_worktree": is_worktree,
                     "status": status_str, "phase": phase_str,
                     "paused": is_paused_row, "waiting": is_waiting_row, "last_error": last_err, "last_error_short": last_err_short,
                     "retry_after": retry_after_val, "waiting_reason": waiting_reason,
@@ -1448,13 +1741,13 @@ class ProjectPreprocessor:
             global_diagnostic = "Background preprocessing is actively running."
 
         res = {
-            "success": True, "enabled": self.enabled, "paused": self._paused.is_set(),
+            "success": True, "enabled": self.enabled, "paused": self._paused.is_set() or mode_paused,
             "phases": list(self.PHASES), "projects": projects,
             "scheduler_background_allowed": bg_allowed,
             "global_diagnostic": global_diagnostic,
             "ingestion_reuse_rate": self.ingestion_reuse_rate(),
         }
-        self._status_cache[key] = {"time": now_mono, "data": dict(res)}
+        self._status_cache[key] = {"time": now_mono, "data": dict(res), "mode_paused": mode_paused}
         return res
 
     _PROJECT_COLUMNS = frozenset({
@@ -1562,6 +1855,10 @@ class ProjectPreprocessor:
                 self._cpu_wakeup.wait(poll)
                 self._cpu_wakeup.clear()
                 continue
+            if not self._background_work_allowed():
+                self._cpu_wakeup.wait(min(0.1, poll))
+                self._cpu_wakeup.clear()
+                continue
             if not self.cpu_runs_during_foreground and not self.scheduler.background_allowed():
                 self._cpu_wakeup.wait(poll)
                 self._cpu_wakeup.clear()
@@ -1616,6 +1913,10 @@ class ProjectPreprocessor:
                 self._gpu_wakeup.wait(poll)
                 self._gpu_wakeup.clear()
                 continue
+            if not self._background_work_allowed():
+                self._gpu_wakeup.wait(min(0.1, poll))
+                self._gpu_wakeup.clear()
+                continue
             if self.background_gpu is None or not self.background_gpu.ready():
                 self._gpu_wakeup.wait(poll)
                 self._gpu_wakeup.clear()
@@ -1645,14 +1946,44 @@ class ProjectPreprocessor:
                 self._stop.wait(1.0)
 
     def _yield(self) -> bool:
-        if self._stop.is_set():
+        if self._stop.is_set() or self._paused.is_set() or not self._background_work_allowed():
             return True
         if self.cpu_runs_during_foreground:
             return False
         return bool(self.scheduler.foreground_busy())
 
+    def _background_work_allowed(self) -> bool:
+        """Fail closed outside active mode; never load config from the state directory."""
+        path = self.state_dir / "operational_mode.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return True
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        mode = payload.get("mode")
+        revision = payload.get("revision")
+        updated_at = payload.get("updated_at")
+        if (
+            mode not in {"active", "gaming", "maintenance"}
+            or isinstance(revision, bool)
+            or not isinstance(revision, int)
+            or revision < 1
+            or not isinstance(updated_at, str)
+            or not updated_at
+        ):
+            return False
+        return mode == "active"
+
     def _gpu_yield(self) -> bool:
-        return self._stop.is_set() or self.scheduler.foreground_busy()
+        return (
+            self._stop.is_set()
+            or self._paused.is_set()
+            or not self._background_work_allowed()
+            or self.scheduler.foreground_busy()
+        )
 
     def _fs_watcher_loop(self) -> None:
         """Keep one bounded watchdog observer synchronized with active projects.
@@ -1674,6 +2005,8 @@ class ProjectPreprocessor:
                 self._preprocessor = preprocessor
 
             def on_any_event(self, event: Any) -> None:
+                if not self._preprocessor._background_work_allowed():
+                    return
                 # Watchdog also reports access/close events on some backends. They
                 # are not repository mutations and treating them as edits makes
                 # sync tools such as Mutagen continuously requeue preprocessing.
@@ -1694,8 +2027,22 @@ class ProjectPreprocessor:
         refresh = max(1.0, float(self.cfg.get("watcher_refresh_seconds", 3.0)))
         try:
             observer.start()
-            self._watcher_active = True
             while not self._stop.is_set():
+                if not self._background_work_allowed():
+                    # Keep one observer thread, but detach every recursive watch.
+                    # Active mode rebuilds this set from current project registry.
+                    for root in list(watches):
+                        watch = watches.pop(root)
+                        try:
+                            observer.unschedule(watch)
+                        except Exception:
+                            with self._stats_lock:
+                                self._stats["watcher_errors"] += 1
+                            raise
+                    self._watcher_active = False
+                    self._stop.wait(refresh)
+                    continue
+                self._watcher_active = True
                 try:
                     with self._db_lock, closing(self._connect()) as con:
                         roots = {str(r[0]) for r in con.execute(
@@ -1722,6 +2069,12 @@ class ProjectPreprocessor:
                 self._stats["watcher_errors"] += 1
         finally:
             self._watcher_active = False
+            for watch in list(watches.values()):
+                try:
+                    observer.unschedule(watch)
+                except Exception:
+                    pass
+            watches.clear()
             try:
                 observer.stop()
                 observer.join(timeout=3.0)
@@ -1729,6 +2082,10 @@ class ProjectPreprocessor:
                 pass
 
     def _step(self, row: dict[str, Any]) -> bool:
+        # An in-flight step finishes as its existing durable checkpoint boundary.
+        # The next step observes mode again; active resumes from saved phase/cursor.
+        if not self._background_work_allowed():
+            return False
         root = str(row["root"])
         if not Path(root).is_dir():
             self.unregister(root, purge_data=True)
@@ -1737,6 +2094,21 @@ class ProjectPreprocessor:
             return False
         phase = str(row.get("phase") or "inventory")
         self._set_project(root, status="running")
+        optional_phase = {
+            "code_index": ("call_graph", "deterministic"),
+            "rag": ("rag", "files"),
+            "modules": ("modules", "project"),
+        }.get(phase)
+        if optional_phase is not None:
+            project_phase, next_phase = optional_phase
+            if not phase_is_allowed(self._project_settings(root), project_phase):
+                if phase == "code_index" and self.code_index is not None:
+                    try:
+                        self.code_index.prune(root, [])
+                    except Exception:
+                        pass
+                self._set_project(root, phase=next_phase)
+                return True
         if phase == "inventory":
             return self._step_inventory(row)
         if phase == "hash":
@@ -1767,9 +2139,13 @@ class ProjectPreprocessor:
         """Apply watcher-confirmed path changes without rescanning the repository."""
         root = str(row["root"])
         base = Path(root)
+        settings = self._project_settings(root)
         now = time.time()
         paths = sorted(set(str(x).replace("\\", "/") for x in dirty_paths if x))[:1024]
         if not paths:
+            return False
+        if any(Path(rel).name in {".local-ai.toml", ".local-ai.worktree.toml"} for rel in paths):
+            # Policy changes can affect paths outside the dirty batch. Recompute full inventory.
             return False
         placeholders = ",".join("?" for _ in paths)
         with self._db_lock, closing(self._connect()) as con:
@@ -1800,6 +2176,13 @@ class ProjectPreprocessor:
                 except OSError:
                     continue
                 size, mtime_ns = int(stat.st_size), int(stat.st_mtime_ns)
+                if size > int(getattr(self.repo_tools, "max_file_bytes", size)) or not self._project_path_allowed(
+                    root, rel, settings, phase="preprocess", size_bytes=size
+                ):
+                    if rel in old:
+                        deleted.add(rel)
+                        topology_changed = True
+                    continue
                 present[rel] = (size, mtime_ns)
                 topology_changed = topology_changed or rel not in old
             elif rel in old:
@@ -1817,7 +2200,11 @@ class ProjectPreprocessor:
         # Hash only those paths; building a full Git snapshot defeats incremental work.
         def _content_identity(rel: str) -> tuple[str, bool]:
             try:
-                digest = str(self.repo_tools._hash_file_only(Path(root) / rel) or "")
+                path = Path(root) / rel
+                invalidate = getattr(self.repo_tools, "invalidate_snapshot", None)
+                if callable(invalidate):
+                    invalidate(path)
+                digest = str(self.repo_tools._hash_file_only(path) or "")
             except Exception:
                 digest = ""
             return digest, bool(digest)
@@ -1854,6 +2241,12 @@ class ProjectPreprocessor:
                     con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
                 except sqlite3.OperationalError:
                     pass
+            for rel in content_changed.difference(deleted):
+                con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
+                try:
+                    con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
+                except sqlite3.OperationalError:
+                    pass
             for rel, (size, mtime_ns) in present.items():
                 existing = old.get(rel)
                 old_hash = str(existing["content_hash"] or "") if existing else ""
@@ -1864,13 +2257,14 @@ class ProjectPreprocessor:
                 stored_hash = digest or old_hash
                 needs_hash = int(not digest)
                 stored_card = old_card if content_same else None
+                stored_rag_hash = old_rag_hash if content_same else None
                 con.execute(
                     """INSERT INTO file_refs(root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,generation,card_key,updated_at)
                        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(root,path) DO UPDATE SET
                        content_hash=excluded.content_hash,size=excluded.size,mtime_ns=excluded.mtime_ns,
                        needs_hash=excluded.needs_hash,rag_hash=excluded.rag_hash,generation=excluded.generation,
                        card_key=excluded.card_key,updated_at=excluded.updated_at""",
-                    (root, rel, stored_hash, size, mtime_ns, needs_hash, old_rag_hash, generation, stored_card, now),
+                    (root, rel, stored_hash, size, mtime_ns, needs_hash, stored_rag_hash, generation, stored_card, now),
                 )
             if major:
                 con.execute("DELETE FROM module_cards WHERE root=?", (root,))
@@ -1887,6 +2281,7 @@ class ProjectPreprocessor:
                 "structure": [(path, Path(path).suffix.lower()) for path in all_paths],
                 "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
                 "analyzer": __version__,
+                "project_config": resolve_project_config(root).config_digest,
             })
         inventory_hash = stable_hash({"previous": row.get("inventory_hash"), "dirty": sorted(content_changed)})
         if not content_changed:
@@ -1924,6 +2319,8 @@ class ProjectPreprocessor:
 
     def _step_inventory(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
+        resolution = resolve_project_config(root)
+        settings = resolution.settings
         if not Path(root).exists():
             self.unregister(root, purge_data=True)
             return True
@@ -1941,7 +2338,23 @@ class ProjectPreprocessor:
             raise RuntimeError(str(inventory.get("error", "inventory failed")))
         if self._yield():
             return False
-        new_files = {x["path"]: x for x in inventory.get("files", [])}
+        policy_api, project_context = self._project_config_context(root)
+        inventory_files = {str(item["path"]): item for item in inventory.get("files", []) if item.get("path")}
+        self._add_project_text_extensions(root, inventory_files, policy_api, project_context)
+        new_files: dict[str, dict[str, Any]] = {}
+        for item in inventory_files.values():
+            relative = str(item.get("path") or "")
+            if not relative:
+                continue
+            try:
+                size = int(item.get("size", 0))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if self._project_path_allowed(
+                root, relative, settings, phase="preprocess", size_bytes=size
+            ):
+                new_files[relative] = item
+        new_files.update(self._forced_preprocess_files(root, settings))
         with self._db_lock, closing(self._connect()) as con:
             old_rows = con.execute(
                 "SELECT path,content_hash,size,mtime_ns,card_key,rag_hash FROM file_refs WHERE root=?", (root,)
@@ -1969,13 +2382,26 @@ class ProjectPreprocessor:
             "structure": structure,
             "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
             "analyzer": __version__,
+            "project_config": resolution.config_digest,
+            "project_type": getattr(settings, "project_type", None),
+            "solution_path": getattr(settings, "solution_path", None),
+            "language_overrides": getattr(settings, "language_overrides", {}),
         })
         force = bool(row.get("force_refresh"))
         now = time.time()
-        if not changed and not force and row.get("last_complete_at"):
+        if (
+            not changed
+            and not force
+            and row.get("last_complete_at")
+            and row.get("structural_hash") == structural_hash
+        ):
             with self._db_lock, closing(self._connect()) as con:
                 uncarded = con.execute("SELECT COUNT(*) FROM file_refs WHERE root=? AND card_key IS NULL", (root,)).fetchone()[0]
-                unragged = con.execute("SELECT COUNT(*) FROM file_refs WHERE root=? AND (rag_hash IS NULL OR rag_hash<>content_hash)", (root,)).fetchone()[0]
+                unragged = (
+                    con.execute("SELECT COUNT(*) FROM file_refs WHERE root=? AND (rag_hash IS NULL OR rag_hash<>content_hash)", (root,)).fetchone()[0]
+                    if phase_is_allowed(settings, "rag")
+                    else 0
+                )
             if uncarded == 0 and unragged == 0:
                 self._set_project(root, phase="complete", status="complete", force_refresh=0, next_check_at=now + float(self.cfg.get("auto_recheck_seconds", 1800)), updated_at=now)
                 return True
@@ -2098,7 +2524,12 @@ class ProjectPreprocessor:
             path = (base / rel).resolve(strict=False)
             try:
                 path.relative_to(base)
-                digest = git_hashes.get(rel) or self.repo_tools._hash_file_only(path)
+                digest = git_hashes.get(rel)
+                if not digest:
+                    invalidate = getattr(self.repo_tools, "invalidate_snapshot", None)
+                    if callable(invalidate):
+                        invalidate(path)
+                    digest = self.repo_tools._hash_file_only(path)
             except Exception:
                 digest = ""
             old_hash = str(item["content_hash"] or "")
@@ -2421,11 +2852,21 @@ class ProjectPreprocessor:
             self._missing_refs_checked_generations.add(generation_key)
             self._missing_refs_checked_generations = self._bound_generation_set(self._missing_refs_checked_generations)
         with self._db_lock, closing(self._connect()) as con:
-            refs = [(str(r["path"]), str(r["content_hash"])) for r in con.execute("SELECT path,content_hash FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path", (root,)).fetchall()]
+            refs = [
+                (str(r["path"]), str(r["content_hash"]), int(r["size"] or 0))
+                for r in con.execute(
+                    "SELECT path,content_hash,size FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path",
+                    (root,),
+                ).fetchall()
+            ]
+        settings = self._project_settings(root)
         refs = [
             (path, digest)
-            for path, digest in refs
+            for path, digest, size_bytes in refs
             if not any(part.lower() in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1])
+            and self._project_path_allowed(
+                root, path, settings, phase="call_graph", size_bytes=size_bytes,
+            )
         ]
         pruned_generations = getattr(self, "_code_index_pruned_generations", set())
         if generation_key not in pruned_generations:
@@ -2436,11 +2877,15 @@ class ProjectPreprocessor:
             except Exception:
                 pass
         try:
-            with closing(self.code_index._connect()) as ci_con:
-                existing = dict(ci_con.execute("SELECT path, content_hash FROM files WHERE root=?", (root,)).fetchall())
+            select_pending = getattr(self.code_index, "files_needing_reindex", None)
+            if callable(select_pending):
+                pending = select_pending(root, refs)[:limit]
+            else:
+                with closing(self.code_index._connect()) as ci_con:
+                    existing = dict(ci_con.execute("SELECT path, content_hash FROM files WHERE root=?", (root,)).fetchall())
+                pending = [(p, h) for p, h in refs if existing.get(p) != h][:limit]
         except Exception:
-            existing = {}
-        pending = [(p, h) for p, h in refs if existing.get(p) != h][:limit]
+            pending = refs[:limit]
         if not pending:
             self._set_project(root, phase="deterministic")
             return True
@@ -2648,7 +3093,6 @@ class ProjectPreprocessor:
             or "no configuration file found" in normalized
             or "project configuration auto-generation failed" in normalized
             or "project root is missing" in normalized
-            or "no module named 'codegraphcontext'" in normalized
         )
 
     @staticmethod
@@ -2660,6 +3104,10 @@ class ProjectPreprocessor:
     def candidate_paths(self, root: str, query: str, limit: int = 32) -> list[str]:
         """Fast deterministic candidate selection; exact source verification happens later."""
         resolved = self._root(root)
+        limit = max(0, min(int(limit), 64))
+        if not limit:
+            return []
+        settings = self._project_settings(resolved)
         terms = self.repo_tools._terms(query)
         paths: list[str] = []
         if terms:
@@ -2682,11 +3130,35 @@ class ProjectPreprocessor:
         out: list[str] = []
         seen: set[str] = set()
         for path in paths:
-            if path not in seen:
-                seen.add(path); out.append(path)
+            relative = str(path).replace("\\", "/")
+            try:
+                candidate = (Path(resolved) / relative).resolve(strict=True)
+                candidate.relative_to(Path(resolved))
+                if not candidate.is_file():
+                    continue
+                size = int(candidate.stat().st_size)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            relative = candidate.relative_to(Path(resolved)).as_posix()
+            if relative not in seen and self._project_path_allowed(
+                resolved, relative, settings, phase="search", size_bytes=size
+            ):
+                seen.add(relative)
+                out.append(relative)
             if len(out) >= limit:
                 break
-        return out
+        try:
+            context = resolve_project_context(resolved, self.state_dir)
+            usage = context.prioritize_paths(
+                out,
+                purpose="preprocess_search",
+                scope="candidate_paths",
+                repository_revision=self._external_revision(resolved),
+            )
+            out = list(usage.paths)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+        return out[:limit]
 
     def _content_card_key(self, content_hash: str) -> str:
         return stable_hash({
@@ -2736,6 +3208,14 @@ class ProjectPreprocessor:
             con.commit()
 
     def _run_background_generate(self, model: str, prompt: str, system: str, schema: dict[str, Any], max_tokens: int, source: str) -> dict[str, Any]:
+        from .operational_mode import load_operational_mode, operational_mode_gate_error
+
+        state_dir = getattr(self, "state_dir", None)
+        if state_dir is not None:
+            mode = load_operational_mode(state_dir)
+            rejection = operational_mode_gate_error(mode, "preprocess")
+            if rejection is not None:
+                return rejection
         if self._gpu_yield():
             return {"success": False, "preempted": True, "error": "foreground work pending"}
 
@@ -2761,6 +3241,9 @@ class ProjectPreprocessor:
                 role="background", input_tokens=max(1, (len(prompt) + len(system)) // 4),
                 output_tokens=int(max_tokens), background=True, preserve_explicit_think=False,
             )
+            # A queued scheduler closure must recheck mode at the runtime handoff.
+            if not self._background_work_allowed():
+                return {"success": False, "preempted": True, "error_code": "operational_mode_paused", "error": "background inference start blocked by operational mode"}
             response = self.runtime.request_interruptible(
                 "/api/generate", payload, self.scheduler.foreground_busy,
                 timeout=float(self.cfg.get("background_request_timeout_seconds", 300)),
@@ -3040,7 +3523,7 @@ class ProjectPreprocessor:
         if current and current["revision_hash"] == revision:
             self._set_project(root, phase="hot_queries")
             return True
-        profile = self.services.repo_profile(root)
+        profile = self._project_profile(root, self.services.repo_profile(root))
         repo_map = self.services.repo_map(root, int(self.cfg.get("preprocess_symbol_sample", 300)))
         module_data = []
         for x in modules:
@@ -3185,7 +3668,7 @@ class ProjectPreprocessor:
 
         profile = {}
         try:
-            profile = self.services.repo_profile(root)
+            profile = self._project_profile(root, self.services.repo_profile(root))
         except Exception:
             pass
         validation_cmds = profile.get("validation_commands", [])
@@ -3196,8 +3679,17 @@ class ProjectPreprocessor:
             return True
 
         cmd_info = validation_cmds[0]
-        cmd_str = cmd_info.get("command") if isinstance(cmd_info, dict) else str(cmd_info)
-        if not cmd_str:
+        cmd_value = (
+            cmd_info.get("argv", cmd_info.get("command"))
+            if isinstance(cmd_info, dict)
+            else cmd_info
+        )
+        cmd_str = (
+            json_dumps(cmd_value)
+            if isinstance(cmd_value, (list, tuple))
+            else str(cmd_value or "")
+        )
+        if not cmd_value:
             completed_at = time.time()
             interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
             self._set_project(root, phase="complete", status="complete", last_complete_at=completed_at, next_check_at=completed_at + interval, force_refresh=0)
@@ -3207,8 +3699,25 @@ class ProjectPreprocessor:
         from .process_utils import hidden_run_kwargs, terminate_tree
         proc = None
         try:
+            if isinstance(cmd_value, (list, tuple)):
+                argv = [str(value) for value in cmd_value]
+            else:
+                argv = shlex.split(cmd_str, posix=(os.name != "nt"))
+                if os.name == "nt":
+                    argv = [
+                        value[1:-1]
+                        if len(value) >= 2
+                        and (
+                            (value.startswith('"') and value.endswith('"'))
+                            or (value.startswith("'") and value.endswith("'"))
+                        )
+                        else value
+                        for value in argv
+                    ]
+            if not argv or not argv[0]:
+                raise ValueError("diagnostic command must contain an executable")
             proc = subprocess.Popen(
-                cmd_str, shell=True, cwd=root,
+                argv, shell=False, cwd=root,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 encoding="utf-8", errors="replace",
                 **hidden_run_kwargs(),

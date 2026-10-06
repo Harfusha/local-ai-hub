@@ -29,6 +29,15 @@ def test_memory_put_validation_requires_key_and_value():
     Handler._validate_payload("/api/memory/put", {"key": "my_key", "value": "my_value"})
 
 
+@pytest.mark.parametrize("expected_version", [True, -1, 1.5, "1", None])
+def test_memory_put_validation_rejects_invalid_expected_version(expected_version):
+    with pytest.raises(RequestBodyError, match="expected_version must be a non-negative integer"):
+        Handler._validate_payload(
+            "/api/memory/put",
+            {"key": "my_key", "value": "my_value", "expected_version": expected_version},
+        )
+
+
 def test_memory_get_and_delete_validation_requires_key():
     for path in ("/api/memory/get", "/api/memory/delete"):
         with pytest.raises(RequestBodyError, match="key is required"):

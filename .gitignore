@@ -2,6 +2,12 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# T03 generated validation temporary state; source/receipt snapshots are tracked.
+/.t03-sync-checks/pytest-temp/
+/.t03-sync-checks/pytest-followup/
+/.t03-sync-checks/pytest-path-hints/
+/.t03-sync-checks/tmp/
 .venv/
 tool-envs/
 
@@ -52,6 +58,7 @@ config.runtime.toml
 # Agent workspace state (internal, not for distribution)
 .superpowers/
 .serena/
+.codegraphcontext/
 .agents/
 .worktrees/
 
@@ -59,3 +66,10 @@ config.runtime.toml
 /skills/local-ai-orchestrator/SKILL.md
 /skills/local-ai-orchestrator/references/*.md
 /skills/token-economizer/SKILL.md
+
+# Isolated state and temporary files from T01 manual merge verification.
+/.sync-t01-runtime/
+# T14 reconciliation-only pytest runtime; keep out of committed source handoff.
+/.t14-sync-runtime-20261006/
+# T13 targeted integration checks: local runtime artifacts, never source handoff.
+/.sync-validation-t13-*/
