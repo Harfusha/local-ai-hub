@@ -1,0 +1,225 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sys
+import threading
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+_ROOT_SOURCE = os.environ.get("T18_ROOT_SOURCE", "")
+if _ROOT_SOURCE:
+    sys.path.insert(0, str(Path(_ROOT_SOURCE).resolve()))
+
+from local_ai_hub import http_server
+
+
+def test_current_root_mode_read_auth_post_and_json_envelope(tmp_path: Path, monkeypatch) -> None:
+    root_source = Path(_ROOT_SOURCE).resolve() if _ROOT_SOURCE else None
+    if root_source is None:
+        pytest.skip("set T18_ROOT_SOURCE to pin the current root source")
+    expected_module = root_source / "local_ai_hub" / "http_server.py"
+    assert Path(http_server.__file__).resolve() == expected_module
+    expected_sha = os.environ.get("T18_ROOT_HTTP_SERVER_SHA256", "").upper()
+    assert len(expected_sha) == 64
+    assert hashlib.sha256(expected_module.read_bytes()).hexdigest().upper() == expected_sha
+
+    events: list[tuple[str, object]] = []
+
+    class Telemetry:
+        def record_system(self, action, **details):
+            events.append((action, details))
+
+        def record_live(self, **_details):
+            return None
+
+    class ModeJobs:
+        path = tmp_path / "jobs.sqlite3"
+
+        @contextmanager
+        def operational_mode_change_guard(self):
+            yield
+
+        def on_operational_mode_changed(self, snapshot):
+            events.append(("mode_changed", snapshot.mode))
+            return {"inference_active": False}
+
+        def wait_for_inference_actions(self, actions, timeout):
+            assert "transcribe" in actions
+            assert timeout >= 0
+            events.append(("inference_actions_drained", len(actions)))
+            return True
+
+        def inference_actions_active(self, *, exclude_actions=()):
+            events.append(("inference_actions_active", tuple(sorted(exclude_actions))))
+            return False
+
+    class ModeTracker:
+        def active_count(self):
+            return 0
+
+        def enter_gaming(self):
+            events.append(("tracker_mode", "gaming"))
+
+        def enter_active(self):
+            events.append(("tracker_mode", "active"))
+
+        def cancel_and_wait(self, _timeout):
+            return {"state": "drained", "inference_active": False}
+
+    class LoadedAccelerator:
+        def status(self):
+            return {"loaded": True, "active_backend": "transformers"}
+
+        def release(self, *, timeout_seconds):
+            assert timeout_seconds > 0
+            return False
+
+    class Runtime:
+        def unload_configured_models(self, *, timeout_seconds):
+            assert 0 < timeout_seconds <= 3
+            return {
+                "success": False,
+                "backend_available": True,
+                "unloaded": ["model-a"],
+                "failed": {"model-b": "timeout"},
+            }
+
+    state_dir = tmp_path / "profile"
+    initial = http_server.set_operational_mode(state_dir, "gaming")
+    assert initial.mode == "gaming"
+
+    app = SimpleNamespace(
+        config={
+            "server": {"state_dir": str(state_dir)},
+            "security": {
+                "api_token": "configured-global-token-123456",
+                "action_tokens": {"mode.control": "mode-control-token-123456"},
+            },
+        },
+        telemetry=Telemetry(),
+        async_jobs=ModeJobs(),
+        debug_traces=None,
+        preprocessor=SimpleNamespace(status=lambda: {"success": True, "projects": []}),
+        runtime=Runtime(),
+        embeddings=LoadedAccelerator(),
+        reranker=LoadedAccelerator(),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server, "_ACTIVE_TRANSCRIPTIONS", ModeTracker())
+    monkeypatch.setattr(http_server, "_ACTIVE_CONVERSATIONS", ModeTracker())
+
+    remote_reader = http_server.Handler.__new__(http_server.Handler)
+    remote_reader.command = "GET"
+    remote_reader.path = "/api/mode"
+    remote_reader.headers = {"X-LocalAI-Token": ""}
+    remote_reader.client_address = ("203.0.113.7", 23456)
+    remote_reader.responses = []
+    remote_reader._validate_host_and_origin = lambda: True
+    remote_reader._tenant_binding_allowed = lambda: True
+    remote_reader._send = lambda status, payload: remote_reader.responses.append((status, payload))
+    assert remote_reader._require_authorized() is False
+    assert remote_reader.responses == [(401, {"success": False, "error": "unauthorized"})]
+
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        with urllib.request.urlopen(f"{base_url}/api/mode", timeout=3) as response:
+            mode_before = json.loads(response.read())
+            assert response.status == 200
+        assert mode_before["success"] is True
+        assert mode_before["mode"] == "gaming"
+        assert mode_before["revision"] == initial.revision
+
+        bad_request = urllib.request.Request(
+            f"{base_url}/api/admin/mode",
+            data=b'{"mode":"active"}',
+            headers={
+                "Content-Type": "application/json",
+                "X-LocalAI-Token": "wrong-action-token",
+                "Connection": "close",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as denied:
+            urllib.request.urlopen(bad_request, timeout=3)
+        denied_payload = json.loads(denied.value.read())
+        assert denied.value.code == 401
+        assert denied_payload == {
+            "success": False,
+            "status_code": 401,
+            "error": "unauthorized",
+            "terminal": True,
+            "retryable": False,
+        }
+        assert http_server.load_operational_mode(state_dir).mode == "gaming"
+
+        request = urllib.request.Request(
+            f"{base_url}/api/admin/mode",
+            data=b'{"mode":"active"}',
+            headers={
+                "Content-Type": "application/json",
+                "X-LocalAI-Token": "mode-control-token-123456",
+                "Connection": "close",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=3) as response:
+            payload = json.loads(response.read())
+            assert response.status == 200
+        assert payload["success"] is True
+        assert payload["mode"] == "active"
+        assert payload["revision"] == initial.revision + 1
+        assert payload["degraded"] is False
+        assert http_server.load_operational_mode(state_dir).mode == "active"
+        assert ("mode_changed", "active") in events
+        assert any(
+            action == "admin.authorization"
+            and details.get("operation") == "mode.control"
+            and details.get("actor") == "action_token"
+            and details.get("success") is True
+            for action, details in events
+        )
+
+        gaming_request = urllib.request.Request(
+            f"{base_url}/api/admin/mode",
+            data=b'{"mode":"gaming"}',
+            headers={
+                "Content-Type": "application/json",
+                "X-LocalAI-Token": "mode-control-token-123456",
+                "Connection": "close",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(gaming_request, timeout=3) as response:
+            gaming_payload = json.loads(response.read())
+            assert response.status == 200
+        assert gaming_payload["success"] is True
+        assert gaming_payload["mode"] == "gaming"
+        assert gaming_payload["revision"] == initial.revision + 2
+        assert gaming_payload["whisper_process_release"]["state"] == "drained"
+        assert gaming_payload["conversation_release"]["state"] == "drained"
+        assert gaming_payload["inference_admission_release"]["state"] == "drained"
+        assert gaming_payload["runtime_unload"] == {
+            "success": False,
+            "backend_available": True,
+            "unloaded": ["model-a"],
+            "failed": {"model-b": "timeout"},
+        }
+        assert gaming_payload["accelerator_release"]["success"] is False
+        assert gaming_payload["accelerator_release"]["verified"] is False
+        assert set(gaming_payload["accelerator_release"]["failed"]) == {"embeddings", "reranker"}
+        assert http_server.load_operational_mode(state_dir).mode == "gaming"
+        assert ("mode_changed", "gaming") in events
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

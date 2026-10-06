@@ -293,6 +293,8 @@ def test_work_order_executes_patch_validates_and_handoffs(tmp_path):
         assert res["changed_files"] == ["a.txt"]
         assert res["validation"]["passed"] is True
         assert res["artifact_id"] in artifacts.data
+        handoff_report = json.loads(artifacts.data[res["artifact_id"]]["text"])
+        assert handoff_report["verification_receipts"] == res["verification_receipts"]
         assert not list((tmp_path / "state" / "work_journals").glob("*.json"))
     finally:
         wo.close()
@@ -349,24 +351,28 @@ def test_edit_retries_stop_at_configured_attempt_limit(tmp_path):
         wo.close()
 
 
-def test_cancel_during_validation_rolls_back_before_terminal_state(tmp_path):
+def test_cancel_after_receipt_collection_preserves_receipts_and_rolls_back(tmp_path):
     root = init_repo(tmp_path)
     patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
 
-    class BlockingValidationServices(FakeServices):
+    class BlockingVerificationServices(FakeServices):
         def __init__(self):
             super().__init__(patch)
-            self.validation_started = threading.Event()
-            self.release_validation = threading.Event()
+            self.verification_started = threading.Event()
+            self.release_verification = threading.Event()
 
-        def command(self, args, tenant):
-            if args.get("action") == "run":
-                self.validation_started.set()
-                if not self.release_validation.wait(timeout=5):
-                    return {"success": False, "exit_code": 1, "error": "validation wait expired"}
-            return super().command(args, tenant)
+        def second_opinion(self, args, tenant):
+            self.verify_calls += 1
+            if self.verify_calls >= 2:
+                self.verification_started.set()
+                if not self.release_verification.wait(timeout=5):
+                    return {"success": False, "text": "verification wait expired"}
+            return {"success": True, "text": json.dumps({
+                "passed": True, "summary": "verified",
+                "criteria": [{"criterion": "a.txt contains new", "passed": True}], "risks": [],
+            })}
 
-    services = BlockingValidationServices()
+    services = BlockingVerificationServices()
     wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), FakeArtifacts())
     try:
         submitted = wo.submit("tenant", {
@@ -375,17 +381,81 @@ def test_cancel_during_validation_rolls_back_before_terminal_state(tmp_path):
             "acceptance_criteria": ["a.txt contains new"],
             "response_profile": "debug",
         })
-        assert services.validation_started.wait(timeout=5)
+        assert services.verification_started.wait(timeout=5)
         cancellation = wo.cancel("tenant", submitted["work_id"])
-        services.release_validation.set()
+        services.release_verification.set()
         result = wait_terminal(wo, submitted["work_id"])
 
         assert cancellation["status"] == "cancelling"
         assert result["status"] == "cancelled", result
         assert (root / "a.txt").read_text(encoding="utf-8") == "old\n"
         assert result.get("rolled_back") is True
+        assert result.get("verification_receipts")
     finally:
-        services.release_validation.set()
+        services.release_verification.set()
+        wo.close()
+
+
+def test_final_validation_runs_for_evidence_criteria_without_changes(tmp_path):
+    root = init_repo(tmp_path)
+
+    class NoChangeTestServices(FakeServices):
+        def __init__(self):
+            super().__init__("")
+            self.validation_runs = []
+
+        def delegate_repo(self, args, tenant):
+            self.delegate_calls += 1
+            if self.delegate_calls == 1:
+                return {"success": True, "text": json.dumps({
+                    "summary": "verify existing repository",
+                    "needs_agent": False,
+                    "steps": [
+                        {"id": "inspect", "kind": "inspect", "task": "inspect", "depends_on": [], "acceptance": []},
+                        {"id": "review", "kind": "review", "task": "confirm suite remains valid", "depends_on": ["inspect"], "acceptance": []},
+                    ],
+                    "validation_commands": ["pytest -q tests"],
+                })}
+            return {"success": True, "text": "{}"}
+
+        def second_opinion(self, args, tenant):
+            return {"success": True, "text": json.dumps({
+                "passed": True,
+                "summary": "suite verified",
+                "criteria": [{"criterion": "pytest suite", "passed": True}],
+                "risks": [],
+            })}
+
+        def command(self, args, tenant):
+            if args.get("action") == "discover":
+                return {"success": True, "validation_commands": ["pytest -q tests"]}
+            self.validation_runs.append(args["command"])
+            revision = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            return {
+                "success": True, "exit_code": 0, "execution_id": "pytest-run-1",
+                "repository_revision": revision,
+            }
+
+    services = NoChangeTestServices()
+    artifacts = FakeArtifacts()
+    wo = WorkOrchestrator(config(tmp_path), tmp_path / "state", services, None, FakeLeases(), artifacts)
+    try:
+        submitted = wo.submit("tenant", {
+            "root": str(root.resolve()),
+            "task": "verify the existing test suite",
+            "acceptance_criteria": ["pytest suite"],
+            "response_profile": "debug",
+        })
+        result = wait_terminal(wo, submitted["work_id"])
+
+        assert result["status"] == "complete", result
+        assert result["changed_files"] == []
+        assert services.validation_runs == ["pytest -q tests"]
+        assert result["verification"]["receipt_gate"]["complete"] is True
+    finally:
         wo.close()
 
 
@@ -716,6 +786,9 @@ def test_stale_verification_receipt_cannot_complete_work_order(tmp_path):
 
 def test_local_service_forwards_receipt_opt_out_and_keeps_work_id():
     class Broker:
+        def authorize_auxiliary_action(self, action, *, endpoint, task_id=""):
+            return {"allowed": True}
+
         def run(self, *args, **kwargs):
             self.args = args
             self.kwargs = kwargs
