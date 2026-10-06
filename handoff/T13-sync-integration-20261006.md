@@ -61,3 +61,11 @@ Changed files versus pinned master: **1,372**, fully listed in `T13-sync-changed
 Resolved merge commit: `ebc0e4bc6f2fbb31421dab01dcfa9a22c3e540c1`. Its parents are `4aa2edef7f788602da59ab7cfdf5015cd1b304cb` and pinned master `ca2f86237b1f8ac9ce4f576a308b65b94a24a69c`. `git merge-base --is-ancestor ca2f86237b1f8ac9ce4f576a308b65b94a24a69c HEAD` returned 0. No unresolved files; tracked working tree clean after merge. Only the two explicitly preserved nested checkout artifacts remain untracked. This final handoff update is committed separately on the same ready merge branch.
 
 Additional pre-commit `git diff --cached --check -- src tests tools` compared the entire incoming merge against the old branch HEAD, rather than against pinned master. It reported inherited CRLF whitespace in master files (including dashboard and T10 tests). That broader whitespace check did **not** pass. Pinned-master-relative source/test/tool whitespace check did pass; protected master blobs were kept byte-for-byte, without unrelated formatting changes.
+
+## Additional user-supplied root regression receipt
+
+After T14budget merged at the root, the user supplied a fresh result for `python -B -m pytest -q -p no:cacheprovider tests/test_mcp_response_budget.py tests/test_response_budget.py --tb=short`: **23 passed, 3 failed**. This receipt comes from the root run, not a command executed in this assigned checkout; it is separate from the pinned-master focused totals above.
+
+Two MCP command rollback tests were intercepted by persisted `mode=gaming`. This suggests an existing fixture/global-state isolation gap and does not prove a command-broker regression. The third failure concerns 128-token rejection: error context `backend unavailable` is truncated to `context ` (the user described the trailing space as `context<space>`).
+
+Record these as outstanding operational-test and response-budget gaps. No live operational mode was changed, no root files or refs were written, no T14 context-pack or response-budget redesign was attempted, and the start-master pin was not advanced.
