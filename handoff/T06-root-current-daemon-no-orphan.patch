@@ -1,0 +1,57 @@
+diff --git a/tests/test_daemon_lifecycle_hardening.py b/b/tests/test_daemon_lifecycle_hardening.py
+index 346ce9d..eafe7fd 100644
+--- a/tests/test_daemon_lifecycle_hardening.py
++++ b/tests/test_daemon_lifecycle_hardening.py
+@@ -334,6 +334,52 @@ def test_stop_daemon_does_not_claim_tree_stopped_when_cleanup_is_unconfirmed(
+     assert broker.stop_daemon(daemon["daemon_id"])["success"] is True
+ 
+ 
++@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object process-tree integration")
++def test_stop_daemon_leaves_no_child_process_orphan(
++    tmp_path: Path,
++) -> None:
++    broker = _broker(tmp_path)
++    child_pid_file = tmp_path / "daemon-child.pid"
++    parent_code = (
++        "import pathlib, subprocess, sys, time; "
++        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
++        "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii'); "
++        "time.sleep(60)"
++    )
++    daemon = broker.spawn_daemon(
++        [sys.executable, "-c", parent_code, str(child_pid_file)],
++        str(tmp_path),
++        name="explicit-tree-stop-test",
++        task_id="daemon-test",
++    )
++    assert daemon["success"] is True
++    process = broker._daemons[daemon["daemon_id"]]["process"]
++    child_pid: int | None = None
++    child_identity: object | None = None
++    try:
++        deadline = time.monotonic() + 5
++        while (not child_pid_file.exists() or not child_pid_file.stat().st_size) and time.monotonic() < deadline:
++            time.sleep(0.02)
++        assert child_pid_file.exists() and child_pid_file.stat().st_size, "daemon leader did not start its child"
++        child_pid = int(child_pid_file.read_text(encoding="ascii"))
++        child_identity = commands_module.process_identity(child_pid)
++        assert child_identity is not None, "daemon child exited before broker stop"
++
++        stopped = broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
++
++        assert stopped["success"] is True
++        assert stopped["status"] == "stopped"
++        assert stopped["process_tree_stopped"] is True
++        assert process.poll() is not None, "daemon leader remained alive after stop"
++        deadline = time.monotonic() + 5
++        while commands_module.process_identity(child_pid) is not None and time.monotonic() < deadline:
++            time.sleep(0.02)
++        assert commands_module.process_identity(child_pid) != child_identity, "daemon child remained alive after stop"
++    finally:
++        if process.poll() is None:
++            broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
++
++
+ @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object process-tree integration")
+ def test_daemon_job_stops_descendants_after_leader_exits(
+     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

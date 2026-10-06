@@ -1,0 +1,45 @@
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -26,6 +26,7 @@
+ import uuid
+ from collections import deque
+ from collections.abc import Mapping, Sequence
++from functools import wraps
+ from dataclasses import dataclass, field
+ from pathlib import Path
+ from typing import Any
+@@ -1684,6 +1685,18 @@
+     return any(p.search(tail) for p in _INTERACTIVE_PATTERNS)
+ 
+ 
++def _stable_rollback_status(method: Any) -> Any:
++    @wraps(method)
++    def wrapped(self: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
++        result = method(self, *args, **kwargs)
++        rollback_key = "auto_rollback" if method.__name__ == "patch_and_verify" else "rollback_on_failure"
++        rollback_default = method.__name__ == "patch_and_verify"
++        if kwargs.get(rollback_key, rollback_default) and isinstance(result, dict):
++            result.setdefault("rolled_back", False)
++        return result
++    return wrapped
++
++
+ class CommandBroker:
+     """Safe shared command runner with repo-state-aware cache and single-flight."""
+ 
+@@ -3638,6 +3651,7 @@
+             _cache_context=resolved.cache_context,
+         )
+ 
++    @_stable_rollback_status
+     def run(
+         self,
+         command: str | CommandInvocation,
+@@ -4194,6 +4208,7 @@
+             return repaired
+         return compacted
+ 
++    @_stable_rollback_status
+     def patch_and_verify(
+         self,
+         patch: str,

@@ -1,0 +1,61 @@
+diff --git a/src/local_ai_hub/commands.py b/src/local_ai_hub/commands.py
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -4841,6 +4841,6 @@
+                     "retryable": False,
+                 }
+-        declared_paths = paths if paths is not None else (rollback_paths if rollback_on_failure else None)
++        declared_paths = paths if paths is not None else rollback_paths
+         if (is_mutating or auto_fix) and not declared_paths and not _transaction_context:
+             return {"success": False, "error": "mutating command requires an explicit non-empty paths write set", "mutation_write_set_required": True, "terminal": True, "retryable": False}
+         if rollback_on_failure and paths is not None and rollback_paths is not None:
+diff --git a/tests/test_command_rollback.py b/tests/test_command_rollback.py
+--- a/tests/test_command_rollback.py
++++ b/tests/test_command_rollback.py
+@@ -392,4 +392,46 @@
+     assert unrelated.read_text(encoding="utf-8") == "keep"
+ 
++def test_run_uses_rollback_paths_as_write_set_without_rollback(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    repo = tmp_path / "repo"
++    repo.mkdir()
++    (repo / "owned.txt").write_text("before", encoding="utf-8")
++    _commit_task_worktree(repo, "owned.txt")
++    broker = CommandBroker(
++        {
++            "server": {"state_dir": str(tmp_path / "state")},
++            "commands": {"allow_mutating": True},
++        },
++        artifacts=None,
++        repo_state=None,
++    )
++    broker.set_task_store(_FakeTaskStore(str(repo)))
++    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
++    executed: list[bool] = []
++
++    def fake_execute(*_args: object, **_kwargs: object) -> dict[str, object]:
++        executed.append(True)
++        return {
++            "success": True,
++            "exit_code": 0,
++            "stdout": "",
++            "stderr": "",
++            "timed_out": False,
++            "duration_ms": 1,
++        }
++
++    monkeypatch.setattr(broker, "_execute", fake_execute)
++    result = broker.run(
++        "git add owned.txt",
++        str(repo),
++        force=True,
++        task_id="task-owned",
++        rollback_paths=["owned.txt"],
++    )
++
++    assert result["success"] is True
++    assert executed == [True]
++
+ 
+ def test_rollback_oserror_marks_outcome_unknown_invalidates_caches_and_records_incident(

@@ -1,0 +1,37 @@
+{
+  "schema": "work_command_verification+source_review",
+  "task": "T06 daemon task_id adapter follow-up",
+  "base": "root current + T07 v9 + T06 core",
+  "scratch": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t06-combined-ovdosy97",
+  "combined_apply_check": "PASS",
+  "followup_apply": "PASS",
+  "paths": [
+    "src/local_ai_hub/services.py",
+    "src/local_ai_hub/http_server.py",
+    "tests/test_daemon_lifecycle_hardening.py"
+  ],
+  "patch_sha256": "760ce419df5b595ee82219e975e98eff232173345b217463232ac5fd916af1ee",
+  "patch_bytes": 5349,
+  "root_hashes_before": {
+    "src/local_ai_hub/commands.py": "DC125391DC6BC06C8C5777018E524230233E41E68D09894174D66E6BABF0344E",
+    "src/local_ai_hub/services.py": "CCD292C8F91809B59BD3446D045CB550BABBD8CAEA86FAB4FCAA6D2E284564A0",
+    "src/local_ai_hub/http_server.py": "BDB4ECF50C149FCB144F3745EC9AB58FCE029F900A6ED83A41C5FAF1D2C9BECB",
+    "tests/test_daemon_lifecycle_hardening.py": "66065F38B3436CC6742BF5B771F0C675C1AA2288B3C9296028CC670CA451C7E5"
+  },
+  "root_hashes_after": {
+    "src/local_ai_hub/commands.py": "DC125391DC6BC06C8C5777018E524230233E41E68D09894174D66E6BABF0344E",
+    "src/local_ai_hub/services.py": "CCD292C8F91809B59BD3446D045CB550BABBD8CAEA86FAB4FCAA6D2E284564A0",
+    "src/local_ai_hub/http_server.py": "BDB4ECF50C149FCB144F3745EC9AB58FCE029F900A6ED83A41C5FAF1D2C9BECB",
+    "tests/test_daemon_lifecycle_hardening.py": "66065F38B3436CC6742BF5B771F0C675C1AA2288B3C9296028CC670CA451C7E5"
+  },
+  "root_unchanged": true,
+  "test_receipt": {
+    "kind": "work_command_verification",
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_daemon_lifecycle_hardening.py::test_daemon_stop_task_id_flows_through_service_and_http tests/test_daemon_lifecycle_hardening.py::test_stop_daemon_rejects_a_different_task_owner",
+    "result": "2 passed in 1.06s; earlier candidate run; no rerun per shared slot"
+  },
+  "source_review": {
+    "kind": "source_review",
+    "result": "MCP service dispatch and HTTP /api/daemon stop forward task_id to owner-guarded broker"
+  }
+}

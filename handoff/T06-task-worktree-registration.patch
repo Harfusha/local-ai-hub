@@ -1,0 +1,42 @@
+diff --git a/src/local_ai_hub/agent_tasks.py b/src/local_ai_hub/agent_tasks.py
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -309,17 +710,37 @@ class TaskStore:
+         now = time.time()
+         initial_status = TaskStatus.PLANNED
+         initial_sd: dict[str, Any] = {}
++        if repo_root:
++            initial_sd["repo_root"] = str(repo_root)
+ 
+         if auto_worktree:
+             try:
+                 from .process_utils import create_git_worktree
+                 r_root = repo_root or context.repository_id or "."
+-                wt_res = create_git_worktree(r_root, branch_name=f"hub/task-{t_id}")
++                if context.repository_id and Path(r_root).expanduser().resolve(strict=False) != Path(context.repository_id).expanduser().resolve(strict=False):
++                    raise ValueError("task worktree repository does not match task context")
++                worktree_ttl = 24 * 60 * 60.0
++                worktree_expiry = now + worktree_ttl
++                wt_res = create_git_worktree(
++                    r_root,
++                    branch_name=f"hub/task-{t_id}",
++                    task_id=t_id,
++                    owner=actor,
++                    created_at=now,
++                    ttl_seconds=worktree_ttl,
++                    expires_at=worktree_expiry,
++                )
+                 if wt_res.get("success"):
+                     initial_sd["worktree"] = wt_res
+             except Exception:
+                 pass
+ 
++        memory_context = self._task_memory_context(
++            t_id, contract, context, root_override=repo_root
++        )
++        if memory_context is not None:
++            initial_sd["memory_context"] = memory_context
++
+         initial_state = TaskState(
+             task_id=t_id,
+             status=initial_status,

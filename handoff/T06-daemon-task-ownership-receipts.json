@@ -1,0 +1,51 @@
+{
+  "schema": "T09 work_command_verification + work_source_review shape",
+  "receipt_status": "local_handoff_only_hub_transport_unavailable",
+  "work_command_verification": {
+    "kind": "work_command_verification",
+    "passed": true,
+    "task_id": "T06",
+    "owner": "C:\\Users\\Adam\\.codex\\worktrees\\t06-safe-commands\\.local-ai-hub",
+    "criterion": "daemon-tree-ownership",
+    "command_id": null,
+    "command_classification": "test",
+    "command": "pytest -q tests/test_daemon_lifecycle_hardening.py::test_stop_daemon_rejects_a_different_task_owner tests/test_daemon_lifecycle_hardening.py::test_daemon_job_stops_descendants_after_leader_exits tests/test_daemon_lifecycle_hardening.py::test_live_daemon_is_reconciled_after_broker_restart tests/test_daemon_lifecycle_hardening.py::test_daemon_stop_task_id_flows_through_service_and_http tests/test_daemon_lifecycle_hardening.py::test_live_posix_daemon_tree_preserves_process_group_termination tests/test_daemon_lifecycle_hardening.py::test_posix_daemon_stop_preserves_process_group_lifecycle",
+    "command_sha256": "21913a82be01794b1893a57b7dceec0819991373fea3148f669d4a5dc63efdcc",
+    "exit_code": 0,
+    "repository_revision": "94337de7309b66c63ff427cce8cd3a49e6414d73",
+    "mutation_generation": null,
+    "result": {
+      "success": true,
+      "exit_code": 0,
+      "passed": 5,
+      "skipped": 1,
+      "failed": 0
+    },
+    "duration_ms": 3215,
+    "cached": false,
+    "evidence_source": "single native fallback after local_ai_command returned request_not_sent",
+    "hub_persisted": false
+  },
+  "work_source_review": {
+    "kind": "work_source_review",
+    "passed": true,
+    "task_id": "T06",
+    "owner": "C:\\Users\\Adam\\.codex\\worktrees\\t06-safe-commands\\.local-ai-hub",
+    "criteria": [
+      "daemon-tree-ownership"
+    ],
+    "verification": "Reviewed focused root patch for task_id persistence/owner checks, Windows named Job reopen + identity/membership validation, POSIX live process-group stop, and recovered POSIX fail-closed behavior.",
+    "repository_revision": "94337de7309b66c63ff427cce8cd3a49e6414d73",
+    "mutation_generation": null,
+    "diff": {
+      "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t06-safe-commands\\.local-ai-hub\\handoff\\T06-root-daemon-task-identity.patch",
+      "patch_sha256": "42cb9b8ec380b966fbf43bd538125417f1a29c53765e4230e227b189f174b3f9",
+      "files": [
+        "src/local_ai_hub/commands.py",
+        "tests/test_daemon_lifecycle_hardening.py"
+      ],
+      "git_apply_check": "passed against C:\\Users\\Adam\\.local-ai-hub"
+    },
+    "hub_persisted": false
+  }
+}

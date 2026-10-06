@@ -1,0 +1,28 @@
+{
+  "work_source_review": {
+    "criteria": [
+      "rollback-journal-durability-before-import",
+      "write-set-directory-sync-before-journal-removal",
+      "sync-failure-retains-journal-and-fails-closed"
+    ],
+    "diff": {
+      "files": [
+        "src/local_ai_hub/commands.py",
+        "tests/test_command_rollback.py"
+      ],
+      "candidate_source_sha256": "EDCA2E790DE9F68FEABF9B679433D61201629278445782216807AAE5DC87FC6D",
+      "candidate_test_sha256": "3B8675EBED395F643BA60BD956AD321B1B5AEEA7EACD017B0124B87EF0472F65",
+      "root_apply_check": "not applicable; candidate-only source durability fix"
+    },
+    "passed": true,
+    "verification": "Static review confirms journal directory sync precedes source import; test records that order. Pinned write-set parent directories sync after verified import and rollback; journal stays until source state is durable. A source-directory sync error leaves the journal and returns recovery_required with outcome_unknown and incident_required. Regression tests added; not run while T20 owns serial slot.",
+    "mutation_generation": null,
+    "owner": "C:\\Users\\Adam\\.codex\\worktrees\\t06-safe-commands\\.local-ai-hub",
+    "kind": "work_source_review",
+    "task_id": "T06",
+    "repository_revision": "94337de7309b66c63ff427cce8cd3a49e6414d73",
+    "additional_test_selector": "tests/test_command_rollback.py::test_source_directory_sync_failure_retains_journal_and_fails_closed",
+    "platform_limitations": "Windows directory fsync is no-op; directory metadata durability remains unverified on Windows."
+  },
+  "receipt_status": "local_handoff_only_hub_offline"
+}

@@ -1,0 +1,39 @@
+diff --git a/tests/test_auto_fix_repair_loop.py b/tests/test_auto_fix_repair_loop.py
+--- a/tests/test_auto_fix_repair_loop.py
++++ b/tests/test_auto_fix_repair_loop.py
+@@ -355,6 +355,35 @@
+     assert generated == []
+ 
+ 
++def test_repair_loop_skips_retry_after_outcome_unknown_mutation(temp_dir: Path, monkeypatch):
++    broker = make_broker(temp_dir)
++    project = temp_dir / "project"
++    _init_test_repo(project, {"changed.py": "value = 0\n"})
++    calls: list[str] = []
++    generated: list[str] = []
++
++    def uncertain_run(command: str, *_args, **_kwargs):
++        calls.append(command)
++        return {"success": False, "outcome_unknown": True, "retryable": False}
++
++    def generator(command: str, *_args):
++        generated.append(command)
++        return {"changed.py": "value = 1\n"}
++
++    monkeypatch.setattr(broker, "run", uncertain_run)
++    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
++    result = broker.repair_loop(
++        "git add changed.py", project, "tenant-1", task_id="task-1",
++        paths=["changed.py"], fix_generator=generator,
++    )
++
++    assert result["repair_skipped"] is True
++    assert result["outcome_unknown"] is True
++    assert result["attempts"] == 0
++    assert calls == ["git add changed.py"]
++    assert generated == []
++
++
+ def test_long_pytest_failure_has_artifact_and_first_failure_preview(temp_dir: Path):
+     broker = make_broker(temp_dir)
+     script = temp_dir / "synthetic_pytest_failure.py"

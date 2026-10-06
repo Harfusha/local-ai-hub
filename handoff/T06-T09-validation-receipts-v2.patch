@@ -1,0 +1,292 @@
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -2210,9 +2210,11 @@
+         task_id: str,
+         criterion: str,
+         command_id: str,
++        command: str,
+         command_digest: str,
+         repository_revision: str,
+         duration_ms: float,
++        mutation_generation: int = 0,
+         cached: bool = False,
+     ) -> None:
+         if not result.get("success") or not task_id or self.verification_store is None:
+@@ -2222,16 +2224,38 @@
+                 raise RuntimeError("artifact store unavailable")
+             from .agent_verification import VerificationReceipt
+ 
++            try:
++                from .agent_verification import classify_verification_command
++
++                evidence_type = classify_verification_command(command)
++            except ImportError:
++                evidence_type = "source_review"
++                if criterion.strip().lower() in {"test", "tests"}:
++                    evidence_type = "test"
++                elif criterion.strip().lower() in {"benchmark", "benchmarks"}:
++                    evidence_type = "benchmark"
++            if isinstance(mutation_generation, bool):
++                raise ValueError("mutation_generation must be a non-negative integer")
++            proof_generation = int(mutation_generation)
++            if proof_generation < 0:
++                raise ValueError("mutation_generation must be a non-negative integer")
++
+             proof = {
+-                "kind": "command_verification",
++                "kind": "work_command_verification",
++                "passed": True,
+                 "task_id": task_id,
++                "owner": tenant,
+                 "criterion": criterion,
+                 "command_id": command_id,
++                "command": command,
+                 "command_sha256": command_digest,
++                "command_classification": evidence_type,
+                 "exit_code": int(result.get("exit_code", 0)),
+                 "repository_revision": repository_revision,
++                "mutation_generation": proof_generation,
+                 "duration_ms": max(0.0, float(duration_ms or 0)),
+                 "cached": cached,
++                "result": dict(result),
+             }
+             if hasattr(self.artifacts, "put_json"):
+                 evidence_id = self.artifacts.put_json(proof, tenant, "command_verification")
+@@ -2241,19 +2265,33 @@
+                 evidence_id = ""
+             if not evidence_id:
+                 raise RuntimeError("verification evidence was not persisted")
+-            receipt = VerificationReceipt.create(
+-                task_id=task_id,
+-                criterion=criterion,
+-                passed=True,
+-                command_id=command_id,
+-                evidence_id=str(evidence_id),
+-                repository_revision=repository_revision,
+-                details={
++            import inspect
++
++            receipt_arguments: dict[str, Any] = {
++                "task_id": task_id,
++                "criterion": criterion,
++                "passed": True,
++                "command_id": command_id,
++                "evidence_id": str(evidence_id),
++                "repository_revision": repository_revision,
++                "details": {
++                    "command": command,
++                    "command_sha256": command_digest,
++                    "command_classification": evidence_type,
+                     "exit_code": proof["exit_code"],
+                     "duration_ms": proof["duration_ms"],
+                     "cached": cached,
+                 },
+-            )
++            }
++            receipt_parameters = inspect.signature(VerificationReceipt.create).parameters
++            for name, value in (
++                ("owner", tenant),
++                ("mutation_generation", proof["mutation_generation"]),
++                ("evidence_type", evidence_type),
++            ):
++                if name in receipt_parameters:
++                    receipt_arguments[name] = value
++            receipt = VerificationReceipt.create(**receipt_arguments)
+             self.verification_store.record(receipt)
+             result["verification_receipt"] = receipt.to_dict()
+             result["verification_evidence_id"] = str(evidence_id)
+@@ -4745,6 +4783,7 @@
+         force: bool = False,
+         task_id: str = "",
+         criterion: str = "",
++        mutation_generation: int = 0,
+         record_verification: bool = True,
+         auto_fix: bool = False,
+         fix_generator: Any | None = None,
+@@ -4914,9 +4953,11 @@
+                         task_id=task_id,
+                         criterion=criterion or f"command:{self._safe_label(command)}",
+                         command_id=f"cache_{uuid.uuid4().hex}",
++                        command=command,
+                         command_digest=hashlib.sha256(command.encode("utf-8")).hexdigest(),
+                         repository_revision=str(state.get("fingerprint", "")),
+                         duration_ms=float(result.get("duration_ms", 0) or 0),
++                        mutation_generation=mutation_generation,
+                         cached=True,
+                     )
+                 return self._compact(result, tenant, command)
+--- /dev/null
++++ b/tests/test_t06_t09_validation_receipts.py
+@@ -0,0 +1,172 @@
++from __future__ import annotations
++
++import json
++import importlib.util
++import sys
++import threading
++import urllib.request
++from pathlib import Path
++
++import pytest
++
++from local_ai_hub import http_server
++from local_ai_hub.agent_identity import ScopeContext
++from local_ai_hub.agent_tasks import GoalContract
++from local_ai_hub.agent_verification import VerificationReceipt
++from local_ai_hub.app import LocalAIApp
++
++
++def _setup(tmp_path: Path, task_id: str) -> tuple[LocalAIApp, Path, str]:
++    repo = tmp_path / "repo"
++    repo.mkdir()
++    source = repo / "lint_target.py"
++    source.write_text("value = 1\n", encoding="utf-8")
++    configured_lint = f'"{sys.executable}" -m pyflakes "{source}"'
++    (repo / ".local-ai.toml").write_text(
++        f"[commands]\nlint = {json.dumps(configured_lint)}\n"
++        "[verification_rules]\nrequired_commands = [\"lint\"]\n",
++        encoding="utf-8",
++    )
++    state = tmp_path / "state"
++    state.mkdir()
++    config = tmp_path / "hub.toml"
++    config.write_text(
++        f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state.as_posix()}"\n'
++        "\n[agent_state]\nenabled = true\n",
++        encoding="utf-8",
++    )
++    app = LocalAIApp(str(config))
++    app.agent_tasks.create(
++        GoalContract(goal="validate configured lint", acceptance_criteria=("required_commands",)),
++        ScopeContext(task_id=task_id, repository_id=str(repo)),
++        task_id=task_id,
++        actor="agent",
++        repo_root=str(repo),
++    )
++    return app, repo, configured_lint
++
++
++def _post(port: int, payload: dict) -> dict:
++    request = urllib.request.Request(
++        f"http://127.0.0.1:{port}/api/agent-state/tasks",
++        data=json.dumps(payload).encode("utf-8"),
++        headers={"Content-Type": "application/json", "Connection": "close"},
++        method="POST",
++    )
++    try:
++        with urllib.request.urlopen(request) as response:
++            return json.loads(response.read().decode("utf-8"))
++    except urllib.error.HTTPError as exc:
++        return json.loads(exc.read().decode("utf-8"))
++
++
++def _serve(app: LocalAIApp):
++    previous = http_server.APP
++    http_server.APP = app
++    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++    return previous, server, thread
++
++
++def test_configured_lint_runner_records_t09_proof_and_completes_over_http(tmp_path: Path):
++    if importlib.util.find_spec("pyflakes") is None:
++        pytest.skip("configured pyflakes lint runner is unavailable")
++    task_id = "t06-configured-lint"
++    app, repo, configured_lint = _setup(tmp_path, task_id)
++    previous, server, thread = _serve(app)
++    try:
++        result = app.commands.run(
++            configured_lint,
++            str(repo),
++            tenant="agent",
++            task_id=task_id,
++            criterion="lint",
++            force=True,
++        )
++        assert result["success"] is True
++        receipt = VerificationReceipt.from_dict(result["verification_receipt"])
++        evidence = app.artifacts.get(receipt.evidence_id, max_chars=50_000, tenant="agent")
++        proof = json.loads(evidence["text"])
++        assert proof["kind"] == "work_command_verification"
++        assert proof["passed"] is True
++        assert proof["owner"] == "agent"
++        assert proof["criterion"] == "lint"
++        assert proof["command"] == configured_lint
++        assert proof["command_sha256"] == __import__("hashlib").sha256(
++            configured_lint.encode("utf-8")
++        ).hexdigest()
++        assert proof["command_classification"] == "source_review"
++        assert proof["result"]["success"] is True
++        assert proof["result"]["exit_code"] == 0
++        if hasattr(receipt, "evidence_type"):
++            assert receipt.evidence_type == "source_review"
++            assert receipt.command_id
++        # T06 legacy task gates require a receipt matching acceptance criteria.
++        # T09 also reads the explicit lint receipt produced above.
++        legacy_receipt = app.commands.run(
++            configured_lint,
++            str(repo),
++            tenant="agent",
++            task_id=task_id,
++            criterion="required_commands",
++            force=True,
++        )
++        assert legacy_receipt["success"] is True
++        completion = _post(
++            server.server_address[1],
++            {"action": "complete", "task_id": task_id, "actor": "agent"},
++        )
++        assert completion["success"] is True, completion
++    finally:
++        server.shutdown()
++        server.server_close()
++        thread.join(timeout=5)
++        http_server.APP = previous
++        app.close()
++
++
++@pytest.mark.parametrize("negative", ["substituted_command", "stale_receipt", "wrong_owner"])
++def test_t09_completion_rejects_invalid_lint_receipt(tmp_path: Path, negative: str):
++    from inspect import signature
++
++    if "owner" not in signature(VerificationReceipt.create).parameters:
++        pytest.skip("T09 typed owner receipt API is not integrated in this worktree")
++    if importlib.util.find_spec("pyflakes") is None:
++        pytest.skip("configured pyflakes lint runner is unavailable")
++
++    task_id = f"t06-invalid-lint-{negative}"
++    app, repo, configured_lint = _setup(tmp_path, task_id)
++    previous, server, thread = _serve(app)
++    try:
++        command = configured_lint
++        tenant = "agent"
++        if negative == "substituted_command":
++            command = f'"{sys.executable}" -c "raise SystemExit(0)"'
++        elif negative == "wrong_owner":
++            tenant = "intruder"
++        result = app.commands.run(
++            command,
++            str(repo),
++            tenant=tenant,
++            task_id=task_id,
++            criterion="lint",
++            force=True,
++        )
++        assert result["success"] is True
++        if negative == "stale_receipt":
++            from dataclasses import replace
++
++            receipt = VerificationReceipt.from_dict(result["verification_receipt"])
++            app.agent_verification.record(replace(receipt, expires_at=0.0))
++        completion = _post(
++            server.server_address[1],
++            {"action": "complete", "task_id": task_id, "actor": "agent"},
++        )
++        assert completion["success"] is False, completion
++    finally:
++        server.shutdown()
++        server.server_close()
++        thread.join(timeout=5)
++        http_server.APP = previous
++        app.close()

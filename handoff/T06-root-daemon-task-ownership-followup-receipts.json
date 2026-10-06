@@ -1,0 +1,80 @@
+{
+  "schema": "T09 work_command_verification + work_source_review shape",
+  "receipt_status": "local_handoff_only_hub_transport_unavailable",
+  "work_command_verification": [
+    {
+      "task_id": "T06",
+      "owner": "C:\\Users\\Adam\\.codex\\worktrees\\t06-safe-commands\\.local-ai-hub",
+      "criterion": "daemon-tree-ownership",
+      "command_id": null,
+      "command_classification": "test",
+      "repository_revision": "94337de7309b66c63ff427cce8cd3a49e6414d73",
+      "mutation_generation": null,
+      "cached": false,
+      "hub_persisted": false,
+      "evidence_source": "native fallback in T06-owned worktree; Hub transport unavailable",
+      "kind": "work_command_verification",
+      "passed": false,
+      "command": "pytest -q tests/test_daemon_lifecycle_hardening.py::test_daemon_job_stops_descendants_after_leader_exits tests/test_daemon_lifecycle_hardening.py::test_live_daemon_is_reconciled_after_broker_restart tests/test_daemon_lifecycle_hardening.py::test_daemon_stop_task_id_flows_through_service_and_http",
+      "command_sha256": "2372d5e2977d8d11ff303660880c14b8022d9507d57e32c42c9db988d92cb1da",
+      "exit_code": 1,
+      "result": {
+        "success": false,
+        "passed": 2,
+        "failed": 1,
+        "failure": "candidate http_server lacks load_operational_mode; test fixture corrected with raising=False",
+        "superseded_by": "second targeted adapter selector"
+      },
+      "duration_ms": 2080
+    },
+    {
+      "task_id": "T06",
+      "owner": "C:\\Users\\Adam\\.codex\\worktrees\\t06-safe-commands\\.local-ai-hub",
+      "criterion": "daemon-tree-ownership",
+      "command_id": null,
+      "command_classification": "test",
+      "repository_revision": "94337de7309b66c63ff427cce8cd3a49e6414d73",
+      "mutation_generation": null,
+      "cached": false,
+      "hub_persisted": false,
+      "evidence_source": "native fallback in T06-owned worktree; Hub transport unavailable",
+      "kind": "work_command_verification",
+      "passed": true,
+      "command": "pytest -q tests/test_daemon_lifecycle_hardening.py::test_daemon_stop_task_id_flows_through_service_and_http",
+      "command_sha256": "b2c72bc3f2e4ab0a1e1184334a8d7dbc94f1e9fa81219c992afb4f92ac2723d4",
+      "exit_code": 0,
+      "result": {
+        "success": true,
+        "passed": 1,
+        "failed": 0
+      },
+      "duration_ms": 4490
+    }
+  ],
+  "work_source_review": {
+    "kind": "work_source_review",
+    "passed": true,
+    "task_id": "T06",
+    "owner": "C:\\Users\\Adam\\.codex\\worktrees\\t06-safe-commands\\.local-ai-hub",
+    "criteria": [
+      "daemon-tree-ownership"
+    ],
+    "verification": "Confirmed v2 removed @staticmethod from root _flush_daemon_log while candidate retains it; follow-up restores it. Adapter fixture sets state_dir and stubs active operational mode while preserving production gate. Owner/task checks and POSIX live/recovered semantics are unchanged.",
+    "repository_revision": "94337de7309b66c63ff427cce8cd3a49e6414d73",
+    "mutation_generation": null,
+    "diff": {
+      "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t06-safe-commands\\.local-ai-hub\\handoff\\T06-root-daemon-task-identity-followup.patch",
+      "patch_sha256": "97d25cc1c2f16712d291c5abb7b27d8aec7571f30e008798998ee28f41df18bd",
+      "files": [
+        "src/local_ai_hub/commands.py",
+        "tests/test_daemon_lifecycle_hardening.py"
+      ],
+      "root_apply_check": "passed",
+      "root_preimage_sha256": {
+        "src/local_ai_hub/commands.py": "75BC48CD49A93B8150954262D0D336F76213574E3C9A25D57BF79843161A21B1",
+        "tests/test_daemon_lifecycle_hardening.py": "61848DCEA4C914033FD186B3900C1AD3746562077DD3037BD240DB122621C323"
+      }
+    },
+    "hub_persisted": false
+  }
+}

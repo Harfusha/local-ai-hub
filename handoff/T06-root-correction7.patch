@@ -1,0 +1,13 @@
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -5178,7 +5178,9 @@
+                         timed_out=bool(result.get("timed_out")),
+                         cancelled=bool(result.get("cancelled")),
+                         metadata={"outcome_unknown": True, "rollback_error": result.get("rollback_error", "")} if result.get("outcome_unknown") else {},
+-                        affected_paths=tuple(set(diag_paths)),
++                        affected_paths=tuple(
++                            scope_paths or result.get("rollback_paths") or set(diag_paths)
++                        ),
+                     ))
+                     if inc and result.get("outcome_unknown"):
+                         result["incident_id"] = inc.incident_id
