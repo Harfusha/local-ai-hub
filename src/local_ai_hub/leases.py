@@ -11,10 +11,15 @@ from contextlib import closing
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from .sqlite_support import (
+    backup_durable_database,
+    connect_sqlite,
+    initialize_wal,
+    retry_busy,
+    validate_durable_schema,
+)
 
 _COORDINATION_ID_UNSET = object()
-
-from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
 from .process_utils import canonical_root
 
 
@@ -64,12 +69,141 @@ def _overlap(a: str, b: str) -> bool:
     return na.startswith(nb + "/") or nb.startswith(na + "/")
 
 
+_LEASE_SCHEMA_VERSION = 1
+_LEASE_MIGRATION_KEY = "leases-sqlite3-to-agent-state-v1"
+
+
+def _lease_migration_complete(target: Path) -> bool:
+    if not target.exists():
+        return False
+    uri = f"{target.resolve().as_uri()}?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True, timeout=2.0)) as con:
+        has_migrations = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_state_migrations'"
+        ).fetchone()
+        if not has_migrations:
+            return False
+        return con.execute(
+            "SELECT 1 FROM agent_state_migrations WHERE migration_key = ?",
+            (_LEASE_MIGRATION_KEY,),
+        ).fetchone() is not None
+
+
+def migrate_legacy_lease_database(state_dir: Path) -> Path:
+    """Back up and merge legacy lease tables into the durable Agent State database."""
+    state_dir = Path(state_dir)
+    target = state_dir / "agent_state.sqlite"
+    legacy = state_dir / "leases.sqlite3"
+    if not legacy.exists() or _lease_migration_complete(target):
+        return target
+
+    backup = backup_durable_database(legacy, purpose="path-migration")
+    expected_columns = {
+        "leases": (
+            "lease_id", "tenant", "root_id", "root_path", "path", "purpose",
+            "created_at", "expires_at",
+        ),
+        "lease_waits": ("tenant", "blocked_by", "root_id", "requested_path", "updated_at"),
+    }
+    with closing(connect_sqlite(target, isolation_level=None)) as con:
+        con.execute("ATTACH DATABASE ? AS lease_backup", (str(backup),))
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS agent_state_migrations "
+                "(migration_key TEXT PRIMARY KEY, applied_at REAL NOT NULL)"
+            )
+            if con.execute(
+                "SELECT 1 FROM agent_state_migrations WHERE migration_key = ?",
+                (_LEASE_MIGRATION_KEY,),
+            ).fetchone():
+                con.execute("COMMIT")
+                return target
+
+            for table, columns in expected_columns.items():
+                source_columns = {
+                    str(row[1]) for row in con.execute(f"PRAGMA lease_backup.table_info({table})")
+                }
+                if not set(columns).issubset(source_columns):
+                    raise sqlite3.DatabaseError(f"legacy lease schema mismatch: {table}")
+
+            con.execute(
+                """CREATE TABLE IF NOT EXISTS leases (
+                       lease_id TEXT NOT NULL, tenant TEXT NOT NULL, root_id TEXT NOT NULL,
+                       root_path TEXT NOT NULL, path TEXT NOT NULL, purpose TEXT NOT NULL,
+                       created_at REAL NOT NULL, expires_at REAL NOT NULL,
+                       PRIMARY KEY(lease_id, path))"""
+            )
+            con.execute(
+                """CREATE TABLE IF NOT EXISTS lease_waits (
+                       tenant TEXT NOT NULL, blocked_by TEXT NOT NULL, root_id TEXT NOT NULL,
+                       requested_path TEXT NOT NULL, updated_at REAL NOT NULL,
+                       PRIMARY KEY(tenant, blocked_by, requested_path))"""
+            )
+            for table, keys in (("leases", ("lease_id", "path")), ("lease_waits", ("tenant", "blocked_by", "requested_path"))):
+                all_columns = expected_columns[table]
+                join = " AND ".join(f"current.{key} = legacy.{key}" for key in keys)
+                conflict = " OR ".join(
+                    f"current.{column} IS NOT legacy.{column}"
+                    for column in all_columns if column not in keys
+                )
+                conflicts = int(con.execute(
+                    f"SELECT COUNT(*) FROM lease_backup.{table} AS legacy "
+                    f"JOIN main.{table} AS current ON {join} WHERE {conflict}"
+                ).fetchone()[0])
+                if conflicts:
+                    raise sqlite3.DatabaseError(f"legacy lease data conflicts with durable Agent State: {table}")
+                column_list = ", ".join(all_columns)
+                con.execute(
+                    f"INSERT OR IGNORE INTO main.{table} ({column_list}) "
+                    f"SELECT {column_list} FROM lease_backup.{table}"
+                )
+                missing = int(con.execute(
+                    f"SELECT COUNT(*) FROM lease_backup.{table} AS legacy "
+                    f"LEFT JOIN main.{table} AS current ON {join} "
+                    f"WHERE current.{keys[0]} IS NULL"
+                ).fetchone()[0])
+                if missing:
+                    raise sqlite3.DatabaseError(f"legacy lease migration verification failed: {table}")
+
+            con.execute("CREATE INDEX IF NOT EXISTS idx_leases_root ON leases(root_id, expires_at)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_tenant ON lease_waits(tenant)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_blocked ON lease_waits(blocked_by)")
+            con.execute(
+                """CREATE TABLE IF NOT EXISTS agent_state_schema_versions (
+                       component TEXT PRIMARY KEY, version INTEGER NOT NULL, updated_at REAL NOT NULL)"""
+            )
+            version_row = con.execute(
+                "SELECT version FROM agent_state_schema_versions WHERE component = 'leases'"
+            ).fetchone()
+            if version_row and int(version_row[0]) > _LEASE_SCHEMA_VERSION:
+                raise sqlite3.DatabaseError("unsupported newer leases schema version")
+            con.execute(
+                """INSERT INTO agent_state_schema_versions(component, version, updated_at)
+                   VALUES ('leases', ?, ?) ON CONFLICT(component) DO UPDATE SET
+                   version = excluded.version, updated_at = excluded.updated_at""",
+                (_LEASE_SCHEMA_VERSION, time.time()),
+            )
+            con.execute(
+                "INSERT INTO agent_state_migrations(migration_key, applied_at) VALUES (?, ?)",
+                (_LEASE_MIGRATION_KEY, time.time()),
+            )
+            con.execute("COMMIT")
+        except Exception:
+            if con.in_transaction:
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.execute("DETACH DATABASE lease_backup")
+    return target
+
+
 class ScopeLeaseStore:
     """Advisory cross-agent write-scope leases for avoiding obvious concurrent edit collisions."""
 
     def __init__(self, state_dir: Path):
-        self.path = state_dir / "leases.sqlite3"
         state_dir.mkdir(parents=True, exist_ok=True)
+        self.path = migrate_legacy_lease_database(state_dir)
         self._lock = threading.RLock()
         self._initialized = False
         self._init_db()
@@ -85,6 +219,35 @@ class ScopeLeaseStore:
                 return
             def _setup() -> None:
                 with closing(self._connect()) as con:
+                    expected = {
+                        "leases": [("lease_id", "TEXT", 1, 1), ("tenant", "TEXT", 1, 0),
+                                   ("root_id", "TEXT", 1, 0), ("root_path", "TEXT", 1, 0),
+                                   ("path", "TEXT", 1, 2), ("purpose", "TEXT", 1, 0),
+                                   ("created_at", "REAL", 1, 0), ("expires_at", "REAL", 1, 0)],
+                        "lease_waits": [("tenant", "TEXT", 1, 1), ("blocked_by", "TEXT", 1, 2),
+                                        ("root_id", "TEXT", 1, 0), ("requested_path", "TEXT", 1, 3),
+                                        ("updated_at", "REAL", 1, 0)],
+                    }
+                    wait_columns = con.execute("PRAGMA table_info(lease_waits)").fetchall()
+                    root_is_keyed = any(str(row[1]) == "root_id" and int(row[5]) > 0 for row in wait_columns)
+                    wait_key = ("tenant", "blocked_by", "requested_path")
+                    if root_is_keyed:
+                        expected["lease_waits"] = [
+                            ("tenant", "TEXT", 1, 2), ("blocked_by", "TEXT", 1, 3),
+                            ("root_id", "TEXT", 1, 1), ("requested_path", "TEXT", 1, 4),
+                            ("updated_at", "REAL", 1, 0),
+                        ]
+                        wait_key = ("root_id", "tenant", "blocked_by", "requested_path")
+                    validate_durable_schema(
+                        con,
+                        self.path,
+                        expected,
+                        complete_groups=(tuple(expected),),
+                        required_unique={
+                            "leases": (("lease_id", "path"),),
+                            "lease_waits": (wait_key,),
+                        },
+                    )
                     initialize_wal(con)
                     con.execute(
                         """CREATE TABLE IF NOT EXISTS leases (
@@ -133,6 +296,21 @@ class ScopeLeaseStore:
                             con.execute("ALTER TABLE lease_waits_new RENAME TO lease_waits")
                         con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_tenant ON lease_waits(tenant)")
                         con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_blocked ON lease_waits(blocked_by)")
+                        con.execute(
+                            """CREATE TABLE IF NOT EXISTS agent_state_schema_versions (
+                                   component TEXT PRIMARY KEY, version INTEGER NOT NULL, updated_at REAL NOT NULL)"""
+                        )
+                        version = con.execute(
+                            "SELECT version FROM agent_state_schema_versions WHERE component = 'leases'"
+                        ).fetchone()
+                        if version and int(version[0]) > _LEASE_SCHEMA_VERSION:
+                            raise sqlite3.DatabaseError("unsupported newer leases schema version")
+                        con.execute(
+                            """INSERT INTO agent_state_schema_versions(component, version, updated_at)
+                               VALUES ('leases', ?, ?) ON CONFLICT(component) DO UPDATE SET
+                               version = excluded.version, updated_at = excluded.updated_at""",
+                            (_LEASE_SCHEMA_VERSION, time.time()),
+                        )
                         con.execute("COMMIT")
                     except BaseException:
                         if con.in_transaction:

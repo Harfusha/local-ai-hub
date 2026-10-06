@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import closing
+from dataclasses import replace
 
 import pytest
 
@@ -52,6 +53,20 @@ def test_deleted_memory_record_replay_is_tombstoned_after_reopen(tmp_path):
     reopened = MemoryStore(AgentStateStore(db_path))
     with pytest.raises(ValueError, match="deleted"):
         reopened.record(original, actor="user", idempotency_key=idempotency_key)
+
+    other_root = tmp_path / "other-repo"
+    other_root.mkdir()
+    relocated = replace(
+        original,
+        scope_id=str(other_root),
+        provenance={"root": str(other_root), "tenant": "tenant-a"},
+    )
+    with pytest.raises(ValueError, match="deleted"):
+        reopened.record(
+            relocated,
+            actor="user",
+            idempotency_key="deleted-memory-replay-in-other-scope",
+        )
 
     assert reopened.get(
         saved.record_id,

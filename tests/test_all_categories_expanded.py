@@ -11,6 +11,7 @@ import pytest
 from local_ai_hub.agent_blackboard import BlackboardStore
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_tasks import TaskStore, GoalContract, ScopeContext, TaskStatus, AgentScope, TaskCheckpoint
+from local_ai_hub import trace_context
 from local_ai_hub.commands import CommandBroker
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.model_policy import ModelExecutionPolicy

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "patch": "t08-root-current-integration-corrections-v2.patch",
+  "patch_sha256": "9586996239024CEF15BE72BAA1F15F52C6A72F04F3D57B031E3E2B6EFAF79A13",
+  "patch_scope": "tests only; six unresolved selectors; no source paths",
+  "test_preimage_sha256": {
+    "tests/test_agent_tasks.py": "20E3203F037185F1C6CF1C2165088F485FB6AB70DBC158229AF18353FD2DF1A1",
+    "tests/test_agent_state_reliability.py": "3FFF9085D5D7261E5863144391080C75CAAB068155DC10D6C02146BF690A3ECF",
+    "tests/test_all_advanced_improvements.py": "5D3B63F8A9950A6E26359F157D3317402F1A36D8B0A7832B92E3E6E90F4DE321",
+    "tests/test_all_categories_expanded.py": "3AFCD4694E31F2CAE4CEC28C07C2109A44FEC903743E9A7199E0E3D040E1CB74",
+    "tests/test_storage_service_reliability.py": "D06B7BD11F1C4D8DF31E07F9EFBC83C56EC84028A5A443B18E2800E5F3C8A855",
+    "tests/test_agent_task_memory_adoption.py": "E70862DD67E85BB4DE95204661C37945E306806CE1E503D2E8F3CEF4BE22653B"
+  },
+  "apply_check": "passed read-only against root-current",
+  "tests": "not run",
+  "runner_count": "0 active pytest processes observed"
+}

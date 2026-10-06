@@ -20,6 +20,14 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 from .json_utils import dumps as json_dumps
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
 
+from .json_utils import dumps as json_dumps
+from .sqlite_support import (
+    DurableSchemaMismatchError,
+    connect_sqlite,
+    initialize_wal,
+    is_busy_error,
+    retry_busy,
+)
 
 @dataclass(frozen=True)
 class AgentEvent:
@@ -125,8 +133,12 @@ class AppendResult:
 
 class AgentStateStore:
     _append_publish_locks_guard = threading.Lock()
-    _append_publish_locks: dict[str, threading.Lock] = {}
+    _append_publish_locks: dict[str, Any] = {}
+    # PRAGMA user_version belongs to this database-wide core schema. Independent
+    # stores keep component versions in agent_state_schema_versions instead.
     _SCHEMA_VERSION = 1
+    # Live events use this payload version implicitly; the side table stores legacy overrides.
+    _CURRENT_EVENT_PAYLOAD_VERSION = 1
     _SCHEMA_PREFLIGHT_TIMEOUT_SECONDS = 5.0
     _MIGRATION_BACKUP_TIMEOUT_SECONDS = 5.0
     _MIGRATION_BACKUP_PAGES = 128
@@ -137,6 +149,14 @@ class AgentStateStore:
     _LEGACY_EVENT_COLUMNS = [*_EVENT_COLUMNS[:-1], "schema_version", "created_at"]
     _SNAPSHOT_COLUMNS = ["snapshot_id", "stream_id", "seq", "state", "created_at"]
     _EXPECTED_OBJECT_SQL_HASHES = {
+        ("index", "idx_lease_waits_tenant", "lease_waits"): "dd609992da24cef67dfdcaecef49c82b6451892d43863c9a1ff152701068273a",
+        ("index", "idx_leases_root", "leases"): "a0ede5303197cc5172c5583f33a72ee1636083712d84e9d618a642a34671cc85",
+        ("table", "agent_state_migrations", "agent_state_migrations"): "c05fc94a41754f655038115d920ca125256bad65f5fd82bcc8ee4cdc8ce1c164",
+        ("table", "agent_state_schema_versions", "agent_state_schema_versions"): "a2884a575e1e67cfbc5b40c2e90370a89d5310197171332b6806c0b4e036a547",
+        ("table", "lease_waits", "lease_waits"): "dd85a48b1dbe347ede4ca2c5e5ac8ba648090b0553e37af0b104a4b0afeedbd9",
+        ("table", "leases", "leases"): "8efd0ab396d15d5557fc4dda0683cbf77f3957867131072d89c6a0fc334e9059",
+        ("index", "idx_lease_waits_blocked", "lease_waits"): "366fe3b81e54f9032edecf9d798a2b2d23160bba578438a89591b929c1e87cab",
+        ("table", "agent_swarms", "agent_swarms"): "5ccda29c6b858caae83c2ca78296c4ff939f7ae41cdab14054e67bf374592a81",
         ("table", "sqlite_sequence", "sqlite_sequence"): "9e042902d97481bf7dccaaff2183d686b3344691bb622fdfc017096ef4080c65",
         ("index", "idx_agent_budgets_task", "agent_budgets"): "bcf430cc5b43169c32c9a6493b85943f219431ea8e688bdfe76f7284734c20f9",
         ("index", "idx_agent_change_task", "agent_change_intents"): "59e49e948f8ccd127cd4698378e49e66af98e872ec9fcf1e23445854cb88440b",
@@ -145,6 +165,7 @@ class AgentStateStore:
         ("index", "idx_agent_incidents_fp", "agent_incidents"): "4b67662bd5955574d1cce114df205ba62a1e0f5165613b4edd16072d34339709",
         ("index", "idx_agent_incidents_lookup", "agent_incidents"): "f170ab3ca4813c2fde1ef264a4a148c1ad08c0a6ea7243119864d2f7d35e58d9",
         ("index", "idx_agent_incidents_recent", "agent_incidents"): "2dabb490a313b3f49ec8cf3bbec38e5dd7d7869db9dc9ea69474d96fe86260a8",
+        ("index", "idx_agent_incidents_scope", "agent_incidents"): "fcddf0dcdaa939754d8826b199dc730bfee46c1e3f9f1dc7742757a26b324fc3",
         ("index", "idx_agent_klinks_path", "agent_knowledge_links"): "a765bbe0d7e69856c925200094c53bbd726cfaec770d274d4451b18b40e52b32",
         ("index", "idx_agent_memory_expires", "agent_memory_records"): "2b572d27d7aeff30fd4f5bac34028828f8cea53b3e7a33a365ecd2ac8d62bda6",
         ("index", "idx_agent_memory_provenance_branch", "agent_memory_records"): "d2bbcbdc38fffca0533cc1fb185773d0d7063c91e7318838a15bfb4a3ef919ff",
@@ -219,7 +240,15 @@ class AgentStateStore:
         ("index", "idx_agent_events_created", "agent_events"): "0c060f3923ffc6874a55f975a4a5b5ae2257fe99d3adfd783c3bcc18e763f510",
         ("index", "idx_agent_events_kind", "agent_events"): "77d2e2a836ce41786c2710ad9b46a9ff484aac89a3fc28461dcd46c5f85a9299",
     }
-
+    _ALTERNATE_OBJECT_SQL_HASHES.update({
+        ("table", "lease_waits", "lease_waits"): {
+            "a866368052df7b9433b7a44d47dc262c5a76a06058b878e0249ccee791dfb17c",
+            "e9a38812fd120d00228269c2e5f28f02172702355abd9127562ccf78a5c93612",
+        },
+        ("table", "leases", "leases"): {
+            "f7a165f4f68106fb33b5855d0a66532e63fde78b2675380b67fe8112096f8edd",
+        },
+    })
 
     def __init__(
         self,
@@ -237,6 +266,11 @@ class AgentStateStore:
                 lock_key, threading.RLock()
             )
         self._lock = threading.RLock()
+        lock_key = os.path.normcase(str(self.db_path.resolve()))
+        with self._append_publish_locks_guard:
+            self._append_publish_lock = self._append_publish_locks.setdefault(
+                lock_key, threading.RLock()
+            )
         self._initialized = False
         self._subscribers: list[queue.Queue[AgentEvent]] = []
         self._subscribers_lock = threading.Lock()
@@ -256,81 +290,113 @@ class AgentStateStore:
                 return
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-            expected_events = [
-                "stream_id", "seq", "event_id", "kind", "payload", "idempotency_key",
-                "correlation_id", "actor", "created_at",
-            ]
-            expected_snapshots = ["snapshot_id", "stream_id", "seq", "state", "created_at"]
-            expected_cursors = ["stream_id", "last_seq", "first_retained_seq"]
+            expected = {
+                "agent_events": [
+                    ("stream_id", "TEXT", 1, 1), ("seq", "INTEGER", 1, 2),
+                    ("event_id", "TEXT", 1, 0), ("kind", "TEXT", 1, 0),
+                    ("payload", "TEXT", 1, 0), ("idempotency_key", "TEXT", 1, 0),
+                    ("correlation_id", "TEXT", 1, 0), ("actor", "TEXT", 1, 0),
+                    ("created_at", "REAL", 1, 0),
+                ],
+                "agent_snapshots": [
+                    ("snapshot_id", "INTEGER", 0, 1), ("stream_id", "TEXT", 1, 0),
+                    ("seq", "INTEGER", 1, 0), ("state", "TEXT", 1, 0),
+                    ("created_at", "REAL", 1, 0),
+                ],
+                "agent_event_cursors": [
+                    ("stream_id", "TEXT", 0, 1), ("last_seq", "INTEGER", 1, 0),
+                    ("first_retained_seq", "INTEGER", 1, 0),
+                ],
+            }
 
             def _setup() -> None:
-                existed_before_open = self.db_path.exists() and self.db_path.stat().st_size > 0
-                if existed_before_open:
+                existed_before_open = self.db_path.exists()
+                if existed_before_open and self.db_path.stat().st_size > 0:
                     self._preflight_schema_read_only()
-                con = connect_sqlite(self.db_path)
+                con = sqlite3.connect(self.db_path, timeout=5.0)
                 try:
-                    self._migrate_known_schema(con, existed_before_open=existed_before_open)
-                    version = int(con.execute("PRAGMA user_version").fetchone()[0])
-                    if version < 0 or version > self._SCHEMA_VERSION:
-                        raise RuntimeError(f"unsupported agent state schema version: {version}")
-                    existing = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                    current = True
-                    if "agent_events" in existing:
-                        current = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_events)")] == expected_events
-                    if current and "agent_snapshots" in existing:
-                        current = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_snapshots)")] == expected_snapshots
-                    if "agent_event_cursors" in existing:
-                        cursor_columns = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_event_cursors)")]
-                        if cursor_columns != expected_cursors:
-                            raise RuntimeError("agent event cursor schema mismatch; refusing to alter durable database")
-                    if not current or (version == self._SCHEMA_VERSION and not {"agent_events", "agent_snapshots"}.issubset(existing)):
-                        raise RuntimeError(
-                            "agent state schema mismatch; refusing to delete or recreate durable database"
-                        )
-                    if version == 0 and {"agent_events", "agent_snapshots"}.issubset(existing):
-                        self._verified_migration_backup(con)
-                    initialize_wal(con)
+                    self._migrate_known_schema(
+                        con,
+                        existed_before_open=existed_before_open,
+                    )
+                    if not con.in_transaction:
+                        con.execute("BEGIN IMMEDIATE")
                     with con:
                         con.execute("""
-                        CREATE TABLE IF NOT EXISTS agent_events (
-                            stream_id TEXT NOT NULL,
-                            seq INTEGER NOT NULL,
-                            event_id TEXT NOT NULL,
-                            kind TEXT NOT NULL,
-                            payload TEXT NOT NULL,
-                            idempotency_key TEXT NOT NULL,
-                            correlation_id TEXT NOT NULL,
-                            actor TEXT NOT NULL,
-                            created_at REAL NOT NULL,
-                            PRIMARY KEY (stream_id, seq),
-                            UNIQUE (stream_id, idempotency_key)
-                        );
+                            CREATE TABLE IF NOT EXISTS agent_events (
+                                stream_id TEXT NOT NULL,
+                                seq INTEGER NOT NULL,
+                                event_id TEXT NOT NULL,
+                                kind TEXT NOT NULL,
+                                payload TEXT NOT NULL,
+                                idempotency_key TEXT NOT NULL,
+                                correlation_id TEXT NOT NULL,
+                                actor TEXT NOT NULL,
+                                created_at REAL NOT NULL,
+                                PRIMARY KEY (stream_id, seq),
+                                UNIQUE (stream_id, idempotency_key)
+                            )
                         """)
-                        con.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_created ON agent_events (created_at)")
-                        con.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_kind ON agent_events (kind)")
+                        con.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_agent_events_created "
+                            "ON agent_events (created_at)"
+                        )
+                        con.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_agent_events_kind "
+                            "ON agent_events (kind)"
+                        )
                         con.execute("""
-                        CREATE TABLE IF NOT EXISTS agent_snapshots (
-                            snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            stream_id TEXT NOT NULL,
-                            seq INTEGER NOT NULL,
-                            state TEXT NOT NULL,
-                            created_at REAL NOT NULL
-                        );
+                            CREATE TABLE IF NOT EXISTS agent_snapshots (
+                                snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                stream_id TEXT NOT NULL,
+                                seq INTEGER NOT NULL,
+                                state TEXT NOT NULL,
+                                created_at REAL NOT NULL
+                            )
                         """)
-                        con.execute("CREATE INDEX IF NOT EXISTS idx_agent_snapshots_stream ON agent_snapshots (stream_id, seq DESC)")
+                        con.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_agent_snapshots_stream "
+                            "ON agent_snapshots (stream_id, seq DESC)"
+                        )
                         con.execute("""
-                        CREATE TABLE IF NOT EXISTS agent_event_cursors (
-                            stream_id TEXT PRIMARY KEY,
-                            last_seq INTEGER NOT NULL,
-                            first_retained_seq INTEGER NOT NULL
-                        );
+                            -- Sparse legacy overrides; current payload version is implicit.
+                            CREATE TABLE IF NOT EXISTS agent_event_schema_versions (
+                                stream_id TEXT NOT NULL,
+                                seq INTEGER NOT NULL,
+                                schema_version INTEGER NOT NULL,
+                                PRIMARY KEY (stream_id, seq)
+                            )
                         """)
-                        if "agent_event_cursors" not in existing:
-                            con.execute("""
-                            INSERT INTO agent_event_cursors (stream_id, last_seq, first_retained_seq)
-                            SELECT stream_id, MAX(seq), MIN(seq) FROM agent_events GROUP BY stream_id
-                            """)
+                        con.execute("""
+                            CREATE TABLE IF NOT EXISTS agent_event_cursors (
+                                stream_id TEXT PRIMARY KEY,
+                                last_seq INTEGER NOT NULL,
+                                first_retained_seq INTEGER NOT NULL
+                            )
+                        """)
+                        con.execute("""
+                            INSERT OR IGNORE INTO agent_event_cursors (
+                                stream_id, last_seq, first_retained_seq
+                            )
+                            SELECT stream_id, MAX(seq), MIN(seq)
+                            FROM agent_events
+                            GROUP BY stream_id
+                        """)
                         con.execute(f"PRAGMA user_version={self._SCHEMA_VERSION}")
+                        self._classify_schema(con)
+
+                        from .sqlite_support import validate_durable_schema
+
+                        validate_durable_schema(
+                            con,
+                            self.db_path,
+                            expected,
+                            complete_groups=(tuple(expected),),
+                            required_unique={
+                                "agent_events": (("stream_id", "idempotency_key"),),
+                            },
+                        )
+                    initialize_wal(con)
                 finally:
                     con.close()
 
@@ -425,15 +491,16 @@ class AgentStateStore:
                                 destination_path=recovery_path,
                             )
                         except Exception as backup_error:
-                            raise RuntimeError(
-                                f"agent_state schema mismatch: {exc}; verified recovery backup "
-                                f"could not be created: {backup_error}. "
-                                "The original database and sidecars were preserved."
-                            ) from backup_error
-                        raise RuntimeError(
-                            f"agent_state schema mismatch: {exc}; verified recovery backup "
-                            f"created at {recovery_path}. "
-                            "Preserve the original database files and use a compatible recovery path."
+                            raise DurableSchemaMismatchError(
+                                self.db_path,
+                                [str(exc)],
+                                None,
+                                str(backup_error),
+                            ) from exc
+                        raise DurableSchemaMismatchError(
+                            self.db_path,
+                            [str(exc)],
+                            recovery_path,
                         ) from exc
             except RuntimeError:
                 raise
@@ -452,7 +519,7 @@ class AgentStateStore:
     def _classify_schema(cls, con: sqlite3.Connection) -> tuple[Any, ...]:
         version = int(con.execute("PRAGMA user_version").fetchone()[0])
         if version > cls._SCHEMA_VERSION or version < 0:
-            raise RuntimeError(f"unsupported agent state schema version: {version}")
+            raise RuntimeError(f"unsupported agent_state schema version: {version}")
 
         event_columns = cls._columns(con, "agent_events")
         snapshot_columns = cls._columns(con, "agent_snapshots")
@@ -507,7 +574,14 @@ class AgentStateStore:
             else:
                 raise RuntimeError("unsupported agent_state schema layout")
         else:
-            is_empty = not objects
+            auxiliary_only_tables = {
+                "agent_state_migrations", "agent_state_schema_versions",
+                "leases", "lease_waits",
+            }
+            is_empty = (
+                not event_columns and not snapshot_columns
+                and tables.issubset(auxiliary_only_tables)
+            )
             is_current_unversioned = (
                 version == 0
                 and event_columns == cls._EVENT_COLUMNS
@@ -618,7 +692,7 @@ class AgentStateStore:
             except Exception:
                 con.rollback()
                 raise
-            if locked[1] == "current":
+            if locked[0] == cls._SCHEMA_VERSION:
                 con.rollback()
                 return
             locked_data_version = int(con.execute("PRAGMA data_version").fetchone()[0])
@@ -629,9 +703,12 @@ class AgentStateStore:
             ):
                 con.rollback()
                 raise RuntimeError("agent_state changed before migration; retry initialization")
+        else:
+            con.execute("BEGIN IMMEDIATE")
 
         try:
             con.execute("""
+                -- Sparse legacy overrides; current payload version is implicit.
                 CREATE TABLE IF NOT EXISTS agent_event_schema_versions (
                     stream_id TEXT NOT NULL,
                     seq INTEGER NOT NULL,
@@ -665,7 +742,8 @@ class AgentStateStore:
                 con.execute("""
                     INSERT INTO agent_event_schema_versions (stream_id, seq, schema_version)
                     SELECT stream_id, seq, schema_version FROM agent_events
-                """)
+                    WHERE schema_version != ?
+                """, (cls._CURRENT_EVENT_PAYLOAD_VERSION,))
                 con.execute("DROP TABLE agent_events")
                 con.execute("""
                     CREATE TABLE agent_events (
@@ -718,8 +796,6 @@ class AgentStateStore:
             con.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_created ON agent_events (created_at)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_kind ON agent_events (kind)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_agent_snapshots_stream ON agent_snapshots (stream_id, seq DESC)")
-            con.execute(f"PRAGMA user_version={cls._SCHEMA_VERSION}")
-            con.commit()
         except Exception:
             con.rollback()
             raise
@@ -1209,17 +1285,73 @@ class AgentStateStore:
             try:
                 q.put_nowait(event)
             except queue.Full:
+                dropped: list[AgentEvent] = []
+                target_size = max(0, q.maxsize - 2)
+                while q.qsize() > target_size:
+                    try:
+                        dropped.append(q.get_nowait())
+                    except queue.Empty:
+                        break
+
+                by_stream: dict[str, list[tuple[int, int]]] = {}
+                lost_count = 0
+                for item in dropped:
+                    ranges = item.payload.get("gap_ranges", []) if item.kind == "stream.gap" else []
+                    if item.kind == "stream.gap":
+                        lost_count += int(item.payload.get("lost_count", 0) or 0)
+                    for gap in ranges:
+                        if not isinstance(gap, Mapping):
+                            continue
+                        stream_id = str(gap.get("stream_id", item.stream_id))
+                        start, end = gap.get("from_seq"), gap.get("to_seq")
+                        if start is not None and end is not None:
+                            by_stream.setdefault(stream_id, []).append((int(start), int(end)))
+                    if item.kind != "stream.gap" and item.seq is not None:
+                        by_stream.setdefault(item.stream_id, []).append((int(item.seq), int(item.seq)))
+                        lost_count += 1
+
+                # A one-slot queue cannot carry both the gap marker and the newest event.
+                # In that case the marker includes the newest sequence as lost, so a
+                # consumer can recover it through durable replay.
+                if q.maxsize == 1:
+                    if event.seq is not None:
+                        by_stream.setdefault(event.stream_id, []).append((int(event.seq), int(event.seq)))
+                    lost_count += 1
+
+                gap_ranges: list[dict[str, int | str]] = []
+                for stream_id, intervals in by_stream.items():
+                    merged: list[list[int]] = []
+                    for start, end in sorted(intervals):
+                        if merged and start <= merged[-1][1] + 1:
+                            merged[-1][1] = max(merged[-1][1], end)
+                        else:
+                            merged.append([start, end])
+                    gap_ranges.extend(
+                        {"stream_id": stream_id, "from_seq": start, "to_seq": end}
+                        for start, end in merged
+                    )
+
+                marker = AgentEvent.create(
+                    stream_id=event.stream_id,
+                    kind="stream.gap",
+                    payload={
+                        "reason": "subscriber queue overflow",
+                        "gap_ranges": gap_ranges,
+                        "lost_count": lost_count,
+                        "replay_required": self.enabled,
+                        "cursor": event.seq,
+                    },
+                    actor="system",
+                )
                 try:
-                    q.get_nowait()
-                except Exception:
-                    pass
-                else:
-                    with self._drop_count_lock:
-                        self._dropped_event_count += 1
-                try:
-                    q.put_nowait(event)
+                    q.put_nowait(marker)
+                    if q.maxsize > 1:
+                        q.put_nowait(event)
                 except Exception:
                     dead_queues.append(q)
+                if lost_count:
+                    with self._drop_count_lock:
+                        self._dropped_event_count += lost_count
             except Exception:
                 dead_queues.append(q)
         if dead_queues:
@@ -1368,6 +1500,7 @@ class AgentStateStore:
                 except Exception:
                     pass
 
+    @staticmethod
     def _event_page_error(next_seq: int, message: str | None = None) -> dict[str, Any]:
         return {
             "success": False,
@@ -1384,25 +1517,17 @@ class AgentStateStore:
             },
         }
 
+
+
     def events(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> list[AgentEvent]:
-        if not self.enabled or not self.db_path.exists():
-            return []
-        self._ensure_schema()
-        con = connect_sqlite(self.db_path)
-        try:
-            cur = con.execute(
-                """
-                SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
-                FROM agent_events
-                WHERE stream_id = ? AND seq > ?
-                ORDER BY seq ASC
-                LIMIT ?
-                """,
-                (stream_id, int(after_seq), max(1, int(limit))),
-            )
-            return [AgentEvent.from_row(row) for row in cur.fetchall()]
-        finally:
-            con.close()
+        page = self.event_page(stream_id, after_seq=after_seq, limit=limit)
+        if page["success"] is not True:
+            error = page["error"]
+            message = str(error["message"])
+            if "time limit exceeded" in message.casefold():
+                raise TimeoutError(message)
+            raise RuntimeError(f"{error['code']}: {message}")
+        return [AgentEvent.from_dict(event) for event in page["events"]]
 
     def snapshot(self, stream_id: str, state: Mapping[str, Any], seq: int | None = None) -> int:
         if not self.enabled:
@@ -1481,15 +1606,53 @@ class AgentStateStore:
             con = connect_sqlite(self.db_path, isolation_level=None)
             try:
                 con.execute("BEGIN IMMEDIATE")
-                cur_ev = con.execute("DELETE FROM agent_events WHERE created_at < ?", (cutoff,))
-                deleted_events = cur_ev.rowcount if cur_ev else 0
-                con.execute("""
-                    UPDATE agent_event_cursors
-                    SET first_retained_seq = COALESCE(
-                        (SELECT MIN(seq) FROM agent_events WHERE stream_id = agent_event_cursors.stream_id),
-                        last_seq + 1
+                stream_rows = con.execute(
+                    "SELECT stream_id FROM agent_event_cursors ORDER BY stream_id"
+                ).fetchall()
+                deleted_events = 0
+                for stream_row in stream_rows:
+                    clean_stream = str(stream_row[0])
+                    cursor = con.execute(
+                        "SELECT last_seq FROM agent_event_cursors WHERE stream_id = ?",
+                        (clean_stream,),
+                    ).fetchone()
+                    last_seq = int(cursor[0]) if cursor else 0
+                    first_recent = con.execute(
+                        """
+                        SELECT MIN(seq) FROM agent_events
+                        WHERE stream_id = ? AND created_at >= ?
+                        """,
+                        (clean_stream, cutoff),
+                    ).fetchone()
+                    if first_recent and first_recent[0] is not None:
+                        first_retained_seq = int(first_recent[0])
+                        con.execute(
+                            "DELETE FROM agent_event_schema_versions WHERE stream_id = ? AND seq < ?",
+                            (clean_stream, first_retained_seq),
+                        )
+                        cur_ev = con.execute(
+                            "DELETE FROM agent_events WHERE stream_id = ? AND seq < ?",
+                            (clean_stream, first_retained_seq),
+                        )
+                    else:
+                        con.execute(
+                            "DELETE FROM agent_event_schema_versions WHERE stream_id = ?",
+                            (clean_stream,),
+                        )
+                        cur_ev = con.execute(
+                            "DELETE FROM agent_events WHERE stream_id = ?",
+                            (clean_stream,),
+                        )
+                    deleted_events += max(0, cur_ev.rowcount if cur_ev else 0)
+                    retained = con.execute(
+                        "SELECT MIN(seq) FROM agent_events WHERE stream_id = ?",
+                        (clean_stream,),
+                    ).fetchone()
+                    first_retained = int(retained[0]) if retained and retained[0] is not None else last_seq + 1
+                    con.execute(
+                        "UPDATE agent_event_cursors SET first_retained_seq = ? WHERE stream_id = ?",
+                        (first_retained, clean_stream),
                     )
-                """)
                 cur_snap = con.execute("DELETE FROM agent_snapshots WHERE created_at < ?", (cutoff,))
                 deleted_snaps = cur_snap.rowcount if cur_snap else 0
                 con.execute("COMMIT")
@@ -1556,7 +1719,7 @@ class AgentStateStore:
 
 
 class SwarmPubSub:
-    """Lightweight in-memory and SQLite-backed pubsub topic bus for swarm agent workers."""
+    """App-owned durable pubsub with bounded live fanout and explicit gaps."""
 
     _instance: SwarmPubSub | None = None
     _lock = threading.Lock()
@@ -1573,23 +1736,19 @@ class SwarmPubSub:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls(state_store)
-            elif state_store is not None and cls._instance.state_store is None:
+            elif state_store is not None:
                 cls._instance.state_store = state_store
             return cls._instance
 
     def subscribe(self, topic: str, maxsize: int = 100) -> tuple[str, queue.Queue[dict[str, Any]]]:
-        """Register a bounded listener queue for a topic."""
         clean_topic = topic.strip().lower()
         sub_id = f"sub_{uuid.uuid4().hex[:10]}"
         q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max(10, min(int(maxsize), 1000)))
         with self._mu:
-            if clean_topic not in self._subscribers:
-                self._subscribers[clean_topic] = {}
-            self._subscribers[clean_topic][sub_id] = q
+            self._subscribers.setdefault(clean_topic, {})[sub_id] = q
         return sub_id, q
 
     def unsubscribe(self, topic: str, sub_id: str) -> bool:
-        """Unregister a listener queue from a topic."""
         clean_topic = topic.strip().lower()
         with self._mu:
             subs = self._subscribers.get(clean_topic, {})
@@ -1600,72 +1759,244 @@ class SwarmPubSub:
 
     def _prune_expired_locked(self, clean_topic: str, now: float) -> None:
         cutoff = now - self.max_age_seconds
-        msgs = self._topics.get(clean_topic, [])
-        if msgs and msgs[0]["timestamp"] < cutoff:
-            self._topics[clean_topic] = [m for m in msgs if m["timestamp"] >= cutoff]
+        messages = self._topics.get(clean_topic, [])
+        if messages and messages[0]["timestamp"] < cutoff:
+            self._topics[clean_topic] = [message for message in messages if message["timestamp"] >= cutoff]
 
-    def publish(self, topic: str, message: dict[str, Any] | str, sender: str = "agent") -> dict[str, Any]:
-        """Publish a message to an ephemeral topic channel with memory bounds and TTL pruning."""
+    @staticmethod
+    def _sequence_gap_ranges(dropped: list[dict[str, Any]]) -> list[dict[str, int]]:
+        by_topic: dict[str, list[tuple[int, int]]] = {}
+        for message in dropped:
+            for gap in message.get("gap_ranges", []):
+                if isinstance(gap, dict) and gap.get("from_seq") is not None and gap.get("to_seq") is not None:
+                    by_topic.setdefault(str(message.get("topic", "")), []).append(
+                        (int(gap["from_seq"]), int(gap["to_seq"]))
+                    )
+            seq = message.get("sequence")
+            if seq is not None and message.get("kind") != "pubsub.gap":
+                by_topic.setdefault(str(message.get("topic", "")), []).append((int(seq), int(seq)))
+        ranges: list[dict[str, int]] = []
+        for intervals in by_topic.values():
+            merged: list[list[int]] = []
+            for start, end in sorted(intervals):
+                if merged and start <= merged[-1][1] + 1:
+                    merged[-1][1] = max(merged[-1][1], end)
+                else:
+                    merged.append([start, end])
+            ranges.extend({"from_seq": start, "to_seq": end} for start, end in merged)
+        return ranges
+
+    @classmethod
+    def _enqueue(cls, q: queue.Queue[dict[str, Any]], message: dict[str, Any]) -> None:
+        try:
+            q.put_nowait(message)
+            return
+        except queue.Full:
+            pass
+        dropped: list[dict[str, Any]] = []
+        while q.qsize() > q.maxsize - 2:
+            try:
+                dropped.append(q.get_nowait())
+            except queue.Empty:
+                break
+        gaps = cls._sequence_gap_ranges(dropped)
+        lost_count = sum(
+            int(item.get("payload", {}).get("lost_count", 0) or 0)
+            if item.get("kind") == "pubsub.gap"
+            else 1
+            for item in dropped
+        )
+        marker = {
+            "id": f"gap_{uuid.uuid4().hex[:12]}",
+            "topic": message.get("topic", ""),
+            "kind": "pubsub.gap",
+            "timestamp": time.time(),
+            "sequence": message.get("sequence"),
+            "gap_ranges": gaps,
+            "payload": {
+                "gap_ranges": gaps,
+                "cursor": message.get("sequence"),
+                "lost_count": lost_count,
+                "replay_required": message.get("sequence") is not None,
+            },
+        }
+        q.put_nowait(marker)
+        q.put_nowait(message)
+
+    def publish(
+        self,
+        topic: str,
+        message: dict[str, Any] | str,
+        sender: str = "agent",
+        idempotency_key: str = "",
+    ) -> dict[str, Any]:
         clean_topic = topic.strip().lower()
         now = time.time()
         msg_payload = message if isinstance(message, dict) else {"text": str(message)}
+        event_id = f"pub_{uuid.uuid4().hex[:12]}"
+        sequence: int | None = None
+        durable = bool(self.state_store is not None and self.state_store.enabled)
+        if idempotency_key:
+            stable_id = uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                "pubsub:" + clean_topic + ":" + idempotency_key,
+            ).hex[:12]
+            event_id = f"pub_{stable_id}"
+        if durable:
+            persisted = self.state_store.append(
+                AgentEvent(
+                    event_id=event_id,
+                    stream_id=f"pubsub:{clean_topic}",
+                    kind="pubsub.message",
+                    payload={
+                        "message_id": event_id,
+                        "topic": clean_topic,
+                        "sender": sender,
+                        "message": msg_payload,
+                    },
+                    idempotency_key=idempotency_key or f"publish:{event_id}",
+                    correlation_id="",
+                    actor=sender,
+                    created_at=now,
+                ),
+                strict_idempotency=True,
+            )
+            if persisted.error or persisted.retryable or persisted.event is None:
+                return {
+                    "success": False,
+                    "error": persisted.error or "durable pubsub append failed",
+                    "retryable": persisted.retryable,
+                    "durable": True,
+                    "replay_available": True,
+                }
+            event_id = str(persisted.event.payload.get("message_id") or persisted.event.event_id)
+            now = persisted.event.created_at
+            sequence = persisted.seq
+            if persisted.duplicate:
+                return {
+                    "success": True,
+                    "duplicate": True,
+                    "topic": clean_topic,
+                    "message_id": event_id,
+                    "timestamp": now,
+                    "cursor": sequence,
+                    "durable": True,
+                    "replay_available": True,
+                }
         event = {
-            "id": f"pub_{uuid.uuid4().hex[:12]}",
+            "id": event_id,
             "topic": clean_topic,
             "sender": sender,
             "timestamp": now,
             "payload": msg_payload,
+            "sequence": sequence,
+            "kind": "pubsub.message",
         }
         with self._mu:
-            if clean_topic not in self._topics:
-                if len(self._topics) > 128:
-                    empty = [t for t, ms in self._topics.items() if not ms or (now - ms[-1]["timestamp"] > self.max_age_seconds)]
-                    for t in empty:
-                        self._topics.pop(t, None)
-                self._topics[clean_topic] = []
-            self._topics[clean_topic].append(event)
-            if len(self._topics[clean_topic]) > 200:
-                self._topics[clean_topic] = self._topics[clean_topic][-200:]
+            bucket = self._topics.setdefault(clean_topic, [])
+            bucket.append(event)
+            if len(bucket) > 200:
+                self._topics[clean_topic] = bucket[-200:]
             self._prune_expired_locked(clean_topic, now)
+            for q in list(self._subscribers.get(clean_topic, {}).values()):
+                self._enqueue(q, event)
+        result = {
+            "success": True,
+            "topic": clean_topic,
+            "message_id": event_id,
+            "timestamp": now,
+            "cursor": sequence,
+            "durable": durable,
+            "replay_available": durable,
+        }
+        if durable and persisted.duplicate:
+            result["duplicate"] = True
+        return result
 
-            # Fan out to bounded subscriber queues without leaking
-            for sub_id, q in list(self._subscribers.get(clean_topic, {}).items()):
-                try:
-                    q.put_nowait(event)
-                except queue.Full:
-                    try:
-                        q.get_nowait()
-                        q.put_nowait(event)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-
-        if self.state_store and self.state_store.enabled:
-            try:
-                self.state_store.append(
-                    AgentEvent.create(
-                        stream_id=f"pubsub:{clean_topic}",
-                        kind="pubsub_message",
-                        payload={"sender": sender, "message": msg_payload},
-                        actor=sender,
-                    )
-                )
-            except Exception:
-                pass
-
-        return {"success": True, "topic": clean_topic, "message_id": event["id"], "timestamp": now}
-
-    def poll(self, topic: str, since_timestamp: float = 0.0, limit: int = 50) -> dict[str, Any]:
-        """Poll messages from a topic published after since_timestamp."""
+    def poll(
+        self,
+        topic: str,
+        since_timestamp: float = 0.0,
+        limit: int = 50,
+        after_seq: int = 0,
+    ) -> dict[str, Any]:
         clean_topic = topic.strip().lower()
+        page_limit = max(1, min(int(limit), 1000))
+        durable = bool(self.state_store is not None and self.state_store.enabled)
+        if durable:
+            page = self.state_store.event_page(
+                stream_id=f"pubsub:{clean_topic}",
+                after_seq=after_seq,
+                limit=page_limit,
+            )
+            if page.get("success") is not True:
+                return {
+                    "success": False,
+                    "topic": clean_topic,
+                    "count": 0,
+                    "messages": [],
+                    "cursor": page["next_seq"],
+                    "after_seq": page["next_seq"],
+                    "first_retained_seq": None,
+                    "last_seq": 0,
+                    "has_more": False,
+                    "gap_ranges": [],
+                    "gap": None,
+                    "cursor_reset": False,
+                    "error": page.get("error"),
+                    "durable": True,
+                    "replay_available": True,
+                }
+            messages = []
+            for event in page["events"]:
+                payload = dict(event.payload)
+                messages.append({
+                    "id": str(payload.get("message_id") or event.event_id),
+                    "topic": clean_topic,
+                    "sender": str(payload.get("sender", event.actor)),
+                    "timestamp": event.created_at,
+                    "payload": payload.get("message", {}),
+                    "sequence": event.seq,
+                })
+            return {
+                "success": True,
+                "topic": clean_topic,
+                "count": len(messages),
+                "messages": messages,
+                "cursor": page["next_seq"],
+                "after_seq": max(0, int(after_seq)),
+                "first_retained_seq": page["first_retained_seq"],
+                "last_seq": page["last_seq"],
+                "has_more": page["has_more"],
+                "gap_ranges": page["gap_ranges"],
+                "gap": page["gap_ranges"][0] if page["gap_ranges"] else None,
+                "cursor_reset": page["cursor_reset"],
+                "durable": True,
+                "replay_available": True,
+            }
+
         now = time.time()
         with self._mu:
             self._prune_expired_locked(clean_topic, now)
-            msgs = [m for m in self._topics.get(clean_topic, []) if m["timestamp"] > since_timestamp]
+            bucket = self._topics.get(clean_topic, [])
+            messages = [item for item in bucket if item["timestamp"] > since_timestamp][:page_limit]
+            first_timestamp = bucket[0]["timestamp"] if bucket else None
+            retention_gap = bool(first_timestamp is not None and since_timestamp < first_timestamp and since_timestamp > 0)
         return {
             "success": True,
             "topic": clean_topic,
-            "count": len(msgs[:limit]),
-            "messages": msgs[:limit],
+            "count": len(messages),
+            "messages": messages,
+            "cursor": None,
+            "after_seq": max(0, int(after_seq)),
+            "first_retained_seq": None,
+            "last_seq": None,
+            "has_more": False,
+            "gap_ranges": [],
+            "gap": {
+                "reason": "ephemeral retention",
+                "first_retained_timestamp": first_timestamp,
+            } if retention_gap else None,
+            "durable": False,
+            "replay_available": False,
         }

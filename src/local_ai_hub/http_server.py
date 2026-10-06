@@ -69,6 +69,46 @@ os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 APP: LocalAIApp | None = None
 
 
+def _trusted_project_context(root: str) -> Any | None:
+    """Resolve coordination identity from server project config, never request data."""
+    root = str(root or "").strip()
+    if not root or APP is None:
+        return None
+    state_store = getattr(APP, "agent_state", None)
+    if state_store is None:
+        return None
+    try:
+        from .project_config import resolve_project_context
+
+        return resolve_project_context(root, Path(state_store.db_path).parent)
+    except Exception:
+        # Project identity is optional: resolution failure keeps the physical
+        # worktree local and cannot grant cross-worktree access.
+        return None
+
+
+def _bind_repository_memory_provenance(
+    provenance: Mapping[str, Any],
+    *,
+    root: str,
+    tenant: str,
+    project_context: Any | None,
+) -> dict[str, Any]:
+    """Bind repository source and shared identity from trusted server context."""
+    result = dict(provenance)
+    result.pop("repository_id", None)
+    physical_root = str(getattr(project_context, "root", root) or root).strip()
+    if physical_root:
+        result["root"] = physical_root
+    if tenant:
+        result["tenant"] = tenant
+    coordination_id = str(
+        getattr(project_context, "coordination_id", None) or ""
+    ).strip()
+    if coordination_id:
+        # Reuse existing provenance field, populated only from ProjectContext.
+        result["repository_id"] = coordination_id
+    return result
 def _lease_coordination_id(root: str) -> str | None:
     """Resolve lease namespace from server-side project identity only."""
     if APP is None:
@@ -1132,8 +1172,8 @@ class Handler(BaseHTTPRequestHandler):
             return {"success": False, "error": "Hub app not initialized"}
         state_dir = Path(APP.config.get("server", {}).get("state_dir", "state")).resolve()
         db_map = {
-            "agent_state": state_dir / "agent_state.sqlite3",
-            "cache": state_dir / "cache.sqlite3",
+            "agent_state": state_dir / "agent_state.sqlite",
+            "cache": state_dir / "cache.sqlite",
             "telemetry": state_dir / "telemetry.sqlite3",
         }
         target_db = db_map.get(db_name.lower())
@@ -2162,8 +2202,37 @@ class Handler(BaseHTTPRequestHandler):
         try:
             # Subscribe before fetching history. An event appended in the replay
             # window is then either replayed or queued; duplicate queued events
-            # are discarded by the sequence check below.
+            # are discarded by the per-stream sequence check below.
+            last_seq_by_stream: dict[str, int] = {}
             last_seq = after_seq
+            stream_success = True
+
+            def note_seq(event_stream: str, seq: int) -> None:
+                last_seq_by_stream[event_stream] = max(
+                    last_seq_by_stream.get(event_stream, after_seq), seq
+                )
+
+            def current_last_seq() -> int:
+                if stream_id:
+                    return last_seq_by_stream.get(stream_id, last_seq)
+                return max([after_seq, *last_seq_by_stream.values()])
+
+            def write_sse(event_name: str, payload: Mapping[str, Any], seq: int | None = None) -> bool:
+                nonlocal stream_success, stream_error
+                event_id = f"id: {seq}\n" if seq is not None else ""
+                msg = (
+                    f"{event_id}event: {event_name}\n"
+                    f"data: {json_dumps(payload, separators=(',', ':'))}\n\n"
+                ).encode("utf-8")
+                try:
+                    self.wfile.write(msg)
+                    self.wfile.flush()
+                    return True
+                except OSError:
+                    stream_success = False
+                    stream_error = "client disconnected"
+                    return False
+
             if stream_id and after_seq >= 0:
                 replay_cursor = after_seq
                 replay_through_seq = None
@@ -2218,6 +2287,7 @@ class Handler(BaseHTTPRequestHandler):
                                 return
                             replay_cursor = checkpoint
                             last_seq = checkpoint
+                            last_seq_by_stream[stream_id] = checkpoint
                             continue
                     page_payload = json_dumps(page, separators=(",", ":"))
                     page_msg = f"id: {page.get('next_seq', replay_cursor)}\nevent: replay_page\ndata: {page_payload}\n\n".encode("utf-8")
@@ -2242,6 +2312,7 @@ class Handler(BaseHTTPRequestHandler):
                         if event_seq <= last_seq or (kind and event_kind != kind):
                             continue
                         last_seq = event_seq
+                        note_seq(stream_id, event_seq)
                         payload = json_dumps(raw_event, separators=(",", ":"))
                         msg = f"id: {event_seq}\nevent: {event_kind}\ndata: {payload}\n\n".encode("utf-8")
                         try:
@@ -2281,28 +2352,48 @@ class Handler(BaseHTTPRequestHandler):
             while True:
                 remaining = timeout - (time.monotonic() - start_time)
                 if remaining <= 0:
-                    try:
-                        timeout_msg = f"event: stream_timeout\ndata: {{\"reconnect\":true,\"next_seq\":{last_seq},\"last_seq\":{last_seq}}}\n\n".encode("utf-8")
-                        self.wfile.write(timeout_msg)
-                        self.wfile.flush()
-                    except OSError:
-                        stream_success = False
-                        stream_error = "client disconnected"
+                    write_sse(
+                        "stream_timeout",
+                        {
+                            "reconnect": True,
+                            "last_seq": current_last_seq(),
+                            "next_seq": current_last_seq(),
+                            "last_seq_by_stream": dict(last_seq_by_stream),
+                        },
+                    )
                     break
                 try:
                     ev = q.get(timeout=min(1.0, remaining))
-                    if ev.seq is not None and ev.seq <= last_seq:
+                    if ev.kind == "stream.gap":
+                        ranges = ev.payload.get("gap_ranges", [])
+                        matching_ranges = [
+                            gap for gap in ranges
+                            if isinstance(gap, Mapping)
+                            and (not stream_id or str(gap.get("stream_id", ev.stream_id)) == stream_id)
+                        ]
+                        relevant = not stream_id or ev.stream_id == stream_id or matching_ranges
+                        if not relevant:
+                            continue
+                        for gap in matching_ranges:
+                            gap_stream = str(gap.get("stream_id", ev.stream_id))
+                            try:
+                                note_seq(gap_stream, int(gap.get("to_seq", 0)))
+                            except (TypeError, ValueError):
+                                continue
+                        if not write_sse(ev.kind, ev.to_dict()):
+                            break
                         continue
+
                     if stream_id and ev.stream_id != stream_id:
                         continue
+                    if ev.seq is not None:
+                        if ev.seq <= last_seq_by_stream.get(ev.stream_id, after_seq):
+                            continue
+                        note_seq(ev.stream_id, ev.seq)
                     if kind and ev.kind != kind:
                         continue
-                    if ev.seq is not None:
-                        last_seq = max(last_seq, ev.seq)
-                    payload = json_dumps(ev.to_dict(), separators=(",", ":"))
-                    msg = f"id: {ev.seq or 0}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
-                    self.wfile.write(msg)
-                    self.wfile.flush()
+                    if not write_sse(ev.kind, ev.to_dict(), ev.seq):
+                        break
                 except queue.Empty:
                     try:
                         self.wfile.write(b": keep-alive\n\n")
@@ -4027,6 +4118,18 @@ class Handler(BaseHTTPRequestHandler):
                             identity_value = payload.get(identity_key) or rec_data.get(identity_key)
                             if identity_value not in (None, ""):
                                 provenance[identity_key] = str(identity_value)
+                        if scope_val is AgentScope.REPOSITORY:
+                            provenance = _bind_repository_memory_provenance(
+                                provenance,
+                                root=str(root_val or ""),
+                                tenant=str(tenant_val or ""),
+                                project_context=_trusted_project_context(str(root_val or "")),
+                            )
+                            project_context = _trusted_project_context(str(root_val or ""))
+                            if project_context is not None and str(
+                                getattr(project_context, "root", "") or ""
+                            ).strip():
+                                resolved_scope_id = str(project_context.root)
                         record = MemoryRecord.create(
                             kind=kind_val,
                             scope=scope_val,
@@ -4297,6 +4400,24 @@ class Handler(BaseHTTPRequestHandler):
                     # not identify a human approver, so they fail closed.
                     approver = str(getattr(self, "_authorization_actor", "unrecognized"))
                     try:
+                        root_input = str(payload.get("root") or "").strip()
+                        project_context = _trusted_project_context(root_input)
+                        root_value = getattr(project_context, "root", root_input)
+                        repository_id_value = getattr(project_context, "coordination_id", None)
+                        promotion_scope, promotion_scope_id, ambiguous_scope = _resolve_memory_scope(
+                            _parse_memory_scope(payload.get("scope")),
+                            scope_id=payload.get("scope_id"),
+                            root=root_value,
+                            repository_id=repository_id_value,
+                            tenant=tenant,
+                            task_id=payload.get("task_id"),
+                            session_id=payload.get("session_id"),
+                            clone_id=payload.get("clone_id"),
+                            worktree_id=payload.get("worktree_id"),
+                            branch=payload.get("branch"),
+                        )
+                        if ambiguous_scope or promotion_scope is None:
+                            self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
                         promoted = APP.agent_memory.promote(
                             str(payload.get("record_id", "")),
                             target_scope,
@@ -4306,6 +4427,8 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(200, {"success": True, "record": promoted.to_dict()}); return
                     except ApprovalRequiredError as exc:
                         self._send(403, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                    except ValueError as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "quarantine":
@@ -4511,7 +4634,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 if action == "compile":
-                    req = build_context_request(payload, tenant=tenant)
+                    req = build_context_request(
+                        payload,
+                        tenant=tenant,
+                        project_context=_trusted_project_context(str(payload.get("root") or "")),
+                    )
                     if not req.task_id:
                         self._send(400, {
                             "success": False,
@@ -5373,7 +5500,7 @@ class Handler(BaseHTTPRequestHandler):
                             "error": "task context compiler unavailable",
                         }); return
                     if guarded_requested and has_task_id and getattr(APP, "agent_context", None):
-                        task_request = build_context_request({
+                        task_request_payload = {
                             "task_id": payload.get("task_id", ""),
                             "session_id": payload.get("session_id", ""),
                             "token_budget": max_tokens,
@@ -5389,7 +5516,11 @@ class Handler(BaseHTTPRequestHandler):
                             "branch": payload.get("branch", ""),
                             "repository_id": payload.get("repository_id", ""),
                             "include_diagnostics": payload.get("include_diagnostics", False),
-                        }, tenant=tenant, identity=self._agent())
+                        }
+                        task_request = build_context_request(
+                            task_request_payload, tenant=tenant, identity=self._agent(),
+                            project_context=_trusted_project_context(root),
+                        )
                         try:
                             compiled = APP.agent_context.compile(task_request)
                             unified = compose_task_context(
@@ -5638,7 +5769,7 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/api/coord/pubsub_publish", "/api/pubsub_publish"}:
                 self._send(200, APP.services.pubsub_publish(str(payload.get("topic", "default")), payload.get("message", ""), sender=str(payload.get("publisher", payload.get("sender", "agent"))))); return
             if path in {"/api/coord/pubsub_poll", "/api/pubsub_poll"}:
-                self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), since_timestamp=float(payload.get("since_timestamp", 0.0)), limit=int(payload.get("limit", 50)))); return
+                self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), since_timestamp=float(payload.get("since_timestamp", 0.0)), limit=int(payload.get("limit", 50)), after_seq=int(payload.get("after_seq", 0)))); return
             if path in {"/api/coord/simulate_merge", "/api/simulate_merge"}:
                 self._send(200, APP.services.simulate_merge(str(payload.get("root", ".")), str(payload.get("source_branch", "")), target_branch=str(payload.get("target_branch", "HEAD")))); return
             if path in {"/api/task/eval_suite", "/api/eval_suite"}:

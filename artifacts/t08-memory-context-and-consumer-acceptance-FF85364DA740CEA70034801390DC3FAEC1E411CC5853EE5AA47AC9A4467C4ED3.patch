@@ -1,0 +1,3335 @@
+diff --git a/src/local_ai_hub/agent_tasks.py b/src/local_ai_hub/agent_tasks.py
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -3,13 +3,11 @@
+ from .json_utils import dumps as json_dumps
+ 
+ import json
++import inspect
++import hashlib
+ import sqlite3
+-import hashlib
+-import inspect
+-import math
+ import threading
+ import time
+-import unicodedata
+ import uuid
+ from contextlib import closing
+ from dataclasses import dataclass, field
+@@ -20,8 +18,6 @@
+ from .agent_events import AgentEvent, AgentStateStore
+ from .agent_identity import AgentScope, ScopeContext
+ from .sqlite_support import connect_sqlite, retry_busy
+-
+-MAX_TASK_QUERY_SCAN_ROWS = 10_000
+ 
+ 
+ class CompletionGateError(RuntimeError):
+@@ -85,14 +81,12 @@
+     constraints: tuple[str, ...] = ()
+     risk_profile: str = "normal"
+     slo_profile: dict[str, Any] = field(default_factory=dict)
+-    description: str = ""
+ 
+     def __post_init__(self) -> None:
+         goal = str(self.goal or "").strip()
+         if not goal:
+             raise ValueError("task contract requires goal")
+         object.__setattr__(self, "goal", goal)
+-        object.__setattr__(self, "description", str(self.description or "").strip())
+         if not isinstance(self.scope, AgentScope):
+             object.__setattr__(self, "scope", AgentScope.parse(self.scope))
+         if not isinstance(self.acceptance_criteria, tuple):
+@@ -106,7 +100,6 @@
+         scope_val = self.scope.value if isinstance(self.scope, AgentScope) else (getattr(self.scope, "value", None) or str(self.scope))
+         return {
+             "goal": self.goal,
+-            "description": self.description,
+             "acceptance_criteria": list(self.acceptance_criteria),
+             "scope": scope_val,
+             "non_goals": list(self.non_goals),
+@@ -117,19 +110,22 @@
+ 
+     @classmethod
+     def from_dict(cls, data: Mapping[str, Any]) -> GoalContract:
+-        explicit_goal = next(
+-            (data.get(key) for key in ("goal", "title", "summary", "intent", "task", "name") if data.get(key)),
+-            None,
+-        )
+-        goal_val = str(explicit_goal or data.get("description") or "").strip()
+-        description = str(data.get("description") or "").strip() if explicit_goal else ""
++        goal_val = str(
++            data.get("goal")
++            or data.get("title")
++            or data.get("description")
++            or data.get("summary")
++            or data.get("intent")
++            or data.get("task")
++            or data.get("name")
++            or ""
++        ).strip()
+         if not goal_val:
+             crit = data.get("acceptance_criteria")
+             if crit and isinstance(crit, (list, tuple)) and len(crit) > 0:
+                 goal_val = f"Complete task: {crit[0]}"
+         return cls(
+             goal=goal_val,
+-            description=description,
+             acceptance_criteria=tuple(data.get("acceptance_criteria") or ()),
+             scope=AgentScope.parse(data.get("scope", AgentScope.TASK.value)),
+             non_goals=tuple(data.get("non_goals") or ()),
+@@ -218,12 +214,20 @@
+         }
+ 
+ 
+-class TaskList(list[TaskState]):
+-    """List-compatible task page with an explicit bounded-query truncation signal."""
+-
+-    def __init__(self, tasks: list[TaskState] | tuple[TaskState, ...] = (), *, query_truncated: bool = False) -> None:
+-        super().__init__(tasks)
+-        self.query_truncated = bool(query_truncated)
++def _validate_checkpoint_memory_context(
++    current_state_data: Mapping[str, Any],
++    requested_state_data: Mapping[str, Any],
++) -> None:
++    """Prevent checkpoint clients from replacing server-injected memory."""
++    if "memory_context" not in requested_state_data:
++        return
++    if (
++        "memory_context" not in current_state_data
++        or requested_state_data["memory_context"] != current_state_data["memory_context"]
++    ):
++        raise CompletionGateError(
++            "Cannot checkpoint: memory_context is server-managed and cannot be modified"
++        )
+ 
+ 
+ class TaskStore:
+@@ -237,12 +241,19 @@
+         self.state_store = state_store
+         self.default_heartbeat_ttl = float(default_heartbeat_ttl)
+         self.policy_engine = policy_engine
++        self.verification_store: Any | None = None
+         self.memory_store: Any | None = None
+         self.memory_context_compiler: Any | None = None
+         self.incident_store: Any | None = None
+         self._lock = threading.RLock()
+         self._initialized = False
+         self._init_projection_table()
++
++    def set_policy_engine(self, policy_engine: Any) -> None:
++        self.policy_engine = policy_engine
++
++    def set_verification_store(self, verification_store: Any) -> None:
++        self.verification_store = verification_store
+ 
+     def set_memory_adoption(
+         self,
+@@ -289,6 +300,19 @@
+             trace_tenant = str(current_trace_context().get("tenant", "") or "").strip()
+             tenant = trace_tenant
+             root = str(root_override or context.repository_id or "").strip()
++            coordination_id = ""
++            if root:
++                try:
++                    from .project_config import resolve_project_context
++
++                    project = resolve_project_context(
++                        root, Path(self.state_store.db_path).parent
++                    )
++                    coordination_id = str(project.coordination_id or "").strip()
++                except Exception:
++                    # Failed or unavailable identity resolution keeps task
++                    # adoption scoped to this physical worktree.
++                    coordination_id = ""
+             tenant_key = hashlib.sha256(
+                 f"agent-task-memory-tenant\\0{tenant}".encode("utf-8")
+             ).hexdigest() if tenant else ""
+@@ -303,18 +327,6 @@
+                     "warnings": [{"code": "memory_tenant_mismatch"}],
+                     "estimated_tokens": 0,
+                 }
+-
+-            coordination_id = ""
+-            if root:
+-                try:
+-                    from .project_config import resolve_project_context
+-
+-                    project = resolve_project_context(
+-                        root, Path(self.state_store.db_path).parent
+-                    )
+-                    coordination_id = str(project.coordination_id or "").strip()
+-                except Exception:
+-                    coordination_id = ""
+ 
+             request = ContextRequest(
+                 task_id=task_id,
+@@ -640,8 +652,126 @@
+                     f"Cannot transition to COMPLETED: volatile memory '{record_id}' lacks current-source check"
+                 )
+ 
+-    def set_policy_engine(self, policy_engine: Any) -> None:
+-        self.policy_engine = policy_engine
++    def _verify_completion(self, task: TaskState) -> None:
++        self._validate_memory_audit(task)
++        if not task.contract.acceptance_criteria:
++            return
++
++        state_data = task.checkpoint.state_data
++        worktree = state_data.get("worktree")
++        repo_root = worktree.get("repo_root") if isinstance(worktree, Mapping) else None
++        if not isinstance(repo_root, (str, Path)) or not str(repo_root).strip():
++            repo_root = state_data.get("repo_root")
++        if not isinstance(repo_root, (str, Path)) or not str(repo_root).strip():
++            context_repo_root = task.context.repository_id
++            if isinstance(context_repo_root, (str, Path)) and str(context_repo_root).strip():
++                try:
++                    if Path(context_repo_root).expanduser().is_dir():
++                        repo_root = context_repo_root
++                except (OSError, TypeError, ValueError):
++                    pass
++        has_repo_root = isinstance(repo_root, (str, Path)) and bool(str(repo_root).strip())
++        repository_revision = str(state_data.get("repository_revision", "") or "").strip()
++        mutation_generation = state_data.get("mutation_generation", 0)
++        if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int) or mutation_generation < 0:
++            raise CompletionGateError(
++                "Cannot transition to COMPLETED: task mutation_generation is invalid"
++            )
++
++        if has_repo_root:
++            try:
++                from .project_config import resolve_project_context
++
++                project = resolve_project_context(repo_root, Path(self.state_store.db_path).parent)
++                settings = project.settings
++                verification_rules = settings.verification_rules
++                configured_criteria = tuple(settings.commands)
++                if not isinstance(verification_rules, Mapping) or not isinstance(settings.commands, Mapping):
++                    raise ValueError("project verification settings are invalid")
++            except Exception as exc:
++                raise CompletionGateError(
++                    "Cannot transition to COMPLETED: project verification config could not be resolved"
++                ) from exc
++        else:
++            verification_rules = {}
++            configured_criteria = ()
++        acceptance = set(task.contract.acceptance_criteria)
++        active_rules = any(str(key).strip() in acceptance for key in verification_rules)
++
++        verifier = getattr(self, "verification_store", None)
++        if verifier is None:
++            try:
++                from .agent_verification import VerificationStore
++
++                verifier = VerificationStore(self.state_store, task_store=self)
++                self.verification_store = verifier
++            except Exception as exc:
++                raise CompletionGateError(
++                    "Cannot transition to COMPLETED: verification evaluator is unavailable"
++                ) from exc
++
++        completion = getattr(verifier, "completion", None)
++        if not callable(completion):
++            raise CompletionGateError(
++                "Cannot transition to COMPLETED: verification evaluator has no completion method"
++            )
++        try:
++            parameters = inspect.signature(completion).parameters
++            supports_kwargs = any(
++                parameter.kind is inspect.Parameter.VAR_KEYWORD
++                for parameter in parameters.values()
++            )
++            supports_project_rules = {
++                "current_revision",
++                "current_mutation_generation",
++                "verification_rules",
++                "configured_criteria",
++            }.issubset(parameters)
++            if supports_project_rules:
++                if active_rules and not repository_revision:
++                    raise CompletionGateError(
++                        "Cannot transition to COMPLETED: trusted repository_revision is unavailable"
++                    )
++                result = completion(
++                    task.task_id,
++                    current_revision=repository_revision,
++                    current_mutation_generation=mutation_generation,
++                    verification_rules=verification_rules,
++                    configured_criteria=configured_criteria,
++                )
++            else:
++                if active_rules:
++                    raise CompletionGateError(
++                        "Cannot transition to COMPLETED: verification evaluator does not support project rules"
++                    )
++                legacy_kwargs = {}
++                if repository_revision and ("current_revision" in parameters or supports_kwargs):
++                    legacy_kwargs["current_revision"] = repository_revision
++                result = completion(task.task_id, **legacy_kwargs)
++        except CompletionGateError:
++            raise
++        except Exception as exc:
++            raise CompletionGateError(
++                f"Cannot transition to COMPLETED: verification evaluator failed ({type(exc).__name__})"
++            ) from exc
++
++        complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
++        if complete is not True:
++            unsatisfied = (
++                result.get("unsatisfied_criteria", ())
++                if isinstance(result, Mapping)
++                else getattr(result, "unsatisfied_criteria", ())
++            )
++            stale = result.get("stale_criteria", ()) if isinstance(result, Mapping) else getattr(result, "stale_criteria", ())
++            details = []
++            if unsatisfied:
++                details.append(f"unsatisfied={tuple(unsatisfied)}")
++            if stale:
++                details.append(f"stale={tuple(stale)}")
++            suffix = f" ({'; '.join(details)})" if details else ""
++            raise CompletionGateError(
++                f"Cannot transition to COMPLETED: verification evaluator rejected completion{suffix}"
++            )
+ 
+     def _db_path_available(self) -> bool:
+         """Return whether the projection database path is usable.
+@@ -669,6 +799,23 @@
+             self.state_store._ensure_schema()
+             def _setup() -> None:
+                 with closing(connect_sqlite(self.state_store.db_path)) as con:
++                    from .sqlite_support import validate_durable_schema
++
++                    validate_durable_schema(
++                        con,
++                        self.state_store.db_path,
++                        {
++                            "agent_tasks_projection": [
++                                ("task_id", "TEXT", 0, 1), ("status", "TEXT", 1, 0),
++                                ("owner", "TEXT", 1, 0), ("lease_id", "TEXT", 1, 0),
++                                ("contract", "TEXT", 1, 0), ("context", "TEXT", 1, 0),
++                                ("checkpoint", "TEXT", 1, 0), ("receipts", "TEXT", 1, 0),
++                                ("heartbeat_expires_at", "REAL", 1, 0),
++                                ("created_at", "REAL", 1, 0), ("updated_at", "REAL", 1, 0),
++                            ],
++                        },
++                        required_if_event_kinds={"agent_tasks_projection": ("task.%",)},
++                    )
+                     con.execute(
+                         """
+                         CREATE TABLE IF NOT EXISTS agent_tasks_projection (
+@@ -704,7 +851,6 @@
+                         ON agent_tasks_projection (status, updated_at DESC);
+                         """
+                     )
+-                    self._backfill_task_search_index(con)
+                     con.commit()
+             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+             self._initialized = True
+@@ -731,19 +877,7 @@
+             try:
+                 from .process_utils import create_git_worktree
+                 r_root = repo_root or context.repository_id or "."
+-                if context.repository_id and Path(r_root).expanduser().resolve(strict=False) != Path(context.repository_id).expanduser().resolve(strict=False):
+-                    raise ValueError("task worktree repository does not match task context")
+-                worktree_ttl = 24 * 60 * 60.0
+-                worktree_expiry = now + worktree_ttl
+-                wt_res = create_git_worktree(
+-                    r_root,
+-                    branch_name=f"hub/task-{t_id}",
+-                    task_id=t_id,
+-                    owner=actor,
+-                    created_at=now,
+-                    ttl_seconds=worktree_ttl,
+-                    expires_at=worktree_expiry,
+-                )
++                wt_res = create_git_worktree(r_root, branch_name=f"hub/task-{t_id}")
+                 if wt_res.get("success"):
+                     initial_sd["worktree"] = wt_res
+             except Exception:
+@@ -799,163 +933,21 @@
+             return None
+         return self._row_to_state(row)
+ 
+-    @staticmethod
+-    def _normalize_search_text(value: Any) -> str:
+-        return unicodedata.normalize("NFKC", str(value or "")).casefold()
+-
+-    @staticmethod
+-    def _collect_search_values(value: Any, fields: list[str]) -> None:
+-        if isinstance(value, Mapping):
+-            for item in value.values():
+-                TaskStore._collect_search_values(item, fields)
+-        elif isinstance(value, (list, tuple, set)):
+-            for item in value:
+-                TaskStore._collect_search_values(item, fields)
+-        elif value is not None:
+-            text = str(value).strip()
+-            if text:
+-                fields.append(text)
+-
+-    @staticmethod
+-    def _searchable_task_fields(
+-        task_id: str,
+-        contract: Mapping[str, Any],
+-        checkpoint: Mapping[str, Any],
+-        context: Mapping[str, Any] | None = None,
+-    ) -> tuple[str, ...]:
+-        fields = [str(task_id)]
+-        for source in (contract, context or {}, checkpoint):
+-            TaskStore._collect_search_values(source, fields)
+-        return tuple(fields)
+-
+-    @classmethod
+-    def _search_grams(cls, values: Any) -> set[str]:
+-        if isinstance(values, str):
+-            values = (values,)
+-        grams: set[str] = set()
+-        for value in values:
+-            normalized = cls._normalize_search_text(value)
+-            grams.update(normalized[index:index + 3] for index in range(max(0, len(normalized) - 2)))
+-        return grams
+-
+-    @classmethod
+-    def _write_task_search_index(
+-        cls,
+-        con: sqlite3.Connection,
+-        task_id: str,
+-        fields: tuple[str, ...],
+-    ) -> None:
+-        con.execute("DELETE FROM agent_task_search_grams WHERE task_id = ?", (task_id,))
+-        con.execute(
+-            "INSERT OR REPLACE INTO agent_task_search_documents(task_id, fields) VALUES (?, ?)",
+-            (task_id, json_dumps(list(fields))),
+-        )
+-        con.executemany(
+-            "INSERT INTO agent_task_search_grams(task_id, gram) VALUES (?, ?)",
+-            ((task_id, gram) for gram in sorted(cls._search_grams(fields))),
+-        )
+-
+-    @classmethod
+-    def _backfill_task_search_index(cls, con: sqlite3.Connection) -> None:
+-        con.execute(
+-            "CREATE TABLE IF NOT EXISTS agent_task_search_documents "
+-            "(task_id TEXT PRIMARY KEY, fields TEXT NOT NULL)"
+-        )
+-        con.execute(
+-            "CREATE TABLE IF NOT EXISTS agent_task_search_grams "
+-            "(task_id TEXT NOT NULL, gram TEXT NOT NULL, PRIMARY KEY(task_id, gram))"
+-        )
+-        con.execute(
+-            "CREATE INDEX IF NOT EXISTS idx_agent_task_search_grams_gram "
+-            "ON agent_task_search_grams(gram, task_id)"
+-        )
+-        rows = con.execute(
+-            "SELECT task_id, contract, context, checkpoint FROM agent_tasks_projection"
+-        ).fetchall()
+-        for task_id, contract_raw, context_raw, checkpoint_raw in rows:
+-            contract = json.loads(contract_raw or "{}")
+-            context = json.loads(context_raw or "{}")
+-            checkpoint = json.loads(checkpoint_raw or "{}")
+-            fields = cls._searchable_task_fields(task_id, contract, checkpoint, context)
+-            expected = cls._search_grams(fields)
+-            document = con.execute(
+-                "SELECT fields FROM agent_task_search_documents WHERE task_id = ?", (task_id,)
+-            ).fetchone()
+-            existing = {
+-                str(row[0]) for row in con.execute(
+-                    "SELECT gram FROM agent_task_search_grams WHERE task_id = ?", (task_id,)
+-                ).fetchall()
+-            }
+-            if not document or document[0] != json_dumps(list(fields)) or existing != expected:
+-                cls._write_task_search_index(con, task_id, fields)
+-        con.execute(
+-            "DELETE FROM agent_task_search_documents WHERE task_id NOT IN "
+-            "(SELECT task_id FROM agent_tasks_projection)"
+-        )
+-        con.execute(
+-            "DELETE FROM agent_task_search_grams WHERE task_id NOT IN "
+-            "(SELECT task_id FROM agent_tasks_projection)"
+-        )
+-
+-    @classmethod
+-    def _refresh_task_search_index(cls, con: sqlite3.Connection, task_id: str) -> None:
+-        row = con.execute(
+-            "SELECT contract, context, checkpoint FROM agent_tasks_projection WHERE task_id = ?",
+-            (task_id,),
+-        ).fetchone()
+-        if not row:
+-            con.execute("DELETE FROM agent_task_search_documents WHERE task_id = ?", (task_id,))
+-            con.execute("DELETE FROM agent_task_search_grams WHERE task_id = ?", (task_id,))
+-            return
+-        contract, context, checkpoint = (json.loads(value or "{}") for value in row)
+-        fields = cls._searchable_task_fields(task_id, contract, checkpoint, context)
+-        cls._write_task_search_index(con, task_id, fields)
+-
+-    def list_tasks(
+-        self,
+-        status: TaskStatus | None = None,
+-        limit: int = 100,
+-        include_stale: bool = False,
+-        query: str | None = None,
+-    ) -> TaskList:
++    def list_tasks(self, status: TaskStatus | None = None, limit: int = 100, include_stale: bool = False) -> list[TaskState]:
+         if not self._db_path_available():
+-            return TaskList()
++            return []
+         self._init_projection_table()
+         now = time.time()
+-        normalized_query = self._normalize_search_text(query or "")
+-        query_terms = [term for term in normalized_query.split() if term]
+-        page_size = max(1, int(limit))
+-
+-        def matches_query(row: tuple[Any, ...]) -> bool:
+-            contract_data = json.loads(row[4] or "{}")
+-            context_data = json.loads(row[5] or "{}")
+-            checkpoint_data = json.loads(row[6] or "{}")
+-            fields = self._searchable_task_fields(
+-                row[0], contract_data, checkpoint_data, context_data
+-            )
+-            normalized_fields = tuple(self._normalize_search_text(value) for value in fields)
+-            return all(any(term in value for value in normalized_fields) for term in query_terms)
+-
+-        def _fetch_tasks() -> tuple[list[Any], bool]:
++        def _fetch_tasks() -> list[Any]:
+             with closing(connect_sqlite(self.state_store.db_path)) as con:
+                 where_clauses: list[str] = []
+                 params: list[Any] = []
+                 if status is not None:
+                     where_clauses.append("status = ?")
+                     params.append(status.value)
+-                if not query_terms and not include_stale:
++                if not include_stale:
+                     where_clauses.append("NOT (heartbeat_expires_at > 0 AND heartbeat_expires_at < ?)")
+                     params.append(now)
+-                query_grams = sorted(self._search_grams(query_terms))
+-                if query_grams:
+-                    placeholders = ", ".join("?" for _ in query_grams)
+-                    where_clauses.append(
+-                        "task_id IN (SELECT task_id FROM agent_task_search_grams "
+-                        f"WHERE gram IN ({placeholders}) GROUP BY task_id "
+-                        "HAVING COUNT(DISTINCT gram) = ?)"
+-                    )
+-                    params.extend(query_grams)
+-                    params.append(len(query_grams))
+                 where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+                 sql = f"""
+                     SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
+@@ -963,39 +955,17 @@
+                     FROM agent_tasks_projection
+                     {where_sql}
+                     ORDER BY updated_at DESC
++                    LIMIT ?
+                 """
+-                if not query_terms:
+-                    cur = con.execute(sql + " LIMIT ?", (*params, page_size))
+-                    return cur.fetchall(), False
+-
+-                cur = con.execute(sql + " LIMIT ?", (*params, MAX_TASK_QUERY_SCAN_ROWS + 1))
+-                candidates = cur.fetchmany(MAX_TASK_QUERY_SCAN_ROWS + 1)
+-                query_truncated = len(candidates) > MAX_TASK_QUERY_SCAN_ROWS
+-                matched: list[Any] = []
+-                terminal_statuses = {
+-                    TaskStatus.COMPLETED.value,
+-                    TaskStatus.CANCELLED.value,
+-                    TaskStatus.FAILED.value,
+-                    TaskStatus.ABANDONED.value,
+-                }
+-                for row in candidates[:MAX_TASK_QUERY_SCAN_ROWS]:
+-                    heartbeat_expires_at = float(row[8] or 0.0)
+-                    if (
+-                        not include_stale
+-                        and heartbeat_expires_at > 0
+-                        and heartbeat_expires_at < now
+-                        and row[1] not in terminal_statuses
+-                    ):
+-                        continue
+-                    if matches_query(row):
+-                        matched.append(row)
+-                        if len(matched) >= page_size:
+-                            return matched, False
+-                return matched, query_truncated
+-
+-        rows, query_truncated = retry_busy(_fetch_tasks, retries=5, base_delay_seconds=0.02)
++                params.append(max(1, int(limit)))
++                cur = con.execute(sql, tuple(params))
++                return cur.fetchall()
++
++        rows = retry_busy(_fetch_tasks, retries=5, base_delay_seconds=0.02)
+         tasks = [self._row_to_state(row) for row in rows]
+-        return TaskList(tasks[:page_size], query_truncated=query_truncated)
++        if not include_stale:
++            tasks = [t for t in tasks if not t.is_stale]
++        return tasks[:max(1, int(limit))]
+ 
+     def count(self, status: TaskStatus | None = None) -> int:
+         if not self._db_path_available():
+@@ -1127,126 +1097,6 @@
+         )
+         return updated, appended.event if not appended.duplicate else None
+ 
+-    def _verify_completion(self, task: TaskState) -> None:
+-        self._validate_memory_audit(task)
+-        if not task.contract.acceptance_criteria:
+-            return
+-
+-        state_data = task.checkpoint.state_data
+-        worktree = state_data.get("worktree")
+-        repo_root = worktree.get("repo_root") if isinstance(worktree, Mapping) else None
+-        if not isinstance(repo_root, (str, Path)) or not str(repo_root).strip():
+-            repo_root = state_data.get("repo_root")
+-        if not isinstance(repo_root, (str, Path)) or not str(repo_root).strip():
+-            context_repo_root = task.context.repository_id
+-            if isinstance(context_repo_root, (str, Path)) and str(context_repo_root).strip():
+-                try:
+-                    if Path(context_repo_root).expanduser().is_dir():
+-                        repo_root = context_repo_root
+-                except (OSError, TypeError, ValueError):
+-                    pass
+-
+-        repository_revision = str(state_data.get("repository_revision", "") or "").strip()
+-        mutation_generation = state_data.get("mutation_generation", 0)
+-        if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int) or mutation_generation < 0:
+-            raise CompletionGateError(
+-                "Cannot transition to COMPLETED: task mutation_generation is invalid"
+-            )
+-
+-        verification_rules: Mapping[str, Any] = {}
+-        configured_criteria: tuple[str, ...] = ()
+-        if isinstance(repo_root, (str, Path)) and str(repo_root).strip():
+-            try:
+-                from .project_config import resolve_project_context
+-
+-                project = resolve_project_context(repo_root, Path(self.state_store.db_path).parent)
+-                settings = project.settings
+-                verification_rules = settings.verification_rules
+-                configured_criteria = tuple(settings.commands)
+-                if not isinstance(verification_rules, Mapping) or not isinstance(settings.commands, Mapping):
+-                    raise ValueError("project verification settings are invalid")
+-            except Exception as exc:
+-                raise CompletionGateError(
+-                    "Cannot transition to COMPLETED: project verification config could not be resolved"
+-                ) from exc
+-
+-        acceptance = set(task.contract.acceptance_criteria)
+-        active_rules = any(str(key).strip() in acceptance for key in verification_rules)
+-        verifier = getattr(self, "verification_store", None)
+-        if verifier is None:
+-            try:
+-                from .agent_verification import VerificationStore
+-
+-                verifier = VerificationStore(self.state_store, task_store=self)
+-                self.verification_store = verifier
+-            except Exception as exc:
+-                raise CompletionGateError(
+-                    "Cannot transition to COMPLETED: verification evaluator is unavailable"
+-                ) from exc
+-
+-        completion = getattr(verifier, "completion", None)
+-        if not callable(completion):
+-            raise CompletionGateError(
+-                "Cannot transition to COMPLETED: verification evaluator has no completion method"
+-            )
+-        try:
+-            parameters = inspect.signature(completion).parameters
+-            supports_kwargs = any(
+-                parameter.kind is inspect.Parameter.VAR_KEYWORD
+-                for parameter in parameters.values()
+-            )
+-            supports_project_rules = {
+-                "current_revision",
+-                "current_mutation_generation",
+-                "verification_rules",
+-                "configured_criteria",
+-            }.issubset(parameters)
+-            if supports_project_rules:
+-                if active_rules and not repository_revision:
+-                    raise CompletionGateError(
+-                        "Cannot transition to COMPLETED: trusted repository_revision is unavailable"
+-                    )
+-                result = completion(
+-                    task.task_id,
+-                    current_revision=repository_revision,
+-                    current_mutation_generation=mutation_generation,
+-                    verification_rules=verification_rules,
+-                    configured_criteria=configured_criteria,
+-                )
+-            else:
+-                if active_rules:
+-                    raise CompletionGateError(
+-                        "Cannot transition to COMPLETED: verification evaluator does not support project rules"
+-                    )
+-                legacy_kwargs = {}
+-                if repository_revision and ("current_revision" in parameters or supports_kwargs):
+-                    legacy_kwargs["current_revision"] = repository_revision
+-                result = completion(task.task_id, **legacy_kwargs)
+-        except CompletionGateError:
+-            raise
+-        except Exception as exc:
+-            raise CompletionGateError(
+-                f"Cannot transition to COMPLETED: verification evaluator failed ({type(exc).__name__})"
+-            ) from exc
+-
+-        complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
+-        if complete is not True:
+-            unsatisfied = (
+-                result.get("unsatisfied_criteria", ())
+-                if isinstance(result, Mapping)
+-                else getattr(result, "unsatisfied_criteria", ())
+-            )
+-            stale = result.get("stale_criteria", ()) if isinstance(result, Mapping) else getattr(result, "stale_criteria", ())
+-            details = []
+-            if unsatisfied:
+-                details.append(f"unsatisfied={tuple(unsatisfied)}")
+-            if stale:
+-                details.append(f"stale={tuple(stale)}")
+-            suffix = f" ({'; '.join(details)})" if details else ""
+-            raise CompletionGateError(
+-                f"Cannot transition to COMPLETED: verification evaluator rejected completion{suffix}"
+-            )
+-
+     def transition(
+         self,
+         task_id: str,
+@@ -1269,36 +1119,11 @@
+                     actor=actor,
+                     idempotency_key=idempotency_key,
+                 )
+-            if idempotency_key and self._db_path_available():
+-                with closing(connect_sqlite(self.state_store.db_path)) as con:
+-                    row = con.execute(
+-                        "SELECT actor, kind, payload FROM agent_events WHERE stream_id = ? AND idempotency_key = ?",
+-                        (f"task:{task_id}", idempotency_key),
+-                    ).fetchone()
+-                if row is not None:
+-                    try:
+-                        payload = json.loads(row[2])
+-                        source_status = TaskStatus(payload.get("from_status"))
+-                    except (TypeError, ValueError, json.JSONDecodeError):
+-                        payload = None
+-                        source_status = None
+-                    expected_payload = {
+-                        "from_status": payload.get("from_status") if isinstance(payload, dict) else None,
+-                        "to_status": target.value,
+-                        "reason": reason,
+-                    }
+-                    valid_source_transition = (
+-                        source_status is not None
+-                        and target in VALID_TRANSITIONS.get(source_status, set())
+-                    )
+-                    if (
+-                        row[0] != actor
+-                        or row[1] != "task.transitioned"
+-                        or payload != expected_payload
+-                        or not valid_source_transition
+-                    ):
+-                        raise ValueError("idempotency key was already used")
+-            return current
++            if not idempotency_key:
++                return current
++            return self._replay_same_status_transition(
++                task_id, target, reason=reason, actor=actor, idempotency_key=idempotency_key
++            )
+ 
+         allowed = VALID_TRANSITIONS.get(current.status, set())
+         if target not in allowed:
+@@ -1390,6 +1215,66 @@
+         )
+         return self._commit_update(current, updated, event)
+ 
++    def _replay_same_status_transition(
++        self,
++        task_id: str,
++        target: TaskStatus,
++        *,
++        reason: str,
++        actor: str,
++        idempotency_key: str,
++    ) -> TaskState:
++        """Serialize a no-op retry with writers and validate its original operation."""
++        def _read_retry() -> TaskState:
++            con = connect_sqlite(
++                self.state_store.db_path, isolation_level=None, timeout_seconds=0.25
++            )
++            try:
++                con.execute("BEGIN IMMEDIATE")
++                row = con.execute(
++                    "SELECT * FROM agent_tasks_projection WHERE task_id = ?", (task_id,)
++                ).fetchone()
++                if not row:
++                    raise KeyError(f"Task {task_id} not found")
++                persisted = self._row_to_state(row)
++                if persisted.status != target:
++                    raise ConcurrentTaskUpdateError(
++                        f"Task {task_id} changed during transition; reload and retry"
++                    )
++                existing = con.execute(
++                    """SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
++                              correlation_id, actor, created_at
++                       FROM agent_events WHERE stream_id = ? AND idempotency_key = ?""",
++                    (f"task:{task_id}", idempotency_key),
++                ).fetchone()
++                if existing:
++                    event = AgentEvent.from_row(existing)
++                    payload = dict(event.payload)
++                    try:
++                        source_status = TaskStatus(payload.get("from_status"))
++                        valid_transition = target in VALID_TRANSITIONS.get(source_status, set())
++                    except (TypeError, ValueError):
++                        valid_transition = False
++                    if (
++                        event.actor != actor
++                        or event.kind != "task.transitioned"
++                        or set(payload) != {"from_status", "to_status", "reason"}
++                        or payload.get("to_status") != target.value
++                        or payload.get("reason") != reason
++                        or not valid_transition
++                    ):
++                        raise ValueError("idempotency key was already used")
++                con.execute("COMMIT")
++                return persisted
++            except Exception:
++                if con.in_transaction:
++                    con.execute("ROLLBACK")
++                raise
++            finally:
++                con.close()
++
++        return retry_busy(_read_retry, retries=5, base_delay_seconds=0.02)
++
+     def complete(
+         self,
+         task_id: str,
+@@ -1499,6 +1384,9 @@
+         if not current:
+             raise KeyError(f"Task {task_id} not found")
+ 
++        _validate_checkpoint_memory_context(
++            current.checkpoint.state_data, checkpoint.state_data
++        )
+         merged_state_data = dict(checkpoint.state_data)
+         for key in ("memory_context", "memory_audit", "memory_audit_history"):
+             if key not in merged_state_data and key in current.checkpoint.state_data:
+@@ -1639,7 +1527,7 @@
+             raise KeyError(f"Task {task_id} not found")
+         resume_key = idempotency_key or f"resume_{task_id}_{int(time.time())}"
+         if current.status == TaskStatus.ACTIVE and idempotency_key:
+-            return self.transition(
++            return self._replay_same_status_transition(
+                 task_id,
+                 TaskStatus.ACTIVE,
+                 reason="resumed from checkpoint",
+@@ -1734,110 +1622,19 @@
+         )
+         return self._commit_update(current, updated, event)
+ 
+-    def cleanup_worktree(
+-        self,
+-        task_id: str,
+-        delete_branch: bool = True,
+-        *,
+-        actor: str = "http-default",
+-    ) -> dict[str, Any]:
++    def cleanup_worktree(self, task_id: str, delete_branch: bool = True) -> dict[str, Any]:
+         task = self.get(task_id)
+         if not task:
+             return {"success": False, "error": f"Task {task_id} not found"}
+         wt = task.checkpoint.state_data.get("worktree")
+         if not isinstance(wt, dict) or not wt.get("worktree_path"):
+             return {"success": True, "had_worktree": False}
+-        actor_value = str(actor or "").strip()
+-        if not actor_value or actor_value.lower() in {"http-default", "system", "admin", "*"}:
+-            return {"success": False, "error": "cleanup requires a non-reserved owner actor"}
+-        if actor_value != task.owner:
+-            return {"success": False, "error": "cleanup actor does not own task"}
+-
+         try:
+-            from .process_utils import get_git_worktree_ownership, remove_git_worktree
+-
+-            task_id_value = str(wt.get("task_id", ""))
+-            owner_value = str(wt.get("owner", ""))
+-            repo_value = Path(str(wt.get("repo_root", ""))).expanduser().resolve(strict=False)
+-            worktree_id = str(wt.get("worktree_id", ""))
+-            branch = str(wt.get("branch", ""))
+-            worktree_path = Path(str(wt.get("worktree_path", ""))).expanduser()
+-            if not task_id_value or task_id_value != task.task_id:
+-                return {"success": False, "error": "worktree task identity mismatch"}
+-            if not owner_value or owner_value != task.owner:
+-                return {"success": False, "error": "worktree owner identity mismatch"}
+-            if not worktree_id or not branch or worktree_path.is_symlink():
+-                return {"success": False, "error": "worktree ownership metadata is incomplete"}
+-            expected_repo = Path(task.context.repository_id or ".").expanduser().resolve(strict=False)
+-            if repo_value != expected_repo:
+-                return {"success": False, "error": "worktree repository does not match task context"}
+-            created_at = float(wt["created_at"])
+-            ttl_seconds = float(wt["ttl_seconds"])
+-            expires_at = float(wt["expires_at"])
+-            if (
+-                not math.isfinite(created_at)
+-                or not math.isfinite(ttl_seconds)
+-                or not math.isfinite(expires_at)
+-                or ttl_seconds < 60.0
+-                or ttl_seconds > 30 * 24 * 60 * 60.0
+-                or abs(expires_at - (created_at + ttl_seconds)) > 0.001
+-            ):
+-                return {"success": False, "error": "worktree lifetime metadata is inconsistent"}
+-
+-            if wt.get("cleanup_success") and not worktree_path.exists():
+-                return {"success": True, "had_worktree": True, "already_cleaned": True}
+-            ownership = get_git_worktree_ownership(repo_value, worktree_path)
+-            if ownership is None:
+-                return {"success": False, "error": "live worktree ownership marker is missing"}
+-            expected_fields = (
+-                "worktree_id",
+-                "task_id",
+-                "owner",
+-                "repo_root",
+-                "worktree_path",
+-                "branch",
+-                "created_at",
+-                "ttl_seconds",
+-                "expires_at",
+-            )
+-            if any(ownership.get(field) != wt.get(field) for field in expected_fields):
+-                return {"success": False, "error": "worktree ownership metadata was tampered"}
+-
+-            rm_res = remove_git_worktree(
+-                repo_value,
+-                worktree_path,
+-                delete_branch=delete_branch,
+-                branch_name=branch,
+-                worktree_id=worktree_id,
+-                expected_metadata=wt,
+-            )
+-            if not rm_res.get("success"):
+-                return {"success": False, "had_worktree": True, "cleanup": rm_res, "error": rm_res.get("error", "cleanup failed")}
+-
+-            cleaned_at = time.time()
+-            cleaned_wt = {**wt, "cleanup_success": True, "cleaned_at": cleaned_at}
+-            state_data = {**task.checkpoint.state_data, "worktree": cleaned_wt}
+-            updated_checkpoint = TaskCheckpoint(
+-                phase=task.checkpoint.phase,
+-                next_action=task.checkpoint.next_action,
+-                affected_paths=task.checkpoint.affected_paths,
+-                evidence_ids=task.checkpoint.evidence_ids,
+-                blockers=task.checkpoint.blockers,
+-                state_data=state_data,
+-            )
+-            updated = self.checkpoint(
+-                task_id,
+-                updated_checkpoint,
+-                actor=actor_value,
+-                idempotency_key=f"cleanup_{task_id}_{worktree_id}",
+-            )
+-            return {
+-                "success": True,
+-                "had_worktree": True,
+-                "cleanup": rm_res,
+-                "cleaned_at": cleaned_at,
+-                "task": updated.to_dict(),
+-            }
++            from .process_utils import remove_git_worktree
++            r_root = wt.get("repo_root", ".")
++            w_path = wt.get("worktree_path")
++            rm_res = remove_git_worktree(r_root, w_path, delete_branch=delete_branch)
++            return {"success": True, "had_worktree": True, "cleanup": rm_res}
+         except Exception as exc:
+             return {"success": False, "error": str(exc)}
+ 
+@@ -1929,7 +1726,6 @@
+                         state.updated_at,
+                     ),
+                 )
+-                self._refresh_task_search_index(con, state.task_id)
+                 con.execute("COMMIT")
+             except Exception:
+                 try:
+@@ -2004,7 +1800,6 @@
+                         state.updated_at,
+                     ),
+                 )
+-                self._refresh_task_search_index(con, state.task_id)
+                 if not existing:
+                     appended = self.state_store.append_in_transaction(
+                         con, event, strict_idempotency=True
+@@ -2131,7 +1926,6 @@
+                     raise ConcurrentTaskUpdateError(
+                         f"Task {current.task_id} changed during transition; reload and retry"
+                     )
+-                self._refresh_task_search_index(con, updated.task_id)
+                 appended = self.state_store.append_in_transaction(
+                     con, event, strict_idempotency=True
+                 )
+@@ -2174,16 +1968,12 @@
+         ) = row
+         contract_data = json.loads(contract_raw)
+         if not str(contract_data.get("goal", "")).strip():
++            # V4 rejects empty goals for new contracts, but older persisted
++            # projections may still contain one. Keep those tasks loadable and
++            # make the missing intent explicit instead of returning blank
++            # task context or failing the entire Agent OS startup.
+             contract_data = dict(contract_data)
+-            legacy_title = str(contract_data.get("title", "")).strip()
+-            if legacy_title:
+-                contract_data["goal"] = legacy_title
+-            else:
+-                # V4 rejects empty goals for new contracts, but older persisted
+-                # projections may still contain one. Keep those tasks loadable and
+-                # make the missing intent explicit instead of returning blank
+-                # task context or failing the entire Agent OS startup.
+-                contract_data["goal"] = f"Legacy task contract: {task_id}"
++            contract_data["goal"] = f"Legacy task contract: {task_id}"
+         contract = GoalContract.from_dict(contract_data)
+         ctx_data = json.loads(context_raw)
+         context = ScopeContext(
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -1,9 +1,6 @@
+ from __future__ import annotations
+ 
+ import hmac
+-import inspect
+-import ipaddress
+-import hashlib
+ import json
+ import os
+ import queue
+@@ -13,7 +10,6 @@
+ import uuid
+ import time
+ import threading
+-from contextlib import nullcontext
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ from pathlib import Path
+ from typing import Any, Mapping
+@@ -28,7 +24,6 @@
+ from .dashboard import DASHBOARD_HTML
+ from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
+ from .delivery import decide_delivery
+-from .resilience import RecoveryJournal
+ from .agent_identity import AgentScope, ScopeContext
+ from .agent_tasks import CompletionGateError, GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus
+ from .agent_memory import ApprovalRequiredError, MAX_MEMORY_QUERY_LIMIT, MemoryKind, MemoryRecord, MemoryStatus
+@@ -47,11 +42,6 @@
+     stage_capture,
+     validate_capture_request,
+ )
+-from .operational_mode import (
+-    load_operational_mode,
+-    operational_mode_gate_error,
+-    set_operational_mode,
+-)
+ 
+ 
+ os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+@@ -63,7 +53,7 @@
+ 
+ 
+ def _trusted_project_context(root: str) -> Any | None:
+-    """Resolve repository identity from server project configuration."""
++    """Resolve coordination identity from server project config, never request data."""
+     root = str(root or "").strip()
+     if not root or APP is None:
+         return None
+@@ -75,13 +65,19 @@
+ 
+         return resolve_project_context(root, Path(state_store.db_path).parent)
+     except Exception:
++        # Project identity is optional: resolution failure keeps the physical
++        # worktree local and cannot grant cross-worktree access.
+         return None
+ 
+ 
+ def _bind_repository_memory_provenance(
+-    provenance: Mapping[str, Any], *, root: str, tenant: str, project_context: Any | None
++    provenance: Mapping[str, Any],
++    *,
++    root: str,
++    tenant: str,
++    project_context: Any | None,
+ ) -> dict[str, Any]:
+-    """Replace client repository identity with server-derived identity."""
++    """Bind repository source and shared identity from trusted server context."""
+     result = dict(provenance)
+     result.pop("repository_id", None)
+     physical_root = str(getattr(project_context, "root", root) or root).strip()
+@@ -89,154 +85,13 @@
+         result["root"] = physical_root
+     if tenant:
+         result["tenant"] = tenant
+-    coordination_id = str(getattr(project_context, "coordination_id", None) or "").strip()
++    coordination_id = str(
++        getattr(project_context, "coordination_id", None) or ""
++    ).strip()
+     if coordination_id:
++        # Reuse existing provenance field, populated only from ProjectContext.
+         result["repository_id"] = coordination_id
+     return result
+-
+-class _ActiveTranscriptionRegistry:
+-    """Track synchronous Whisper calls and cancel them before gaming release."""
+-
+-    def __init__(self) -> None:
+-        self._condition = threading.Condition(threading.RLock())
+-        self._active: dict[str, threading.Event] = {}
+-        self._results: dict[str, dict[str, Any]] = {}
+-        self._waiting: set[str] = set()
+-        self._gaming = False
+-        self._drained_callbacks: list[Any] = []
+-
+-    def enter_gaming(self) -> None:
+-        with self._condition:
+-            self._gaming = True
+-            for event in self._active.values():
+-                event.set()
+-            self._condition.notify_all()
+-
+-    def enter_active(self) -> None:
+-        with self._condition:
+-            self._gaming = False
+-
+-    def begin(self) -> tuple[str, threading.Event]:
+-        token = uuid.uuid4().hex
+-        event = threading.Event()
+-        with self._condition:
+-            if self._gaming:
+-                event.set()
+-            self._active[token] = event
+-            self._condition.notify_all()
+-        return token, event
+-
+-    def finish(self, token: str, result: Any) -> None:
+-        callbacks: list[Any] = []
+-        with self._condition:
+-            normalized = result if isinstance(result, dict) else {}
+-            if self._gaming and token in self._waiting:
+-                self._results[token] = {
+-                    "cancelled": normalized.get("reason") == "cancelled" or normalized.get("cancelled") is True,
+-                    "success": normalized.get("success") is True,
+-                }
+-            self._active.pop(token, None)
+-            if not self._active:
+-                callbacks, self._drained_callbacks = self._drained_callbacks, []
+-                self._condition.notify_all()
+-        for callback in callbacks:
+-            try:
+-                callback()
+-            except Exception:
+-                pass
+-
+-    def cancel_and_wait(self, timeout_seconds: float) -> dict[str, Any]:
+-        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+-        with self._condition:
+-            active_at_start = tuple(self._active)
+-            self._waiting.update(active_at_start)
+-            for event in self._active.values():
+-                event.set()
+-            while self._active and time.monotonic() < deadline:
+-                self._condition.wait(max(0.0, deadline - time.monotonic()))
+-            pending = len(self._active)
+-            results = [self._results.pop(token, {}) for token in active_at_start]
+-            self._waiting.difference_update(active_at_start)
+-        if pending:
+-            return {"state": "timed_out", "inference_active": True, "active": pending}
+-        if not active_at_start:
+-            return {"state": "not_applicable", "inference_active": False, "active": 0}
+-        cancelled = all(item.get("cancelled") is True for item in results)
+-        return {
+-            "state": "cancelled" if cancelled else "completed",
+-            "inference_active": False,
+-            "active": 0,
+-            "cancelled": cancelled,
+-        }
+-
+-    def when_drained(self, callback: Any) -> None:
+-        with self._condition:
+-            if self._active:
+-                self._drained_callbacks.append(callback)
+-                return
+-        try:
+-            callback()
+-        except Exception:
+-            pass
+-
+-    def active_count(self) -> int:
+-        with self._condition:
+-            return len(self._active)
+-
+-    def defer_process_cleanup(self, token: str, process: Any, *, tree_termination_confirmed: bool) -> None:
+-        if not tree_termination_confirmed:
+-            return
+-
+-        def observe_exit() -> None:
+-            try:
+-                process.wait()
+-            except Exception:
+-                return
+-            self.finish(token, {"success": False, "reason": "cancelled", "cancelled": True})
+-
+-        try:
+-            threading.Thread(target=observe_exit, name="whisper-cleanup-observer", daemon=True).start()
+-        except Exception:
+-            return
+-
+-
+-_ACTIVE_TRANSCRIPTIONS = _ActiveTranscriptionRegistry()
+-_ACTIVE_CONVERSATIONS = _ActiveTranscriptionRegistry()
+-_GAMING_DRAIN_TIMEOUT_SECONDS = 4.5
+-
+-
+-def _invoke_cancellable_request(registry: _ActiveTranscriptionRegistry, callback: Any, payload: dict[str, Any], tenant: str) -> Any:
+-    token, cancel_event = registry.begin()
+-    result: Any = {}
+-    try:
+-        try:
+-            parameters = inspect.signature(callback).parameters.values()
+-            supports_cancel = any(
+-                parameter.name == "cancel_event"
+-                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+-                for parameter in parameters
+-            )
+-        except (TypeError, ValueError):
+-            supports_cancel = False
+-        if cancel_event.is_set() and not supports_cancel:
+-            result = {
+-                "success": False,
+-                "cancelled": True,
+-                "preempted": True,
+-                "reason": "cancelled",
+-                "error": "request cancelled before an uncancellable handler could start",
+-                "terminal": True,
+-                "retryable": False,
+-            }
+-            return result
+-        result = (
+-            callback(payload, tenant, cancel_event=cancel_event)
+-            if supports_cancel
+-            else callback(payload, tenant)
+-        )
+-        return result
+-    finally:
+-        registry.finish(token, result)
+ 
+ # Monitoring/control reads must never appear as workload. Keep this hard safety set
+ # independent of user config so a dashboard refresh cannot create immortal active jobs.
+@@ -244,288 +99,12 @@
+     "/health", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
+     "/api/status", "/api/capabilities", "/api/metrics", "/api/adoption", "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/audit/tail", "/api/control",
+     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
+-    "/api/mode", "/api/admin/mode",
+     "/api/debug-traces",
+ }
+ 
+-HTTP_MODE_OPERATOR_GET_PATHS = frozenset({
+-    "/api/adoption", "/api/audit/tail", "/api/capabilities", "/api/config",
+-    "/api/debug-traces", "/api/hardware/gpu", "/api/hardware/system",
+-    "/api/live/status", "/api/logs/tail", "/api/metrics", "/api/mode",
+-    "/api/models/manage", "/api/preprocess/status", "/api/status",
+-    "/api/telemetry/report", "/api/telemetry/timeline",
+-})
+-HTTP_MODE_GAMING_READ_GET_PATHS = frozenset({
+-    "/api/agent-state/blackboard", "/api/agent-state/events",
+-    "/api/agent-state/memory", "/api/agent-state/swarm",
+-    "/api/agent-state/tasks", "/api/db/query", "/api/rag/workspaces",
+-})
+-HTTP_MODE_OPERATOR_POST_PATHS = frozenset({"/api/admin/mode", "/api/control"})
+-
+-
+-def _http_admin_action(method: str, path: str) -> str | None:
+-    method = str(method).upper()
+-    path = urlparse(str(path)).path
+-    if method == "GET":
+-        if path == "/api/debug-traces" or path.startswith("/api/debug-traces/"):
+-            return "trace.read"
+-        return {
+-            "/api/adoption": "telemetry.read",
+-            "/api/audit/tail": "audit.read",
+-            "/api/capabilities": "status.read",
+-            "/api/config": "config.read",
+-            "/api/control": "control.read",
+-            "/api/db/query": "db.query",
+-            "/api/hardware/gpu": "hardware.read",
+-            "/api/hardware/system": "hardware.read",
+-            "/api/live": "telemetry.read",
+-            "/api/live/status": "status.read",
+-            "/api/logs/tail": "logs.read",
+-            "/api/metrics": "telemetry.read",
+-            "/api/models/manage": "model.manage",
+-            "/api/mode": "status.read",
+-            "/api/status": "status.read",
+-            "/api/telemetry/report": "telemetry.read",
+-            "/api/telemetry/timeline": "telemetry.read",
+-        }.get(path)
+-    if method == "POST":
+-        if path.startswith("/api/maintenance/"):
+-            return "maintenance"
+-        return {
+-            "/api/admin/mode": "mode.control",
+-            "/api/bundle/import": "bundle.import",
+-            "/api/config": "config.write",
+-            "/api/config/update": "config.write",
+-            "/api/control": "control",
+-            "/api/db/query": "db.query",
+-            "/api/models/manage": "model.manage",
+-        }.get(path)
+-    return None
+-
+-
+-def _token_matches(supplied: str, expected: str) -> bool:
+-    if not expected:
+-        return False
+-    try:
+-        return hmac.compare_digest(str(supplied), expected)
+-    except (TypeError, ValueError):
+-        return False
+-
+-
+-def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
+-    view = json.loads(json_dumps(config, default=str))
+-    security = view.get("security")
+-    if not isinstance(security, dict):
+-        return view
+-    if security.get("api_token"):
+-        security["api_token"] = "***configured***"
+-    action_tokens = security.get("action_tokens")
+-    if isinstance(action_tokens, dict):
+-        security["action_tokens"] = {
+-            str(action): "***configured***"
+-            for action, token in action_tokens.items() if token
+-        }
+-    elif action_tokens:
+-        security["action_tokens"] = "***configured***"
+-    return view
+-HTTP_MODE_GAMING_READ_POST_PATHS = frozenset({
+-    "/api/artifact/get", "/api/artifact/list", "/api/db/query",
+-    "/api/evidence/get", "/api/memory/get", "/api/memory/search",
+-})
+-HTTP_MODE_SAFE_METHOD_REJECTIONS = frozenset({
+-    "/api/maintenance/optimize_db", "/api/maintenance/purge_cache",
+-    "/api/maintenance/resolve_errors",
+-})
+-
+-
+-def _http_mode_action(path: str, payload: Mapping[str, Any] | None = None) -> str:
+-    if path in {"/api/speculative-lint", "/api/command/speculative-lint"}:
+-        action = str((payload or {}).get("action", "submit")).strip().lower().replace("-", "_")
+-        return "speculative_lint" if action == "submit" else f"speculative_lint_{action}"
+-    if path in {"/api/async-jobs", "/api/work-orders"}:
+-        action_key = "job_action" if path == "/api/async-jobs" else "action"
+-        return str((payload or {}).get(action_key, "submit")).strip().lower().replace("-", "_")
+-    if path == "/api/delegate":
+-        return "delegate"
+-    return path.removeprefix("/api/").replace("/", "_").replace("-", "_") or "http_request"
+-
+-
+-def _http_mode_policy(method: str, path: str, payload: Mapping[str, Any] | None = None) -> str:
+-    if not path.startswith("/api/"):
+-        return "operator"
+-    if method == "GET":
+-        if path in HTTP_MODE_OPERATOR_GET_PATHS or path in HTTP_MODE_SAFE_METHOD_REJECTIONS:
+-            return "operator"
+-        return "gaming_read" if path in HTTP_MODE_GAMING_READ_GET_PATHS else "blocked"
+-    if method != "POST":
+-        return "blocked"
+-    if path in HTTP_MODE_OPERATOR_POST_PATHS:
+-        return "operator"
+-    action_key = "job_action" if path == "/api/async-jobs" else "action"
+-    action = str((payload or {}).get(action_key, "")).strip().lower().replace("-", "_")
+-    if path == "/api/async-jobs" and action in {"status", "wait", "result", "cancel", "evaluation_report"}:
+-        return "existing_job"
+-    if path == "/api/work-orders" and action in {"status", "get", "cancel"}:
+-        return "existing_job"
+-    if path in {"/api/speculative-lint", "/api/command/speculative-lint"} and action in {"status", "cancel"}:
+-        return "existing_job"
+-    if path == "/api/agent-state/events/delta" and action == "export":
+-        return "gaming_read"
+-    if path == "/api/agent-state/tasks" and action in {"get", "list"}:
+-        return "gaming_read"
+-    if path == "/api/agent-state/memory" and action in {"get", "list", "search"}:
+-        return "gaming_read"
+-    if path == "/api/agent-state/incidents" and action in {"get", "list"}:
+-        return "gaming_read"
+-    if path == "/api/agent-state/verification" and action in {"get", "list", "status"}:
+-        return "gaming_read"
+-    if path == "/api/agent-state/blackboard" and action in {"get", "list", "read"}:
+-        return "gaming_read"
+-    return "gaming_read" if path in HTTP_MODE_GAMING_READ_POST_PATHS else "blocked"
+-
+-
+-def _http_mode_gate_error(
+-    method: str, path: str, payload: Mapping[str, Any] | None = None
+-) -> dict[str, Any] | None:
+-    policy = _http_mode_policy(method, path, payload)
+-    if policy in {"operator", "existing_job"}:
+-        return None
+-    action = _http_mode_action(path, payload)
+-    try:
+-        state_dir = APP.config.get("server", {}).get("state_dir", "state") if APP is not None else "state"
+-        snapshot = load_operational_mode(state_dir)
+-        if not snapshot.degraded and snapshot.mode == "active":
+-            return None
+-        if not snapshot.degraded and snapshot.mode == "gaming" and policy == "gaming_read":
+-            return None
+-        rejection = operational_mode_gate_error(snapshot, action, requires_heavy_work=True)
+-    except Exception:
+-        rejection = {
+-            "success": False, "mode": "maintenance",
+-            "error": "operation blocked because operational mode is unavailable",
+-            "retryable": True, "terminal": False, "retry_after_seconds": 5,
+-        }
+-    result = dict(rejection) if isinstance(rejection, dict) else {}
+-    result.setdefault("success", False)
+-    result.setdefault("error", "operation blocked by operational mode")
+-    result.setdefault("error_code", "operational_mode_blocked")
+-    result.setdefault("action", action)
+-    result["retryable"] = True
+-    result["terminal"] = False
+-    result.setdefault("retry_after_seconds", 5)
+-    return result
+-
+-
+-def _is_loopback_client_address(client_address: Any) -> bool:
+-    try:
+-        host = str(client_address[0]).split("%", 1)[0]
+-        return ipaddress.ip_address(host).is_loopback
+-    except (IndexError, TypeError, ValueError):
+-        return False
+-
+ 
+ def _json_bytes(data: Any) -> bytes:
+     return json_dumps(data).encode("utf-8")
+-
+-
+-AGENT_EVENT_PAGE_MAX_BYTES = 1024 * 1024
+-AGENT_EVENT_PAGE_MAX_LIMIT = 100
+-
+-
+-def _minimum_json_bytes(value: Any, ceiling: int) -> int:
+-    """Return lower bound for UTF-8 JSON size without encoding huge strings."""
+-    if isinstance(value, str):
+-        return min(len(value) + 2, ceiling + 1)
+-    if value is None:
+-        return 4
+-    if value is True:
+-        return 4
+-    if value is False:
+-        return 5
+-    if isinstance(value, (int, float)):
+-        try:
+-            return min(len(json_dumps(value).encode("ascii")), ceiling + 1)
+-        except (OverflowError, ValueError):
+-            return ceiling + 1
+-    if isinstance(value, dict):
+-        total = 2 + max(0, len(value) - 1)
+-        for key, item in value.items():
+-            total += _minimum_json_bytes(key, max(0, ceiling - total)) + 1
+-            total += _minimum_json_bytes(item, max(0, ceiling - total))
+-            if total > ceiling:
+-                return ceiling + 1
+-        return total
+-    if isinstance(value, (list, tuple)):
+-        total = 2 + max(0, len(value) - 1)
+-        for item in value:
+-            total += _minimum_json_bytes(item, max(0, ceiling - total))
+-            if total > ceiling:
+-                return ceiling + 1
+-        return total
+-    return 0
+-
+-
+-def _bound_agent_event_page(status: int, page: dict[str, Any], after_seq: Any) -> tuple[int, dict[str, Any]]:
+-    """Bound event responses without advancing past rows omitted by the byte cap."""
+-    try:
+-        cursor = max(0, int(after_seq))
+-    except (TypeError, ValueError, OverflowError):
+-        cursor = 0
+-    events = list(page.get("events") or [])
+-    if not events:
+-        if len(_json_bytes(page)) <= AGENT_EVENT_PAGE_MAX_BYTES:
+-            return status, page
+-        return 413, {
+-            **page,
+-            "events": [],
+-            "next_seq": cursor,
+-            "error": {
+-                "code": "agent_event_page_too_large",
+-                "message": "event page metadata exceeds serialized response byte limit",
+-                "max_bytes": AGENT_EVENT_PAGE_MAX_BYTES,
+-            },
+-        }
+-
+-    accepted: list[dict[str, Any]] = []
+-    accepted_page: dict[str, Any] | None = None
+-    for index, event in enumerate(events):
+-        try:
+-            next_seq = max(0, int(event.get("seq") or 0))
+-        except (AttributeError, TypeError, ValueError, OverflowError):
+-            break
+-        candidate = dict(page)
+-        candidate["next_seq"] = next_seq
+-        candidate["has_more"] = bool(page.get("has_more")) or index + 1 < len(events)
+-        candidate["gap_ranges"] = [
+-            gap for gap in (page.get("gap_ranges") or [])
+-            if isinstance(gap, dict) and int(gap.get("to_seq") or 0) <= next_seq
+-        ]
+-        candidate["events"] = []
+-        if _minimum_json_bytes(event, AGENT_EVENT_PAGE_MAX_BYTES) > AGENT_EVENT_PAGE_MAX_BYTES:
+-            break
+-        trial_events = [*accepted, event]
+-        candidate["events"] = trial_events
+-        if len(_json_bytes(candidate)) > AGENT_EVENT_PAGE_MAX_BYTES:
+-            break
+-        accepted = trial_events
+-        accepted_page = candidate
+-    if accepted_page is not None:
+-        return status, accepted_page
+-    return 413, {
+-        "success": False,
+-        "events": [],
+-        "next_seq": cursor,
+-        "first_retained_seq": max(0, int(page.get("first_retained_seq") or 0)),
+-        "last_seq": max(0, int(page.get("last_seq") or 0)),
+-        "has_more": bool(page.get("has_more")) or bool(events),
+-        "gap_ranges": [],
+-        "cursor_reset": bool(page.get("cursor_reset")),
+-        "error": {
+-            "code": "agent_event_page_too_large",
+-            "message": "first event exceeds serialized response byte limit",
+-            "max_bytes": AGENT_EVENT_PAGE_MAX_BYTES,
+-        },
+-    }
+ 
+ 
+ def _resolve_memory_scope(
+@@ -1011,8 +590,8 @@
+             return {"success": False, "error": "Hub app not initialized"}
+         state_dir = Path(APP.config.get("server", {}).get("state_dir", "state")).resolve()
+         db_map = {
+-            "agent_state": state_dir / "agent_state.sqlite3",
+-            "cache": state_dir / "cache.sqlite3",
++            "agent_state": state_dir / "agent_state.sqlite",
++            "cache": state_dir / "cache.sqlite",
+             "telemetry": state_dir / "telemetry.sqlite3",
+         }
+         target_db = db_map.get(db_name.lower())
+@@ -1028,23 +607,11 @@
+             }
+             return sqlite3.SQLITE_OK if action in _ALLOWED else sqlite3.SQLITE_DENY
+ 
+-        work_limit_reached = False
+         try:
+             uri = f"file:{target_db.as_posix()}?mode=ro"
+             con = sqlite3.connect(uri, uri=True, timeout=3.0)
+             try:
+                 con.set_authorizer(_readonly_authorizer)
+-                progress_checks = 0
+-
+-                def _limit_sqlite_work() -> int:
+-                    nonlocal progress_checks, work_limit_reached
+-                    progress_checks += 1
+-                    if progress_checks > 5000:
+-                        work_limit_reached = True
+-                        return 1
+-                    return 0
+-
+-                con.set_progress_handler(_limit_sqlite_work, 1000)
+                 cur = con.cursor()
+                 cur.execute(sql_clean)
+                 col_names = [d[0] for d in cur.description] if cur.description else []
+@@ -1062,8 +629,6 @@
+             finally:
+                 con.close()
+         except sqlite3.DatabaseError as exc:
+-            if work_limit_reached:
+-                return {"success": False, "error": "query execution exceeded work limit"}
+             # Sanitize error to avoid leaking internal paths
+             msg = str(exc)
+             if state_dir.as_posix() in msg or str(state_dir) in msg:
+@@ -1153,13 +718,6 @@
+                             self._debug_observer_token = set_observer(DebugTraceObserver(trace_store, self._debug_trace_id))
+         except Exception:
+             pass
+-
+-    def _ensure_trace_request_id(self) -> str:
+-        request_id = getattr(self, "_trace_request_id", None)
+-        if not request_id:
+-            request_id = self.headers.get("X-LocalAI-Request-ID") or uuid.uuid4().hex
+-            self._trace_request_id = request_id
+-        return request_id
+ 
+     @classmethod
+     def _safe_debug_trace_request(cls, payload: Any) -> dict[str, Any]:
+@@ -1296,84 +854,17 @@
+     def _agent(self) -> str:
+         return self.headers.get("X-LocalAI-Agent") or "generic"
+ 
+-    def _authorized(self, action: str | None = None) -> bool:
++    def _authorized(self) -> bool:
+         if APP is None:
+-            return _is_loopback_client_address(getattr(self, "client_address", None))
+-        security = APP.config.get("security", {})
+-        if not isinstance(security, dict):
+-            self._authorization_actor = "unrecognized"
+-            return False
+-        expected = str(security.get("api_token", "") or "")
+-        action_tokens = security.get("action_tokens", {})
+-        if not isinstance(action_tokens, dict):
+-            self._authorization_actor = "unrecognized"
+-            return False
+-        if action is None:
+-            action = _http_admin_action(
+-                str(getattr(self, "command", "")),
+-                urlparse(str(getattr(self, "path", ""))).path,
+-            )
++            return True
++        expected = str(APP.config.get("security", {}).get("api_token", ""))
++        if not expected:
++            return True
+         supplied = self.headers.get("X-LocalAI-Token", "")
+         auth = self.headers.get("Authorization", "")
+         if auth.lower().startswith("bearer "):
+             supplied = auth[7:].strip()
+-        global_valid = _token_matches(supplied, expected)
+-        scoped = str(action_tokens.get(action, "")) if action else ""
+-        scoped_valid = len(scoped) >= 16 and _token_matches(supplied, scoped)
+-        local_client = _is_loopback_client_address(getattr(self, "client_address", None))
+-        self._authorization_actor = (
+-            "api_token" if global_valid else
+-            "action_token" if scoped_valid else
+-            "local" if not expected and not action_tokens and local_client else
+-            "unrecognized"
+-        )
+-        if global_valid or scoped_valid:
+-            return True
+-        if expected or action_tokens:
+-            return False
+-        return local_client
+-
+-    def _audit_admin_authorization(self, action: str, *, allowed: bool) -> bool:
+-        if APP is None:
+-            return False
+-        telemetry = getattr(APP, "telemetry", None)
+-        recorder = getattr(telemetry, "record_system", None)
+-        if not callable(recorder):
+-            return False
+-        try:
+-            recorder(
+-                "admin.authorization",
+-                success=allowed,
+-                component="http_admin",
+-                operation=action,
+-                path=urlparse(str(getattr(self, "path", ""))).path,
+-                actor=str(getattr(self, "_authorization_actor", "unknown")),
+-            )
+-            return True
+-        except Exception:
+-            return False
+-
+-    def _audit_admin_result(self, status: int) -> None:
+-        action = str(getattr(self, "_admin_action", "") or "")
+-        if not action or getattr(self, "_admin_result_audited", False):
+-            return
+-        self._admin_result_audited = True
+-        telemetry = getattr(APP, "telemetry", None) if APP is not None else None
+-        recorder = getattr(telemetry, "record_system", None)
+-        if not callable(recorder):
+-            return
+-        try:
+-            recorder(
+-                "admin.action.result",
+-                success=200 <= int(status) < 400,
+-                component="http_admin",
+-                operation=action,
+-                path=urlparse(str(getattr(self, "path", ""))).path,
+-                status_code=int(status),
+-                actor=str(getattr(self, "_authorization_actor", "unknown")),
+-            )
+-        except Exception:
+-            pass
++        return hmac.compare_digest(supplied, expected)
+ 
+     def _validate_host_and_origin(self) -> bool:
+         """Validate Host and Origin headers to protect against DNS rebinding and cross-origin attacks."""
+@@ -1438,28 +929,8 @@
+     def _require_authorized(self) -> bool:
+         if not self._validate_host_and_origin():
+             return False
+-        local_mode_read = (
+-            str(getattr(self, "command", "")).upper() == "GET"
+-            and urlparse(str(getattr(self, "path", ""))).path == "/api/mode"
+-            and _is_loopback_client_address(getattr(self, "client_address", None))
+-        )
+-        action = _http_admin_action(
+-            str(getattr(self, "command", "")),
+-            urlparse(str(getattr(self, "path", ""))).path,
+-        )
+-        self._admin_action = action or ""
+-        self._admin_result_audited = False
+-        authorized = self._authorized(action)
+-        if not authorized and local_mode_read:
+-            self._authorization_actor = "local"
+-            authorized = True
+-        if not authorized:
+-            if action:
+-                self._audit_admin_authorization(action, allowed=False)
++        if not self._authorized():
+             self._send(401, {"success": False, "error": "unauthorized"})
+-            return False
+-        if action and not self._audit_admin_authorization(action, allowed=True):
+-            self._send(503, {"success": False, "error": "admin audit unavailable", "retryable": True})
+             return False
+         if not self._tenant_binding_allowed():
+             return False
+@@ -1557,7 +1028,13 @@
+                         return value
+             raise RequestBodyError(f"{name} is required")
+ 
+-        if path == "/api/embed":
++        if path == "/api/chat/completions":
++            messages = payload.get("messages")
++            if not isinstance(messages, list) or not messages or len(messages) > 128:
++                raise RequestBodyError("messages must be a non-empty list of at most 128 entries")
++            if len(json_dumps(messages, default=str)) > 1_000_000:
++                raise RequestBodyError("messages exceed 1000000 characters", 413)
++        elif path == "/api/embed":
+             values = payload.get("texts", payload.get("input", []))
+             values = [values] if isinstance(values, str) else values
+             if not isinstance(values, list) or len(values) > 256:
+@@ -1776,15 +1253,7 @@
+             trace_store.event(api_trace_id, "async_job_submitted", {"job_id": result.get("job_id", ""), "trace_id": result.get("trace_id", ""), "delivery": decision})
+         return 200, result
+ 
+-    def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
+-        self._audit_admin_result(status)
+-        if status >= 400 and isinstance(data, dict):
+-            data = dict(data)
+-            data.setdefault("success", False)
+-            data.setdefault("status_code", status)
+-            retryable = status in {408, 425, 429, 500, 502, 503, 504}
+-            data.setdefault("retryable", retryable)
+-            data.setdefault("terminal", not retryable)
++    def _send(self, status: int, data: Any) -> None:
+         request_id = getattr(self, "_journal_request_id", None)
+         if request_id and APP is not None and not getattr(self, "_journal_finished", False):
+             try:
+@@ -1844,8 +1313,6 @@
+             self.send_header("Content-Type", "application/json; charset=utf-8")
+             self.send_header("Connection", "close")
+             self._common_headers()
+-            for name, value in (headers or {}).items():
+-                self.send_header(str(name), str(value))
+             self.send_header("Content-Length", str(len(body)))
+             self.end_headers()
+             self.wfile.write(body)
+@@ -1912,74 +1379,133 @@
+             self._finish_stream_request(False, error="client disconnected before headers")
+             return
+ 
+-        stream_success = True
+-        stream_error = ""
+         q = APP.agent_state.subscribe(maxsize=200)
+         try:
+             # Subscribe before fetching history. An event appended in the replay
+             # window is then either replayed or queued; duplicate queued events
+-            # are discarded by the sequence check below.
+-            last_seq = after_seq
++            # are discarded by the per-stream sequence check below.
++            last_seq_by_stream: dict[str, int] = {}
++            stream_success = True
++
++            def note_seq(event_stream: str, seq: int) -> None:
++                last_seq_by_stream[event_stream] = max(
++                    last_seq_by_stream.get(event_stream, after_seq), seq
++                )
++
++            def current_last_seq() -> int:
++                return max([after_seq, *last_seq_by_stream.values()])
++
++            def write_sse(event_name: str, payload: Mapping[str, Any], seq: int | None = None) -> bool:
++                nonlocal stream_success
++                event_id = f"id: {seq}\n" if seq is not None else ""
++                msg = (
++                    f"{event_id}event: {event_name}\n"
++                    f"data: {json_dumps(payload, separators=(',', ':'))}\n\n"
++                ).encode("utf-8")
++                try:
++                    self.wfile.write(msg)
++                    self.wfile.flush()
++                    return True
++                except OSError:
++                    stream_success = False
++                    return False
++
+             if stream_id and after_seq >= 0:
+-                past = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=1000)
+-                for ev in past:
+-                    if kind and ev.kind != kind:
+-                        continue
+-                    last_seq = max(last_seq, ev.seq or 0)
+-                    payload = json_dumps(ev.to_dict(), separators=(",", ":"))
+-                    msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
+-                    try:
+-                        self.wfile.write(msg)
+-                        self.wfile.flush()
+-                    except OSError:
+-                        stream_success = False
+-                        stream_error = "client disconnected"
+-                        return
++                replay_cursor = after_seq
++                while True:
++                    page = APP.agent_state.event_page(
++                        stream_id, after_seq=replay_cursor, limit=1000
++                    )
++                    gap_ranges = [
++                        {"stream_id": stream_id, **gap}
++                        for gap in page.get("gap_ranges", [])
++                    ]
++                    if gap_ranges:
++                        gap_event = {
++                            "kind": "stream.gap",
++                            "stream_id": stream_id,
++                            "seq": None,
++                            "payload": {
++                                "reason": "event retention",
++                                "gap_ranges": gap_ranges,
++                                "first_retained_seq": page.get("first_retained_seq"),
++                                "last_seq": page.get("last_seq", 0),
++                                "replay_required": True,
++                            },
++                        }
++                        if not write_sse("stream.gap", gap_event):
++                            return
++                    for ev in page.get("events", []):
++                        if ev.seq is not None:
++                            note_seq(ev.stream_id, ev.seq)
++                        if kind and ev.kind != kind:
++                            continue
++                        if not write_sse(ev.kind, ev.to_dict(), ev.seq):
++                            return
++                    next_cursor = int(page.get("next_seq", replay_cursor))
++                    note_seq(stream_id, next_cursor)
++                    if not page.get("has_more") or next_cursor <= replay_cursor:
++                        break
++                    replay_cursor = next_cursor
+ 
+             start_time = time.monotonic()
+             while True:
+                 remaining = timeout - (time.monotonic() - start_time)
+                 if remaining <= 0:
+-                    try:
+-                        timeout_msg = f"event: stream_timeout\ndata: {{\"reconnect\":true,\"last_seq\":{last_seq}}}\n\n".encode("utf-8")
+-                        self.wfile.write(timeout_msg)
+-                        self.wfile.flush()
+-                    except OSError:
+-                        stream_success = False
+-                        stream_error = "client disconnected"
++                    write_sse(
++                        "stream_timeout",
++                        {
++                            "reconnect": True,
++                            "last_seq": current_last_seq(),
++                            "last_seq_by_stream": dict(last_seq_by_stream),
++                        },
++                    )
+                     break
+                 try:
+                     ev = q.get(timeout=min(1.0, remaining))
+-                    if ev.seq is not None and ev.seq <= last_seq:
++                    if ev.kind == "stream.gap":
++                        ranges = ev.payload.get("gap_ranges", [])
++                        matching_ranges = [
++                            gap for gap in ranges
++                            if isinstance(gap, Mapping)
++                            and (not stream_id or str(gap.get("stream_id", ev.stream_id)) == stream_id)
++                        ]
++                        relevant = not stream_id or ev.stream_id == stream_id or matching_ranges
++                        if not relevant:
++                            continue
++                        for gap in matching_ranges:
++                            gap_stream = str(gap.get("stream_id", ev.stream_id))
++                            try:
++                                note_seq(gap_stream, int(gap.get("to_seq", 0)))
++                            except (TypeError, ValueError):
++                                continue
++                        if not write_sse(ev.kind, ev.to_dict()):
++                            break
+                         continue
++
+                     if stream_id and ev.stream_id != stream_id:
+                         continue
++                    if ev.seq is not None:
++                        if ev.seq <= last_seq_by_stream.get(ev.stream_id, after_seq):
++                            continue
++                        note_seq(ev.stream_id, ev.seq)
+                     if kind and ev.kind != kind:
+                         continue
+-                    if ev.seq is not None:
+-                        last_seq = max(last_seq, ev.seq)
+-                    payload = json_dumps(ev.to_dict(), separators=(",", ":"))
+-                    msg = f"id: {ev.seq or 0}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
+-                    self.wfile.write(msg)
+-                    self.wfile.flush()
++                    if not write_sse(ev.kind, ev.to_dict(), ev.seq):
++                        break
+                 except queue.Empty:
+                     try:
+                         self.wfile.write(b": keep-alive\n\n")
+                         self.wfile.flush()
+                     except OSError:
+                         stream_success = False
+-                        stream_error = "client disconnected"
+                         break
+-        except OSError:
+-            stream_success = False
+-            stream_error = "client disconnected"
+         except Exception:
+             stream_success = False
+-            stream_error = "stream failed"
+         finally:
+             self.close_connection = True
+             APP.agent_state.unsubscribe(q)
+-            self._finish_stream_request(stream_success, error=stream_error)
++            self._finish_stream_request(stream_success)
+ 
+     def do_OPTIONS(self) -> None:
+         if APP is None:
+@@ -2008,16 +1534,12 @@
+         if APP is None:
+             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
+             return
++        self._begin_trace(path)
+         # The dashboard shell contains no runtime data. Keeping it public lets a
+         # remote deployment prompt for an API token client-side; every data/control
+         # endpoint remains authenticated.
+         if path not in {"/", "/dashboard", "/favicon.ico"} and not self._require_authorized():
+             return
+-        mode_rejection = _http_mode_gate_error("GET", path)
+-        if mode_rejection is not None:
+-            self._send(503, mode_rejection)
+-            return
+-        self._begin_trace(path)
+         query = parse_qs(parsed.query)
+         try:
+             if path in {"/", "/dashboard"}:
+@@ -2025,9 +1547,6 @@
+                     self._send(404, {"error": "dashboard disabled"}); return
+                 self._telemetry_finished = True
+                 self._send_html(200, DASHBOARD_HTML); return
+-            if path == "/api/mode":
+-                snapshot = load_operational_mode(APP.config.get("server", {}).get("state_dir", "state"))
+-                self._send(200, {"success": True, **snapshot.to_dict()}); return
+             if path == "/favicon.ico":
+                 self._telemetry_finished = True
+                 self.send_response(204); self.end_headers(); return
+@@ -2045,20 +1564,18 @@
+             if path == "/api/status":
+                 detail = str((query.get("detail") or [""])[0]).strip().lower()
+                 if detail == "agent_state":
+-                    agent_state = getattr(APP, "agent_state", None)
+-                    agent_state_enabled = bool(agent_state and getattr(agent_state, "enabled", False))
+                     tasks = APP.agent_tasks.list_tasks() if getattr(APP, "agent_tasks", None) else []
+                     active_tasks = [t.task_id for t in tasks if t.status == TaskStatus.ACTIVE]
+                     incidents = APP.agent_incidents.list_incidents() if getattr(APP, "agent_incidents", None) else []
+                     candidates = APP.agent_learning.list_candidates() if getattr(APP, "agent_learning", None) else []
+                     self._send(200, {
+                         "success": True,
+-                        "enabled": agent_state_enabled,
++                        "enabled": bool(getattr(APP, "agent_state", None) and APP.agent_state.enabled),
+                         "active_tasks": active_tasks,
+                         "tasks_count": len(tasks),
+                         "incidents_count": len(incidents),
+                         "candidates_count": len(candidates),
+-                        "status": "healthy" if agent_state_enabled else "disabled",
++                        "status": "healthy",
+                     }); return
+                 scope = str((query.get("scope") or ["process"])[0])
+                 status = APP.status(scope=scope)
+@@ -2082,17 +1599,8 @@
+                         pass
+                 limit = int((query.get("limit") or [100])[0])
+                 include_stale = str((query.get("include_stale") or ["false"])[0]).lower() in ("true", "1", "yes")
+-                task_query = (query.get("query") or [""])[0]
+-                tasks = APP.agent_tasks.list_tasks(
+-                    status=status_filter,
+-                    limit=limit,
+-                    include_stale=include_stale,
+-                    query=task_query,
+-                )
+-                response = {"success": True, "tasks": [t.to_dict() for t in tasks]}
+-                if getattr(tasks, "query_truncated", False):
+-                    response["query_truncated"] = True
+-                self._send(200, response); return
++                tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit, include_stale=include_stale)
++                self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
+             if path == "/api/agent-state/memory":
+                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
+                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+@@ -2102,8 +1610,11 @@
+                     scope_val = _parse_memory_scope(scope_raw)
+                     scope_id_val = (query.get("scope_id") or [None])[0]
+                     root_val = (query.get("root") or [None])[0]
+-                    repository_id_val = (query.get("repository_id") or [None])[0]
+-                    tenant_val = (query.get("tenant") or [None])[0]
++                    project_context = _trusted_project_context(str(root_val or ""))
++                    repository_id_val = str(
++                        getattr(project_context, "coordination_id", None) or ""
++                    ) or None
++                    tenant_val = tenant
+                     task_id_val = (query.get("task_id") or [None])[0]
+                     session_id_val = (query.get("session_id") or [None])[0]
+                     clone_id_val = (query.get("clone_id") or [None])[0]
+@@ -2157,8 +1668,11 @@
+                 limit_val = _memory_query_limit((query.get("limit") or [100])[0])
+                 scope_id_val = (query.get("scope_id") or [None])[0]
+                 root_val = (query.get("root") or [None])[0]
+-                repository_id_val = (query.get("repository_id") or [None])[0]
+-                tenant_val = (query.get("tenant") or [None])[0]
++                project_context = _trusted_project_context(str(root_val or ""))
++                repository_id_val = str(
++                    getattr(project_context, "coordination_id", None) or ""
++                ) or None
++                tenant_val = tenant
+                 task_id_val = (query.get("task_id") or [None])[0]
+                 session_id_val = (query.get("session_id") or [None])[0]
+                 clone_id_val = (query.get("clone_id") or [None])[0]
+@@ -2218,34 +1732,13 @@
+                     )
+                 self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
+             if path == "/api/agent-state/events":
+-                agent_state = getattr(APP, "agent_state", None)
+-                if agent_state is None:
+-                    self._send(503, {"success": False, "events": [], "next_seq": 0, "error": {"code": "event_page_unavailable", "message": "agent state is unavailable"}}); return
++                if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
++                    self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+                 stream_id = (query.get("stream_id") or [""])[0]
+-                after_seq = (query.get("after_seq") or ["0"])[0]
+-                try:
+-                    int(after_seq)
+-                except (TypeError, ValueError, OverflowError):
+-                    after_seq = "0"
+-                try:
+-                    requested_limit = int((query.get("limit") or [100])[0])
+-                except (TypeError, ValueError, OverflowError):
+-                    requested_limit = 100
+-                page_kwargs: dict[str, Any] = {
+-                    "stream_id": stream_id,
+-                    "after_seq": after_seq,
+-                    "limit": max(1, min(requested_limit, AGENT_EVENT_PAGE_MAX_LIMIT)),
+-                }
+-                through_seq = (query.get("through_seq") or [None])[0]
+-                if through_seq is not None:
+-                    page_kwargs["through_seq"] = through_seq
+-                page = agent_state.event_page(**page_kwargs)
+-                error = page.get("error") or {}
+-                status = 200 if page.get("success") is True else (
+-                    403 if error.get("code") == "agent_state_disabled" else 503
+-                )
+-                status, page = _bound_agent_event_page(status, page, after_seq)
+-                self._send(status, page); return
++                after_seq = int((query.get("after_seq") or [0])[0])
++                limit = int((query.get("limit") or [100])[0])
++                evs = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=limit)
++                self._send(200, {"success": True, "events": [e.to_dict() for e in evs]}); return
+             if path == "/api/agent-state/blackboard":
+                 if not getattr(APP, "agent_blackboard", None):
+                     self._send(503, {"success": False, "error": "blackboard unavailable"}); return
+@@ -2290,23 +1783,10 @@
+             if path == "/api/telemetry/report":
+                 days = int((query.get("days") or [30])[0])
+                 scope = str((query.get("scope") or ["window"])[0])
+-                try:
+-                    recent_errors = int((query.get("recent_errors") or [25])[0])
+-                    error_offset = int((query.get("error_offset") or [0])[0])
+-                except (TypeError, ValueError):
+-                    self._send(400, {
+-                        "success": False,
+-                        "error": "recent_errors and error_offset must be integers",
+-                        "terminal": True,
+-                        "retryable": False,
+-                    }); return
+-                self._send(200, {"success": True, "report": APP.telemetry.report(
+-                    days, recent_errors=recent_errors, error_offset=error_offset, scope=scope,
+-                )}); return
++                self._send(200, {"success": True, "report": APP.telemetry.report(days, scope=scope)}); return
+             if path == "/api/telemetry/timeline":
+-                limit = (query.get("limit") or [100])[0]
+-                before_id = (query.get("before_id") or [None])[0]
+-                self._send(200, {"success": True, **APP.telemetry.get_timeline_page(limit, before_id=before_id)}); return
++                limit = int((query.get("limit") or [100])[0])
++                self._send(200, {"success": True, "timeline": APP.telemetry.get_timeline(limit)}); return
+             if path == "/api/audit/tail":
+                 limit = int((query.get("limit") or [20])[0])
+                 self._send(200, {"success": True, "events": APP.telemetry.tail(limit)}); return
+@@ -2430,16 +1910,19 @@
+                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
+                 return
+             if path == "/api/maintenance/optimize_db":
+-                self._send(405, {"success": False, "error": "method not allowed"}, headers={"Allow": "POST"})
++                self._send(200, APP.services.optimize_databases())
+                 return
+             if path == "/api/maintenance/purge_cache":
+-                self._send(405, {"success": False, "error": "method not allowed"}, headers={"Allow": "POST"})
++                days = int((query.get("days") or [7])[0])
++                self._send(200, APP.services.purge_stale_cache(days))
+                 return
+             if path == "/api/maintenance/resolve_errors":
+-                self._send(405, {"success": False, "error": "method not allowed"}, headers={"Allow": "POST"})
++                self._send(200, APP.services.resolve_all_errors())
+                 return
+             if path == "/api/config":
+-                view = _redact_config_secrets(APP.config)
++                view = json.loads(json_dumps(APP.config, default=str))
++                if isinstance(view.get("security"), dict) and view["security"].get("api_token"):
++                    view["security"]["api_token"] = "***configured***"
+                 self._send(200, {"success": True, "config": view, "config_path": APP.config.get("_config_path", ""), "runtime_override_path": APP.config.get("_runtime_override_path", "")})
+                 return
+             if path == "/api/logs/tail":
+@@ -2583,303 +2066,16 @@
+             except Exception:
+                 pass
+ 
+-    def _claim_recovery(self, path: str, payload: Any) -> bool:
+-        request_id = str(getattr(self, "_trace_request_id", ""))
+-        tenant = self._tenant()
+-        identity = str(self._agent() or "")
+-        self._journal_request_id = request_id
+-        self._journal_finished = False
+-        try:
+-            claim = APP.recovery.begin(
+-                request_id,
+-                tenant,
+-                path,
+-                identity=identity,
+-                payload=payload,
+-            )
+-        except Exception:
+-            self._journal_finished = True
+-            self._send(503, {
+-                "success": False,
+-                "error": "request journal unavailable; mutation was not dispatched",
+-                "status_code": 503,
+-                "retryable": True,
+-                "outcome_unknown": False,
+-            })
+-            return False
+-
+-        if claim.get("claimed"):
+-            return True
+-
+-        self._journal_finished = True
+-        state = str(claim.get("state", ""))
+-        if state == "conflict":
+-            self._send(409, {"success": False, "error": claim.get("error", "request id conflict"), "terminal": True})
+-            return False
+-        if state in {"done", "failed"} and claim.get("response") is not None:
+-            status = int(claim.get("status_code") or (200 if state == "done" else 500))
+-            self._send(status, claim["response"])
+-            return False
+-        if state == "running":
+-            wait_seconds = min(
+-                2.0,
+-                max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))),
+-            )
+-            try:
+-                replay = APP.recovery.wait_for(
+-                    request_id,
+-                    tenant,
+-                    path,
+-                    timeout_seconds=wait_seconds,
+-                    identity=identity,
+-                    payload_fingerprint=APP.recovery.fingerprint_payload(payload),
+-                )
+-            except Exception:
+-                self._send(409, {
+-                    "success": False,
+-                    "error": "request outcome is unknown; mutation was not replayed",
+-                    "status_code": 409,
+-                    "terminal": True,
+-                    "retryable": False,
+-                    "outcome_unknown": True,
+-                })
+-                return False
+-            if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
+-                status = int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500))
+-                self._send(status, replay["response"])
+-                return False
+-            if replay and replay.get("outcome_unknown"):
+-                self._send(409, {
+-                    "success": False,
+-                    "error": "request outcome is unknown; mutation was not replayed",
+-                    "terminal": True,
+-                    "retryable": False,
+-                    "outcome_unknown": True,
+-                })
+-                return False
+-            self._send(409, {
+-                "success": False,
+-                "error": "request with this id is already running",
+-                "retryable": True,
+-                "in_progress": True,
+-                "retry_after_seconds": 1,
+-                "waited_seconds": wait_seconds,
+-            })
+-            return False
+-        if claim.get("outcome_unknown") or state == "abandoned":
+-            self._send(409, {
+-                "success": False,
+-                "error": "request outcome is unknown; mutation was not replayed",
+-                "terminal": True,
+-                "retryable": False,
+-                "outcome_unknown": True,
+-            })
+-            return False
+-        self._send(409, {"success": False, "error": "request journal returned an invalid state", "terminal": True})
+-        return False
+-
+     def do_POST(self) -> None:
+         if APP is None:
+             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
+             return
+         path = urlparse(self.path).path
++        self._begin_trace(path)
+         if not self._require_authorized():
+             return
+-        self._begin_trace(path)
+-        if getattr(APP, "recovery", None) is not None:
+-            try:
+-                request_id = RecoveryJournal.validate_request_id(self._ensure_trace_request_id())
+-            except (TypeError, ValueError) as exc:
+-                self._journal_finished = True
+-                self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+-                return
+-            self._trace_request_id = request_id
+-        if path == "/api/admin/mode":
+-            try:
+-                payload = self._read_json()
+-            except RequestBodyError as exc:
+-                self._send(exc.status, {
+-                    "success": False, "error": str(exc), "error_code": "invalid_mode_request",
+-                    "terminal": True, "retryable": False,
+-                }); return
+-            mode = payload.get("mode")
+-            if set(payload) != {"mode"} or not isinstance(mode, str):
+-                self._send(400, {
+-                    "success": False, "error": "request must contain only a string mode",
+-                    "error_code": "invalid_mode_request", "terminal": True, "retryable": False,
+-                }); return
+-            async_jobs = getattr(APP, "async_jobs", None)
+-            mode_changed = getattr(async_jobs, "on_operational_mode_changed", None)
+-            guard_factory = getattr(async_jobs, "operational_mode_change_guard", None)
+-            guard = guard_factory() if callable(guard_factory) else nullcontext()
+-            cancellation_error = ""
+-            try:
+-                with guard:
+-                    state_dir = APP.config.get("server", {}).get("state_dir", "state")
+-                    current_mode = load_operational_mode(state_dir)
+-                    requested_mode = str(mode).strip().lower().replace("-", "_")
+-                    if (
+-                        requested_mode == "active" and current_mode.mode != "active"
+-                        and (_ACTIVE_TRANSCRIPTIONS.active_count() or _ACTIVE_CONVERSATIONS.active_count())
+-                    ):
+-                        self._send(423, {
+-                            "success": False, "error": "cannot reactivate while Whisper or conversation cleanup is active",
+-                            "error_code": "inference_active", "mode_changed": False,
+-                            "mode": current_mode.mode, "revision": current_mode.revision,
+-                            "terminal": False, "retryable": True, "retry_after_seconds": 1,
+-                        }); return
+-                    snapshot = set_operational_mode(state_dir, mode)
+-                    if snapshot.mode == "gaming":
+-                        _ACTIVE_TRANSCRIPTIONS.enter_gaming()
+-                        _ACTIVE_CONVERSATIONS.enter_gaming()
+-                    elif snapshot.mode == "active":
+-                        _ACTIVE_TRANSCRIPTIONS.enter_active()
+-                        _ACTIVE_CONVERSATIONS.enter_active()
+-                    if callable(mode_changed):
+-                        try:
+-                            mode_changed(snapshot)
+-                        except Exception as exc:
+-                            cancellation_error = type(exc).__name__
+-            except ValueError as exc:
+-                self._send(400, {
+-                    "success": False, "error": str(exc), "error_code": "invalid_mode_request",
+-                    "terminal": True, "retryable": False,
+-                }); return
+-            except OSError:
+-                self._send(503, {
+-                    "success": False, "error": "operational mode could not be persisted",
+-                    "error_code": "mode_persistence_failed", "terminal": True, "retryable": True,
+-                }); return
+-            self._telemetry_finished = True
+-            response = {"success": True, **snapshot.to_dict()}
+-            runtime_unload: dict[str, Any] | None = None
+-            whisper_release: dict[str, Any] = {"state": "not_applicable", "inference_active": False}
+-            conversation_release: dict[str, Any] = {"state": "not_applicable", "inference_active": False}
+-            admission_release: dict[str, Any] = {"state": "not_applicable", "inference_active": False}
+-            inference_active = False
+-            preprocessor = getattr(APP, "preprocessor", None)
+-            if preprocessor is not None:
+-                try:
+-                    prep_status = preprocessor.status()
+-                    inference_active = not isinstance(prep_status, dict) or prep_status.get("success") is not True or any(
+-                        isinstance(project, dict) and project.get("status") == "running"
+-                        for project in prep_status.get("projects", [])
+-                    )
+-                except Exception:
+-                    inference_active = True
+-            if snapshot.mode == "gaming":
+-                drain_deadline = time.monotonic() + _GAMING_DRAIN_TIMEOUT_SECONDS
+-                whisper_release = _ACTIVE_TRANSCRIPTIONS.cancel_and_wait(max(0.0, drain_deadline - time.monotonic()))
+-                conversation_release = _ACTIVE_CONVERSATIONS.cancel_and_wait(max(0.0, drain_deadline - time.monotonic()))
+-                inference_active = inference_active or bool(whisper_release.get("inference_active")) or bool(conversation_release.get("inference_active"))
+-                active_checker = getattr(async_jobs, "inference_actions_active", None)
+-                if callable(active_checker):
+-                    try:
+-                        admission_active = bool(active_checker(exclude_actions={"transcribe"}))
+-                        admission_release = {
+-                            "state": "active" if admission_active else "drained",
+-                            "inference_active": admission_active,
+-                        }
+-                    except Exception:
+-                        admission_release = {"state": "unavailable", "inference_active": True}
+-                else:
+-                    admission_release = {
+-                        "state": "unavailable", "inference_active": True,
+-                        "reason": "inference_admission_tracking_unavailable",
+-                    }
+-                inference_active = inference_active or bool(admission_release.get("inference_active"))
+-            response["whisper_process_release"] = whisper_release
+-            response["conversation_release"] = conversation_release
+-            response["inference_admission_release"] = admission_release
+-            if snapshot.mode == "gaming" and inference_active:
+-                runtime_unload = {"success": False, "state": "skipped_active_inference", "inference_active": True}
+-                response["runtime_unload"] = runtime_unload
+-                response["accelerator_release"] = {"success": False, "state": "skipped_active_inference", "verified": False}
+-            if snapshot.mode == "gaming" and not inference_active:
+-                stale_unload = {"success": False, "backend_available": False, "unloaded": [], "failed": {"mode": "stale mode transition"}}
+-                stale_accelerator = {"success": False, "verified": False, "released": [], "failed": {"mode": "stale mode transition"}}
+-                if not callable(guard_factory):
+-                    response["success"] = False
+-                    response["mode_transition_stale"] = True
+-                    response["runtime_unload"] = stale_unload
+-                    response["accelerator_release"] = stale_accelerator
+-                else:
+-                    with guard_factory():
+-                        release_snapshot = load_operational_mode(APP.config.get("server", {}).get("state_dir", "state"))
+-                        if (
+-                            release_snapshot.degraded
+-                            or release_snapshot.mode != snapshot.mode
+-                            or release_snapshot.revision != snapshot.revision
+-                        ):
+-                            response["success"] = False
+-                            response["mode_transition_stale"] = True
+-                            response["runtime_unload"] = stale_unload
+-                            response["accelerator_release"] = stale_accelerator
+-                        else:
+-                                runtime = getattr(APP, "runtime", None)
+-                                unload = getattr(runtime, "unload_configured_models", None)
+-                                if callable(unload):
+-                                    try:
+-                                        result = unload(timeout_seconds=3.0)
+-                                        runtime_unload = result if isinstance(result, dict) else {
+-                                            "success": False, "backend_available": False,
+-                                            "unloaded": [], "failed": {"backend": "invalid unload result"},
+-                                        }
+-                                    except Exception as exc:
+-                                        runtime_unload = {
+-                                            "success": False, "backend_available": False,
+-                                            "unloaded": [], "failed": {"backend": type(exc).__name__},
+-                                        }
+-                                else:
+-                                    runtime_unload = {
+-                                        "success": False, "backend_available": False,
+-                                        "unloaded": [], "failed": {"backend": "unload unavailable"},
+-                                    }
+-                                response["runtime_unload"] = runtime_unload
+-                                components = {
+-                                    "embeddings": getattr(APP, "embeddings", None),
+-                                    "reranker": getattr(APP, "reranker", None),
+-                                }
+-                                accelerator_release: dict[str, Any] = {
+-                                    "success": True, "verified": True, "released": [], "failed": {},
+-                                }
+-                                release_deadline = time.monotonic() + 3.0
+-                                for name, component in components.items():
+-                                    status_fn = getattr(component, "status", None)
+-                                    release_fn = getattr(component, "release", None)
+-                                    try:
+-                                        before = status_fn() if callable(status_fn) else None
+-                                        if not isinstance(before, dict):
+-                                            raise RuntimeError("component status unavailable")
+-                                        if not before.get("loaded") or str(before.get("active_backend", "")).lower() == "ollama":
+-                                            continue
+-                                        if not callable(release_fn):
+-                                            raise RuntimeError("accelerator release unavailable")
+-                                        timeout = max(0.0, release_deadline - time.monotonic())
+-                                        if timeout <= 0.0 or not release_fn(timeout_seconds=timeout):
+-                                            raise TimeoutError("accelerator release deadline reached")
+-                                        after = status_fn()
+-                                        if not isinstance(after, dict) or after.get("loaded"):
+-                                            raise RuntimeError("accelerator release was not verified")
+-                                        accelerator_release["released"].append(name)
+-                                    except Exception as exc:
+-                                        accelerator_release["success"] = False
+-                                        accelerator_release["verified"] = False
+-                                        accelerator_release["failed"][name] = type(exc).__name__
+-                                response["accelerator_release"] = accelerator_release
+-            if cancellation_error:
+-                response["job_cancellation"] = {"success": False, "error": cancellation_error}
+-            elif mode in {"gaming", "maintenance"} and not callable(mode_changed):
+-                response["job_cancellation"] = {
+-                    "success": False, "error": "operational mode cancellation hook is unavailable",
+-                }
+-            self._send(200, response); return
+         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+         if path == "/api/bundle/import":
+-            mode_rejection = _http_mode_gate_error("POST", path)
+-            if mode_rejection is not None:
+-                self._send(503, mode_rejection)
+-                return
+             if content_type not in {"application/zip", "application/octet-stream"}:
+                 self._send(415, {"success": False, "error": "bundle import requires raw ZIP content"}); return
+             try:
+@@ -2887,38 +2083,18 @@
+                 raw_bundle = self._read_body(limit=limit)
+                 query = parse_qs(urlparse(self.path).query)
+                 target_root = (query.get("target_root") or [None])[0]
+-                if not self._claim_recovery(path, {
+-                    "bundle_sha256": hashlib.sha256(raw_bundle).hexdigest(),
+-                    "target_root": target_root,
+-                }):
+-                    return
+                 self._send(200, APP.import_bundle(raw_bundle, target_root)); return
+             except RequestBodyError as exc:
+                 self._send(exc.status, {"success": False, "error": str(exc)}); return
+-            except Exception:
+-                self._send(500, {
+-                    "success": False,
+-                    "error": "bundle import failed; outcome may be partial",
+-                    "outcome_unknown": True,
+-                    "terminal": True,
+-                    "retryable": False,
+-                }); return
+         try:
+             payload = self._read_json()
+             self._validate_payload(path, payload)
+         except RequestBodyError as exc:
+             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+-        mode_rejection = _http_mode_gate_error("POST", path, payload)
+-        if mode_rejection is not None:
+-            self._send(503, mode_rejection)
+-            return
+         if path == "/api/telemetry/tool-accounting":
+             # Internal MCP reporter path: do not journal or recursively count this
+-            # metadata transport as an agent workload/tool call. Journal request IDs
+-            # so a lost response cannot duplicate an accepted batch.
++            # metadata transport as an agent workload/tool call.
+             self._telemetry_finished = True
+-            if getattr(APP, "recovery", None) is not None and not self._claim_recovery(path, payload):
+-                return
+             accepted = 0
+             rejected = 0
+             rejection_reasons: dict[str, int] = {}
+@@ -2937,9 +2113,6 @@
+                 "rejected": rejected,
+                 "rejection_reasons": rejection_reasons,
+             }); return
+-        tenant = self._tenant()
+-        if not self._claim_recovery(path, payload):
+-            return
+         self._request_evaluation = payload.get("evaluation")
+         if path == "/api/conversations/continue" or (
+             path in {"/api/delegate", "/api/reason"} and bool(payload.get("conversation", False))
+@@ -2948,19 +2121,37 @@
+         trace_store = getattr(APP, "debug_traces", None)
+         api_trace_id = str(getattr(self, "_debug_trace_id", "") or "")
+         if trace_store is not None and api_trace_id:
+-            try:
+-                if not getattr(self, "_debug_trace_redacted", False):
+-                    captured_request = self._safe_debug_trace_request(payload)
+-                    trace_store.update(api_trace_id, state="running", request=captured_request)
+-                    trace_store.event(
+-                        api_trace_id,
+-                        "request_body_captured",
+-                        {"content_type": content_type, "capture_status": captured_request.get("capture_status", "captured")},
+-                    )
+-                trace_store.event(api_trace_id, "handler_started", {"action": path, "payload_keys": sorted(str(key) for key in payload)})
+-            except Exception:
+-                # Debug persistence is optional and must not strand a claimed request.
+-                pass
++            if not getattr(self, "_debug_trace_redacted", False):
++                captured_request = self._safe_debug_trace_request(payload)
++                trace_store.update(api_trace_id, state="running", request=captured_request)
++                trace_store.event(
++                    api_trace_id,
++                    "request_body_captured",
++                    {"content_type": content_type, "capture_status": captured_request.get("capture_status", "captured")},
++                )
++            trace_store.event(api_trace_id, "handler_started", {"action": path, "payload_keys": sorted(str(key) for key in payload)})
++        tenant = self._tenant()
++        self._journal_request_id = str(getattr(self, "_trace_request_id", ""))
++        self._journal_finished = False
++        try:
++            prior = APP.recovery.lookup(self._journal_request_id, tenant, path)
++            if prior and prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
++                self._journal_finished = True
++                self._send(int(prior.get("status_code") or (200 if prior.get("state") == "done" else 500)), prior["response"]); return
++            if prior and prior.get("state") == "running":
++                wait_seconds = min(2.0, max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))))
++                replay = APP.recovery.wait_for(self._journal_request_id, tenant, path, timeout_seconds=wait_seconds)
++                if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
++                    self._journal_finished = True
++                    self._send(int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500)), replay["response"]); return
++                self._journal_finished = True
++                self._send(409, {"success": False, "error": "request with this id is already running", "retryable": True, "in_progress": True, "retry_after_seconds": 1, "waited_seconds": wait_seconds}); return
++            if prior and prior.get("state") == "conflict":
++                self._journal_finished = True
++                self._send(409, {"success": False, "error": prior.get("error", "request id conflict")}); return
++            APP.recovery.begin(self._journal_request_id, tenant, path)
++        except Exception:
++            pass
+         try:
+             if path == "/api/work-orders":
+                 if not getattr(APP, "work_orchestrator", None) or not APP.work_orchestrator.enabled:
+@@ -3100,18 +2291,12 @@
+             if delivery is not None:
+                 self._send(*delivery); return
+             if path == "/api/delegate":
+-                if bool(payload.get("conversation", False)):
+-                    result = _invoke_cancellable_request(_ACTIVE_CONVERSATIONS, APP.services.delegate, payload, tenant)
+-                    self._send(200, result); return
+                 self._send(200, APP.services.delegate(payload, tenant)); return
+             if path == "/api/conversations/continue":
+-                result = _invoke_cancellable_request(_ACTIVE_CONVERSATIONS, APP.services.continue_conversation, payload, tenant)
+-                self._send(200, result); return
++                self._send(200, APP.services.continue_conversation(payload, tenant)); return
+             if path == "/api/async-jobs":
+                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+                 if action == "submit":
+-                    if bool(payload.get("conversation", False)):
+-                        self._send(400, {"success": False, "error": "conversations require delivery=sync", "terminal": True, "retryable": False}); return
+                     self._send(200, APP.async_jobs.submit(tenant, str(payload.get("job_action", "reason")), payload)); return
+                 if action == "status":
+                     self._send(200, APP.async_jobs.status(tenant, str(payload.get("job_id", "")))); return
+@@ -3232,42 +2417,8 @@
+                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                 if action == "complete":
+                     try:
+-                        task_id = str(payload.get("task_id", ""))
+-                        task_state = APP.agent_tasks.get(task_id)
+-                        if task_state is None:
+-                            raise KeyError(f"Task {task_id} not found")
+-                        task_context = getattr(task_state, "context", None)
+-                        root = str(
+-                            payload.get("root")
+-                            or getattr(task_context, "repository_id", "")
+-                            or ""
+-                        ).strip()
+-                        verification_store = getattr(APP, "agent_verification", None)
+-                        if verification_store is None:
+-                            raise CompletionGateError("completion verification store unavailable")
+-                        if not root:
+-                            self._send(400, {
+-                                "success": False,
+-                                "error": "project root is required for task completion verification",
+-                                "terminal": True,
+-                                "retryable": False,
+-                            }); return
+-                        current_revision, revision_stop = _completion_revision_or_stop(
+-                            root,
+-                            getattr(APP, "repo_tools", None),
+-                            getattr(APP, "repo_state", None),
+-                        )
+-                        if revision_stop:
+-                            self._send(409, revision_stop); return
+-                        from .verification_rules import complete_task_with_project_rules
+-
+-                        task = complete_task_with_project_rules(
+-                            APP.agent_tasks,
+-                            verification_store,
+-                            task_id,
+-                            root=root,
+-                            state_dir=verification_store.state_store.db_path.parent,
+-                            current_revision=current_revision,
++                        task = APP.agent_tasks.complete(
++                            str(payload.get("task_id", "")),
+                             reason=str(payload.get("reason", payload.get("value", "completed by agent"))),
+                             actor=actor,
+                             idempotency_key=idempotency_key,
+@@ -3308,6 +2459,8 @@
+                         self._send(200, {"success": True, "task": task.to_dict()}); return
+                     except KeyError as exc:
+                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
++                    except CompletionGateError as exc:
++                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                 if action == "rollback":
+                     try:
+                         task = APP.agent_tasks.rollback(
+@@ -3357,7 +2510,7 @@
+                 if action in {"cleanup_worktree", "task_cleanup_worktree"}:
+                     t_id = str(payload.get("task_id", ""))
+                     del_br = bool(payload.get("delete_branch", True))
+-                    self._send(200, APP.agent_tasks.cleanup_worktree(t_id, delete_branch=del_br, actor=self._agent())); return
++                    self._send(200, APP.agent_tasks.cleanup_worktree(t_id, delete_branch=del_br)); return
+                 if action in {"reap_expired", "zombie_reap", "recover_zombie_tasks"}:
+                     auto_rec = bool(payload.get("auto_recover", False))
+                     reaped = APP.agent_tasks.reap_expired_heartbeats(auto_recover=auto_rec)
+@@ -3371,24 +2524,8 @@
+                             pass
+                     limit = int(payload.get("limit", 100))
+                     include_stale = bool(payload.get("include_stale", False))
+-                    task_query = payload.get("query")
+-                    if task_query is not None and not isinstance(task_query, str):
+-                        self._send(400, {
+-                            "success": False,
+-                            "error": "query must be a string",
+-                            "terminal": True,
+-                            "retryable": False,
+-                        }); return
+-                    tasks = APP.agent_tasks.list_tasks(
+-                        status=status_filter,
+-                        limit=limit,
+-                        include_stale=include_stale,
+-                        query=task_query,
+-                    )
+-                    response = {"success": True, "tasks": [t.to_dict() for t in tasks]}
+-                    if getattr(tasks, "query_truncated", False):
+-                        response["query_truncated"] = True
+-                    self._send(200, response); return
++                    tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit, include_stale=include_stale)
++                    self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
+                 self._send(400, {"success": False, "error": f"unknown task action '{action}'", "terminal": True, "retryable": False}); return
+             if path == "/api/agent-state/memory":
+                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
+@@ -3425,13 +2562,18 @@
+                             kind_val = MemoryKind.FACT
+                         raw_scope = str(rec_data.get("scope") or "").lower()
+                         requested_scope = _parse_memory_scope(raw_scope)
+-                        root_input = str(payload.get("root") or rec_data.get("root") or "").strip()
+-                        project_context = _trusted_project_context(root_input)
++                        source_root = str(
++                            payload.get("root") or rec_data.get("root") or ""
++                        ).strip()
++                        project_context = _trusted_project_context(source_root)
++                        trusted_repository_id = str(
++                            getattr(project_context, "coordination_id", None) or ""
++                        ).strip()
+                         scope_val, resolved_scope_id, ambiguous_scope = _resolve_memory_scope(
+                             requested_scope,
+                             scope_id=rec_data.get("scope_id") or payload.get("scope_id"),
+-                            root=getattr(project_context, "root", root_input),
+-                            repository_id=getattr(project_context, "coordination_id", None),
++                            root=source_root,
++                            repository_id=trusted_repository_id,
+                             tenant=tenant,
+                             task_id=payload.get("task_id") or rec_data.get("task_id"),
+                             session_id=payload.get("session_id") or rec_data.get("session_id"),
+@@ -3461,9 +2603,17 @@
+                             identity_value = payload.get(identity_key) or rec_data.get(identity_key)
+                             if identity_value not in (None, ""):
+                                 provenance[identity_key] = str(identity_value)
+-                        provenance = _bind_repository_memory_provenance(
+-                            provenance, root=root_input, tenant=tenant, project_context=project_context
+-                        )
++                        if scope_val is AgentScope.REPOSITORY:
++                            provenance = _bind_repository_memory_provenance(
++                                provenance,
++                                root=source_root,
++                                tenant=tenant,
++                                project_context=project_context,
++                            )
++                            if project_context is not None and str(
++                                getattr(project_context, "root", "") or ""
++                            ).strip():
++                                resolved_scope_id = str(project_context.root)
+                         record = MemoryRecord.create(
+                             kind=kind_val,
+                             scope=scope_val,
+@@ -3488,9 +2638,9 @@
+                     scope_id_val = payload.get("scope_id")
+                     root_val = payload.get("root")
+                     project_context = _trusted_project_context(str(root_val or ""))
+-                    if project_context is not None:
+-                        root_val = project_context.root
+-                    repository_id_val = getattr(project_context, "coordination_id", None)
++                    repository_id_val = str(
++                        getattr(project_context, "coordination_id", None) or ""
++                    ) or None
+                     tenant_val = tenant
+                     task_id_val = payload.get("task_id")
+                     session_id_val = payload.get("session_id")
+@@ -3533,39 +2683,21 @@
+                     record_id_val = str(payload.get("record_id", "")).strip()
+                     if not record_id_val:
+                         self._send(400, {"success": False, "error": "memory delete requires record_id", "terminal": True, "retryable": False}); return
+-                    root_input = str(payload.get("root") or "").strip()
+-                    project_context = _trusted_project_context(root_input)
+-                    root_value = getattr(project_context, "root", root_input)
+-                    repository_id_value = getattr(project_context, "coordination_id", None)
+-                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+-                        _parse_memory_scope(payload.get("scope")),
+-                        scope_id=payload.get("scope_id"),
+-                        root=root_value,
+-                        repository_id=repository_id_value,
+-                        tenant=tenant,
+-                        task_id=payload.get("task_id"),
+-                        session_id=payload.get("session_id"),
+-                        clone_id=payload.get("clone_id"),
+-                        worktree_id=payload.get("worktree_id"),
+-                        branch=payload.get("branch"),
+-                    )
+-                    if ambiguous_scope:
+-                        self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+-                    if scope_val is None:
++                    existing = APP.agent_memory.get(record_id_val)
++                    if existing is None:
+                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
+-                    deleted = APP.agent_memory.delete(
+-                        record_id_val,
+-                        scope=scope_val,
+-                        scope_id=str(scope_id_val) if scope_id_val is not None else None,
+-                        root=str(root_value or "") or None,
+-                        repository_id=str(repository_id_value or "") or None,
+-                        tenant=str(tenant or "") or None,
+-                        task_id=str(payload.get("task_id") or "") or None,
+-                        session_id=str(payload.get("session_id") or "") or None,
+-                        clone_id=str(payload.get("clone_id") or "") or None,
+-                        worktree_id=str(payload.get("worktree_id") or "") or None,
+-                        branch=str(payload.get("branch") or "") or None,
+-                    )
++                    if existing.scope is AgentScope.REPOSITORY:
++                        root_val = str(payload.get("root") or "").strip()
++                        tenant_val = tenant
++                        if not root_val or not APP.agent_memory.find(
++                            record_id=record_id_val,
++                            scope=AgentScope.REPOSITORY,
++                            root=root_val,
++                            tenant=tenant_val,
++                            limit=1,
++                        ):
++                            self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
++                    deleted = APP.agent_memory.delete(record_id_val)
+                     self._send(200 if deleted else 404, {
+                         "success": bool(deleted),
+                         "deleted": bool(deleted),
+@@ -3581,9 +2713,9 @@
+                     scope_id_val = payload.get("scope_id")
+                     root_val = payload.get("root")
+                     project_context = _trusted_project_context(str(root_val or ""))
+-                    if project_context is not None:
+-                        root_val = project_context.root
+-                    repository_id_val = getattr(project_context, "coordination_id", None)
++                    repository_id_val = str(
++                        getattr(project_context, "coordination_id", None) or ""
++                    ) or None
+                     tenant_val = tenant
+                     task_id_val = payload.get("task_id")
+                     session_id_val = payload.get("session_id")
+@@ -3800,7 +2932,11 @@
+                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+                 if action == "receipt":
+-                    rcpt_data = payload.get("receipt") or {}
++                    rcpt_data = payload.get("receipt")
++                    if not isinstance(rcpt_data, dict):
++                        self._send(400, {"success": False, "error": "receipt must be an object", "terminal": True, "retryable": False}); return
++                    if type(rcpt_data.get("passed")) is not bool:
++                        self._send(400, {"success": False, "error": "receipt.passed must be boolean", "terminal": True, "retryable": False}); return
+                     try:
+                         if "receipt_id" in rcpt_data:
+                             rcpt = VerificationReceipt.from_dict(rcpt_data)
+@@ -3808,7 +2944,7 @@
+                             rcpt = VerificationReceipt.create(
+                                 task_id=str(rcpt_data.get("task_id", "")),
+                                 criterion=str(rcpt_data.get("criterion", "")),
+-                                passed=bool(rcpt_data.get("passed", True)),
++                                passed=rcpt_data["passed"],
+                                 change_intent_id=str(rcpt_data.get("change_intent_id", "")),
+                                 evidence_id=str(rcpt_data.get("evidence_id", "")),
+                                 command_id=str(rcpt_data.get("command_id", "")),
+@@ -3855,7 +2991,8 @@
+                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+                 if action == "compile":
+                     req = build_context_request(
+-                        payload, tenant=tenant,
++                        payload,
++                        tenant=tenant,
+                         project_context=_trusted_project_context(str(payload.get("root") or "")),
+                     )
+                     if not req.task_id:
+@@ -4158,7 +3295,7 @@
+                 return
+             if path == "/api/resolve_imports":
+                 root = str(payload.get("root", "."))
+-                lang = str(payload.get("language", "auto"))
++                lang = str(payload.get("language", "csharp"))
+                 syms = payload.get("symbols", [payload.get("symbol")] if payload.get("symbol") else [])
+                 if APP.deterministic is not None:
+                     self._send(200, APP.services.resolve_imports(root, syms, lang))
+@@ -4496,7 +3633,6 @@
+                     int(payload.get("top_k", 12)),
+                     context_lines=int(payload["context_lines"]) if payload.get("context_lines") is not None else None,
+                     enrich=bool(payload.get("enrich", False)),
+-                    path_hints=payload.get("path_hints"),
+                 )); return
+             if path == "/api/context/pack":
+                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))
+@@ -4512,35 +3648,6 @@
+                 mode = str(payload.get("mode", "adaptive")).strip().lower()
+                 if mode not in {"full", "fast", "adaptive"}:
+                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "context mode must be adaptive, full or fast"}); return
+-                path_control_fields = ("path_hints", "directory_hints", "exclude_paths", "force_include_paths")
+-                path_controls_requested = any(field in payload for field in path_control_fields)
+-                path_controls = None
+-                if path_controls_requested:
+-                    if mode != "adaptive":
+-                        self._send(400, {
+-                            "success": False, "terminal": True, "retryable": False,
+-                            "error": "path controls require adaptive context mode",
+-                        }); return
+-                    for field in path_control_fields:
+-                        if payload.get(field) is not None and not isinstance(payload.get(field), list):
+-                            self._send(400, {
+-                                "success": False, "terminal": True, "retryable": False,
+-                                "error": f"{field} must be a list",
+-                            }); return
+-                    from .agent_consistency import ConsistencyRequest
+-                    try:
+-                        path_controls = ConsistencyRequest(
+-                            root=root,
+-                            path_hints=payload.get("path_hints") or (),
+-                            directory_hints=payload.get("directory_hints") or (),
+-                            exclude_paths=payload.get("exclude_paths") or (),
+-                            force_include_paths=payload.get("force_include_paths") or (),
+-                        )
+-                    except (TypeError, ValueError) as exc:
+-                        self._send(400, {
+-                            "success": False, "terminal": True, "retryable": False,
+-                            "error": str(exc),
+-                        }); return
+                 guarded = payload.get("guarded", False)
+                 if not isinstance(guarded, bool):
+                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "guarded must be boolean"}); return
+@@ -4589,10 +3696,6 @@
+                         tenant=tenant,
+                         override_reason=str(payload.get("override_reason", "")),
+                         approval=approval,
+-                        path_hints=path_controls.path_hints if path_controls else (),
+-                        directory_hints=path_controls.directory_hints if path_controls else (),
+-                        exclude_paths=path_controls.exclude_paths if path_controls else (),
+-                        force_include_paths=path_controls.force_include_paths if path_controls else (),
+                     )
+                     result = APP.services.adaptive_context_pack(
+                         request,
+@@ -4610,7 +3713,7 @@
+                             "error": "task context compiler unavailable",
+                         }); return
+                     if guarded_requested and has_task_id and getattr(APP, "agent_context", None):
+-                        task_request = build_context_request({
++                        task_request_payload = {
+                             "task_id": payload.get("task_id", ""),
+                             "session_id": payload.get("session_id", ""),
+                             "token_budget": max_tokens,
+@@ -4621,7 +3724,12 @@
+                             "changed_paths": payload.get("changed_paths") or [],
+                             "repository_revision": payload.get("repository_revision", payload.get("repo_revision", "")),
+                             "since_hash": payload.get("task_since_hash", ""),
+-                        }, tenant=tenant)
++                        }
++                        task_request = build_context_request(
++                            task_request_payload,
++                            tenant=tenant,
++                            project_context=_trusted_project_context(root),
++                        )
+                         try:
+                             compiled = APP.agent_context.compile(task_request)
+                             unified = compose_task_context(
+@@ -4658,23 +3766,10 @@
+                             result["task_context"] = unified
+                             result["task_context_id"] = unified["context_id"]
+                     self._send(200, result); return
+-                if mode == "fast":
+-                    result = APP.services.fast_context(root, query_text, max_tokens)
+-                else:
+-                    result = APP.services._hybrid_context(
+-                        root, query_text, tenant, payload.get("workspace"), max_tokens,
+-                        quality_first=mode == "adaptive",
+-                        context_identity={
+-                            "path_hints": path_controls.path_hints if path_controls else (),
+-                            "directory_hints": path_controls.directory_hints if path_controls else (),
+-                            "exclude_paths": path_controls.exclude_paths if path_controls else (),
+-                            "force_include_paths": path_controls.force_include_paths if path_controls else (),
+-                        },
+-                        path_hints=path_controls.path_hints if path_controls else (),
+-                        directory_hints=path_controls.directory_hints if path_controls else (),
+-                        exclude_paths=path_controls.exclude_paths if path_controls else (),
+-                        force_include_paths=path_controls.force_include_paths if path_controls else (),
+-                    )
++                result = APP.services.fast_context(root, query_text, max_tokens) if mode == "fast" else APP.services._hybrid_context(
++                    root, query_text, tenant, payload.get("workspace"), max_tokens,
++                    quality_first=mode == "adaptive",
++                )
+                 if isinstance(result, dict):
+                     result["delivery_mode"] = mode
+                 self._send(200, result); return
+@@ -4796,30 +3891,10 @@
+                 top_k = int(payload.get("top_k", 8))
+                 self._send(200, APP.rag.docset_search(name, query, tenant, top_k=top_k)); return
+             if path == "/api/telemetry/timeline":
+-                limit = payload.get("limit", 100) if isinstance(payload, dict) else 100
+-                before_id = payload.get("before_id") if isinstance(payload, dict) else None
+-                self._send(200, {"success": True, **APP.telemetry.get_timeline_page(limit, before_id=before_id)}); return
++                limit = int(payload.get("limit", 100)) if isinstance(payload, dict) else 100
++                self._send(200, {"success": True, "timeline": APP.telemetry.get_timeline(limit)}); return
+             if path in {"/api/task/transcribe", "/api/transcribe"}:
+-                from .process_utils import ProcessCleanupUnverifiedError
+-                token, cancel_event = _ACTIVE_TRANSCRIPTIONS.begin()
+-                result: Any = {}
+-                cleanup_deferred = False
+-                try:
+-                    result = APP.services.transcribe(payload, tenant, cancel_event=cancel_event)
+-                    self._send(200, result); return
+-                except ProcessCleanupUnverifiedError as exc:
+-                    cleanup_deferred = True
+-                    result = {
+-                        "success": False, "reason": "cleanup_unverified", "error": str(exc),
+-                        "terminal": False, "retryable": True, "cleanup_unverified": True,
+-                    }
+-                    _ACTIVE_TRANSCRIPTIONS.defer_process_cleanup(
+-                        token, exc.process, tree_termination_confirmed=exc.tree_termination_confirmed,
+-                    )
+-                    self._send(503, result); return
+-                finally:
+-                    if not cleanup_deferred:
+-                        _ACTIVE_TRANSCRIPTIONS.finish(token, result)
++                self._send(200, APP.services.transcribe(payload, tenant)); return
+             if path in {"/api/repo/code_invariants", "/api/code_invariants"}:
+                 self._send(200, APP.services.code_invariants(str(payload.get("root", ".")), payload.get("path"))); return
+             if path in {"/api/repo/generate_dataset", "/api/generate_dataset"}:
+@@ -4860,7 +3935,7 @@
+             if path in {"/api/coord/pubsub_publish", "/api/pubsub_publish"}:
+                 self._send(200, APP.services.pubsub_publish(str(payload.get("topic", "default")), payload.get("message", ""), sender=str(payload.get("publisher", payload.get("sender", "agent"))))); return
+             if path in {"/api/coord/pubsub_poll", "/api/pubsub_poll"}:
+-                self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), since_timestamp=float(payload.get("since_timestamp", 0.0)), limit=int(payload.get("limit", 50)))); return
++                self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), since_timestamp=float(payload.get("since_timestamp", 0.0)), limit=int(payload.get("limit", 50)), after_seq=int(payload.get("after_seq", 0)))); return
+             if path in {"/api/coord/simulate_merge", "/api/simulate_merge"}:
+                 self._send(200, APP.services.simulate_merge(str(payload.get("root", ".")), str(payload.get("source_branch", "")), target_branch=str(payload.get("target_branch", "HEAD")))); return
+             if path in {"/api/task/eval_suite", "/api/eval_suite"}:
+diff --git a/tests/test_t08_http_memory_context_immutable.py b/tests/test_t08_http_memory_context_immutable.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_t08_http_memory_context_immutable.py
+@@ -0,0 +1,141 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++from local_ai_hub import http_server, trace_context
++from local_ai_hub.agent_identity import AgentScope
++from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus
++from local_ai_hub.app import LocalAIApp
++
++
++def test_http_task_checkpoint_cannot_replace_server_memory_context(tmp_path: Path, monkeypatch):
++    config = tmp_path / "config.toml"
++    config.write_text(
++        f'[server]\nbind="127.0.0.1"\nstate_dir="{(tmp_path / "state").as_posix()}"\n'
++        "\n[agent_state]\nenabled=true\n",
++        encoding="utf-8",
++    )
++    root = tmp_path / "repo"
++    root.mkdir()
++    app = LocalAIApp(str(config))
++    try:
++        record = MemoryRecord.create(
++            kind=MemoryKind.FACT,
++            scope=AgentScope.REPOSITORY,
++            scope_id=str(root),
++            key="verified fact",
++            value="keep authoritative memory context",
++            status=MemoryStatus.CONFIRMED,
++            source="user",
++            provenance={"root": str(root), "tenant": "tenant-a"},
++        )
++        app.agent_memory.record(record, actor="user", idempotency_key="seed-http-memory")
++        monkeypatch.setattr(http_server, "APP", app)
++        monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda _self: True)
++        monkeypatch.setattr(http_server.Handler, "_tenant", lambda _self: "tenant-a")
++        monkeypatch.setattr(http_server.Handler, "_agent", lambda _self: "test-agent")
++        monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: self._payload)
++        monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda _self, _path, _payload: None)
++
++        def begin_trace(handler, _path):
++            handler._trace_request_id = handler._request_id
++            handler._debug_trace_id = ""
++
++        monkeypatch.setattr(http_server.Handler, "_begin_trace", begin_trace)
++
++        def post(payload: dict, request_id: str) -> tuple[int, dict]:
++            handler = object.__new__(http_server.Handler)
++            handler.path = "/api/agent-state/tasks"
++            handler.command = "POST"
++            handler.headers = {"Content-Type": "application/json"}
++            handler._payload = payload
++            handler._request_id = request_id
++            handler.client_address = ("127.0.0.1", 10000)
++            handler.server = object()
++            responses: list[tuple[int, dict]] = []
++            handler._send = lambda status, data: responses.append((status, data))
++            token = trace_context.set_context(tenant="tenant-a")
++            try:
++                http_server.Handler.do_POST(handler)
++            finally:
++                trace_context.reset_context(token)
++            assert len(responses) == 1, responses
++            return responses[0]
++
++        task_id = "http-memory-owned"
++        status, created = post(
++            {
++                "action": "create",
++                "task_id": task_id,
++                "repo_root": str(root),
++                "contract": {"goal": "Use relevant verified memory"},
++                "context": {"repository_id": str(root), "branch": "main", "task_id": task_id},
++            },
++            "http-create-memory-task",
++        )
++        assert status == 200 and created["success"] is True, created
++        authoritative = created["task"]["checkpoint"]["state_data"]["memory_context"]
++        assert [item["id"] for item in authoritative["items"]] == [record.record_id]
++
++        before = app.agent_tasks.get(task_id)
++        assert before is not None
++        before_events = app.agent_state.events(f"task:{task_id}")
++        forged = {
++            "action": "checkpoint",
++            "task_id": task_id,
++            "checkpoint": {
++                "phase": "work",
++                "next_action": "attacker supplied empty context",
++                "state_data": {"memory_context": {"items": [], "warnings": []}},
++            },
++        }
++        status, rejected = post(forged, "http-forged-memory-context")
++
++        assert status == 400, rejected
++        assert rejected["success"] is False
++        after = app.agent_tasks.get(task_id)
++        assert after is not None
++        assert after.checkpoint.to_dict() == before.checkpoint.to_dict()
++        after_events = app.agent_state.events(f"task:{task_id}")
++        assert [(event.event_id, event.seq) for event in after_events] == [
++            (event.event_id, event.seq) for event in before_events
++        ]
++        assert after.checkpoint.state_data["memory_context"] == authoritative
++
++        for task_status in ("active", "verifying"):
++            status, response = post(
++                {"action": "transition", "task_id": task_id, "status": task_status},
++                f"http-transition-{task_status}",
++            )
++            assert status == 200 and response["success"] is True, response
++        status, response = post(
++            {
++                "action": "checkpoint",
++                "task_id": task_id,
++                "checkpoint": {"phase": "verify", "state_data": {"memory_audit": {"used_ids": []}}},
++            },
++            "http-empty-memory-audit",
++        )
++        assert status == 200 and response["success"] is True, response
++        status, rejected_completion = post({"action": "complete", "task_id": task_id}, "http-complete-no-memory-reason")
++        assert status == 400 and "used memory IDs or not_used_reason" in rejected_completion["error"]
++
++        status, response = post(
++            {
++                "action": "checkpoint",
++                "task_id": task_id,
++                "checkpoint": {
++                    "phase": "verify",
++                    "state_data": {"memory_audit": {"used_ids": [], "not_used_reason": "the fact did not affect this task"}},
++                },
++            },
++            "http-valid-memory-reason",
++        )
++        assert status == 200 and response["success"] is True, response
++        assert response["task"]["checkpoint"]["state_data"]["memory_context"] == authoritative
++        status, completed = post({"action": "complete", "task_id": task_id}, "http-complete-with-memory-reason")
++        assert status == 200 and completed["success"] is True, completed
++    finally:
++        app.close()
+diff --git a/tests/test_t08_t13_t12_consumer_overlay.py b/tests/test_t08_t13_t12_consumer_overlay.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_t08_t13_t12_consumer_overlay.py
+@@ -0,0 +1,267 @@
++from __future__ import annotations
++
++import json
++import os
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import textwrap
++
++import pytest
++
++
++def test_t13_async_job_tracks_actual_t12_service_until_drain(tmp_path: Path):
++    t13_root = Path(os.environ.get("T08_T13_WORKTREE", ""))
++    t12_root = Path(os.environ.get("T08_T12_WORKTREE", ""))
++    candidate_root = Path(__file__).resolve().parents[1]
++    if not (t13_root / "src/local_ai_hub/app.py").is_file():
++        pytest.skip("set T08_T13_WORKTREE to existing T13 candidate")
++    if not (t12_root / "src/local_ai_hub/services.py").is_file():
++        pytest.skip("set T08_T12_WORKTREE to existing T12 candidate")
++
++    overlay_package = tmp_path / "overlay" / "local_ai_hub"
++    overlay_package.mkdir(parents=True)
++    for source_root, filename in (
++        (t13_root, "app.py"),
++        (t13_root, "async_jobs.py"),
++        (t13_root, "http_server.py"),
++        (t13_root, "operational_mode.py"),
++        (t12_root, "services.py"),
++    ):
++        shutil.copyfile(
++            source_root / "src/local_ai_hub" / filename,
++            overlay_package / filename,
++        )
++
++    script = textwrap.dedent(
++        r"""
++        import json, os, sys, threading, time
++        from contextlib import closing
++        from pathlib import Path
++        from types import SimpleNamespace
++        t13_src = Path(os.environ["T08_T13_WORKTREE"]) / "src"
++        t12_src = Path(os.environ["T08_T12_WORKTREE"]) / "src"
++        candidate_src = Path(os.environ["T08_CANDIDATE_WORKTREE"]) / "src"
++        overlay_pkg = Path(os.environ["T08_OVERLAY_PACKAGE"])
++        sys.path[:0] = [str(t13_src), str(t12_src), str(candidate_src)]
++        import local_ai_hub
++        local_ai_hub.__path__[:] = [
++            str(overlay_pkg),
++            str(t13_src / "local_ai_hub"),
++            str(t12_src / "local_ai_hub"),
++            str(candidate_src / "local_ai_hub"),
++        ]
++        from types import SimpleNamespace
++        from local_ai_hub.app import LocalAIApp
++        from local_ai_hub.artifacts import ArtifactStore
++        from local_ai_hub.async_jobs import AsyncJobManager
++        from local_ai_hub.conversations import ConversationStore
++        from local_ai_hub import http_server
++        from local_ai_hub.operational_mode import set_operational_mode
++        from local_ai_hub.services import LocalAIServices
++
++        state_dir = Path(os.environ["T08_STATE_DIR"])
++        state_dir.mkdir(parents=True, exist_ok=True)
++        set_operational_mode(state_dir, "active")
++        service = object.__new__(LocalAIServices)
++        service.config = {"model_conversations": {"max_prompt_tokens": 8192}}
++        service.conversations = ConversationStore(idle_ttl_seconds=60)
++        service.router = SimpleNamespace(
++            classify=lambda *_args, **_kwargs: {
++                "model": "test-model", "task_type": "general", "complexity": "normal"
++            },
++            apply_model_override=lambda route, _model: route,
++        )
++        service._resident_optimize = lambda route, *_args, **_kwargs: route
++        service._resolve_local_task_project = lambda _root: (None, "", "", "")
++        entered = [threading.Event(), threading.Event()]
++        release = threading.Event()
++        call_count = []
++        call_lock = threading.Lock()
++        def controlled_model_boundary(*_args, **_kwargs):
++            with call_lock:
++                index = len(call_count)
++                call_count.append("generate")
++            if index >= len(entered):
++                raise AssertionError("unexpected extra model boundary call")
++            entered[index].set()
++            if not release.wait(8):
++                raise TimeoutError("controlled inference release timed out")
++            return {"success": True, "text": "controlled result", "model": "test-model"}
++        service._generate = controlled_model_boundary
++
++        app = object.__new__(LocalAIApp)
++        app.services = service
++        config = {
++            "server": {"state_dir": str(state_dir), "bind": "127.0.0.1"},
++            "security": {"api_token": ""},
++            "async_jobs": {"enabled": True, "result_ttl_seconds": 3600},
++            "artifacts": {"ttl_hours": 1},
++            "model_conversations": {"max_prompt_tokens": 8192},
++        }
++        artifacts = ArtifactStore(state_dir, ttl_hours=1)
++        manager = AsyncJobManager(config, None, artifacts, None)
++        app.async_jobs = manager
++        manager.executor = app._execute_async_task
++        app.config = config
++        class Runtime:
++            config = {"ollama": {"enabled": True}}
++            def __init__(self):
++                self.unload_calls = []
++            def unload_configured_models(self, **kwargs):
++                self.unload_calls.append(dict(kwargs))
++                raise AssertionError("Ollama unload ran while inference was active")
++        app.runtime = Runtime()
++        app.preprocessor = None
++        app.embeddings = None
++        app.reranker = None
++        app.debug_traces = None
++        class Recovery:
++            @staticmethod
++            def fingerprint_payload(_payload):
++                return "controlled-fingerprint"
++            @staticmethod
++            def begin(*_args, **_kwargs):
++                return {"claimed": True, "state": "running", "response": None}
++            @staticmethod
++            def finish(*_args, **_kwargs):
++                return None
++        app.recovery = Recovery()
++        http_server.APP = app
++        http_server._GAMING_DRAIN_TIMEOUT_SECONDS = 0.1
++        http_server.Handler._begin_trace = lambda self, path: setattr(self, "_trace_request_id", f"req-{path}")
++        http_server.Handler._validate_host_and_origin = lambda _self: True
++        http_server.Handler._tenant_binding_allowed = lambda _self: True
++        http_server.Handler._validate_payload = lambda _self, _path, _payload: None
++        http_server.Handler._read_json = lambda self: self._test_payload
++        http_server.Handler._tenant = lambda _self: "tenant-a"
++        http_server.Handler._agent = lambda _self: "test-agent"
++
++        def make_handler(path, payload):
++            handler = object.__new__(http_server.Handler)
++            handler.path = path
++            handler.command = "POST"
++            handler.headers = {"Content-Type": "application/json", "Host": "localhost"}
++            handler.client_address = ("127.0.0.1", 12345)
++            handler.server = SimpleNamespace()
++            handler._test_payload = payload
++            responses = []
++            handler._send = lambda status, data: responses.append((status, data))
++            return handler, responses
++
++        initial = service.conversations.start("tenant-a", {
++            "model": "test-model", "system": "controlled system", "max_tokens": 64,
++            "temperature": 0.0, "source": "test", "priority": 1,
++            "route": {"model": "test-model", "task_type": "general", "complexity": "normal"},
++            "trace_system": "controlled system",
++        })
++        drained = threading.Event()
++        http_done = threading.Event()
++        try:
++            submitted = manager.submit(
++                "tenant-a", "delegate", {"task": "controlled test"}
++            )
++            assert submitted.get("success") is True, submitted
++            job_id = submitted["job_id"]
++            assert entered[0].wait(8), "T12 LocalAIServices.delegate did not reach controlled model boundary"
++            row = manager._row("tenant-a", job_id)
++            assert row is not None and row["state"] == "running"
++            assert manager.inference_actions_active() is True
++            manager.when_inference_actions_drained({"delegate"}, drained.set)
++
++            conversation_handler, conversation_responses = make_handler(
++                "/api/conversations/continue",
++                {"conversation_id": initial.conversation_id, "task": "continue while async worker is active"},
++            )
++            conversation_thread = threading.Thread(
++                target=lambda: (http_server.Handler.do_POST(conversation_handler), http_done.set()),
++                daemon=True,
++            )
++            conversation_thread.start()
++            assert entered[1].wait(8), "T12 LocalAIServices.continue_conversation did not reach controlled model boundary"
++            assert manager.inference_actions_active() is True
++            assert not drained.wait(0.05), "drain callback fired while async and HTTP conversation services were active"
++
++            mode_handler, mode_responses = make_handler("/api/admin/mode", {"mode": "gaming"})
++            http_server.Handler.do_POST(mode_handler)
++            assert mode_responses and mode_responses[0][0] == 200, mode_responses
++            mode_receipt = mode_responses[0][1]
++            assert mode_receipt.get("mode_changed") is True, mode_receipt
++            assert mode_receipt.get("transition", {}).get("inference_active") is True, mode_receipt
++            assert mode_receipt.get("resources", {}).get("conversation_release", {}).get("state") == "timed_out", mode_receipt
++            assert mode_receipt.get("resources", {}).get("inference_admission_release", {}).get("state") == "timed_out", mode_receipt
++            assert app.runtime.unload_calls == [], "GPU-backed runtime unload must be deferred while consumers are active"
++            assert manager.resource_release_active() is True
++            assert not drained.is_set(), "drain callback fired before active services returned"
++
++            blocked = manager.submit(
++                "tenant-a", "delegate", {"task": "must not dispatch while gaming"}
++            )
++            assert blocked.get("success") is False, blocked
++            with closing(manager._connect()) as con:
++                persisted_rows = int(con.execute("SELECT COUNT(*) FROM async_jobs").fetchone()[0])
++            assert persisted_rows == 1, persisted_rows
++            assert len(call_count) == 2, call_count
++            assert manager.inference_actions_active() is True
++
++            release.set()
++            assert drained.wait(8), "drain callback did not fire after T12 service exit"
++            conversation_thread.join(8)
++            assert not conversation_thread.is_alive(), "HTTP conversation handler did not finish"
++            assert http_done.is_set(), "HTTP conversation handler exited without completion"
++            assert conversation_responses and conversation_responses[0][0] == 200, conversation_responses
++            deadline = time.monotonic() + 3
++            while manager.resource_release_active() and time.monotonic() < deadline:
++                time.sleep(0.01)
++            assert manager.resource_release_active() is False, "resource release ownership did not end after all consumers drained"
++            final = manager.wait("tenant-a", job_id, 8)
++            assert final.get("terminal") is True, final
++            assert manager.inference_actions_active() is False
++            print(json.dumps({
++                "job_id": job_id,
++                "final_state": final.get("state"),
++                "drain_callback_after_service_exit": drained.is_set(),
++                "http_conversation_status": conversation_responses[0][0],
++                "mode_release_deferred_while_active": mode_receipt.get("resources", {}).get("inference_admission_release", {}).get("state"),
++                "persisted_rows": persisted_rows,
++                "model_boundary_calls": len(call_count),
++            }))
++        finally:
++            release.set()
++            manager.close()
++        """
++    )
++    env = os.environ.copy()
++    env.update(
++        {
++            "T08_T13_WORKTREE": str(t13_root),
++            "T08_T12_WORKTREE": str(t12_root),
++            "T08_CANDIDATE_WORKTREE": str(candidate_root),
++            "T08_OVERLAY_PACKAGE": str(overlay_package),
++            "T08_STATE_DIR": str(tmp_path / "state"),
++            "PYTHONPATH": os.pathsep.join(
++                (
++                    str(t13_root / "src"),
++                    str(t12_root / "src"),
++                    str(candidate_root / "src"),
++                )
++            ),
++        }
++    )
++    result = subprocess.run(
++        [sys.executable, "-B", "-c", script],
++        cwd=candidate_root,
++        env=env,
++        capture_output=True,
++        text=True,
++        timeout=30,
++        check=False,
++    )
++    assert result.returncode == 0, result.stdout + result.stderr
++    receipt = json.loads(result.stdout.strip().splitlines()[-1])
++    assert receipt["drain_callback_after_service_exit"] is True
++    assert receipt["persisted_rows"] == 1
++    assert receipt["model_boundary_calls"] == 2
++    assert receipt["http_conversation_status"] == 200
++    assert receipt["mode_release_deferred_while_active"] == "timed_out"

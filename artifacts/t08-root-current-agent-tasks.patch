@@ -1,0 +1,415 @@
+diff --git a/src/local_ai_hub/agent_tasks.py b/src/local_ai_hub/agent_tasks.py
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -22,6 +22,9 @@
+ from .sqlite_support import connect_sqlite, retry_busy
+ 
+ MAX_TASK_QUERY_SCAN_ROWS = 10_000
++
++
++MAX_TRAINING_DATASET_BYTES = 16 * 1024 * 1024
+ 
+ 
+ class CompletionGateError(RuntimeError):
+@@ -231,15 +234,29 @@
+     requested_state_data: Mapping[str, Any],
+ ) -> None:
+     """Prevent checkpoint clients from replacing server-injected memory."""
+-    if "memory_context" not in requested_state_data:
+-        return
+-    if (
++    if "memory_context" in requested_state_data and (
+         "memory_context" not in current_state_data
+         or requested_state_data["memory_context"] != current_state_data["memory_context"]
+     ):
+         raise CompletionGateError(
+             "Cannot checkpoint: memory_context is server-managed and cannot be modified"
+         )
++    if "_agent_task_scope" in requested_state_data and (
++        "_agent_task_scope" not in current_state_data
++        or requested_state_data["_agent_task_scope"] != current_state_data["_agent_task_scope"]
++    ):
++        raise ValueError("Cannot checkpoint: _agent_task_scope is server-managed and cannot be modified")
++    if "repo_root" in requested_state_data and (
++        requested_state_data["repo_root"] != current_state_data.get("repo_root")
++    ):
++        raise ValueError("Cannot checkpoint: repo_root is server-managed and cannot be modified")
++    current_worktree = current_state_data.get("worktree")
++    requested_worktree = requested_state_data.get("worktree")
++    if isinstance(requested_worktree, Mapping):
++        requested_root = requested_worktree.get("repo_root")
++        current_root = current_worktree.get("repo_root") if isinstance(current_worktree, Mapping) else None
++        if requested_root != current_root and (requested_root is not None or current_root is not None):
++            raise ValueError("Cannot checkpoint: worktree repo_root is server-managed and cannot be modified")
+ 
+ 
+ def _preserve_checkpoint_memory_state(
+@@ -251,9 +268,21 @@
+     if not allow_server_memory_refresh:
+         _validate_checkpoint_memory_context(current_state_data, checkpoint.state_data)
+     merged_state_data = dict(checkpoint.state_data)
+-    for key in ("memory_context", "memory_audit", "memory_audit_history"):
++    for key in (
++        "memory_context",
++        "memory_audit",
++        "memory_audit_history",
++        "_agent_task_scope",
++        "repo_root",
++    ):
+         if key not in merged_state_data and key in current_state_data:
+             merged_state_data[key] = current_state_data[key]
++    current_worktree = current_state_data.get("worktree")
++    merged_worktree = merged_state_data.get("worktree")
++    if isinstance(current_worktree, Mapping) and current_worktree.get("repo_root"):
++        preserved_worktree = dict(merged_worktree) if isinstance(merged_worktree, Mapping) else dict(current_worktree)
++        preserved_worktree["repo_root"] = current_worktree["repo_root"]
++        merged_state_data["worktree"] = preserved_worktree
+     if merged_state_data == dict(checkpoint.state_data):
+         return checkpoint
+     return TaskCheckpoint(
+@@ -265,6 +294,51 @@
+         state_data=merged_state_data,
+     )
+ 
++
++def _canonical_repository_root(value: Any) -> str:
++    raw = str(value or "").strip()
++    if not raw:
++        raise ValueError("repo_root is required")
++    path = Path(raw).expanduser()
++    if not path.is_absolute():
++        raise ValueError("repo_root must be absolute")
++    try:
++        canonical = path.resolve(strict=True)
++    except (OSError, RuntimeError, ValueError) as exc:
++        raise ValueError("repo_root must resolve to an existing directory") from exc
++    if not canonical.is_dir():
++        raise ValueError("repo_root must resolve to an existing directory")
++    return str(canonical)
++
++def _tenant_scope_key(tenant: Any) -> str:
++    value = str(tenant or "").strip()
++    if not value:
++        raise ValueError("authenticated tenant is required")
++    return hashlib.sha256(f"agent-task-memory-tenant\\0{value}".encode("utf-8")).hexdigest()
++
++def _task_scope_values(task: "TaskState") -> tuple[str, str]:
++    state_data = task.checkpoint.state_data
++    scope = state_data.get("_agent_task_scope")
++    if not isinstance(scope, Mapping) or scope.get("version") != 1:
++        return "", ""
++    root = scope.get("repo_root")
++    tenant_key = scope.get("tenant_key")
++    try:
++        canonical_root = _canonical_repository_root(root)
++    except ValueError:
++        return "", ""
++    key = str(tenant_key or "").strip().lower()
++    if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
++        return "", ""
++    return canonical_root, key
++
++def _task_matches_scope(
++    task: "TaskState", repo_root: str, tenant_key: str, task_id: str | None = None
++) -> bool:
++    if task_id and task.task_id != task_id:
++        return False
++    task_root, task_tenant_key = _task_scope_values(task)
++    return task_root == repo_root and task_tenant_key == tenant_key
+ 
+ class TaskStore:
+     def __init__(
+@@ -442,18 +516,41 @@             token_budget = 512
+             used_tokens = self._memory_token_count(instruction)
+             elements = getattr(compiled, "elements", ())
++            compiled_memory_ids = {
++                str(getattr(element, "element_id", "") or "").strip()
++                for element in elements
++                if getattr(element, "source_kind", "") == "memory_record"
++            }
++            scoped_records_by_id: dict[str, Any] = {}
++            if compiled_memory_ids:
++                find_for_context = getattr(memory_store, "find_for_context", None)
++                if callable(find_for_context):
++                    try:
++                        scoped_records = find_for_context(
++                            root=root,
++                            task_id=task_id,
++                            tenant=tenant,
++                            clone_id=context.clone_id,
++                            worktree_id=context.worktree_id,
++                            branch=context.branch,
++                            limit=20,
++                        )
++                        scoped_records_by_id = {
++                            str(getattr(record, "record_id", "") or "").strip(): record
++                            for record in scoped_records
++                            if str(getattr(record, "record_id", "") or "").strip()
++                            in compiled_memory_ids
++                        }
++                    except Exception:
++                        warnings.append({"code": "memory_scoped_lookup_unavailable"})
++                else:
++                    warnings.append({"code": "memory_scoped_lookup_unavailable"})
+             for element in elements:
+                 if getattr(element, "source_kind", "") != "memory_record" or len(items) >= 5:
+                     continue
+                 record_id = str(getattr(element, "element_id", "") or "").strip()
+                 if not record_id:
+                     continue
+-                try:
+-                    record = memory_store.get(
+-                        record_id,
+-                    )
+-                except Exception:
+-                    warnings.append({"code": "memory_record_unavailable"})
+-                    continue
++                record = scoped_records_by_id.get(record_id)
+                 if record is None:
+                     warnings.append({"code": "memory_record_unavailable"})
+                     continue
+@@ -751,8 +849,14 @@
+         now = time.time()
+         initial_status = TaskStatus.PLANNED
+         initial_sd: dict[str, Any] = {}
+-        if repo_root:
+-            initial_sd["repo_root"] = str(repo_root)
++        canonical_root = _canonical_repository_root(repo_root) if repo_root else ""
++        try:
++            from .trace_context import current as current_trace_context
++            authenticated_tenant = str(current_trace_context().get("tenant", "") or "").strip()
++        except Exception:
++            authenticated_tenant = ""
++        if canonical_root:
++            initial_sd["repo_root"] = canonical_root
+ 
+         if auto_worktree:
+             try:
+@@ -773,11 +877,21 @@
+                 )
+                 if wt_res.get("success"):
+                     initial_sd["worktree"] = wt_res
++                    if not canonical_root and wt_res.get("repo_root"):
++                        canonical_root = _canonical_repository_root(wt_res["repo_root"])
++                        initial_sd["repo_root"] = canonical_root
+             except Exception:
+                 pass
+ 
++        if canonical_root and authenticated_tenant:
++            initial_sd["_agent_task_scope"] = {
++                "version": 1,
++                "repo_root": canonical_root,
++                "tenant_key": _tenant_scope_key(authenticated_tenant),
++            }
++
+         memory_context = self._task_memory_context(
+-            t_id, contract, context, root_override=repo_root
++            t_id, contract, context, root_override=canonical_root or repo_root
+         )
+         if memory_context is not None:
+             initial_sd["memory_context"] = memory_context
+@@ -1344,10 +1458,24 @@
+         idempotency_key: str,
+         checkpoint: TaskCheckpoint | None = None,
+         _allow_server_memory_refresh: bool = False,
++        _expected_reap: tuple[str, str, TaskStatus, float, float] | None = None,
+     ) -> TaskState:
+         current = self.get(task_id)
+         if not current:
+             raise KeyError(f"Task {task_id} not found")
++
++        if _expected_reap is not None:
++            expected_root, expected_tenant_key, expected_status, expected_expiry, deadline = _expected_reap
++            if (
++                not _task_matches_scope(current, expected_root, expected_tenant_key, task_id)
++                or current.status is not expected_status
++                or current.heartbeat_expires_at != expected_expiry
++                or expected_expiry <= 0
++                or expected_expiry >= deadline
++            ):
++                raise ConcurrentTaskUpdateError(
++                    f"Task {task_id} changed scope or heartbeat before reap transition"
++                )
+ 
+         if checkpoint is not None:
+             checkpoint = _preserve_checkpoint_memory_state(
+@@ -1635,22 +1763,9 @@
+         if not current:
+             raise KeyError(f"Task {task_id} not found")
+ 
+-        _validate_checkpoint_memory_context(
+-            current.checkpoint.state_data, checkpoint.state_data
+-        )
+-        merged_state_data = dict(checkpoint.state_data)
+-        for key in ("memory_context", "memory_audit", "memory_audit_history"):
+-            if key not in merged_state_data and key in current.checkpoint.state_data:
+-                merged_state_data[key] = current.checkpoint.state_data[key]
+-        if merged_state_data != dict(checkpoint.state_data):
+-            checkpoint = TaskCheckpoint(
+-                phase=checkpoint.phase,
+-                next_action=checkpoint.next_action,
+-                affected_paths=checkpoint.affected_paths,
+-                evidence_ids=checkpoint.evidence_ids,
+-                blockers=checkpoint.blockers,
+-                state_data=merged_state_data,
+-            )
++        checkpoint = _preserve_checkpoint_memory_state(
++            current.checkpoint.state_data, checkpoint
++        )
+ 
+         if capture_files or checkpoint.state_data.get("capture_files"):
+             snaps = dict(checkpoint.state_data.get("file_snapshots") or {})
+@@ -1981,7 +2096,20 @@
+         except Exception as exc:
+             return {"success": False, "error": str(exc)}
+ 
+-    def reap_expired_heartbeats(self, now: float | None = None, *, auto_recover: bool = False) -> list[str]:
++    def reap_expired_heartbeats(
++        self,
++        now: float | None = None,
++        *,
++        auto_recover: bool = False,
++        repo_root: str | Path | None = None,
++        tenant: Any = None,
++        task_id: str | None = None,
++    ) -> list[str]:
++        try:
++            scoped_root = _canonical_repository_root(repo_root)
++            tenant_key = _tenant_scope_key(tenant)
++        except ValueError:
++            return []
+         if not self._db_path_available():
+             return []
+         self._init_projection_table()
+@@ -2004,6 +2132,20 @@
+         for t_id in expired_ids:
+             try:
+                 current = self.get(t_id)
++                if (
++                    current is None
++                    or not _task_matches_scope(current, scoped_root, tenant_key, task_id)
++                    or current.status not in {
++                        TaskStatus.PLANNED,
++                        TaskStatus.ACTIVE,
++                        TaskStatus.VERIFYING,
++                        TaskStatus.WAITING,
++                        TaskStatus.BLOCKED,
++                    }
++                    or current.heartbeat_expires_at <= 0
++                    or current.heartbeat_expires_at >= current_time
++                ):
++                    continue
+                 target_status = TaskStatus.WAITING if auto_recover and current and current.status != TaskStatus.PLANNED else TaskStatus.ABANDONED
+                 reason = "heartbeat expired - auto-recovered to waiting" if auto_recover else "heartbeat expired"
+                 self.transition(
+@@ -2012,15 +2154,35 @@
+                     reason=reason,
+                     actor="system",
+                     idempotency_key=f"reap_{t_id}_{int(current_time)}",
++                    _expected_reap=(
++                        scoped_root,
++                        tenant_key,
++                        current.status,
++                        current.heartbeat_expires_at,
++                        current_time,
++                    ),
+                 )
+                 reaped.append(t_id)
+             except Exception:
+                 pass
+         return reaped
+ 
+-    def recover_zombie_tasks(self, now: float | None = None) -> list[str]:
++    def recover_zombie_tasks(
++        self,
++        now: float | None = None,
++        *,
++        repo_root: str | Path | None = None,
++        tenant: Any = None,
++        task_id: str | None = None,
++    ) -> list[str]:
+         """Automatically detect timed-out zombie tasks and recover them to WAITING state for re-assignment."""
+-        return self.reap_expired_heartbeats(now=now, auto_recover=True)
++        return self.reap_expired_heartbeats(
++            now=now,
++            auto_recover=True,
++            repo_root=repo_root,
++            tenant=tenant,
++            task_id=task_id,
++        )
+ 
+     def _save_projection(self, state: TaskState) -> None:
+         if not self._db_path_available():
+@@ -2364,10 +2526,20 @@
+         output_path: str,
+         min_receipts: int = 1,
+         format: str = "jsonl",
++        *,
++        repo_root: str | Path | None = None,
++        tenant: Any = None,
++        task_id: str | None = None,
+     ) -> dict[str, Any]:
+         """Export verified completed tasks into structured fine-tuning / LoRA training dataset."""
+-        tasks = self.list_tasks(status=TaskStatus.COMPLETED, limit=5000)
++        scoped_root = Path(_canonical_repository_root(repo_root))
++        tenant_key = _tenant_scope_key(tenant)
++        tasks = [
++            task for task in self.list_tasks(status=TaskStatus.COMPLETED, limit=5000)
++            if _task_matches_scope(task, str(scoped_root), tenant_key, task_id)
++        ]
+         samples: list[dict[str, Any]] = []
++        estimated_bytes = 0
+ 
+         for t in tasks:
+             if len(t.verification_receipts) < min_receipts:
+@@ -2382,7 +2554,7 @@
+             input_text = f"Acceptance criteria:\n{criteria_str}\n\nConstraints:\n{constraints_str}"
+             output_text = f"Action taken:\nModified {affected}.\nVerification receipts validated: {', '.join(receipts_list)}.\nOutcome: {next_act}"
+ 
+-            samples.append({
++            sample = {
+                 "instruction": instruction,
+                 "prompt": instruction,
+                 "input": input_text,
+@@ -2390,17 +2562,34 @@
+                 "task_id": t.task_id,
+                 "created_at": t.created_at,
+                 "status": t.status.value,
+-            })
+-
+-        out_file = Path(output_path).expanduser().resolve(strict=False)
++            }
++            estimated_bytes += len(json_dumps(sample, ensure_ascii=False).encode("utf-8")) + 1
++            if estimated_bytes > MAX_TRAINING_DATASET_BYTES:
++                raise ValueError(
++                    f"training dataset exceeds {MAX_TRAINING_DATASET_BYTES} byte limit"
++                )
++            samples.append(sample)
++
++        requested_output = Path(str(output_path or "")).expanduser()
++        if not str(output_path or "").strip():
++            raise ValueError("output_path is required")
++        if not requested_output.is_absolute():
++            requested_output = scoped_root / requested_output
++        out_file = requested_output.resolve(strict=False)
++        if out_file == scoped_root or not out_file.is_relative_to(scoped_root):
++            raise ValueError("output_path must remain inside repo_root")
+         out_file.parent.mkdir(parents=True, exist_ok=True)
++        out_file = out_file.resolve(strict=False)
++        if out_file == scoped_root or not out_file.is_relative_to(scoped_root):
++            raise ValueError("output_path must remain inside repo_root")
+ 
+         if format.lower() == "json":
+-            out_file.write_text(json_dumps(samples, indent=2, ensure_ascii=False), encoding="utf-8")
++            payload = json_dumps(samples, indent=2, ensure_ascii=False)
+         else:
+-            with out_file.open("w", encoding="utf-8") as f:
+-                for item in samples:
+-                    f.write(json_dumps(item, ensure_ascii=False) + "\n")
++            payload = "".join(json_dumps(item, ensure_ascii=False) + "\n" for item in samples)
++        if len(payload.encode("utf-8")) > MAX_TRAINING_DATASET_BYTES:
++            raise ValueError(f"training dataset exceeds {MAX_TRAINING_DATASET_BYTES} byte limit")
++        out_file.write_text(payload, encoding="utf-8")
+ 
+         return {
+             "success": True,

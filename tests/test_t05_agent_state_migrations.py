@@ -20,6 +20,7 @@ from local_ai_hub.agent_context import ContextCompiler
 from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_incidents import IncidentStore
 from local_ai_hub.agent_learning import LearningStore
+from local_ai_hub.leases import ScopeLeaseStore
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
 from local_ai_hub.agent_policy import PolicyEngine
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStore
@@ -253,6 +254,9 @@ def test_historical_schema_version_migrates_and_preserves_legacy_event_versions(
             "SELECT schema_version FROM agent_event_schema_versions WHERE stream_id=? AND seq=1",
             (event.stream_id,),
         ).fetchone()[0] == 7
+        assert connection.execute(
+            "SELECT COUNT(*) FROM agent_event_schema_versions"
+        ).fetchone()[0] == 1
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
     _assert_state_survives(db_path, task, event, memory)
 
@@ -338,11 +342,92 @@ def test_unsupported_newer_schema_version_fails_closed_byte_for_byte(tmp_path, u
         connection.commit()
     before = _sqlite_file_snapshot(db_path)
 
-    with pytest.raises(RuntimeError, match="schema version"):
-        AgentStateStore(db_path).events(event.stream_id)
+    with pytest.raises(RuntimeError, match="schema version") as caught:
+        AgentStateStore(db_path)._preflight_schema_read_only()
 
+    assert caught.value.recovery_required is True
+    assert caught.value.backup_path is not None and caught.value.backup_path.is_file()
+    with closing(sqlite3.connect(caught.value.backup_path)) as backup:
+        assert backup.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        assert backup.execute("PRAGMA user_version").fetchone()[0] == unsupported_version
+        assert backup.execute(
+            "SELECT event_id FROM agent_events WHERE event_id=?", (event.event_id,)
+        ).fetchone() == (event.event_id,)
     assert db_path.is_file()
     assert _sqlite_file_snapshot(db_path) == before
+
+
+def test_preflight_ignores_transient_shm_metadata_change(tmp_path, monkeypatch):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _seed_state(db_path)
+    shm_path = Path(f"{db_path}-shm")
+    shm_path.write_bytes(b"transient sqlite shared-memory state")
+    original_classify = AgentStateStore._classify_schema.__func__
+
+    def touch_shm_during_snapshot_classification(cls, connection):
+        result = original_classify(cls, connection)
+        stat = shm_path.stat()
+        os.utime(shm_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10_000_000))
+        return result
+
+    monkeypatch.setattr(
+        AgentStateStore,
+        "_classify_schema",
+        classmethod(touch_shm_during_snapshot_classification),
+    )
+    AgentStateStore(db_path)._preflight_schema_read_only()
+
+
+def test_component_schema_version_is_independent_of_database_version(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite"
+    _seed_state(db_path)
+    ScopeLeaseStore(tmp_path)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("DROP TABLE agent_event_schema_versions")
+        connection.execute("PRAGMA user_version=0")
+        connection.commit()
+
+    AgentStateStore(db_path)._ensure_schema()
+
+    with closing(sqlite3.connect(db_path)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT version FROM agent_state_schema_versions WHERE component='leases'"
+        ).fetchone() == (1,)
+
+
+def test_legacy_event_version_metadata_is_sparse_and_pruned_with_event(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _, event, _ = _seed_state(db_path)
+    with closing(sqlite3.connect(db_path)) as connection:
+        assert connection.execute(
+            "SELECT schema_version FROM agent_event_schema_versions WHERE stream_id=? AND seq=?",
+            (event.stream_id, 1),
+        ).fetchone() is None
+        connection.execute(
+            "INSERT INTO agent_event_schema_versions(stream_id, seq, schema_version) "
+            "VALUES (?, ?, 7)",
+            (event.stream_id, 1),
+        )
+        connection.execute(
+            "UPDATE agent_events SET created_at=? WHERE stream_id=? AND seq=?",
+            (time.time() - (2 * 86400), event.stream_id, 1),
+        )
+        connection.commit()
+
+    result = AgentStateStore(db_path).cleanup(retention_days=1)
+
+    assert result["success"] is True
+    assert result["deleted_events"] >= 1
+    with closing(sqlite3.connect(db_path)) as connection:
+        assert connection.execute(
+            "SELECT 1 FROM agent_events WHERE stream_id=? AND seq=?",
+            (event.stream_id, 1),
+        ).fetchone() is None
+        assert connection.execute(
+            "SELECT 1 FROM agent_event_schema_versions WHERE stream_id=? AND seq=?",
+            (event.stream_id, 1),
+        ).fetchone() is None
 
 
 def test_unknown_legacy_layout_fails_closed_without_changing_database_bytes(tmp_path):
@@ -433,7 +518,7 @@ def test_missing_required_projection_schema_fails_closed_and_preserves_wal_and_s
         backups = list(tmp_path.glob("agent_state.sqlite.schema-mismatch-*.sqlite3"))
         assert len(backups) == 1
         assert str(backups[0]) in str(exc_info.value)
-        assert "preserve the original database files" in str(exc_info.value).casefold()
+        assert "no migration applied" in str(exc_info.value).casefold()
         with closing(sqlite3.connect(backups[0])) as backup:
             assert backup.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
             assert backup.execute("PRAGMA user_version").fetchone()[0] == 0

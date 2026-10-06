@@ -82,6 +82,28 @@ class AsyncJobManager:
         self._initialized = False
         self._init_db()
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=0.75)
 
@@ -688,16 +710,16 @@ class AsyncJobManager:
             return {"success": False, "error": "async task payload exceeds 2MB", "terminal": True, "retryable": False}
         request_hash = stable_hash({"tenant": tenant, "action": action, "payload": request_hash_payload})
         task_id = str(clean.get("task_id") or "")
-        now = time.time()
         delay = max(0.0, min(30.0, float(dispatch_delay_seconds or 0.0)))
+        now = time.time()
         dispatch_not_before = now + delay if delay else 0.0
         mode_snapshot: dict[str, Any] | None = None
         mode_rejection: dict[str, Any] | None = None
         with self._mode_transition_lock, self._lock, closing(self._connect()) as con:
-            if request_id:
+            if caller_request_id:
                 identified = con.execute(
                     "SELECT job_id,action,request_hash,state,trace_id,task_id,expires_at,created_at,error,artifact_id FROM async_jobs WHERE tenant=? AND json_valid(payload_json) AND json_extract(payload_json,'$.request_id')=? ORDER BY created_at LIMIT 1",
-                    (tenant, request_id),
+                    (tenant, caller_request_id),
                 ).fetchone()
                 if identified:
                     job_id, old_action, old_hash, old_state, trace_id, old_task_id, expires_at, created_at, old_error, artifact_id = identified
@@ -767,7 +789,6 @@ class AsyncJobManager:
                 con.row_factory = sqlite3.Row
                 return con.execute("SELECT * FROM async_jobs WHERE job_id=? AND tenant=?", (job_id, tenant)).fetchone()
         return retry_busy(read, retries=3)
-
     def _dispatch(self, job_id: str) -> None:
         if self._shutdown.is_set():
             return
@@ -819,6 +840,7 @@ class AsyncJobManager:
                 self._workers.add(worker)
             worker.start()
 
+
     def _release_for_retry(self, job_id: str, error: str) -> None:
         trace_id = ""
         already_terminal = False
@@ -866,6 +888,7 @@ class AsyncJobManager:
         # its event after it records the final cancelled state.
         if state == "queued":
             self._event(job_id).set()
+
 
     def _execute(self, job_id: str) -> dict[str, Any]:
         self._cancel_jobs_blocked_by_mode(self._operational_mode_snapshot())
@@ -1145,9 +1168,10 @@ class AsyncJobManager:
             return 0
         cancelled_ids: list[tuple[str, str]] = []
         unknown_ids: list[tuple[str, str]] = []
+        now = time.time()
         with self._lock, closing(self._connect()) as con:
-            rows = con.execute("SELECT job_id,state,action,attempts,cancel_requested,trace_id,payload_json FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
-            for job_id, state, action, attempts, cancelled, trace_id, payload_json in rows:
+            rows = con.execute("SELECT job_id,state,action,attempts,cancel_requested,trace_id,payload_json,lease_until FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
+            for job_id, state, action, attempts, cancelled, trace_id, payload_json, lease_until in rows:
                 if cancelled:
                     con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                     cancelled_ids.append((str(job_id), str(trace_id or "")))
@@ -1155,6 +1179,9 @@ class AsyncJobManager:
                     error = "async job outcome unknown after restart; safe replay unavailable"
                     con.execute("UPDATE async_jobs SET state='outcome_unknown',lease_until=0,error=?,updated_at=? WHERE job_id=?", (error, time.time(), job_id))
                     unknown_ids.append((str(job_id), str(trace_id or "")))
+                elif state == "queued" and float(lease_until or 0) > now:
+                    # Keep persisted dispatch/worker lease; tick will claim it when due.
+                    continue
                 else:
                     con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id)); ids.append((str(job_id), str(trace_id or "")))
             con.commit()

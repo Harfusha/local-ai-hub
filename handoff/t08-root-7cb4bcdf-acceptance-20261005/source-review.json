@@ -1,0 +1,31 @@
+{
+  "review": "AST indexed symbol/diff check; manual identity/approval/export review",
+  "scope": [
+    {
+      "path": "src/local_ai_hub/agent_memory.py",
+      "changed_symbols": [
+        "MemoryStore.promote",
+        "MemoryStore.find"
+      ],
+      "expected_postimage_matches": true
+    },
+    {
+      "path": "src/local_ai_hub/app.py",
+      "changed_symbols": [
+        "LocalAIApp.export_bundle"
+      ],
+      "expected_postimage_matches": true
+    }
+  ],
+  "findings": [],
+  "checks": [
+    "approval checked before lookup",
+    "promotion forwards exact scope and scope_id",
+    "repository lookup still requires root and tenant or repository identity",
+    "explicit export context remains authoritative",
+    "default global lookup filters tenant; repository fallback requires root and tenant",
+    "transport fixture unchanged"
+  ],
+  "hub_indexed_review": "not run: user instructed ignore HUB",
+  "agent_os_completion": "not verified: user instructed ignore HUB"
+}

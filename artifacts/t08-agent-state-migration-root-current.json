@@ -1,0 +1,53 @@
+{
+  "task": "T08 AgentState migration root-current scoped handoff",
+  "investigation": "read-only root/candidate comparison; no pytest run and no root write",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "candidate": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "root_source_path": "src/local_ai_hub/agent_events.py",
+  "root_source_preimage_sha256": "30ab4485f34a67d8212e6151057e06ef806d40f92073036d8f9f4f4546b44822",
+  "candidate_source_sha256": "b00aaf9a109b697ce7d3a8756ef3e88bd72772d2f36dec30bf3acda76e6babe3",
+  "root_test_path": "tests/test_agent_state_migrations.py",
+  "root_test_sha256": "e65bd621876ed30f647b1e68c6c6460ff9520457f45a2c48e1fa40c1c67386f2",
+  "candidate_test_path": "tests/test_t05_agent_state_migrations.py",
+  "candidate_test_sha256": "3275fc55d22407dc7b63426a56494595bfc0e390a8344fa1bc0610b3213d22e9",
+  "candidate_has_root_test_module": false,
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub\\artifacts\\t08-agent-state-migration-root-current.patch",
+  "patch_sha256": "d5e013334c1e62b2effb858ab6219ba65d64dceaa40a82956223ad3658d9e928",
+  "patch_scope": [
+    "src/local_ai_hub/agent_events.py"
+  ],
+  "patch_summary": [
+    "Classify user_version=0 with current event/snapshot columns and exact event-version table as already-current layout; if migration history exists, require marker [1]. This preserves existing event metadata and leaves backup plus version write to _ensure_schema._verified_migration_backup.",
+    "Match the public future-version RuntimeError wording asserted by the unchanged test.",
+    "Propagate sqlite3.DatabaseError for corrupt SQLite preflight after preserving timeout handling."
+  ],
+  "tests_not_run_reason": "User requested T20 test-slot assignment before any new test run.",
+  "requested_command": "C:\\Python313\\python.exe -B -W error::ResourceWarning -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_state_migrations.py::test_current_unversioned_agent_state_migrates_with_verified_backup_and_restart tests/test_agent_state_migrations.py::test_unsupported_future_schema_version_fails_closed_without_mutation tests/test_agent_state_migrations.py::test_migration_backup_failure_prevents_schema_version_write tests/test_agent_state_migrations.py::test_corrupt_agent_state_fails_closed_without_replacing_bytes",
+  "selectors": [
+    "tests/test_agent_state_migrations.py::test_current_unversioned_agent_state_migrates_with_verified_backup_and_restart",
+    "tests/test_agent_state_migrations.py::test_unsupported_future_schema_version_fails_closed_without_mutation",
+    "tests/test_agent_state_migrations.py::test_migration_backup_failure_prevents_schema_version_write",
+    "tests/test_agent_state_migrations.py::test_corrupt_agent_state_fails_closed_without_replacing_bytes"
+  ],
+  "prior_root_result_from_T05": "13 passed, 5 failed in 28.03s; four AgentState migration selectors failed, plus one separate memory delete seam.",
+  "root_patch_apply_check": "passed; git apply --check only, no root write",
+  "blocker": "Awaiting T20 test slot and T20 integration of scoped patch; assertions unchanged.",
+  "slot_request_attempt": {
+    "thread_id": "01a0d322-b3d3-7930-b552-14e9b7020fec",
+    "attempts": 2,
+    "result": "send_message_to_thread failed: Could not determine whether Codex thread exists; unavailable or failed host durable",
+    "effect": "no message delivered; no test run started"
+  },
+  "current_checkpoint": {
+    "date": "2026-10-01",
+    "stage": "scoped_patch_ready_waiting_for_T20_root_test_slot",
+    "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+    "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "root_agent_events_sha256": "30ab4485f34a67d8212e6151057e06ef806d40f92073036d8f9f4f4546b44822",
+    "patch_apply_check": "passed; read-only; patch not applied",
+    "tests_run": "none in this checkpoint; awaiting assigned T20 slot",
+    "codex_goal": "get_goal returned null; this manifest is the existing durable task checkpoint"
+  }
+}

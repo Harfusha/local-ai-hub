@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "task": "T08 atomicity/recovery static review",
+  "date": "2026-10-02",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "validation": {
+    "ast_parse": {
+      "status": "PASS",
+      "files": 14,
+      "paths": [
+        "src/local_ai_hub/agent_events.py",
+        "src/local_ai_hub/agent_tasks.py",
+        "src/local_ai_hub/agent_verification.py",
+        "src/local_ai_hub/leases.py",
+        "tests/test_agent_t08_durable_contract.py",
+        "tests/test_agent_t08_crash_after_commit.py",
+        "tests/test_agent_crash_recovery.py",
+        "tests/test_agent_t08_receipt_transaction.py",
+        "tests/test_agent_t08_cache_isolation.py",
+        "tests/test_agent_t08_event_page_snapshot.py",
+        "tests/test_agent_t08_live_order.py",
+        "tests/test_agent_tasks.py",
+        "tests/test_agent_verification.py",
+        "tests/test_lease_atomic_deadlock.py"
+      ]
+    },
+    "tracked_owned_source_diff_check": {
+      "status": "PASS",
+      "paths": [
+        "src/local_ai_hub/agent_events.py",
+        "src/local_ai_hub/agent_tasks.py",
+        "src/local_ai_hub/agent_verification.py",
+        "src/local_ai_hub/leases.py"
+      ]
+    },
+    "tests_or_benchmarks_run": false
+  },
+  "candidate_file_sha256": {
+    "src/local_ai_hub/agent_events.py": "B00AAF9A109B697CE7D3A8756EF3E88BD72772D2F36DEC30BF3ACDA76E6BABE3",
+    "src/local_ai_hub/agent_tasks.py": "1D59F3E1FA8A6082EAA439F4EC3D4C542BBAD47FA5F2664D76570462FB505D25",
+    "src/local_ai_hub/agent_verification.py": "468E4B18117CF77CE0BB34CFE08F9D1898EE0BDA43C5494BEAF7AE23F418645D",
+    "src/local_ai_hub/leases.py": "08864C962783D530B255EBB6EEEB3154E496492AF12D869CD8CA45EC45577F89",
+    "tests/test_agent_t08_durable_contract.py": "D47741E331210A18D369677C1942081BDF9BDD229117A631D6853BDF4212AA90",
+    "tests/test_agent_t08_crash_after_commit.py": "AEE9E6B7A74E3E16C7985BF5C7843B0DDC420F26D748DA9881E33451C0BC8541",
+    "tests/test_agent_crash_recovery.py": "5D74703C2AB77D2C3B59412C3E7FB6BCDE505764BBF7F9BADB4FB85B44BC0FBF",
+    "tests/test_agent_t08_receipt_transaction.py": "D07BFDF7781F42C93730E867AEFB66FD04CD528E23D222AF7A69DCB5EEBCA118",
+    "tests/test_agent_t08_cache_isolation.py": "75A289CB3027A623F3D2CBEC50E530DCA801EBE15ED8FA09538D156E98127F4C",
+    "tests/test_agent_t08_event_page_snapshot.py": "5D5E6F946D8165F640F0798129F45C70BA27D396C0A90F2BCA9846D01B3CA7DA",
+    "tests/test_agent_t08_live_order.py": "385F014E54BA9DFCFAD9194B658C7103B6FE1962393C5B8D92F268571D565D9A",
+    "tests/test_agent_tasks.py": "552F5FA6C5E4E5DEAF2067B98ADD684D18D10824FADC6B94D81A21FB54663234",
+    "tests/test_agent_verification.py": "A95129488A04FD3E0FC5513A25EC9C7F1A5E8AF3604015996DC0C85BCC10CF24",
+    "tests/test_lease_atomic_deadlock.py": "F0A0768CBF17B8AC2A4C0DFA9B47003C79EC147B48060C5C727C699BD11C8A70"
+  },
+  "slot_blocker": "T02 holds sole test/benchmark slot; T08 has no release/assignment.",
+  "owner_boundary": "No agent_memory.py or agent_context.py edits. No writes to root or T09 checkout."
+}

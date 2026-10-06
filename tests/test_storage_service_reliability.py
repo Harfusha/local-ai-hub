@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub import trace_context
 from local_ai_hub.agent_learning import (
     CandidateStatus,
     ImprovementCandidate,
