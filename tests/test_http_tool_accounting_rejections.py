@@ -24,6 +24,7 @@ def test_tool_accounting_reports_aggregate_rejections_without_exception_details(
     responses = []
     handler._send = lambda status, data: responses.append((status, data))
     monkeypatch.setattr(http_server, "APP", App())
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
 
     handler.do_POST()
 

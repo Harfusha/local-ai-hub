@@ -134,6 +134,47 @@ def test_profile_digest_parses_chrome_trace_and_text_profiles(tmp_path: Path) ->
     assert text["top_functions"] == [{"summary": "1.25 3 0.1 0.2 render checkout"}]
 
 
+def test_profile_digest_filters_invalid_chrome_trace_events(tmp_path: Path) -> None:
+    trace_path = tmp_path / "invalid-events.json"
+    trace_path.write_text(
+        json.dumps(
+            {
+                "traceEvents": [
+                    {"name": "render", "dur": 3.5},
+                    {"name": "infinite", "dur": float("inf")},
+                    {"name": "not-finite", "dur": float("nan")},
+                    {"name": "boolean", "dur": True},
+                    {"name": "numeric-string", "dur": "9"},
+                    {"name": ["unhashable"], "dur": 10},
+                    None,
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _engine(tmp_path).profile_digest(str(trace_path))
+
+    assert result["success"] is True
+    assert result["top_functions"] == [
+        {"function": "render", "cumulative_time_microseconds": 3.5, "calls": 1}
+    ]
+    assert json.dumps(result, allow_nan=False)
+
+
+def test_profile_digest_rejects_non_array_chrome_trace_events(tmp_path: Path) -> None:
+    trace_path = tmp_path / "wrong-events-shape.json"
+    trace_path.write_text(
+        json.dumps({"traceEvents": {"name": "render", "dur": 10}}),
+        encoding="utf-8",
+    )
+
+    result = _engine(tmp_path).profile_digest(str(trace_path))
+
+    assert result["success"] is False
+    assert result["error"] == "failed to parse profile: traceEvents must be a JSON array"
+
+
 def test_profile_digest_rejects_unrecognized_text_instead_of_empty_success(
     tmp_path: Path,
 ) -> None:

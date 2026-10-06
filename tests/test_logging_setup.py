@@ -47,6 +47,22 @@ def test_shutdown_detaches_and_closes_logging_handlers(tmp_path):
     assert file_handler.stream is None
 
 
+def test_shutdown_restores_logger_propagation(tmp_path):
+    logger = logging.getLogger("local_ai_hub")
+    original_propagate = logger.propagate
+    try:
+        logger.propagate = True
+        configure_logging(tmp_path, {"logging": {"level": "INFO"}})
+
+        assert logger.propagate is False
+        shutdown_logging()
+
+        assert logger.propagate is True
+    finally:
+        shutdown_logging()
+        logger.propagate = original_propagate
+
+
 def test_full_logging_queue_drops_without_blocking():
     log_queue = queue.Queue(maxsize=1)
     handler = _DropQueueHandler(log_queue)
