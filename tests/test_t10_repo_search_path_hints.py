@@ -84,6 +84,33 @@ def test_repo_search_prioritizes_request_and_config_hints_without_narrowing(tmp_
     ]
 
 
+def test_repo_search_default_scope_applies_public_repository_search_hint(tmp_path: Path) -> None:
+    (tmp_path / "templates" / "element").mkdir(parents=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "templates" / "element" / "button.php").write_text(
+        "button\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "button.py").write_text("button\n", encoding="utf-8")
+    services = _search_service(tmp_path, None)
+
+    result = services.repo_search(
+        str(tmp_path),
+        "button",
+        top_k=2,
+        path_hints=[
+            PathHint(
+                path="templates/element",
+                purpose="repository_search",
+                scope="repo_search",
+            )
+        ],
+    )
+
+    assert result["success"] is True
+    assert [hit["path"] for hit in result["results"]] == [
+        "templates/element/button.php",
+        "src/button.py",
+    ]
 
 
 def test_repo_search_hints_cannot_restore_excluded_or_outside_results(tmp_path: Path, monkeypatch) -> None:
