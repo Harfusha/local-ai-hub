@@ -128,6 +128,91 @@ def _comparison_stages(value: float, *, cold: int = 30, warm: int = 30) -> dict[
     }
 
 
+def test_queue_admission_failure_retains_phase_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original_submit = AsyncJobManager.submit
+
+    def reject_benchmark_submission(
+        self: AsyncJobManager,
+        tenant: str,
+        action: str,
+        payload: dict[str, object],
+        *,
+        dispatch_delay_seconds: float = 0.0,
+    ) -> dict[str, object]:
+        if tenant == "benchmark":
+            return {
+                "success": False,
+                "state": "rejected",
+                "error": "SENTINEL_PAYLOAD_SECRET",
+                "admission": {"state": "rejected", "reason": "resource_pressure", "pressure_level": "critical"},
+            }
+        return original_submit(self, tenant, action, payload, dispatch_delay_seconds=dispatch_delay_seconds)
+
+    monkeypatch.setattr(AsyncJobManager, "submit", reject_benchmark_submission)
+    result = run_benchmark(
+        state_dir=tmp_path / "state",
+        scratch_dir=tmp_path / "scratch",
+        file_count=4,
+        rag_chunks=2,
+        repetitions=1,
+        light_repetitions=1,
+        paired_repetitions=1,
+        concurrency=(1,),
+    )
+
+    stage = result["stages"]["hub_queue_admission"]
+    assert stage["status"] == "failed"
+    assert stage["error_count"] == 1
+    assert stage["error_samples"] == [{
+        "phase": "submit",
+        "type": "RuntimeError",
+        "message": "async job admission failed",
+        "reported_error": True,
+        "state": "rejected",
+        "reason": "resource_pressure",
+        "pressure_level": "critical",
+    }]
+    assert "SENTINEL_PAYLOAD_SECRET" not in repr(result)
+
+
+def test_queue_admission_exception_redacts_exception_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original_submit = AsyncJobManager.submit
+
+    def raise_benchmark_submission(
+        self: AsyncJobManager,
+        tenant: str,
+        action: str,
+        payload: dict[str, object],
+        *,
+        dispatch_delay_seconds: float = 0.0,
+    ) -> dict[str, object]:
+        if tenant == "benchmark":
+            raise RuntimeError("SENTINEL_EXCEPTION_SECRET")
+        return original_submit(self, tenant, action, payload, dispatch_delay_seconds=dispatch_delay_seconds)
+
+    monkeypatch.setattr(AsyncJobManager, "submit", raise_benchmark_submission)
+    result = run_benchmark(
+        state_dir=tmp_path / "state",
+        scratch_dir=tmp_path / "scratch",
+        file_count=4,
+        rag_chunks=2,
+        repetitions=1,
+        light_repetitions=1,
+        paired_repetitions=1,
+        concurrency=(1,),
+    )
+
+    stage = result["stages"]["hub_queue_admission"]
+    assert stage["status"] == "failed"
+    assert stage["error_count"] == 1
+    assert stage["error_samples"] == [{
+        "phase": "submit",
+        "type": "RuntimeError",
+        "message": "async job submit raised an exception",
+    }]
+    assert "SENTINEL_EXCEPTION_SECRET" not in repr(result)
+
+
 def test_summarize_samples_reports_percentiles_and_throughput() -> None:
     summary = summarize_samples([10.0, 20.0, 30.0, 40.0])
 
@@ -262,6 +347,7 @@ def test_run_benchmark_is_isolated_and_preserves_existing_scratch_data(
     assert result["success"] is True
     assert collision_path.read_text(encoding="utf-8") == "user-owned sentinel"
     assert result["metadata"]["benchmark_scope"] == "hub_app_synthetic_repo"
+    assert result["metadata"]["runtime_source_root"] == str(Path(__file__).resolve().parents[1] / "src")
     assert "preseeded warm keys" in result["metadata"]["cold_warm_policy"]
     assert result["metadata"]["prewarm_enabled"] is False
     assert result["metadata"]["observability_enabled"] is False

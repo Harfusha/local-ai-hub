@@ -6,7 +6,7 @@
 
 **Architecture:** Zachovat osm veřejných MCP nástrojů jako levný vstupní bod; jejich interní implementace, ergonomie akcí, služby, indexy, cache a Agent OS lze zásadně přepracovat. Sjednotit kontrakty operací, přenést validaci a bezpečnostní pravidla na společné hranice a optimalizovat podle měření. Rozdělit práci podle vlastnictví souborů; společné transporty integruje jediný vlastník.
 
-**Tech Stack:** Python 3.11+, FastMCP, existující HTTP server a HubClient, SQLite/WAL, pytest, Git, Ollama/llama.cpp, volitelné OpenVINO/Serena/CodeGraph, Chrome MV3.
+**Tech Stack:** Python 3.11+, FastMCP, existující HTTP server a HubClient, SQLite/WAL, pytest, Git, Ollama/llama.cpp, volitelné OpenVINO/Serena, Chrome MV3.
 
 ---
 
@@ -245,7 +245,7 @@ T03 je závislost transportních změn T04/T05/T19. T06 předchází mutujícím
 - [ ] Query plán vybírá relevantní backends podle confidence a zbývajícího deadline; drahé optional backends nesmí běžet bez přínosu pro kvalitu.
 - [ ] Výsledky uvádějí backend, fallback, freshness, coverage/truncation a přesnou evidence; syntax failure nesmí vypadat jako úplný prázdný nález.
 - [ ] Pro symbols/callers/dead code/affected tests/impact/cross-repo/API spec/invariants vytvořit language a framework fixtures podle skutečně deklarované podpory, včetně negativních případů.
-- [ ] Změřit built-in/Serena/CodeGraph on/off/crash/timeout a regressions současného retrieval; žádný marketingový „100% exact“ bez kvalifikačního rozsahu.
+- [ ] Změřit built-in/Serena on/off/crash/timeout a regressions současného retrieval; žádný marketingový „100% exact“ bez kvalifikačního rozsahu.
 
 **Hotovo:** vyšší nebo shodná retrieval kvalita; splněná latency/coverage matice; nepodporované syntaxe pravdivě označené.
 
@@ -356,7 +356,7 @@ T03 je závislost transportních změn T04/T05/T19. T06 předchází mutujícím
 
 - [ ] Vygenerovat API/MCP/client coverage docs z T01/T03; documentovat payload/status/timeout/side effects/backend availability pro každý řádek.
 - [ ] Klientské convenience metody přidat jen pro skutečně chybějící veřejné případy; payload mapping test porovnává s reálným handlerem. Provést usability scénáře: najít caller, získat kvalitní kontext, ověřit změnu, pokračovat v konverzaci, zrušit job, obnovit task a najít důkaz; měřit first-call success, počet potřebných volání a srozumitelnost chyb.
-- [ ] Clean-host Windows/Linux install, core-only i podporované optional extras; chybějící Tree-sitter/Whisper/OpenVINO/Serena/CodeGraph musí mít přesný doctor výsledek.
+- [ ] Clean-host Windows/Linux install, core-only i podporované optional extras; chybějící Tree-sitter/Whisper/OpenVINO/Serena musí mít přesný doctor výsledek.
 - [ ] Config merge dvakrát je idempotentní a zachovává cizí entries; per-host manifest parse + skutečný MCP handshake, kde host dostupný.
 - [ ] Změny flags/models/policy/schema promítnout současně do INSTALL_PROMPT a UPDATE_PROMPT, generatoru a generated manifest testů.
 - [ ] Rollout po doménách s quality/latency comparison a rollback na předchozí kód/config. Durable state před změnou zálohovat; nevracet starý kód proti nekompatibilní DB bez recovery postupu.

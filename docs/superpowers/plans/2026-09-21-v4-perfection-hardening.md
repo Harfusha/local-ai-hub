@@ -42,7 +42,7 @@
 
 - [x] **Step 1: Run the existing model, tier, RAG, hardware, and fallback tests through the command broker.** Focused v4 matrix: 139 passed.
 - [x] **Step 2: Run bounded live benchmark/eval.** Hardware benchmark passed after adapter fix; synthetic eval passed 2/2; Hub status showed Ollama online, qwen 7B, high VRAM pressure and context factor 0.5.
-- [x] **Step 3: Probe optional backends once.** Serena and CodeGraph returned healthy live backend receipts; RAG index/search succeeded after the lock fix; unavailable optional llama.cpp/OpenVINO paths remain explicit non-claims.
+- [x] **Step 3: Probe optional backends once.** Serena returned a healthy live backend receipt; RAG index/search succeeded after the lock fix; unavailable optional llama.cpp/OpenVINO paths remain explicit non-claims.
 - [x] **Step 4: Update the feature audit so every optional capability has a measured status and an explicit non-claim when the host lacks it.** Live receipts and host-specific non-claims are recorded in `docs/FEATURE_AUDIT_V4.md`.
 
 ## Task 3: Stability and contention proof

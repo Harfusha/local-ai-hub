@@ -225,6 +225,8 @@ class AsyncJobManager:
         request_id = self._request_id(clean)
         task_id = str(clean.get("task_id") or "")
         now = time.time()
+        delay = max(0.0, min(30.0, float(dispatch_delay_seconds or 0.0)))
+        delayed_timer: threading.Timer | None = None
         with self._lock, closing(self._connect()) as con:
             if request_id:
                 identified = con.execute(
@@ -265,6 +267,11 @@ class AsyncJobManager:
             job_id = uuid.uuid4().hex
             con.execute("INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,task_id) VALUES(?,?,?,?,?,'queued',?,?,?,?)", (job_id, tenant, action, request_hash, encoded, now, now, now + self.result_ttl_seconds, task_id))
             con.commit()
+            if delay:
+                delayed_timer = threading.Timer(delay, self._dispatch, args=(job_id,))
+                delayed_timer.daemon = True
+                self._delayed_dispatch[job_id] = delayed_timer
+                delayed_timer.start()
             self._stats["submitted"] += 1
         trace_id = ""
         if self.debug_traces is not None:
@@ -277,14 +284,7 @@ class AsyncJobManager:
             except Exception:
                 trace_id = ""
         self._event(job_id)
-        delay = max(0.0, min(30.0, float(dispatch_delay_seconds or 0.0)))
-        if delay:
-            timer = threading.Timer(delay, self._dispatch, args=(job_id,))
-            timer.daemon = True
-            with self._lock:
-                self._delayed_dispatch[job_id] = timer
-            timer.start()
-        else:
+        if not delay:
             self._dispatch_background(job_id)
         return {"success": True, "job_id": job_id, "trace_id": trace_id, "task_id": task_id, "state": "queued", "coalesced": False, "admission": admission, "admission_state": admission["state"]}
 

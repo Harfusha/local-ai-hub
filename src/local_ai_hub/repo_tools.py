@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from collections import Counter, OrderedDict
+from functools import lru_cache
 from queue import Empty, Queue
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,36 @@ _SYMBOL_PATTERNS = [
     re.compile(r"^\s*class\s+([A-Za-z_]\w*)"),
     re.compile(r"^\s*(?:public|private|protected|internal|static|final|virtual|override|abstract|sealed|partial|async|export|default|const|let|var|function|func|fn|type|interface|enum|struct|record|trait|impl|namespace|module)\s+(?:[\w<>,?\[\].]+\s+)*([A-Za-z_]\w*)"),
 ]
+
+
+@lru_cache(maxsize=1)
+def _windows_file_api():
+    import ctypes
+    from ctypes import wintypes
+
+    class _FileBasicInfo(ctypes.Structure):
+        _fields_ = [
+            ("CreationTime", ctypes.c_longlong),
+            ("LastAccessTime", ctypes.c_longlong),
+            ("LastWriteTime", ctypes.c_longlong),
+            ("ChangeTime", ctypes.c_longlong),
+            ("FileAttributes", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    get_info = kernel32.GetFileInformationByHandleEx
+    get_info.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    get_info.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    return _FileBasicInfo, kernel32, create_file, get_info, close_handle, ctypes.c_void_p(-1).value
 
 
 @dataclass(frozen=True)
@@ -91,7 +122,7 @@ class RepositoryTools:
             ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
             "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
             "library", "temp", "logs", "usersettings", "packagestore", "memorycaptures", "builds",
-                ".serena", ".local-ai-hub",
+            ".serena", ".local-ai-hub", ".codegraphcontext",
         }
         self.ignore_dirs = {str(name).lower() for name in rag.get("ignore_dirs", [])} | default_ignore_dirs
         self.ignore_extensions = {str(x).lower() for x in rag.get("ignore_extensions", [
@@ -110,6 +141,7 @@ class RepositoryTools:
         self.prefer_git = bool(search.get("prefer_git_files", True))
         self.use_ripgrep = bool(search.get("use_ripgrep_if_available", True))
         self.ripgrep_timeout = max(0.5, float(search.get("ripgrep_timeout_seconds", 15.0)))
+        self.ripgrep_slow_cooldown = max(1.0, float(search.get("ripgrep_slow_cooldown_seconds", 15.0)))
         self.git_grep_timeout = max(0.5, float(search.get("git_grep_timeout_seconds", min(10.0, self.ripgrep_timeout))))
         self.git_files_timeout = max(0.5, float(search.get("git_files_timeout_seconds", 5.0)))
         self.git_files_cache_ttl = max(0.0, float(search.get("git_files_cache_ttl_seconds", 3.0)))
@@ -124,13 +156,14 @@ class RepositoryTools:
         self._git_files_slow_until: dict[str, float] = {}
         self._git_files_flights: dict[str, threading.Lock] = {}
         self._git_grep_slow_until: dict[str, float] = {}
-        self._git_stats = {"file_list_hits": 0, "file_list_misses": 0, "file_list_timeouts": 0, "file_list_coalesced": 0, "grep_timeouts": 0, "grep_cooldown_skips": 0, "snapshot_hits": 0, "snapshot_misses": 0, "snapshot_degraded": 0}
+        self._ripgrep_slow_until: dict[str, float] = {}
+        self._git_stats = {"file_list_hits": 0, "file_list_misses": 0, "file_list_timeouts": 0, "file_list_coalesced": 0, "grep_timeouts": 0, "grep_cooldown_skips": 0, "ripgrep_timeouts": 0, "ripgrep_cooldown_skips": 0, "python_search_fallbacks": 0, "snapshot_hits": 0, "snapshot_misses": 0, "snapshot_degraded": 0}
         snap = config.get("snapshot_cache", {})
-        self.snapshot_max_entries = max(64, int(snap.get("max_entries", 4096)))
+        self.snapshot_max_entries = max(64, int(snap.get("max_entries", max(4096, self.max_files))))
         self.snapshot_max_bytes = max(8_000_000, int(snap.get("max_bytes", 256_000_000)))
         self._snapshot_lock = threading.RLock()
         self._snapshots: OrderedDict[str, tuple[int, int, int, int, str, list[str], int]] = OrderedDict()
-        self._hash_only_cache: OrderedDict[str, tuple[int, int, int, int, str]] = OrderedDict()
+        self._hash_only_cache: OrderedDict[str, tuple[int, int, int, int, str, bool]] = OrderedDict()
         self._hash_only_max_entries = 8192
         self._snapshot_bytes = 0
         self.snapshot_hits = 0
@@ -223,6 +256,21 @@ class RepositoryTools:
             flight.release()
 
     def iter_files(self, root: str, max_depth: int = 25) -> Iterable[Path]:
+        for path, _stat in self._iter_files_with_stat(root, max_depth=max_depth):
+            yield path
+
+    def _is_ignored_relative_path(self, relative: Path) -> bool:
+        if any(part.lower() in self.ignore_dirs for part in relative.parts[:-1]):
+            return True
+        if relative.suffix.lower() in self.ignore_extensions:
+            return True
+        return bool(
+            self.extensions
+            and relative.suffix.lower() not in self.extensions
+            and relative.name.lower() not in self.special_filenames
+        )
+
+    def _iter_files_with_stat(self, root: str, max_depth: int = 25) -> Iterable[tuple[Path, os.stat_result]]:
         base = self._root(root)
         git_files = self._git_files(base)
         if git_files is not None:
@@ -276,31 +324,37 @@ class RepositoryTools:
                 relative = path.relative_to(base)
             except ValueError:
                 continue
-            # `git ls-files -co --exclude-standard` also returns untracked files.
-            # External code-intelligence tools create project-local metadata that
-            # must never feed back into Local AI Hub's own repository inventory.
-            if any(part.lower() in self.ignore_dirs for part in relative.parts[:-1]):
-                continue
-            if path.suffix.lower() in self.ignore_extensions:
-                continue
-            if self.extensions and path.suffix.lower() not in self.extensions and path.name.lower() not in self.special_filenames:
+            # `git ls-files -co --exclude-standard` can return ignored paths from
+            # other worktrees; configured exclusions apply to every inventory path.
+            if self._is_ignored_relative_path(relative):
                 continue
             try:
-                if path.stat().st_size > self.max_file_bytes:
+                stat = path.stat()
+                if stat.st_size > self.max_file_bytes:
                     continue
             except OSError:
                 continue
             count += 1
-            yield path
+            yield path, stat
 
-    def _read_snapshot(self, path: Path) -> tuple[str, list[str]]:
+    def _read_snapshot(self, path: Path, *, stat: os.stat_result | None = None) -> tuple[str, list[str]]:
         """Cache decoded file content/hash by stat identity across different repo queries."""
-        stat = path.stat()
+        stat_was_supplied = stat is not None
+        if stat is None:
+            stat = path.stat()
         key = str(path)
         identity, verify_content = self._cache_identity(path, stat)
+        allow_cached_lookup = True
+        if stat_was_supplied and os.name != "nt":
+            with self._snapshot_lock:
+                allow_cached_lookup = key in self._snapshots
+            if allow_cached_lookup:
+                # POSIX identity uses the supplied stat, which can predate this read.
+                stat = path.stat()
+                identity, verify_content = self._cache_identity(path, stat)
         cached = None
         with self._snapshot_lock:
-            item = self._snapshots.get(key)
+            item = self._snapshots.get(key) if allow_cached_lookup else None
             if item is not None and item[:4] == identity:
                 self._snapshots.move_to_end(key)
                 if not verify_content:
@@ -312,7 +366,10 @@ class RepositoryTools:
         if cached is not None and cached[4] == digest:
             with self._snapshot_lock:
                 self.snapshot_verified_rehashes += 1
-                self._hash_only_cache[key] = (*identity, digest)
+                current = self._snapshots.get(key)
+                if current is not None and current[4] == digest:
+                    self._snapshots.move_to_end(key)
+                self._hash_only_cache[key] = (*identity, digest, False)
                 self._hash_only_cache.move_to_end(key)
                 while len(self._hash_only_cache) > self._hash_only_max_entries:
                     self._hash_only_cache.popitem(last=False)
@@ -327,7 +384,7 @@ class RepositoryTools:
                 self._snapshot_bytes -= old[6]
             self._snapshots[key] = (*identity, digest, lines, size)
             self._snapshot_bytes += size
-            self._hash_only_cache[key] = (*identity, digest)
+            self._hash_only_cache[key] = (*identity, digest, False)
             self._hash_only_cache.move_to_end(key)
             if len(self._hash_only_cache) > self._hash_only_max_entries:
                 self._hash_only_cache.popitem(last=False)
@@ -345,35 +402,9 @@ class RepositoryTools:
         handle = None
         close_handle = None
         invalid_handle = -1
-        kernel32 = None
         try:
             import ctypes
-            from ctypes import wintypes
-
-            class _FileBasicInfo(ctypes.Structure):
-                _fields_ = [
-                    ("CreationTime", ctypes.c_longlong),
-                    ("LastAccessTime", ctypes.c_longlong),
-                    ("LastWriteTime", ctypes.c_longlong),
-                    ("ChangeTime", ctypes.c_longlong),
-                    ("FileAttributes", wintypes.DWORD),
-                ]
-
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            create_file = kernel32.CreateFileW
-            create_file.argtypes = [
-                wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
-                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
-            ]
-            create_file.restype = wintypes.HANDLE
-            get_info = kernel32.GetFileInformationByHandleEx
-            get_info.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
-            get_info.restype = wintypes.BOOL
-            close_handle = kernel32.CloseHandle
-            close_handle.argtypes = [wintypes.HANDLE]
-            close_handle.restype = wintypes.BOOL
-
-            invalid_handle = ctypes.c_void_p(-1).value
+            _FileBasicInfo, _kernel32, create_file, get_info, close_handle, invalid_handle = _windows_file_api()
             native_path = os.path.abspath(os.fspath(path))
             if native_path.startswith("\\\\"):
                 native_path = "\\\\?\\UNC\\" + native_path[2:]
@@ -409,6 +440,13 @@ class RepositoryTools:
             int(getattr(stat, "st_ino", 0)),
         ), False
 
+    @staticmethod
+    def _stat_cache_identity(stat: os.stat_result) -> tuple[int, int, int, int]:
+        return (
+            int(stat.st_mtime_ns), int(stat.st_size),
+            int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)),
+        )
+
     def _hash_file_only(self, path: Path) -> str:
         """Return SHA-256 without decoding source text or populating the decoded snapshot LRU.
 
@@ -417,7 +455,17 @@ class RepositoryTools:
         """
         stat = path.stat()
         key = str(path)
-        identity, verify_content = self._cache_identity(path, stat)
+        with self._snapshot_lock:
+            snapshot = self._snapshots.get(key)
+            h_item = self._hash_only_cache.get(key)
+        identity_unverified = os.name == "nt" and snapshot is None and h_item is None
+        if identity_unverified:
+            # Cold reads already hash every byte. Defer the extra Windows handle
+            # query until next access, then verify bytes before trusting this identity.
+            identity = self._stat_cache_identity(stat)
+            verify_content = True
+        else:
+            identity, verify_content = self._cache_identity(path, stat)
         cached_digest = None
         with self._snapshot_lock:
             item = self._snapshots.get(key)
@@ -431,11 +479,15 @@ class RepositoryTools:
             h_item = self._hash_only_cache.get(key)
             if h_item is not None and h_item[:4] == identity:
                 self._hash_only_cache.move_to_end(key)
-                if verify_content:
+                if verify_content or h_item[5]:
                     cached_digest = cached_digest or h_item[4]
                 else:
                     self.snapshot_hits += 1
                     return h_item[4]
+            elif h_item is not None and h_item[5] and h_item[:4] == self._stat_cache_identity(stat):
+                self._hash_only_cache.move_to_end(key)
+                cached_digest = cached_digest or h_item[4]
+                verify_content = True
         h = hashlib.sha256()
         with path.open("rb") as fh:
             while True:
@@ -446,14 +498,18 @@ class RepositoryTools:
         digest = h.hexdigest()
         with self._snapshot_lock:
             snapshot = self._snapshots.get(key)
-            if snapshot is not None and snapshot[:4] == identity and snapshot[4] != digest:
+            snapshot_identity_matches = snapshot is not None and snapshot[:4] == identity
+            if snapshot_identity_matches and snapshot[4] != digest:
                 self._snapshots.pop(key, None)
                 self._snapshot_bytes -= snapshot[6]
-            elif snapshot is not None and snapshot[:4] == identity:
+            elif snapshot_identity_matches:
                 self._snapshots.move_to_end(key)
-            if cached_digest == digest:
+            if cached_digest is not None:
                 self.snapshot_verified_rehashes += 1
-            self._hash_only_cache[key] = (identity[0], identity[1], identity[2], identity[3], digest)
+            self._hash_only_cache[key] = (
+                identity[0], identity[1], identity[2], identity[3], digest,
+                identity_unverified and cached_digest is None,
+            )
             self._hash_only_cache.move_to_end(key)
             if len(self._hash_only_cache) > self._hash_only_max_entries:
                 self._hash_only_cache.popitem(last=False)
@@ -785,6 +841,7 @@ class RepositoryTools:
                 "cached_roots": len(self._git_files_cache),
                 "cooldown_roots": sum(1 for until in self._git_files_slow_until.values() if until > now),
                 "grep_cooldown_roots": sum(1 for until in self._git_grep_slow_until.values() if until > now),
+                "ripgrep_cooldown_roots": sum(1 for until in self._ripgrep_slow_until.values() if until > now),
                 "snapshot_cached_roots": len(self._git_snapshot_cache),
                 "snapshot_cooldown_roots": sum(1 for until in self._git_snapshot_slow_until.values() if until > now),
             }
@@ -827,15 +884,16 @@ class RepositoryTools:
 
     def _git_grep_pathspecs(self) -> list[str]:
         includes = [f"*{extension}" for extension in sorted(self.extensions) if extension.startswith(".")]
-        includes.extend(name for name in sorted(self.special_filenames) if "/" not in name and "\\" not in name)
         if not includes:
             includes = [":(top)**"]
+        else:
+            includes.extend(name for name in sorted(self.special_filenames) if "/" not in name and "\\" not in name)
         excludes = [f":(exclude){name}/**" for name in sorted(self.ignore_dirs) if name]
         return [*includes, *excludes]
 
     def _git_grep_command(self, base: Path, terms: list[str], max_matches: int) -> list[str]:
         cmd = [
-            "git", "-C", str(base), "grep", "-n", "-I", "-i", "--no-color", "--full-name",
+            "git", "-C", str(base), "grep", "-n", "-I", "-i", "--no-color", "--full-name", "--untracked",
             "-m", str(max(1, min(8, self.max_snippets_per_file * 2))),
         ]
         for term in terms[: self.max_search_terms]:
@@ -846,12 +904,23 @@ class RepositoryTools:
     def _ripgrep_candidates(self, base: Path, terms: list[str], max_matches: int) -> tuple[list[tuple[str, int]] | None, bool]:
         if not self._rg or not terms:
             return None, False
+        key = str(base)
+        now = time.monotonic()
+        with self._git_files_lock:
+            if now < self._ripgrep_slow_until.get(key, 0.0):
+                self._git_stats["ripgrep_cooldown_skips"] += 1
+                return None, True
         cmd = [self._rg, "--json", "--ignore-case", "--max-count", str(max(2, self.max_snippets_per_file * 3))]
         for term in terms[:12]:
             cmd.extend(["-e", term])
         cmd.append(str(base))
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.ripgrep_timeout, check=False, encoding="utf-8", errors="replace", **hidden_run_kwargs())
+        except subprocess.TimeoutExpired:
+            with self._git_files_lock:
+                self._git_stats["ripgrep_timeouts"] += 1
+                self._ripgrep_slow_until[key] = time.monotonic() + self.ripgrep_slow_cooldown
+            return None, True
         except Exception:
             return None, True
         # rg returns 1 when there are no matches; both 0/1 are successful searches.
@@ -859,6 +928,8 @@ class RepositoryTools:
         # failure so a miss never falls back to an O(repository) Python scan.
         if proc.returncode not in {0, 1}:
             return None, True
+        with self._git_files_lock:
+            self._ripgrep_slow_until.pop(key, None)
         out: list[tuple[str, int]] = []
         seen: set[tuple[str, int]] = set()
         for raw in proc.stdout.splitlines():
@@ -990,11 +1061,25 @@ class RepositoryTools:
         hits: list[dict[str, Any]] = []
         scanned = 0
         candidate_engine = "python"
-        candidates, accelerator_failed = self._ripgrep_candidates(base, terms, self.max_hits * 4)
-        accelerated = candidates is not None
-        if accelerated:
-            candidate_engine = "ripgrep"
+        accelerator_failed = False
+        git_grep_attempted = False
+        if self.use_git_grep and terms and (base / ".git").exists():
+            candidates, git_grep_failed = self._git_grep_candidates(base, terms, self.max_hits * 4)
+            git_grep_attempted = True
+            accelerator_failed = accelerator_failed or git_grep_failed
+            accelerated = candidates is not None
+            if accelerated:
+                candidate_engine = "git-grep"
         else:
+            candidates = None
+            accelerated = False
+        if not accelerated:
+            candidates, ripgrep_failed = self._ripgrep_candidates(base, terms, self.max_hits * 4)
+            accelerator_failed = accelerator_failed or ripgrep_failed
+            accelerated = candidates is not None
+            if accelerated:
+                candidate_engine = "ripgrep"
+        if not accelerated and not git_grep_attempted:
             candidates, git_grep_failed = self._git_grep_candidates(base, terms, self.max_hits * 4)
             accelerator_failed = accelerator_failed or git_grep_failed
             accelerated = candidates is not None
@@ -1006,6 +1091,12 @@ class RepositoryTools:
                 per_path_lines.setdefault(rel, []).append(line_no)
             for rel, line_numbers in per_path_lines.items():
                 path = (base / rel).resolve(strict=False)
+                try:
+                    relative = path.relative_to(base)
+                except ValueError:
+                    continue
+                if self._is_ignored_relative_path(relative):
+                    continue
                 try:
                     file_hash, lines = self._read_snapshot(path)
                 except Exception:
@@ -1037,6 +1128,10 @@ class RepositoryTools:
                 "retryable": True,
             }
         if not hits and not accelerated:
+            with self._git_files_lock:
+                self._git_stats["python_search_fallbacks"] = min(
+                    1_000_000, self._git_stats["python_search_fallbacks"] + 1
+                )
             for path in self.iter_files(str(base)):
                 scanned += 1
                 rel = str(path.relative_to(base)).replace("\\", "/")
@@ -1681,8 +1776,10 @@ class RepositoryTools:
             seen_paths.add(rel)
             path = (base / rel).resolve(strict=False)
             try:
-                path.relative_to(base)
+                relative = path.relative_to(base)
             except ValueError:
+                continue
+            if self._is_ignored_relative_path(relative):
                 continue
             if not path.is_file():
                 continue
@@ -1822,16 +1919,15 @@ class RepositoryTools:
         base = self._root(root)
         items: list[dict[str, Any]] = []
         total_bytes = 0
-        for path in self.iter_files(str(base)):
+        for path, stat in self._iter_files_with_stat(str(base)):
             try:
-                stat = path.stat()
                 rel = str(path.relative_to(base)).replace("\\", "/")
                 item: dict[str, Any] = {
                     "path": rel, "size": int(stat.st_size), "mtime_ns": int(stat.st_mtime_ns),
                     "extension": path.suffix.lower(),
                 }
                 if include_hashes:
-                    digest, _lines = self._read_snapshot(path)
+                    digest, _lines = self._read_snapshot(path, stat=stat)
                     item["sha256"] = digest
                 items.append(item)
                 total_bytes += int(stat.st_size)

@@ -22,6 +22,7 @@ from typing import Any
 
 from . import __version__
 from .cache import MemoryLRUCache, SQLiteCache, stable_hash
+from .code_index import _mask_non_code
 from .normalizer import tokenize_query_terms
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
 from .diff_parsers import (
@@ -1982,7 +1983,28 @@ class DeterministicEngine:
                 graph = self.code_index.query(root_s, query, limit or 24)
             except Exception:
                 graph = {"success": False, "confidence": 0.0}
+            if intent == "callers" and graph.get("symbols") and callable(getattr(self.code_index, "find_callers", None)):
+                query_folded = query.casefold()
+                direct_symbols = [
+                    item for item in graph["symbols"]
+                    if re.search(rf"(?<!\w){re.escape(str(item.get('name') or '').casefold())}(?!\w)", query_folded)
+                    if item.get("name")
+                ]
+                target = (direct_symbols or graph["symbols"])[0]
+                caller_result = self.code_index.find_callers(root_s, str(target["name"]), limit or 24)
+                graph = {
+                    **graph,
+                    "caller_symbol": str(target["name"]),
+                    "callers": caller_result.get("callers", []),
+                    "callers_coverage": caller_result.get("coverage", {}),
+                    "callers_success": bool(caller_result.get("success")),
+                }
             result["code_index"] = {k: graph.get(k) for k in ("symbols", "references", "edges", "confidence") if k in graph}
+            if intent == "callers" and "callers" in graph:
+                result["code_index"].update({
+                    key: graph[key]
+                    for key in ("caller_symbol", "callers", "callers_coverage", "callers_success")
+                })
 
         kind_map = {
             "routes": ["route"], "tests": ["test_file"], "syntax": ["syntax_error"], "config": ["env", "config", "config_key"],
@@ -2700,6 +2722,9 @@ class DeterministicEngine:
                     lines.append(f"- {x.get('path')}")
         elif intent in {"symbols", "callers", "references"}:
             graph = result.get("code_index", {}) if isinstance(result.get("code_index"), dict) else {}
+            if intent == "callers":
+                for x in graph.get("callers", [])[:max_items]:
+                    lines.append(f"- {x.get('caller')} calls {x.get('callee')} — {x.get('path')}:{x.get('line')}")
             for x in graph.get("symbols", [])[:max_items]:
                 lines.append(f"- definition {x.get('name')} — {x.get('path')}:{x.get('line')}")
             group = graph.get("references", []) if intent != "symbols" else []
@@ -4236,9 +4261,28 @@ def test_{sym}_regression_edge_cases():
                 if s and (s == t_stem or s in t_stem or t_stem in s):
                     test_paths_set.add(t_path)
 
-        if self.code_index is not None:
+        code_index = self.code_index
+        if code_index is None:
+            # Direct DeterministicEngine callers may not receive the shared index
+            # that services inject. Build it lazily from RepositoryTools' bounded
+            # inventory so dependency traversal still selects transitive tests.
             try:
-                imp = self.code_index.impact(str(resolved_root), norm_changed)
+                from .code_index import CodeIndex
+
+                candidate_index = CodeIndex(self.config, self.repo_tools)
+                candidate_paths = [
+                    path.relative_to(resolved_root).as_posix()
+                    for path in self.repo_tools.iter_files(str(resolved_root))
+                ]
+                indexed = candidate_index.update_files_batch(str(resolved_root), candidate_paths)
+                if indexed.get("success"):
+                    self.code_index = candidate_index
+                    code_index = candidate_index
+            except Exception:
+                code_index = None
+        if code_index is not None:
+            try:
+                imp = code_index.impact(str(resolved_root), norm_changed)
                 for st in imp.get("suggested_tests", []):
                     test_paths_set.add(st["path"].replace("\\", "/"))
             except Exception:
@@ -4772,28 +4816,96 @@ def test_{sym}_regression_edge_cases():
         }
 
     def code_invariants(self, root: str, path: str | None = None) -> dict[str, Any]:
-        """Check source invariants; explicit ``path`` can still target test fixtures."""
+        """Check Python source invariants; report unsupported files and syntax errors."""
         resolved_root = Path(self._root(root))
         target_paths: list[Path] = []
+        unsupported_files: list[dict[str, str]] = []
+        parse_errors: list[dict[str, Any]] = []
+        scan_errors: list[dict[str, Any]] = []
+        read_errors: list[dict[str, Any]] = []
+        if not resolved_root.is_dir():
+            return {
+                "success": False,
+                "complete": False,
+                "error": "root_not_directory",
+                "root": str(resolved_root),
+                "files_checked": 0,
+                "supported_languages": ["python"],
+                "parse_errors": [],
+                "scan_errors": [],
+                "read_errors": [],
+                "unsupported_files": [],
+                "truncated": False,
+                "violation_count": 0,
+                "violations": [],
+            }
         if path:
             candidate = (resolved_root / path).resolve(strict=False)
             if candidate.is_file():
-                target_paths.append(candidate)
+                if not candidate.is_relative_to(resolved_root):
+                    return {
+                        "success": False,
+                        "complete": False,
+                        "error": "path_outside_root",
+                        "root": str(resolved_root),
+                        "files_checked": 0,
+                        "supported_languages": ["python"],
+                        "parse_errors": [],
+                        "scan_errors": [],
+                        "read_errors": [],
+                        "unsupported_files": [],
+                        "truncated": False,
+                        "violation_count": 0,
+                        "violations": [],
+                    }
+                if candidate.suffix.lower() == ".py":
+                    target_paths.append(candidate)
+                else:
+                    unsupported_files.append({
+                        "path": str(candidate.relative_to(resolved_root)).replace("\\", "/"),
+                        "language": candidate.suffix.lower().lstrip(".") or "unknown",
+                        "reason": "unsupported_language",
+                    })
             else:
-                return {"success": False, "error": f"path not found: {path}"}
+                return {
+                    "success": False,
+                    "complete": False,
+                    "error": f"path not found: {path}",
+                    "root": str(resolved_root),
+                    "files_checked": 0,
+                    "supported_languages": ["python"],
+                    "parse_errors": [],
+                    "scan_errors": [],
+                    "read_errors": [],
+                    "unsupported_files": [],
+                    "truncated": False,
+                    "violation_count": 0,
+                    "violations": [],
+                }
         else:
-            for dirpath, dirnames, filenames in os.walk(resolved_root):
+            truncated = False
+            def record_scan_error(exc: OSError) -> None:
+                scan_errors.append({
+                    "path": str(exc.filename or resolved_root),
+                    "reason": type(exc).__name__,
+                    "message": exc.strerror or str(exc),
+                })
+
+            for dirpath, dirnames, filenames in os.walk(resolved_root, onerror=record_scan_error):
                 # Repository-wide audits should cover shipped runtime code, not
                 # test setup commands or managed dependency environments. An
                 # explicit path remains available for fixture-level checks.
                 dirnames[:] = [d for d in dirnames if d not in {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", "tests", "tool-envs"}]
                 for f in filenames:
                     if f.endswith(".py"):
-                        target_paths.append(Path(dirpath) / f)
                         if len(target_paths) >= 150:
+                            truncated = True
                             break
-                if len(target_paths) >= 150:
+                        target_paths.append(Path(dirpath) / f)
+                if truncated:
                     break
+        if path:
+            truncated = False
 
         violations: list[dict[str, Any]] = []
 
@@ -4844,19 +4956,41 @@ def test_{sym}_regression_edge_cases():
                 self.generic_visit(node)
 
         for p in target_paths:
+            rel = str(p.relative_to(resolved_root)).replace("\\", "/")
             try:
-                rel = str(p.relative_to(resolved_root)).replace("\\", "/")
                 code = p.read_text(encoding="utf-8", errors="replace")
                 tree = ast.parse(code, filename=rel)
-                visitor = InvariantVisitor(rel)
-                visitor.visit(tree)
-            except Exception:
+            except OSError as exc:
+                read_errors.append({
+                    "path": rel,
+                    "reason": type(exc).__name__,
+                    "message": str(exc),
+                })
                 continue
+            except SyntaxError as exc:
+                parse_errors.append({
+                    "path": rel,
+                    "reason": "syntax_error",
+                    "line": exc.lineno,
+                    "column": exc.offset,
+                    "message": exc.msg,
+                })
+                continue
+            visitor = InvariantVisitor(rel)
+            visitor.visit(tree)
 
+        complete = not parse_errors and not scan_errors and not read_errors and not unsupported_files and not truncated
         return {
-            "success": True,
+            "success": complete,
+            "complete": complete,
             "root": str(resolved_root),
             "files_checked": len(target_paths),
+            "supported_languages": ["python"],
+            "parse_errors": parse_errors,
+            "scan_errors": scan_errors,
+            "read_errors": read_errors,
+            "unsupported_files": unsupported_files,
+            "truncated": truncated,
             "violation_count": len(violations),
             "violations": violations[:100],
         }
@@ -5957,16 +6091,20 @@ def test_{sym}_regression_edge_cases():
                                 "line": node.lineno,
                             })
 
-        express_pat = re.compile(r"\b(?:app|router)\.(get|post|put|patch|delete|options|head)\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
+        express_call_pat = re.compile(r"\b(?:app|router)\.(get|post|put|patch|delete|options|head)\s*\(", re.I)
         next_route_pat = re.compile(r"^\s*export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*\(", re.M)
         for p in list(p_root.rglob("*.js")) + list(p_root.rglob("*.ts")) + list(p_root.rglob("*.mjs")):
             if any(part in skip_dirs for part in p.parts):
                 continue
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
-                for m in express_pat.finditer(text):
+                scan_source = _mask_non_code(text, "typescript" if p.suffix.lower() == ".ts" else "javascript")
+                for m in express_call_pat.finditer(scan_source):
+                    route_match = re.match(r"\s*(['\"])([^'\"\r\n]+)\1", text[m.end():])
+                    if not route_match:
+                        continue
                     method = m.group(1).upper()
-                    r_path = m.group(2)
+                    r_path = route_match.group(2)
                     endpoints.append({
                         "method": method,
                         "path": r_path,
@@ -5977,7 +6115,7 @@ def test_{sym}_regression_edge_cases():
                         "line": text[:m.start()].count("\n") + 1,
                     })
                 if p.stem.lower() == "route":
-                    for m in next_route_pat.finditer(text):
+                    for m in next_route_pat.finditer(scan_source):
                         method = m.group(1).upper()
                         rel_p = p.relative_to(p_root) if p.is_relative_to(p_root) else p
                         r_path = "/" + "/".join(part for part in rel_p.parts[:-1] if part not in {"app", "src", "api"})
@@ -6006,7 +6144,17 @@ def test_{sym}_regression_edge_cases():
                 continue
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
+                php_scan_source = _mask_non_code(text, "php")
+
+                def is_php_code_match(match: re.Match[str]) -> bool:
+                    return bool(re.match(
+                        r"(?:Route::|#\[(?:Route|Get|Post|Put|Patch|Delete)\b|\$(?:builder|routes)->)",
+                        php_scan_source[match.start():], re.I,
+                    ))
+
                 for m in php_route_pat.finditer(text):
+                    if not is_php_code_match(m):
+                        continue
                     method = m.group(1).upper()
                     r_path = m.group(2)
                     endpoints.append({
@@ -6019,6 +6167,8 @@ def test_{sym}_regression_edge_cases():
                         "line": text[:m.start()].count("\n") + 1,
                     })
                 for m in php_resource_pat.finditer(text):
+                    if not is_php_code_match(m):
+                        continue
                     res_path = "/" + m.group(1).lstrip("/")
                     endpoints.append({
                         "method": "RESOURCE",
@@ -6030,6 +6180,8 @@ def test_{sym}_regression_edge_cases():
                         "line": text[:m.start()].count("\n") + 1,
                     })
                 for m in php_attr_route_pat.finditer(text):
+                    if not is_php_code_match(m):
+                        continue
                     r_path = m.group(1) or "/"
                     methods_str = m.group(2) or "GET"
                     for method_raw in methods_str.replace("'", "").replace('"', "").split(","):
@@ -6044,6 +6196,8 @@ def test_{sym}_regression_edge_cases():
                             "line": text[:m.start()].count("\n") + 1,
                         })
                 for m in cake_route_pat.finditer(text):
+                    if not is_php_code_match(m):
+                        continue
                     r_path = m.group(1)
                     endpoints.append({
                         "method": "ANY",
@@ -6055,6 +6209,8 @@ def test_{sym}_regression_edge_cases():
                         "line": text[:m.start()].count("\n") + 1,
                     })
                 for m in cake_resource_pat.finditer(text):
+                    if not is_php_code_match(m):
+                        continue
                     r_path = "/" + m.group(1).lstrip("/")
                     endpoints.append({
                         "method": "RESOURCE",
@@ -6074,7 +6230,12 @@ def test_{sym}_regression_edge_cases():
                 continue
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
-                for m in form_pat.finditer(text):
+                html_scan_source = re.sub(
+                    r"<!--[\s\S]*?-->",
+                    lambda match: "".join("\n" if char == "\n" else " " for char in match.group(0)),
+                    text,
+                )
+                for m in form_pat.finditer(html_scan_source):
                     r_path = m.group(1)
                     method = (m.group(2) or "GET").upper()
                     endpoints.append({

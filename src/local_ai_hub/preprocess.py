@@ -649,8 +649,29 @@ class ProjectPreprocessor:
         if any(part.lower() in self.repo_tools.ignore_dirs for part in rel_path.parts[:-1]):
             return None
         name = rel_path.name.lower()
+        if name in {".local-ai.toml", ".local-ai.worktree.toml"}:
+            return str(rel_path).replace("\\", "/")
         suffix = rel_path.suffix.lower()
-        if self.repo_tools.extensions and suffix not in self.repo_tools.extensions and name not in self.repo_tools.special_filenames:
+        project_extensions: set[str] = set()
+        _api, project_context = self._project_config_context(str(root))
+        if project_context is not None:
+            settings = project_context.settings
+            project_extensions.update(
+                str(value).lower() for value in getattr(settings, "text_extensions", ())
+            )
+            for override in getattr(settings, "language_overrides", {}).values():
+                project_extensions.update(
+                    str(value).lower() for value in override.get("text_extensions", ())
+                )
+            project_extensions.difference_update(
+                str(value).lower() for value in getattr(settings, "binary_extensions", ())
+            )
+        if (
+            self.repo_tools.extensions
+            and suffix not in self.repo_tools.extensions
+            and suffix not in project_extensions
+            and name not in self.repo_tools.special_filenames
+        ):
             return None
         return str(rel_path).replace("\\", "/")
 
@@ -658,8 +679,86 @@ class ProjectPreprocessor:
         with self._dirty_lock:
             return self._dirty_paths.pop(root, set())
 
+    def _project_config_context(self, root: str) -> tuple[Any | None, Any | None]:
+        """Resolve optional project policy lazily for the owning repository."""
+        try:
+            from importlib import import_module
+
+            api = import_module("local_ai_hub.project_config")
+        except ModuleNotFoundError as exc:
+            if exc.name == "local_ai_hub.project_config":
+                return None, None
+            raise
+        state_dir = self.config.get("server", {}).get("state_dir", "state")
+        return api, api.resolve_project_context(root, state_dir)
+
+    def _project_profile(self, root: str, profile: Any) -> Any:
+        _api, context = self._project_config_context(root)
+        if context is None or not isinstance(profile, dict):
+            return profile
+        profile = dict(profile)
+        settings = context.settings
+        for name in ("project_type", "solution_path"):
+            value = getattr(settings, name, None)
+            if value:
+                profile[name] = value
+        return profile
+
+    @staticmethod
+    def _project_path_allowed(api: Any | None, context: Any | None, root: str, path: str, *, size_bytes: int | None = None) -> bool:
+        if api is None or context is None:
+            return True
+        return bool(api.path_is_allowed(
+            root, path, context.settings, phase="preprocess", size_bytes=size_bytes,
+        ))
+
+    def _add_project_text_extensions(self, root: str, files: dict[str, dict[str, Any]], api: Any | None, context: Any | None) -> None:
+        if api is None or context is None:
+            return
+        settings = context.settings
+        extensions = {str(value).lower() for value in getattr(settings, "text_extensions", ())}
+        for override in getattr(settings, "language_overrides", {}).values():
+            extensions.update(str(value).lower() for value in override.get("text_extensions", ()))
+        extensions.difference_update(str(value).lower() for value in getattr(settings, "binary_extensions", ()))
+        extensions.difference_update(str(value).lower() for value in getattr(self.repo_tools, "extensions", ()))
+        if not extensions:
+            return
+        base = Path(root)
+        ignored = {str(value).lower() for value in getattr(self.repo_tools, "ignore_dirs", ())}
+        may_descend = getattr(api, "may_descend", None)
+        for current, directories, filenames in os.walk(base, followlinks=False):
+            current_path = Path(current)
+            retained = []
+            for name in directories:
+                child = current_path / name
+                if name.lower() in ignored or (callable(may_descend) and not may_descend(
+                    base, child, settings, phase="preprocess", hard_denied=False,
+                )):
+                    continue
+                retained.append(name)
+            directories[:] = retained
+            for name in filenames:
+                candidate = current_path / name
+                if candidate.suffix.lower() not in extensions:
+                    continue
+                try:
+                    stat = candidate.stat()
+                    relative = candidate.relative_to(base).as_posix()
+                except (OSError, ValueError):
+                    continue
+                if not self._project_path_allowed(
+                    api, context, root, str(candidate), size_bytes=int(stat.st_size),
+                ):
+                    continue
+                files.setdefault(relative, {
+                    "path": relative, "size": int(stat.st_size),
+                    "mtime_ns": int(stat.st_mtime_ns), "extension": candidate.suffix.lower(),
+                })
+
     def notify_path_changed(self, changed_path: str) -> bool:
         """Coalesce watcher events and queue only the owning registered project."""
+        if not self._background_work_allowed():
+            return False
         try:
             changed = Path(changed_path).resolve(strict=False)
         except Exception:
@@ -731,16 +830,19 @@ class ProjectPreprocessor:
                 watch_revision = int(self._watch_revisions.get(resolved, 0))
                 dirty_paths = sorted(self._dirty_paths.get(resolved, set()))[:256]
                 dirty_count = len(self._dirty_paths.get(resolved, set()))
+            _api, project_context = self._project_config_context(resolved)
+            config_digest = str(getattr(project_context, "config_digest", ""))
             fp = stable_hash({
                 "root": resolved, "generation": int(row["generation"] or 0),
                 "inventory": row["inventory_hash"], "structure": row["structural_hash"],
-                "watch_revision": watch_revision,
+                "watch_revision": watch_revision, "project_config": config_digest,
             })
             return {
                 "success": True, "root": resolved, "kind": "preprocessed-watcher",
                 "fingerprint": fp, "dirty": dirty_count > 0, "changed_files": dirty_count,
                 "changed_paths": dirty_paths, "status": str(row["status"]),
-                "phase": str(row["phase"]), "created_at": time.time(),
+                "phase": str(row["phase"]), "project_config_digest": config_digest,
+                "created_at": time.time(),
             }
         except Exception:
             return None
@@ -1557,6 +1659,10 @@ class ProjectPreprocessor:
                 self._cpu_wakeup.wait(poll)
                 self._cpu_wakeup.clear()
                 continue
+            if not self._background_work_allowed():
+                self._cpu_wakeup.wait(poll)
+                self._cpu_wakeup.clear()
+                continue
             if not self.cpu_runs_during_foreground and not self.scheduler.background_allowed():
                 self._cpu_wakeup.wait(poll)
                 self._cpu_wakeup.clear()
@@ -1611,6 +1717,10 @@ class ProjectPreprocessor:
                 self._gpu_wakeup.wait(poll)
                 self._gpu_wakeup.clear()
                 continue
+            if not self._background_work_allowed():
+                self._gpu_wakeup.wait(poll)
+                self._gpu_wakeup.clear()
+                continue
             if self.background_gpu is None or not self.background_gpu.ready():
                 self._gpu_wakeup.wait(poll)
                 self._gpu_wakeup.clear()
@@ -1646,6 +1756,31 @@ class ProjectPreprocessor:
             return False
         return bool(self.scheduler.foreground_busy())
 
+    def _background_work_allowed(self) -> bool:
+        """Fail closed outside active mode; never load config from the state directory."""
+        path = self.state_dir / "operational_mode.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return True
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        mode = payload.get("mode")
+        revision = payload.get("revision")
+        updated_at = payload.get("updated_at")
+        if (
+            mode not in {"active", "gaming", "maintenance"}
+            or isinstance(revision, bool)
+            or not isinstance(revision, int)
+            or revision < 1
+            or not isinstance(updated_at, str)
+            or not updated_at
+        ):
+            return False
+        return mode == "active"
+
     def _gpu_yield(self) -> bool:
         return self._stop.is_set() or self.scheduler.foreground_busy()
 
@@ -1669,6 +1804,8 @@ class ProjectPreprocessor:
                 self._preprocessor = preprocessor
 
             def on_any_event(self, event: Any) -> None:
+                if not self._preprocessor._background_work_allowed():
+                    return
                 # Watchdog also reports access/close events on some backends. They
                 # are not repository mutations and treating them as edits makes
                 # sync tools such as Mutagen continuously requeue preprocessing.
@@ -1689,8 +1826,22 @@ class ProjectPreprocessor:
         refresh = max(1.0, float(self.cfg.get("watcher_refresh_seconds", 3.0)))
         try:
             observer.start()
-            self._watcher_active = True
             while not self._stop.is_set():
+                if not self._background_work_allowed():
+                    # Keep one observer thread, but detach every recursive watch.
+                    # Active mode rebuilds this set from current project registry.
+                    for root in list(watches):
+                        watch = watches.pop(root)
+                        try:
+                            observer.unschedule(watch)
+                        except Exception:
+                            with self._stats_lock:
+                                self._stats["watcher_errors"] += 1
+                            raise
+                    self._watcher_active = False
+                    self._stop.wait(refresh)
+                    continue
+                self._watcher_active = True
                 try:
                     with self._db_lock, closing(self._connect()) as con:
                         roots = {str(r[0]) for r in con.execute(
@@ -1717,6 +1868,12 @@ class ProjectPreprocessor:
                 self._stats["watcher_errors"] += 1
         finally:
             self._watcher_active = False
+            for watch in list(watches.values()):
+                try:
+                    observer.unschedule(watch)
+                except Exception:
+                    pass
+            watches.clear()
             try:
                 observer.stop()
                 observer.join(timeout=3.0)
@@ -1724,6 +1881,10 @@ class ProjectPreprocessor:
                 pass
 
     def _step(self, row: dict[str, Any]) -> bool:
+        # An in-flight step finishes as its existing durable checkpoint boundary.
+        # The next step observes mode again; active resumes from saved phase/cursor.
+        if not self._background_work_allowed():
+            return False
         root = str(row["root"])
         if not Path(root).is_dir():
             self.unregister(root, purge_data=True)
@@ -1732,6 +1893,21 @@ class ProjectPreprocessor:
             return False
         phase = str(row.get("phase") or "inventory")
         self._set_project(root, status="running")
+        api, project_context = self._project_config_context(root)
+        skipped_phase = {
+            "code_index": "call_graph",
+            "modules": "modules",
+        }.get(phase)
+        if skipped_phase and api is not None and project_context is not None and not api.phase_is_allowed(
+            project_context.settings, skipped_phase,
+        ):
+            if phase == "code_index" and self.code_index is not None:
+                try:
+                    self.code_index.prune(root, [])
+                except Exception:
+                    pass
+            self._set_project(root, phase="deterministic" if phase == "code_index" else "project")
+            return True
         if phase == "inventory":
             return self._step_inventory(row)
         if phase == "hash":
@@ -1766,6 +1942,9 @@ class ProjectPreprocessor:
         paths = sorted(set(str(x).replace("\\", "/") for x in dirty_paths if x))[:1024]
         if not paths:
             return False
+        if any(Path(rel).name in {".local-ai.toml", ".local-ai.worktree.toml"} for rel in paths):
+            # Policy changes can affect paths outside the dirty batch. Recompute full inventory.
+            return False
         placeholders = ",".join("?" for _ in paths)
         with self._db_lock, closing(self._connect()) as con:
             old_rows = con.execute(
@@ -1783,6 +1962,7 @@ class ProjectPreprocessor:
         present: dict[str, tuple[int, int]] = {}
         deleted: set[str] = set()
         topology_changed = False
+        policy_api, project_context = self._project_config_context(root)
         for rel in paths:
             target = (base / rel).resolve(strict=False)
             try:
@@ -1795,6 +1975,13 @@ class ProjectPreprocessor:
                 except OSError:
                     continue
                 size, mtime_ns = int(stat.st_size), int(stat.st_mtime_ns)
+                if not self._project_path_allowed(
+                    policy_api, project_context, root, str(target), size_bytes=size,
+                ):
+                    if rel in old:
+                        deleted.add(rel)
+                        topology_changed = True
+                    continue
                 present[rel] = (size, mtime_ns)
                 topology_changed = topology_changed or rel not in old
             elif rel in old:
@@ -1936,7 +2123,18 @@ class ProjectPreprocessor:
             raise RuntimeError(str(inventory.get("error", "inventory failed")))
         if self._yield():
             return False
-        new_files = {x["path"]: x for x in inventory.get("files", [])}
+        policy_api, project_context = self._project_config_context(root)
+        inventory_files = {str(item["path"]): item for item in inventory.get("files", [])}
+        self._add_project_text_extensions(root, inventory_files, policy_api, project_context)
+        new_files = {
+            str(item["path"]): item
+            for item in inventory_files.values()
+            if self._project_path_allowed(
+                policy_api, project_context, root,
+                str(Path(root) / str(item["path"])),
+                size_bytes=int(item.get("size", 0)),
+            )
+        }
         with self._db_lock, closing(self._connect()) as con:
             old_rows = con.execute(
                 "SELECT path,content_hash,size,mtime_ns,card_key,rag_hash FROM file_refs WHERE root=?", (root,)
@@ -1964,6 +2162,10 @@ class ProjectPreprocessor:
             "structure": structure,
             "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
             "analyzer": __version__,
+            "project_config": str(getattr(project_context, "config_digest", "")),
+            "project_type": getattr(getattr(project_context, "settings", None), "project_type", None),
+            "solution_path": getattr(getattr(project_context, "settings", None), "solution_path", None),
+            "language_overrides": getattr(getattr(project_context, "settings", None), "language_overrides", {}),
         })
         force = bool(row.get("force_refresh"))
         now = time.time()
@@ -2416,11 +2618,21 @@ class ProjectPreprocessor:
             self._missing_refs_checked_generations.add(generation_key)
             self._missing_refs_checked_generations = self._bound_generation_set(self._missing_refs_checked_generations)
         with self._db_lock, closing(self._connect()) as con:
-            refs = [(str(r["path"]), str(r["content_hash"])) for r in con.execute("SELECT path,content_hash FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path", (root,)).fetchall()]
+            refs = [
+                (str(r["path"]), str(r["content_hash"]), int(r["size"] or 0))
+                for r in con.execute(
+                    "SELECT path,content_hash,size FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path",
+                    (root,),
+                ).fetchall()
+            ]
+        policy_api, project_context = self._project_config_context(root)
         refs = [
             (path, digest)
-            for path, digest in refs
+            for path, digest, size_bytes in refs
             if not any(part.lower() in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1])
+            and self._project_path_allowed(
+                policy_api, project_context, root, str(Path(root) / path), size_bytes=size_bytes,
+            )
         ]
         pruned_generations = getattr(self, "_code_index_pruned_generations", set())
         if generation_key not in pruned_generations:
@@ -3038,7 +3250,7 @@ class ProjectPreprocessor:
         if current and current["revision_hash"] == revision:
             self._set_project(root, phase="hot_queries")
             return True
-        profile = self.services.repo_profile(root)
+        profile = self._project_profile(root, self.services.repo_profile(root))
         repo_map = self.services.repo_map(root, int(self.cfg.get("preprocess_symbol_sample", 300)))
         module_data = []
         for x in modules:
@@ -3183,7 +3395,7 @@ class ProjectPreprocessor:
 
         profile = {}
         try:
-            profile = self.services.repo_profile(root)
+            profile = self._project_profile(root, self.services.repo_profile(root))
         except Exception:
             pass
         validation_cmds = profile.get("validation_commands", [])
