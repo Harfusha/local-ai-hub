@@ -1,0 +1,81 @@
+--- a/src/local_ai_hub/preprocess.py
++++ b/src/local_ai_hub/preprocess.py
+@@ -246,6 +246,8 @@
+         ``None`` means another loop already owns this project. Callers should simply
+         retry later; this is contention, not a foreground-yield or an error.
+         """
++        if self._paused.is_set() or not self._background_work_allowed():
++            return False
+         root = str(row.get("root", ""))
+         lock = self._project_step_lock(root)
+         if not lock.acquire(blocking=False):
+@@ -1230,10 +1232,11 @@
+     def status(self, root: str | None = None) -> dict[str, Any]:
+         now_mono = time.monotonic()
+         key = str(root or "__all__")
++        mode_paused = not self._background_work_allowed()
+         if not hasattr(self, "_status_cache"):
+             self._status_cache = {}
+         cached = self._status_cache.get(key)
+-        if cached and now_mono - cached["time"] < 0.5:
++        if cached and cached.get("mode_paused") == mode_paused and now_mono - cached["time"] < 0.5:
+             return dict(cached["data"])
+         with closing(self._connect()) as con:
+             if root is not None:
+@@ -1521,13 +1524,13 @@
+             global_diagnostic = "Background preprocessing is actively running."
+ 
+         res = {
+-            "success": True, "enabled": self.enabled, "paused": self._paused.is_set(),
++            "success": True, "enabled": self.enabled, "paused": self._paused.is_set() or mode_paused,
+             "phases": list(self.PHASES), "projects": projects,
+             "scheduler_background_allowed": bg_allowed,
+             "global_diagnostic": global_diagnostic,
+             "ingestion_reuse_rate": self.ingestion_reuse_rate(),
+         }
+-        self._status_cache[key] = {"time": now_mono, "data": dict(res)}
++        self._status_cache[key] = {"time": now_mono, "data": dict(res), "mode_paused": mode_paused}
+         return res
+ 
+     _PROJECT_COLUMNS = frozenset({
+@@ -1636,7 +1639,7 @@
+                 self._cpu_wakeup.clear()
+                 continue
+             if not self._background_work_allowed():
+-                self._cpu_wakeup.wait(poll)
++                self._cpu_wakeup.wait(min(0.1, poll))
+                 self._cpu_wakeup.clear()
+                 continue
+             if not self.cpu_runs_during_foreground and not self.scheduler.background_allowed():
+@@ -1694,7 +1697,7 @@
+                 self._gpu_wakeup.clear()
+                 continue
+             if not self._background_work_allowed():
+-                self._gpu_wakeup.wait(poll)
++                self._gpu_wakeup.wait(min(0.1, poll))
+                 self._gpu_wakeup.clear()
+                 continue
+             if self.background_gpu is None or not self.background_gpu.ready():
+@@ -1726,7 +1729,7 @@
+                 self._stop.wait(1.0)
+ 
+     def _yield(self) -> bool:
+-        if self._stop.is_set():
++        if self._stop.is_set() or self._paused.is_set() or not self._background_work_allowed():
+             return True
+         if self.cpu_runs_during_foreground:
+             return False
+@@ -1758,7 +1761,12 @@
+         return mode == "active"
+ 
+     def _gpu_yield(self) -> bool:
+-        return self._stop.is_set() or self.scheduler.foreground_busy()
++        return (
++            self._stop.is_set()
++            or self._paused.is_set()
++            or not self._background_work_allowed()
++            or self.scheduler.foreground_busy()
++        )
+ 
+     def _fs_watcher_loop(self) -> None:
+         """Keep one bounded watchdog observer synchronized with active projects.

@@ -2,7 +2,8 @@
 
 Assigned checkout: `C:/Users/Adam/.codex/worktrees/t14-render-order/.local-ai-hub`.
 Branch: `codex/sync-t14-render-order-20261006`.
-Pinned observed master: `7aa8b00168c03de6f5fccca158ef74fa1c5dfc4d`.
+Initial pinned master: `7aa8b00168c03de6f5fccca158ef74fa1c5dfc4d`.
+Final pinned observed master: `3c23c33d76c43043d839642c7b0d3e10ea444d67`.
 Master is centrally advancing; this handoff describes this immutable snapshot.
 
 ## Preservation and merge
@@ -15,6 +16,7 @@ Master is centrally advancing; this handoff describes this immutable snapshot.
   `ed6b2dbeb80ef98e2f93cb6f54048aa64c588d6e`, retained by
   `codex/checkpoint-t14-render-order-premerge-20261006`.
 - Pinned master ref: `codex/checkpoint-t14-render-order-pinned-master-20261006`.
+- Final master ref: `codex/checkpoint-t14-render-order-final-master-20261006`.
 - Startup had no tracked dirty or untracked files; nothing additional needed saving.
 - `git merge --no-commit --no-ff 7aa8b00168c03de6f5fccca158ef74fa1c5dfc4d`
   merged automatically with no unresolved files. Both preservation commits remain
@@ -26,6 +28,12 @@ Master is centrally advancing; this handoff describes this immutable snapshot.
   missing receipts still fail closed; original render-order hunk moves existing
   exact lexical blocks to evidence order before RAG append. Master already
   contained both that hunk and the original regression test.
+- Initial merge committed as `19e93e2457d85a83f6dfabdc8c8392e256ed4349`.
+  Final check found master advanced to `3c23c33d`; a second explicit
+  `git merge --no-commit --no-ff 3c23c33d76c43043d839642c7b0d3e10ea444d67`
+  also merged without conflicts. The T14 production files and five checked test
+  files were unchanged between those snapshots. Merged source/tests/tools equal
+  final pinned master. Only this integration note differs.
 
 ## Actual targeted checks
 

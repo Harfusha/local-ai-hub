@@ -117,6 +117,15 @@ and strict CodeGraph substring assertion remain in
 also needs acceptance review before release; no broad completion claim.
 T14 render-order checkout now assigned to Anscombe independently.
 
+Fresh integrated-root budget regression:
+`python -B -m pytest -q -p no:cacheprovider tests/test_mcp_response_budget.py
+tests/test_response_budget.py --tb=short`: **23 passed, 3 failed in 2.77s**.
+Two command rollback tests received `operational_mode_blocked` with gaming
+mode instead of reaching their fake transport; investigate test/runtime
+state isolation without changing the user's live mode. The third test
+confirms a protected error string is truncated at the 128-token budget.
+No test expectation weakened and no repeat of this command was launched.
+
 ## Rules for the remainder
 
 - Preserve each original HEAD and dirty tracked content in a checkpoint ref
