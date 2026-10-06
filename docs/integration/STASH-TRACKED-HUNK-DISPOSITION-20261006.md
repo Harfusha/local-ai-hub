@@ -992,6 +992,25 @@ Static `ast.parse` + `ast.literal_eval` extracted only the two constant SQL fing
 
 V02-H027 now records the exact remaining disabled-status/empty-boundary sentinel difference. Final queue: 17 confirmed missing hunks, 98 owner-conflict hunks. T05/T08/T18 must resolve schema/disabled-state ownership before source work; newer strict schema and process safeguards must remain.
 
+## Post-pin owned integration ledger (not a repin)
+
+All primary hunk statuses/counters above remain comparisons against immutable `47a1f32f44f0ab23a17b5d6cc21c16dfc2549a1a`. This separate ledger follows actual owned integration beyond that pin; it does not merge or modify the assigned source checkout. On this audit turn, HEAD was `088f9b3300b36f46ba131652082040b1d46339a6`, clean; all 533 unique rows/32 version headings, 17 index-services intervals, original checkpoint refs and stash IDs verified; only the authorized report differs from pin.
+
+Known owned packet verified by exact Git objects from the assigned checkout: `ba538f654ca9073defe5f1136848928bdac50502`, parent `6602b52798435c89874b62d40beeb8c6c6bd2e4e`; changed paths are `src/local_ai_hub/agent_verification.py`, `tests/test_agent_verification.py`, new `tests/test_agent_verification_input_safety.py`, and its handoff note. Source blob `7cbcfc55dffb3d6676689f35d91456a23ea78be6`; regression blob `9bd4b5b82671b21dc6dc41ee9d4ccc7c3970477a`; owner receipt blob `3e62acf4f19a50cc42c43f85712875226d79b34f`. This is committed source integration by its owner, not checkpoint-only preservation.
+
+| Original obligation | Post-pin source witness | Residual / acceptance boundary |
+| --- | --- | --- |
+| V04-H018 | from_dict:186 rejects non-bool passed, bool/non-int/negative generation and non-Mapping details before construction. | PARTIAL: original top-level `isinstance(data, Mapping)` guard remains absent; current starts with `data.get`. Typed outer-envelope rejection/equivalent caller guard and targeted regression need owner adjudication. No live exploit claim. |
+| V04-H020 | Parser forwards validated mutation_generation variable and evidence_type without coercing generation. | Concrete typed-field source behavior restored in packet; original baseline row remains missing-at-pin. |
+| V04-H021 | Parser forwards validated passed and copied Mapping details. | Explicit missing passed is now rejected rather than defaulted false; fail-closed behavior strengthened. No claim of all parser obligations closed. |
+| V10-H003 | New input-safety regressions reject passed string/int, bool/negative generation, array/pair details and add pre-construction/Mapping-copy cases. | Equivalent malformed-field coverage present as source in another file; own audit does not run tests or certify whole task completion. |
+| V04-H041 | record_change:1400 catches only KeyError around task lookup/generation checkpoint. | Non-KeyError checkpoint errors now propagate. Existing durable change event/projection commit still precedes checkpoint; not combined atomicity or retry-idempotency proof. |
+| V03-H036 | TaskCheckpoint still copies phase/next_action/affected_paths/evidence_ids/state_data without blockers in this packet. | OPEN: blocker/revision-preserving advancement remains separate T08 ownership; absence of helper alone is not full behavioral proof. |
+
+Owner handoff reports RED 33 failed/17 passed, focused GREEN 50 passed, final targeted 57 passed. Exact final owner command in receipt: `python -B -m pytest -q --tb=short -p no:cacheprovider --basetemp=.sync-validation-t08-receipt-final tests/test_agent_verification_input_safety.py tests/test_agent_verification.py::test_verification_receipt_parser_requires_explicit_boolean_passed "tests/test_agent_verification.py::test_verifier_projection_rolls_back_when_event_projection_write_fails[change]" tests/test_agent_verification.py::test_recorded_change_advances_generation_and_invalidates_existing_receipt`. Main thread separately recorded the matching targeted root command exit 0 and 57/57. These are external owner receipts, not test execution or release acceptance by this source-readonly audit.
+
+Main thread assigned T18 source-readonly adjudication of V02-H006 and its historical fingerprints. No source-write ownership assigned to this audit. Residual outer Mapping guard and blocker preservation were immediately sent as a bounded list to the main native ancestor. Preserve trusted tenant/project identity, current schema/process safeguards and fencing; no new feature or legacy whitelist restoration.
+
 ## Handoff gate
 
 Documentation commit is the deliverable of this read-only-source phase, not closure of reconciliation. The agent goal remains active for the owned integration phase. Pin ancestry, doc-only staged paths, whitespace check, unresolved-file absence and preserved original refs/stash list are verified at commit handoff; actual commit SHA is reported by the agent. No source acceptance is implied.
