@@ -221,3 +221,72 @@ def test_post_caps_path_hints_and_drops_unlisted_fields(tmp_path, monkeypatch):
     assert len(records) == 64
     assert records[0] == {"path": "src/0.py", "purpose": "implementation", "scope": "repository"}
     assert all("private" not in record for record in records)
+
+
+def test_post_forwards_path_hints_to_search_only(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def capture_request(path, payload, **_kwargs):
+        calls.append((path, payload))
+        return {"success": True}
+
+    monkeypatch.setattr(client, "request", capture_request)
+    hints = ({"path": "src/app.py", "purpose": "implementation", "scope": "repository"},)
+
+    client.post("/api/search", {"query": "needle"}, path_hints=hints)
+    client.post("/api/command", {"command": "pytest"}, path_hints=hints)
+
+    assert calls == [
+        (
+            "/api/search",
+            {"query": "needle", "path_hints": list(hints)},
+        ),
+        ("/api/command", {"command": "pytest"}),
+    ]
+
+
+def test_post_sanitizes_embedded_path_hints_and_drops_unsupported_routes(
+    tmp_path, monkeypatch
+):
+    client = _client(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        client,
+        "request",
+        lambda path, payload, **kwargs: calls.append((path, payload)) or {"success": True},
+    )
+    payload = {
+        "query": "needle",
+        "path_hints": [
+            {
+                "path": "src/hinted.py",
+                "purpose": "implementation",
+                "scope": "repository",
+                "private": "drop",
+            },
+            {"path": "src/invalid.py", "scope": "repository"},
+        ],
+    }
+    original_payload = dict(payload)
+
+    client.post("/api/search", payload)
+    client.post("/api/context/pack", payload)
+
+    assert calls == [
+        (
+            "/api/search",
+            {
+                "query": "needle",
+                "path_hints": [
+                    {
+                        "path": "src/hinted.py",
+                        "purpose": "implementation",
+                        "scope": "repository",
+                    }
+                ],
+            },
+        ),
+        ("/api/context/pack", {"query": "needle"}),
+    ]
+    assert payload == original_payload

@@ -1971,24 +1971,26 @@ class RAGStore:
         scope_key = self._scope_key(tenant)
         now = time.monotonic()
         if not hasattr(self, "_rev_cache"):
-            self._rev_cache: dict[tuple[str, str], tuple[float, str]] = {}
+            self._rev_cache: dict[tuple[str, str], tuple[float, str, int]] = {}
             self._rev_lock = threading.Lock()
+        with closing(self._connect()) as con:
+            generation = self._workspace_index_generation(con, scope_key, workspace)
         with self._rev_lock:
             cached = self._rev_cache.get((scope_key, workspace))
-            if cached and now - cached[0] < 3.0:
+            if cached and now - cached[0] < 3.0 and cached[2] == generation:
                 return cached[1]
         with closing(self._connect()) as con:
             rows = con.execute(
                 "SELECT path,content_hash,mtime_ns,size FROM files WHERE tenant=? AND workspace=? ORDER BY path",
                 (scope_key, workspace),
             ).fetchall()
-        rev = stable_hash({"index": self.index_fingerprint, "files": rows})
+        rev = stable_hash({"index": self.index_fingerprint, "generation": generation, "files": rows})
         with self._rev_lock:
             if len(self._rev_cache) > 256:
                 oldest_keys = sorted(self._rev_cache.keys(), key=lambda k: self._rev_cache[k][0])[:128]
                 for k in oldest_keys:
                     self._rev_cache.pop(k, None)
-            self._rev_cache[(scope_key, workspace)] = (now, rev)
+            self._rev_cache[(scope_key, workspace)] = (now, rev, generation)
         return rev
 
     @staticmethod

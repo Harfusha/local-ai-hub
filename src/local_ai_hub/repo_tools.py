@@ -96,7 +96,7 @@ class RepositoryTools:
             ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
             "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
             "library", "temp", "logs", "usersettings", "packagestore", "memorycaptures", "builds",
-            ".serena", ".codegraphcontext", ".local-ai-hub",
+            ".serena", ".local-ai-hub",
         }
         self.ignore_dirs = {str(name).lower() for name in rag.get("ignore_dirs", [])} | default_ignore_dirs
         self.ignore_extensions = {str(x).lower() for x in rag.get("ignore_extensions", [
@@ -2156,7 +2156,7 @@ class RepositoryTools:
                 dirnames.clear()
             for name in sorted(filenames):
                 candidate = current / name
-                if not self._searchable_context_file(base, candidate):
+                if not self._searchable_context_file(base, candidate, project_settings=project_settings):
                     continue
                 try:
                     rel = candidate.relative_to(base).as_posix()
@@ -2176,7 +2176,35 @@ class RepositoryTools:
         project_settings: Any | None = None,
     ) -> dict[str, Any]:
         """Search explicit files and bounded content below caller-supplied directories."""
+        from .project_config import path_is_allowed, resolve_project_context
+        from .state_paths import configured_state_dir
+
         base = self._root(root)
+        try:
+            project_context = resolve_project_context(base, configured_state_dir(self.config))
+            if project_context.resolution.error_codes:
+                raise ValueError("project_policy_unavailable")
+            if project_settings is None:
+                project_settings = project_context.settings
+        except (OSError, RuntimeError, ValueError):
+            return {
+                "success": False, "root": str(base), "error": "project_policy_unavailable",
+                "results": [], "scanned_files": 0, "targeted": True,
+            }
+        git_inventory = self._git_files(base)
+        if git_inventory is None and (base / ".git").exists():
+            return {
+                "success": False, "root": str(base), "error": "git_inventory_unavailable",
+                "results": [], "scanned_files": 0, "targeted": True,
+            }
+        git_paths = None
+        if git_inventory is not None:
+            git_paths = set()
+            for candidate in git_inventory:
+                try:
+                    git_paths.add(candidate.resolve(strict=False).relative_to(base).as_posix())
+                except (OSError, RuntimeError, ValueError):
+                    continue
         if not isinstance(paths, (list, tuple)):
             return {"success": False, "error": "paths must be a list"}
         controls: list[tuple[str, tuple[str, ...]]] = []
@@ -2246,17 +2274,21 @@ class RepositoryTools:
                         seen_targets.add(child_key)
                 if expanded >= expansion_cap:
                     break
-
         terms = self._terms(query)
         phrase = query.strip().lower()
         effective_snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
         hits: list[dict[str, Any]] = []
         scanned = 0
         seen_paths: set[str] = set()
+        path_rank = {rel: rank for rank, (rel, _path) in enumerate(targets)}
         for rel, path in targets:
             if rel in seen_paths:
                 continue
             seen_paths.add(rel)
+            if git_paths is not None and rel not in git_paths and not path_is_allowed(
+                base, rel, project_settings, phase="search", soft_ignored=True,
+            ):
+                continue
             scanned += 1
             try:
                 file_hash, lines = self._read_snapshot(path)
@@ -2280,7 +2312,14 @@ class RepositoryTools:
                     "path": rel, "start_line": start + 1, "end_line": end,
                     "score": round(score, 3), "text": snippet, "file_sha256": file_hash,
                 })
-        hits.sort(key=lambda x: (-x["score"], x["path"], x["start_line"]))
+        hits.sort(
+            key=lambda x: (
+                -x["score"],
+                path_rank.get(x["path"], len(path_rank)),
+                x["path"],
+                x["start_line"],
+            )
+        )
         dedup: list[dict[str, Any]] = []
         per_file: Counter[str] = Counter()
         for hit in hits:

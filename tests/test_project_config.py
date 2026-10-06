@@ -203,6 +203,30 @@ def test_config_file_resolving_outside_its_source_root_is_rejected(
     assert result.error_codes == ("unsafe_config_path",)
 
 
+def test_config_overlay_accepts_256_kib_and_rejects_one_byte_more(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    config = root / ".local-ai.toml"
+    prefix = b'project_type = "python"\n'
+    limit = 256 * 1024
+    at_limit = prefix + b"#" * (limit - len(prefix))
+    assert len(at_limit) == limit
+    config.write_bytes(at_limit)
+
+    accepted = resolve_project_config(root)
+
+    assert accepted.error_codes == ()
+    assert accepted.settings.project_type == "python"
+
+    config.write_bytes(at_limit + b"\n")
+    rejected = resolve_project_config(root)
+
+    assert rejected.settings == ProjectSettings()
+    assert rejected.error_codes == ("config_too_large",)
+
+
 def test_invalid_project_configuration_falls_back_atomically(tmp_path: Path) -> None:
     (tmp_path / ".local-ai.toml").write_text(
         'exclude_paths = ["should-not-leak/**"]\n'
@@ -1176,6 +1200,40 @@ def test_file_size_limit_rejects_invalid_size_evidence(tmp_path: Path) -> None:
     )
 
 
+def test_path_override_specificity_is_shared_across_symlink_alias_and_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    alias_dir = tmp_path / "alias" / "module"
+    alias_dir.mkdir(parents=True)
+    alias_file = alias_dir / "keep.py"
+    alias_file.write_text("x", encoding="utf-8")
+    target_dir = tmp_path / "generated" / "src" / "module"
+    target_dir.mkdir(parents=True)
+    target_file = target_dir / "keep.py"
+    target_file.write_text("x", encoding="utf-8")
+    _mock_resolutions(
+        monkeypatch,
+        {
+            alias_dir: target_dir,
+            alias_file: target_file,
+        },
+    )
+    settings = ProjectSettings(
+        path_overrides={
+            "alias/module": "include",
+            "alias/module/keep.py": "include",
+            "generated/**": "exclude",
+        }
+    )
+
+    assert may_descend(
+        tmp_path, "alias/module", settings, phase="search", soft_ignored=True
+    )
+    assert path_is_allowed(
+        tmp_path, "alias/module/keep.py", settings, phase="search"
+    )
+
+
 def test_specific_default_override_falls_through_to_force_include(
     tmp_path: Path,
 ) -> None:
@@ -1651,3 +1709,15 @@ def test_project_config_precedence_covers_primary_linked_common_and_worktree_lay
         "lint": "ruff check .",
         "test": "worktree-test",
     }
+
+
+def test_verification_rule_rejects_unknown_command_alias(tmp_path: Path) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        '[verification_rules]\ntask_complete = ["missing"]\n', encoding="utf-8"
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.settings == ProjectSettings()
+    assert result.active_sources == ("defaults",)
+    assert result.error_codes == ("invalid_config",)
