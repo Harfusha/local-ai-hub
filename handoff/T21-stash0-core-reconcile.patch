@@ -1,0 +1,379 @@
+diff --git a/docs/PROJECT_CONFIGURATION.md b/docs/PROJECT_CONFIGURATION.md
+--- a/docs/PROJECT_CONFIGURATION.md
++++ b/docs/PROJECT_CONFIGURATION.md
+@@ -1,11 +1,14 @@
+ # Project configuration
+ 
+-Local AI Hub reads optional project settings from four layers, low to high:
++Local AI Hub reads optional project settings from five layers, low to high:
+ 
+ 1. Built-in defaults.
+-2. Repository root `.local-ai.toml`.
+-3. Git common directory `info/local-ai.toml`, shared by linked worktrees.
+-4. Repository root `.local-ai.worktree.toml`, local to that worktree.
++2. Primary repository root `.local-ai.toml`, inherited by linked worktrees.
++3. Current worktree root `.local-ai.toml`, when distinct from primary root.
++4. Git common directory `info/local-ai.toml`, shared by linked worktrees.
++5. Current worktree root `.local-ai.worktree.toml`.
++
++The resolver finds the primary worktree through Git's common directory and bounded `git worktree list --porcelain` fallback. The current worktree's project file can override inherited keys; its worktree file remains the highest local layer.
+ 
+ Single-developer deployments may keep settings durably in local config sources. These files are never required for Hub startup. Config files must resolve within their project or Git common source root; escaping links are rejected. Invalid configuration rejects the complete overlay and returns built-in defaults with a safe error code.
+ 
+@@ -51,8 +54,7 @@
+ API_TOKEN = "${HOST_API_TOKEN}"
+ 
+ [verification_rules]
+-require_receipt = true
+-required_commands = ["check"]
++task_complete = ["check"]
+ 
+ [retrieval_weights]
+ lexical = 0.6
+@@ -62,7 +64,7 @@
+ 
+ ```
+ 
+-Command values are data; resolver does not execute them. Host variable names resolve only in the owning command adapter.
++Command values are data; resolver does not execute them. Host variable names resolve only in the owning command adapter. The `verification_rules` table maps exact task acceptance-criterion names to receipt requirements; each array names configured command aliases required for that criterion.
+ 
+ ## Path patterns and overrides
+ 
+
+diff --git a/src/local_ai_hub/project_config.py b/src/local_ai_hub/project_config.py
+--- a/src/local_ai_hub/project_config.py
++++ b/src/local_ai_hub/project_config.py
+@@ -313,6 +313,73 @@
+         return None
+ 
+ 
++def _git_primary_worktree_root(root: Path, common_dir: Path | None) -> Path | None:
++    """Find primary worktree without assuming the Git directory layout."""
++    if common_dir is None:
++        return None
++
++    def _points_to_common_dir(worktree: Path) -> bool:
++        git_marker = worktree / ".git"
++        try:
++            if git_marker.is_dir():
++                return git_marker.resolve(strict=False) == common_dir
++            if git_marker.is_file():
++                marker = git_marker.read_text(encoding="utf-8", errors="replace")[:1024]
++                prefix, separator, raw_path = marker.partition(":")
++                if prefix.strip().lower() != "gitdir" or not separator:
++                    return False
++                git_dir = Path(raw_path.strip())
++                if not git_dir.is_absolute():
++                    git_dir = worktree / git_dir
++                return git_dir.resolve(strict=False) == common_dir
++        except (OSError, RuntimeError, ValueError):
++            return False
++        return False
++
++    try:
++        resolved_root = root.resolve(strict=True)
++        if _points_to_common_dir(resolved_root):
++            return resolved_root
++    except (OSError, RuntimeError):
++        return None
++
++    if common_dir.name.lower() == ".git":
++        candidate = common_dir.parent
++        if _points_to_common_dir(candidate):
++            return candidate
++
++    kwargs: dict[str, Any] = {
++        "cwd": str(root),
++        "stdin": subprocess.DEVNULL,
++        "stdout": subprocess.PIPE,
++        "stderr": subprocess.DEVNULL,
++        "text": True,
++        "encoding": "utf-8",
++        "errors": "replace",
++        "timeout": _GIT_TIMEOUT_SECONDS,
++        "check": False,
++    }
++    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
++    if no_window:
++        kwargs["creationflags"] = no_window
++    try:
++        result = subprocess.run(["git", "worktree", "list", "--porcelain"], **kwargs)
++    except (OSError, subprocess.TimeoutExpired):
++        return None
++    if result.returncode != 0:
++        return None
++    for line in result.stdout.splitlines():
++        if not line.startswith("worktree "):
++            continue
++        candidate = Path(line[len("worktree ") :].strip())
++        if _points_to_common_dir(candidate):
++            try:
++                return candidate.resolve(strict=True)
++            except (OSError, RuntimeError):
++                continue
++    return None
++
++
+ def _merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+     merged = dict(base)
+     for key, value in override.items():
+@@ -738,9 +805,15 @@
+     project_root: Path, common_dir: Path | None
+ ) -> ProjectConfigResolution:
+     project_path = project_root / _PROJECT_CONFIG
++    primary_root = _git_primary_worktree_root(project_root, common_dir)
+     worktree_path = project_root / ".local-ai.worktree.toml"
+     machine_path = common_dir / "info" / "local-ai.toml" if common_dir else None
+-    layers: list[tuple[str, Path, Path]] = [("project", project_path, project_root)]
++    layers: list[tuple[str, Path, Path]] = []
++    if primary_root is not None and primary_root != project_root:
++        layers.append(
++            ("primary_project", primary_root / _PROJECT_CONFIG, primary_root)
++        )
++    layers.append(("project", project_path, project_root))
+     if machine_path is not None and common_dir is not None:
+         layers.append(("git_common", machine_path, common_dir))
+     layers.append(("worktree", worktree_path, project_root))
+@@ -1333,10 +1406,17 @@
+             )
+             connection.commit()
+ 
+-    def _connect(self) -> sqlite3.Connection:
+-        connection = sqlite3.connect(self.database, timeout=2.0)
++    def _connect(self, *, existing_only: bool = False) -> sqlite3.Connection:
++        if existing_only:
++            database_uri = f"{self.database.resolve(strict=False).as_uri()}?mode=ro"
++            connection = sqlite3.connect(
++                database_uri, timeout=2.0, uri=True
++            )
++        else:
++            connection = sqlite3.connect(self.database, timeout=2.0)
+         connection.execute("PRAGMA busy_timeout = 2000")
+         return connection
++
+     def add(self, hint: PathHint) -> None:
+         if validate_path_hint(
+             self.root,
+@@ -1410,25 +1490,38 @@
+         repository_revision: str,
+         config_digest: str,
+     ) -> tuple[PathHint, ...]:
+-        with closing(self._connect()) as connection:
+-            now = datetime.now(timezone.utc).isoformat()
+-            rows = connection.execute(
+-                """SELECT path, purpose, scope, evidence_id, provenance,
+-                          repository_revision, config_digest, expires_at
+-                   FROM project_path_hints
+-                   WHERE project_id = ? AND purpose = ? AND scope = ?
+-                     AND repository_revision = ? AND config_digest = ?
+-                     AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))
+-                   ORDER BY path LIMIT 256""",
+-                (
+-                    self.project_id,
+-                    purpose,
+-                    scope,
+-                    repository_revision,
+-                    config_digest,
+-                    now,
+-                ),
+-            ).fetchall()
++        if not self.database.is_file():
++            return ()
++        try:
++            with closing(self._connect(existing_only=True)) as connection:
++                table_exists = connection.execute(
++                    """SELECT 1 FROM sqlite_master
++                       WHERE type = 'table' AND name = 'project_path_hints'"""
++                ).fetchone()
++                if table_exists is None:
++                    return ()
++                now = datetime.now(timezone.utc).isoformat()
++                rows = connection.execute(
++                    """SELECT path, purpose, scope, evidence_id, provenance,
++                              repository_revision, config_digest, expires_at
++                       FROM project_path_hints
++                       WHERE project_id = ? AND purpose = ? AND scope = ?
++                         AND repository_revision = ? AND config_digest = ?
++                         AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))
++                       ORDER BY path LIMIT 256""",
++                    (
++                        self.project_id,
++                        purpose,
++                        scope,
++                        repository_revision,
++                        config_digest,
++                        now,
++                    ),
++                ).fetchall()
++        except sqlite3.OperationalError:
++            if not self.database.is_file():
++                return ()
++            raise
+         result: list[PathHint] = []
+         for row in rows:
+             hint = PathHint(*row)
+
+diff --git a/tests/test_project_config.py b/tests/test_project_config.py
+--- a/tests/test_project_config.py
++++ b/tests/test_project_config.py
+@@ -1474,3 +1474,96 @@
+     )
+ 
+ 
++def test_project_context_never_reads_hub_state_as_configuration(
++    tmp_path: Path,
++) -> None:
++    root = tmp_path / "repo"
++    state_dir = tmp_path / "hub-state"
++    root.mkdir()
++    state_dir.mkdir()
++    (root / ".local-ai.toml").write_text(
++        'shared_namespace = "project-local"\n', encoding="utf-8"
++    )
++    (state_dir / ".local-ai.toml").write_text(
++        'shared_namespace = "runtime-override"\n', encoding="utf-8"
++    )
++
++    context = project_config.resolve_project_context(root, state_dir)
++
++    assert context.settings.shared_namespace == "project-local"
++    assert context.resolution.active_sources == ("defaults", "project")
++    assert (state_dir / ".local-ai.toml").read_text(encoding="utf-8") == (
++        'shared_namespace = "runtime-override"\n'
++    )
++
++
++def test_model_profile_and_prompt_prefix_defaults_and_validation(
++    tmp_path: Path,
++) -> None:
++    defaults = project_config.resolve_project_config(tmp_path)
++
++    assert defaults.settings.model_profile == "balanced"
++    assert defaults.settings.system_prompt_prefix is None
++    assert defaults.error_codes == ()
++
++    (tmp_path / ".local-ai.toml").write_text(
++        'model_profile = "unknown"\n', encoding="utf-8"
++    )
++    rejected = project_config.resolve_project_config(tmp_path)
++
++    assert rejected.settings == project_config.ProjectSettings()
++    assert rejected.error_codes == ("invalid_config",)
++
++
++def test_linked_worktree_inherits_primary_repository_project_config(
++    tmp_path: Path, monkeypatch
++) -> None:
++    primary = tmp_path / "primary"
++    common = primary / ".git"
++    linked = tmp_path / "worktrees" / "feature"
++    (common / "info").mkdir(parents=True)
++    linked.mkdir(parents=True)
++    (primary / ".local-ai.toml").write_text(
++        'exclude_paths = ["shared-generated/**"]\n'
++        '[commands]\nlint = "python -m ruff check"\n',
++        encoding="utf-8",
++    )
++    (linked / ".local-ai.toml").write_text(
++        '[commands]\ntest = "python -m pytest"\n', encoding="utf-8"
++    )
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: common)
++
++    result = project_config.resolve_project_config(linked)
++
++    assert result.error_codes == ()
++    assert result.settings.exclude_paths == ("shared-generated/**",)
++    assert result.settings.commands == {
++        "lint": "python -m ruff check",
++        "test": "python -m pytest",
++    }
++    assert result.active_sources == ("defaults", "primary_project", "project")
++
++
++def test_primary_worktree_discovery_uses_git_worktree_list(
++    tmp_path: Path, monkeypatch
++) -> None:
++    common = tmp_path / "custom-git-dir"
++    primary = tmp_path / "primary"
++    linked = tmp_path / "linked"
++    common.mkdir()
++    primary.mkdir()
++    linked.mkdir()
++    (primary / ".git").write_text(f"gitdir: {common}\n", encoding="utf-8")
++    (linked / ".git").write_text(
++        f"gitdir: {common / 'worktrees' / 'linked'}\n", encoding="utf-8"
++    )
++    output = (
++        f"worktree {primary}\nHEAD {('a' * 40)}\nbranch refs/heads/main\n\n"
++        f"worktree {linked}\nHEAD {('b' * 40)}\nbranch refs/heads/feature\n"
++    )
++    result = type("CommandResult", (), {"returncode": 0, "stdout": output})()
++    monkeypatch.setattr(
++        project_config.subprocess, "run", lambda *_args, **_kwargs: result
++    )
++
++    assert project_config._git_primary_worktree_root(linked, common) == primary
+
+diff --git a/tests/test_project_path_hints.py b/tests/test_project_path_hints.py
+--- a/tests/test_project_path_hints.py
++++ b/tests/test_project_path_hints.py
+@@ -723,3 +723,59 @@
+         ).fetchall()
+ 
+     assert rows == [("revision-1",), ("revision-2",)]
++def test_hint_find_does_not_recreate_database_removed_after_existence_check(
++    tmp_path: Path, monkeypatch
++) -> None:
++    store = ProjectPathHintStore(
++        tmp_path / "state", tmp_path, git_common_dir=None
++    )
++    with closing(store._connect()):
++        pass
++    connect = store._connect
++
++    def unlink_before_read(**kwargs):
++        store.database.unlink()
++        return connect(**kwargs)
++
++    monkeypatch.setattr(store, "_connect", unlink_before_read)
++    assert store.find(
++        purpose="entry",
++        scope="repo",
++        repository_revision="revision-current",
++        config_digest="digest-current",
++    ) == ()
++    assert not store.database.exists()
++def test_expired_persisted_hint_is_not_reused(tmp_path: Path) -> None:
++    (tmp_path / "main.py").write_text("x")
++    store = ProjectPathHintStore(
++        tmp_path / "state", tmp_path, git_common_dir=None
++    )
++    store.add(
++        PathHint(
++            path="main.py",
++            purpose="entry",
++            scope="repo",
++            evidence_id="evidence-expired",
++            provenance="verified_search",
++            repository_revision="revision-current",
++            config_digest="digest-current",
++            expires_at="2099-01-01T00:00:00+00:00",
++        )
++    )
++    with closing(store._connect()) as connection, connection:
++        connection.execute(
++            """UPDATE project_path_hints SET expires_at = ?
++               WHERE project_id = ? AND evidence_id = ?""",
++            (
++                "2000-01-01T00:00:00+00:00",
++                store.project_id,
++                "evidence-expired",
++            ),
++        )
++
++    assert store.find(
++        purpose="entry",
++        scope="repo",
++        repository_revision="revision-current",
++        config_digest="digest-current",
++    ) == ()
