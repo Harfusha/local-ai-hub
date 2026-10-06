@@ -297,6 +297,20 @@ def test_root_session_reset_clears_that_roots_circuit(tmp_path: Path):
         ext.close()
 
 
+class _FakeClient:
+    instances = []
+
+    def __init__(self, command, *, cwd=None, env=None, **kwargs):
+        self.command = command
+        self.cwd = cwd
+        self.env = env or {}
+        self.closed = False
+        self.__class__.instances.append(self)
+
+    def close(self):
+        self.closed = True
+
+
 def test_serena_search_uses_available_symbol_tool_when_pattern_tool_missing(monkeypatch, tmp_path: Path):
     import local_ai_hub.external_tools as mod
 
@@ -433,7 +447,7 @@ def test_serena_session_retained_for_one_hour(tmp_path: Path):
         ext._session_access["serena"][old_root] = now - 3900
 
         with ext._lock:
-            evicted = ext._prune_sessions_locked("serena")
+            evicted = ext._prune_sessions_locked()
 
         # Old project must be evicted
         assert old_client in evicted

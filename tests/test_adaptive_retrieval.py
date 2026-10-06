@@ -24,6 +24,100 @@ def test_fusion_prefers_agreement_and_keeps_file_diversity() -> None:
     assert all(score > 0 for _path, score in result)
 
 
+def test_project_retrieval_weights_tune_sources_but_preserve_authority() -> None:
+    groups = {
+        "deterministic": ["src/authority.py"],
+        "code_index": ["src/indexed.py"],
+        "lexical": ["docs/only-lexical.md", "src/authority.py"],
+        "serena": ["src/routes.py", "docs/only-lexical.md"],
+    }
+
+    baseline = dict(fuse_ranked_paths(groups, limit=8))
+    tuned = dict(fuse_ranked_paths(
+        groups, limit=8,
+        source_weights={"lexical": 0.25, "deterministic": 0.0, "code_index": 0.0},
+    ))
+
+    assert tuned["src/authority.py"] >= 1.25 / 61
+    assert tuned["src/indexed.py"] >= round(1.20 / 61, 6)
+    assert tuned["docs/only-lexical.md"] < baseline["docs/only-lexical.md"]
+    assert set(tuned) == set(baseline)
+
+
+def test_pinned_project_hint_survives_fusion_cap_but_remains_policy_checked(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    deterministic_paths = [f"det-{index % 5}/file-{index}.py" for index in range(28)]
+    indexed_paths = [f"index-{index % 5}/file-{index}.py" for index in range(24)]
+    preprocessed_paths = [f"prep-{index % 5}/file-{index}.py" for index in range(20)]
+
+    class FakeRepoTools:
+        @staticmethod
+        def iter_files(_root):
+            return []
+
+        @staticmethod
+        def context_pack_paths(root, query, paths, **kwargs):
+            captured["paths"] = tuple(paths)
+            captured["kwargs"] = kwargs
+            return {
+                "success": True, "root": root, "query": query,
+                "context": "safe evidence",
+                "evidence": [{
+                    "path": paths[0], "start_line": 1, "end_line": 1,
+                    "text": "safe evidence", "content_hash": "hash-1",
+                }],
+                "scanned_files": 1,
+            }
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"search": {}, "features": {"rag": False}, "preprocessing": {}}
+    services.learner = None
+    services.repo_tools = FakeRepoTools()
+    services.deterministic = type("Deterministic", (), {
+        "related_paths": lambda *_args, **_kwargs: deterministic_paths,
+    })()
+    services.code_index = type("CodeIndex", (), {
+        "related_paths": lambda *_args, **_kwargs: indexed_paths,
+    })()
+    services.preprocessor = type("Preprocessor", (), {
+        "candidate_paths": lambda *_args, **_kwargs: preprocessed_paths,
+    })()
+    services.external_tools = None
+    services.evidence_store = None
+    services.rag = None
+    services._external_context_candidates = lambda *_args, **_kwargs: ({}, [], {})
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), "context", "tenant", None, 400,
+        quality_first=True,
+        path_hints=(
+            {"path": "docs/pinned.md", "provenance": "project_config:pinned_context"},
+            {"path": "private/blocked.md", "provenance": "project_config:pinned_context"},
+        ),
+        exclude_paths=("private",),
+    )
+
+    assert result["success"] is True
+    assert "docs/pinned.md" in captured["paths"]
+    assert "private/blocked.md" not in captured["paths"]
+    assert "docs/pinned.md" not in captured["kwargs"]["force_include_paths"]
+
+
+def test_context_reader_keeps_soft_ignored_pinned_candidate_unread(tmp_path: Path) -> None:
+    ignored = tmp_path / "vendor" / "pinned.md"
+    ignored.parent.mkdir()
+    ignored.write_text("unique-pinned-contract-marker", encoding="utf-8")
+    tools = RepositoryTools({"server": {"state_dir": str(tmp_path / "state")}})
+
+    result = tools.context_pack_paths(
+        str(tmp_path), "unique-pinned-contract-marker", ["vendor/pinned.md"],
+    )
+
+    assert result["success"] is True
+    assert result["evidence"] == []
+    assert "unique-pinned-contract-marker" not in result["context"]
+
+
 def test_terms_keep_compounds_and_drop_generic_request_words(tmp_path: Path) -> None:
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},
@@ -426,13 +520,20 @@ def test_all_adaptive_backends_keep_multifile_evidence_and_report_coverage(tmp_p
         source.parent.mkdir(exist_ok=True)
         source.write_text(f"def {name}(): pass\n", encoding="utf-8")
 
+    requested_paths: list[str] = []
+
     class FakeRepoTools:
+        @staticmethod
+        def iter_files(_root):
+            return [str(path) for path in tmp_path.rglob("*") if path.is_file()]
+
         @staticmethod
         def search_terms(_query: str) -> list[str]:
             return ["route-repair"]
 
         @staticmethod
-        def context_pack_paths(root: str, query: str, paths: list[str], *, max_tokens: int, top_k: int) -> dict:
+        def context_pack_paths(root: str, query: str, paths: list[str], *, max_tokens: int, top_k: int, **_kwargs) -> dict:
+            requested_paths.extend(paths)
             return {
                 "success": True, "root": root, "query": query, "context": "route evidence",
                 "evidence": [{"path": "src/routes.py", "start_line": 1, "end_line": 1, "text": "def routes(): pass"}],
@@ -459,6 +560,7 @@ def test_all_adaptive_backends_keep_multifile_evidence_and_report_coverage(tmp_p
             return {"success": True, "results": [
                 {"path": "src/handlers.py", "chunk_no": 1, "text": "handler evidence", "content_hash": "h1"},
                 {"path": "src/models.py", "chunk_no": 2, "text": "model evidence", "content_hash": "h2"},
+                {"path": "private/generated.py", "chunk_no": 3, "text": "must not leak", "content_hash": "h3"},
             ]}
 
     services = LocalAIServices.__new__(LocalAIServices)
@@ -473,7 +575,8 @@ def test_all_adaptive_backends_keep_multifile_evidence_and_report_coverage(tmp_p
     services.rag = FakeRag()
 
     result = services._hybrid_context_uncached(
-        str(tmp_path), "route-repair across handlers and models", "tenant", None, 900, quality_first=True
+        str(tmp_path), "route-repair across handlers and models", "tenant", None, 900,
+        quality_first=True, exclude_paths=("private/**",), force_include_paths=("private/generated.py",),
     )
 
     states = result["retrieval"]["backend_states"]
@@ -483,6 +586,9 @@ def test_all_adaptive_backends_keep_multifile_evidence_and_report_coverage(tmp_p
     assert result["retrieval"]["quality"]["file_coverage"] == 3
     assert result["retrieval"]["quality"]["cross_backend_agreement_count"] >= 1
     assert all(item.get("evidence_id") for item in result["evidence"])
+    assert all(item.get("path") != "private/generated.py" for item in result["evidence"])
+    assert "must not leak" not in result["context"]
+    assert "private/generated.py" not in requested_paths
 
 
 def test_external_context_candidates_skips_when_empty_query(tmp_path: Path) -> None:

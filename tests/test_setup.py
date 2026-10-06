@@ -106,6 +106,24 @@ def test_global_policy_has_explicit_read_only_and_fallback_contract() -> None:
         assert phrase in policy
 
 
+@pytest.mark.parametrize("relative_path", ["AGENTS.md", "docs/INSTALL_PROMPT.md", "docs/UPDATE_PROMPT.md"])
+def test_instruction_policy_blocks_match_generated_policy_sources(relative_path: str) -> None:
+    text = (ROOT / relative_path).read_text(encoding="utf-8")
+    expected_agent = setup.generate_global_policy({})
+    expected_token = setup.generate_token_economy_policy({})
+
+    def block(begin: str, end: str) -> str:
+        start = text.find(begin)
+        assert start >= 0, f"{relative_path} missing {begin}"
+        assert text.find(begin, start + len(begin)) < 0, f"{relative_path} repeats {begin}"
+        finish = text.find(end, start + len(begin))
+        assert finish >= 0, f"{relative_path} missing {end}"
+        return text[start:finish + len(end)]
+
+    assert block(setup.GLOBAL_POLICY_BEGIN, setup.GLOBAL_POLICY_END) == expected_agent
+    assert block(setup.TOKEN_ECONOMY_POLICY_BEGIN, setup.TOKEN_ECONOMY_POLICY_END) == expected_token
+
+
 def test_direct_serena_is_explicit_opt_in(tmp_path: Path):
     cfg = {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True}}
     entries = setup.build_mcp_entries(tmp_path, tmp_path / "python", tmp_path / "serena", "codex", cfg)
