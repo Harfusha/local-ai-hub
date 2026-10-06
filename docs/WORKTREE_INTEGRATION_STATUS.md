@@ -668,13 +668,15 @@ in 22.43 s, and `git diff --check` passed. The other six queues remain pending
 scoped implementation and acceptance.
 
 T08 receipt/generation source packet from Helmholtz (`t13-lifecycle-8429`)
-was verified and cherry-picked as master commit `ba538f65`. It changes only
-`agent_verification.py`, its targeted tests, and a handoff receipt. The parser
-now rejects malformed `passed`, generation, and `details` types; generation
-checkpoint handling tolerates only `KeyError`. TDD RED showed 33 failed / 17
-passed; owner GREEN was 50 passed; final owner and root targeted check was 57
-passed. Root command:
-`python -B -m pytest -q -p no:cacheprovider tests/test_agent_verification_input_safety.py tests/test_agent_verification.py::test_verification_receipt_parser_requires_explicit_boolean_passed 'tests/test_agent_verification.py::test_verifier_projection_rolls_back_when_event_projection_write_fails[change]' tests/test_agent_verification.py::test_recorded_change_advances_generation_and_invalidates_existing_receipt --tb=short`.
+was verified and cherry-picked as master commit `ba538f65`. Follow-up static
+review found the original outer `Mapping` type guard in V04-H018 still absent.
+Added a top-level invalid-payload regression; it failed first for all four
+non-mapping inputs with `AttributeError`, then the explicit guard was added.
+The parser rejects non-mapping payloads, malformed `passed`, generation, and
+`details`; generation checkpoint handling tolerates only `KeyError`. Packet
+RED showed 33 failed / 17 passed; owner GREEN 50 passed; after the extra guard,
+the root targeted set passed **61/61**. Root command:
+`python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_verification_input_safety.py tests/test_agent_verification.py::test_verification_receipt_parser_requires_explicit_boolean_passed 'tests/test_agent_verification.py::test_verifier_projection_rolls_back_when_event_projection_write_fails[change]' tests/test_agent_verification.py::test_recorded_change_advances_generation_and_invalidates_existing_receipt`.
 
 Four bounded TaskStore source queues remain. Russell (`hub-audit-repairs`) owns
 `agent_tasks.py`: TTL, terminal listing, repeated completion revalidation,
@@ -704,20 +706,25 @@ documentation evidence only, not runtime or release acceptance.
 
 #### Agent event schema review (read-only owner queue)
 
-New bounded static evidence says the current `agent_events.py` accepted-map
-contains 61 fingerprints. Three original accepted fingerprints are absent:
-`lease_waits` (`a866368052df7b9433b7a44d47dc262c5a76a06058b878e0249ccee791dfb17c`),
-`leases` (`f7a165f4f68106fb33b5855d0a66532e63fde78b2675380b67fe8112096f8edd`),
-and `agent_event_cursors`
-(`0ecf2e08637aef9d2f4a9167feb61de083e1a9d9b8b927f79ae7a58e74b2ef71`).
-This is an owner-adjudication queue, not evidence of live database
-incompatibility and not permission to reallow older schemas. V02-H006 remains
-open across T05/T08/T18 until strict schema, process-safety, and disposable
-state policy are reconciled. V13-H005 is now classified master-improved: all
-53 original accepted hashes remain among the current 61. A read-only T18
-owner review is assigned in the existing T18 checkout; no DB/runtime/source
-mutation or test is authorized by this evidence. Five additional event hunks
-have manual counterparts, now dispositioned in follow-up commit
+The initial fingerprint comparison was incomplete: it parsed only the base
+`_EXPECTED_OBJECT_SQL_HASHES` literal and omitted its `.update(...)` and
+`_ALTERNATE_OBJECT_SQL_HASHES` union. Current root blob
+`aa6dc82c8582805f174b22323f34f014d9d7e21d` already accepts all three cited
+definitions: `lease_waits` hash
+`a866368052df7b9433b7a44d47dc262c5a76a06058b878e0249ccee791dfb17c` and
+`leases` hash `f7a165f4f68106fb33b5855d0a66532e63fde78b2675380b67fe8112096f8edd`
+are explicit alternate hashes; `agent_event_cursors` hash
+`0ecf2e08637aef9d2f4a9167feb61de083e1a9d9b8b927f79ae7a58e74b2ef71` is in
+the expected-map update. Therefore these are not missing whitelist entries
+and must not be added again. V02-H006 remains an owner conflict only for
+whole-schema/migration/process-safety adjudication; static hash acceptance is
+not proof of successful DB initialization or row preservation. V13-H005 is
+master-improved: all 53 original accepted object hashes remain among the
+current 61. T18's read-only review found `_reserve_backup_destination`
+swallows Windows account/ACL subprocess exceptions; this is a separate
+fail-closed confidentiality issue for the exception-handling queue. No
+runtime, import, model, DB, or source changes/tests were run in this review.
+Five additional event hunks have manual counterparts, now dispositioned in follow-up commit
 `088f9b3300b36f46ba131652082040b1d46339a6` (parent
 `b7757a77d57374d8ef04971d417f81ac42d1d57a`), merged into master. The report
 now counts 333 behavior-preserved, 85 master-improved, 17 missing, and 98
@@ -725,8 +732,9 @@ owner-conflict hunks across 533 total. It adjudicates six conflicts: V02-H007
 shared canonical DB lock, H026 docstring/parsing guards, H028 reset/cursor
 upper bound, H029 replay gap/JSON envelope, H031 timeout/error/list wrapper,
 and V13-H005 accepted-object map. V02-H027 retains the current fail-closed
-disabled sentinel semantics. V02-H006 remains open for exactly the three
-missing accepted-map fingerprints above. No runtime, import, model, DB, or
+disabled sentinel semantics. V02-H006 remains open only for whole-layout,
+migration, process-safety, backup, and runtime acceptance—not for missing
+hashes. No runtime, import, model, DB, or
 source changes; this follow-up changes only the disposition document. Original
 refs/stash IDs remain retained. Counts are static review, not release
 acceptance.
