@@ -1,0 +1,174 @@
+{
+  "builder_sha256": "af4b0fc87e0fe7276a649118967d18010bc0578345bd3bbf0c77b6725ff6f13b",
+  "captured_utc": "2026-10-01T21:11:41+00:00",
+  "command": "& 'C:\\Python313\\python.exe' -B handoff/T01-build-operation-evidence-review-20261001-v1.py",
+  "confirmed_execution_receipts": 1,
+  "confirmed_execution_receipts_total": 2,
+  "counts": {
+    "baseline_test_coverage_counts": {
+      "metadata only; operation behavior unverified": 434
+    },
+    "gap_matrix_rows": 434,
+    "gap_matrix_unassigned": 0,
+    "high_impact_triage_overlap": 34,
+    "high_impact_triage_rows": 46,
+    "operation_id_intersection": 87,
+    "output_rows": 446,
+    "owner_counts": {
+      "T01": 1,
+      "T02": 3,
+      "T03": 14,
+      "T04": 75,
+      "T05": 10,
+      "T06": 1,
+      "T08": 64,
+      "T09": 9,
+      "T10": 159,
+      "T11": 13,
+      "T12": 8,
+      "T13": 10,
+      "T14": 5,
+      "T15": 33,
+      "T16": 3,
+      "T17": 11,
+      "T18": 20,
+      "T19": 4,
+      "T20": 2,
+      "T21": 1
+    },
+    "review_disposition_counts": {
+      "negative_conditional_gate_only": 1,
+      "partial_http_route_assertion": 1,
+      "partial_mcp_dispatch_assertion": 1,
+      "partial_mcp_health_assertion": 1,
+      "targeted_behavior_test_passed_in_t01_current_worktree": 1,
+      "unverified_no_asserted_operation_test": 441
+    },
+    "root_delta_rows": 151,
+    "supplemental_triage_rows": 12,
+    "surface_coverage": {
+      "CLI": {
+        "behavioral_linked": 15,
+        "total": 15,
+        "unlinked": 0
+      },
+      "HTTP": {
+        "behavioral_linked": 28,
+        "total": 290,
+        "unlinked": 262
+      },
+      "MCP": {
+        "behavioral_linked": 53,
+        "total": 225,
+        "unlinked": 172
+      }
+    }
+  },
+  "inputs": {
+    "handoff/T01-root-current-owner-coverage-delta-20261001-v3.csv": "5207d7612dcccf62dbb242b38468bcd3dbee827b06deb6c90443b38b8f33e42b",
+    "handoff/T01-unlinked-MCP-HTTP-owner-gaps-20261001-v2.csv": "ef8a777c71e14d8c50204d4e5f38274590862ff61e3b300f0937f3a651b94f51",
+    "handoff/T01-unlinked-MCP-HTTP-owner-gaps-20261001-v2.json": "848329c7dc956e53c9564360e9cf29e2172dab87b490c5cd84577adf74679bb5",
+    "handoff/T01-unverified-high-impact-owner-triage-root-snapshot-20261001.csv": "364ee175a5f5cb2bc873acb33a8a5c16e8717e4d3a80355bca42cf8c18ee3552"
+  },
+  "limits": [
+    "Three selectors provide narrow direct route/action assertions; they do not establish downstream service/model quality.",
+    "One selector proves disabled-mode rejection only, not successful enabled-mode operation.",
+    "Remaining rows retain metadata-only test IDs and require owner-provided operation assertions.",
+    "One targeted two-selector batch was run in T01 after explicit T02 slot release; no Hub calls were made."
+  ],
+  "output_csv": "handoff/T01-operation-evidence-review-20261001-v1.csv",
+  "output_csv_sha256": "2223d4341f6dd72703458f19e9c8e8b1a1e4613d98b5e02ad25cec124e632922",
+  "owner_receipt_lookup_pending": [
+    "op-65970ac00a0a"
+  ],
+  "reviewed_root_delta_selectors": {
+    "op-65970ac00a0a": {
+      "execution_command": "",
+      "execution_receipt_path": "",
+      "execution_receipt_sha256": "",
+      "execution_receipt_status": "owner_lookup_pending",
+      "execution_result": "",
+      "owner": "T13",
+      "review": "partial_http_route_assertion",
+      "scope": "Loopback POST asserts forwarded model, language, audio_path, tenant; service is mocked. No real transcription/backend quality proof.",
+      "source_pin_status": "owner_lookup_pending",
+      "test_ids": [
+        "tests/test_transcription_contract.py::test_http_transcribe_route_preserves_requested_model"
+      ],
+      "test_source_sha256": "568616AC241D6B9E1C4F797542A9FFEF63384CB3FB6C56B9A27A3DEADC71E492"
+    },
+    "op-6bfb2c2726e6": {
+      "execution_command": "",
+      "execution_receipt_path": "",
+      "execution_receipt_sha256": "",
+      "execution_receipt_status": "no_execution_receipt_found",
+      "execution_result": "",
+      "owner": "T08",
+      "review": "negative_conditional_gate_only",
+      "scope": "Selector calls agent_state with FEATURES.agent_os=False and asserts HTTP 400 invalid action. Does not prove enabled-mode agent_state behavior.",
+      "source_pin_status": "not_applicable_no_run_receipt",
+      "test_ids": [
+        "tests/test_operation_contracts.py::test_mcp_boundary_rejects_invalid_operation_before_handler"
+      ],
+      "test_source_sha256": "B0D2CCE62F5F3FB0BABB145A8933E8254236D3D61DB31ABE57008FBFCEA28AAF"
+    },
+    "op-901c14322762": {
+      "execution_command": "",
+      "execution_receipt_path": "",
+      "execution_receipt_sha256": "",
+      "execution_receipt_status": "no_execution_receipt_found",
+      "execution_result": "",
+      "owner": "T14",
+      "review": "partial_mcp_dispatch_assertion",
+      "scope": "Selector calls local_ai_artifact(list), asserts success and POST /api/artifact/list dispatch. Backend response is mocked; no route/service behavior proof.",
+      "source_pin_status": "not_applicable_no_run_receipt",
+      "test_ids": [
+        "tests/test_mcp_task_mode_gate.py::test_gaming_allows_cheap_artifact_read"
+      ],
+      "test_source_sha256": "DDBC0A14ECC172BF642CDE6117D9824E99E7553A97DEF644D7A09151D467F3E4"
+    },
+    "op-fef1ba551941": {
+      "execution_command": "python -B -m pytest -c pytest.ini -q -p no:cacheprovider --tb=short tests/test_operational_mode.py::test_missing_mode_file_defaults_to_active tests/test_operational_mode.py::test_mode_updates_are_persisted_and_increment_revision tests/test_operational_mode.py::test_mode_update_waits_for_writer_in_another_process tests/test_operational_mode.py::test_mode_updates_from_multiple_processes_do_not_lose_revisions tests/test_operational_mode.py::test_mode_replace_retries_windows_sharing_violation tests/test_operational_mode.py::test_mode_replace_sharing_violation_retry_is_bounded tests/test_operational_mode.py::test_mode_update_retries_transient_replace_permission_error tests/test_operational_mode.py::test_corrupt_mode_fails_closed_to_maintenance tests/test_operational_mode.py::test_http_mode_routes_read_and_update_persisted_mode tests/test_operational_mode.py::test_http_mode_skips_gaming_unload_after_later_resume tests/test_operational_mode.py::test_mcp_agent_tool_is_rejected_before_dispatch_but_status_remains_available tests/test_http_mode_update_rejects_invalid_and_unauthorized_requests tests/test_operational_mode_http_gate.py::test_context_pack_is_retryably_gated_in_paused_modes tests/test_operational_mode_http_gate.py::test_gaming_allows_safe_reads_but_maintenance_blocks_agent_reads tests/test_mcp_operational_mode_dispatch.py::test_gaming_mcp_dispatch_allows_only_speculative_lint tests/test_mcp_operational_mode_dispatch.py::test_maintenance_mcp_dispatch_still_blocks_speculative_lint tests/test_mcp_task_mode_gate.py::test_gaming_defers_mcp_inference_with_bounded_retry tests/test_mcp_task_mode_gate.py::test_gaming_allows_cheap_artifact_read tests/test_mcp_task_mode_gate.py::test_maintenance_blocks_agent_action_but_preserves_job_status tests/test_client_transport.py::test_client_replays_duplicate_request_until_owner_finishes tests/test_hubctl_mode.py::test_hubctl_pause_resume_use_authorized_mode_endpoint tests/test_hubctl_mode.py::test_hubctl_sets_mode_offline_without_starting_server tests/test_hubctl_mode.py::test_hubctl_reads_persisted_mode_offline tests/test_hubctl_mode.py::test_hubctl_mode_does_not_assume_requested_mode_without_server_confirmation tests/test_hubctl_mode.py::test_hubctl_mode_reads_current_mode tests/test_preprocess_operational_mode.py::test_gaming_finishes_current_step_then_active_resumes_one_checkpoint tests/test_preprocess_operational_mode.py::test_gaming_cpu_loop_does_not_schedule_another_project_step tests/test_preprocess_operational_mode.py::test_gaming_gpu_loop_does_not_schedule_another_project_step tests/test_preprocess_operational_mode.py::test_gaming_unschedules_watcher_and_active_resyncs_once",
+      "execution_receipt_path": "T13 thread 01a0d8a1-7ce1-7470-8e18-ee0a2ac57a5d; handoff/root-source-deterministic-overlay-20261001",
+      "execution_receipt_sha256": "",
+      "execution_receipt_status": "transcript_result_found_source_pin_unbound",
+      "execution_result": "34 passed in 5.36s; selector included in suite",
+      "owner": "T03",
+      "review": "partial_mcp_health_assertion",
+      "scope": "Selector calls local_ai_status(health), asserts client lookup and success in operational modes. Client response is mocked; no live health proof.",
+      "source_pin_status": "owner supplied worktree file hash; transcript did not bind hash to this run",
+      "test_ids": [
+        "tests/test_operational_mode.py::test_mcp_agent_tool_is_rejected_before_dispatch_but_status_remains_available"
+      ],
+      "test_source_sha256": "C9947D2FE44582B238E6FAA0DF062C4B73B2542AF93D3037EB124A206147E2FD"
+    }
+  },
+  "schema_version": "t01-operation-evidence-review/v1",
+  "supplemental_triage_candidates": [
+    {
+      "assessment": "targeted T01 worktree run; source and adjacent result receipt hashes recorded",
+      "claimed_result": "2 passed in 2.89s with adjacent unknown-action negative selector",
+      "command": "$env:PYTHONPATH='src'; & 'C:\\Python313\\python.exe' -B -m pytest -q --tb=short tests/test_mcp_coord_operation_acceptance.py::test_http_agent_task_rejects_unknown_action_without_store_mutation tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint",
+      "operation_id": "op-28d63e90525c",
+      "owner_task": "T08",
+      "receipt_path": "handoff/T01-operation-level-receipt-task-rollback-20261001.md",
+      "receipt_sha256": "c73e0560f9ff9e70ef9a702903617dafd74416211842763d2bce2c4b7569c0b5",
+      "result": "2 passed in 2.82s",
+      "scope": "local_ai_coord -> HubClient.coord mapping -> in-process real Handler.do_POST -> isolated SQLite TaskStore; previous file snapshot restored and task.rolled_back persisted after reopen",
+      "selector": "tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint",
+      "source_sha256_in_t01_checkout": "2ea4b59d11db9519c3fc1d2a98c22aac78e68d67b8c31c802602f16d4ffc11b6"
+    }
+  ],
+  "tests_run": [
+    {
+      "command": "$env:PYTHONPATH='src'; & 'C:\\Python313\\python.exe' -B -m pytest -q --tb=short tests/test_mcp_coord_operation_acceptance.py::test_http_agent_task_rejects_unknown_action_without_store_mutation tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint",
+      "hub_calls": 0,
+      "receipt_path": "handoff/T01-operation-level-receipt-task-rollback-20261001.md",
+      "receipt_sha256": "c73e0560f9ff9e70ef9a702903617dafd74416211842763d2bce2c4b7569c0b5",
+      "result": "2 passed in 2.82s",
+      "source_path": "tests/test_mcp_coord_operation_acceptance.py",
+      "source_sha256": "2ea4b59d11db9519c3fc1d2a98c22aac78e68d67b8c31c802602f16d4ffc11b6"
+    }
+  ],
+  "workspace": "C:\\Users\\Adam\\.codex\\worktrees\\t01-coverage-main-verify\\.local-ai-hub"
+}

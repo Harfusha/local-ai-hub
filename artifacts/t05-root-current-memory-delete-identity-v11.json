@@ -1,0 +1,52 @@
+{
+  "schema": "t05.root_current_identity_delete_review_handoff.v12",
+  "owner": "T05",
+  "date": "2026-10-02",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-root-current-memory-delete-identity-v4.patch",
+  "patch_sha256": "B9D6C60B1ED6F2D6E00E6D7EC84772EBFA3E1185997262E35E432666BCB38BDC",
+  "diff_paths": [
+    "tests/test_agent_task_memory_adoption.py",
+    "tests/test_memory_delete_identity_contract.py"
+  ],
+  "pre_sha256": {
+    "tests/test_agent_task_memory_adoption.py": "874C9F5BB901F0EDD1F3456D8409DAB79CD79528C80C6D9D3455814484D0A318",
+    "tests/test_memory_delete_identity_contract.py": "absent"
+  },
+  "v4_post_sha256": {
+    "tests/test_agent_task_memory_adoption.py": "6C34252656CDAA8AEF38446BC8D572A05D8B0E7C4804F9A4F93AB3DB5CE7DE68",
+    "tests/test_memory_delete_identity_contract.py": "8ABD2AF37787D7747F9AF58C75A4347EFD1C41537109A05313201F84FC8187E2"
+  },
+  "current_root_v3_post_sha256": {
+    "tests/test_agent_task_memory_adoption.py": "B85E72F40C2EFE491AF08383C81D7FEDF03689096F42F630B7BA3DB71EF92847",
+    "tests/test_memory_delete_identity_contract.py": "8ABD2AF37787D7747F9AF58C75A4347EFD1C41537109A05313201F84FC8187E2"
+  },
+  "root_v3_already_integrated": true,
+  "v4_vs_root_v3_nonblank_lines_equal": true,
+  "v4_delta": "Only restores blank line removed by v3; no semantic delta. v3 root remains untouched.",
+  "verification": "v3 reverse-check passed on isolated copy of current root; v4 forward apply-check and apply passed on recovered isolated preimage; no pytest. Current root is already at v3 postimage, so no forward apply attempted there.",
+  "test_receipt": {
+    "patch_tested": "v3",
+    "patch_sha256": "6DDE50EAB5A824A67ED3C1CA5A3D83B9C98E57323E8210E1E0179F5521102A4B",
+    "selectors": [
+      "test_correction_stale_transition_and_delete_preserve_provenance_lineage",
+      "test_repository_memory_delete_requires_matching_root_and_tenant"
+    ],
+    "result": "2 passed in 0.57s",
+    "environment": "T05 candidate agent_memory.py + current-root agent_events.py bridge; v3 isolated overlay",
+    "v4_relation": "Same behavior; v4 removes the unrelated blank-line hunk only."
+  },
+  "root_changed_by_this_work": false,
+  "acceptance": "Review handoff only. T20 owns already-integrated v3 root and current-root test execution.",
+  "current_root_source_sha256": {
+    "src/local_ai_hub/agent_memory.py": "C68A8C70386BA5155C23D48AE23735E3E0344C3E72F021F0D76DEF708AF2B838",
+    "src/local_ai_hub/agent_events.py": "30AB4485F34A67D8212E6151057E06EF806D40F92073036D8F9F4F4546B44822",
+    "src/local_ai_hub/agent_tasks.py": "79487FCE9F8A477A9DE888A6C7FEF77C3526F9B63151EF69FF0CE2019502BA45"
+  },
+  "current_root_check": "v3 reverse-apply-check passed; v3 postimage matches current root. v4 forward apply-check and apply passed only on recovered isolated preimage; do not apply v4 to root.",
+  "root_test_status": "Both test files are untracked in root working tree; SHA-256 pins record exact pre/post bytes.",
+  "patch_review": "V4 has exactly two test paths and no blank-line-only hunk. V4 and integrated v3 have identical nonblank source lines; added unauthorized test hashes match.",
+  "receipt_path": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-root-current-memory-delete-identity-v11.json"
+}

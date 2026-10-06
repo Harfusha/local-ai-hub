@@ -12,6 +12,7 @@ import threading
 import time
 from unittest import mock
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,19 +20,85 @@ from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_incidents import IncidentStore
 from local_ai_hub.agent_memory import AgentScope, MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
 from local_ai_hub.commands import CommandBroker
+from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.process_utils import create_git_worktree, remove_git_worktree
 from local_ai_hub.services import LocalAIServices
 from local_ai_hub.token_accounting import TenantQuotaEnforcer
 
 
-def test_command_broker_lint_fix_and_daemon_lifecycle(tmp_path: Path):
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}, "commands": {"enabled": True}})
-
-    # 1. Test lint_fix
+def test_command_broker_lint_fix_and_daemon_lifecycle(tmp_path: Path, monkeypatch):
+    subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=tmp_path, check=True)
     script = tmp_path / "test_file.py"
     script.write_text("x = 1\n", encoding="utf-8")
-    lint_res = broker.lint_fix(str(tmp_path), command=f'"{sys.executable}" -c "print(\'fixed\')"')
+    subprocess.run(["git", "add", "test_file.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=tmp_path, check=True)
+    repo_root = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], cwd=tmp_path, capture_output=True,
+        text=True, check=True,
+    ).stdout.strip()
+    branch = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"], cwd=tmp_path,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    task_id = "task-lifecycle"
+
+    class TaskStore:
+        def get(self, requested_task_id: str):
+            if requested_task_id != task_id:
+                return None
+            return SimpleNamespace(
+                task_id=task_id,
+                checkpoint=SimpleNamespace(state_data={
+                    "worktree": {
+                        "success": True, "worktree_path": str(tmp_path),
+                        "repo_root": repo_root, "branch": branch,
+                    }
+                }),
+            )
+
+    class AllowedPolicy:
+        def authorize(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                allowed=True, reason="test grant",
+                to_dict=lambda: {"allowed": True, "reason": "test grant"},
+            )
+
+        def get_budget(self, _task_id):
+            return SimpleNamespace(is_exhausted=lambda: False)
+
+        def consume(self, *_args, **_kwargs):
+            return None
+
+    broker = CommandBroker({
+        "server": {"state_dir": str(tmp_path / "state")},
+        "commands": {"enabled": True},
+    })
+    broker.set_task_store(TaskStore())
+    install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
+    broker.set_policy_engine(AllowedPolicy())
+    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+
+    def execute(argv, cwd, timeout, *_args, **_kwargs):
+        assert argv[:3] == ["docker", "run", "--rm"]
+        completed = subprocess.run(
+            argv[-1], cwd=cwd, shell=True, capture_output=True, text=True, timeout=timeout,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTEST_ADDOPTS": "-p no:cacheprovider"},
+        )
+        return {
+            "success": completed.returncode == 0, "exit_code": completed.returncode,
+            "stdout": completed.stdout, "stderr": completed.stderr, "duration_ms": 1,
+        }
+
+    monkeypatch.setattr(broker, "_execute", execute)
+
+    # 1. Test lint_fix
+    lint_res = broker.lint_fix(
+        str(tmp_path), command=f'"{sys.executable}" -c "print(\'fixed\')"',
+        task_id=task_id, paths=["test_file.py"],
+    )
     assert lint_res["success"] is True
 
     # 2. Test daemon lifecycle
@@ -39,15 +106,16 @@ def test_command_broker_lint_fix_and_daemon_lifecycle(tmp_path: Path):
         f'"{sys.executable}" -c "import time; time.sleep(5)"',
         str(tmp_path),
         name="pytest_daemon",
+        task_id=task_id,
     )
-    assert daemon_res["success"] is True
+    assert daemon_res["success"] is True, daemon_res
     d_id = daemon_res["daemon_id"]
 
     status_res = broker.daemon_status(d_id)
     assert status_res["success"] is True
     assert status_res["running"] is True
 
-    stop_res = broker.stop_daemon(d_id)
+    stop_res = broker.stop_daemon(d_id, task_id=task_id)
     assert stop_res["success"] is True
 
     time.sleep(0.2)
@@ -95,14 +163,17 @@ def test_command_broker_http_probe(tmp_path: Path):
     server_thread = threading.Thread(target=server.handle_request, daemon=True)
     server_thread.start()
 
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}, "commands": {"enabled": True}})
+    broker = CommandBroker({
+        "server": {"state_dir": str(tmp_path / "state")},
+        "commands": {"enabled": True},
+        "network": {"allow_private_hosts": ["127.0.0.1"]},
+    })
     probe_res = broker.http_probe(
         f"http://127.0.0.1:{port}/",
         expected_status=200,
         json_path="status",
         timeout=3.0,
     )
-    print("PROBE_RES:", probe_res)
     assert probe_res["success"] is True
     assert probe_res["status_code"] == 200
     assert probe_res["json_matched"] is True
@@ -126,7 +197,13 @@ def test_process_utils_git_worktree_lifecycle(tmp_path: Path):
     assert wt_target.is_dir()
     assert (wt_target / "README.md").exists()
 
-    rel_res = remove_git_worktree(repo, wt_target, delete_branch=True, branch_name="feat-branch")
+    rel_res = remove_git_worktree(
+        repo,
+        wt_target,
+        delete_branch=True,
+        branch_name="feat-branch",
+        worktree_id=lease_res["worktree_id"],
+    )
     assert rel_res["success"] is True
     assert not wt_target.exists()
 
@@ -278,10 +355,20 @@ def test_incident_webhooks(tmp_path: Path):
     assert "http://127.0.0.1:9999/hook" not in incidents.webhook_urls
 
 
-def test_audio_transcription_service(tmp_path: Path):
+def test_audio_transcription_service(tmp_path: Path, monkeypatch):
     from unittest.mock import MagicMock
+    from types import SimpleNamespace
+
     dummy_audio = tmp_path / "voice.wav"
     dummy_audio.write_bytes(b"RIFFdummywaveheader12345678")
+    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper")
+    monkeypatch.setattr(
+        "local_ai_hub.process_utils.run_hidden",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout='{"text":"transcribed audio"}',
+        ),
+    )
 
     srv = LocalAIServices(
         config={
@@ -299,3 +386,4 @@ def test_audio_transcription_service(tmp_path: Path):
     res = srv.transcribe({"audio_path": str(dummy_audio)}, tenant="test")
     assert res["success"] is True
     assert "audio_path" in res
+    assert res["text"] == "transcribed audio"

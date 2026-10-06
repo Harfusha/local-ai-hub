@@ -1,0 +1,40 @@
+diff --git a/tests/test_agent_state_operations.py b/tests/test_agent_state_operations.py
+index 79cd452..462493f 100644
+--- a/tests/test_agent_state_operations.py
++++ b/tests/test_agent_state_operations.py
+@@ -147,7 +147,7 @@ def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
+                 status=MemoryStatus.CONFIRMED,
+                 source="reviewer",
+                 evidence_ids=("evidence-1", "evidence-2"),
+-                sensitivity="sensitive",
++                sensitivity="normal",
+                 provenance=provenance,
+                 expires_at=expiry,
+             ),
+@@ -166,7 +166,7 @@ def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
+         assert restored.confidence == 0.63
+         assert restored.evidence_ids == ("evidence-1", "evidence-2")
+         assert restored.source == "reviewer"
+-        assert restored.sensitivity == "sensitive"
++        assert restored.sensitivity == "normal"
+         assert restored.expires_at == expiry
+         assert restored.status is MemoryStatus.CONFIRMED
+         assert restored.contradicts_record_id == "record-old"
+@@ -198,7 +198,7 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
+                 status=MemoryStatus.CONFIRMED,
+                 source="project-reviewer",
+                 evidence_ids=("project-evidence",),
+-                sensitivity="sensitive",
++                sensitivity="normal",
+                 provenance=provenance,
+                 expires_at=expiry,
+             ),
+@@ -220,7 +220,7 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
+         assert restored.confidence == 0.71
+         assert restored.evidence_ids == ("project-evidence",)
+         assert restored.source == "project-reviewer"
+-        assert restored.sensitivity == "sensitive"
++        assert restored.sensitivity == "normal"
+         assert restored.expires_at == expiry
+         assert restored.status is MemoryStatus.CONFIRMED
+         assert restored.contradicts_record_id == "project-old"
