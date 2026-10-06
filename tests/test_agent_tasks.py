@@ -5,11 +5,6 @@ import threading
 from pathlib import Path
 import subprocess
 import sys
-from types import ModuleType, SimpleNamespace
-import pytest
-
-from local_ai_hub.agent_events import AgentEvent, AgentStateStore
-import sys
 import threading
 from types import ModuleType, SimpleNamespace
 import pytest
@@ -402,6 +397,95 @@ def test_completed_succeeds_when_verified(
     store.set_verification_store(CurrentVerifierAdapter())
     completed = store.transition(task.task_id, TaskStatus.COMPLETED, reason="all passed", actor="agent", idempotency_key="c")
     assert completed.status == TaskStatus.COMPLETED
+
+
+def test_transition_idempotency_reuse_by_different_actor_is_rejected(store: TaskStore):
+    task = store.create(contract_with_criteria(), task_context())
+    store.transition(
+        task.task_id,
+        TaskStatus.ACTIVE,
+        reason="start",
+        actor="agent-one",
+        idempotency_key="shared-transition-key",
+    )
+
+    with pytest.raises(ValueError, match="^idempotency key was already used$"):
+        store.transition(
+            task.task_id,
+            TaskStatus.VERIFYING,
+            reason="start",
+            actor="agent-two",
+            idempotency_key="shared-transition-key",
+        )
+
+    persisted = store.get(task.task_id)
+    assert persisted is not None and persisted.status is TaskStatus.ACTIVE
+    assert len(store.state_store.events(f"task:{task.task_id}")) == 2
+
+
+def test_same_status_transition_rejects_idempotency_key_owned_by_another_actor(
+    store: TaskStore,
+):
+    task = store.create(contract_with_criteria(), task_context())
+    store.transition(
+        task.task_id,
+        TaskStatus.ACTIVE,
+        reason="start",
+        actor="agent-one",
+        idempotency_key="shared-transition-key",
+    )
+
+    with pytest.raises(ValueError, match="^idempotency key was already used$"):
+        store.transition(
+            task.task_id,
+            TaskStatus.ACTIVE,
+            reason="retry start",
+            actor="agent-two",
+            idempotency_key="shared-transition-key",
+        )
+
+    persisted = store.get(task.task_id)
+    assert persisted is not None and persisted.status is TaskStatus.ACTIVE
+    assert persisted.owner == "agent-one"
+    assert len(store.state_store.events(f"task:{task.task_id}")) == 2
+
+
+def test_same_status_transition_rejects_reused_key_with_different_payload(
+    store: TaskStore,
+):
+    task = store.create(contract_with_criteria(), task_context())
+    store.transition(
+        task.task_id,
+        TaskStatus.ACTIVE,
+        reason="start",
+        actor="agent-one",
+        idempotency_key="shared-transition-key",
+    )
+
+    with pytest.raises(ValueError, match="^idempotency key was already used$"):
+        store.transition(
+            task.task_id,
+            TaskStatus.ACTIVE,
+            reason="different reason",
+            actor="agent-one",
+            idempotency_key="shared-transition-key",
+        )
+
+    persisted = store.get(task.task_id)
+    assert persisted is not None and persisted.status is TaskStatus.ACTIVE
+    assert len(store.state_store.events(f"task:{task.task_id}")) == 2
+
+
+def test_resume_replay_with_same_idempotency_key_does_not_append_event(
+    store: TaskStore,
+):
+    task = store.create(contract_with_criteria(), task_context())
+
+    first = store.resume(task.task_id, actor="agent-one", idempotency_key="resume-key")
+    replay = store.resume(task.task_id, actor="agent-one", idempotency_key="resume-key")
+
+    assert replay == first
+    assert len(store.state_store.events(f"task:{task.task_id}")) == 2
 
 
 def test_completed_forwards_project_rules_to_verification_completion(

@@ -372,7 +372,6 @@ class TaskStore:
 
 
 
-
     def set_policy_engine(self, policy_engine: Any) -> None:
         self.policy_engine = policy_engine
 

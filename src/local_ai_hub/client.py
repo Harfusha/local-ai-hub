@@ -702,11 +702,6 @@ class HubClient:
                     except OSError:
                         pass
                 owner_lock.close()
-                if not keep_lock:
-                    try:
-                        lock_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
 
     @staticmethod
     def _terminal_preflight(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -1411,6 +1406,7 @@ class HubClient:
             return self.post("/api/coord/worktree_release", {
                 "root": kwargs.get("root", "."),
                 "worktree_path": kwargs.get("worktree_path") or kwargs.get("value") or kwargs.get("lease_id") or "",
+                "worktree_id": kwargs.get("worktree_id", ""),
                 "delete_branch": kwargs.get("delete_branch", True),
                 "branch": kwargs.get("branch") or kwargs.get("key") or kwargs.get("task_id"),
             })

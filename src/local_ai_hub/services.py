@@ -52,7 +52,7 @@ from .frontend_review import (
     build_coder_context,
 )
 from .vision_inputs import prepare_vision_inputs
-from .vision_payload import vision_success_payload
+from .vision_payload import vision_input_error, vision_success_payload
 from .vision_request import build_vision_request, select_vision_model, vision_feature_error, vision_request_timeout
 from .vision_runtime import vision_capability_error, vision_generation_error
 from .agent_consistency import AdaptiveContextPack, ConsistencyRequest, GuardWarning
@@ -2272,7 +2272,7 @@ class LocalAIServices:
 
         from tempfile import TemporaryDirectory
 
-        from .process_utils import ProcessCancelledError, run_hidden
+        from .process_utils import ProcessCancelledError, ProcessCleanupUnverifiedError, run_hidden
 
         try:
             with TemporaryDirectory(prefix="local-ai-hub-transcribe-") as output_dir:
@@ -2367,6 +2367,8 @@ class LocalAIServices:
                     "model": model,
                     "engine": "whisper_cli",
                 }
+        except ProcessCleanupUnverifiedError:
+            raise
         except ProcessCancelledError:
             return {
                 "success": False,
@@ -3601,9 +3603,9 @@ class LocalAIServices:
         from .process_utils import create_git_worktree
         return create_git_worktree(root, branch_name=branch_name, worktree_path=worktree_path)
 
-    def worktree_release(self, root: str, worktree_path: str, delete_branch: bool = True, branch_name: str | None = None) -> dict[str, Any]:
+    def worktree_release(self, root: str, worktree_path: str, delete_branch: bool = True, branch_name: str | None = None, *, worktree_id: str = "") -> dict[str, Any]:
         from .process_utils import remove_git_worktree
-        return remove_git_worktree(root, worktree_path, delete_branch=delete_branch, branch_name=branch_name)
+        return remove_git_worktree(root, worktree_path, delete_branch=delete_branch, branch_name=branch_name, worktree_id=worktree_id)
 
     def list_worktrees(self, root: str) -> dict[str, Any]:
         from .process_utils import list_git_worktrees

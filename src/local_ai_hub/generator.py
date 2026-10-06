@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
-import json
 import os
 from pathlib import Path
 from typing import Any
@@ -402,7 +401,7 @@ Delegation is the default for any task with useful bounded independent work.
 ## READ-ONLY AUDIT CONTRACT
 
 - Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects. Never label such work read-only when any of these occur; split validation into a separately owned, explicitly side-effecting task.
-- Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. Native discovery is fallback-only after one bounded terminal Hub failure.
+- Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. Native fallback requires an explicit `terminal=true` and `retryable=false` result.
 {audit_fallback}
 - Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.
 - Do not run parallel duplicate commands or scopes. Tool labels are not evidence; preserve exact action, arguments, result, and ownership in the audit record.
@@ -413,7 +412,7 @@ For every non-trivial repository task, use Local AI Hub before broad repository 
 
 {repo_gate_section}
 
-Before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files for discovery, call the hub first. Native broad discovery is fallback-only after one bounded hub failure.
+Before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files for discovery, call the hub first. Native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
 Stop escalating when evidence is sufficient; reuse cached results and bounded evidence instead of widening the search.
 
@@ -429,7 +428,7 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 - `in_progress=true`: do not duplicate the work.
 - `retryable`/429/503: back off and do independent work.
 - `degraded`/`stale`: verify only the affected slice.
-- Hub unavailable: one bounded health/retry attempt, then native fallback. Never loop or inflate timeouts.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
 Do not fan out overlapping retrieval layers. Stop escalating when evidence is sufficient. Local AI Hub handles its own bounded work; Codex handles native-subagent design and integration.
 {subagents_section}{agent_os_section}
@@ -674,7 +673,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         " generated artifacts, or other workspace side effects. Never label such work read-only when any of these occur;"
         " split validation into a separately owned, explicitly side-effecting task.\n"
         "- Before native discovery or validation, retain preceding Hub result with action, absolute root, status,"
-        " cache/in_progress state, and evidence IDs. Native discovery is fallback-only after one bounded terminal Hub failure.\n"
+        " cache/in_progress state, and evidence IDs. Native fallback requires an explicit `terminal=true` and `retryable=false` result.\n"
         + ("- Native validation fallback is allowed only after `local_ai_command` returns `terminal=true` and `retryable=false`; run one bounded fallback, state side effects/owner, and never repeat identical commands.\n" if fs.commands else "")
         + "- Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly"
         " enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.\n"
