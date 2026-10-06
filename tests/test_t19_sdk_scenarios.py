@@ -45,6 +45,13 @@ def scenario_hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         }
 
     app.services._generate = fake_generate
+    app.async_jobs._resource_admission = lambda: {
+        "state": "accepted",
+        "reason": "capacity_available",
+        "retryable": False,
+        "pressure_level": "nominal",
+        "context_budget_factor": 1.0,
+    }
     monkeypatch.setattr(http_server, "APP", app)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

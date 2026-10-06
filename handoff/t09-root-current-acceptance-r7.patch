@@ -1,0 +1,171 @@
+diff --git a/tests/test_agent_receipt_completion_t09.py b/tests/test_agent_receipt_completion_t09.py
+index 8f5f043..2da5875 100644
+--- a/tests/test_agent_receipt_completion_t09.py
++++ b/tests/test_agent_receipt_completion_t09.py
+@@ -439,3 +439,165 @@ def test_valid_durable_receipt_completes_task(stores):
+     persisted = verifier.completion(task.task_id, current_revision="rev-1")
+     assert persisted.complete is True
+     assert persisted.receipts[0].receipt_id == receipt.receipt_id
++
++
++def test_cancelled_task_with_valid_receipt_cannot_complete(stores):
++    tasks, verifier, artifacts = stores
++    task = task_ready_for_completion(tasks, "task-cancelled-receipt")
++    verifier.record(passing_receipt(tasks, verifier, artifacts, task.task_id))
++    tasks.transition(
++        task.task_id,
++        TaskStatus.CANCELLED,
++        reason="cancel before completion",
++        actor=task.owner,
++        idempotency_key="cancel-before-complete",
++    )
++
++    with pytest.raises(ValueError, match=f"Cannot complete task {task.task_id} from cancelled"):
++        tasks.complete(
++            task.task_id,
++            actor=task.owner,
++            idempotency_key="cancelled-receipt-complete",
++        )
++
++    assert tasks.get(task.task_id).status is TaskStatus.CANCELLED
++
++def test_keyword_search_backfills_missing_index_after_reopen(stores):
++    tasks, _verifier, _artifacts = stores
++    task = tasks.create(
++        GoalContract(
++            goal="Search index recovery",
++            description="nebula retrieval after reopen",
++            acceptance_criteria=("index repair",),
++            scope=AgentScope.TASK,
++        ),
++        ScopeContext(repository_id="repo-index-recovery", task_id="task-index-recovery"),
++        task_id="task-index-recovery",
++        actor="tenant-a",
++    )
++    with closing(connect_sqlite(tasks.state_store.db_path)) as con:
++        con.execute("DROP TABLE agent_task_search_grams")
++        con.execute("DROP TABLE agent_task_search_documents")
++        con.commit()
++
++    reopened = TaskStore(AgentStateStore(tasks.state_store.db_path, enabled=True))
++    matches = reopened.list_tasks(query="nebula retrieval")
++
++    assert [match.task_id for match in matches] == [task.task_id]
++
++def test_source_review_receipt_without_command_completes_documentation_task(stores):
++    tasks, verifier, artifacts = stores
++    task_id = "task-documentation-review"
++    owner = "tenant-docs"
++    tasks.create(
++        GoalContract(
++            goal="Document release evidence",
++            acceptance_criteria=("documentation review",),
++            scope=AgentScope.TASK,
++        ),
++        ScopeContext(repository_id="repo-documentation", task_id=task_id),
++        task_id=task_id,
++        actor=owner,
++    )
++    tasks.transition(
++        task_id,
++        TaskStatus.ACTIVE,
++        reason="start documentation review",
++        actor=owner,
++        idempotency_key="documentation-active",
++    )
++    tasks.transition(
++        task_id,
++        TaskStatus.VERIFYING,
++        reason="document review evidence ready",
++        actor=owner,
++        idempotency_key="documentation-verifying",
++    )
++    tasks.checkpoint(
++        task_id,
++        TaskCheckpoint(state_data={"repository_revision": "rev-docs", "mutation_generation": 0}),
++        actor=owner,
++        idempotency_key="documentation-revision",
++    )
++    evidence_id = artifacts.put_json(
++        {
++            "kind": "work_source_review",
++            "passed": True,
++            "task_id": task_id,
++            "owner": owner,
++            "criteria": ["documentation review"],
++            "repository_revision": "rev-docs",
++            "mutation_generation": 0,
++            "review_summary": "release docs checked against acceptance criteria",
++        },
++        owner,
++        "source_review",
++    )
++    receipt = VerificationReceipt.create(
++        task_id,
++        "documentation review",
++        passed=True,
++        evidence_id=evidence_id,
++        repository_revision="rev-docs",
++        owner=owner,
++        mutation_generation=0,
++    )
++    assert receipt.evidence_type == "source_review"
++    assert receipt.command_id == ""
++    verifier.record(receipt)
++
++    completed = tasks.complete(
++        task_id,
++        actor=owner,
++        idempotency_key="documentation-complete",
++    )
++
++    assert completed.status is TaskStatus.COMPLETED
++    assert verifier.completion(task_id, current_revision="rev-docs").complete is True
++
++
++def test_model_assessment_artifact_cannot_satisfy_test_receipt(stores):
++    tasks, verifier, artifacts = stores
++    task = task_ready_for_completion(tasks, "task-model-is-not-test-proof")
++    model_evidence_id = artifacts.put_json(
++        {
++            "passed": True,
++            "task_id": task.task_id,
++            "owner": task.owner,
++            "criterion": "tests",
++            "command_id": "claimed-model-command",
++            "repository_revision": "rev-1",
++            "mutation_generation": 0,
++            "assessment": {"score": 1.0, "summary": "model says tests passed"},
++        },
++        task.owner,
++        "source_review",
++    )
++    receipt = VerificationReceipt.create(
++        task.task_id,
++        "tests",
++        passed=True,
++        evidence_id=model_evidence_id,
++        command_id="claimed-model-command",
++        repository_revision="rev-1",
++        owner=task.owner,
++        mutation_generation=0,
++        evidence_type="test",
++    )
++    with pytest.raises(ValueError, match="requires matching trusted evidence"):
++        verifier.record(receipt)
++
++    completion = verifier.completion(task.task_id, current_revision="rev-1")
++
++    assert completion.complete is False
++    assert completion.unsatisfied_criteria == ("tests",)
++
++
++def test_passed_benchmark_receipt_requires_command_id():
++    with pytest.raises(ValueError, match="passed benchmark verification receipt requires command_id"):
++        VerificationReceipt.create(
++            "task-benchmark-receipt",
++            "latency benchmark",
++            passed=True,
++            evidence_id="benchmark-evidence",
++        )
+\ No newline at end of file

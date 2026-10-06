@@ -177,16 +177,16 @@ class MCPStdioClient:
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
     def _request(self, method: str, params: dict[str, Any], *, timeout: float | None = None, soft_timeout: float | None = None, ensure_started: bool = True) -> Any:
+        request_started = time.monotonic()
+        hard_timeout = self.call_timeout if timeout is None else max(0.05, float(timeout))
+        hard_deadline = request_started + hard_timeout
+        soft_deadline = (request_started + max(0.05, float(soft_timeout))) if soft_timeout is not None else None
+        effective_deadline = min(hard_deadline, soft_deadline) if soft_deadline is not None else hard_deadline
         if ensure_started:
             self._spawn()
         request_id = self._next_id
         self._next_id += 1
         self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
-        now = time.monotonic()
-        hard_timeout = self.call_timeout if timeout is None else max(0.05, float(timeout))
-        hard_deadline = now + hard_timeout
-        soft_deadline = (now + max(0.05, float(soft_timeout))) if soft_timeout is not None else None
-        effective_deadline = min(hard_deadline, soft_deadline) if soft_deadline is not None else hard_deadline
 
         while time.monotonic() < effective_deadline:
             proc = self._proc
@@ -213,7 +213,7 @@ class MCPStdioClient:
         if soft_deadline is not None and time.monotonic() >= soft_deadline and time.monotonic() < hard_deadline:
             raise MCPSoftTimeoutError(f"MCP soft timeout: {method}")
 
-        self._stop_process()
+        self._stop_process(deadline=hard_deadline)
         raise TimeoutError(f"MCP call timed out: {method}")
 
     def _refresh_tools(self) -> None:
@@ -284,7 +284,7 @@ class MCPStdioClient:
             out["result"] = {k: v for k, v in result.items() if k not in {"content", "structuredContent"}}
         return out
 
-    def _stop_process(self) -> None:
+    def _stop_process(self, *, deadline: float | None = None) -> None:
         proc = self._proc
         responses = self._responses
         stderr_lines = self._stderr
@@ -298,20 +298,47 @@ class MCPStdioClient:
         self._stderr = deque(maxlen=80)
         if not proc:
             return
+
+        # A request timeout has no remaining budget for process-tree teardown.
+        # Detach state now, then reap in the background so cleanup cannot extend
+        # the caller's explicit deadline.
+        if deadline is not None and time.monotonic() >= deadline:
+            threading.Thread(
+                target=self._cleanup_process,
+                args=(proc, reader_threads, responses, stderr_lines),
+                name="local-ai-mcp-reaper",
+                daemon=True,
+            ).start()
+            return
+        self._cleanup_process(proc, reader_threads, responses, stderr_lines)
+
+    @staticmethod
+    def _cleanup_process(
+        proc: subprocess.Popen[str],
+        reader_threads: tuple[threading.Thread, ...],
+        responses: queue.Queue[dict[str, Any]],
+        stderr_lines: deque[str],
+    ) -> None:
         try:
-            if proc.stdin:
-                proc.stdin.close()
+            stdin = getattr(proc, "stdin", None)
+            if stdin:
+                stdin.close()
         except Exception:
             pass
         if proc.poll() is None:
-            terminate_tree(proc.pid, grace_seconds=1.0)
+            pid = getattr(proc, "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                try:
+                    terminate_tree(pid, grace_seconds=1.0)
+                except Exception:
+                    pass
         try:
             proc.wait(timeout=1.0)
         except Exception:
             pass
         # Popen does not guarantee pipe file objects are closed merely because
         # the child exited. Closing them also unblocks line-reader threads.
-        for stream in (proc.stdout, proc.stderr):
+        for stream in (getattr(proc, "stdout", None), getattr(proc, "stderr", None)):
             try:
                 if stream:
                     stream.close()
@@ -587,7 +614,15 @@ class ExternalCodeIntelligence:
             "project root is missing",
         ))
 
-    def _record_failure(self, backend: str, exc: Exception, *, operation: str, root: str | None = None) -> None:
+    def _record_failure(
+        self,
+        backend: str,
+        exc: Exception,
+        *,
+        operation: str,
+        root: str | None = None,
+        emit_telemetry: bool = True,
+    ) -> None:
         message = str(exc)
         health = self._backend_health[backend]
         key = (backend, root or "")
@@ -610,9 +645,19 @@ class ExternalCodeIntelligence:
         self._failures[backend] = sum(value for (name, _root), value in self._root_failures.items() if name == backend)
         if self._root_failures[key] >= self.failure_threshold:
             self._root_cooldown_until[key] = time.monotonic() + self.cooldown_seconds
-        if self.telemetry is not None:
+        if emit_telemetry and self.telemetry is not None:
             try:
                 self.telemetry.record_error("code_intelligence", f"{backend}:{operation}", exc, retryable=True, recovered=False)
+            except Exception:
+                pass
+
+    def _record_failure_recovery(self, backend: str, exc: Exception, *, operation: str, recovered: bool) -> None:
+        if self.telemetry is not None:
+            try:
+                self.telemetry.record_error(
+                    "code_intelligence", f"{backend}:{operation}", exc,
+                    retryable=True, recovered=recovered,
+                )
             except Exception:
                 pass
 
@@ -1043,16 +1088,25 @@ class ExternalCodeIntelligence:
             return {"backend": "serena", "action": action, **self._trim(result)}
         except MCPSoftTimeoutError as exc:
             self.query_failures += 1
+            self._record_failure("serena", exc, operation=action, root=root, emit_telemetry=False)
             if self.code_index is not None:
-                return self._fallback_code_index(root, action, query, path, limit, reason="serena_soft_timeout")
+                fallback = self._fallback_code_index(root, action, query, path, limit, reason="serena_soft_timeout")
+                self._record_failure_recovery("serena", exc, operation=action, recovered=bool(fallback.get("success")))
+                return fallback
+            self._record_failure_recovery("serena", exc, operation=action, recovered=False)
             return {"success": False, "backend": "serena", "error": str(exc), "error_type": "MCPSoftTimeoutError", "fallback_used": False, "degraded_reason": "serena_soft_timeout"}
         except Exception as exc:
-            self._record_failure("serena", exc, operation=action, root=root)
+            self._record_failure("serena", exc, operation=action, root=root, emit_telemetry=False)
             if not _retrying and self._recover_backend("serena", root, exc):
-                return self._query_serena_locked(root, action, query, path, limit, timeout=timeout, soft_timeout=soft_timeout, _retrying=True)
+                recovered = self._query_serena_locked(root, action, query, path, limit, timeout=timeout, soft_timeout=soft_timeout, _retrying=True)
+                self._record_failure_recovery("serena", exc, operation=action, recovered=bool(recovered.get("success")))
+                return recovered
             self.query_failures += 1
             if self.code_index is not None:
-                return self._fallback_code_index(root, action, query, path, limit, reason=f"serena_error:{type(exc).__name__}")
+                fallback = self._fallback_code_index(root, action, query, path, limit, reason=f"serena_error:{type(exc).__name__}")
+                self._record_failure_recovery("serena", exc, operation=action, recovered=bool(fallback.get("success")))
+                return fallback
+            self._record_failure_recovery("serena", exc, operation=action, recovered=False)
             return {"success": False, "backend": "serena", "error": str(exc), "error_type": type(exc).__name__}
 
     def query(self, root: str, query: str, *, backend: str = "auto", action: str = "search", path: str = "", limit: int = 20, timeout: float | None = None, soft_timeout: float | None = None) -> dict[str, Any]:

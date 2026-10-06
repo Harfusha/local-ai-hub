@@ -28,7 +28,7 @@ def test_request_stream_aggregates_generate_chunks_and_notifies_callback(tmp_pat
         json.dumps({"model": "m", "response": "hel", "done": False}),
         json.dumps({"response": "lo", "done": True, "total_duration": 7}),
     ])
-    monkeypatch.setattr("local_ai_hub.ollama.urlopen", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr("local_ai_hub.ollama._open_interruptible_response", lambda *_args, **_kwargs: response)
     chunks = []
 
     result = _runtime(tmp_path).request_stream("/api/generate", {"model": "m", "prompt": "p"}, chunks.append)
@@ -44,7 +44,7 @@ def test_request_stream_separates_thinking_and_ignores_empty_output_chunks(tmp_p
         json.dumps({"model": "m", "thinking": "reason ", "response": "", "done": False}),
         json.dumps({"thinking": "more", "response": "final", "done": True}),
     ])
-    monkeypatch.setattr("local_ai_hub.ollama.urlopen", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr("local_ai_hub.ollama._open_interruptible_response", lambda *_args, **_kwargs: response)
     chunks = []
     thinking = []
 
@@ -82,7 +82,7 @@ def test_request_stream_aggregates_chat_content_and_ignores_bad_lines(tmp_path, 
         json.dumps({"message": {"role": "assistant", "content": "one"}, "done": False}),
         json.dumps({"message": {"content": " two"}, "done": True}),
     ])
-    monkeypatch.setattr("local_ai_hub.ollama.urlopen", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr("local_ai_hub.ollama._open_interruptible_response", lambda *_args, **_kwargs: response)
     chunks = []
 
     result = _runtime(tmp_path).request_stream("/api/chat", {"model": "m", "messages": []}, chunks.append)

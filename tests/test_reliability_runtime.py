@@ -131,7 +131,7 @@ def test_generated_manifests_cover_generic_and_vscode(tmp_path: Path):
     assert spec and spec.loader
     setup = importlib.util.module_from_spec(spec); spec.loader.exec_module(setup)
     install = tmp_path / "install"; install.mkdir()
-    setup.write_generated_agent_manifests(install, tmp_path / "python", None, None, {"code_intelligence": {"direct_agent_mcp": False}})
+    setup.write_generated_agent_manifests(install, tmp_path / "python", None, {"code_intelligence": {"direct_agent_mcp": False}})
     generic = json.loads((install / "generated" / "mcp-servers.json").read_text(encoding="utf-8"))
     vscode = json.loads((install / "generated" / "vscode-mcp.json").read_text(encoding="utf-8"))
     assert generic["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT"] == "generic"

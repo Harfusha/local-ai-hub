@@ -1,0 +1,100 @@
+diff --git a/src/local_ai_hub/async_jobs.py b/src/local_ai_hub/async_jobs.py
+--- a/src/local_ai_hub/async_jobs.py
++++ b/src/local_ai_hub/async_jobs.py
+@@ -108,39 +108,24 @@
+                     ]
+                     con.execute("BEGIN IMMEDIATE")
+                     try:
+-                        schema_version = int(con.execute("PRAGMA user_version").fetchone()[0])
+                         existing = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+-                        has_table = "async_jobs" in existing
+-                        actual_columns = (
+-                            [str(row[1]) for row in con.execute("PRAGMA table_info(async_jobs)")]
+-                            if has_table else None
+-                        )
+-                        if schema_version not in (0, 1):
+-                            raise RuntimeError(f"unsupported async_jobs schema version: {schema_version}")
+-                        if schema_version == 1 and actual_columns != expected_columns:
+-                            raise RuntimeError("unsupported async_jobs schema: version 1 columns do not match")
+-                        if schema_version == 0 and actual_columns not in (None, expected_columns, expected_columns[:-1]):
+-                            raise RuntimeError("unsupported async_jobs schema: database preserved")
+-
+-                        if actual_columns == expected_columns[:-1]:
+-                            con.execute(
+-                                "ALTER TABLE async_jobs ADD COLUMN dispatch_not_before REAL NOT NULL DEFAULT 0"
+-                            )
+-                        elif not has_table:
+-                            con.execute("""CREATE TABLE async_jobs (
+-                                job_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, action TEXT NOT NULL, request_hash TEXT NOT NULL,
+-                                payload_json TEXT NOT NULL, state TEXT NOT NULL, result_json TEXT NOT NULL DEFAULT '',
+-                                artifact_id TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', lease_until REAL NOT NULL DEFAULT 0,
+-                                attempts INTEGER NOT NULL DEFAULT 0, cancel_requested INTEGER NOT NULL DEFAULT 0,
+-                                created_at REAL NOT NULL, updated_at REAL NOT NULL, expires_at REAL NOT NULL,
+-                                trace_id TEXT NOT NULL DEFAULT '', task_id TEXT NOT NULL DEFAULT '',
+-                                dispatch_not_before REAL NOT NULL DEFAULT 0
+-                            )""")
++                        if "async_jobs" in existing:
++                            actual_columns = [str(row[1]) for row in con.execute("PRAGMA table_info(async_jobs)")]
++                            if actual_columns != expected_columns:
++                                raise RuntimeError("unsupported async_jobs schema: database preserved")
++                        con.execute("""CREATE TABLE IF NOT EXISTS async_jobs (
++                            job_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, action TEXT NOT NULL, request_hash TEXT NOT NULL,
++                            payload_json TEXT NOT NULL, state TEXT NOT NULL, result_json TEXT NOT NULL DEFAULT '',
++                            artifact_id TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', lease_until REAL NOT NULL DEFAULT 0,
++                            attempts INTEGER NOT NULL DEFAULT 0, cancel_requested INTEGER NOT NULL DEFAULT 0,
++                            created_at REAL NOT NULL, updated_at REAL NOT NULL, expires_at REAL NOT NULL,
++                            trace_id TEXT NOT NULL DEFAULT '', task_id TEXT NOT NULL DEFAULT '',
++                            dispatch_not_before REAL NOT NULL DEFAULT 0
++                        )""")
+                         con.execute("CREATE INDEX IF NOT EXISTS idx_async_jobs_state ON async_jobs(state, lease_until, expires_at)")
+                         con.execute("CREATE INDEX IF NOT EXISTS idx_async_jobs_dispatch ON async_jobs(state, dispatch_not_before, expires_at)")
+                         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_async_jobs_active_dedupe ON async_jobs(tenant, request_hash) WHERE state IN ('queued','running')")
+                         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_async_jobs_request_id ON async_jobs(tenant, json_extract(payload_json, '$.request_id')) WHERE json_valid(payload_json) AND json_type(payload_json, '$.request_id')='text' AND json_extract(payload_json, '$.request_id')<>''")
+-                        con.execute("PRAGMA user_version = 1")
+                         con.commit()
+                     except Exception:
+                         if con.in_transaction:
+diff --git a/tests/test_async_jobs.py b/tests/test_async_jobs.py
+--- a/tests/test_async_jobs.py
++++ b/tests/test_async_jobs.py
+@@ -316,7 +316,7 @@
+     assert version == 0
+ 
+ 
+-def test_async_jobs_migrates_previous_schema_without_dropping_rows(tmp_path):
++def test_async_jobs_rejects_previous_schema_without_mutating_rows(tmp_path):
+     state_dir = tmp_path / "state"
+     state_dir.mkdir()
+     db_path = state_dir / "async_jobs.sqlite3"
+@@ -335,17 +335,20 @@
+         )
+         con.commit()
+ 
+-    manager, _scheduler = _manager(tmp_path)
+-    try:
+-        migrated = manager._row("tenant-a", "legacy-queued")
+-        assert migrated is not None
+-        assert migrated["state"] == "queued"
+-        assert migrated["dispatch_not_before"] == 0
+-        with closing(sqlite3.connect(db_path)) as con:
+-            version = int(con.execute("PRAGMA user_version").fetchone()[0])
+-        assert version == 1
+-    finally:
+-        manager.close()
++    with pytest.raises(RuntimeError, match="unsupported async_jobs schema"):
++        _manager(tmp_path)
++
++    with closing(sqlite3.connect(db_path)) as con:
++        columns = [str(row[1]) for row in con.execute("PRAGMA table_info(async_jobs)")]
++        row = con.execute("SELECT job_id, state, request_hash FROM async_jobs").fetchone()
++        version = int(con.execute("PRAGMA user_version").fetchone()[0])
++    assert columns == [
++        "job_id", "tenant", "action", "request_hash", "payload_json", "state", "result_json",
++        "artifact_id", "error", "lease_until", "attempts", "cancel_requested", "created_at",
++        "updated_at", "expires_at", "trace_id", "task_id",
++    ]
++    assert row == ("legacy-queued", "queued", "legacy-hash")
++    assert version == 0
+ 
+ def test_submit_coalesces_active_job_without_outer_scheduler_enqueue(tmp_path):
+     manager, scheduler = _manager(tmp_path)

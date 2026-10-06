@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-41",
+  "owner": "T06",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "selector": "test_spawn_daemon_blocks_disallowed_mutation_when_policy_blocking_is_disabled",
+  "status": "RED_EXPECTED",
+  "summary": "1 failed because disallowed mutation reached daemon process launch",
+  "input_sha256_before": {
+    "src/local_ai_hub/commands.py": "B2A5B2B0570C45D16560FECA92E1BBF2C5B28476A12D7C9A602F03B714283E3E",
+    "tests/test_daemon_lifecycle_hardening.py": "233171BC451B74E95006F53BCD052E4EAA2A50BCAD1A20BCDE4D52A2954F3E17"
+  },
+  "input_sha256_after": {
+    "src/local_ai_hub/commands.py": "FCFE25432B91A75EA6F40E183A3B7AE1C3B74664F470D418BCBA4FEC851524BD",
+    "tests/test_daemon_lifecycle_hardening.py": "233171BC451B74E95006F53BCD052E4EAA2A50BCAD1A20BCDE4D52A2954F3E17"
+  },
+  "log_path": "handoff/T20-CPU-SLOT-20261002-41/01-t06-daemon-policy-red.log",
+  "log_sha256": "6EE73ECB34FD8B9BEEA23087CD00916C96CD8BAE8D042A3D77232E736770B039"
+}

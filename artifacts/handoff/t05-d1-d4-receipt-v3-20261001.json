@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "owner": "T05",
+  "date": "2026-10-01",
+  "supersedes": "t05-d1-d4-receipt-v2-20261001.json",
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "selectors": {
+    "files": [
+      "tests/test_t05_memory_delete_artifacts.py",
+      "tests/test_t05_memory_fts_atomicity.py"
+    ],
+    "result": "6 passed in 2.07s, exit 0",
+    "command": "python -B - with pytest.main; -q -p no:cacheprovider --tb=short -W always::ResourceWarning",
+    "import_assertions": {
+      "agent_memory": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\src\\local_ai_hub\\agent_memory.py",
+      "agent_events": "C:\\Users\\Adam\\.local-ai-hub\\src\\local_ai_hub\\agent_events.py"
+    },
+    "root_agent_events_sha256_before_after": "02a25102b888b23fe99b8c508f59aedd846ba24fd38a268bcc6893b0877e0a38"
+  },
+  "root_test_handoff": {
+    "patch": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\handoff\\t05-d1-d4-tests-v1-20261001.patch",
+    "patch_sha256": "fa75589ac55defcefcd7438fd4d5835dee5a88c16bcfb394512528944b32139c",
+    "apply_check": "PASS against current root HEAD; test-only patch",
+    "root_agent_events_sha256": "02a25102b888b23fe99b8c508f59aedd846ba24fd38a268bcc6893b0877e0a38"
+  },
+  "source_sha256": {
+    "candidate_agent_memory": "fae4e3dc6e0b34cb2dd80e7d4a3b32ed4356b045d68c78bcbcba3cf186ef00fc",
+    "candidate_delete_tests": "5f82540b7e6e19cb4c66da5f38c34c321d7d17be5a6bcb96814536ccd6ca7637",
+    "candidate_fts_tests": "e2c07e0caae7c8d493ca7dbe240cbce4571fea1f27f2243d23dc13bc572be189"
+  },
+  "acceptance_limit": "Root runtime and full root suite remain T20-owned and unverified; candidate event bridge API absent, so FTS transaction test used exact root agent_events module overlay."
+}

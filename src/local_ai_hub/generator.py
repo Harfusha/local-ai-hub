@@ -36,6 +36,12 @@ For durable work, create and checkpoint one Agent OS task contract before edits.
 If Hub is unavailable, make one bounded health/retry attempt, then use one native fallback. Native validation still requires `terminal=true` and `retryable=false`; never poll or repeat an identical operation."""
 
 from local_ai_hub.features import FeatureSet
+from local_ai_hub.operation_contracts import (
+    operation_contract,
+    operation_enabled,
+    operation_metadata,
+    operation_parameters_schema,
+)
 from local_ai_hub.prompt_contracts import capability_for
 
 
@@ -113,7 +119,13 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
     batch_line = '- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.' if features.tasks else ''
     return f"""## Context economy contract
 
-- Every Hub response is aggregate-bounded (default ≈{budget} tokens); explicit `max_response_tokens` below 128 are rejected, never silently raised.
+- Every Hub response is aggregate-bounded (default ≈{budget} tokens).
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
 {batch_line}
@@ -606,6 +618,8 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         model_default = (
             f"\nLocal model policy: `{fs.background_model}` is preprocessing-only, `{fs.fast_model}` handles quick/simple tasks,"
             f" `{fs.general_model}` handles ordinary tasks, `{fs.smart_model}` handles more involved work, and {reasoning_tier} handles the hardest or highest-risk reasoning."
+            " Treat profile/default model names as routing targets only. Check installed-model inventory before live inference;"
+            " do not infer runtime availability, output quality, or performance from a configured mapping."
             " Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`."
             " Model routes above are resolved from active config. Keep hard and extreme reasoning as distinct tiers; see `docs/MODEL_CAPABILITIES.md` for the full matrix."
         )
@@ -776,6 +790,12 @@ Load and follow this skill before any coding or repository task. Apply its disco
 
 ### 6. MCP Response Economy
 - Hub responses are aggregate-bounded; use `max_response_tokens` only for a bounded exception.
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer compact/minimal profiles, stable `reuse_key` values, cache reuse, and artifact slices.
 - Keep command output at summary/status level; fetch exact logs only when needed.
 """
@@ -807,6 +827,12 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.\n"
         "- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
+        "- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.\n"
+        "- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.\n"
+        "- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.\n"
+        "- Reject `max_response_tokens` below 128; never raise the request silently.\n"
+        "- Native fallback requires an explicit `terminal=true` and `retryable=false` result.\n"
+        "- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.\n"
         + local_model_line
         + "<!-- END TOKEN ECONOMY POLICY -->"
     )
@@ -841,17 +867,8 @@ def generate_mcp_configs(
 
 
 def _apply_response_budget_schema(schemas: dict[str, dict[str, Any]], cfg: dict[str, Any]) -> None:
-    """Add one compact response contract to every enabled public tool."""
-    fields = {
-        "max_response_tokens": {"type": "integer", "minimum": 0, "default": 0},
-        "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": "compact"},
-        "reuse_key": {"type": "string", "default": ""},
-    }
+    """Describe the common response budget contract for every public tool."""
     for schema in schemas.values():
-        params = schema.setdefault("parameters", {})
-        props = params.setdefault("properties", {})
-        for name, spec in fields.items():
-            props.setdefault(name, dict(spec))
         schema["description"] = str(schema.get("description", "")) + " Responses are aggregate-bounded; exact detail remains artifact-backed."
 
 
@@ -862,26 +879,19 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     local_semantic_enabled = fs.tasks and fs.has_any_model()
     schemas: dict[str, dict[str, Any]] = {}
 
-    if fs.status:
-        status_description = "Health, queue, and token-saving status. detail: brief, cache, telemetry, full, agent_state."
+    if operation_enabled(fs, "local_ai_status"):
+        status_actions = fs.supported_status_actions()
+        status_description = "Health, queue, and token-saving status."
         if fs.agent_os:
             status_description += " `agent_state` summarizes durable Agent OS task state."
-        status_description += _actions_note(["brief", "cache", "telemetry", "full", "agent_state"])
+        status_description += _actions_note(status_actions)
         schemas["local_ai_status"] = {
             "name": "local_ai_status",
             "description": status_description,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "enum": ["brief", "cache", "telemetry", "full", "agent_state"], "default": ""},
-                    "detail": {"type": "string", "enum": ["brief", "cache", "telemetry", "full", "agent_state"], "default": "brief"},
-                    "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
-                    "extra_fields": {"type": "array", "items": {"type": "string"}},
-                },
-            },
+            "parameters": operation_parameters_schema("local_ai_status", fs),
         }
 
-    if fs.repo:
+    if operation_enabled(fs, "local_ai_repo"):
         repo_actions = fs.supported_repo_actions()
         repo_semantic_contract = (
             f" {_semantic_handoff_contract(fs)}"
@@ -891,162 +901,34 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         schemas["local_ai_repo"] = {
             "name": "local_ai_repo",
             "description": "Primary bounded repository worker; use deterministic/indexed evidence first, then semantic/graph as enabled; use review_diff/security_audit before model inference." + context_pack_guidance() + repo_semantic_contract + _actions_note(repo_actions),
-            "parameters": {
-                "type": "object",
-                "required": ["action"],
-                "properties": {
-                    "action": {"type": "string", "enum": repo_actions},
-                    "root": {"type": "string", "default": "."},
-                    "query": {"type": "string", "default": ""},
-                    "path": {"type": "string", "default": ""},
-                    "task": {"type": "string", "default": ""},
-                    "task_id": {"type": "string", "default": ""},
-                    "include_code": {"type": "boolean", "default": False},
-                    "include_tests": {"type": "boolean", "default": False},
-                    "phase": {"type": "string", "default": ""},
-                    "focus": {"type": "array", "items": {"type": "string"}},
-                    "preload_profile": {"type": "string", "default": ""},
-                    "guarded": {"type": "boolean", "default": False},
-                    "changed_paths": {"type": "array", "items": {"type": "string"}},
-                    "since_hash": {"type": "string", "default": ""},
-                    "approval": {"type": ["boolean", "string"], "default": ""},
-                    "override_reason": {"type": "string", "default": ""},
-                    "base": {"type": "string", "default": "HEAD"},
-                    "staged": {"type": "boolean", "default": False},
-                    "mode": {"type": "string", "default": "adaptive"},
-                    "language": {"type": "string", "default": "auto"},
-                    "relation": {"type": "string", "default": ""},
-                    "profile": {"type": "string", "default": ""},
-                    "max_tokens": {"type": "integer", "default": 0},
-                    "token_budget": {"type": "integer", "default": 0},
-                    "diff": {"type": "string", "default": ""},
-                    "workspace": {"type": "string", "default": ""},
-                    "evidence": {"type": "array", "items": {"type": "object"}},
-                    "receipt": {"type": "object"},
-                    "extra_fields": {"type": "array", "items": {"type": "string"}},
-                    "max_response_tokens": {"type": "integer", "default": 0},
-                    "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": "compact"},
-                    "reuse_key": {"type": "string", "default": ""},
-                },
-            },
+            "parameters": operation_parameters_schema("local_ai_repo", fs),
         }
-        if fs.batch_replacement:
-            schemas["local_ai_repo"]["parameters"]["properties"].update({
-                "dry_run": {"type": "boolean", "default": False},
-                "edits": {"type": "array", "items": {"type": "object"}},
-            })
 
-    if fs.tasks and fs.has_any_model():
+    if operation_enabled(fs, "local_ai_task"):
         task_actions = fs.supported_task_actions()
         schemas["local_ai_task"] = {
             "name": "local_ai_task",
             "description": f"Tiered bounded local-model work ({fs.fast_model} quick, {fs.general_model} ordinary, {fs.smart_model} more involved, {reasoning_tier} hardest) for semantic generation, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests. {_semantic_handoff_contract(fs)}" + _actions_note(task_actions),
-            "parameters": {
-                "type": "object",
-                "required": ["action"],
-                "properties": {
-                    "action": {"type": "string", "enum": task_actions},
-                    "task": {"type": "string", "default": ""},
-                    "context": {"type": "string", "default": ""},
-                    "root": {"type": "string", "default": ""},
-                    "profile": {"type": "string", "default": ""},
-                    "delivery": {"type": "string", "enum": ["sync", "async", "auto"], "default": "sync"},
-                    "complexity": {"type": "string", "default": "auto"},
-                    "max_tokens": {"type": "integer", "default": 0},
-                    "conversation": {"type": "boolean", "default": False},
-                    "conversation_id": {"type": "string", "default": ""},
-                    "prompt": {"type": "string", "default": ""},
-                    "model": {"type": "string", "default": ""},
-                    "candidate": {"type": "string", "default": ""},
-                    "image_artifact_id": {"type": "string", "default": ""},
-                    "screenshot_artifact_id": {"type": "string", "default": ""},
-                    "bundle_artifact_id": {"type": "string", "default": ""},
-                    "dom_artifact_id": {"type": "string", "default": ""},
-                    "accessibility_artifact_id": {"type": "string", "default": ""},
-                    "computed_styles_artifact_id": {"type": "string", "default": ""},
-                    "runtime_artifact_id": {"type": "string", "default": ""},
-                    "network_artifact_id": {"type": "string", "default": ""},
-                    "source": {"type": "string", "default": ""},
-                    "cloud_fallback": {"type": "boolean", "default": False},
-                    "dom": {"type": ["string", "object"]},
-                    "accessibility": {"type": ["string", "object"]},
-                    "computed_styles": {"type": ["string", "object"]},
-                    "runtime": {"type": ["string", "object"]},
-                    "bundle": {"type": ["string", "object"]},
-                    "html": {"type": "string"},
-                    "accessibility_snapshot": {"type": ["string", "object"]},
-                    "computed_style_data": {"type": ["string", "object"]},
-                    "runtime_context": {"type": ["string", "object"]},
-                    "viewport": {"type": "object"},
-                    "page": {"type": "object"},
-                    "tasks": {"type": "array", "items": {"type": "object"}},
-                    "latency_budget_ms": {"type": "number", "default": 0},
-                    "job_action": {"type": "string", "default": "reason"},
-                    "job_id": {"type": "string", "default": ""},
-                    "timeout_seconds": {"type": "number", "default": 90},
-                    "evaluation_task_id": {"type": "string", "default": ""},
-                    "evaluation_cohort": {"type": "string", "default": ""},
-                    "quality_pass": {"type": ["boolean", "null"]},
-                    "test_pass": {"type": ["boolean", "null"]},
-                    "evaluation_duration_ms": {"type": "number", "default": 0},
-                    "evaluation_days": {"type": "integer", "default": 30},
-                    "workspace": {"type": "string", "default": ""},
-                    "approver": {"type": "string", "default": ""},
-                    "candidate_data": {"type": "object"},
-                    "format": {"type": ["string", "object"]},
-                    "json_schema": {"type": "object"},
-                    "extra_fields": {"type": "array", "items": {"type": "string"}},
-                },
-            },
+            "parameters": operation_parameters_schema("local_ai_task", fs),
         }
 
-    if fs.rag:
+    if operation_enabled(fs, "local_ai_rag"):
         rag_actions = fs.supported_rag_actions()
         schemas["local_ai_rag"] = {
             "name": "local_ai_rag",
             "description": "Fallback semantic retrieval after indexed evidence is insufficient; also supports managed docsets and document/diagram ingestion." + _actions_note(rag_actions),
-            "parameters": {
-                "type": "object",
-                "required": ["action"],
-                "properties": {
-                    "action": {"type": "string", "enum": rag_actions},
-                    "query": {"type": "string", "default": ""},
-                    "root": {"type": "string", "default": "."},
-                    "top_k": {"type": "integer", "default": 6},
-                    "workspace": {"type": "string", "default": ""},
-                    "extra_fields": {"type": "array", "items": {"type": "string"}},
-                },
-            },
+            "parameters": operation_parameters_schema("local_ai_rag", fs),
         }
 
-    if fs.commands:
+    if operation_enabled(fs, "local_ai_command"):
         command_actions = fs.supported_command_actions()
         schemas["local_ai_command"] = {
             "name": "local_ai_command",
             "description": "Safe CLI broker for validation and enabled repair, affected-test, format/lint-fix, mock, and replay workflows." + _actions_note(command_actions),
-            "parameters": {
-                "type": "object",
-                "required": ["action"],
-                "properties": {
-                    "action": {"type": "string", "enum": command_actions},
-                    "command": {"type": "string", "default": ""},
-                    "cwd": {"type": "string", "default": "."},
-                    "task_id": {"type": "string", "default": ""},
-                    "criterion": {"type": "string", "default": ""},
-                    "timeout": {"type": "integer", "default": 0},
-                    "stream": {"type": "boolean", "default": False},
-                    "stream_id": {"type": "string", "default": ""},
-                    "force": {"type": "boolean", "default": False},
-                    "auto_fix": {"type": "boolean", "default": False},
-                    "max_attempts": {"type": "integer", "default": 3},
-                    "snapshot": {"type": "boolean", "default": False},
-                    "rollback_on_failure": {"type": "boolean", "default": False},
-                    "extra_fields": {"type": "array", "items": {"type": "string"}},
-                },
-            },
+            "parameters": operation_parameters_schema("local_ai_command", fs),
         }
 
-    if fs.coord:
+    if operation_enabled(fs, "local_ai_coord"):
         coord_actions = fs.supported_coord_actions()
         coord_description = "Coordination, leases, and reusable memos."
         if fs.agent_os:
@@ -1055,82 +937,29 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         schemas["local_ai_coord"] = {
             "name": "local_ai_coord",
             "description": coord_description,
-            "parameters": {
-                "type": "object",
-                "required": ["action"],
-                "properties": {
-                    "action": {"type": "string", "enum": coord_actions},
-                    "root": {"type": "string", "default": "."},
-                    "paths": {"type": "array", "items": {"type": "string"}},
-                    "lease_id": {"type": "string", "default": ""},
-                    "task_id": {"type": "string", "default": ""},
-                    "key": {"type": "string", "default": ""},
-                    "value": {"type": "string", "default": ""},
-                    "query": {"type": "string", "default": ""},
-                    "command": {"type": "string", "default": ""},
-                    "ttl_seconds": {"type": "integer", "default": 0},
-                    "max_tokens": {"type": "integer", "default": 0},
-                    "task": {"type": "string", "default": ""},
-                    "contract": {"type": "object"},
-                    "checkpoint": {"type": "object"},
-                    "status": {"type": "string", "default": ""},
-                    "reason": {"type": "string", "default": ""},
-                    "record": {"type": "object"},
-                    "record_id": {"type": "string", "default": ""},
-                    "target_scope": {"type": "string", "default": ""},
-                    "approver": {"type": "string", "default": ""},
-                    "fingerprint": {"type": "object"},
-                    "tool_outcome": {"type": "object"},
-                    "include_stale": {"type": "boolean", "default": False},
-                    "extra_fields": {"type": "array", "items": {"type": "string"}},
-                },
-            },
+            "parameters": operation_parameters_schema("local_ai_coord", fs),
         }
 
-    if fs.work_orchestrator:
+    if operation_enabled(fs, "local_ai_work"):
         schemas["local_ai_work"] = {
             "name": "local_ai_work",
             "description": "Delegate, resume, inspect or cancel a complete bounded repository work order with compact verified handoff.",
-            "parameters": {
-                "type": "object",
-                "required": ["action"],
-                "properties": {
-                    "action": {"type": "string", "enum": ["submit", "status", "wait", "get", "cancel", "continue"]},
-                    "root": {"type": "string", "default": ""},
-                    "task": {"type": "string", "default": ""},
-                    "work_id": {"type": "string", "default": ""},
-                    "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
-                    "constraints": {"type": "array", "items": {"type": "string"}},
-                    "mode": {"type": "string", "enum": ["execute", "plan", "plan_only", "dry_run"], "default": "execute"},
-                    "permissions": {"type": "object"},
-                    "budget": {"type": "object"},
-                    "timeout_seconds": {"type": "number", "default": 90},
-                    "answer": {"type": "string", "default": ""},
-                    "response_profile": {"type": "string", "enum": ["minimal", "compact", "standard", "debug", "delta"], "default": "compact"},
-                    "return_fields": {"type": "array", "items": {"type": "string"}},
-                    "max_output_tokens": {"type": "integer", "default": 0},
-                    "keep_failed_workspace": {"type": "boolean", "default": False},
-                },
-            },
+            "parameters": operation_parameters_schema("local_ai_work", fs),
         }
 
-    if fs.artifacts:
+    artifact_contract = operation_contract("local_ai_artifact")
+    if operation_enabled(fs, "local_ai_artifact") and artifact_contract is not None:
+        artifact_actions = fs.supported_artifact_actions()
         schemas["local_ai_artifact"] = {
             "name": "local_ai_artifact",
-            "description": "Fetch one needed artifact section, exact evidence slice, or list artifacts. Actions: get, slice, list.",
-            "parameters": {
-                "type": "object",
-                "required": ["artifact_id"],
-                "properties": {
-                    "action": {"type": "string", "enum": ["get", "slice", "list"], "default": "get"},
-                    "artifact_id": {"type": "string", "default": ""},
-                    "section": {"type": "string", "default": ""},
-                    "offset": {"type": "integer", "default": 0},
-                    "max_chars": {"type": "integer", "default": 4000},
-                    "extra_fields": {"type": "array", "items": {"type": "string"}},
-                },
-            },
+            "description": artifact_contract["description"].format(actions=", ".join(artifact_actions)),
+            "parameters": operation_parameters_schema("local_ai_artifact", fs),
+            "x-operation-contract": operation_metadata("local_ai_artifact"),
         }
+
+    for name, schema in schemas.items():
+        schema["parameters"] = operation_parameters_schema(name, fs)
+        schema["x-operation-contract"] = operation_metadata(name)
 
     _apply_response_budget_schema(schemas, cfg)
     return schemas
