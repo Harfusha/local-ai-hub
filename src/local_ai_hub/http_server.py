@@ -77,6 +77,19 @@ def _lease_coordination_id(root: str) -> str | None:
     except Exception:
         return None
 
+
+def _parse_include_body(value: Any, *, query: bool = False) -> bool:
+    if query:
+        if value is None:
+            return False
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+    elif type(value) is bool:
+        return value
+    raise ValueError("include_body must be a boolean")
+
 class _ActiveTranscriptionRegistry:
     """Track synchronous Whisper calls and cancel them before gaming release."""
 
@@ -2811,7 +2824,7 @@ class Handler(BaseHTTPRequestHandler):
                 root = (query.get("root") or ["."])[0]
                 pat = (query.get("pattern") or query.get("name_path_pattern") or [""])[0]
                 depth = int((query.get("depth") or [0])[0])
-                include_body = bool((query.get("include_body") or [False])[0])
+                include_body = _parse_include_body((query.get("include_body") or [None])[0], query=True)
                 rel_path = (query.get("path") or query.get("relative_path") or [None])[0]
                 self._send(200, APP.services.code_find_symbol(root, pat, depth=depth, include_body=include_body, relative_path=rel_path))
                 return
@@ -4881,7 +4894,7 @@ class Handler(BaseHTTPRequestHandler):
                 root = str(payload.get("root", "."))
                 pat = str(payload.get("pattern") or payload.get("name_path_pattern") or "")
                 depth = int(payload.get("depth", 0))
-                include_body = bool(payload.get("include_body", False))
+                include_body = _parse_include_body(payload.get("include_body", False))
                 include_info = bool(payload.get("include_info", True))
                 rel_path = payload.get("path") or payload.get("relative_path")
                 limit = int(payload.get("limit", 30))
