@@ -241,6 +241,9 @@ class AgentStateStore:
         ("table", "lease_waits", "lease_waits"): {
             "a866368052df7b9433b7a44d47dc262c5a76a06058b878e0249ccee791dfb17c",
             "e9a38812fd120d00228269c2e5f28f02172702355abd9127562ccf78a5c93612",
+            # ScopeLeaseStore's namespace-key rebuild/rename quotes the table name.
+            # Same NOT NULL columns and root-inclusive PK; no SQL normalization widening.
+            "314dbe78e360c6c00133c85323b9349936d9cb2e87121e60c8ffb733b46d20aa",
         },
         ("table", "leases", "leases"): {
             "f7a165f4f68106fb33b5855d0a66532e63fde78b2675380b67fe8112096f8edd",
@@ -938,26 +941,33 @@ class AgentStateStore:
         identity = (info.st_dev, info.st_ino)
         try:
             if os.name == "nt":
+                from .process_utils import run_hidden
+
                 try:
-                    account = os.environ.get("USERNAME")
-                    if not account:
-                        account = subprocess.run(
-                            ["whoami"],
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=1.0,
-                        ).stdout.strip()
-                    if account:
-                        subprocess.run(
-                            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"],
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=1.0,
-                        )
-                except Exception:
-                    pass
+                    # USERNAME is caller-controlled, not proof of the process account.
+                    account = run_hidden(
+                        ["whoami"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=1.0,
+                    ).stdout.strip()
+                    if (
+                        not account
+                        or len(account.split("\\")) != 2
+                        or not all(account.split("\\"))
+                        or any(character in account for character in "\r\n\x00")
+                    ):
+                        raise PermissionError("agent_state backup process account is unknown")
+                    run_hidden(
+                        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=1.0,
+                    )
+                except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+                    raise PermissionError("agent_state backup permissions could not be secured") from exc
             else:
                 os.fchmod(descriptor, 0o600)
                 if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o600:

@@ -16,7 +16,7 @@ Runtime state and caches remain outside version control.
 | T01 inventory | integrated; unfinished | Popper the 2nd; t01-coverage-main-verify | `b9466d30` merged into master. Worker reported 821 passed, 11 failed; two context follow-up tests passed, nine failures remain. Final inventory regeneration and release acceptance follow source consolidation. |
 | T02 quality baseline | integrated; unfinished | Gibbs the 2nd; t02-quality-baseline-resume | Branch `codex/sync-t02-master-20261006`, head `673d1a0b`, merged into master. Checkpoint `codex/sync-t02-checkpoint-20261006` retains original dirty content. Targeted command in `handoff/T02-sync-integration-20261006.md`: 18 passed, 78 deselected. Runner still uses removed checkpoint/resume CLI flags; real-input baseline and historical intermittent test failure remain unresolved. Nine original untracked artifacts retained unchanged. |
 | T06 safe-command checkout | integrated; unfinished | Wegener the 2nd; t06-safe-commands | `dac22b98` merged into master; 166 changed paths against worker's pinned master. Final targeted checks: 48 passed, 5 failed; 27 Python files compiled in memory. Remaining POSIX rollback ctime issue, transaction/attempt fixtures, patch/import acceptance and generic provenance are in `handoff/T06-sync-master-integration-20261006.md`. Original tracked newline bytes are unverified; LF/CRLF variants and exact handoff bytes preserved. |
-| T05 identity / memory | integrated; unfinished | Maxwell the 2nd; t05-identity-recovery | Final worker `b47246f7`, merged at `fc950005`. All ordinary dirty/untracked material committed; runtime exclusions enumerated in `artifacts/sync-t05-20261006/ordinary-preservation-manifest.json`. Worker reported 122 passed, 14 failed, 1 skipped. Root fresh two-test transport check: 1 passed, 1 failed, 15 deselected; worktree-scoped delete did not raise expected HTTP 403. Preserve assertion and repair isolation after consolidation. |
+| T05 identity / memory | partially integrated; unfinished | Tesla; existing `t17-multimodal-resume` | T05 scope/context commits `174f2af9`, `4a3b4a7c`, `686dfd6b` integrated; 78 focused context/scope tests pass. Owner confirmed one remaining append-result atomicity defect; separate follow-up active. Root T08 durable packet has 2 T05-owned memory failures; six broad baseline failures remain. Historical 382-version archive stays in owner branch pending policy/size review. |
 | T03 contracts | integrated; unfinished | Einstein the 2nd; t03-contracts-resume | `32c5079b` merged into master. Original/dirty refs `codex/checkpoint-t03-original-20261006` and `codex/checkpoint-t03-dirty-20261006` preserve the old state. Focused follow-up: 169 passed, 3 failed. Schema parity, gaming/maintenance dispatch and earlier memory-scope HTTP 404 remain unresolved. Additional original untracked handoffs are being committed separately. |
 | T04 transport / startup | integrated; unfinished | Raman the 2nd; t04-integration and t04-lock-recovery | Both `8634b913` and `31de8a7a` merged; final merge `5e8424c4` retains both colliding integration documents. Worker checks: 113 passed, 5 failed, 1 skipped; follow-up 98 passed, 6 failed. Schema/fixture and removed-sidecar acceptance remain unresolved. |
 | T26 preprocessing argv | synchronized and integrated; acceptance partial | orchestrator; t26-preprocess-argv-5361 | Original dirty content committed at `e2f7e296`, retained by `codex/checkpoint-t26-dirty-20261006`. The dirty addition was an exact duplicate of the existing test; deduplicated at `9e7df358`. Merge into master has identical final tree and preserves both commits. No new T26 test run in this phase. |
@@ -747,3 +747,134 @@ hashes. No runtime, import, model, DB, or
 source changes; this follow-up changes only the disposition document. Original
 refs/stash IDs remain retained. Counts are static review, not release
 acceptance.
+
+## 2026-10-06 current-master source follow-up
+
+- T08 TaskStore queue packet integrated at `27118ce3` (`agent_tasks.py` and
+  `tests/test_task_store_t08_queue.py` only). It implements the pinned V03
+  TTL clamp, no-query terminal retention, repeated-COMPLETED revalidation,
+  and generation checkpoint blocker/error preservation. The pin's missing
+  rows remain historical disposition counts, not current missing-code claims.
+- Root verification: `$env:PYTHONPATH='src'; python -B -m pytest -q
+  -p no:cacheprovider tests/test_task_store_t08_queue.py` — **41 passed in
+  5.69s**.
+- Broader check: `$env:PYTHONPATH='src'; python -B -m pytest -q
+  -p no:cacheprovider tests/test_task_store_t08_queue.py
+  tests/test_agent_tasks.py --tb=short` — **74 passed, 11 failed in 21.33s**.
+  Failures are existing `test_agent_tasks.py` expectations/fixtures around
+  server-managed `repo_root` checkpoint state and passed receipts missing
+  `command_id`. Cause/ownership not adjudicated; expectations were not changed.
+- Root still has unrelated dirty `async_jobs.py`, `http_server.py`, and
+  untracked `agent_state.sqlite`; untouched and unstaged. This is not release
+  acceptance.
+
+## T18 Windows backup ACL follow-up
+
+- T18 owner commit `a9483085` was based on `8479e19b` and touched only
+  `src/local_ai_hub/agent_events.py` plus
+  `tests/test_t18_backup_reservation_acl.py`. Cherry-picked to master as
+  `df4021db`; root remained on `master` with the three unrelated dirty entries
+  listed above.
+- Root verification:
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_t18_backup_reservation_acl.py
+  tests/test_t05_agent_state_migrations.py::test_verified_backup_reserves_destination_and_only_cleans_its_file`
+  — **17 passed, 1 skipped in 0.74s**. POSIX permission-bit case skipped on
+  Windows. Live ACL/runtime recovery remains unverified.
+- T18 worktree has five untracked temporary/evidence paths; preserved, not
+  merged or deleted. Their contents still need owner-level classification.
+
+## Priority stash packet c36ddae1 current-master recheck
+
+- Candidate commit `c36ddae1fd70b18844e4cade5e3c27c58b50e81a` remains in
+  `codex/sync-hub-audit-repairs-20261006`, not merged. It adds the 2,192-line
+  pinned stash disposition report and T05/T08/T09 tests. Its own frozen-packet
+  run reported 67 passed, 19 failed; not release-ready.
+- Re-ran only `tests/test_agent_t08_durable_contract.py` with imports explicitly
+  pinned to root master `6b3c9a5e` (confirmed source path
+  `C:\Users\Adam\.local-ai-hub\src\local_ai_hub\__init__.py`).
+  Exact command:
+  `$env:PYTHONPATH='C:\Users\Adam\.local-ai-hub\src'; python -B -c "import local_ai_hub; print('SOURCE=' + str(local_ai_hub.__file__)); import pytest; raise SystemExit(pytest.main(['-q','-p','no:cacheprovider','--tb=short',r'C:\Users\Adam\.codex\worktrees\hub-audit-repairs\.local-ai-hub\tests\test_agent_t08_durable_contract.py']))"`
+  Result: **59 passed, 3 failed in 29.79s**. Failures:
+  `test_memory_append_result_error_rolls_back_projection`,
+  `test_expired_memory_delete_and_event_are_atomic`, and
+  `test_scope_leases_migrate_into_versioned_agent_state_database` (strict
+  `lease_waits` schema fingerprint rejection). First two routed to T05;
+  schema compatibility routed to T18/T08. No tests or allowlists weakened.
+- Keep candidate tests/report in their owner branch until failures are
+  adjudicated. This recheck does not prove the other candidate tests pass on
+  current master; no stash was applied or dropped.
+
+## Preserved stash census — 2026-10-06
+
+- Read-only inventory of all 45 `git stash list` entries: `git stash show
+  --numstat --include-untracked` reports **7,876 path entries** (668 tracked,
+  7,208 untracked), **5,644,035 insertions**, and **25,218 deletions**. Path
+  names repeat across snapshots; name-only census has 7,241 distinct names.
+  The 44/45 path-and-line-count signatures are not content-equivalence proofs.
+- Path-entry distribution is dominated by `handoff` (5,032), `artifacts`
+  (750), `tests` (722), `.handoff` (503), `src` (317), and `docs` (90).
+  Largest snapshots include T08/T12/T13 and command-broker evidence, source
+  copies, patches, and test runs. These are candidate contents requiring
+  owner/hunk disposition, not 7,876 files to blindly copy into release.
+- None of the 45 individual stash commits has exactly 182 tracked plus 192
+  untracked paths. Current root status remains two modified source files
+  (`async_jobs.py`, `http_server.py`) plus untracked `agent_state.sqlite`.
+  The goal's older 182/192 root snapshot was not reproduced in current status
+  or as one exact stash; do not infer its disposition from counts alone.
+  All 45 stash refs remain unchanged.
+
+## Current-master follow-up after T18 exact fingerprint
+
+- T18 added only the exact quoted `lease_waits` fingerprint plus focused tests;
+  owner commit `b89d5890` cherry-picked as `ac5f5230`.
+- Root command:
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_t18_lease_migration_fingerprint.py
+  tests/test_t18_backup_reservation_acl.py
+  tests/test_t05_agent_state_migrations.py::test_verified_backup_reserves_destination_and_only_cleans_its_file`
+  — **25 passed, 1 skipped in 1.53s** (POSIX-only permissions skipped on
+  Windows).
+- Repeated root-pinned T08 durable packet after the fix — **60 passed, 2
+  failed in 24.84s**. The lease-migration failure is resolved. Remaining:
+  `test_memory_append_result_error_rolls_back_projection` and
+  `test_expired_memory_delete_and_event_are_atomic`; both remain with T05
+  ownership and are not test-expected-value changes.
+- T18 reports a separate older diagnostic regression: a test expects literal
+  `unsupported`, receives a sanitized message. Not included in the passing T18
+  target; still requires adjudication. No full release acceptance.
+
+## T05 current-master integration and follow-up
+
+- Cherry-picked owner T05 context/global guard commits as `174f2af9`,
+  `4a3b4a7c`, and `686dfd6b`. The earlier owner patch `98eecacd` was empty on
+  master; the same TASK guard already existed, so no duplicate commit was made.
+  Scope preserves root+tenant repository identity, session+tenant identity,
+  explicit GLOBAL provenance, and tenantless GLOBAL-only context.
+- Root ran the focused contract set: **78 passed in 9.24s**. Exact invocation:
+
+~~~powershell
+$env:PYTHONPATH='src'
+@'
+import subprocess, types, pytest
+module = types.ModuleType('audit_t05_tenant')
+module.__file__ = 'c36ddae1/tests/test_agent_memory_context_tenant_isolation.py'
+source = subprocess.check_output(['git', 'show', 'c36ddae1:tests/test_agent_memory_context_tenant_isolation.py'])
+exec(compile(source, module.__file__, 'exec'), module.__dict__)
+AuditModule = type('AuditModule', (pytest.Module,), {'_getobj': lambda self: module})
+Plugin = type('AuditPlugin', (), {'pytest_pycollect_makemodule': lambda self, module_path, parent: AuditModule.from_parent(parent, path=module_path) if module_path.name == 'test_agent_memory_context_tenant_isolation.py' else None})
+raise SystemExit(pytest.main(['-q', '-p', 'no:cacheprovider', '--tb=short', '--basetemp=.pytest_cache/t05-context-global-root', 'tests/test_t05_memory_context_global_guard.py', 'tests/test_t05_memory_task_scope_guard.py', 'tests/test_agent_memory_context_tenant_isolation.py'], plugins=[Plugin()]))
+'@ | python -B -
+~~~
+
+- Re-tested owner T08 durable packet with import pinned to root after T18 fix:
+  **60 passed, 2 failed in 24.84s**. Expired-memory test used a stale TASK
+  lookup without root/tenant; owner scoped probe confirms atomic rollback/delete
+  behavior, so no T08 test edit. `test_memory_append_result_error_rolls_back_projection`
+  is a real remaining T05 defect: AppendResult.error leaves one projection,
+  zero events, then attempts to publish `None`. Tesla owns the fix in the same
+  worktree; no release completion claim.
+- Owner's wider affected set reported 220 passed / 6 baseline failures; those
+  six were reproduced against the earlier source pin. Not a release gate pass.
+  Historical 382-version, 70,873,144-byte archive commit `386b64d5` remains on
+  the owner branch; original stash refs are preserved and unchanged.
