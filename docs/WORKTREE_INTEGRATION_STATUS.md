@@ -667,8 +667,9 @@ receipts. Regression suite `tests/test_work_orchestrator.py` passed **24/24**
 in 22.43 s, and `git diff --check` passed. The other six queues remain pending
 scoped implementation and acceptance. Ownership is now assigned in existing
 worker checkouts: Russell (`hub-audit-repairs`) owns `agent_tasks.py` queues
-TTL/list/revalidation/generation; Helmholtz (`t13-lifecycle-8429`) owns strict
-`agent_verification.py` receipt parsing; Tesla (`t17-multimodal-resume`) owns
+TTL/list/revalidation and generation V03-H036; Helmholtz
+(`t13-lifecycle-8429`) owns `agent_verification.py` strict receipt parsing and
+generation V04-H041; Tesla (`t17-multimodal-resume`) owns
 the `agent_memory.py` task-provenance guard. They must first reconcile/sync
 their preserved work to master `f140b96c4d3a451651436136405de7a931faf533`;
 no worker may edit the concurrently dirty root `http_server.py` or
