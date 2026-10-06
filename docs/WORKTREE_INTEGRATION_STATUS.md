@@ -76,6 +76,15 @@ Further preservation:
   parent. Their restoration/integration and missing-checkout inventory remain
   pending; do not drop any stash until content coverage is verified.
 
+T11 missing-checkout recovery: all eleven ordinary handoff files from the
+third parent of stash `4b54e7af` restored into master after checking none of
+their paths existed. This stash contains no tracked source delta versus its
+first parent. The 179023-byte owner patch is preserved as historical evidence,
+not applied blindly. Historical receipts do not prove fresh acceptance.
+The stash remains intact. Missing checkout registration/provenance still
+requires reconciliation; source integration coverage of the archived patch
+must be checked before cleanup.
+
 ## Rules for the remainder
 
 - Preserve each original HEAD and dirty tracked content in a checkpoint ref
