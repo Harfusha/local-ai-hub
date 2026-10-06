@@ -91,7 +91,7 @@ class RepositoryTools:
             ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
             "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
             "library", "temp", "logs", "usersettings", "packagestore", "memorycaptures", "builds",
-                ".serena", ".local-ai-hub",
+                ".serena", ".codegraphcontext", ".local-ai-hub",
         }
         self.ignore_dirs = {str(name).lower() for name in rag.get("ignore_dirs", [])} | default_ignore_dirs
         self.ignore_extensions = {str(x).lower() for x in rag.get("ignore_extensions", [
