@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+import hashlib
 import json
 import os
 import sqlite3
@@ -23,6 +24,29 @@ from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
 from local_ai_hub.agent_policy import PolicyEngine
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStore
 from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
+
+
+class _MigrationArtifactStore:
+    def __init__(self, task):
+        self.task = task
+
+    def get(self, artifact_id, *, max_chars, tenant):
+        proof = {
+            "passed": True,
+            "kind": "work_source_review",
+            "criteria": ["migration"],
+            "task_id": self.task.task_id,
+            "owner": tenant,
+            "repository_revision": "",
+            "mutation_generation": 0,
+        }
+        return {
+            "success": True,
+            "artifact_id": artifact_id,
+            "kind": "source_review",
+            "next_offset": None,
+            "text": json.dumps(proof),
+        }
 
 
 def _seed_state(db_path):
@@ -54,12 +78,15 @@ def _seed_state(db_path):
         key="migration-memory",
         value="durable memory",
         source="test",
-        provenance={"root": str(db_path.parent / "memory-repo"), "tenant": "migration-tenant"},
+        provenance={
+            "root": str(db_path.parent / "memory-repo"),
+            "tenant": "migration-tenant",
+        },
     )
     # Seed durable projection directly; event-writer integration belongs to T08.
     MemoryStore(state)._save_record(memory)
 
-    verifications = VerificationStore(state, task_store=tasks)
+    verifications = VerificationStore(state, task_store=tasks, artifact_store=_MigrationArtifactStore(task))
     receipt = VerificationReceipt.create(
         task_id=task.task_id,
         criterion="migration",
@@ -109,7 +136,7 @@ def _assert_state_survives(db_path, task, event, memory):
         root=memory.provenance["root"],
         tenant=memory.provenance["tenant"],
     ).value == "durable memory"
-    assert VerificationStore(state, task_store=tasks).completion(task.task_id).complete is True
+    assert VerificationStore(state, task_store=tasks, artifact_store=_MigrationArtifactStore(task)).completion(task.task_id).complete is True
 
 
 def _backup_for(db_path):
@@ -133,7 +160,7 @@ def _make_historical_v0(db_path, event):
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "agent_event_schema_versions" in tables:
             connection.execute("DROP TABLE agent_event_schema_versions")
-        connection.execute("ALTER TABLE agent_events RENAME TO agent_events_current")
+        connection.execute("ALTER " "TABLE agent_events RENAME TO agent_events_current")
         connection.execute("""
             CREATE TABLE agent_events (
                 stream_id TEXT NOT NULL,
@@ -181,7 +208,7 @@ def test_unversioned_current_schema_migrates_with_verified_backup_and_restart(tm
     with closing(sqlite3.connect(db_path)) as connection:
         columns = [row[1] for row in connection.execute("PRAGMA table_info(agent_events)")]
         if "schema_version" in columns:
-            connection.execute("ALTER TABLE agent_events DROP COLUMN schema_version")
+            connection.execute("ALTER " "TABLE agent_events DROP COLUMN schema_version")
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for table in ("agent_event_schema_versions", "agent_schema_migrations"):
             if table in tables:
@@ -322,7 +349,7 @@ def test_unknown_legacy_layout_fails_closed_without_changing_database_bytes(tmp_
     db_path = tmp_path / "agent_state.sqlite3"
     _, event, _ = _seed_state(db_path)
     with closing(sqlite3.connect(db_path)) as connection:
-        connection.execute("ALTER TABLE agent_events ADD COLUMN unknown_future_data TEXT")
+        connection.execute("ALTER " "TABLE agent_events ADD COLUMN unknown_future_data TEXT")
         connection.execute("DROP TABLE agent_event_schema_versions")
         connection.execute("PRAGMA user_version=0")
         connection.commit()
@@ -539,8 +566,8 @@ def test_migration_backup_timeout_fails_closed_before_database_mutation(tmp_path
 
 
 @pytest.mark.parametrize("schema_changes", [
-    ("ALTER TABLE agent_tasks_projection ADD COLUMN extra TEXT NOT NULL DEFAULT ''",),
-    ("ALTER TABLE agent_change_intents ADD COLUMN linked_task TEXT REFERENCES agent_tasks_projection(task_id)",),
+    ("ALTER " "TABLE agent_tasks_projection ADD COLUMN extra TEXT NOT NULL DEFAULT ''",),
+    ("ALTER " "TABLE agent_change_intents ADD COLUMN linked_task TEXT REFERENCES agent_tasks_projection(task_id)",),
     (
         "DROP TABLE agent_memory_embeddings",
         "CREATE TABLE agent_memory_embeddings (record_id BLOB PRIMARY KEY, embedding TEXT NOT NULL, created_at REAL NOT NULL)",
@@ -637,3 +664,119 @@ def test_backup_timeout_bounds_sqlite_busy_wait(tmp_path, monkeypatch):
         source.close()
         locker.rollback()
         locker.close()
+
+
+def test_preflight_accepts_incident_store_ignored_column_migration_variant(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _seed_state(db_path)
+
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("DROP TABLE agent_incidents")
+        incident_ddl = """CREATE TABLE agent_incidents (
+                                incident_id TEXT PRIMARY KEY,
+                                operation_class TEXT NOT NULL,
+                                error_class TEXT NOT NULL,
+                                signature_hash TEXT NOT NULL,
+                                redacted_message TEXT NOT NULL,
+                                state_revision TEXT NOT NULL,
+                                attempts INTEGER NOT NULL,
+                                evidence_ids TEXT NOT NULL,
+                                root_cause TEXT,
+                                verified_fix TEXT,
+                                confidence REAL NOT NULL,
+                                resolved INTEGER NOT NULL,
+                                created_at REAL NOT NULL,
+                                updated_at REAL NOT NULL,
+                                expires_at REAL,
+                                affected_paths TEXT NOT NULL DEFAULT '[]'
+                            , ignored INTEGER NOT NULL DEFAULT 0)"""
+        connection.execute(incident_ddl)
+        connection.executescript(
+            """
+            CREATE INDEX idx_agent_incidents_fp
+                ON agent_incidents (error_class, operation_class, signature_hash, state_revision);
+            CREATE INDEX idx_agent_incidents_lookup
+                ON agent_incidents (operation_class, signature_hash, state_revision, updated_at DESC);
+            CREATE INDEX idx_agent_incidents_recent
+                ON agent_incidents (operation_class, signature_hash, updated_at DESC);
+            """
+        )
+        connection.execute(
+            "INSERT INTO agent_incidents (incident_id, operation_class, error_class, "
+            "signature_hash, redacted_message, state_revision, attempts, evidence_ids, "
+            "confidence, resolved, created_at, updated_at, affected_paths) "
+            "VALUES ('legacy-incident', 'command', '', '', '', '', 0, '[]', 0, 0, 1, 1, '[]')"
+        )
+        connection.commit()
+        incident_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_incidents'"
+        ).fetchone()[0]
+
+    incident_hash = hashlib.sha256(
+        " ".join(str(incident_sql).split()).casefold().encode("utf-8")
+    ).hexdigest()
+    assert incident_hash == "43c461c1906a1c11a5558889e2c49478942b940c3e98d0a926848ead3010a63e", repr(incident_sql)
+
+    before = _sqlite_file_snapshot(db_path)
+    state = AgentStateStore(db_path)
+    state._preflight_schema_read_only()
+    assert _sqlite_file_snapshot(db_path) == before
+    IncidentStore(state)
+    backups = list(tmp_path.glob("agent_state.sqlite3.migration-v0-v1-*.bak"))
+    assert len(backups) == 1
+    with closing(sqlite3.connect(backups[0])) as backup:
+        assert backup.execute(
+            "SELECT incident_id FROM agent_incidents WHERE incident_id='legacy-incident'"
+        ).fetchone() == ("legacy-incident",)
+        backup_sql = backup.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_incidents'"
+        ).fetchone()[0]
+        assert hashlib.sha256(
+            " ".join(str(backup_sql).split()).casefold().encode("utf-8")
+        ).hexdigest() == incident_hash
+    with closing(sqlite3.connect(db_path)) as migrated:
+        columns = {str(row[1]) for row in migrated.execute("PRAGMA table_info(agent_incidents)")}
+        assert {"ignored", "repository_key", "tenant_key"}.issubset(columns)
+        assert migrated.execute(
+            "SELECT incident_id FROM agent_incidents WHERE incident_id='legacy-incident'"
+        ).fetchone() == ("legacy-incident",)
+
+
+def test_preflight_accepts_incident_store_scope_columns_variant(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _seed_state(db_path)
+
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("DROP TABLE agent_incidents")
+        connection.execute(
+            """CREATE TABLE agent_incidents (
+                incident_id TEXT PRIMARY KEY,
+                operation_class TEXT NOT NULL,
+                error_class TEXT NOT NULL,
+                signature_hash TEXT NOT NULL,
+                redacted_message TEXT NOT NULL,
+                state_revision TEXT NOT NULL,
+                attempts INTEGER NOT NULL,
+                evidence_ids TEXT NOT NULL,
+                root_cause TEXT,
+                verified_fix TEXT,
+                confidence REAL NOT NULL,
+                resolved INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                expires_at REAL,
+                affected_paths TEXT NOT NULL DEFAULT '[]'
+            , ignored INTEGER NOT NULL DEFAULT 0, repository_key TEXT NOT NULL DEFAULT '', tenant_key TEXT NOT NULL DEFAULT '')"""
+        )
+        connection.commit()
+        incident_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_incidents'"
+        ).fetchone()[0]
+    incident_hash = hashlib.sha256(
+        " ".join(str(incident_sql).split()).casefold().encode("utf-8")
+    ).hexdigest()
+    assert incident_hash == "b3f8fa5c1723ab3addf421e28c3e9e07d232a7734cc95c247aed04224f3856b0"
+
+    before = _sqlite_file_snapshot(db_path)
+    AgentStateStore(db_path)._preflight_schema_read_only()
+    assert _sqlite_file_snapshot(db_path) == before

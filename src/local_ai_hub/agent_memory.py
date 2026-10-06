@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import hashlib
 import json
 import math
 import os
 import re
+import sqlite3
 import threading
 import time
 import uuid
@@ -56,6 +58,28 @@ def _memory_event_stream_id(scope: AgentScope, scope_id: str | None, key: str) -
     return "memory:" + "".join(f"{len(part)}:{part}" for part in parts)
 
 
+def _memory_deletion_event(
+    con: Any,
+    *,
+    record_id: str,
+) -> AgentEvent | None:
+    rows = con.execute(
+        """
+        SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
+               correlation_id, actor, created_at
+        FROM agent_events
+        WHERE kind = 'memory.deleted' AND idempotency_key = ?
+        """,
+        (f"deleted_{record_id}",),
+    ).fetchall()
+    for row in rows:
+        event = AgentEvent.from_row(row)
+        if str(event.payload.get("record_id", "")) != record_id:
+            raise ValueError("memory deletion idempotency key collision")
+        return event
+    return None
+
+
 def _normalise_scope_root(value: str) -> str:
     return os.path.normcase(os.path.abspath(os.path.normpath(str(value).replace("\\", "/")))).replace("\\", "/")
 
@@ -78,35 +102,31 @@ def _memory_matches_request_scope(
         if not isinstance(provenance, Mapping):
             return False
         record_root = str(provenance.get("root") or "")
-        return bool(record_root and root and _normalise_scope_root(record_root) == _normalise_scope_root(root))
+        record_tenant = str(provenance.get("tenant") or "").strip()
+        requested_tenant = str(tenant or "").strip()
+        if not (root and _normalise_scope_root(record_root) == _normalise_scope_root(root)):
+            return False
+        return requested_tenant == record_tenant
     if scope_value == AgentScope.TASK.value:
         if not isinstance(provenance, Mapping):
-            return False
-        record_provenance = provenance
-        record_root = str(record_provenance.get("root") or "").strip()
-        record_tenant = str(record_provenance.get("tenant") or "").strip()
+            provenance = {}
+        record_root = str(provenance.get("root") or "").strip()
+        record_tenant = str(provenance.get("tenant") or "").strip()
         requested_root = str(root or "").strip()
         requested_tenant = str(tenant or "").strip()
         requested_task_id = str(task_id or "").strip()
-        return bool(
-            requested_task_id
-            and requested_root
-            and requested_tenant
-            and str(scope_id or "").strip() == requested_task_id
-            and record_root
-            and _normalise_scope_root(record_root) == _normalise_scope_root(requested_root)
-            and record_tenant == requested_tenant
-        )
+        if not requested_task_id or str(scope_id or "").strip() != requested_task_id:
+            return False
+        if requested_root and record_root and _normalise_scope_root(record_root) != _normalise_scope_root(requested_root):
+            return False
+        return requested_tenant == record_tenant
     if scope_value == AgentScope.SESSION.value:
         record_tenant = str((provenance or {}).get("tenant") or "").strip()
         requested_tenant = str(tenant or "").strip()
         requested_session = str(session_id or "").strip()
-        return bool(
-            requested_session
-            and requested_tenant
-            and str(scope_id or "").strip() == requested_session
-            and record_tenant == requested_tenant
-        )
+        if not requested_session or str(scope_id or "").strip() != requested_session:
+            return False
+        return requested_tenant == record_tenant
     if scope_value == AgentScope.CLONE.value:
         return bool(clone_id) and scope_id == clone_id
     if scope_value == AgentScope.WORKTREE.value:
@@ -202,7 +222,7 @@ def _context_scope_sql(
 
     def add_scoped_identity(scope_value: str, identity_value: str = "") -> None:
         identity_value = str(identity_value or "").strip()
-        if not tenant or (scope_value != AgentScope.REPOSITORY.value and not identity_value):
+        if scope_value != AgentScope.REPOSITORY.value and not identity_value:
             return
         if scope_value == AgentScope.REPOSITORY.value and not root:
             return
@@ -544,7 +564,6 @@ def _normalise_memory_evidence_ids(value: Any, *, allow_none: bool = False) -> t
         raise ValueError("memory evidence_ids must contain only strings")
     return tuple(value)
 
-
 def _sanitise_memory_record(record: MemoryRecord, *, reject_sensitive: bool = True) -> MemoryRecord:
     sensitivity = str(record.sensitivity or "").strip().casefold()
     if reject_sensitive and sensitivity != "normal":
@@ -795,6 +814,12 @@ class MemoryStore:
                     ).fetchone()
                     if existing:
                         existing_event = AgentEvent.from_row(existing)
+                        existing_record_id = str(existing_event.payload.get("record_id", ""))
+                        if _memory_deletion_event(
+                            con,
+                            record_id=existing_record_id,
+                        ) is not None:
+                            raise ValueError("memory record was deleted and cannot be replayed")
                         self.state_store.append_in_transaction(
                             con,
                             existing_event,
@@ -814,23 +839,15 @@ class MemoryStore:
                             existing_record = self._row_to_record(existing_row)
                         else:
                             existing_record = MemoryRecord.from_dict(existing_event.payload)
-                            deleted = con.execute(
-                                """
-                                SELECT 1 FROM agent_events
-                                WHERE stream_id = ? AND kind = 'memory.deleted' AND seq > ?
-                                  AND json_extract(
-                                      CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
-                                      '$.record_id'
-                                  ) = ?
-                                LIMIT 1
-                                """,
-                                (stream_id, existing_event.seq, existing_record.record_id),
-                            ).fetchone()
-                            if deleted is None:
-                                self._save_record_row(con, existing_record)
+                            self._save_record_row(con, existing_record)
                         con.execute("COMMIT")
                         return existing_record, True, None
 
+                    if _memory_deletion_event(
+                        con,
+                        record_id=record.record_id,
+                    ) is not None:
+                        raise ValueError("memory record was deleted and cannot be replayed")
                     final_record = self._resolve_conflict_in_transaction(con, record)
                     event = AgentEvent.create(
                         stream_id=stream_id,
@@ -995,6 +1012,8 @@ class MemoryStore:
         worktree_id: str | None = None,
         branch: str | None = None,
     ) -> MemoryRecord:
+        if target_scope == AgentScope.GLOBAL and approver != "user":
+            raise ApprovalRequiredError("global promotion requires user approval")
         current = self.get(
             record_id,
             scope=scope,
@@ -1010,9 +1029,6 @@ class MemoryStore:
         )
         if not current:
             raise KeyError(f"Memory record {record_id} not found")
-
-        if target_scope == AgentScope.GLOBAL and approver != "user":
-            raise ApprovalRequiredError("global promotion requires user approval")
 
         promoted = current.with_scope(target_scope, MemoryStatus.CONFIRMED)
         event = AgentEvent.create(
@@ -1041,31 +1057,95 @@ class MemoryStore:
         worktree_id: str | None = None,
         branch: str | None = None,
     ) -> MemoryRecord:
-        current = self.get(
-            record_id,
-            scope=scope,
-            scope_id=scope_id,
-            root=root,
-            repository_id=repository_id,
-            tenant=tenant,
-            task_id=task_id,
-            session_id=session_id,
-            clone_id=clone_id,
-            worktree_id=worktree_id,
-            branch=branch,
-        )
-        if not current:
+        identity = {
+            "scope": scope,
+            "scope_id": scope_id,
+            "root": root,
+            "repository_id": repository_id,
+            "tenant": tenant,
+            "task_id": task_id,
+            "session_id": session_id,
+            "clone_id": clone_id,
+            "worktree_id": worktree_id,
+            "branch": branch,
+        }
+        authorised = self.get(record_id, **identity)
+        if authorised is None:
             raise KeyError(f"Memory record {record_id} not found")
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            quarantined = authorised.with_status(MemoryStatus.QUARANTINED, reason=reason)
+            self._save_record(quarantined)
+            return quarantined
+        self._init_table()
 
-        quarantined = current.with_status(MemoryStatus.QUARANTINED, reason=reason)
-        event = AgentEvent.create(
-            stream_id=f"memory:{current.scope.value}:{current.key or current.record_id}",
-            kind="memory.quarantined",
-            payload={"record_id": record_id, "reason": reason},
-            idempotency_key=f"quar_{record_id}_{int(time.time())}",
-            actor=actor,
+        def _do_quarantine() -> tuple[MemoryRecord, AgentEvent | None]:
+            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+            try:
+                with self.state_store.ordered_event_publication(con) as publish:
+                    con.execute("BEGIN IMMEDIATE")
+                    try:
+                        row = con.execute(
+                            """
+                            SELECT record_id, kind, scope, scope_id, key, value, status,
+                                   confidence, source, evidence_ids, sensitivity,
+                                   contradicts_record_id, supersedes_record_id,
+                                   quarantine_reason, provenance, created_at, updated_at,
+                                   expires_at
+                            FROM agent_memory_records
+                            WHERE record_id = ?
+                            """,
+                            (record_id,),
+                        ).fetchone()
+                        if row is None:
+                            raise KeyError(f"Memory record {record_id} not found")
+                        current = self._row_to_record(row)
+                        if (
+                            current.scope != authorised.scope
+                            or current.scope_id != authorised.scope_id
+                            or current.provenance != authorised.provenance
+                        ):
+                            raise KeyError(f"Memory record {record_id} not found")
+                        quarantined = current.with_status(
+                            MemoryStatus.QUARANTINED,
+                            reason=reason,
+                        )
+                        event = AgentEvent.create(
+                            stream_id=_memory_event_stream_id(
+                                current.scope,
+                                current.scope_id,
+                                current.key or current.record_id,
+                            ),
+                            kind="memory.quarantined",
+                            payload={"record_id": record_id, "reason": reason},
+                            idempotency_key=(
+                                f"quar_{record_id}_"
+                                f"{hashlib.sha256(reason.encode('utf-8')).hexdigest()[:16]}"
+                            ),
+                            actor=actor,
+                        )
+                        appended = self.state_store.append_in_transaction(
+                            con,
+                            event,
+                            strict_idempotency=False,
+                        )
+                        self._save_record_row(con, quarantined)
+                        con.execute("COMMIT")
+                    except BaseException:
+                        if bool(getattr(con, "in_transaction", False)):
+                            con.execute("ROLLBACK")
+                        raise
+                    persisted_event = appended.event
+                    publish([persisted_event] if persisted_event is not None else [])
+                    return quarantined, persisted_event
+            finally:
+                con.close()
+
+        quarantined, _event = retry_busy(
+            _do_quarantine,
+            retries=5,
+            base_delay_seconds=0.02,
         )
-        return self._save_record_mutation(quarantined, event)
+        return quarantined
 
     @staticmethod
     def _normalise_path(value: str) -> str:
@@ -1361,9 +1441,6 @@ class MemoryStore:
             and not str(session_id or "").strip()
             and str(scope_id or "").strip()
         ):
-            # ``scope_id`` is the persisted SESSION identity. Reuse it for the
-            # session-specific fail-closed filter when callers provide that
-            # identity without the redundant ``session_id`` alias.
             session_id = str(scope_id).strip()
         if (
             requested_scope == AgentScope.REPOSITORY.value
@@ -1391,20 +1468,7 @@ class MemoryStore:
                 semantic=False,
                 limit=1,
             )
-            record = records[0] if records else None
-            if requested_scope != AgentScope.GLOBAL.value or record is None:
-                return record
-            provenance = record.provenance if isinstance(record.provenance, dict) else {}
-            if str(record.scope_id or "").strip() or any(
-                str(provenance.get(field) or "").strip()
-                for field in ("root", "repository_id", "task_id", "session_id", "clone_id", "worktree_id", "branch")
-            ):
-                return None
-            record_tenant = str(provenance.get("tenant") or "").strip()
-            requested_tenant = str(tenant or "").strip()
-            if record_tenant and (not requested_tenant or record_tenant != requested_tenant):
-                return None
-            return record
+            return records[0] if records else None
         self._init_table()
         con = connect_sqlite(self.state_store.db_path)
         try:
@@ -1432,6 +1496,15 @@ class MemoryStore:
             if not include_expired:
                 sql += " AND (expires_at IS NULL OR expires_at > ?)"
                 params.append(time.time())
+            provenance_tenant = (
+                "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
+                "'$.tenant')"
+            )
+            sql += (
+                " AND scope = ? AND ("
+                f"{provenance_tenant} IS NULL OR {provenance_tenant} = '')"
+            )
+            params.append(AgentScope.GLOBAL.value)
             row = con.execute(sql, tuple(params)).fetchone()
             if not row:
                 return None
@@ -1651,13 +1724,6 @@ class MemoryStore:
             elif scope_val == AgentScope.GLOBAL.value:
                 sql += " AND 0"
 
-        if scope_val == AgentScope.TASK.value and not (task_id_val and root and tenant):
-            sql += " AND 0"
-        if scope_val == AgentScope.SESSION.value and not (session_id_val and tenant):
-            sql += " AND 0"
-        if scope_val == AgentScope.REPOSITORY.value and not root:
-            sql += " AND 0"
-
         if scope_val != AgentScope.GLOBAL.value:
             if scope_id_val:
                 sql += " AND scope_id = ?"
@@ -1665,9 +1731,15 @@ class MemoryStore:
             elif scope_val is not None:
                 has_identity = bool(root or repository_id or tenant or identity_scopes)
                 if scope_val == AgentScope.REPOSITORY.value:
-                    sql += " AND scope_id = ''"
-                elif scope_val in {AgentScope.TASK.value, AgentScope.SESSION.value} and not has_identity:
-                    sql += " AND scope_id = ''"
+                    if not (root or repository_id):
+                        sql += " AND 0"
+                elif scope_val in {AgentScope.TASK.value, AgentScope.SESSION.value}:
+                    if not legacy_allowed:
+                        sql += " AND 0"
+                    elif not has_identity:
+                        sql += " AND scope_id = ''"
+                    else:
+                        sql += " AND 0"
                 else:
                     sql += " AND 0"
         elif scope_id_val:
@@ -1684,34 +1756,10 @@ class MemoryStore:
         if legacy_allowed:
             sql += " AND (scope NOT IN (?, ?) OR scope_id = '')"
             params.extend([AgentScope.TASK.value, AgentScope.SESSION.value])
-        provenance_tenant = (
-            "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
-            "'$.tenant')"
-        )
-        if tenant_agnostic_global:
-            if scope_val != AgentScope.GLOBAL.value:
-                raise ValueError("tenant-agnostic memory lookup is only valid for GLOBAL scope")
-        elif tenant:
-            sql += (
-                f" AND ((scope = ? AND ({provenance_tenant} IS NULL OR "
-                f"{provenance_tenant} = '' OR {provenance_tenant} = ?)) "
-                f"OR (scope != ? AND {provenance_tenant} = ?))"
-            )
-            params.extend([AgentScope.GLOBAL.value, tenant, AgentScope.GLOBAL.value, tenant])
-        else:
-            sql += (
-                f" AND (scope = ? AND ({provenance_tenant} IS NULL OR "
-                f"{provenance_tenant} = ''))"
-            )
-            params.append(AgentScope.GLOBAL.value)
         if root:
             canonical_root = _normalise_scope_root(root)
-            if scope_val == AgentScope.GLOBAL.value:
-                sql += f" AND ({_CONTEXT_ROOT_SQL} = ? OR {_CONTEXT_ROOT_SQL} = '')"
-                params.append(canonical_root)
-            else:
-                sql += f" AND (scope = ? OR {_CONTEXT_ROOT_SQL} = ?)"
-                params.extend([AgentScope.GLOBAL.value, canonical_root])
+            sql += f" AND ({_CONTEXT_ROOT_VALUE_SQL} = ? OR {_CONTEXT_ROOT_SQL} = ?)"
+            params.extend([canonical_root, canonical_root])
         elif not repository_id and not (scope_val in identity_fields and scope_id_val):
             sql += f" AND (scope = ? OR {_CONTEXT_ROOT_SQL} = '')"
             params.append(AgentScope.GLOBAL.value)
@@ -1722,6 +1770,41 @@ class MemoryStore:
             )
             sql += f" AND {provenance_repository_id} = ?"
             params.append(repository_id)
+        provenance_tenant = (
+            "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
+            "'$.tenant')"
+        )
+        if tenant_agnostic_global:
+            if scope_val != AgentScope.GLOBAL.value:
+                raise ValueError("tenant-agnostic memory lookup is only valid for GLOBAL scope")
+        elif tenant:
+            if scope_val == AgentScope.GLOBAL.value or (
+                record_id is not None
+                and scope_val == AgentScope.TASK.value
+                and (repository_id or root)
+            ):
+                sql += (
+                    f" AND ({provenance_tenant} IS NULL OR "
+                    f"{provenance_tenant} = '' OR {provenance_tenant} = ?)"
+                )
+            else:
+                sql += f" AND {provenance_tenant} = ?"
+            params.append(tenant)
+        else:
+            sql += f" AND ({provenance_tenant} IS NULL OR {provenance_tenant} = '')"
+        if scope_val == AgentScope.REPOSITORY.value and (
+            not (root or repository_id)
+            or (scope is not None and not tenant and not repository_id)
+        ):
+            sql += " AND 0"
+        if scope_val == AgentScope.TASK.value:
+            if (tenant and not (root or repository_id)) or (root and not (tenant or repository_id)) or not (task_id_val or scope_id_val):
+                sql += " AND 0"
+        if scope_val == AgentScope.SESSION.value and (
+            (tenant and not session_id_val)
+            or (scope is not None and session_id_val and not tenant)
+        ):
+            sql += " AND 0"
         for identity_value, identity_scope in identity_scopes:
             if identity_scope == scope_val:
                 continue
@@ -1797,11 +1880,7 @@ class MemoryStore:
             cand_sql = base_sql + " ORDER BY updated_at DESC LIMIT 100"
             cand_rows = con.execute(cand_sql, tuple(base_params)).fetchall()
             seen_cand = {r.record_id for r in cand_records}
-            for row in cand_rows:
-                decoded = self._decode_memory_rows((row,))
-                if not decoded:
-                    continue
-                rec = decoded[0]
+            for rec in self._decode_memory_rows(cand_rows):
                 if rec.record_id not in seen_cand:
                     cand_records.append(rec)
                     seen_cand.add(rec.record_id)
@@ -1889,35 +1968,78 @@ class MemoryStore:
         self._init_table()
         cutoff = float(time.time() if now is None else now)
         with self._lock:
-            def _do_reap() -> int:
-                con = connect_sqlite(self.state_store.db_path)
+            def _do_reap() -> tuple[int, list[AgentEvent]]:
+                con = connect_sqlite(self.state_store.db_path, isolation_level=None)
                 try:
-                    with con:
-                        cur = con.execute(
-                            "DELETE FROM agent_memory_records WHERE expires_at IS NOT NULL AND expires_at <= ?",
-                            (cutoff,),
-                        )
-                        count = int(cur.rowcount)
-                        if count > 0:
-                            con.execute(
-                                "DELETE FROM agent_memory_embeddings WHERE record_id NOT IN (SELECT record_id FROM agent_memory_records)"
+                    with self.state_store.ordered_event_publication(con) as publish:
+                        con.execute("BEGIN IMMEDIATE")
+                        try:
+                            expired_rows = con.execute(
+                                """
+                                SELECT record_id, scope, scope_id, key, expires_at
+                                FROM agent_memory_records
+                                WHERE expires_at IS NOT NULL AND expires_at <= ?
+                                ORDER BY record_id
+                                """,
+                                (cutoff,),
+                            ).fetchall()
+                            events: list[AgentEvent] = []
+                            for row in expired_rows:
+                                record_id = str(row[0])
+                                event = AgentEvent.create(
+                                    stream_id=_memory_event_stream_id(
+                                        AgentScope(str(row[1])),
+                                        str(row[2] or ""),
+                                        str(row[3] or record_id),
+                                    ),
+                                    kind="memory.expired",
+                                    payload={
+                                        "record_id": record_id,
+                                        "expires_at": float(row[4]),
+                                    },
+                                    idempotency_key=f"expired_{record_id}",
+                                    actor="system",
+                                )
+                                appended = self.state_store.append_in_transaction(
+                                    con,
+                                    event,
+                                    strict_idempotency=False,
+                                )
+                                if not appended.duplicate and appended.event is not None:
+                                    events.append(appended.event)
+                            count = int(
+                                con.execute(
+                                    "DELETE FROM agent_memory_records WHERE expires_at IS NOT NULL AND expires_at <= ?",
+                                    (cutoff,),
+                                ).rowcount
                             )
-                            try:
+                            if count > 0:
                                 con.execute(
-                                    "DELETE FROM agent_memory_fts WHERE record_id NOT IN (SELECT record_id FROM agent_memory_records)"
+                                    "DELETE FROM agent_memory_embeddings WHERE record_id NOT IN (SELECT record_id FROM agent_memory_records)"
                                 )
-                            except Exception:
-                                pass
-                            try:
-                                con.execute(
-                                    "DELETE FROM agent_entity_relations WHERE source_entity NOT IN (SELECT record_id FROM agent_memory_records) AND target_entity NOT IN (SELECT record_id FROM agent_memory_records)"
-                                )
-                            except Exception:
-                                pass
-                        return count
+                                try:
+                                    con.execute(
+                                        "DELETE FROM agent_memory_fts WHERE record_id NOT IN (SELECT record_id FROM agent_memory_records)"
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    con.execute(
+                                        "DELETE FROM agent_entity_relations WHERE source_entity NOT IN (SELECT record_id FROM agent_memory_records) AND target_entity NOT IN (SELECT record_id FROM agent_memory_records)"
+                                    )
+                                except Exception:
+                                    pass
+                            con.execute("COMMIT")
+                        except BaseException:
+                            if bool(getattr(con, "in_transaction", False)):
+                                con.execute("ROLLBACK")
+                            raise
+                        publish(events)
+                        return count, events
                 finally:
                     con.close()
-            return retry_busy(_do_reap, retries=5, base_delay_seconds=0.02)
+            count, _events = retry_busy(_do_reap, retries=5, base_delay_seconds=0.02)
+            return count
 
     def count(self) -> int:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
@@ -2063,128 +2185,159 @@ class MemoryStore:
         root: str | None = None,
         repository_id: str | None = None,
         tenant: str | None = None,
-        actor: str = "agent",
+        task_id: str | None = None,
+        session_id: str | None = None,
+        clone_id: str | None = None,
+        worktree_id: str | None = None,
+        branch: str | None = None,
     ) -> bool:
         # Never derive authorization from the record being deleted. Callers must
-        # provide the scope identity they already verified. Tenant provenance is
-        # an additional predicate for scoped records; GLOBAL records are shared.
+        # provide the scope identity they already verified.
         if scope is None:
             return False
         scope_value = scope.value if isinstance(scope, AgentScope) else str(scope)
-        tenant_value = str(tenant).strip() if tenant else ""
-        if scope_value == AgentScope.GLOBAL.value:
-            if str(scope_id or "").strip():
+        parsed_scope = AgentScope.parse(scope_value, default=None)
+        if parsed_scope is None:
+            return False
+        scope_value = parsed_scope.value
+        identity_values = {
+            "root": str(root or "").strip(),
+            "repository_id": str(repository_id or "").strip(),
+            "tenant": str(tenant or "").strip(),
+            "task_id": str(task_id or "").strip(),
+            "session_id": str(session_id or "").strip(),
+            "clone_id": str(clone_id or "").strip(),
+            "worktree_id": str(worktree_id or "").strip(),
+            "branch": str(branch or "").strip(),
+        }
+        scope_id_value = str(scope_id or "").strip()
+        scope_identity_key = {
+            AgentScope.TASK: "task_id",
+            AgentScope.SESSION: "session_id",
+            AgentScope.CLONE: "clone_id",
+            AgentScope.WORKTREE: "worktree_id",
+            AgentScope.BRANCH: "branch",
+        }.get(parsed_scope)
+        if scope_identity_key:
+            supplied_scope_identity = identity_values[scope_identity_key]
+            if supplied_scope_identity:
+                if scope_id_value and scope_id_value != supplied_scope_identity:
+                    return False
+                scope_id_value = supplied_scope_identity
+            if not scope_id_value:
                 return False
-            scope_id = ""
-        elif scope_value == AgentScope.REPOSITORY.value:
-            if scope_id is None:
-                scope_id = ""
-            if not root and not repository_id:
+        elif parsed_scope is AgentScope.REPOSITORY:
+            if not identity_values["root"] and not identity_values["repository_id"]:
                 return False
-        elif scope_value != AgentScope.GLOBAL.value and not scope_id:
+        elif parsed_scope is AgentScope.GLOBAL:
+            # Tenant is transport identity, not part of a GLOBAL record's scope.
+            # Other supplied identities remain provenance constraints below.
+            scope_id_value = ""
+        elif not scope_id_value:
             return False
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return False
         self._init_table()
-        con = connect_sqlite(self.state_store.db_path, isolation_level=None)
-        try:
-            con.create_function(
-                "canonical_scope_root",
-                1,
-                lambda value: _normalise_scope_root(str(value)) if value else "",
-            )
-            with self.state_store.ordered_event_publication(con) as publish:
-                con.execute("BEGIN IMMEDIATE")
-                sql = "DELETE FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id IS ?"
-                params: list[Any] = [record_id, scope_value, scope_id]
-                if root:
-                    canonical_root = _normalise_scope_root(root)
-                    sql += f" AND ({_CONTEXT_ROOT_VALUE_SQL} = ? OR {_CONTEXT_ROOT_SQL} = ?)"
-                    params.extend([canonical_root, canonical_root])
-                elif scope_value == AgentScope.GLOBAL.value:
-                    sql += f" AND {_CONTEXT_ROOT_SQL} = ''"
-                if repository_id:
-                    provenance_repository_id = (
-                        "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
-                        "'$.repository_id')"
-                    )
-                    sql += f" AND {provenance_repository_id} = ?"
-                    params.append(repository_id)
-                elif scope_value == AgentScope.GLOBAL.value:
-                    provenance_repository_id = (
-                        "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
-                        "'$.repository_id')"
-                    )
-                    sql += f" AND ({provenance_repository_id} IS NULL OR {provenance_repository_id} = '')"
-                provenance_tenant = (
-                    "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
-                    "'$.tenant')"
-                )
-                if scope_value == AgentScope.GLOBAL.value:
-                    if tenant_value:
-                        sql += f" AND ({provenance_tenant} IS NULL OR {provenance_tenant} = '' OR {provenance_tenant} = ?)"
-                        params.append(tenant_value)
-                    else:
-                        sql += f" AND ({provenance_tenant} IS NULL OR {provenance_tenant} = '')"
-                else:
-                    if tenant_value:
-                        sql += f" AND {provenance_tenant} = ?"
-                        params.append(tenant_value)
-                    else:
-                        sql += f" AND ({provenance_tenant} IS NULL OR {provenance_tenant} = '')"
-                where_clause = sql.split(" WHERE ", 1)[1]
-                deleted_row = con.execute(
-                    "SELECT scope_id, key FROM agent_memory_records WHERE " + where_clause,
-                    params,
-                ).fetchone()
-                cur = con.execute(sql, params)
-                cnt = cur.rowcount
-                if cnt > 0:
+
+        def _do_delete() -> tuple[bool, AgentEvent | None]:
+            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+            try:
+                with self.state_store.ordered_event_publication(con) as publish:
+                    con.execute("BEGIN IMMEDIATE")
+                    row = con.execute(
+                        """
+                        SELECT scope_id, key, provenance
+                        FROM agent_memory_records
+                        WHERE record_id = ? AND scope = ? AND scope_id = ?
+                        """,
+                        (record_id, scope_value, scope_id_value),
+                    ).fetchone()
+                    if row is None:
+                        con.execute("COMMIT")
+                        return False, None
+                    try:
+                        provenance = json.loads(row[2]) if row[2] else {}
+                    except (TypeError, ValueError):
+                        provenance = {}
+                    record_tenant = str(provenance.get("tenant", "") or "").strip()
+                    if record_tenant and parsed_scope is not AgentScope.GLOBAL and record_tenant != identity_values["tenant"]:
+                        con.execute("COMMIT")
+                        return False, None
+                    for identity_key, expected in identity_values.items():
+                        if not expected or identity_key == scope_identity_key:
+                            continue
+                        if parsed_scope is AgentScope.GLOBAL and identity_key == "tenant":
+                            continue
+                        actual = str(provenance.get(identity_key, "") or "").strip()
+                        if identity_key == "root":
+                            if _normalise_scope_root(actual) != _normalise_scope_root(expected):
+                                con.execute("COMMIT")
+                                return False, None
+                        elif actual != expected:
+                            con.execute("COMMIT")
+                            return False, None
+
                     stream_id = _memory_event_stream_id(
-                        AgentScope(scope_value),
-                        str(deleted_row[0] or ""),
-                        str(deleted_row[1] or record_id),
+                        parsed_scope,
+                        str(row[0] or ""),
+                        str(row[1] or record_id),
                     )
                     event = AgentEvent.create(
                         stream_id=stream_id,
                         kind="memory.deleted",
                         payload={"record_id": record_id},
-                        idempotency_key=f"del_{record_id}",
-                        actor="agent",
+                        idempotency_key=f"deleted_{record_id}",
+                        actor="memory-store",
                     )
                     appended = self.state_store.append_in_transaction(
                         con,
                         event,
-                        strict_idempotency=False,
+                        strict_idempotency=True,
                     )
-                    con.execute(
-                        "DELETE FROM agent_entity_relations WHERE source_entity = ? OR target_entity = ?",
-                        (record_id, record_id),
+                    if appended.error or appended.event is None:
+                        raise RuntimeError(appended.error or "memory deletion event append returned no persisted event")
+
+                    cur = con.execute(
+                        "DELETE FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = ?",
+                        (record_id, scope_value, scope_id_value),
                     )
-                    con.execute(
-                        "DELETE FROM agent_memory_embeddings WHERE record_id = ?",
-                        (record_id,),
-                    )
-                    fts_table = con.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_memory_fts'"
-                    ).fetchone()
-                    if fts_table is not None:
+                    cnt = cur.rowcount
+                    if cnt <= 0:
+                        raise RuntimeError("memory record disappeared during deletion")
+                    if cnt > 0:
                         con.execute(
-                            "DELETE FROM agent_memory_fts WHERE record_id = ?",
+                            "DELETE FROM agent_memory_embeddings WHERE record_id = ?",
                             (record_id,),
                         )
-                con.execute("COMMIT")
-                if cnt > 0:
+                        if con.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_memory_fts'"
+                        ).fetchone() is not None:
+                            con.execute(
+                                "DELETE FROM agent_memory_fts WHERE record_id = ?",
+                                (record_id,),
+                            )
+                        con.execute(
+                            "DELETE FROM agent_entity_relations WHERE source_entity = ? OR target_entity = ?",
+                            (record_id, record_id),
+                        )
+                    con.execute("COMMIT")
                     publish([appended.event])
-                return cnt > 0
-        except Exception:
-            try:
-                con.execute("ROLLBACK")
+                    return True, appended.event
             except Exception:
-                pass
-            raise
-        finally:
-            con.close()
+                try:
+                    con.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+            finally:
+                con.close()
+
+        deleted, _ = retry_busy(
+            _do_delete,
+            retries=5,
+            base_delay_seconds=0.02,
+        )
+        return deleted
 
     def compact(
         self,
@@ -2200,7 +2353,27 @@ class MemoryStore:
             return {"success": False, "compacted_groups": 0, "compacted_records": 0, "created_records": []}
 
         now = time.time()
-        records = self.find(scope=scope, limit=1000)
+        self._init_table()
+        scope_value = (
+            scope.value if hasattr(scope, "value")
+            else (AgentScope.parse(scope, AgentScope.REPOSITORY).value if scope is not None else None)
+        )
+        select_sql = (
+            "SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source, "
+            "evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id, "
+            "quarantine_reason, provenance, created_at, updated_at, expires_at "
+            "FROM agent_memory_records WHERE (expires_at IS NULL OR expires_at > ?)"
+        )
+        select_params: list[Any] = [now]
+        if scope_value is not None:
+            select_sql += " AND scope = ?"
+            select_params.append(scope_value)
+        select_sql += " ORDER BY updated_at DESC LIMIT 1000"
+        con = connect_sqlite(self.state_store.db_path)
+        try:
+            records = self._decode_memory_rows(con.execute(select_sql, tuple(select_params)).fetchall())
+        finally:
+            con.close()
         candidates = [
             r for r in records
             if r.status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED)
@@ -2208,14 +2381,15 @@ class MemoryStore:
             and (older_than_seconds <= 0.0 or (now - r.updated_at) >= older_than_seconds)
         ]
 
-        groups: dict[tuple[AgentScope, MemoryKind], list[MemoryRecord]] = defaultdict(list)
+        groups: dict[tuple[AgentScope, str, MemoryKind, str], list[MemoryRecord]] = defaultdict(list)
         for r in candidates:
-            groups[(r.scope, r.kind)].append(r)
+            provenance_key = json_dumps(r.provenance or {}, sort_keys=True)
+            groups[(r.scope, r.scope_id, r.kind, provenance_key)].append(r)
 
         created_records: list[dict[str, Any]] = []
         total_compacted = 0
 
-        for (grp_scope, grp_kind), grp_records in groups.items():
+        for (grp_scope, grp_scope_id, grp_kind, provenance_key), grp_records in groups.items():
             if len(grp_records) < max(2, min_records):
                 continue
 
@@ -2223,7 +2397,18 @@ class MemoryStore:
             if target_scope is not None:
                 out_scope = AgentScope.parse(target_scope, grp_scope)
 
-            digest_key = f"compacted_{grp_kind.value}_{int(now)}"
+            group_identity = json_dumps(
+                [
+                    grp_scope.value,
+                    grp_scope_id,
+                    grp_kind.value,
+                    provenance_key,
+                    sorted(record.record_id for record in grp_records),
+                ],
+                sort_keys=True,
+            )
+            digest_suffix = hashlib.sha256(group_identity.encode("utf-8")).hexdigest()[:12]
+            digest_key = f"compacted_{grp_kind.value}_{int(now)}_{digest_suffix}"
             all_ev: set[str] = set()
             for r in grp_records:
                 all_ev.update(r.evidence_ids)
@@ -2245,41 +2430,91 @@ class MemoryStore:
             digest_record = MemoryRecord.create(
                 kind=grp_kind,
                 scope=out_scope,
+                scope_id=grp_scope_id if out_scope == grp_scope else "",
                 key=digest_key,
                 value=digest_value,
                 confidence=round(avg_conf, 3),
+                provenance=dict(grp_records[0].provenance),
                 status=MemoryStatus.CONFIRMED if out_scope != grp_scope else MemoryStatus.ACTIVE,
                 source="memory_compactor",
                 evidence_ids=tuple(sorted(all_ev)),
             )
 
-            self._save_record(digest_record)
+            pending_events: list[AgentEvent] = []
+            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+            try:
+                with self.state_store.ordered_event_publication(con) as publish:
+                    con.execute("BEGIN IMMEDIATE")
+                    try:
+                        self._save_record_row(con, digest_record)
+                        for src_rec in grp_records:
+                            superseded_rec = src_rec.with_superseded_by(digest_record.record_id)
+                            self._save_record_row(con, superseded_rec)
+                            relation_id = f"rel_{uuid.uuid4().hex[:12]}"
+                            relation_now = time.time()
+                            con.execute(
+                                """
+                                INSERT INTO agent_entity_relations (
+                                    relation_id, source_entity, relation, target_entity,
+                                    weight, metadata, created_at, updated_at
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    relation_id,
+                                    src_rec.record_id,
+                                    "compacted_into",
+                                    digest_record.record_id,
+                                    1.0,
+                                    json_dumps({}),
+                                    relation_now,
+                                    relation_now,
+                                ),
+                            )
+                            relation_event = AgentEvent.create(
+                                stream_id=f"relation:{src_rec.record_id}:{digest_record.record_id}",
+                                kind="relation.recorded",
+                                payload={
+                                    "relation_id": relation_id,
+                                    "source": src_rec.record_id,
+                                    "relation": "compacted_into",
+                                    "target": digest_record.record_id,
+                                    "weight": 1.0,
+                                },
+                                actor=actor,
+                            )
+                            appended_relation = self.state_store.append_in_transaction(
+                                con, relation_event, strict_idempotency=False
+                            )
+                            pending_events.append(appended_relation.event)
+                            total_compacted += 1
+
+                        compact_event = AgentEvent.create(
+                            stream_id=_memory_event_stream_id(
+                                out_scope, digest_record.scope_id, digest_key
+                            ),
+                            kind="memory.compacted",
+                            payload={
+                                "digest_record_id": digest_record.record_id,
+                                "compacted_count": len(grp_records),
+                                "source_record_ids": [r.record_id for r in grp_records],
+                            },
+                            idempotency_key=f"compact_{digest_record.record_id}",
+                            actor=actor,
+                        )
+                        appended_compact = self.state_store.append_in_transaction(
+                            con, compact_event, strict_idempotency=False
+                        )
+                        pending_events.append(appended_compact.event)
+                        con.execute("COMMIT")
+                    except BaseException:
+                        if bool(getattr(con, "in_transaction", False)):
+                            con.execute("ROLLBACK")
+                        raise
+                    publish(pending_events)
+            finally:
+                con.close()
+
             self._auto_link_record(digest_record, actor=actor)
-
-            for src_rec in grp_records:
-                superseded_rec = src_rec.with_superseded_by(digest_record.record_id)
-                self._save_record(superseded_rec)
-                self.record_relation(
-                    source=src_rec.record_id,
-                    relation="compacted_into",
-                    target=digest_record.record_id,
-                    weight=1.0,
-                    actor=actor,
-                )
-                total_compacted += 1
-
-            event = AgentEvent.create(
-                stream_id=f"memory:{out_scope.value}:{digest_key}",
-                kind="memory.compacted",
-                payload={
-                    "digest_record_id": digest_record.record_id,
-                    "compacted_count": len(grp_records),
-                    "source_record_ids": [r.record_id for r in grp_records],
-                },
-                idempotency_key=f"compact_{digest_record.record_id}",
-                actor=actor,
-            )
-            self.state_store.append(event)
             created_records.append(digest_record.to_dict())
 
         return {

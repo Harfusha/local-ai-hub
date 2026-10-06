@@ -60,6 +60,8 @@ def test_memory_record_find_delete_and_restart_round_trip(tmp_path: Path) -> Non
         saved.record_id,
         scope=AgentScope.REPOSITORY,
         scope_id="repo-restart",
+        root=str(tmp_path),
+        repository_id="repo-restart",
     ) is True
     assert reopened.get(saved.record_id) is None
 

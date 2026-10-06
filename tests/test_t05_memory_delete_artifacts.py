@@ -14,16 +14,19 @@ def test_scoped_delete_purges_fts_and_embedding_artifacts(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     store = MemoryStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
-    record = MemoryRecord.create(
-        kind=MemoryKind.FACT,
-        scope=AgentScope.REPOSITORY,
-        scope_id=str(root),
-        key="delete-search-artifacts",
-        value="sensitive searchable memory",
-        source="user",
-        provenance={"root": str(root), "tenant": "tenant-a"},
+    record = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope=AgentScope.REPOSITORY,
+            scope_id=str(root),
+            key="delete-search-artifacts",
+            value="sensitive searchable memory",
+            source="user",
+            provenance={"root": str(root), "tenant": "tenant-a"},
+        ),
+        actor="user",
+        idempotency_key="delete-search-artifacts",
     )
-    store._save_record(record)
     assert store.set_embedding(record.record_id, [0.25, 0.75])
     with closing(connect_sqlite(store.state_store.db_path)) as con:
         fts_exists = con.execute(
@@ -95,8 +98,8 @@ def test_replaying_record_after_delete_does_not_restore_memory_or_fts(tmp_path):
         tenant="tenant-a",
     )
 
-    replayed = store.record(record, actor="user", idempotency_key="delete-replay-record")
-    assert replayed.record_id == record.record_id
+    with pytest.raises(ValueError, match="memory record was deleted and cannot be replayed"):
+        store.record(record, actor="user", idempotency_key="delete-replay-record")
     assert store.get(
         record.record_id,
         scope=AgentScope.REPOSITORY,
@@ -131,26 +134,30 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
     root.mkdir()
     db_path = tmp_path / "agent_state.sqlite3"
     store = MemoryStore(AgentStateStore(db_path))
-    record = MemoryRecord.create(
-        kind=MemoryKind.FACT,
-        scope=AgentScope.REPOSITORY,
-        scope_id=str(root),
-        key="rollback-delete-primary",
-        value="retain after failed deletion",
-        source="user",
-        provenance={"root": str(root), "tenant": "tenant-a"},
+    record = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope=AgentScope.REPOSITORY,
+            scope_id=str(root),
+            key="rollback-delete-primary",
+            value="retain after failed deletion",
+            source="user",
+            provenance={"root": str(root), "tenant": "tenant-a"},
+        ),
+        actor="user",
     )
-    related = MemoryRecord.create(
-        kind=MemoryKind.FACT,
-        scope=AgentScope.REPOSITORY,
-        scope_id=str(root),
-        key="rollback-delete-related",
-        value="retain relation",
-        source="user",
-        provenance={"root": str(root), "tenant": "tenant-a"},
+    related = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope=AgentScope.REPOSITORY,
+            scope_id=str(root),
+            key="rollback-delete-related",
+            value="retain relation",
+            source="user",
+            provenance={"root": str(root), "tenant": "tenant-a"},
+        ),
+        actor="user",
     )
-    store._save_record(record)
-    store._save_record(related)
     store.record_relation(record.record_id, "related_to", related.record_id)
     assert store.set_embedding(record.record_id, [0.5, 0.5])
     with closing(connect_sqlite(db_path)) as con:
@@ -163,7 +170,7 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
         f"{len(part)}:{part}" for part in (record.scope.value, record.scope_id or "", record.key or record.record_id)
     )
     seeded_event = AgentEvent.create(stream_id, "test.marker", {"safe": True}, "delete-fault-before")
-    assert store.state_store.append(seeded_event).event == seeded_event.with_seq(1)
+    assert store.state_store.append(seeded_event).event == seeded_event.with_seq(2)
     events_before = store.state_store.events(stream_id)
 
     real_connect = sqlite3.connect

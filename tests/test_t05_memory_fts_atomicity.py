@@ -51,6 +51,7 @@ def test_record_update_fts_write_failure_rolls_back_durable_record_and_preserves
     monkeypatch.setattr(agent_memory_module, "connect_sqlite", connect_with_fts_write_fault)
     with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
         store.record(updated, actor="user", idempotency_key="failed-update")
+
     con = connect_sqlite(state_store.db_path)
     try:
         row = con.execute(
@@ -65,6 +66,14 @@ def test_record_update_fts_write_failure_rolls_back_durable_record_and_preserves
             "SELECT COUNT(*) FROM agent_events WHERE idempotency_key = ?",
             ("failed-update",),
         ).fetchone()[0]
+        stream_id = con.execute(
+            "SELECT stream_id FROM agent_events WHERE idempotency_key = ?",
+            ("before-update",),
+        ).fetchone()[0]
+        cursor = con.execute(
+            "SELECT last_seq FROM agent_event_cursors WHERE stream_id = ?",
+            (stream_id,),
+        ).fetchone()
     finally:
         con.close()
 
