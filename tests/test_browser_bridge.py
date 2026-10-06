@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
 import threading
 import tomllib
 from pathlib import Path
@@ -79,6 +80,9 @@ class ArtifactSink:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object, str, str | None]] = []
 
+    def batch(self, tenant: str, *, cancel_check=None):
+        return _ArtifactSinkBatch(self, tenant)
+
     def put_bytes(self, value: bytes, tenant: str, kind: str, mime_type: str) -> str:
         self.calls.append(("bytes", value, tenant, mime_type))
         return f"{tenant}:screenshot"
@@ -86,6 +90,24 @@ class ArtifactSink:
     def put_json(self, value: dict, tenant: str, kind: str) -> str:
         self.calls.append((kind, value, tenant, None))
         return f"{tenant}:{kind}"
+
+
+class _ArtifactSinkBatch:
+    def __init__(self, sink: ArtifactSink, tenant: str):
+        self._sink = sink
+        self._tenant = tenant
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def put_json(self, value: dict, kind: str) -> str:
+        return self._sink.put_json(value, self._tenant, kind)
+
+    def put_bytes(self, value: bytes, kind: str, mime_type: str) -> str:
+        return self._sink.put_bytes(value, self._tenant, kind, mime_type)
 
 
 def test_capture_capability_is_single_use_and_tab_bound() -> None:
@@ -308,6 +330,56 @@ def test_abandon_cancels_inflight_commit_before_artifact_write(monkeypatch: pyte
     worker.join(2)
     assert result == [{"success": False, "terminal": True, "retryable": False, "error_code": "capture_cancelled", "error": "cancelled", "request_id": "cancel-inflight"}]
     assert sink.calls == []
+
+
+def test_expiry_cancels_inflight_commit_before_artifact_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = {"now": 100.0}
+    monkeypatch.setattr(browser_bridge_module.time, "monotonic", lambda: clock["now"])
+    started = threading.Event()
+    release = threading.Event()
+    short_config = config()
+    short_config["browser_bridge"]["capability_ttl_seconds"] = 1
+    sink = ArtifactSink()
+    capability = issue_capture_capability(
+        short_config, origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
+    payload = capture_payload()
+    payload["request_id"] = "expire-inflight"
+    assert stage_capture(capability, payload, tenant="tenant-a", config=short_config)["success"] is True
+
+    def delayed_capture(*_args, cancel_check=None, **_kwargs):
+        started.set()
+        release.wait(2)
+        assert cancel_check is not None
+        if cancel_check():
+            return {"success": False, "terminal": True, "retryable": False, "error_code": "capture_cancelled", "error": "expired"}
+        raise AssertionError("expiry was not observed before artifact write")
+
+    monkeypatch.setattr(browser_bridge_module, "capture_to_artifacts", delayed_capture)
+    result: list[dict] = []
+    worker = threading.Thread(
+        target=lambda: result.append(
+            commit_staged_capture(
+                capability,
+                {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "expire-inflight"},
+                artifacts=sink,
+                tenant="tenant-a",
+                config=short_config,
+            )
+        )
+    )
+    worker.start()
+    assert started.wait(2)
+    clock["now"] = 102.0
+    replacement = issue_capture_capability(
+        short_config, origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
+    assert replacement
+    release.set()
+    worker.join(2)
+    assert not worker.is_alive()
+    assert result == [{"success": False, "terminal": True, "retryable": False, "error_code": "capture_cancelled", "error": "expired", "request_id": "expire-inflight"}]
+    assert sink.calls == []
 def test_expired_staged_capture_is_cleaned_without_artifact_commit(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = {"now": 100.0}
     monkeypatch.setattr(browser_bridge_module.time, "monotonic", lambda: clock["now"])
@@ -335,6 +407,116 @@ def test_expired_staged_capture_is_cleaned_without_artifact_commit(monkeypatch: 
     )
     assert late_commit["success"] is False
     assert sink.calls == []
+
+
+def test_partial_artifact_failure_is_terminal_and_not_reported_as_success() -> None:
+    class FailingSink(ArtifactSink):
+        def put_json(self, value: dict, tenant: str, kind: str) -> str:
+            if kind == "browser-computed-styles":
+                self.calls.append((kind, value, tenant, None))
+                raise OSError("fixture artifact failure")
+            return super().put_json(value, tenant, kind)
+
+    sink = FailingSink()
+    capability = issue_capture_capability(
+        config(), origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
+    payload = capture_payload()
+    payload["request_id"] = "partial-artifact-failure"
+    assert stage_capture(capability, payload, tenant="tenant-a", config=config())["success"] is True
+    request = {
+        "origin": "chrome-extension://fixture",
+        "tab_id": 7,
+        "window_id": 3,
+        "request_id": "partial-artifact-failure",
+    }
+
+    failed = commit_staged_capture(capability, request, artifacts=sink, tenant="tenant-a", config=config())
+    writes_after_failure = len(sink.calls)
+    replay = commit_staged_capture(capability, request, artifacts=sink, tenant="tenant-a", config=config())
+
+    assert failed["success"] is False
+    assert failed["error_code"] == "artifact_store_error"
+    assert replay == failed
+    assert len(sink.calls) == writes_after_failure
+    assert not any(call[0] == "frontend-review-bundle" for call in sink.calls)
+
+
+def run_browser_background_case(case: str) -> dict:
+    root = Path(__file__).parents[1]
+    result = subprocess.run(
+        [
+            "node",
+            str(root / "tests/test_browser_bridge_background.js"),
+            str(root / "browser_bridge/background.js"),
+            case,
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_extension_abandons_stage_when_tab_or_document_changes_before_commit() -> None:
+    for change_kind in ("navigation", "same-url-state"):
+        assert run_browser_background_case(change_kind) == {
+            "success": True,
+            "case": f"{change_kind}-after-stage-abandons",
+        }
+
+
+def test_extension_reports_and_abandons_partial_artifact_commit_failure() -> None:
+    assert run_browser_background_case("artifact-failure") == {
+        "success": True,
+        "case": "artifact-failure-reported-and-abandoned",
+    }
+
+
+def test_extension_reconciles_commit_when_response_is_lost() -> None:
+    assert run_browser_background_case("lost-commit-response") == {
+        "success": True,
+        "case": "lost-commit-response-reconciled",
+    }
+
+
+def test_extension_reconciles_commit_after_http_5xx_response() -> None:
+    assert run_browser_background_case("commit-5xx-response") == {
+        "success": True,
+        "case": "commit-5xx-reconciled",
+    }
+
+
+def test_extension_does_not_cancel_commit_with_ambiguous_in_progress_result() -> None:
+    assert run_browser_background_case("commit-in-progress") == {
+        "success": True,
+        "case": "in-progress-commit-not-cancelled",
+    }
+
+
+def test_extension_preserves_timed_out_commit_outcome() -> None:
+    assert run_browser_background_case("commit-timeout-response") == {
+        "success": True,
+        "case": "timed-out-commit-not-cancelled",
+    }
+
+
+def test_extension_does_not_cancel_commit_when_both_responses_are_lost() -> None:
+    assert run_browser_background_case("commit-response-lost-twice") == {
+        "success": True,
+        "case": "ambiguous-commit-left-uncancelled",
+    }
+
+
+@pytest.mark.parametrize("response_case", ["commit-invalid-shape", "commit-missing-artifact-id", "commit-request-id-mismatch"])
+def test_extension_treats_malformed_commit_response_as_unknown(response_case: str) -> None:
+    assert run_browser_background_case(response_case) == {
+        "success": True,
+        "case": "malformed-commit-remains-unknown",
+    }
 
 
 def test_packaged_browser_bridge_defaults_match_source_defaults() -> None:

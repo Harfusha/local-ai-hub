@@ -264,6 +264,7 @@ tbody tr.click:hover{background:#162338}
       <span class="brand">Local AI Hub</span>
     </div>
     <span id="conn" class="pill warn-t"><span class="pulse-dot"></span>connecting</span>
+    <span id="activityModeBadge" class="pill warn-t" data-mode="unknown">Mode: Unknown</span>
     <span id="updated" class="tiny"></span>
     <label class="tiny">SLO <select id="sloScope"><option value="process" selected>Since restart</option><option value="window">Last 30 days</option></select></label>
     <span class="tiny spacer">Agent debug traces · bounded prompt/output retention</span>
@@ -278,6 +279,11 @@ tbody tr.click:hover{background:#162338}
         <button class="btn" id="doctorBtn">Run diagnostics</button>
         <button class="btn" id="pauseEvents">Pause live events</button>
         <div class="tiny muted">Runtime control</div>
+        <div class="tiny muted">Set activity mode</div>
+        <button class="btn" id="activityModeActive" data-activity-mode="active" aria-pressed="false">Active</button>
+        <button class="btn" id="activityModeGaming" data-activity-mode="gaming" aria-pressed="false">Gaming</button>
+        <button class="btn" id="activityModeMaintenance" data-activity-mode="maintenance" aria-pressed="false">Maintenance</button>
+        <span id="activityModeStatus" class="tiny muted" role="status" aria-live="polite">Checking mode…</span>
         <button class="btn warn" id="prepToggle">Pause preprocessing</button>
         <button class="btn" id="restartHub" data-control-action="restart_hub">Restart hub service</button>
         <div class="tiny muted">Destructive maintenance</div>
@@ -517,7 +523,7 @@ tbody tr.click:hover{background:#162338}
 <div id="reliability" class="page">
   <section class="section" id="reliabilitySummary"><h2>Operational severity <span class="tiny">Aggregates current failures, restart history, and request health.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Failure trend unavailable until telemetry arrives.</div><div style="display:flex;gap:8px;align-items:center"><button class="btn ok" id="resolveErrorsBtn" style="display:none;padding:4px 10px">Resolve all errors</button><button class="btn" id="reliabilityAction">Open affected requests</button></div></div></section>
   <div class="split">
-    <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
+    <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Diagnostic</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
     <section class="section"><h2>Runtime / scheduler counters</h2><div id="runtimeCounters" class="kv"></div></section>
   </div>
   <section class="section">
@@ -543,7 +549,7 @@ tbody tr.click:hover{background:#162338}
     <div style="padding:14px">
       <div class="dash-group"><div class="group-title">Hardware &amp; Engine</div><div class="kv" style="padding:0;margin-bottom:12px"><div>Hardware profile</div><div><select id="cfgProfile" style="background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:6px;padding:6px 10px"><option>auto</option><option>cpu</option><option>integrated</option><option>low</option><option>balanced</option><option>high</option><option>max</option></select></div></div></div>
       <div class="dash-group"><div class="group-title">Core MCP Tools</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatStatus"> status (local_ai_status)</label><label><input type="checkbox" id="cfgFeatRepo"> repo (local_ai_repo)</label><label><input type="checkbox" id="cfgFeatTasks"> tasks (local_ai_task &amp; Ollama)</label><label><input type="checkbox" id="cfgFeatRag"> rag (local_ai_rag)</label><label><input type="checkbox" id="cfgFeatCommands"> commands (local_ai_command)</label><label><input type="checkbox" id="cfgFeatCoord"> coord (local_ai_coord)</label><label><input type="checkbox" id="cfgFeatArtifacts"> artifacts (local_ai_artifact)</label></div></div>
-      <div class="dash-group"><div class="group-title">Code Intelligence &amp; Indexing</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgPreprocess"> Preprocessing enabled</label><label><input type="checkbox" id="cfgIntel"> Managed code intelligence</label><label><input type="checkbox" id="cfgSerena"> Serena backend</label><label><input type="checkbox" id="cfgCodegraph"> CodeGraphContext backend</label></div></div>
+      <div class="dash-group"><div class="group-title">Code Intelligence &amp; Indexing</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgPreprocess"> Preprocessing enabled</label><label><input type="checkbox" id="cfgIntel"> Managed code intelligence</label><label><input type="checkbox" id="cfgSerena"> Serena backend</label></div></div>
       <div class="dash-group"><div class="group-title">Advanced Subsystems</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatSubagents"> Subagents (Ollama workers)</label><label><input type="checkbox" id="cfgFeatAgentOs"> Agent OS (durable memory/receipts)</label><label><input type="checkbox" id="cfgFeatDashboard"> Web Dashboard</label></div></div>
       <div class="tiny muted" style="margin:4px 0 7px">Scope and impact: saves only dashboard-managed overrides. Restart applies changes; reset removes only those overrides.</div><div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px"><button class="btn ok" id="cfgSave">Save overrides (restart required)</button><button class="btn" id="cfgReload">Reload view</button><button class="btn warn" id="cfgReset">Reset dashboard overrides</button><span class="tiny" id="cfgStatus"></span></div>
     </div>
@@ -581,6 +587,16 @@ document.head.insertAdjacentHTML('beforeend','<style>.vision-review-modal{width:
 
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
+
+function dashboardHealthBadge(status={}){
+  const dependencies=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.values(status.dependency_status):[];
+  const degradedCount=dependencies.filter(item=>item&&item.degraded===true).length;
+  const degraded=status.success===false||degradedCount>0;
+  const ollamaState=status.ollama_status||((status.ollama_online==null)?'unknown':status.ollama_online?'online':'offline');
+  const className=status.hub_online?(degraded||ollamaState!=='online'?'warn-t':'ok'):'bad-t';
+  const degradedLabel=degradedCount?` / ${String(degradedCount)} degraded check${degradedCount===1?'':'s'}`:degraded?' / status degraded':'';
+  return {className,degradedCount,degradedLabel};
+}
 
 function dashboardHealth(snapshot={}){
   const current=snapshot.current||snapshot.live||snapshot.headless||snapshot;
@@ -771,8 +787,57 @@ let sloScope=$('sloScope')?$('sloScope').value:'1h';
 if($('sloScope')) $('sloScope').onchange=()=>{sloScope=$('sloScope').value;pollStatus()};
 if($('saveToken')) $('saveToken').onclick=()=>{if($('apiToken'))saveToken($('apiToken').value);pollStatus()};
 
+function createDashboardStatusPoller(poll,options={}){
+  const baseDelay=Math.max(1,Number(options.baseDelay)||5000);
+  const maxDelay=Math.max(baseDelay,Number(options.maxDelay)||60000);
+  const maxFailures=Math.max(1,Math.ceil(Math.log2(maxDelay/baseDelay))+1);
+  const isVisible=options.isVisible||(()=>document.visibilityState!=='hidden');
+  const setTimer=options.setTimer||((fn,delay)=>setTimeout(fn,delay));
+  const clearTimer=options.clearTimer||((id)=>clearTimeout(id));
+  const random=options.random||Math.random;
+  let timer=null,started=false,running=false,pending=false,visible=true,generation=0,failures=0;
+  const current=token=>started&&visible&&isVisible()&&generation===token;
+  function clear(){if(timer!==null){clearTimer(timer);timer=null}}
+  function schedule(delay){clear();if(started&&visible&&isVisible())timer=setTimer(()=>{timer=null;void run()},delay)}
+  async function run(){
+    if(!started||!visible||!isVisible())return;
+    if(running){pending=true;return}
+    running=true;
+    const token=generation;
+    let succeeded=false;
+    try{succeeded=await poll(()=>current(token))!==false}catch{}
+    finally{
+      running=false;
+      if(current(token)){
+        pending=false;
+        failures=succeeded?0:Math.min(failures+1,maxFailures);
+        const backoff=Math.min(maxDelay,baseDelay*2**Math.max(0,failures-1));
+        const sample=Math.min(0.999999,Math.max(0,Number(random())||0));
+        schedule(Math.min(maxDelay,Math.round(backoff*(0.8+sample*0.4))));
+      }else if(pending&&started&&visible&&isVisible()){
+        pending=false;
+        schedule(0);
+      }
+    }
+  }
+  return{
+    start(){if(started)return;started=true;visible=isVisible();generation++;schedule(0)},
+    setVisible(next){visible=Boolean(next)&&isVisible();generation++;if(visible)schedule(0);else{pending=false;clear()}},
+    stop(){started=false;visible=false;pending=false;generation++;clear()}
+  };
+}
+
+let lastDashboardStatusSnapshot=null;
+let hardwareRefreshPending=false;
+function shouldRefreshDashboardStatus(status){
+  const snapshot=JSON.stringify(status);
+  if(snapshot===lastDashboardStatusSnapshot)return false;
+  lastDashboardStatusSnapshot=snapshot;
+  return true;
+}
+
 async function apiFetch(path,opts={}){
-  opts={...opts};const h=new Headers(opts.headers||{});if(apiToken)h.set('X-LocalAI-Token',apiToken);opts.headers=h;
+  opts={...opts};const h=new Headers(opts.headers||{});h.set('X-LocalAI-Client','dashboard');if(apiToken)h.set('X-LocalAI-Token',apiToken);opts.headers=h;
   const request=async requestOpts=>{
     const next={...requestOpts};let controller=null,timer=null;
     if(!next.signal&&typeof AbortController==='function'){
@@ -1299,7 +1364,7 @@ async function openGitDiffModal(defaultRoot,defaultPath,defaultStaged){
 if($('cmdGitDiffBtn'))$('cmdGitDiffBtn').onclick=()=>openGitDiffModal($('cmdRoot')?.value?.trim());
 
 if($('intelRediscover'))$('intelRediscover').onclick=async()=>{if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'rediscover'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'rediscovery complete':'error: '+(r.error||'failed');pollStatus()};
-if($('intelReset'))$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena/CodeGraph MCP sessions?'))return;if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');pollStatus()};
+if($('intelReset'))$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena MCP sessions?'))return;if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');pollStatus()};
 
 async function loadArchGraph(){
   try{
@@ -3890,6 +3955,7 @@ function renderErrorFingerprintModal(err){
           <div class="kv" style="padding:0">
             <div>Component</div><div><b>${esc(err.component||'—')}</b></div>
             <div>Operation</div><div><b>${esc(err.operation||'—')}</b></div>
+            <div>Diagnostic</div><div>${esc(String(err.safe_message||'Diagnostic unavailable').slice(0,96))}</div>
             <div>Total Occurrences</div><div class="bad-t"><b>${n(err.count||0)}</b></div>
             <div>Recovered Count</div><div class="ok"><b>${n(err.recovered_count||0)}</b></div>
             <div>Last Seen</div><div>${err.last_seen?new Date(err.last_seen*1000).toLocaleString():'—'}</div>
@@ -4463,6 +4529,83 @@ window.addEventListener('hashchange',()=>switchTab(location.hash.replace('#','')
 $('pauseEvents').onclick=e=>{paused=!paused;e.target.textContent=paused?'Resume live events':'Pause live events'};
 async function post(path,payload){const r=await apiFetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});return await r.json()}
 
+const ACTIVITY_MODES=['active','gaming','maintenance'];
+let activityModeStatusPolls=0;
+let activityModeTransitionNotice=null;
+const activityModeLabels={active:'Active',gaming:'GAMING / PAUSED',maintenance:'Maintenance'};
+function renderActivityMode(mode){
+  const badge=$('activityModeBadge');if(!badge)return;
+  const valid=ACTIVITY_MODES.includes(String(mode||''));
+  const value=valid?String(mode):'unknown';
+  badge.dataset.mode=value;badge.className=`pill ${value==='active'?'ok':value==='unknown'?'warn-t':''}`;
+  badge.textContent=`Mode: ${valid?activityModeLabels[value]:'Unknown'}`;
+  document.querySelectorAll('[data-activity-mode]').forEach(button=>button.setAttribute('aria-pressed',String(valid&&button.dataset.activityMode===value)));
+}
+function activityModeFailure(response,data){
+  if(response?.status===401)return 'Unauthorized (HTTP 401); check the API token.';
+  if(response?.status===400)return `Invalid mode: ${data?.error||'server rejected request'}`;
+  if(response&&!response.ok)return `Mode request failed (HTTP ${response.status}).`;
+  return data?.error||'Mode request failed.';
+}
+function projectActivityModeTransition(confirmed,data){
+  const failures=[];
+  if(confirmed==='gaming'){
+    const unload=data.runtime_unload;
+    if(!unload||unload.state!=='pending'&&unload.success!==true)failures.push('VRAM unload incomplete');
+    const acceleratorRelease=data.accelerator_release;
+    if(!acceleratorRelease||acceleratorRelease.success!==true)failures.push('accelerator release incomplete');
+    if(unload?.state==='pending')failures.push('VRAM unload pending');
+  }
+  if(data.job_cancellation&&data.job_cancellation.success!==true)failures.push('job cancellation incomplete');
+  const persisted=`Mode persisted as ${activityModeLabels[confirmed]}.`;
+  return {
+    modePersisted:true,
+    partial:failures.length>0,
+    failures,
+    status:failures.length?`${persisted} Mode transition incomplete: ${failures.join('; ')}.`:`Mode set to ${activityModeLabels[confirmed]}.`,
+  };
+}
+async function refreshActivityMode(){
+  const status=$('activityModeStatus');
+  try{
+    const response=await apiFetch('/api/mode',{cache:'no-store',timeoutMs:5000});
+    const data=await response.json().catch(()=>null);
+    if(!response.ok||!data||data.success!==true){renderActivityMode('unknown');if(status)status.textContent=`Mode unavailable: ${activityModeFailure(response,data)}`;return false;}
+    if(!ACTIVITY_MODES.includes(data.mode)){renderActivityMode('unknown');if(status)status.textContent='Mode unavailable: invalid mode returned by server.';return false;}
+    renderActivityMode(data.mode);
+    if(activityModeTransitionNotice&&activityModeTransitionNotice.mode!==data.mode)activityModeTransitionNotice=null;
+    const notice=activityModeTransitionNotice?.mode===data.mode?activityModeTransitionNotice:null;
+    if(notice&&data.mode==='gaming'&&data.runtime_unload?.state!=='pending'){
+      const unloadState=data.runtime_unload?.success===true?'complete':'incomplete';
+      notice.text=notice.text.replace(/VRAM unload (?:pending|incomplete)/,`VRAM unload ${unloadState}`);
+    }
+    if(status){const unload=data.runtime_unload;status.textContent=notice?.text??(data.mode==='gaming'&&unload?(unload.success===true?'Gaming mode active. VRAM unload complete.':unload.state==='pending'?'Gaming mode active. VRAM unload in progress.':'Gaming mode active. VRAM unload incomplete.'):'Mode loaded.');}
+    if(data.mode==='gaming'&&data.runtime_unload?.state==='pending'&&activityModeStatusPolls<8){activityModeStatusPolls++;setTimeout(refreshActivityMode,1500);}else if(data.runtime_unload?.state!=='pending'){activityModeStatusPolls=0;}
+    return true;
+  }catch(_){renderActivityMode('unknown');if(status)status.textContent='Mode unavailable: Hub offline or unreachable.';return false;}
+}
+async function applyActivityMode(mode){
+  const buttons=Array.from(document.querySelectorAll('[data-activity-mode]')),status=$('activityModeStatus');
+  mode=String(mode||'');
+  if(!ACTIVITY_MODES.includes(mode)){if(status)status.textContent='Invalid mode selected.';return false;}
+  activityModeTransitionNotice=null;
+  buttons.forEach(button=>button.disabled=true);if(status)status.textContent='Updating mode…';
+  try{
+    const response=await apiFetch('/api/admin/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode}),timeoutMs:5000});
+    const data=await response.json().catch(()=>null);
+    if(!response.ok||!data||data.success!==true){if(status)status.textContent=activityModeFailure(response,data);return false;}
+    const confirmed=data.mode;
+    if(!ACTIVITY_MODES.includes(confirmed)||confirmed!==mode){if(status)status.textContent='Mode update rejected: invalid mode returned by server.';return false;}
+    renderActivityMode(confirmed);
+    const transition=projectActivityModeTransition(confirmed,data);
+    if(transition.partial)activityModeTransitionNotice={mode:confirmed,text:transition.status};
+    if(status)status.textContent=transition.status;
+    if(confirmed==='gaming'&&data.runtime_unload?.state==='pending'){activityModeStatusPolls=0;setTimeout(refreshActivityMode,800);}
+    return true;
+  }catch(_){if(status)status.textContent='Mode update failed: Hub offline or unreachable.';return false;}
+  finally{buttons.forEach(button=>button.disabled=false);}
+}
+
 async function loadConfigView(){
   try{
     const r=await apiFetch('/api/config',{cache:'no-store'}),d=await r.json();
@@ -4472,7 +4615,7 @@ async function loadConfigView(){
     $('cfgPreprocess').checked=c.preprocessing?.enabled!==false&&feat.preprocessing!==false;
     $('cfgIntel').checked=c.code_intelligence?.enabled!==false&&feat.code_intelligence!==false;
     $('cfgSerena').checked=!!c.code_intelligence?.serena_enabled;
-    $('cfgCodegraph').checked=!!c.code_intelligence?.codegraph_enabled;
+
     if($('cfgFeatStatus'))$('cfgFeatStatus').checked=feat.status!==false;
     if($('cfgFeatRepo'))$('cfgFeatRepo').checked=feat.repo!==false;
     if($('cfgFeatTasks'))$('cfgFeatTasks').checked=feat.tasks!==false;
@@ -4495,7 +4638,7 @@ $('cfgSave').onclick=async()=>{
     'preprocessing.enabled':$('cfgPreprocess').checked,
     'code_intelligence.enabled':$('cfgIntel').checked,
     'code_intelligence.serena_enabled':$('cfgSerena').checked,
-    'code_intelligence.codegraph_enabled':$('cfgCodegraph').checked,
+
     'features.status':$('cfgFeatStatus')?$('cfgFeatStatus').checked:true,
     'features.repo':$('cfgFeatRepo')?$('cfgFeatRepo').checked:true,
     'features.tasks':$('cfgFeatTasks')?$('cfgFeatTasks').checked:true,
@@ -4561,6 +4704,10 @@ async function setPreprocessing(action){
 function togglePreprocessing(){return setPreprocessing(last?.preprocessing?.paused?'resume':'pause')}
 $('prepToggle').onclick=togglePreprocessing;
 $('prepAllToggle').onclick=togglePreprocessing;
+document.querySelectorAll('[data-activity-mode]').forEach(button=>button.onclick=()=>applyActivityMode(button.dataset.activityMode));
+refreshActivityMode();
+setInterval(()=>{if(document.visibilityState!=='hidden')refreshActivityMode()},30000);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='hidden')refreshActivityMode()});
 
 function refreshProjectList(){renderProjects(last?.preprocessing?.projects||[])}
 $('projectSearch').oninput=e=>{projectQuery=e.target.value;refreshProjectList()};
@@ -4574,7 +4721,7 @@ const PHASES = [
   {id:'code_index', name:'AST Symbols', icon:'🌲', desc:'Symbol & callgraph extraction'},
   {id:'deterministic', name:'Declarative Facts', icon:'📋', desc:'Routes, models & configs'},
   {id:'serena', name:'Serena', icon:'S', desc:'Semantic/LSP project index'},
-  {id:'codegraph', name:'CodeGraph', icon:'G', desc:'Repository relationship graph'},
+
   {id:'lexical', name:'Full-Text Search', icon:'🔍', desc:'FTS5 lexical keyword index'},
   {id:'rag', name:'Vector RAG', icon:'🧠', desc:'768-dim CPU code embeddings'},
   {id:'files', name:'Semantic Cards', icon:'📄', desc:'cached semantic context cards'},
@@ -4597,11 +4744,7 @@ function renderStepper(currIdx, isComplete, status) {
 
 let projectQuery='',projectFilter='all',projectSort='priority';
 function projectIdentity(project){
-  const root=String(project?.canonical_root||project?.root||project?.project||'').replace(/\\/g,'/').replace(/\/+$/,'');
-  const worktreeAt=root.toLowerCase().indexOf('/.worktrees/');
-  if(worktreeAt>=0)return root.slice(0,worktreeAt)||root;
-  const gitWorktreeAt=root.toLowerCase().indexOf('/worktrees/');
-  return gitWorktreeAt>=0?root.slice(0,gitWorktreeAt)||root:root;
+  return String(project?.git_common_dir||project?.canonical_root||project?.root||project?.project||'').replace(/\\/g,'/').replace(/\/+$/,'');
 }
 function projectState(x){
   const progress=Number(x.overall_progress_pct||0);
@@ -4615,7 +4758,7 @@ function projectState(x){
 
 function groupedProjects(items){
   const list=Array.isArray(items)?items:[];
-  if(!$('projectGroupWorktrees')?.checked)return list.map(x=>({...x,repository_identity:projectIdentity(x),variants:[x]}));
+  if(!$('projectGroupWorktrees')?.checked)return list.map(x=>({...x,repository_identity:x.root||x.project||'',variants:[x]}));
   const groups=new Map();
   list.forEach(item=>{
     const identity=projectIdentity(item)||String(item.project||'unknown');
@@ -4624,7 +4767,7 @@ function groupedProjects(items){
   const rank={error:0,running:1,waiting:2,queued:3,paused:4,ready:5};
   return [...groups.entries()].map(([identity,variants])=>{
     const ordered=[...variants].sort((a,b)=>(rank[projectState(a)]??9)-(rank[projectState(b)]??9));
-    return {...ordered[0],canonical_root:identity,repository_identity:identity,variants};
+    return {...ordered[0],canonical_root:ordered[0].root||identity,repository_identity:ordered[0].root||identity,variants};
   });
 }
 
@@ -4644,7 +4787,7 @@ function renderProjects(items){
   const summary=$('projectSummary');
   if(summary)summary.textContent=`${visible.length} of ${source.length} repository identities · ${entries.length} project entries`;
   rows('projectsBody',visible,x=>{
-    const state=projectState(x),tot=Math.max(1,Number(x.files||0)),ragFiles=Number(x.rag_files||0),cards=Number(x.file_cards||0),ragPct=Math.round(ragFiles/tot*100),cardPct=Math.round(cards/tot*100),overall=Math.max(0,Math.min(100,Number(x.overall_progress_pct||0))),phasePct=Math.max(0,Math.min(100,Number(x.phase_progress_pct||0))),isComplete=state==='ready',isWorktree=(x.root||'').toLowerCase().includes('worktree');
+    const state=projectState(x),tot=Math.max(1,Number(x.files||0)),ragFiles=Number(x.rag_files||0),cards=Number(x.file_cards||0),ragPct=Math.round(ragFiles/tot*100),cardPct=Math.round(cards/tot*100),overall=Math.max(0,Math.min(100,Number(x.overall_progress_pct||0))),phasePct=Math.max(0,Math.min(100,Number(x.phase_progress_pct||0))),isComplete=state==='ready',isWorktree=x.is_worktree===true;
     const badge={running:['badge-running','Running','<span class="pulse-dot"></span>'],waiting:['badge-waiting','Waiting',''],paused:['badge-paused','Paused',''],error:['badge-error','Error',''],ready:['badge-complete','Ready','✓ ']}[state]||['badge-waiting','Queued',''];
     const activityText=x.active_detail||(isComplete?'100% synchronized · real-time sync':state==='paused'?(x.global_paused?'Globally paused':'Project paused'):state==='waiting'?'Waiting for preprocessing slot':state==='error'?(x.last_error_short||'Pipeline error'):'Processing queue');
     const activityCls=isComplete?'ok':state==='error'?'bad-t':state==='paused'?'warn-t':state==='waiting'?'muted':'';
@@ -4853,7 +4996,8 @@ function render(s){
   const worktreeRoot=$('worktreeRoot');
   if(firstProject&&worktreeRoot&&!worktreeRoot.value)worktreeRoot.value=firstProject.root;
 
-  $('health').innerHTML=`<span class="${s.hub_online&&s.ollama_online?'ok':s.hub_online?'warn-t':'bad-t'}">${s.hub_online?'hub ✓':'hub ✗'} / ${s.ollama_online?'ollama ✓':'ollama ✗'} / ${esc(h.state||'n/a')}</span>`;
+  const statusBadge=dashboardHealthBadge(s);
+  $('health').innerHTML=`<span class="${statusBadge.className}">${s.hub_online?'hub ✓':'hub ✗'} / ${s.ollama_online?'ollama ✓':'ollama ✗'} / ${esc(h.state||'n/a')}${statusBadge.degradedLabel}</span>`;
   $('uptime').textContent='uptime '+durSec(s.uptime_seconds)+' · supervisor restarts '+n(h.restarts);
 
   const ep=(rp.execution||{}).models||[];
@@ -4984,7 +5128,7 @@ function render(s){
   rows('blockedReasons',Object.entries(cmd.blocked_by_reason||{}),x=>clickableRow({reason:x[0],count:x[1]},`<td>${esc(x[0])}</td><td>${n(x[1])}</td>`,'blocked_reason'),2);
 
   renderReliabilitySummary(s);
-  rows('errors',o.recent_errors||[],x=>clickableRow(x,`<td>${esc(x.component)}</td><td>${esc(x.operation)}</td><td>${n(x.count)}</td><td>${n(x.recovered_count)}</td><td>${x.last_seen?new Date(x.last_seen*1000).toLocaleTimeString():'—'}</td>`,'error'),5);
+  rows('errors',o.recent_errors||[],x=>clickableRow(x,`<td>${esc(x.component)}</td><td>${esc(x.operation)}</td><td>${esc(String(x.safe_message||'Diagnostic unavailable').slice(0,96))}</td><td>${n(x.count)}</td><td>${n(x.recovered_count)}</td><td>${x.last_seen?new Date(x.last_seen*1000).toLocaleTimeString():'—'}</td>`,'error'),6);
   $('runtimeCounters').innerHTML=`<div>Scheduler submitted</div><div>${n(ss.submitted)}</div><div>Completed / failed</div><div>${n(ss.completed)} / ${n(ss.failed)}</div><div>Model switches</div><div>${n(ss.model_switches)}</div><div>Queue rejections</div><div>${n(ss.queue_rejections)}</div><div>Caller timeouts</div><div>${n(ss.caller_timeouts)}</div><div>Background yields</div><div>${n(ss.background_yields)}</div><div>Supervisor restarts</div><div>${n(h.restarts)}</div>`;
 
   if($('hubHealthCard'))$('hubHealthCard').onclick=()=>switchTab('reliability');
@@ -5059,14 +5203,28 @@ async function probeHealth(){
     if(r.ok&&!hasLiveStatus){$('conn').textContent='online';$('conn').className='pill ok'}
   }catch(e){if(!hasLiveStatus){$('conn').textContent='offline';$('conn').className='pill bad-t'}}
 }
-async function pollStatus(){
-  if(statusPollInFlight)return;
+async function pollStatus(isCurrent=()=>document.visibilityState!=='hidden'){
+  if(document.visibilityState==='hidden'||!isCurrent())return false;
+  if(statusPollInFlight)return true;
   statusPollInFlight=true;
+  const controller=typeof AbortController==='function'?new AbortController():null;
+  statusPollAbortController=controller;
+  const current=()=>document.visibilityState!=='hidden'&&isCurrent();
   try{
-    const r=await apiFetch('/api/live/status?light=1&scope='+sloScope,{cache:'no-store'}),s=await r.json();
-    render(s);hasLiveStatus=true;$('conn').textContent='live';$('conn').className='pill ok';$('updated').textContent='updated '+new Date().toLocaleTimeString();
-    try{
-      const gr=await apiFetch('/api/hardware/system',{cache:'no-store'});
+    const opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
+    const r=await apiFetch('/api/live/status?light=1&scope='+sloScope,opts);
+    if(!current())return false;
+    if(!r.ok)throw new Error(`status request failed (HTTP ${r.status})`);
+    const s=await r.json();
+    if(!current())return false;
+    const changed=shouldRefreshDashboardStatus(s);
+    if(changed)render(s);
+    hasLiveStatus=true;$('conn').textContent='live';$('conn').className='pill ok';if(changed)$('updated').textContent='updated '+new Date().toLocaleTimeString();
+    if(s.success===false){$('conn').textContent='degraded';$('conn').className='pill warn-t';return false;}
+    if(changed||hardwareRefreshPending)try{
+      const hardwareOpts={cache:'no-store'};if(controller)hardwareOpts.signal=controller.signal;
+      const gr=await apiFetch('/api/hardware/system',hardwareOpts);
+      if(!current())return false;
       if(gr.ok){
         const sys=await gr.json(), g=sys.gpu||{}, ram=sys.ram||{};
         const pct=value=>value==null||!Number.isFinite(Number(value))?null:Math.max(0,Math.min(100,Number(value)));
@@ -5085,11 +5243,24 @@ async function pollStatus(){
         const vram=g.available?(g.vram_total_mb&&!g.integrated?` · VRAM ${Math.round(g.vram_used_mb||0)} / ${Math.round(g.vram_total_mb)} MB`:g.unified_memory_mb?` · Unified memory ${Math.round(g.unified_memory_mb)} MB`:g.integrated?' · shared-memory iGPU':''):'';
         const accel=npus.length?` · NPU ${npus[0].runtime_available?'ready':'detected'}`:(ov.some(x=>x.kind==='gpu')?' · OpenVINO GPU ready':'');
         $('sysSub').textContent=`RAM ${ram.used_gb||0} / ${ram.total_gb||0} GB (${ramPct}%)${vram}${accel}`;
+        hardwareRefreshPending=false;
+      }else{
+        hardwareRefreshPending=true;
       }
-    }catch{}
-  }catch(e){console.error('dashboard status refresh failed',e);if(last&&lastOverviewReceivedAt)renderOverviewHealth(last,lastOverviewReceivedAt);$('conn').textContent=hasLiveStatus?'stale':'offline';$('conn').className=hasLiveStatus?'pill warn-t':'pill bad-t'}
-  finally{statusPollInFlight=false}
+    }catch{hardwareRefreshPending=true}
+    return true;
+  }catch(e){
+    if(!current())return false;
+    console.error('dashboard status refresh failed',e);if(last&&lastOverviewReceivedAt)renderOverviewHealth(last,lastOverviewReceivedAt);$('conn').textContent=hasLiveStatus?'stale':'offline';$('conn').className=hasLiveStatus?'pill warn-t':'pill bad-t';return false;
+  }finally{statusPollInFlight=false;if(statusPollAbortController===controller)statusPollAbortController=null}
 }
+const statusPoller=createDashboardStatusPoller(isCurrent=>pollStatus(isCurrent));
+document.addEventListener('visibilitychange',()=>{
+  const visible=document.visibilityState!=='hidden';
+  statusPoller.setVisible(visible);
+  if(!visible&&statusPollAbortController)statusPollAbortController.abort();
+});
+statusPoller.start();
 let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false;
 function eventSeverity(event){
   if(event?.success===false||/fail|error|crash|reject/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'failure';
@@ -5110,14 +5281,14 @@ $('eventSeverity')?.addEventListener('change',()=>renderEvents([]));
 $('eventSource')?.addEventListener('input',()=>renderEvents([]));
 async function pollEvents(){if(eventsPollInFlight)return;eventsPollInFlight=true;try{const r=await apiFetch('/api/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}finally{eventsPollInFlight=false}}
 
-probeHealth();pollStatus();pollEvents();pollTraces();
+probeHealth();pollEvents();pollTraces();
 let isVisible=!document.hidden;
 document.addEventListener('visibilitychange',()=>{
   isVisible=!document.hidden;
-  if(isVisible){probeHealth();pollStatus();pollEvents();pollTraces();}
+  if(isVisible){probeHealth();pollEvents();pollTraces();}
 });
 setInterval(()=>{if(isVisible)probeHealth();},5000);
-setInterval(()=>{if(isVisible)pollStatus();},1000);
+
 setInterval(()=>{if(isVisible)pollEvents();},1000);
 setInterval(()=>{if(isVisible)pollTraces();},2000);
 

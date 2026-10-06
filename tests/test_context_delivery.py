@@ -203,7 +203,7 @@ def test_decision_idempotency_is_root_scoped():
     assert memory.calls[0][1]["idempotency_key"] != memory.calls[1][1]["idempotency_key"]
 
 
-def test_disabled_memory_does_not_claim_decision_persisted():
+def test_disabled_memory_fails_closed_for_operator_decision():
     warning = GuardWarning("warning", "scope_drift", "scope changed", ("e1",), ("src/app.py",), "explain scope")
     guard = _Guard((warning,))
 
@@ -225,9 +225,42 @@ def test_disabled_memory_does_not_claim_decision_persisted():
         _request(override_reason="approved test scope"), mode="fast"
     )
 
-    assert result["decision_recorded"] is True
-    assert result["decision_persisted"] is False
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["stop_code"] == "context_decision_persistence_failed"
     assert memory.calls == 0
+
+
+def test_memory_revision_database_error_fails_closed():
+    guard = _Guard()
+
+    class BrokenMemory:
+        @staticmethod
+        def revision(_root):
+            raise RuntimeError("database unavailable")
+
+    guard.memory_store = BrokenMemory()
+    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="fast")
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["stop_code"] == "context_memory_revision_unavailable"
+
+
+def test_task_state_database_error_fails_closed():
+    guard = _Guard()
+
+    class BrokenTasks:
+        @staticmethod
+        def get(_task_id):
+            raise RuntimeError("database unavailable")
+
+    guard.task_store = BrokenTasks()
+    result = _guarded_services(guard).adaptive_context_pack(_request(), mode="fast")
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["stop_code"] == "context_task_state_unavailable"
 
 
 def test_boundary_warning_waits_then_approval_resumes_task():
@@ -263,6 +296,12 @@ def test_boundary_warning_waits_then_approval_resumes_task():
     tasks = Tasks()
     guard = _Guard((warning,))
     guard.task_store = tasks
+
+    class Memory:
+        def record(self, record, **kwargs):
+            return record
+
+    guard.memory_store = Memory()
     services = _guarded_services(guard)
 
     waiting = services.adaptive_context_pack(_request(), mode="fast")
@@ -290,9 +329,9 @@ def test_boundary_transition_failure_stays_blocked():
     guard.task_store = Tasks()
     result = _guarded_services(guard).adaptive_context_pack(_request(), mode="fast")
 
-    assert result["task_status"] == "active"
-    assert result["waiting"] is True
-    assert result["requires_approval"] is True
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["stop_code"] == "context_task_state_unavailable"
 
 
 def test_boundary_resume_failure_reports_waiting():
@@ -309,11 +348,12 @@ def test_boundary_resume_failure_reports_waiting():
 
     guard = _Guard((warning,))
     guard.task_store = Tasks()
+    guard.memory_store = type("Memory", (), {"record": lambda self, record, **kwargs: record})()
     result = _guarded_services(guard).adaptive_context_pack(_request(approval=True), mode="fast")
 
-    assert result["task_status"] == "waiting"
-    assert result["waiting"] is True
-    assert result["requires_approval"] is True
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["stop_code"] == "context_task_state_unavailable"
 
 
 def test_boundary_guard_stops_when_task_state_is_missing():
@@ -379,13 +419,60 @@ def test_completion_revision_resolution_stops_on_degraded_snapshot():
     assert stop["stop_code"] == "completion_repository_revision_unavailable"
 
 
-def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path):
+def test_taskless_context_pack_cache_identity_includes_tenant(monkeypatch, tmp_path):
     import json
     import threading
-    import urllib.error
     import urllib.request
 
     from local_ai_hub import http_server
+    from local_ai_hub.app import LocalAIApp
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n',
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    hybrid_calls = []
+
+    def record_hybrid(*args, **kwargs):
+        hybrid_calls.append((args, kwargs))
+        return {"success": True, "context": "bounded", "evidence": []}
+
+    app.services._hybrid_context = record_hybrid
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        for tenant in ("tenant-a", "tenant-b"):
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_address[1]}/api/context/pack",
+                data=json.dumps({"root": str(tmp_path), "query": "same query", "mode": "adaptive"}).encode(),
+                headers={"Content-Type": "application/json", "X-LocalAI-Tenant": tenant},
+                method="POST",
+            )
+            with urllib.request.urlopen(request) as response:
+                assert response.status == 200
+
+        assert [call[1]["context_identity"]["tenant"] for call in hybrid_calls] == ["tenant-a", "tenant-b"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        http_server.APP = previous
+
+
+def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, monkeypatch):
+    import json
+    import sqlite3
+    import threading
+    from types import SimpleNamespace
+    import urllib.error
+    import urllib.request
+
+    from local_ai_hub import http_server, project_config
     from local_ai_hub.app import LocalAIApp
 
     cfg_path = tmp_path / "config.toml"
@@ -395,6 +482,16 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path):
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
+    resolved_project = {"digest": "a" * 64}
+    original_project_resolver = project_config.resolve_project_context
+
+    def resolve_project_context(_root, _state_dir):
+        settings = SimpleNamespace(retrieval_weights={}, pinned_context=(), entry_points=())
+        return SimpleNamespace(
+            config_digest=resolved_project["digest"],
+            settings=settings,
+            path_hints=lambda **_kwargs: (),
+        )
     previous = http_server.APP
     http_server.APP = app
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
@@ -433,9 +530,42 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path):
         assert negative["retryable"] is False
         assert "max_tokens must be non-negative" in negative["error"]
 
+        status, invalid_mode = post({"root": str(tmp_path), "query": "x", "mode": "unsafe"})
+        assert status == 400
+        assert "context mode" in invalid_mode["error"]
+
+        status, below_minimum = post({"root": str(tmp_path), "query": "x", "task_id": "task-1", "phase": "review", "max_tokens": 127})
+        assert status == 400
+        assert "128" in below_minimum["error"]
+
+        status, mismatched_budget = post({
+            "root": str(tmp_path), "query": "x", "task_id": "task-1", "phase": "review",
+            "max_tokens": 256, "token_budget": 512,
+        })
+        assert status == 400
+        assert "must match" in mismatched_budget["error"]
+
+        status, malformed_identity = post({
+            "root": str(tmp_path), "query": "x", "task_id": "task-1", "phase": "review",
+            "worktree_id": 42,
+        })
+        assert status == 400
+        assert "worktree_id must be string" in malformed_identity["error"]
+
+        status, oversized_focus = post({
+            "root": str(tmp_path), "query": "x", "task_id": "task-1", "phase": "review",
+            "focus": ["x"] * 17,
+        })
+        assert status == 400
+        assert "focus exceeds maximum of 16" in oversized_focus["error"]
+
         status, unguarded = post({"root": str(tmp_path), "query": "x", "changed_paths": ["src/app.py"]})
         assert status == 400
         assert "guarded=true" in unguarded["error"]
+
+        status, invalid_phase = post({"root": str(tmp_path), "phase": "invented-phase", "max_tokens": 512})
+        assert status == 400
+        assert "phase" in invalid_phase["error"]
 
         status, phase_only = post(
             {"root": str(tmp_path), "phase": "discover", "focus": ["logs", "timeouts"], "max_tokens": 512}
@@ -444,6 +574,131 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path):
         assert phase_only["success"] is True
         assert phase_only["context_pack"]["contract"]["goal"] == "logs timeouts"
         assert phase_only["query"] == "logs timeouts"
+
+        hybrid_calls = []
+        hybrid_budgets = []
+        route_warnings = [{"code": "route-context-warning"}]
+        def record_hybrid(*args, **kwargs):
+            hybrid_calls.append(kwargs)
+            hybrid_budgets.append(args[4])
+            return {
+                "success": True, "context": "adaptive evidence", "context_source": "adaptive-hybrid",
+                "warnings": route_warnings,
+                "retrieval": {"backend_states": {"deterministic": "used"}},
+            }
+        app.services._hybrid_context = record_hybrid
+        status, adaptive = post({"root": str(tmp_path), "query": "route repair", "mode": "adaptive", "max_tokens": 512})
+        assert status == 200
+        assert hybrid_calls[-1]["quality_first"] is True
+        assert adaptive["retrieval"]["backend_states"]["deterministic"] == "used"
+        assert adaptive["warnings"] == route_warnings
+        assert hybrid_budgets[-1] == 512
+
+        monkeypatch.setattr(project_config, "resolve_project_context", resolve_project_context)
+        original_memory_revision = app.services._adaptive_memory_revision
+        for failure in (
+            RuntimeError("private memory backend detail"),
+            sqlite3.OperationalError("private sqlite detail"),
+        ):
+            def fail_memory_revision(_request, failure=failure):
+                raise failure
+
+            monkeypatch.setattr(app.services, "_adaptive_memory_revision", fail_memory_revision)
+            hybrid_count = len(hybrid_calls)
+            status, unavailable_revision = post({
+                "root": str(tmp_path), "query": "memory revision failure", "mode": "adaptive",
+                "path_hints": [{"path": "src/api.py", "purpose": "implementation"}],
+                "max_tokens": 512,
+            })
+            assert status == 200
+            assert unavailable_revision["success"] is False
+            assert unavailable_revision["terminal"] is True
+            assert unavailable_revision["retryable"] is False
+            assert unavailable_revision["stop_code"] == "context_memory_revision_unavailable"
+            assert "context memory revision unavailable:" in unavailable_revision["error"]
+            assert "private" not in json.dumps(unavailable_revision)
+            assert len(hybrid_calls) == hybrid_count
+        monkeypatch.setattr(app.services, "_adaptive_memory_revision", original_memory_revision)
+        status, hinted_adaptive = post({
+            "root": str(tmp_path), "query": "find the CakePHP button", "mode": "adaptive",
+            "path_hints": [{"path": "/templates/element/button.php", "purpose": "button templates"}],
+            "directory_hints": ["/templates/element"],
+            "exclude_paths": ["build", "fixtures/private"],
+            "force_include_paths": ["build/required-schema.json"],
+            "max_tokens": 512,
+        })
+        assert status == 200
+        assert hybrid_calls[-1]["path_hints"] == ({"path": "templates/element/button.php", "purpose": "button templates"},)
+        assert hybrid_calls[-1]["directory_hints"] == ("templates/element",)
+        assert hybrid_calls[-1]["exclude_paths"] == ("build", "fixtures/private")
+        assert hybrid_calls[-1]["force_include_paths"] == ("build/required-schema.json",)
+        assert hybrid_calls[-1]["context_identity"]["path_hints"] == hybrid_calls[-1]["path_hints"]
+        assert hybrid_calls[-1]["context_identity"]["directory_hints"] == hybrid_calls[-1]["directory_hints"]
+        assert hybrid_calls[-1]["context_identity"]["project_config_digest"] == "a" * 64
+        first_identity = dict(hybrid_calls[-1]["context_identity"])
+        resolved_project["digest"] = "b" * 64
+        status, _changed_digest = post({
+            "root": str(tmp_path), "query": "find the CakePHP button", "mode": "adaptive",
+            "path_hints": [{"path": "/templates/element/button.php", "purpose": "button templates"}],
+            "directory_hints": ["/templates/element"],
+            "exclude_paths": ["build", "fixtures/private"],
+            "force_include_paths": ["build/required-schema.json"], "max_tokens": 512,
+        })
+        assert status == 200
+        assert hybrid_calls[-1]["context_identity"]["project_config_digest"] == "b" * 64
+        assert first_identity != hybrid_calls[-1]["context_identity"]
+        status, client_digest = post({
+            "root": str(tmp_path), "query": "find the CakePHP button", "mode": "adaptive",
+            "path_hints": [{"path": "/templates/element/button.php", "purpose": "button templates"}],
+            "project_config_digest": "client-controlled-value", "max_tokens": 512,
+        })
+        assert status == 400
+        assert "server-resolved" in client_digest["error"]
+        monkeypatch.setattr(project_config, "resolve_project_context", original_project_resolver)
+        assert hinted_adaptive["success"] is True
+
+        status, unsafe_hint = post({
+            "root": str(tmp_path), "query": "button", "mode": "adaptive",
+            "path_hints": [{"path": "../outside.py"}], "max_tokens": 512,
+        })
+        assert status == 400
+        assert "repository-relative" in unsafe_hint["error"]
+
+        status, non_adaptive_hints = post({
+            "root": str(tmp_path), "query": "button", "mode": "fast",
+            "directory_hints": ["templates/element"], "max_tokens": 512,
+        })
+        assert status == 400
+        assert "adaptive" in non_adaptive_hints["error"]
+
+        status, full = post({"root": str(tmp_path), "query": "route repair", "mode": "full", "max_tokens": 512})
+        assert status == 200
+        assert hybrid_calls[-1]["quality_first"] is False
+
+        from local_ai_hub.agent_context import CompiledContext
+
+        app.services.adaptive_context_pack = lambda *_args, **_kwargs: {
+            "success": True, "context": "repo evidence", "repo_revision": "revision-1",
+            "evidence": [], "context_pack": {"context_id": "ctx-1", "evidence": []},
+        }
+        app.agent_context.compile = lambda _request: CompiledContext(
+            elements=[], estimated_tokens=0, token_budget=512,
+            repo_revision="revision-1", stale=True,
+        )
+        status, incomplete = post({
+            "root": str(tmp_path), "task_id": "task-context", "phase": "review", "max_tokens": 512,
+        })
+        assert status == 503
+        assert incomplete["success"] is False
+        assert incomplete["stop_code"] == "context_task_context_incomplete"
+
+        app.agent_context = None
+        status, missing_compiler = post({
+            "root": str(tmp_path), "task_id": "task-context", "phase": "review", "max_tokens": 512,
+        })
+        assert status == 503
+        assert missing_compiler["success"] is False
+        assert missing_compiler["stop_code"] == "context_task_context_unavailable"
     finally:
         server.shutdown()
         server.server_close()
@@ -475,10 +730,10 @@ def test_fast_context_returns_explicit_full_continuation():
     assert result["continuation"]["mode"] == "full"
 
 
-def test_shipped_mcp_entrypoint_defaults_context_to_fast_and_telemetry_to_process():
+def test_shipped_mcp_entrypoint_defaults_context_to_adaptive_and_telemetry_to_process():
     source = (ROOT / "src/local_ai_hub/mcp_server.py").read_text(encoding="utf-8")
 
-    assert '"mode": "full" if mode == "full" else "fast"' in source
+    assert '"mode": "full" if mode == "full" else "adaptive" if mode == "adaptive" else "fast"' in source
     assert 'scope: str = "process"' in source
     assert 'scope={scope}' in source
 
@@ -492,19 +747,23 @@ def test_shipped_mcp_status_uses_lightweight_live_endpoint_by_default():
     assert '"token_saving": status.get("observability")' in source
 
 
-def test_context_http_endpoint_defaults_to_fast():
+def test_context_http_endpoint_defaults_to_adaptive():
     source = (ROOT / "src/local_ai_hub/http_server.py").read_text(encoding="utf-8")
 
-    assert 'payload.get("mode", "fast")' in source
+    assert 'payload.get("mode", "adaptive")' in source
 
 
 def test_realtime_status_includes_preprocessor_projects_on_light():
     import threading
-    from local_ai_hub.app import LocalAIApp
+    from local_ai_hub.app import LocalAIApp, _STATUS_MAX_INFLIGHT_DEPENDENCIES, _new_status_dependency_executor
 
     app = LocalAIApp.__new__(LocalAIApp)
     app._live_status_lock = threading.Lock()
     app._live_status_cache = {}
+    app._status_dependency_lock = threading.Lock()
+    app._status_dependency_inflight = {}
+    app._status_dependency_slots = threading.BoundedSemaphore(_STATUS_MAX_INFLIGHT_DEPENDENCIES)
+    app._status_dependency_executor = _new_status_dependency_executor()
     app._headless_status = lambda: {"supervisor": True, "ollama_online": False}
     app.runtime = type("Runtime", (), {
         "is_online": lambda self: True,
@@ -540,6 +799,7 @@ def test_realtime_status_includes_preprocessor_projects_on_light():
     assert res_light["preprocessing"]["projects"][0]["project"] == "myproject"
     assert res_light["ollama_online"] is True
     assert res_light["headless"]["ollama_online"] is True
+    app._status_dependency_executor.shutdown(wait=False, cancel_futures=True)
 
 
 class _EvidenceDeterministic(_Deterministic):
@@ -641,6 +901,62 @@ def test_adaptive_context_cache_key_includes_revision_phase_and_memory_revision(
     assert params["memory_revision"] == "memory-7"
     assert params["focus"] == ("contracts",)
     assert params["preload_profile"] == "review"
+
+
+def test_adaptive_context_uses_project_weights_and_invalidates_config_identity(monkeypatch):
+    from types import SimpleNamespace
+    from local_ai_hub import project_config
+
+    services = _guarded_services(_Guard())
+    services.consistency_guard = None
+    captured = []
+    cache_calls = []
+    revisions = iter(("repo-1", "repo-2"))
+    services.rag = None
+    services.deterministic = None
+    services._repo_cached = lambda _operation, _root, params, compute: (
+        cache_calls.append(dict(params)) or compute()
+    )
+    services._hybrid_context_uncached = lambda *args, **kwargs: (
+        captured.append(kwargs)
+        or {"success": True, "context": "context", "evidence": [], "repo_revision": next(revisions)}
+    )
+    request = _request(
+        root=str(ROOT),
+        path_hints=({"path": "docs/pinned.md", "purpose": "repository_search", "scope": "task"},
+                    {"path": "src/entry.py", "purpose": "repository_search", "scope": "task"}),
+        exclude_paths=("vendor/**",),
+        force_include_paths=("src/entry.py",),
+        memory_revision="m" * 500,
+    )
+
+    results = []
+    for digest, weight in (("config-a", 0.25), ("config-b", 0.75)):
+        project = SimpleNamespace(
+            root=ROOT,
+            settings=project_config.ProjectSettings(retrieval_weights={"lexical": weight}),
+            config_digest=digest,
+            path_hints=lambda **_kwargs: (),
+        )
+        monkeypatch.setattr(
+            project_config, "resolve_project_context",
+            lambda _root, _state, project=project: project,
+        )
+        results.append(services.adaptive_context_pack(request, mode="adaptive"))
+
+    first, second = captured
+    assert first["retrieval_weights"] == {"lexical": 0.25}
+    assert second["retrieval_weights"] == {"lexical": 0.75}
+    assert cache_calls[0]["context_identity"] != cache_calls[1]["context_identity"]
+    assert cache_calls[0]["context_identity"]["memory_revision"] == "m" * 200
+    assert results[0]["context_id"] != results[1]["context_id"]
+    assert first["path_hints"] == second["path_hints"] == request.path_hints
+    assert first["exclude_paths"] == second["exclude_paths"] == ("vendor/**",)
+    assert first["force_include_paths"] == second["force_include_paths"] == ("src/entry.py",)
+    assert cache_calls[0]["context_identity"]["project_config_digest"] == "config-a"
+    assert cache_calls[1]["context_identity"]["project_config_digest"] == "config-b"
+    assert cache_calls[0]["retrieval_weights"] == {"lexical": 0.25}
+    assert cache_calls[1]["retrieval_weights"] == {"lexical": 0.75}
 
 
 def test_generation_cache_key_changes_for_adaptive_context_inputs():
@@ -764,5 +1080,170 @@ def test_path_scoped_context_uses_bounded_degraded_fallback_without_index(tmp_pa
     assert services.repo_tools.full_scan_calls == 0
     assert result["degraded"] is True
     assert result["degraded_reason"] == "bounded_path_candidate_fallback"
+
+def test_adaptive_context_identity_covers_guard_inputs_and_session():
+    services = _guarded_services(_Guard())
+    services.config["retrieval"] = {"profile": "quality-v1"}
+    base = {
+        "task_id": "task-1",
+        "session_id": "session-1",
+        "phase": "review",
+        "focus": ("contracts",),
+        "changed_paths": ("src/api.py",),
+        "preload_profile": "review",
+        "memory_revision": "memory-1",
+    }
+    original = services.adaptive_context_pack(_request(**base), mode="fast")["context_pack"]["context_id"]
+    variants = (
+        {"session_id": "session-2"},
+        {"phase": "test"},
+        {"focus": ("timeouts",)},
+        {"changed_paths": ("src/repo.py",)},
+        {"preload_profile": "plan"},
+        {"memory_revision": "memory-2"},
+        {"task_id": "task-2"},
+    )
+
+    for changed in variants:
+        assert services.adaptive_context_pack(_request(**(base | changed)), mode="fast")["context_pack"]["context_id"] != original
+
+    services.config["retrieval"]["profile"] = "quality-v2"
+    assert services.adaptive_context_pack(_request(**base), mode="fast")["context_pack"]["context_id"] != original
+
+
+def test_context_identity_changes_when_repository_revision_changes():
+    services = _guarded_services(_Guard())
+
+    class RevisionedRepoTools:
+        revision = "repo-r1"
+
+        def git_snapshot(self, root):
+            return type("Snapshot", (), {"revision": self.revision, "changed_paths": ()})()
+
+        def git_diff(self, root, base="HEAD", staged=False, max_tokens=10000):
+            return {"success": True, "revision": self.revision, "changed_paths": [], "diff": ""}
+
+    class RevisionedDeterministic:
+
+        def context_pack(self, root, query, *, max_chars, max_raw_evidence):
+            return {
+                "success": True, "root": root, "query": query, "context": "facts",
+                "evidence": [],
+            }
+
+    repo_tools = RevisionedRepoTools()
+    services.repo_tools = repo_tools
+    services.deterministic = RevisionedDeterministic()
+    first = services.adaptive_context_pack(_request(), mode="fast")["context_pack"]["context_id"]
+
+    repo_tools.revision = "repo-r2"
+    second = services.adaptive_context_pack(_request(), mode="fast")["context_pack"]["context_id"]
+
+    assert first != second
+
+
+def test_unchanged_repository_revision_returns_context_reuse_pointer():
+    result = _guarded_services(_Guard()).adaptive_context_pack(
+        _request(), mode="fast", since_hash="revision-1"
+    )
+
+    assert result["unchanged"] is True
+    assert result["reuse_pointer"] == result["context_pack"]["context_id"]
+    assert result["context"] == "fast facts"
+
+
+def test_context_http_preserves_terminal_pack_failure_with_and_without_task_context(tmp_path):
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from local_ai_hub import http_server
+    from local_ai_hub.app import LocalAIApp
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    terminal_failure = {
+        "success": False,
+        "terminal": True,
+        "retryable": False,
+        "stop_code": "context_memory_revision_unavailable",
+        "error": "context memory revision unavailable: RuntimeError",
+        "context": "",
+        "evidence": [],
+    }
+    app.services.adaptive_context_pack = lambda *_args, **_kwargs: dict(terminal_failure)
+
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def post(payload):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/context/pack",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read().decode("utf-8"))
+
+    try:
+        payload = {"root": str(tmp_path), "query": "bounded context", "guarded": True, "max_tokens": 512}
+        status, body = post(payload)
+        assert status == 500
+        assert body["stop_code"] == terminal_failure["stop_code"]
+
+        payload["task_id"] = "context-pack-terminal-failure"
+        status, body = post(payload)
+        assert status == 503
+        assert body["stop_code"] == "context_task_context_incomplete"
+        assert body["terminal"] is True
+        assert body["retryable"] is False
+        assert body["task_context"]["repository"]["stop_code"] == terminal_failure["stop_code"]
+
+        retryable_failure = {
+            **terminal_failure,
+            "terminal": False,
+            "retryable": True,
+            "stop_code": "context_backend_busy",
+        }
+        app.services.adaptive_context_pack = lambda *_args, **_kwargs: dict(retryable_failure)
+        status, body = post({"root": str(tmp_path), "query": "bounded context", "guarded": True, "max_tokens": 512})
+        assert body["stop_code"] == retryable_failure["stop_code"]
+        assert body["retryable"] is True
+        assert status == 503
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        http_server.APP = previous
+
+
+def test_authoritative_deterministic_evidence_gets_stable_evidence_id():
+    services = _guarded_services(_Guard())
+
+    class DeterministicWithEvidence:
+        @staticmethod
+        def context_pack(root, query, *, max_chars, max_raw_evidence):
+            return {
+                "success": True, "root": root, "query": query, "context": "exact route fact",
+                "evidence": [{"path": "src/routes.py", "start_line": 3, "end_line": 3, "text": "route fact"}],
+            }
+
+    services.deterministic = DeterministicWithEvidence()
+    result = services.adaptive_context_pack(_request(), mode="fast")
+
+    assert result["evidence"][0]["evidence_id"]
 
 

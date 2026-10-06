@@ -7,10 +7,18 @@ from pathlib import Path
 
 from local_ai_hub import http_server, mcp_server
 from local_ai_hub.app import LocalAIApp
+from local_ai_hub.operational_mode import OperationalModeSnapshot
 from local_ai_hub.token_accounting import json_tokens
 
 
 def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(tmp_path: Path, monkeypatch):
+    # MCP module keeps process-global config; isolate its mode gate from the
+    # operator's installed Hub mode so this HTTP contract test is deterministic.
+    monkeypatch.setattr(
+        mcp_server,
+        "load_operational_mode",
+        lambda _state_dir: OperationalModeSnapshot("active", 0, None),
+    )
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
