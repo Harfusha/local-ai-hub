@@ -27,6 +27,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+ast-index = ["tree-sitter-language-pack==1.18.0"]
 local-nlp = ["sentence-transformers>=5.4,<6"]
 intel-accelerators = ["sentence-transformers[openvino]>=5.4,<6", "openvino>=2026.1,<2027"]
 token-economy = ["tiktoken>=0.7", "files-to-prompt>=0.4", "grep-ast>=0.3"]

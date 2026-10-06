@@ -167,6 +167,35 @@ def test_missing_whisper_cli_does_not_report_metadata_as_transcription(
     assert result.get("degraded") is True or result.get("error")
 
 
+def test_missing_output_after_cli_success_is_not_reported_as_missing_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "output-race.wav"
+    audio.write_bytes(b"test audio")
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_dir = Path(args[args.index("--output_dir") + 1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / f"{audio.stem}.json").write_text('{"text":"valid"}', encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    original_read_text = Path.read_text
+
+    def missing_output(path: Path, *args: object, **kwargs: object) -> str:
+        if path.suffix == ".json":
+            raise FileNotFoundError(path)
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
+    monkeypatch.setattr(process_utils, "run_hidden", fake_run)
+    monkeypatch.setattr(Path, "read_text", missing_output)
+
+    result = _service().transcribe({"audio": str(audio)}, "task-17")
+
+    assert result["success"] is False
+    assert result["reason"] == "process_error"
+
+
 def test_missing_audio_has_machine_readable_failure_reason(tmp_path: Path) -> None:
     missing_audio = tmp_path / "missing.wav"
 

@@ -51,6 +51,19 @@
 | VRAM behavior | Measure VRAM use for the supported model/backend cohorts and attach reproducible receipts. | T20 integration/release acceptance after T01–T19 integration. |
 | Staged decomposition | Plan incremental movement from `services.py` and `deterministic.py` into `repo/`, `commands/`, `retrieval/`, and `agent_os/`, with `HubServices` as composition root. | Preserve behavior and ownership boundaries; agree scope with the owning track before implementation. |
 
+## Fast viable release priority
+
+1. **Block on one release identity.** T20 must name the clean integrated commit, revision-bound sdist and SHA-256 receipt, and a serial disposable-host slot. T19 must not install or upgrade a dirty/intermediate snapshot.
+2. **Close hard T19 gates first.** Keep verified-revision preflight, install/update prompt parity, supported package contents, SDK behavior, clean-host Windows/Linux install and doctor results, config idempotence, MCP config/handshake checks, and rollback preservation in the release gate.
+3. **Preserve owner boundaries.** T08 owns incompatible durable-state recovery; T14 owns `/api/context/pack`; T20 owns integrated release identity, host slot, and final cross-track acceptance. T19 changes stay in its registered worktree and owned paths.
+4. **Record evidence per exact revision.** Source tests do not substitute for a built artifact, clean-host install/update, doctor, runtime, or rollback receipt. Keep release blocked until those results match the T20 revision and artifact hashes.
+
+### Explicitly deferred post-release polish
+
+Defer only non-release work: additional tutorial/example prose, documentation restyling, optional SDK convenience wrappers without a demonstrated missing use case, and broader model recommendation copy. These items do not change release safety or supported install behavior.
+
+Do **not** defer mandatory acceptance: package identity and contents; supported Windows/Linux core and extras installs; optional-dependency doctor outcomes; twice-idempotent config merge; per-host manifest parse and available MCP handshake; install/update/uninstall/rollback; required SDK workflows; security/correctness review; or revision-bound receipts. The usability and performance criteria in the master plan remain open until measured on the integrated candidate.
+
 ## Execution Ledger
 
 - Baseline reference: detached `HEAD` and `master` both at `2b33602adef0d030fea66cdcc04ca742c60b2e32`. The earlier ledger recorded 14 pre-existing dirty paths; latest exact status has 13 inherited modified tracked paths plus 3 T19-owned modified paths and 2 T19-owned untracked paths. No inherited changes were removed or normalized.

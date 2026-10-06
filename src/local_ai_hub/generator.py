@@ -123,6 +123,8 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
 {batch_line}
@@ -131,8 +133,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - Fetch exact source, logs, or evidence only with `local_ai_artifact` slices. Never ask a broad tool for the same payload twice.
 - Commands return status, summary, changed paths, and failures; full stdout/stderr stays artifact-backed.
 -{context_pack_guidance()}
-- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
-- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation."""
+- Do not bypass the budget with native broad reads unless Hub has one bounded terminal failure."""
 
 
 def generate_skill_markdown(cfg: dict[str, Any]) -> str:
@@ -616,6 +617,8 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         model_default = (
             f"\nLocal model policy: `{fs.background_model}` is preprocessing-only, `{fs.fast_model}` handles quick/simple tasks,"
             f" `{fs.general_model}` handles ordinary tasks, `{fs.smart_model}` handles more involved work, and {reasoning_tier} handles the hardest or highest-risk reasoning."
+            " Treat profile/default model names as routing targets only. Check installed-model inventory before live inference;"
+            " do not infer runtime availability, output quality, or performance from a configured mapping."
             " Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`."
             " Model routes above are resolved from active config. Keep hard and extreme reasoning as distinct tiers; see `docs/MODEL_CAPABILITIES.md` for the full matrix."
         )

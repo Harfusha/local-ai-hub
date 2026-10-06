@@ -55,11 +55,10 @@ def test_missing_optional_components_have_exact_actionable_doctor_outcomes() -> 
         "  [ERR] Whisper CLI:     Missing; transcription returns audio metadata without a transcript.",
         "  [ERR] OpenVINO:        Requested but missing; CPU fallback for embeddings is unavailable (missing sentence-transformers). CPU fallback for reranking is unavailable (missing sentence-transformers, torch).",
         "  [??] Serena:          Status unavailable; Hub did not report Serena diagnostics.",
-        "  [--] CodeGraph:      Not managed by Hub; optional standalone tooling.",
     ]
 
 
-def test_codegraph_is_explicitly_reported_as_standalone_and_not_hub_managed() -> None:
+def test_codegraph_standalone_is_not_reported_as_a_hub_component() -> None:
     helpers = _doctor_helpers(
         "_openvino_fallback_reason", "_optional_component_status", "_optional_component_lines"
     )
@@ -67,14 +66,8 @@ def test_codegraph_is_explicitly_reported_as_standalone_and_not_hub_managed() ->
         False, None, [], False, True, None, False, False
     )
 
-    assert status["codegraph"] == {
-        "managed": False,
-        "state": "not_managed",
-        "reason": "CodeGraph is optional standalone tooling; Hub does not install or execute it.",
-    }
-    assert "  [--] CodeGraph:      Not managed by Hub; optional standalone tooling." in (
-        helpers["_optional_component_lines"](status)
-    )
+    assert "codegraph" not in status
+    assert all("codegraph" not in line.casefold() for line in helpers["_optional_component_lines"](status))
 
 
 def test_openvino_fallback_names_only_the_requested_component() -> None:
@@ -154,7 +147,7 @@ def test_doctor_json_and_text_report_share_the_optional_component_contract() -> 
     assert "optional_components" in string_keys
 
 
-def test_doctor_reports_codegraph_as_not_managed_without_runtime_integration() -> None:
+def test_doctor_does_not_discover_or_report_standalone_codegraph() -> None:
     operational_paths = (
         ROOT / "config.toml.example",
         *(path for path in ROOT.joinpath("src", "local_ai_hub").rglob("*.py") if path.name != "preprocess.py"),
@@ -164,5 +157,7 @@ def test_doctor_reports_codegraph_as_not_managed_without_runtime_integration() -
         assert "codegraph" not in path.read_text(encoding="utf-8").casefold(), path.name
 
     doctor = (ROOT / "tools" / "doctor.py").read_text(encoding="utf-8")
-    assert '"codegraph"' in doctor.casefold()
-    assert '"state": "not_managed"' in doctor.casefold()
+    assert "codegraph" not in doctor.casefold()
+    installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8").casefold()
+    assert "codegraphcontext and kuzudb are not hub dependencies or backends" in installation
+    assert "hub does not discover, report, or use the standalone installation" in installation

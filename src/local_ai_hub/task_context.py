@@ -98,6 +98,20 @@ def build_context_request(
         token_budget = max(1, min(int(raw_budget or 4000), 128_000))
     except (TypeError, ValueError, OverflowError):
         token_budget = 4000
+    root = _bounded_text(payload.get("root"), 1000)
+    coordination_id = ""
+    if project_context is not None:
+        try:
+            trusted_root = Path(project_context.root).expanduser().resolve(strict=True)
+            supplied_root = Path(root).expanduser().resolve(strict=True) if root else trusted_root
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise ValueError("project context root is invalid") from exc
+        if not trusted_root.is_dir() or supplied_root != trusted_root:
+            raise ValueError("project context root does not match request root")
+        root = str(trusted_root)
+        coordination_id = _bounded_text(
+            getattr(project_context, "coordination_id", None), 200
+        )
     return ContextRequest(
         task_id=_bounded_text(payload.get("task_id"), 200),
         token_budget=token_budget,
@@ -111,6 +125,9 @@ def build_context_request(
         worktree_id=_bounded_text(payload.get("worktree_id"), 200),
         branch=_bounded_text(payload.get("branch"), 200),
         repository_id=_bounded_text(payload.get("repository_id"), 200),
+        # Coordination is trusted only when supplied by the server-resolved
+        # ProjectContext. A similarly named client field is deliberately ignored.
+        coordination_id=coordination_id,
         session_id=_bounded_text(payload.get("session_id"), 200),
         repository_revision=repository_revision,
         phase=_bounded_text(payload.get("phase"), 80),

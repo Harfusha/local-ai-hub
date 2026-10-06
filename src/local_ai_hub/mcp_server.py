@@ -192,6 +192,7 @@ def _classify_mcp_operation(tool_name: str, arguments: dict[str, Any]) -> tuple[
 
 
 try:
+    # CLIENT = HubClient(tenant=TENANT)
     CLIENT = _build_mcp_client(TENANT, CONFIG_PATH)
     CFG = load_config(CONFIG_PATH)
     atexit.register(CLIENT.close)
@@ -337,6 +338,55 @@ def _resolve_action(tool_kind: str, action: str) -> str:
     return tool_aliases.get(cleaned, cleaned)
 
 
+def _action_kind_for_tool(tool_name: str) -> str:
+    return {
+        "local_ai_coord": "coord",
+        "local_ai_command": "command",
+        "local_ai_repo": "repo",
+        "local_ai_task": "task",
+    }.get(tool_name, "")
+
+
+def _action_values_with_aliases(tool_name: str, features: Any = None) -> tuple[str, ...]:
+    tool_kind = _action_kind_for_tool(tool_name)
+    actions = operation_actions(tool_name, features)
+    aliases = _ACTION_ALIASES.get(tool_kind, {})
+    return tuple(dict.fromkeys((
+        *actions,
+        *(alias for alias, canonical in aliases.items() if canonical in actions),
+    )))
+
+
+def _input_schema_with_action_aliases(tool_name: str, schema: dict[str, Any]) -> dict[str, Any]:
+    """Publish short actions with the same conditional schema as their canonical action."""
+    tool_kind = _action_kind_for_tool(tool_name)
+    aliases = _ACTION_ALIASES.get(tool_kind, {})
+    if not aliases:
+        return schema
+
+    result = copy.deepcopy(schema)
+    actions = set(operation_actions(tool_name, FEATURES))
+    selector_schema = result.get("properties", {}).get("action")
+    if not isinstance(selector_schema, dict):
+        return result
+    selector_schema["enum"] = list(_action_values_with_aliases(tool_name, FEATURES))
+
+    conditions = result.setdefault("allOf", [])
+    by_action = {
+        row.get("if", {}).get("properties", {}).get("action", {}).get("const"): row
+        for row in conditions
+        if isinstance(row, dict)
+    }
+    for alias, canonical in aliases.items():
+        canonical_rule = by_action.get(canonical)
+        if canonical not in actions or canonical_rule is None:
+            continue
+        alias_rule = copy.deepcopy(canonical_rule)
+        alias_rule["if"]["properties"]["action"]["const"] = alias
+        conditions.append(alias_rule)
+    return result
+
+
 def _normalize_deterministic(val: Any) -> Any:
     """Sort dictionary keys and normalize microsecond timestamps to maintain stable prompt caches."""
     if isinstance(val, dict):
@@ -370,7 +420,11 @@ def _specialized_note(tool_name: str) -> str:
 
 def _desc_status() -> str:
     if LEAN_SCHEMAS:
-        return "Health, cache, telemetry, and agent_state inspector. Aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: brief, cache, telemetry, full, agent_state."
+        return (
+            "Health, cache, telemetry, and agent_state inspector. Aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: brief, cache, telemetry, full, agent_state."
+            " Use when: make one bounded health, cache, or telemetry check."
+            " Skip when: repository evidence or task work is needed."
+        )
     ollama_note = " ollama_online," if FEATURES.ollama else ""
     agent_state_note = " With Agent OS enabled, `detail=agent_state` summarizes durable task state." if FEATURES.agent_os else ""
     return (
@@ -405,6 +459,8 @@ def _desc_task() -> str:
             " Returns unsupported=true for local-model actions."
             " Semantic generation, exploration, reasoning, review, independent second opinions, and semantic compression are unavailable until a local model backend is enabled."
             " Use deterministic/indexed evidence only."
+            " Use when: a bounded semantic task requires a local model backend."
+            " Skip when: the task is trivial, pure evidence lookup, security/privacy constrained, or local-model tasks are disabled."
         )
     if LEAN_SCHEMAS:
         return (
@@ -413,6 +469,8 @@ def _desc_task() -> str:
             f"{_semantic_handoff_contract(local_enabled, FEATURES.status)}"
             "Command failure diagnosis remains disabled by default; never pass raw logs or open-ended coding. "
             "Local AI Hub does not route or manage native Codex agents. "
+            "Use when: bounded local generation, compression, review, routing, second opinion, or named advisory subagent work is needed. "
+            "Skip when: task is trivial, pure evidence lookup, security/privacy constrained, no useful independent scope, or Codex-owned subagent orchestration is the right owner. "
             f"{_actions_note(FEATURES.supported_task_actions())}"
         )
     profile_note = ""
@@ -455,9 +513,15 @@ def _desc_repo() -> str:
             " Semantic generation, reasoning, review, independent second opinions, and compression are unavailable until a local model backend is enabled."
             " Use deterministic/indexed evidence only for exact facts, symbols, diff, tests, and verification."
             " Native fallback requires terminal=true and retryable=false."
+            " Use when: indexed repository evidence is needed."
+            " Skip when: the task is not repository-scoped or fresh evidence already answers it."
         )
     if LEAN_SCHEMAS:
-        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+        return (
+            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+            " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
+            " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
+        )
     _ = ""
     if FEATURES.has_semantic():
         _ = f" -> {FEATURES.semantic_hint()} for relationships"
@@ -499,7 +563,11 @@ def _desc_repo() -> str:
 
 def _desc_rag() -> str:
     if LEAN_SCHEMAS:
-        return "Semantic RAG & documentation search with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: search, index, docset_search, ingest_document."
+        return (
+            "Semantic RAG and documentation search with aggregate-bounded responses; response controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Actions: search, index, list, docset_index, docset_search, ingest_document, ingest_diagram."
+            " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
+            " Skip when: deterministic/indexed evidence is sufficient or RAG is disabled."
+        )
     if not FEATURES.rag:
         return (
             "Semantic retrieval — RAG backend is disabled on this installation (`features.rag=false`)."
@@ -512,6 +580,7 @@ def _desc_rag() -> str:
         " Keep queries bounded and use it only for bounded semantic retrieval, not open-ended agent orchestration."
         f"{_actions_note(FEATURES.supported_rag_actions())}"
         f"{_specialized_note('local_ai_rag')}"
+        " Response controls: max_response_tokens; response_profile minimal|compact|delta; reuse_key; extra_fields selects additional safe response fields retained by the compact projector."
         " Index is file-incremental and query-cached."
         " Do not trigger index repeatedly for a fresh stable workspace."
         " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
@@ -521,7 +590,11 @@ def _desc_rag() -> str:
 
 def _desc_command() -> str:
     if LEAN_SCHEMAS:
-        return "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Speculative lint is opt-in, read-only, debounced, changed-path scoped, and cancellable. Actions: run, auto_fix, format, patch_and_verify, repair_loop, speculative_lint."
+        return (
+            "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Speculative lint is opt-in, read-only, debounced, changed-path scoped, and cancellable. Actions: run, auto_fix, format, patch_and_verify, repair_loop, speculative_lint."
+            " Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed."
+            " Skip when: no command is needed or a fresh cached result already answers it."
+        )
     agent_os_note = " Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts." if FEATURES.agent_os else ""
     return (
         "Bounded broker for test, lint, typecheck, or build commands; also repeatable analysis/read-only commands."
@@ -541,7 +614,11 @@ def _desc_command() -> str:
 
 def _desc_coord() -> str:
     if LEAN_SCHEMAS:
-        return "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
+        return (
+            "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
+            " Use when: any non-trivial task benefits from durable state/verification, or Hub workers share edit paths or reusable findings."
+            " Skip when: task is a trivial one-step lookup with no shared state to preserve."
+        )
     if FEATURES.agent_os:
         agent_os_note = (
             " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task contract first;"
@@ -571,11 +648,11 @@ def _desc_coord() -> str:
 
 def _desc_work() -> str:
     if LEAN_SCHEMAS:
-        return "Delegate closed, low-risk work with a verified handoff and aggregate-bounded response; optional max_response_tokens, response_profile, reuse_key. Skip micro-edits and live discussion. Actions: submit, status, wait, get, cancel."
+        return "Delegate closed, low-risk work with a verified handoff and aggregate-bounded response. Common controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Work projection controls: return_fields selects top-level fields; max_output_tokens bounds handoff text; work profiles are minimal, compact, standard, debug. Skip micro-edits and live discussion. Actions: submit, status, wait, get, cancel, continue."
     return (
         "Delegate one closed, low-risk work item with a verified handoff to Local AI Hub: plan a bounded dependency DAG, execute the smallest independently verifiable steps, "
         "apply transactional leased edits, run safe validation, verify the integrated result against the original request, and return a compact handoff. "
-        "Actions: submit, status, wait, get, cancel, continue. response_profile=minimal|compact|standard|debug; return_fields selects only needed top-level fields; "
+        "Actions: submit, status, wait, get, cancel, continue. Common response controls: max_response_tokens, response_profile=minimal|compact|delta, reuse_key, extra_fields; work projection profile=minimal|compact|standard|debug; return_fields selects only needed top-level fields; "
         "max_output_tokens bounds the handoff while full details remain artifact-backed. Use when: the task can be delegated as a self-contained repository outcome. "
         "Skip when: the agent must make an unresolved product decision, credentials/network are required, only one tiny lookup is needed, or work is micro-edits/live discussion."
     )
@@ -584,7 +661,11 @@ def _desc_work() -> str:
 def _desc_artifact() -> str:
     if LEAN_SCHEMAS:
         actions = ", ".join(operation_actions("local_ai_artifact"))
-        return f"Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: {actions}."
+        return (
+            f"Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: {actions}."
+            " Use when: exact source or evidence text is required after indexed discovery."
+            " Skip when: no source slice is needed or the existing compact result is sufficient."
+        )
     return (
         "Fetch one exact source or log slice or bounded binary artifact metadata. Binary payloads are never inlined in MCP responses. Evidence IDs start with E."
         " Use when: exact source or evidence text is required after indexed discovery."
@@ -592,17 +673,40 @@ def _desc_artifact() -> str:
     )
 
 
-TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task"))
+TaskAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_task", FEATURES))
+
+
+_REPO_ACTIONS = (
+    "profile", "search", "map", "code_index", "semantic", "intelligence",
+    "deterministic", "context", "route", "delegate", "solve", "review_diff", "impact",
+    "refactor_impact", "resolve_imports", "generate_tests", "validate_patch",
+    "audit_dependencies", "ast_outline", "test_matrix", "security_audit", "git_status", "repo_state",
+    "synthesize_commit", "verify", "preprocess", "preprocess_status", "preprocess_refresh",
+    "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister",
+    "context_compile", "verify_receipt", "verify_completion",
+    "cross_project_graph", "cross_project_symbols", "cross_project_impact",
+    "cross_repo_graph", "cross_repo_symbols", "cross_repo_impact",
+    "call_graph_diff", "semantic_diff",
+    "affected_tests", "topology", "ast_refactor",
+    "generate_mocks", "split_changes", "synthesize_rules",
+    "code_invariants", "generate_dataset", "profile_digest",
+    "callers", "dead_code", "secret_scan", "schema_inspect", "explain_query", "env_compat",
+    "circular_dependencies", "generate_types", "complexity", "api_spec", "dependency_slice", "migration_drift", "package_audit",
+    "structural_search", "context_budget",
+    "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
+    "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize", "investigate",
+    "diagnose", "briefing", "pipeline",
+)
 
 
 def _repo_action_type(features: Any) -> Any:
-    return Literal.__getitem__(operation_actions("local_ai_repo", features))
+    return Literal.__getitem__(_action_values_with_aliases("local_ai_repo", features))
 
 
 RepoAction: TypeAlias = _repo_action_type(FEATURES)
 RagAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_rag"))
-CommandAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_command"))
-CoordAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_coord"))
+CommandAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_command", FEATURES))
+CoordAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_coord", FEATURES))
 StatusDetail: TypeAlias = Literal.__getitem__(operation_actions("local_ai_status"))
 _STATUS_ACTION_ALIASES = ("status", "health", "check", "info")
 StatusAction: TypeAlias = Literal.__getitem__(
@@ -662,7 +766,7 @@ _STATUS_PROTECTED_KEYS = (
 )
 _RELIABILITY_PROTECTED_KEYS = (
     "success", "terminal", "retryable", "degraded", "stale",
-    "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
+    "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
 )
 _REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
 _REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()
@@ -1483,6 +1587,7 @@ def local_ai_task(
     latency_budget_ms: float = 0.0,
     job_action: str = "reason",
     job_id: str = "",
+    request_id: str = "",
     timeout_seconds: float = 90,
     evaluation_task_id: str = "",
     evaluation_cohort: str = "",
@@ -1548,6 +1653,12 @@ def local_ai_task(
     )
     if mode_rejection is not None:
         return mode_rejection
+    if action in {"submit", "status", "wait", "result", "cancel"} and not getattr(FEATURES, "async_jobs", False):
+        return {
+            "success": False,
+            "unsupported": True,
+            "error": "Async job lifecycle is disabled (async_jobs.enabled=false)",
+        }
     # The static contract requires summary, evidence, analysis, limitations
     # and next step. Requests below this floor routinely truncate after a
     # generic preamble, especially on 7b/9b models. Clamp instead of rejecting
@@ -1603,7 +1714,7 @@ def local_ai_task(
             "action": action, "job_action": job_action, "job_id": job_id, "timeout_seconds": timeout_seconds,
             "task": task, "context": context, "candidate": candidate, "complexity": complexity,
             "max_tokens": max_tokens, "tasks": tasks or [], "profile": profile, "root": root, "workspace": workspace,
-        }, timeout=_timeout("quick")), "status")
+        }, timeout=_timeout("quick"), request_id=request_id or None), "status")
     budgeted_actions = {"continue", "delegate", "explore", "reason", "review", "second_opinion", "compress"}
     if task_id.strip() and action in budgeted_actions and ROOT_FAMILY_BUDGET.default_limit:
         family_key = hashlib.sha1(_client_root(root).encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
@@ -1984,6 +2095,16 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
         extra_fields=extra_fields,
     )
     if isinstance(final, dict) and ("adaptive_context_pack" in safe_value or "context_pack" in safe_value or safe_value.get("guarded")):
+        pack_key = "adaptive_context_pack" if "adaptive_context_pack" in final else "context_pack"
+        context_pack = final.get(pack_key)
+        if isinstance(context_pack, dict) and isinstance(context_pack.get("evidence"), list):
+            context_pack = dict(context_pack)
+            context_pack["evidence"] = [
+                {key: item[key] for key in ("evidence_id", "path", "start_line", "end_line", "source") if key in item}
+                for item in context_pack["evidence"][:24]
+                if isinstance(item, dict)
+            ]
+            final[pack_key] = context_pack
         final["provenance"] = evidence_meta(
             "repo.context",
             str(authoritative.get("repo_revision", safe_value.get("repo_revision", ""))),
@@ -1994,14 +2115,53 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     options = _CURRENT_RESPONSE_OPTIONS.get()
     requested, profile, reuse_key, enabled = _response_budget("context", options)
     if enabled:
+        protected_context_keys = (
+            "success", "context_id", "repo_revision", "evidence_ids",
+            "adaptive_context_pack" if "adaptive_context_pack" in final else "context_pack",
+        )
+        protected_context_keys += tuple(
+            key for key in (
+                "complete", "partial", "task_context", "etag", "omitted_sections",
+                "stop_code", "degraded_reason", "context_truncated", "context_chars",
+                "requires_override", "requires_approval", "decision_recorded",
+                "decision_persisted", "task_status", "waiting", "unchanged", "reuse_pointer",
+            ) if key in final
+        )
+        if requested >= 256:
+            protected_context_keys += tuple(
+                key for key in (
+                    "changed_paths", "stale", "delta_from", "since_hash", "warnings", "degraded",
+                    "fallback_used",
+                ) if key in final
+            )
+        elif requested <= 160:
+            protected_context_keys += tuple(
+                key for key in ("stale", "warnings", "delta_from", "since_hash") if key in final
+            )
+        if requested >= 512:
+            protected_context_keys += tuple(
+                key for key in ("contract", "provenance") if key in final
+            )
+        protected_context_keys = tuple(
+            key for key in protected_context_keys if key in final
+        )
+        # Match the token count to the exact key order returned to the MCP
+        # serializer. Sorting after budgeting can change tokenization.
+        final = _normalize_deterministic(final)
         final = budget_response(
             final,
             max_tokens=requested,
             profile=profile,
             reuse_key=reuse_key,
-            protected_keys=tuple(authoritative),
+            protected_keys=protected_context_keys,
             token_metadata=efficiency_metadata(),
         )
+        budget_meta = final.get("response_budget") if isinstance(final, dict) else None
+        if isinstance(budget_meta, dict) and "returned_tokens" in budget_meta:
+            budget_meta["returned_tokens"] = json_tokens(final)
+            if json_tokens(final) > requested:
+                return _context_input_error("response budget metadata exceeds max_response_tokens")
+        return final
     return _normalize_deterministic(final)
 
 
@@ -2124,9 +2284,15 @@ def _local_ai_repo_impl(
             "scope": "repo_search",
         }] if path else [])
         search_path_hints.extend((path_hints or [])[:64])
+        normalized_hints, hint_error = _normalize_repo_search_path_hints(root, search_path_hints)
+        if hint_error is not None:
+            return {
+                "success": False, "error": hint_error, "status_code": 400,
+                "terminal": True, "retryable": False,
+            }
         return _compact(CLIENT.post("/api/search", {
             "root": root, "query": query or task, "top_k": 12, "enrich": enrich,
-        }, timeout=min(120, _timeout("quick")), path_hints=search_path_hints or None), "search", extra_fields=extra if extra else None)
+        }, timeout=min(120, _timeout("quick")), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
@@ -2845,6 +3011,7 @@ def local_ai_coord(
     focus: list[str] | None = None,
     preload_profile: str = "",
     since_hash: str = "",
+    expected_version: int | None = None,
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_delete, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete, swarm_dispatch, swarm_step, swarm_status, swarm_list, swarm_cancel. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
@@ -2985,9 +3152,12 @@ def local_ai_coord(
     if action == "leases":
         return _compact(CLIENT.get(f"/api/leases?root={quote(root)}"))
     if action == "memo_put":
-        return _compact(CLIENT.post("/api/memory/put", {
+        payload = {
             "root": root, "key": key, "value": value, "ttl_seconds": ttl_seconds or 604800,
-        }))
+        }
+        if expected_version is not None:
+            payload["expected_version"] = expected_version
+        return _compact(CLIENT.post("/api/memory/put", payload))
     if action == "memo_get":
         return _compact(CLIENT.post("/api/memory/get", {"root": root, "key": key}))
     if action == "memo_search":
@@ -3182,7 +3352,9 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         if _registered_tool is None or not _actions:
             continue
         if hasattr(_registered_tool, "parameters"):
-            _registered_tool.parameters = operation_tool_input_schema(_tool_name, FEATURES)
+            _registered_tool.parameters = _input_schema_with_action_aliases(
+                _tool_name, operation_tool_input_schema(_tool_name, FEATURES)
+            )
         _output_schema = operation_tool_output_schema(_tool_name, FEATURES)
         _fn_metadata = getattr(_registered_tool, "fn_metadata", None)
         if hasattr(_fn_metadata, "output_schema"):
@@ -3479,7 +3651,18 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             return result
 
         try:
-            validation = validate_operation_call(name, arguments, features=FEATURES)
+            selector = "detail" if name == "local_ai_status" else "action"
+            validation_arguments = dict(arguments)
+            requested_action = validation_arguments.get(selector)
+            action_kind = _action_kind_for_tool(name)
+            canonical_action = (
+                _resolve_action(action_kind, requested_action)
+                if action_kind and isinstance(requested_action, str)
+                else requested_action
+            )
+            if isinstance(canonical_action, str):
+                validation_arguments[selector] = canonical_action
+            validation = validate_operation_call(name, validation_arguments, features=FEATURES)
             if validation is not None:
                 status_code, error = validation
                 payload = {
@@ -3500,6 +3683,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 return finalize(_mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
             selector = "detail" if name == "local_ai_status" else "action"
             action = arguments.get(selector)
+            if action_kind and isinstance(action, str):
+                action = _resolve_action(action_kind, action)
             if name == "local_ai_status":
                 alias = arguments.get("action")
                 if isinstance(alias, str) and alias in {"status", "health", "check", "info"}:

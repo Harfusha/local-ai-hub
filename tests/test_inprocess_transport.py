@@ -116,6 +116,7 @@ def inprocess_client(tmp_path, monkeypatch):
     )
     set_operational_mode(state_dir, "active")
     app = _App(state_dir)
+    monkeypatch.setattr(http_server, "APP", None)
     transport = InProcessTransport(config_path=str(config_path))
     monkeypatch.setattr(transport, "_create_app", lambda: app)
     client = HubClient(

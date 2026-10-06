@@ -46,7 +46,7 @@ class EmbeddingModel:
         state_dir = configured_state_dir(config)
         self.cache = TieredCache(
             SQLiteCache(
-                state_dir / "cache.sqlite3",
+                state_dir / "cache.sqlite",
                 namespace="embeddings",
                 ttl_seconds=int(cache_cfg.get("embedding_ttl_seconds", 30 * 86400)),
                 max_entries=int(cache_cfg.get("embedding_max_entries", 100_000)),

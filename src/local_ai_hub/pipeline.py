@@ -64,7 +64,7 @@ class LocalAgentPipeline:
         self.refine_runs = 0
         self.execution_policy_fp = stable_hash(config.get("model_execution", {}))
         state_dir = Path(config["server"]["state_dir"])
-        l2 = SQLiteCache(state_dir / "cache.sqlite3", "pipeline-stage", int(cfg.get("ttl_seconds", 604800)), int(cfg.get("max_entries", 12000)))
+        l2 = SQLiteCache(state_dir / "cache.sqlite", "pipeline-stage", int(cfg.get("ttl_seconds", 604800)), int(cfg.get("max_entries", 12000)))
         self.cache = SingleFlightCache(TieredCache(l2, int(cfg.get("l1_entries", 256)), int(cfg.get("l1_ttl_seconds", 1800))), wait_timeout_seconds=float(config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 45)))
         self.runs = 0
         self.critic_runs = 0

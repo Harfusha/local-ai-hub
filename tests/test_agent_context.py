@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+import hashlib
+import json
 from pathlib import Path
 import pytest
 
@@ -275,6 +279,153 @@ def test_delta_pack_returns_unchanged_etag(tmp_path: Path):
     assert unchanged.unchanged is True
     assert unchanged.delta_from == original.etag()
     assert unchanged.elements == []
+
+
+def test_context_etag_separates_request_scope_identity(compiler: ContextCompiler, tmp_path: Path):
+    request = ContextRequest(
+        task_id="task-1",
+        token_budget=128,
+        include_kinds=(),
+        changed_paths=("src/a.py",),
+        root=str(tmp_path / "root-a"),
+        tenant="tenant-a",
+        clone_id="clone-a",
+        worktree_id="worktree-a",
+        branch="branch-a",
+        repository_id="repo-a",
+        session_id="session-a",
+        phase="review",
+        focus=("budget",),
+        preload_profile="review",
+    )
+    original = compiler.compile(request)
+    assert original.elements
+    unchanged = compiler.compile(replace(request, since_hash=original.etag()))
+    assert unchanged.unchanged is True
+    public_context = repr(original.to_dict())
+    for private_identity in ("tenant-a", "session-a", request.root, "repo-a"):
+        assert private_identity not in public_context
+
+    scope_variants = (
+        {"tenant": "tenant-b"},
+        {"root": str(tmp_path / "root-b")},
+        {"clone_id": "clone-b"},
+        {"worktree_id": "worktree-b"},
+        {"branch": "branch-b"},
+        {"repository_id": "repo-b"},
+        {"session_id": "session-b"},
+        {"preload_profile": "fast"},
+        {"focus": ("different focus",)},
+        {"include_kinds": ("verification",)},
+        {"include_diagnostics": True},
+        {"changed_paths": ("src/b.py",)},
+        {"task_id": "task-2"},
+    )
+    for scope in scope_variants:
+        scoped_request = replace(request, **scope)
+        expected = compiler.compile(scoped_request)
+        changed = compiler.compile(
+            replace(scoped_request, since_hash=original.etag())
+        )
+        assert changed.etag() != original.etag(), scope
+        assert changed.unchanged is False, scope
+        assert [(item.element_id, item.content) for item in changed.elements] == [
+            (item.element_id, item.content) for item in expected.elements
+        ], scope
+        assert changed.delta_from == original.etag(), scope
+
+def test_context_etag_matches_legacy_canonical_json_without_json_dumps(monkeypatch):
+    from local_ai_hub import agent_context
+
+    pack = CompiledContext(
+        elements=[
+            ContextElement(
+                element_id="el-1",
+                source_kind="memory_record",
+                content="café 東京 " * 100,
+                estimated_tokens=17,
+                reason="scoped fact",
+                confidence=0.75,
+                freshness=0.5,
+                provenance={"tenant": "tenant-a", "nested": {"ids": [1, "two"]}},
+            ),
+            ContextElement(
+                element_id="el-2",
+                source_kind="task",
+                content="x" * 1024,
+                estimated_tokens=256,
+                reason="",
+            ),
+        ],
+        estimated_tokens=273,
+        token_budget=512,
+        phase="edit",
+        repo_revision="rev-1",
+        request_identity_digest="identity-1",
+    )
+    legacy = hashlib.sha1(usedforsecurity=False)
+    legacy.update(pack.phase.encode("utf-8"))
+    legacy.update(pack.repo_revision.encode("utf-8"))
+    legacy.update(pack.request_identity_digest.encode("ascii", errors="ignore"))
+    for element in pack.elements:
+        serialized = json.dumps(
+            element.to_dict(compact=False),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        legacy.update(serialized.encode("utf-8", errors="replace"))
+    expected = legacy.hexdigest()[:12]
+
+    def forbidden_dumps(*_args, **_kwargs):
+        raise AssertionError("etag should use the configured orjson fast path for large canonical elements")
+
+    if agent_context.json_backend_name() == "orjson":
+        monkeypatch.setattr(agent_context.json, "dumps", forbidden_dumps)
+    assert pack.etag() == expected
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        {"value": float("nan")},
+        {"value": float("inf")},
+        {"value": 1e-7},
+        {1: "integer key"},
+        {"value": 1 << 70},
+        {"value": object()},
+    ],
+)
+def test_context_etag_keeps_stdlib_spelling_for_noncanonical_values(provenance):
+    pack = CompiledContext(
+        elements=[
+            ContextElement(
+                element_id="el-nan",
+                source_kind="task",
+                content="non-finite fallback",
+                estimated_tokens=4,
+                reason="",
+                provenance=provenance,
+            ),
+        ],
+        estimated_tokens=4,
+        token_budget=32,
+    )
+    legacy = hashlib.sha1(usedforsecurity=False)
+    legacy.update(pack.phase.encode("utf-8"))
+    legacy.update(pack.repo_revision.encode("utf-8"))
+    legacy.update(pack.request_identity_digest.encode("ascii", errors="ignore"))
+    for element in pack.elements:
+        serialized = json.dumps(
+            element.to_dict(compact=False),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        legacy.update(serialized.encode("utf-8", errors="replace"))
+    assert pack.etag() == legacy.hexdigest()[:12]
 
 
 def test_disabled_agent_state_returns_stateless_repo_context_warning(tmp_path: Path):

@@ -51,6 +51,51 @@ enabled = true
         app.close()
 
 
+def test_http_coord_pubsub_poll_honors_sequence_cursor(tmp_path: Path, monkeypatch):
+    import json
+    import threading
+    import urllib.request
+
+    from local_ai_hub import http_server
+    from local_ai_hub.agent_events import SwarmPubSub
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11489\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(config_path))
+    monkeypatch.setattr(SwarmPubSub, "_instance", None)
+    app.services.pubsub_publish("cursor-test", {"n": 1})
+    app.services.pubsub_publish("cursor-test", {"n": 2})
+
+    previous_app = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps({"topic": "cursor-test", "after_seq": 1}).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/coord/pubsub_poll",
+            data=payload,
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        http_server.APP = previous_app
+        app.close()
+
+    assert [item["sequence"] for item in result["messages"]] == [2]
+    assert result["after_seq"] == 1
+
+
 def test_coord_task_checkpoint_action_preserves_existing_memo_actions(running_app_client):
     client, app = running_app_client
     # Directly test client coord dispatch logic
@@ -417,6 +462,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": "repository-two"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-tenant-independent", value="global-value", provenance={"root": str(repo_one), "repository_id": "repository-global", "tenant": "legacy-tenant"}),
     )
     for record in records:
         app.agent_memory.record(record, actor="user")
@@ -646,6 +692,132 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             "repository_id": "repository-two",
         })
         assert deleted_by_repository_id["deleted"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        gc.collect()
+        http_server.APP = previous
+        app.close()
+
+
+def test_http_verification_route_rejects_passed_receipt_without_evidence(tmp_path: Path):
+    import gc
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from local_ai_hub import http_server
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11502\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps({
+            "action": "receipt",
+            "receipt": {
+                "receipt_id": "route-receipt-no-evidence",
+                "task_id": "route-task",
+                "criterion": "focused test",
+                "passed": True,
+            },
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/verification",
+            data=payload,
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+        result = json.loads(error.value.read().decode("utf-8"))
+        assert error.value.code == 400
+        assert result["error"] == "passed verification receipt requires evidence_id"
+        assert result["terminal"] is True
+        assert result["retryable"] is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        gc.collect()
+        http_server.APP = previous
+        app.close()
+
+
+def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
+    import gc
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from local_ai_hub import http_server
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    scoped_record = MemoryRecord.create(
+        kind="finding",
+        scope=AgentScope.WORKTREE,
+        scope_id="worktree-one",
+        key="private-delete",
+        value="preserve me",
+    )
+    global_record = MemoryRecord.create(
+        kind="finding",
+        scope=AgentScope.GLOBAL,
+        key="global-delete",
+        value="delete me",
+    )
+    app.agent_memory.record(scoped_record, actor="user")
+    app.agent_memory.record(global_record, actor="user")
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def post(payload):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    try:
+        with pytest.raises(urllib.error.HTTPError) as denied:
+            post({
+                "action": "delete",
+                "record_id": scoped_record.record_id,
+                "scope": "worktree",
+                "scope_id": "worktree-one",
+                "worktree_id": "worktree-one",
+            })
+        assert denied.value.code == 403
+        assert app.agent_memory.get(
+            scoped_record.record_id,
+            scope=AgentScope.WORKTREE,
+            scope_id="worktree-one",
+        ).value == "preserve me"
+        deleted = post({"action": "delete", "record_id": global_record.record_id})
+        assert deleted["deleted"] is True
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -993,3 +1165,64 @@ def test_dashboard_agent_os_tab():
     assert 'loadAgentOsView' in DASHBOARD_HTML
     assert 'renderAgentOsView' in DASHBOARD_HTML
     assert 'agentStateCard' in DASHBOARD_HTML
+
+
+def test_http_verification_route_requires_boolean_passed(tmp_path: Path):
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from local_ai_hub import http_server
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11501\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def post(receipt):
+        payload = json.dumps({"action": "receipt", "receipt": receipt}).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/verification",
+            data=payload,
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    try:
+        invalid_receipts = (
+            {"task_id": "route-task", "criterion": "focused test"},
+            {"task_id": "route-task", "criterion": "focused test", "passed": "false"},
+            {"receipt_id": "route-receipt-text", "task_id": "route-task", "criterion": "focused test", "passed": "false"},
+            {"receipt_id": "route-receipt-int", "task_id": "route-task", "criterion": "focused test", "passed": 1},
+        )
+        for receipt in invalid_receipts:
+            status, result = post(receipt)
+            assert status == 400
+            assert result["success"] is False
+            assert result["terminal"] is True
+            assert result["retryable"] is False
+
+        status, result = post({"task_id": "route-task", "criterion": "focused test", "passed": False})
+        assert status == 200
+        assert result["receipt"]["passed"] is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        gc.collect()
+        http_server.APP = previous
+        app.close()

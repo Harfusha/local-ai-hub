@@ -1,6 +1,6 @@
 # T19 clean-host installer cycle
 
-**Status: NOT RUN.** Future acceptance only; no install/reinstall/uninstall success claimed. Run only after T20 freezes artifacts and explicitly assigns T19 a serial clean-host slot. Verify the sdist SHA-256 against the T20 revision-bound receipt before extraction. Root wrappers do not enforce `--expected-revision`. This procedure covers install, same-version reinstall, and uninstall with persistent service registration skipped; service lifecycle needs a separate receipt. Cross-version upgrade awaits a T20-approved baseline/target artifact pair and config/state-preservation assertions. The v7 artifacts in `T19_RELEASE_VALIDATION_RUNBOOK.md` predate T19 edits.
+**Status: NOT RUN.** This procedure is future acceptance, not evidence of install, reinstall, uninstall, or release success. Run only after T20 freezes the post-integration source revision, clears the T04 source-test blocker, and explicitly assigns T19 a serial clean-host slot for that exact revision; a prior slot release alone does not authorize a run. The installer requires a clean Git checkout because `--expected-revision` verifies `HEAD` and the complete porcelain status; an unpacked sdist is not a valid installer input. The v7 artifacts in `T19_RELEASE_VALIDATION_RUNBOOK.md` predate T19 edits. This cycle covers install/reinstall/uninstall at one revision; cross-version update needs a T20-selected baseline revision and separate receipt.
 
 ## Safety boundary
 
@@ -11,30 +11,26 @@
 
 ## Windows PowerShell
 
-Set `$ArtifactRoot` to the frozen artifact directory and `$PythonVersion` to the only registered Python version on this disposable VM.
+Set `$SourceRoot` to a transferred disposable Git checkout of the frozen revision, `$Revision` to its verified 40-character SHA, and `$PythonVersion` to the only registered Python version on this disposable VM. Keep the `.git` metadata with the checkout; package artifact hash/install checks belong to `T19_RELEASE_VALIDATION_RUNBOOK.md`.
 
 ```powershell
 $PythonVersion = '3.13'
 $Lab = Join-Path $env:TEMP "t19-installer-cycle-py$($PythonVersion.Replace('.', ''))"
 if (Test-Path $Lab) { throw 'Scratch exists; choose a fresh VM or unique path.' }
-$Sdist = Join-Path $ArtifactRoot 'local_ai_hub-4.0.0.tar.gz'
-$ExpectedSdistSha256 = '<T20_RECEIPT_SDIST_SHA256>'
-$ActualSdistSha256 = (Get-FileHash -Algorithm SHA256 $Sdist).Hash.ToLower()
-if ($ActualSdistSha256 -ne $ExpectedSdistSha256.ToLower()) { throw 'sdist SHA-256 does not match T20 receipt' }
-$Extract = Join-Path $Lab 'source'
-$Source = Join-Path $Extract 'local_ai_hub-4.0.0'
+$Source = (Resolve-Path -LiteralPath $SourceRoot).Path
+$ActualRevision = (& git -C $Source rev-parse --verify HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $ActualRevision -ine $Revision) { throw 'Source checkout does not match the frozen revision.' }
+$SourceStatus = & git -C $Source status --porcelain=v1 --untracked-files=all
+if ($LASTEXITCODE -ne 0 -or $SourceStatus) { throw 'Source checkout is not clean.' }
 $Install = Join-Path $Lab 'install'
 $State = Join-Path $Lab 'state'
-New-Item -ItemType Directory -Path $Extract | Out-Null
-Write-Host "Verified sdist SHA-256: $ActualSdistSha256"
-tar -xzf $Sdist -C $Extract
 Copy-Item (Join-Path $Source 'config.toml.example') (Join-Path $Source 'config.toml')
 $InstallToml = $Install.Replace('\', '/')
 $StateToml = $State.Replace('\', '/')
 Add-Content (Join-Path $Source 'config.toml') -Encoding utf8 -Value "`n[setup]`ninstall_dir = `"$InstallToml`"`n`n[server]`nstate_dir = `"$StateToml`"`nport = 11435`n"
 Push-Location $Source
 try {
-  $Flags = @('-Profile','integrated','-SkipModelPull','-SkipTools','-SkipService','-SkipOllamaInstall','-SkipLocalNlpPreload','-SkipTokenEconomy','-SkipCompanionSkills')
+  $Flags = @('-ExpectedRevision',$Revision,'-Profile','integrated','-SkipModelPull','-SkipTools','-SkipService','-SkipOllamaInstall','-SkipLocalNlpPreload','-SkipTokenEconomy','-SkipCompanionSkills')
   & (Join-Path $Source 'install.ps1') @Flags
   if ($LASTEXITCODE -ne 0) { throw "install failed: $LASTEXITCODE" }
   $Config = Join-Path $Install 'config.toml'; $Before = (Get-FileHash $Config).Hash
@@ -54,22 +50,20 @@ try {
 
 ## Linux shell
 
-Set `ARTIFACT_ROOT` to the frozen artifact directory. The selected Python must be the only Python 3.11+ executable available to `install.sh` on this VM.
+Set `T19_SOURCE_ROOT` to a transferred disposable Git checkout of the frozen revision and `T19_REVISION` to its verified 40-character SHA. Keep `.git` metadata with the checkout. The selected Python must be the only Python 3.11+ executable available to `install.sh` on this VM; package artifact hash/install checks belong to `T19_RELEASE_VALIDATION_RUNBOOK.md`.
 
 ```sh
 PYTHON_BIN=python3.13
 PYTHON_TAG=py313
 LAB="$(mktemp -d "/tmp/t19-installer-cycle-$PYTHON_TAG.XXXXXX")"
-SDIST="$ARTIFACT_ROOT/local_ai_hub-4.0.0.tar.gz"
-EXPECTED_SDIST_SHA256="<T20_RECEIPT_SDIST_SHA256>"
-ACTUAL_SDIST_SHA256=$(sha256sum "$SDIST" | cut -d ' ' -f 1)
-test "$ACTUAL_SDIST_SHA256" = "$EXPECTED_SDIST_SHA256" || { echo "sdist SHA-256 does not match T20 receipt" >&2; exit 2; }
-EXTRACT="$LAB/source"
-SOURCE="$EXTRACT/local_ai_hub-4.0.0"
+SOURCE=$(cd "$T19_SOURCE_ROOT" && pwd)
+REVISION="$T19_REVISION"
+ACTUAL_REVISION=$(git -C "$SOURCE" rev-parse --verify HEAD)
+test "$ACTUAL_REVISION" = "$REVISION" || { echo 'Source checkout does not match frozen revision.' >&2; exit 2; }
+test -z "$(git -C "$SOURCE" status --porcelain=v1 --untracked-files=all)" || { echo 'Source checkout is not clean.' >&2; exit 2; }
 INSTALL="$LAB/install"
 STATE="$LAB/state"
-"$PYTHON_BIN" --version; printf "Verified sdist SHA-256: %s\n" "$ACTUAL_SDIST_SHA256"
-mkdir -p "$EXTRACT"; tar -xzf "$SDIST" -C "$EXTRACT"
+"$PYTHON_BIN" --version
 cp "$SOURCE/config.toml.example" "$SOURCE/config.toml"
 cat >> "$SOURCE/config.toml" <<EOF
 
@@ -80,7 +74,7 @@ state_dir = "$STATE"
 port = 11435
 EOF
 cd "$SOURCE"
-FLAGS='--profile integrated --skip-model-pull --skip-tools --skip-service --skip-ollama-install --skip-local-nlp-preload --skip-token-economy --skip-companion-skills'
+FLAGS="--expected-revision $REVISION --profile integrated --skip-model-pull --skip-tools --skip-service --skip-ollama-install --skip-local-nlp-preload --skip-token-economy --skip-companion-skills"
 ./install.sh $FLAGS
 CONFIG="$INSTALL/config.toml"; BEFORE=$(sha256sum "$CONFIG" | cut -d ' ' -f 1)
 "$INSTALL/.venv/bin/local-ai-hub" --help
@@ -93,6 +87,6 @@ test ! -e "$INSTALL"; test -f "$STATE/preserve.marker"
 
 ## Cross-version upgrade acceptance
 
-The Windows and Linux snippets above cover first install, same-version reinstall, and uninstall only. For upgrade acceptance, T20 must supply a frozen baseline sdist and target sdist with separate SHA-256 values and identify the supported baseline version. On each disposable host, verify both hashes against the T20 receipt, install the baseline artifact into a fresh scratch `install`/`state` pair, record installed version and config/state hashes, then run the target artifact's installer against that same pair. Require target version, unchanged user config, and surviving durable state marker. Uninstall with the target artifact and verify install tree removal while external state remains. Test persistent service registration/restart separately with the production service flags. Use one host per OS/Python combination assigned by T20. Root wrappers do not pin revisions; artifact hashes and the retained receipt provide provenance.
+The Windows and Linux snippets above cover first install, same-version reinstall, and uninstall only. Cross-version acceptance requires T20-selected baseline and target revisions, separate clean Git checkouts with verified 40-character SHAs, and revision-bound package hashes. Install the baseline into a fresh scratch install/state pair, record version and config/state hashes, then run the target installer with its matching expected revision against that same pair. Require target version, unchanged user config, and surviving durable state marker. Verify target uninstall preserves external state. Persistent service registration/restart needs a separate receipt. Use only the OS/Python combination assigned by T20; package artifact checks remain in T19_RELEASE_VALIDATION_RUNBOOK.md.
 
 Run one OS/Python combination per disposable VM with a fresh scratch path, only within the exact combination authorized by T20's serial slot. Request another assignment before validating another combination. Record artifact hash, exact commands and exit codes, CLI output, pre/post config hashes, install-tree removal, and survival of the external state marker. One passing cycle covers only that combination. T20 must record Windows and Linux receipts on the integrated candidate before this gate closes.

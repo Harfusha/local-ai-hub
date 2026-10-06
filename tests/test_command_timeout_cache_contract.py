@@ -20,11 +20,10 @@ def test_timeout_and_cancelled_repeatable_commands_are_not_cached(tmp_path, monk
     assert broker.classify(command)["cacheable"] is True
 
     monkeypatch.setattr(broker, "_unavailable_executable", lambda command, cwd: None)
-    monkeypatch.setattr(
-        broker,
-        "_key",
-        lambda command, cwd, classification: ("stable-key", {"fingerprint": "fixed", "changed_paths": []}),
-    )
+    def fixed_key(command, cwd, classification, *, tenant, timeout, tool_identity=None, phase_timings_ms=None, **_fingerprints):
+        return "stable-key", {"fingerprint": "fixed", "changed_paths": []}
+
+    monkeypatch.setattr(broker, "_key", fixed_key)
     executions: list[str] = []
 
     def execute(command, cwd, timeout, cancel_event=None, log_callback=None, **_kwargs):

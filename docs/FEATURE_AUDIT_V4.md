@@ -95,7 +95,7 @@ the `mcp_server.py` type literals are the public contract checked by
 - Live RAG index: 432 files, 4,110 chunks, 4,099 embedded chunks, success; live search success.
 - Live synthetic eval: 2/2 cases passed on `qwen2.5-coder:7b`.
 - Live hardware benchmark: success on `qwen2.5-coder:7b`; host still reports high VRAM pressure and context factor 0.5.
-- Historical bounded probe: Serena reported healthy at audit time; this is not a current runtime receipt. CodeGraphContext is not a Hub backend. Reranker/OpenVINO/llama.cpp hardware quality remains **not claimed**.
+- Live optional backend probe (2026-09-21 audit snapshot): Serena was reported healthy then; this is not current host status. CodeGraphContext and KuzuDB are optional standalone tools outside Hub release checks. Reranker/OpenVINO/llama.cpp hardware quality remains **not claimed**.
 - Busy-database regression: isolated 8/8 pass; the earlier full-suite timing miss was not reproducible as an isolated defect.
 - Final release candidate `3b96cb88b9e0805c6a14ff2685c3f24b19d42e37`: `1687 passed, 5 skipped, 6 subtests passed` in 288.75 seconds; compileall, release-check, selftest and diff-check also passed.
 

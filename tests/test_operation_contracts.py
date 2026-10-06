@@ -997,7 +997,7 @@ def _stub_registered_mcp_tool(monkeypatch, tool_name: str, value: Any):
     calls: list[dict[str, Any]] = []
     registered_tool = mcp_server.mcp._tool_manager._tools[tool_name]
 
-    def fake_handler(**arguments: Any):
+    async def fake_handler(**arguments: Any):
         calls.append(arguments)
         return value
 
@@ -1053,7 +1053,7 @@ def test_registered_mcp_dispatch_accepts_handler_inputs(
     calls = _stub_registered_mcp_tool(monkeypatch, tool_name, result)
     response = asyncio.run(mcp_server.mcp.call_tool(tool_name, arguments))
 
-    assert response[1]["success"] is True
+    assert response[1]["success"] is True, response[1]
     assert len(calls) == 1
     assert all(calls[0][key] == value for key, value in arguments.items())
 

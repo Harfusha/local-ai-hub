@@ -46,6 +46,7 @@ def test_loaded_inventory_lists_unmapped_served_ids_and_marks_each_endpoint_stat
     assert queried == [(first_url, True), (second_url, True)]
     assert inventory["complete"] is False
     assert "configured-b" in inventory["errors"]
+    assert inventory["endpoints"] == {first_url: "complete", second_url: "unknown"}
     assert {row["name"] for row in inventory["models"]} == {"mapped-a", "served-only-by-runner"}
     assert all(row["endpoint_url"] == first_url for row in inventory["models"])
 

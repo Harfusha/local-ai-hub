@@ -224,6 +224,16 @@ def _safe_error_message(value: Any) -> str:
     return f"{safe_type}: {reason}"[:96]
 
 
+_SAFE_ERROR_CODE_MESSAGES = {
+    "local_backend_transport": "local backend transport failure",
+    "local_model_error": "local model inference failed",
+    "model_request_timeout": "model request timed out",
+    "circuit_open": "model circuit open",
+    "http_request_failed": "HTTP request failed",
+    "http_stream_failed": "HTTP stream failed",
+}
+
+
 def _error_fingerprint(error_type: str, component: str, operation: str, error_code: str = "") -> str:
     # Fingerprint only sanitized classification labels, never free-form error text.
     labels = (_safe_error_metadata(value) for value in (error_type, component, operation, error_code))
@@ -931,6 +941,8 @@ class TelemetryStore:
         request_id: str = "",
         tenant: str = "",
         agent: str = "",
+        error_type_override: str = "",
+        error_code_override: str = "",
         retryable: bool = False,
         recovered: bool = False,
     ) -> str:
@@ -940,15 +952,19 @@ class TelemetryStore:
         request_id = request_id or str(ctx.get("request_id") or "")
         tenant = tenant or str(ctx.get("tenant") or "")
         agent = agent or str(ctx.get("agent") or "")
-        error_type = type(error).__name__ if isinstance(error, BaseException) else "Error"
+        error_type = error_type_override or (type(error).__name__ if isinstance(error, BaseException) else "Error")
         safe_request_id = _safe_error_metadata(request_id, 96)
         safe_tenant = _safe_error_metadata(tenant, 160)
         safe_agent = _safe_error_metadata(agent, 80)
         safe_component = _safe_error_metadata(component, 120)
         safe_operation = _safe_error_metadata(operation, 160)
         safe_error_type = _safe_error_metadata(error_type, 120)
-        safe_error_code = _safe_error_code(error)
-        message = _safe_error_message(error)
+        safe_error_code = error_code_override if error_code_override in _SAFE_ERROR_CODE_MESSAGES else _safe_error_code(error)
+        message = (
+            f"{safe_error_type}: {_SAFE_ERROR_CODE_MESSAGES[error_code_override]}"
+            if error_code_override in _SAFE_ERROR_CODE_MESSAGES
+            else _safe_error_message(error)
+        )[:96]
         fp = _error_fingerprint(safe_error_type, safe_component, safe_operation, safe_error_code)
         payload = {
             "created_at": time.time(), "request_id": safe_request_id, "tenant": safe_tenant, "agent": safe_agent,

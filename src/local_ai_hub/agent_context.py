@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from .json_utils import dumps as json_dumps
-
 import hashlib
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -22,6 +21,8 @@ from .context_identity import (
     context_path_hints_identity,
     normalize_context_root,
 )
+from .json_utils import backend_name as json_backend_name
+from .json_utils import dumps as json_dumps
 from .sqlite_support import connect_sqlite, retry_busy
 
 
@@ -45,6 +46,7 @@ class ContextRequest:
     preload_profile: str = ""
     repo_revision: str = ""
     since_hash: str = ""
+    coordination_id: str = ""
     settings_digest: str | None = None
     path_hints: tuple[ContextPathHint, ...] = ()
     identity: str = ""
@@ -83,6 +85,35 @@ class ContextElement:
         }
 
 
+def _orjson_canonical_value(value: Any, ancestors: set[int] | None = None) -> bool:
+    """Return whether orjson preserves stdlib JSON spelling for this value tree."""
+    value_type = type(value)
+    if value is None or value_type in (str, bool):
+        return True
+    if value_type is int:
+        return -(1 << 63) <= value < (1 << 64)
+    if value_type is float:
+        return math.isfinite(value) and "e" not in repr(value).lower()
+    if value_type not in (dict, list, tuple):
+        return False
+
+    if ancestors is None:
+        ancestors = set()
+    identity = id(value)
+    if identity in ancestors:
+        return False
+    ancestors.add(identity)
+    try:
+        if value_type is dict:
+            return all(
+                type(key) is str and _orjson_canonical_value(item, ancestors)
+                for key, item in value.items()
+            )
+        return all(_orjson_canonical_value(item, ancestors) for item in value)
+    finally:
+        ancestors.remove(identity)
+
+
 @dataclass(frozen=True)
 class CompiledContext:
     elements: list[ContextElement]
@@ -108,13 +139,36 @@ class CompiledContext:
         h.update(self.repo_revision.encode("utf-8"))
         h.update(self.request_identity_digest.encode("ascii", errors="ignore"))
         for el in self.elements:
-            serialized = json.dumps(
-                el.to_dict(compact=False),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                default=str,
-            )
+            element_data = el.to_dict(compact=False)
+            if (
+                len(el.content) >= 768
+                and json_backend_name() == "orjson"
+                and _orjson_canonical_value(element_data)
+            ):
+                try:
+                    serialized = json_dumps(
+                        element_data,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    serialized = json.dumps(
+                        element_data,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+            else:
+                serialized = json.dumps(
+                    element_data,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                )
             h.update(serialized.encode("utf-8", errors="replace"))
         return h.hexdigest()[:12]
 
@@ -187,6 +241,16 @@ def _memory_record_matches_tenant(record: Any, tenant: str) -> bool:
         return not record_tenant
     return bool(record_tenant) and record_tenant == requested_tenant
 
+
+def _rollback_after_failure(connection: Any, *, operation: str) -> None:
+    try:
+        connection.execute("ROLLBACK")
+    except Exception as cleanup_error:
+        logging.getLogger(__name__).warning(
+            "agent_context transaction rollback failed operation=%s error_type=%s",
+            operation,
+            type(cleanup_error).__name__,
+        )
 
 class ContextCompiler:
     def __init__(
@@ -300,14 +364,7 @@ class ContextCompiler:
                     "knowledge_link_save",
                     type(exc).__name__,
                 )
-                try:
-                    con.execute("ROLLBACK")
-                except Exception as cleanup_error:
-                    logging.getLogger(__name__).warning(
-                        "agent_context transaction rollback failed operation=%s error_type=%s",
-                        "knowledge_link_save",
-                        type(cleanup_error).__name__,
-                    )
+                _rollback_after_failure(con, operation="knowledge_link_save")
                 raise
             finally:
                 con.close()
@@ -378,14 +435,7 @@ class ContextCompiler:
                     "knowledge_link_invalidate",
                     type(exc).__name__,
                 )
-                try:
-                    con.execute("ROLLBACK")
-                except Exception as cleanup_error:
-                    logging.getLogger(__name__).warning(
-                        "agent_context transaction rollback failed operation=%s error_type=%s",
-                        "knowledge_link_invalidate",
-                        type(cleanup_error).__name__,
-                    )
+                _rollback_after_failure(con, operation="knowledge_link_invalidate")
                 raise
             finally:
                 con.close()
@@ -809,6 +859,7 @@ class ContextCompiler:
                         clone_id=request.clone_id,
                         worktree_id=request.worktree_id,
                         branch=request.branch,
+                        coordination_id=request.coordination_id,
                         limit=20,
                     )
                 except Exception as exc:
@@ -1025,8 +1076,12 @@ class ContextCompiler:
                                     },
                                 ),
                             ))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "agent_context blackboard lookup failed board_id=%s error_type=%s",
+                        b_id,
+                        type(exc).__name__,
+                    )
 
         if request.include_kinds:
             allowed_kinds = {str(kind).strip().lower() for kind in request.include_kinds if str(kind).strip()}

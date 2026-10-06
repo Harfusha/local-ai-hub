@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import errno
+import http.client
 import json
+import sys
 import threading
-import json
 import time
+import types
 from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
 from io import BytesIO
+import pytest
 
 from local_ai_hub import client as client_module
 from local_ai_hub.client import HubClient
@@ -34,6 +38,26 @@ def test_client_get_non_object_json_uses_complete_invalid_response(tmp_path, mon
     assert result["retryable"] is True
     assert result["terminal"] is False
     assert result["request_id"].startswith("req_")
+
+
+def test_client_coord_memo_put_forwards_expected_version(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def capture_post(endpoint, payload, **kwargs):
+        calls.append((endpoint, payload))
+        return {"success": True}
+
+    monkeypatch.setattr(client, "post", capture_post)
+    result = client.coord(
+        "memo_put", root="repo", key="decision", value="accepted", expected_version=4
+    )
+
+    assert result["success"] is True
+    assert calls == [(
+        "/api/memory/put",
+        {"root": "repo", "key": "decision", "value": "accepted", "ttl_seconds": 604800, "expected_version": 4},
+    )]
 
 
 def test_client_reuses_one_http11_connection_for_sequential_requests(tmp_path, monkeypatch):
@@ -291,12 +315,29 @@ def test_client_replays_duplicate_request_until_owner_finishes(tmp_path, monkeyp
         return b'{"success":true,"value":"owner-result"}'
 
     monkeypatch.setattr(client, "_pooled_open", pooled_open)
-    result = client.request("/api/search", {"root": "repo"}, timeout=1)
+    result = client.post("/api/search", {"root": "repo"}, timeout=1)
 
     assert result == {"success": True, "value": "owner-result"}
     assert calls == 2
     assert len(set(request_ids)) == 1
     assert attempt_timeouts[1] < attempt_timeouts[0] - 0.05
+
+
+def test_get_passes_request_id_through_singleflight(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    observed_ids = []
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        observed_ids.append(headers["X-LocalAI-Request-ID"])
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    result = client.get("/health")
+
+    assert result["success"] is True
+    assert len(observed_ids) == 1
+    assert observed_ids[0].startswith("req_")
 
 
 def test_client_does_not_replay_ambiguous_default_post(tmp_path, monkeypatch):
@@ -434,8 +475,6 @@ def test_get_non_object_json_response_includes_request_id(tmp_path, monkeypatch)
         "retryable": True,
         "terminal": False,
     }
-
-
 def test_post_uses_explicit_request_id_across_safe_retry(tmp_path, monkeypatch):
     client = _client(tmp_path)
     request_ids = []
@@ -479,6 +518,156 @@ def test_post_rejects_malformed_request_ids_before_network(tmp_path, monkeypatch
     assert calls == []
 
 
+def test_transport_connection_refusal_marks_request_not_sent(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    connection = http.client.HTTPConnection("127.0.0.1", 1)
+    connection_calls = []
+    connect_calls = []
+
+    def refuse_connection():
+        connect_calls.append(True)
+        raise ConnectionRefusedError(errno.ECONNREFUSED, "connection refused")
+
+    connection.connect = refuse_connection
+    def get_connection(_timeout):
+        connection_calls.append(True)
+        return connection
+
+    monkeypatch.setattr(client, "_connection", get_connection)
+
+    result = client.post("/api/command", {"command": "echo safe"}, request_id="stable-refused-id")
+
+    assert connection_calls == [True]
+    assert connect_calls == [True]
+    assert result == {
+        "success": False,
+        "error": "request was not sent because transport failed before write",
+        "request_not_sent": True,
+        "outcome_unknown": False,
+        "request_id": "stable-refused-id",
+        "terminal": True,
+        "retryable": False,
+    }
+
+
+def test_transport_other_connect_failure_is_classified_as_request_not_sent(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    connection = http.client.HTTPConnection("127.0.0.1", 1)
+    connect_calls = []
+
+    def timeout_connection():
+        connect_calls.append(True)
+        raise TimeoutError("connect timed out")
+
+    connection.connect = timeout_connection
+    monkeypatch.setattr(client, "_connection", lambda _timeout: connection)
+
+    result = client.request("/api/command", {"command": "echo safe"}, request_id="stable-timeout-id")
+
+    assert connect_calls == [True]
+    assert result["request_not_sent"] is True
+    assert result["outcome_unknown"] is False
+    assert result["request_id"] == "stable-timeout-id"
+
+
+def test_transport_write_failure_marks_outcome_unknown(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    connection = http.client.HTTPConnection("127.0.0.1", 1)
+    connection_calls = []
+
+    class BrokenSocket:
+        def __init__(self):
+            self.send_calls = 0
+
+        def sendall(self, _data):
+            self.send_calls += 1
+            raise ConnectionResetError("connection reset during write")
+
+        def close(self):
+            pass
+
+    sock = BrokenSocket()
+
+    def connect_with_socket():
+        connection.sock = sock
+
+    connection.connect = connect_with_socket
+    def get_connection(_timeout):
+        connection_calls.append(True)
+        return connection
+
+    monkeypatch.setattr(client, "_connection", get_connection)
+
+    result = client.post("/api/command", {"command": "echo safe"}, request_id="stable-write-id")
+
+    assert connection_calls == [True]
+    assert sock.send_calls == 1
+    assert result == {
+        "success": False,
+        "error": "request outcome is unknown after a transport failure",
+        "outcome_unknown": True,
+        "request_id": "stable-write-id",
+        "terminal": True,
+        "retryable": False,
+    }
+
+
+def test_safe_posts_with_distinct_explicit_request_ids_do_not_coalesce(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    first_started = threading.Event()
+    second_started = threading.Event()
+    release = threading.Event()
+    request_ids = []
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_id = headers["X-LocalAI-Request-ID"]
+        request_ids.append(request_id)
+        (first_started if request_id == "explicit-one" else second_started).set()
+        release.wait(2)
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    def send(request_id):
+        return client.request(
+            "/api/repo/complexity",
+            {"root": "repo"},
+            timeout=1,
+            replay_safe=True,
+            request_id=request_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(send, "explicit-one")
+        assert first_started.wait(1)
+        second = pool.submit(send, "explicit-two")
+        try:
+            assert second_started.wait(1)
+        finally:
+            release.set()
+        assert first.result(timeout=1)["success"] is True
+        assert second.result(timeout=1)["success"] is True
+
+    assert sorted(request_ids) == ["explicit-one", "explicit-two"]
+
+
+def test_ensure_server_mode_load_failure_blocks_autostart(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    state_dir = client.config["server"]["state_dir"]
+    starts = []
+    mode_module = types.ModuleType("local_ai_hub.operational_mode")
+
+    def fail_mode_load(_state_dir):
+        raise OSError("mode state unavailable")
+
+    mode_module.load_operational_mode = fail_mode_load
+    monkeypatch.setitem(sys.modules, mode_module.__name__, mode_module)
+    monkeypatch.setattr(client, "_online", lambda *_args: False)
+    monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_a, **_k: starts.append(True))
+
+    assert client.ensure_server(timeout=1) is False
+    assert starts == []
+    assert not client_module.Path(state_dir).exists()
 def test_post_malformed_response_returns_explicit_unknown_outcome(tmp_path, monkeypatch):
     client = _client(tmp_path)
     calls = []
@@ -694,6 +883,7 @@ def test_stream_events_reports_uncertain_partial_disconnect(tmp_path, monkeypatc
 
 def test_stream_events_cancel_event_closes_blocked_response(tmp_path, monkeypatch):
     client = _client(tmp_path)
+    del client.max_request_timeout
     cancel = threading.Event()
 
     class Response:

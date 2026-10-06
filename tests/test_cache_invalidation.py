@@ -522,21 +522,28 @@ def test_both_sidecar_atomic_replacements_failing_keep_cross_process_l1_safe(
     )
     reader = subprocess.Popen(
         [sys.executable, "-B", "-c", script, str(tmp_path)],
-        cwd=Path(__file__).resolve().parents[1], env=environment,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     try:
         assert reader.stdout is not None
-        assert reader.stdout.readline().strip() == '\"old\"'
+        assert reader.stdout.readline().strip() == '"old"'
         deadline = time.monotonic() + 5
-        while not (tmp_path / "reader-ready").exists() and time.monotonic() < deadline: time.sleep(.01)
+        while not (tmp_path / "reader-ready").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
         assert (tmp_path / "reader-ready").exists()
         assert first._coordinator is not None
+
         replace = cache_module.os.replace
+
         def fail_sidecar_replace(source, destination):
             if Path(destination).parent == first._coordinator.directory:
                 raise OSError("coordination sidecar replace failed")
             return replace(source, destination)
+
         monkeypatch.setattr(cache_module.os, "replace", fail_sidecar_replace)
         assert first.delete("key") is True
         (tmp_path / "reader-go").write_text("read", encoding="utf-8")
@@ -547,3 +554,18 @@ def test_both_sidecar_atomic_replacements_failing_keep_cross_process_l1_safe(
         if reader.poll() is None:
             reader.terminate()
             reader.wait(timeout=5)
+
+def test_get_checked_reports_coordination_failure_as_unhealthy_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = _cache(tmp_path)
+    cache.set("key", "stale")
+    assert cache.get("key") == "stale"
+    assert cache._coordinator is not None
+
+    def fail_read():
+        raise OSError("coordination sidecar unreadable")
+
+    monkeypatch.setattr(cache._coordinator, "read_locked", fail_read)
+    assert cache.get_checked("key") == (None, False)
+    assert cache.l1.get("key") is None

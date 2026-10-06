@@ -44,6 +44,7 @@ from .learning import UsageLearner
 from .autotune import RuntimeTuner
 from .deterministic import DeterministicEngine
 from .logging_setup import configure_logging, shutdown_logging
+from .sqlite_support import migrate_agent_state_database
 from .external_tools import ExternalCodeIntelligence
 from .async_jobs import AsyncJobManager
 from .speculative_lint import SpeculativeLintQueue
@@ -263,6 +264,7 @@ class LocalAIApp:
     def __init__(self, config_path: str | None = None):
         self.config = load_config(config_path)
         state_dir = Path(self.config["server"]["state_dir"])
+        migrate_agent_state_database(state_dir)
         saving = self.config.get("token_saving", {})
         self.started_at = time.time()
         self._shutdown = threading.Event()
@@ -324,7 +326,7 @@ class LocalAIApp:
         self.memory = WorkspaceMemoryStore(state_dir)
         agent_state_cfg = self.config.get("agent_state", {})
         self.agent_state = AgentStateStore(
-            state_dir / "agent_state.sqlite3",
+            state_dir / "agent_state.sqlite",
             enabled=bool(agent_state_cfg.get("enabled", False)),
             max_payload_bytes=int(agent_state_cfg.get("max_payload_bytes", 65536)),
         )
@@ -335,10 +337,11 @@ class LocalAIApp:
             self.agent_state,
             task_store=self.agent_tasks,
             artifact_store=self.artifacts,
+            evidence_store=self.evidence,
         )
         self.agent_policy = PolicyEngine(self.agent_state)
         self.agent_tasks.set_policy_engine(self.agent_policy)
-        self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite3")
+        self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite", state_store=self.agent_state)
         self.agent_context = ContextCompiler(
             self.agent_state,
             task_store=self.agent_tasks,
@@ -396,7 +399,7 @@ class LocalAIApp:
             verification_store=self.agent_verification,
         )
         self.services.set_consistency_guard(self.consistency_guard)
-        self.swarm = SwarmCoordinator(state_dir / "agent_state.sqlite3", leases=self.leases, blackboard=self.agent_blackboard, verifications=self.agent_verification)
+        self.swarm = SwarmCoordinator(state_dir / "agent_state.sqlite", leases=self.leases, blackboard=self.agent_blackboard, verifications=self.agent_verification)
         self.services.set_swarm(self.swarm)
         self.rag = RAGStore(self.config, self.services, self.reranker)
         self.services.set_rag(self.rag)
@@ -419,6 +422,7 @@ class LocalAIApp:
             runtime=self.runtime,
             vram_balancer=self.vram_balancer,
             config=self.config,
+            scheduler=self.scheduler,
         )
         self.recovery = RecoveryJournal(state_dir, stale_seconds=int(self.config.get("resilience", {}).get("journal_stale_seconds", 900)))
         self._start_resilience_watchdog()
@@ -496,14 +500,12 @@ class LocalAIApp:
                         from .sqlite_support import optimize_db
                         state_dir = Path(self.config["server"]["state_dir"])
                         for db_name in (
-                            "agent_state.sqlite3",
+                            "agent_state.sqlite",
                             "async_jobs.sqlite3",
                             "code-index.sqlite3",
-                            "cache.sqlite3",
+                            "cache.sqlite",
                             "rag.sqlite3",
                             "preprocess.sqlite3",
-                            "agent_blackboard.sqlite3",
-                            "leases.sqlite3",
                             "artifacts.sqlite3",
                         ):
                             db_file = state_dir / db_name

@@ -44,7 +44,7 @@ finally:
 
 ## Requests and timeouts
 
-Use `get(path, timeout=15.0)` for GET requests and `post(path, payload=None, timeout=360.0, *, request_id=None, path_hints=None)` for POST requests. `request(path, payload=None, *, timeout=30.0, replay_safe=False, request_id=None, operational_action=None, requires_heavy_work=True, cancel_event=None)` exposes the lower-level request path; all options after `*` are keyword-only. Timeouts are capped by the configured `client.max_request_timeout_seconds` value.
+Use `get(path, timeout=15.0)` for GET requests and `post(path, payload=None, timeout=360.0, *, request_id=None, path_hints=None, tenant=None, cancel_event=None)` for POST requests. `request(path, payload=None, *, timeout=30.0, replay_safe=False, request_id=None, operational_action=None, requires_heavy_work=True, tenant=None, cancel_event=None)` exposes the lower-level request path; all options after `*` are keyword-only. Timeouts are capped by the configured `client.max_request_timeout_seconds` value.
 
 `post("/api/search", payload, path_hints=...)` and `post("/api/command", payload, path_hints=...)` accept up to 64 validated hints when payload has no explicit `path`; an explicit `path` removes hints.
 
