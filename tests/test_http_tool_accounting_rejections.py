@@ -33,6 +33,7 @@ def test_tool_accounting_reports_aggregate_rejections_without_exception_details(
 
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = "/api/telemetry/tool-accounting"
+    handler._telemetry_finished = False
     handler.headers = {"Content-Type": "application/json"}
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
@@ -65,6 +66,7 @@ def test_tool_accounting_reports_aggregate_rejections_without_exception_details(
     ]
     assert "sensitive prompt text" not in str(responses)
     assert "private source text" not in str(responses)
+    assert handler._telemetry_finished is True
 
 
 def test_suppressed_self_accounting_event_is_not_reported_as_accepted(monkeypatch):

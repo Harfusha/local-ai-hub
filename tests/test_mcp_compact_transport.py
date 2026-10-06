@@ -5,6 +5,7 @@ import json
 import threading
 from pathlib import Path
 import socket
+import threading
 import pytest
 
 from local_ai_hub import mcp_server as local_ai_mcp
@@ -14,6 +15,303 @@ import mcp.types as t
 from local_ai_hub.token_accounting import json_tokens
 
 
+def _assert_json_schema(value, schema: dict[str, object]) -> None:
+    if "const" in schema:
+        assert value == schema["const"]
+    alternatives = schema.get("anyOf")
+    if isinstance(alternatives, list):
+        for alternative in alternatives:
+            try:
+                _assert_json_schema(value, alternative)
+                break
+            except AssertionError:
+                continue
+        else:
+            raise AssertionError(f"value does not match any schema branch: {value!r}")
+
+    expected = schema.get("type")
+    if expected is not None:
+        expected_types = expected if isinstance(expected, list) else [expected]
+        type_checks = {
+            "object": lambda item: isinstance(item, dict),
+            "array": lambda item: isinstance(item, list),
+            "string": lambda item: isinstance(item, str),
+            "boolean": lambda item: isinstance(item, bool),
+            "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
+            "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
+            "null": lambda item: item is None,
+        }
+        assert any(type_checks[kind](value) for kind in expected_types), (expected, value)
+
+    if isinstance(value, dict):
+        for key in schema.get("required", []):
+            assert key in value, f"missing required output field: {key}"
+        properties = schema.get("properties", {})
+        for key, child_schema in properties.items():
+            if key in value and isinstance(child_schema, dict):
+                _assert_json_schema(value[key], child_schema)
+    elif isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for item in value:
+            _assert_json_schema(item, schema["items"])
+
+
+def _telemetry_output_schema() -> dict[str, object]:
+    output_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_status"].output_schema
+    return next(
+        variant for variant in output_schema["anyOf"]
+        if variant.get("title") == "local_ai_status.telemetry result"
+    )
+
+
+def test_status_telemetry_compaction_preserves_required_empty_arrays_and_matches_schema() -> None:
+    report = {
+        "success": True,
+        "window": {"days": 30, "scope": "window", "events": 0},
+        "summary": {"events": 0},
+        "queue": {},
+        "hotspots": [],
+        "by_operation": [],
+        "error_fingerprints": [],
+        "detail": {},
+        "decision_grade": {},
+    }
+
+    result = local_ai_mcp._compact(report, "status")
+
+    _assert_json_schema(result, _telemetry_output_schema())
+    assert result["hotspots"] == []
+    assert result["by_operation"] == []
+    assert result["error_fingerprints"] == []
+
+
+def test_mcp_telemetry_tools_call_loopback_matches_declared_output_schema(tmp_path, monkeypatch) -> None:
+    from local_ai_hub import http_server
+    from local_ai_hub.app import LocalAIApp
+    from local_ai_hub.client import HubClient
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    state_dir = (tmp_path / "state").as_posix()
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'[server]\nbind="127.0.0.1"\nport={port}\nstate_dir="{state_dir}"\n'
+        "[observability]\nenabled=true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(config))
+    previous_app = http_server.APP
+    previous_client = local_ai_mcp.CLIENT
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", port), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = HubClient(tenant="mcp-telemetry-test", config_path=str(config), auto_start=False)
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
+    request = t.CallToolRequest(
+        method="tools/call",
+        params=t.CallToolRequestParams(name="local_ai_status", arguments={"detail": "telemetry", "scope": "window"}),
+    )
+    try:
+        declared_schema = _telemetry_output_schema()
+        response = asyncio.run(local_ai_mcp.mcp._mcp_server.request_handlers[t.CallToolRequest](request))
+        assert isinstance(response.root, t.CallToolResult)
+        assert response.root.isError is not True
+        payload = json.loads(response.root.content[0].text)
+        assert payload["success"] is True, payload
+        _assert_json_schema(payload, declared_schema)
+        assert payload["hotspots"] == []
+        assert payload["by_operation"] == []
+        assert payload["error_fingerprints"] == []
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        http_server.APP = previous_app
+        local_ai_mcp.CLIENT = previous_client
+        app.close()
+
+
+def test_mcp_telemetry_error_text_is_redacted(monkeypatch) -> None:
+    private_values = (
+        "PROMPT-SECRET",
+        "token=TOKEN-SECRET",
+        "/private/customer/report.json",
+    )
+    private_error = "telemetry failed: " + " ".join(private_values)
+
+    def fake_get(path: str, timeout: float | None = None) -> dict[str, object]:
+        if path.startswith("/api/live/status"):
+            return {"success": True, "hub_online": True, "runtime_stats": {}}
+        return {"success": False, "error": private_error}
+
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "get", fake_get)
+    request = t.CallToolRequest(
+        method="tools/call",
+        params=t.CallToolRequestParams(name="local_ai_status", arguments={"detail": "telemetry"}),
+    )
+
+    response = asyncio.run(local_ai_mcp.mcp._mcp_server.request_handlers[t.CallToolRequest](request))
+
+    assert isinstance(response.root, t.CallToolResult)
+    assert response.root.isError is not True
+    payload = json.loads(response.root.content[0].text)
+    assert payload["success"] is False
+    assert payload["error"] == "Telemetry report failed; details omitted"
+    assert all(value not in response.root.content[0].text for value in private_values)
+
+
+def _mcp_telemetry_call() -> t.CallToolResult:
+    request = t.CallToolRequest(
+        method="tools/call",
+        params=t.CallToolRequestParams(name="local_ai_status", arguments={"detail": "telemetry"}),
+    )
+    response = asyncio.run(local_ai_mcp.mcp._mcp_server.request_handlers[t.CallToolRequest](request))
+    assert isinstance(response.root, t.CallToolResult)
+    return response.root
+
+
+def test_mcp_telemetry_loopback_redacts_nested_error_text_and_keeps_metrics(tmp_path, monkeypatch) -> None:
+    from local_ai_hub import http_server
+    from local_ai_hub.app import LocalAIApp
+    from local_ai_hub.client import HubClient
+
+    private_values = (
+        "PROMPT-SECRET",
+        "token=TOKEN-SECRET",
+        "/private/customer/report.json",
+    )
+    telemetry_error = " ".join(private_values)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'[server]\nbind="127.0.0.1"\nport={port}\nstate_dir="{(tmp_path / "state").as_posix()}"\n'
+        "[observability]\nenabled=true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(config))
+    report = {
+        "success": True,
+        "window": {"days": 30, "scope": "window", "events": 7},
+        "summary": {"events": 7, "failure_rate": 0.25},
+        "queue": {"events": 2, "avg_age_ms": 17.5, "last_error": telemetry_error},
+        "hotspots": [{"type": "latency", "signal": "queue_wait", "value_ms": 80, "message": telemetry_error}],
+        "by_operation": [{"action": "context", "calls": 4, "error_message": telemetry_error}],
+        "error_fingerprints": [],
+        "detail": {
+            "status": "incomplete", "truncated": True, "incomplete": True,
+            "omitted_sections": ["writer_failures"], "list_limit": 24, "recent_error": telemetry_error,
+        },
+        "decision_grade": {
+            "counts": {"events": 7},
+            "queue": {"events": 2, "error": telemetry_error},
+            "detail": {"status": "complete", "private_note": telemetry_error},
+        },
+    }
+
+    monkeypatch.setattr(app.telemetry, "report", lambda *args, **kwargs: report)
+    previous_app = http_server.APP
+    previous_client = local_ai_mcp.CLIENT
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", port), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = HubClient(tenant="mcp-telemetry-privacy", config_path=str(config), auto_start=False)
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", True)
+
+    try:
+        tool_result = _mcp_telemetry_call()
+        payload = json.loads(tool_result.content[0].text)
+        assert tool_result.isError is not True
+        assert payload["success"] is True
+        assert payload["summary"]["events"] == 7
+        assert payload["queue"]["events"] == 2
+        assert payload["hotspots"][0]["value_ms"] == 80
+        assert payload["detail"]["list_limit"] == 24
+        assert payload["decision_grade"]["counts"]["events"] == 7
+        assert all(value not in tool_result.content[0].text for value in private_values)
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        http_server.APP = previous_app
+        local_ai_mcp.CLIENT = previous_client
+        app.close()
+
+
+def test_mcp_telemetry_error_projection_preserves_retry_semantics(monkeypatch) -> None:
+    private_error = "token=TOKEN-SECRET /private/customer/report.json"
+
+    def fake_get(path: str, timeout: float | None = None) -> dict[str, object]:
+        if path.startswith("/api/live/status"):
+            return {"success": True, "hub_online": True, "runtime_stats": {}}
+        return {
+            "success": False,
+            "status_code": 503,
+            "terminal": False,
+            "retryable": True,
+            "error": private_error,
+        }
+
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "get", fake_get)
+
+    tool_result = _mcp_telemetry_call()
+    payload = json.loads(tool_result.content[0].text)
+
+    assert payload["success"] is False
+    assert payload["status_code"] == 503
+    assert payload["terminal"] is False
+    assert payload["retryable"] is True
+    assert private_error not in tool_result.content[0].text
+
+
+def test_mcp_telemetry_exception_before_projection_redacts_private_text(monkeypatch) -> None:
+    private_values = ("PROMPT-SECRET", "token=TOKEN-SECRET", "/private/customer/report.json")
+    private_error = "telemetry transport failed: " + " ".join(private_values)
+
+    def fake_get(path: str, timeout: float | None = None) -> dict[str, object]:
+        if path.startswith("/api/live/status"):
+            return {"success": True, "hub_online": True, "runtime_stats": {}}
+        raise RuntimeError(private_error)
+
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "get", fake_get)
+
+    tool_result = _mcp_telemetry_call()
+    payload = json.loads(tool_result.content[0].text)
+
+    assert payload["success"] is False
+    assert payload["status_code"] == 500
+    assert payload["terminal"] is True
+    assert payload["retryable"] is False
+    assert all(value not in tool_result.content[0].text for value in private_values)
+
+
+def test_mcp_telemetry_live_status_exception_redacts_private_text(monkeypatch) -> None:
+    private_values = ("PROMPT-SECRET", "token=TOKEN-SECRET", "/private/customer/report.json")
+    private_error = "live status transport failed: " + " ".join(private_values)
+
+    def fake_get(path: str, timeout: float | None = None) -> dict[str, object]:
+        raise RuntimeError(private_error)
+
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "get", fake_get)
+
+    tool_result = _mcp_telemetry_call()
+    payload = json.loads(tool_result.content[0].text)
+
+    assert payload["success"] is False
+    assert payload["status_code"] == 500
+    assert payload["terminal"] is True
+    assert payload["retryable"] is False
+    assert all(value not in tool_result.content[0].text for value in private_values)
 def test_fallback_used_is_protected_reliability_metadata() -> None:
     assert "fallback_used" in local_ai_mcp._RELIABILITY_PROTECTED_KEYS
 

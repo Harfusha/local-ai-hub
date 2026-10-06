@@ -594,6 +594,30 @@ The resulting staged tree was unchanged before this note. This is proven
 newline-only archival reconciliation, not a claim that each historical patch's
 behavior satisfies release acceptance.
 
+#### T18 status/dashboard root integration
+
+Committed owner result `0e4689bf` merged manually after T13/T17. Preserved the
+current status/privacy/dashboard behavior and T14 `/api/context/pack` ownership;
+the sole conflicted source file was `http_server.py`. Resolved its import and
+monitor-path unions, retained root task-scope denial and memory compact/reap/
+relation gates, kept the current route registry and the T18 bounded status,
+telemetry and trace helpers. The T18 handoff records prior pinned-90 decisions.
+Ten changed source files parse; `git diff --cached --check -- src tests tools`
+passed.
+
+Fresh targeted command:
+`python -B -m pytest -q -p no:cacheprovider
+tests/test_http_post_route_registry_t18.py tests/test_agent_state_transport.py
+tests/test_t14_context_pack_agent_memory.py --tb=short --maxfail=5`.
+Result: **14 passed, 5 failed in 31.59 s**. Failures: POST route golden ordering
+(`post_config_update_1` before `post_bundle_import_1`), telemetry dispatch line
+ordering, scoped memory GET returns HTTP 400 in task-scope isolation test,
+verification receipt preflight returns 403 instead of expected 400, and
+worktree-scoped memory deletion returns 400 instead of expected 403. These
+remain open; no expectations were weakened. This command did not reach the
+entire T14 memory suite because `--maxfail=5` stopped at the fifth failure.
+Owner's 42 known T18 failures and unverified full release remain open.
+
 #### Stashes must be integrated, not merely preserved
 
 The user reaffirmed that stash retention must not conceal unintegrated work.

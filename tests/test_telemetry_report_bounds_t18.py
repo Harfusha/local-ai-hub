@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.error
 import urllib.request
 
 from local_ai_hub.app import LocalAIApp
+from local_ai_hub.json_utils import dumps as json_dumps
 from local_ai_hub import http_server
 import local_ai_hub.telemetry as telemetry_module
-from local_ai_hub.json_utils import dumps as json_dumps
 from local_ai_hub.telemetry import (
     _MAX_TELEMETRY_REPORT_BYTES,
     _bound_telemetry_report,
@@ -15,6 +16,7 @@ from local_ai_hub.telemetry import (
     _encode_error_page_cursor,
     TelemetryStore,
 )
+
 
 def test_telemetry_report_error_rows_are_paginated(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True)
@@ -33,21 +35,6 @@ def test_telemetry_report_error_rows_are_paginated(tmp_path):
     assert first["error_fingerprints_page"] == {"offset": 0, "limit": 2, "total": 5, "next_offset": 2}
     assert second["error_fingerprints_page"]["next_offset"] == 4
     assert last["error_fingerprints_page"]["next_offset"] is None
-
-
-
-def test_telemetry_report_response_stays_within_byte_budget():
-    report = _bound_telemetry_report({
-        "generated_at": "now",
-        "window_days": 30,
-        "scope": "window",
-        "by_agent": [{"agent": f"agent-{index}", "label": "x" * 500} for index in range(1000)],
-    })
-
-    assert len(json_dumps(report).encode("utf-8")) <= _MAX_TELEMETRY_REPORT_BYTES
-    assert report["response_truncated"] is True
-    assert "by_agent" in report["response_truncated_fields"]
-    assert report["by_agent"]
 
 
 def test_telemetry_error_cursor_survives_rank_changes_between_pages(monkeypatch, tmp_path):
@@ -87,7 +74,7 @@ def test_telemetry_error_cursor_survives_rank_changes_between_pages(monkeypatch,
     assert all(row["operation"] != "new-operation" for row in all_rows)
 
 
-def test_telemetry_report_http_route_forwards_error_cursor(tmp_path):
+def test_telemetry_report_http_route_accepts_error_page_parameters(tmp_path):
     state_dir = tmp_path / "state"
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -97,36 +84,78 @@ def test_telemetry_report_http_route_forwards_error_cursor(tmp_path):
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
-    for index in range(30):
+    for index in range(5):
         app.telemetry.record_error("inference", f"generate-{index}", ValueError("invalid argument"))
-    assert app.telemetry.flush(1)
     previous_app = http_server.APP
     http_server.APP = app
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        base = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report"
-        with urllib.request.urlopen(base + "?recent_errors=25&error_cursor=") as response:
-            first = json.loads(response.read().decode("utf-8"))["report"]
-        page = first["error_fingerprints_page"]
-        assert page["cursor"] == ""
-        assert page["next_cursor"]
+        url = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report?error_limit=2&error_offset=2"
+        with urllib.request.urlopen(url) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        assert payload["success"] is True
+        assert len(payload["report"]["error_fingerprints"]) == 2
+        assert payload["report"]["error_fingerprints_page"]["offset"] == 2
+        assert payload["report"]["error_fingerprints_page"]["total"] == 5
 
-        next_cursor = page["next_cursor"]
-        with urllib.request.urlopen(base + f"?recent_errors=25&error_cursor={next_cursor}") as response:
-            second = json.loads(response.read().decode("utf-8"))["report"]
-        assert second["error_fingerprints_page"]["cursor"] == next_cursor
-        keys = ("fingerprint", "error_type", "component", "operation")
-        first_key = tuple(first["error_fingerprints"][0][key] for key in keys)
-        second_key = tuple(second["error_fingerprints"][0][key] for key in keys)
-        assert first_key != second_key
+        bounded_url = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report?error_limit=1000000000&error_offset=-10"
+        with urllib.request.urlopen(bounded_url) as response:
+            bounded_body = response.read()
+            bounded_payload = json.loads(bounded_body.decode("utf-8"))
+        page = bounded_payload["report"]["error_fingerprints_page"]
+        assert page["limit"] == 100
+        assert page["offset"] == 0
+        assert len(bounded_payload["report"]["error_fingerprints"]) <= page["limit"]
+        assert len(bounded_body) <= 256 * 1024
+
+        cursor_url = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report?error_limit=2&error_cursor="
+        with urllib.request.urlopen(cursor_url) as response:
+            cursor_payload = json.loads(response.read().decode("utf-8"))
+        cursor_page = cursor_payload["report"]["error_fingerprints_page"]
+        assert cursor_page["cursor"] == ""
+        assert cursor_page["next_cursor"]
+        next_url = cursor_url + cursor_page["next_cursor"]
+        with urllib.request.urlopen(next_url) as response:
+            next_payload = json.loads(response.read().decode("utf-8"))
+        first_keys = {row["fingerprint"] for row in cursor_payload["report"]["error_fingerprints"]}
+        next_keys = {row["fingerprint"] for row in next_payload["report"]["error_fingerprints"]}
+        assert first_keys.isdisjoint(next_keys)
+
+        try:
+            urllib.request.urlopen(next_url + "&error_offset=0")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 400
+        else:
+            raise AssertionError("cursor plus explicit offset must be rejected")
+
+        try:
+            urllib.request.urlopen(cursor_url + "not-a-valid-cursor!")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 400
+        else:
+            raise AssertionError("malformed cursor must be rejected")
     finally:
         server.shutdown()
         server.server_close()
-        thread.join(timeout=2)
         http_server.APP = previous_app
-        app.telemetry.close()
+        app.close()
+
+
+def test_telemetry_report_response_stays_within_byte_budget():
+    report = _bound_telemetry_report({
+        "generated_at": "now",
+        "window_days": 30,
+        "scope": "window",
+        "by_agent": [{"agent": f"agent-{index}", "label": "x" * 500} for index in range(1000)],
+    })
+
+    assert len(json_dumps(report).encode("utf-8")) <= _MAX_TELEMETRY_REPORT_BYTES
+    assert report["response_truncated"] is True
+    assert "by_agent" in report["response_truncated_fields"]
+    assert report["by_agent"]
+
 
 def test_report_budget_truncation_advances_cursor_after_retained_rows(monkeypatch):
     rows = [
