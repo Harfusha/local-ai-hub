@@ -1514,37 +1514,67 @@ class RepositoryTools:
             result["candidate_context_tokens_est"] = candidate_tokens
         return result
 
+    def _pack_ranked_context(
+        self, search: dict[str, Any], query: str, max_tokens: int, *, targeted: bool = False
+    ) -> dict[str, Any]:
+        """Pack whole ranked snippets within the serialized response budget."""
+        pieces: list[str] = []
+        evidence: list[dict[str, Any]] = []
+        results = search.get("results", [])
+        candidate_tokens = sum(
+            estimate_tokens(
+                f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
+                + item["text"]
+                + "\n"
+            )
+            for item in results
+        )
+        for item in results:
+            header = f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
+            piece = header + item["text"] + "\n"
+            ev = {k: item[k] for k in ("path", "start_line", "end_line", "score", "file_sha256")}
+            ev["raw"] = item.get("text", "")
+            trial_packed = "\n".join([*pieces, piece])
+            trial_evidence = [*evidence, ev]
+            trial_result = {
+                "success": True,
+                "root": search["root"],
+                "query": query,
+                "context": trial_packed,
+                "evidence": trial_evidence,
+                "estimated_tokens": estimate_tokens(trial_packed),
+                "original_estimated_tokens": max(candidate_tokens, estimate_tokens(trial_packed)),
+                "scanned_files": search.get("scanned_files", 0),
+            }
+            if targeted:
+                trial_result["targeted"] = True
+            # Count the full response envelope, including provenance metadata,
+            # before accepting a snippet. Evidence and rendered text stay paired.
+            if estimate_tokens(json.dumps(trial_result, ensure_ascii=False)) > max(0, int(max_tokens)):
+                continue
+            pieces.append(piece)
+            evidence.append(ev)
+
+        packed = "\n".join(pieces)
+        result = {
+            "success": True,
+            "root": search["root"],
+            "query": query,
+            "context": packed,
+            "evidence": evidence,
+            "estimated_tokens": estimate_tokens(packed),
+            "original_estimated_tokens": max(candidate_tokens, estimate_tokens(packed)),
+            "scanned_files": search.get("scanned_files", 0),
+        }
+        if targeted:
+            result["targeted"] = True
+        return result
+
     def context_pack_paths(self, root: str, query: str, paths: list[str], max_tokens: int = 2600, top_k: int = 10) -> dict[str, Any]:
         search = self.search_paths(root, query, paths, top_k=top_k)
         if not search.get("success"):
             return search
-        budget_chars = chars_for_tokens(max_tokens)
-        pieces: list[str] = []
-        evidence: list[dict[str, Any]] = []
-        used = 0
-        candidate_tokens = 0
-        for item in search.get("results", []):
-            header = f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
-            piece = header + item["text"] + "\n"
-            candidate_tokens += estimate_tokens(piece)
-            if used + len(piece) > budget_chars:
-                remaining = budget_chars - used
-                if remaining <= 500:
-                    break
-                piece = piece[:remaining] + "\n[snippet truncated]\n"
-            pieces.append(piece); used += len(piece)
-            ev = {k: item[k] for k in ("path", "start_line", "end_line", "score", "file_sha256")}
-            ev["raw"] = item.get("text", "")
-            evidence.append(ev)
-            if used >= budget_chars:
-                break
-        packed = "\n".join(pieces)
-        return {
-            "success": True, "root": search["root"], "query": query, "context": packed,
-            "evidence": evidence, "estimated_tokens": estimate_tokens(packed),
-            "original_estimated_tokens": max(candidate_tokens, estimate_tokens(packed)),
-            "scanned_files": search.get("scanned_files", 0), "targeted": True,
-        }
+        return self._pack_ranked_context(search, query, max_tokens, targeted=True)
 
     def file_inventory(self, root: str, include_hashes: bool = True) -> dict[str, Any]:
         """Return a deterministic file inventory backed by the shared snapshot cache.
@@ -1610,32 +1640,4 @@ class RepositoryTools:
         search = self.search(root, query, top_k=top_k)
         if not search.get("success"):
             return search
-        budget_chars = chars_for_tokens(max_tokens)
-        pieces: list[str] = []
-        evidence: list[dict[str, Any]] = []
-        used = 0
-        candidate_tokens = 0
-        for item in search.get("results", []):
-            header = f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
-            piece = header + item["text"] + "\n"
-            candidate_tokens += estimate_tokens(piece)
-            if used + len(piece) > budget_chars:
-                remaining = budget_chars - used
-                if remaining > 500:
-                    piece = piece[:remaining] + "\n[snippet truncated]\n"
-                else:
-                    break
-            pieces.append(piece)
-            used += len(piece)
-            ev = {k: item[k] for k in ("path", "start_line", "end_line", "score", "file_sha256")}
-            ev["raw"] = item.get("text", "")
-            evidence.append(ev)
-            if used >= budget_chars:
-                break
-        packed = "\n".join(pieces)
-        return {
-            "success": True, "root": search["root"], "query": query, "context": packed,
-            "evidence": evidence, "estimated_tokens": estimate_tokens(packed),
-            "original_estimated_tokens": max(candidate_tokens, estimate_tokens(packed)),
-            "scanned_files": search.get("scanned_files", 0),
-        }
+        return self._pack_ranked_context(search, query, max_tokens)
