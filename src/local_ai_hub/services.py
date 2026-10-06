@@ -4822,6 +4822,35 @@ class LocalAIServices:
             *(path for path, _score in fused_candidates),
         )))
         candidate_paths = [path for path in candidate_paths if not excluded_path(path)]
+        has_path_controls = bool(path_hints or directory_hints or exclude_paths or force_include_paths)
+        try:
+            lexical_candidate_limit = max(1, min(64, int(search_cfg.get("context_top_k", 14))))
+        except (TypeError, ValueError, OverflowError):
+            lexical_candidate_limit = 14
+        if has_path_controls and len(candidate_paths) < lexical_candidate_limit:
+            # Hints bias candidate ordering; they must not turn a bounded adaptive
+            # lookup into a search restricted to hinted paths. Fill sparse indexed
+            # candidates with a bounded lexical pass, then apply explicit excludes.
+            try:
+                completion = self.repo_tools.search(
+                    root,
+                    query,
+                    top_k=lexical_candidate_limit,
+                )
+                if isinstance(completion, dict) and completion.get("success"):
+                    candidate_paths.extend(
+                        str(item.get("path"))
+                        for item in completion.get("results", [])
+                        if isinstance(item, dict)
+                        and isinstance(item.get("path"), str)
+                        and item.get("path")
+                        and not excluded_path(str(item["path"]))
+                    )
+                    candidate_paths = list(dict.fromkeys(candidate_paths))
+                else:
+                    retrieval_warnings.append("lexical completeness pass unavailable")
+            except Exception as exc:
+                retrieval_warnings.append(f"lexical completeness pass degraded: {type(exc).__name__}")
         try:
             if candidate_paths:
                 candidate_paths = list(dict.fromkeys(candidate_paths))
@@ -4843,7 +4872,6 @@ class LocalAIServices:
                     root, query, candidate_paths, **pack_kwargs,
                 )
                 # If targeted cards return no exact evidence, do one completeness scan.
-                has_path_controls = bool(path_hints or directory_hints or exclude_paths or force_include_paths)
                 if isinstance(lexical, dict) and lexical.get("success") and not lexical.get("evidence") and not has_path_controls:
                     lexical = self.repo_tools.context_pack(
                         root, query, max_tokens=lexical_tokens,
