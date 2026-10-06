@@ -259,14 +259,6 @@ def _validate_checkpoint_memory_context(
             raise ValueError("Cannot checkpoint: worktree repo_root is server-managed and cannot be modified")
 
 
-
-
-
-
-
-
-
-
 def _preserve_checkpoint_memory_state(
     current_state_data: Mapping[str, Any],
     checkpoint: TaskCheckpoint,

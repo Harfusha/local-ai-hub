@@ -8,8 +8,8 @@ Local model routing starts from `[hardware].profile="auto"`; hardware detection 
 
 Before changing model routing or claiming a model switch is safe, measure supported hardware/backend cohorts and attach revision-bound quality, latency, and VRAM evidence before and after. Model output is advisory, not verification.
 
-Source synchronization (2026-10-06, pinned master `fb32354f8bf632e560e052e9b12c73f64b00cba4`): routing quality floors, operational modes, and client identity/transport safeguards are present. HTTP root authorization and complete maintenance isolation remain acceptance gaps. Packaged response budget defaults to 6400 tokens; generated guarded-context prose still mentions 3200. Preserve the configured preprocessing provider; this pinned source exposes deterministic/background Ollama synthesis, with no Gemini preprocessing provider implementation found. Gemini agent manifests are not provider evidence. Do not add or infer a Gemini implementation during installation. Prior candidate instructions and receipts in `handoff/` and checkpoint history are historical, not current acceptance.
 
+Pinned-source limitation (master `2458f72c`, 2026-10-06): routing quality floors, operational modes, and client identity/transport safeguards are source contracts, not deployed runtime proof. HTTP root authorization and complete maintenance isolation remain separate acceptance gaps. Preserve the configured preprocessing provider. This pinned source has no Gemini preprocessing provider implementation; Gemini agent manifests do not prove such support. Do not invent, install, or infer a Gemini preprocessing implementation. Prior candidate instructions and receipts in `handoff/` and checkpoint history are historical, not current acceptance. Configuration and the returned response-budget envelope are authoritative; generated prose may retain an older budget value.
 ---
 
 ```markdown

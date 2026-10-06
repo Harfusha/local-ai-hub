@@ -399,7 +399,7 @@ def test_completed_succeeds_when_verified(
     assert completed.status == TaskStatus.COMPLETED
 
 
-def test_transition_idempotency_reuse_by_different_actor_is_rejected(store: TaskStore):
+def test_historical_transition_idempotency_reuse_by_different_actor_is_rejected(store: TaskStore):
     task = store.create(contract_with_criteria(), task_context())
     store.transition(
         task.task_id,
@@ -423,7 +423,7 @@ def test_transition_idempotency_reuse_by_different_actor_is_rejected(store: Task
     assert len(store.state_store.events(f"task:{task.task_id}")) == 2
 
 
-def test_same_status_transition_rejects_idempotency_key_owned_by_another_actor(
+def test_historical_same_status_transition_rejects_idempotency_key_owned_by_another_actor(
     store: TaskStore,
 ):
     task = store.create(contract_with_criteria(), task_context())
