@@ -593,3 +593,85 @@ normalized bytes, with both exact original trees retained in merge ancestry.
 The resulting staged tree was unchanged before this note. This is proven
 newline-only archival reconciliation, not a claim that each historical patch's
 behavior satisfies release acceptance.
+
+#### T18 status/dashboard root integration
+
+Committed owner result `0e4689bf` merged manually after T13/T17. Preserved the
+current status/privacy/dashboard behavior and T14 `/api/context/pack` ownership;
+the sole conflicted source file was `http_server.py`. Resolved its import and
+monitor-path unions, retained root task-scope denial and memory compact/reap/
+relation gates, kept the current route registry and the T18 bounded status,
+telemetry and trace helpers. The T18 handoff records prior pinned-90 decisions.
+Ten changed source files parse; `git diff --cached --check -- src tests tools`
+passed.
+
+Fresh targeted command:
+`python -B -m pytest -q -p no:cacheprovider
+tests/test_http_post_route_registry_t18.py tests/test_agent_state_transport.py
+tests/test_t14_context_pack_agent_memory.py --tb=short --maxfail=5`.
+Result: **14 passed, 5 failed in 31.59 s**. Failures: POST route golden ordering
+(`post_config_update_1` before `post_bundle_import_1`), telemetry dispatch line
+ordering, scoped memory GET returns HTTP 400 in task-scope isolation test,
+verification receipt preflight returns 403 instead of expected 400, and
+worktree-scoped memory deletion returns 400 instead of expected 403. These
+remain open; no expectations were weakened. This command did not reach the
+entire T14 memory suite because `--maxfail=5` stopped at the fifth failure.
+Owner's 42 known T18 failures and unverified full release remain open.
+
+#### Stashes must be integrated, not merely preserved
+
+The user reaffirmed that stash retention must not conceal unintegrated work.
+The following existing workers own disjoint reconciliation queues. A checkpoint
+match or archived copy alone cannot close any functional integration criterion.
+
+| Queue | Existing owner/worktree | Current status | Required handoff |
+| --- | --- | --- | --- |
+| 22 unmatched direct active-path untracked versions | Russell; hub-audit-repairs | active | Reconcile relevant source/tests, actual checks, exact original SHAs and missing caller blockers; commit unfinished changes |
+| 32 unmatched tracked/index versions | Confucius; existing context-render temporary checkout | active | Original-hunk/current-symbol dispositions and concrete missing integration list; no source writes during overlapping owner work |
+| 382 unmatched archive/overlay/handoff versions | Tesla; t17-multimodal-resume | active | Preserve authored originals and map executable patch/overlay intent to current code; identify missing functional hunks, not just archived bytes |
+| Exact-witness tracked/index versions | Helmholtz; t13-lifecycle-8429 | active | Prove actual current integration or reviewed reconciliation; checkpoint ancestry alone is insufficient |
+
+T18 status/dashboard synchronization remains active under Sartre in its existing
+checkout. Root source integration is sequential. All 45 stash objects remain
+unchanged; no stash is declared disposable based on blob equality or ancestry
+alone. Missing functional hunks found by these queues must receive explicit
+source ownership, implementation, and validation before release acceptance.
+
+#### Tracked/index hunk disposition handoff
+
+Confucius delivered branch `release_context_render_perf_20261006`, commit
+`19ff3fc2` (parent `47a1f32f44f0ab23a17b5d6cc21c16dfc2549a1a`), from the
+existing checkout `lah_wt_worktree_e64978b4714c`. Its only change is
+`docs/integration/STASH-TRACKED-HUNK-DISPOSITION-20261006.md`: static
+dispositions for 32 immutable versions, 29 paths, and 533 unique hunk rows
+(332 behavior-preserved, 77 master-improved, 17 missing, 107 conflict-owner
+needed). The note binds original/base/current/checkpoint SHAs and per-hunk
+locations/evidence. It did not patch source, run tests/imports, or delete/apply
+stashes; its static findings are not runtime acceptance.
+
+Seven source queues are identified: T08 configurable worktree TTL (V03-H012/
+H014), terminal task retention in no-query listing (V03-H019), repeated
+completed-task revalidation (V03-H029/H030/H034), generation blocker/error
+propagation (V03-H036, V04-H041), strict receipt field types (V04-H018/H020/
+H021, V10-H003), WorkOrchestrator evidence/final receipts (V08-H009/H012/H013),
+and T05 task-root/tenant guard (V14-H004/H058). First-completion trusted
+project evaluator, all 17 original INDEX service hunks, hard-ignore, and
+no-CodeGraph context policy are classified as preserved/improved, not to be
+blindly reverted. The 107 overlap conflicts remain explicitly owner-routed.
+Source ownership and tests are still required for each remaining missing queue.
+
+The WorkOrchestrator queue is now repaired in root: evidence-required test or
+benchmark criteria trigger final validation without file changes; handoff
+artifacts and cancelled terminal payloads include collected verification
+receipts. Regression suite `tests/test_work_orchestrator.py` passed **24/24**
+in 22.43 s, and `git diff --check` passed. The other six queues remain pending
+scoped implementation and acceptance. Ownership is now assigned in existing
+worker checkouts: Russell (`hub-audit-repairs`) owns `agent_tasks.py` queues
+TTL/list/revalidation and generation V03-H036; Helmholtz
+(`t13-lifecycle-8429`) owns `agent_verification.py` strict receipt parsing and
+generation V04-H041; Tesla (`t17-multimodal-resume`) owns
+the `agent_memory.py` task-provenance guard. They must first reconcile/sync
+their preserved work to master `f140b96c4d3a451651436136405de7a931faf533`;
+no worker may edit the concurrently dirty root `http_server.py` or
+`async_jobs.py`. The T05 scope note is not proof of an observed live leak.
+All original checkpoint refs/stash objects remain preserved.

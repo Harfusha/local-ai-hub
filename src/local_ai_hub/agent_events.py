@@ -18,9 +18,6 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .json_utils import dumps as json_dumps
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
-
-from .json_utils import dumps as json_dumps
 from .sqlite_support import (
     DurableSchemaMismatchError,
     connect_sqlite,
@@ -1540,6 +1537,7 @@ class AgentStateStore:
                 raise TimeoutError(message)
             raise RuntimeError(f"{error['code']}: {message}")
         return [AgentEvent.from_dict(event) for event in page["events"]]
+
 
     def snapshot(self, stream_id: str, state: Mapping[str, Any], seq: int | None = None) -> int:
         if not self.enabled:

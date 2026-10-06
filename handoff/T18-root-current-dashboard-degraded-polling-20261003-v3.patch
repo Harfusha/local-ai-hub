@@ -1,0 +1,47 @@
+diff --git a/src/local_ai_hub/dashboard.py b/src/local_ai_hub/dashboard.py
+--- a/src/local_ai_hub/dashboard.py
++++ b/src/local_ai_hub/dashboard.py
+@@ -5211,3 +5211,4 @@
+     const r=await apiFetch('/api/live/status?light=1&scope='+sloScope,opts);
+     if(!current())return false;
++    if(!r.ok)throw new Error(`status request failed (HTTP ${r.status})`);
+     const s=await r.json();
+@@ -5218,1 +5218,2 @@
++    if(s.success===false){$('conn').textContent='degraded';$('conn').className='pill warn-t';return false;}
+     if(changed||hardwareRefreshPending)try{
+diff --git a/tests/test_dashboard_polling_quality.py b/tests/test_dashboard_polling_quality.py
+--- a/tests/test_dashboard_polling_quality.py
++++ b/tests/test_dashboard_polling_quality.py
+@@ -157,4 +157,4 @@
+           apiFetch = async function(path) {
+           fetches.push(path);
+           return path.startsWith('/api/live/status')
+-            ? {json: async () => first}
++            ? {ok: true, status: 200, json: async () => first}
+@@ -176,3 +176,3 @@
+         let resolveStatus;
+         apiFetch = async function() {
+-          return new Promise(resolve => { resolveStatus = () => resolve({json: async () => ({success: true})}); });
++          return new Promise(resolve => { resolveStatus = () => resolve({ok: true, status: 200, json: async () => ({success: true})}); });
+@@ -198,3 +198,3 @@
+         let hardwareAttempts = 0;
+         apiFetch = async function(path) {
+-          if (path.startsWith('/api/live/status')) return {json: async () => status};
++          if (path.startsWith('/api/live/status')) return {ok: true, status: 200, json: async () => status};
+diff --git a/tests/test_dashboard_operational_surfaces.py b/tests/test_dashboard_operational_surfaces.py
+--- a/tests/test_dashboard_operational_surfaces.py
++++ b/tests/test_dashboard_operational_surfaces.py
+@@ -8,4 +8,13 @@
+     assert "function requestTraceAvailability(request)" in DASHBOARD_HTML
+ 
++def test_dashboard_marks_degraded_live_status_and_retries_with_backoff() -> None:
++    start = DASHBOARD_HTML.index("async function pollStatus(")
++    end = DASHBOARD_HTML.index("const statusPoller=createDashboardStatusPoller", start)
++    poll_source = DASHBOARD_HTML[start:end]
++
++    assert "if(!r.ok)throw new Error(`status request failed (HTTP ${r.status})`)" in poll_source
++    assert "if(s.success===false){$('conn').textContent='degraded';$('conn').className='pill warn-t'" in poll_source
++    assert "return false;" in poll_source
++
+ 
+ def test_dashboard_exposes_activity_mode_and_reports_http_failures() -> None

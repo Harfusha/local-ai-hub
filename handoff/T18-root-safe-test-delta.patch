@@ -1,0 +1,62 @@
+diff --git a/tests/test_dashboard_operational_surfaces.py b/tests/test_dashboard_operational_surfaces.py
+index 0145e30..f865d26 100644
+--- a/tests/test_dashboard_operational_surfaces.py
++++ b/tests/test_dashboard_operational_surfaces.py
+@@ -163,3 +163,30 @@ def test_dashboard_ux_refinements_and_empty_states() -> None:
+     assert "if(tabId==='reliability')loadLogsTail();" in DASHBOARD_HTML
+     # 7. Bundles table wrap
+     assert '<div class="table-wrap"><table><thead><tr><th>Repository identity</th>' in DASHBOARD_HTML
++
++
++def test_dashboard_route_serves_live_http_document(monkeypatch) -> None:
++    import threading
++    import urllib.request
++    from types import SimpleNamespace
++
++    from local_ai_hub import http_server
++
++    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
++        "monitoring": {"dashboard_enabled": True},
++        "features": {"dashboard": True},
++    }))
++    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++    try:
++        with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/dashboard", timeout=3) as response:
++            body = response.read().decode("utf-8")
++            assert response.status == 200
++            assert response.headers.get_content_type() == "text/html"
++        assert 'id="activityModeBadge"' in body
++        assert "Ollama is offline" in body
++    finally:
++        server.shutdown()
++        server.server_close()
++        thread.join(timeout=3)
+diff --git a/tests/test_db_query_bounds_t18.py b/tests/test_db_query_bounds_t18.py
+index f3c1f90..5e4abd8 100644
+--- a/tests/test_db_query_bounds_t18.py
++++ b/tests/test_db_query_bounds_t18.py
+@@ -25,3 +25,22 @@ def test_read_only_db_query_stops_after_bounded_sqlite_work(monkeypatch, tmp_pat
+     )
+ 
+     assert result == {"success": False, "error": "query execution exceeded work limit"}
++
++
++def test_read_only_db_query_caps_returned_rows_at_100(monkeypatch, tmp_path) -> None:
++    database = tmp_path / "agent_state.sqlite3"
++    connection = sqlite3.connect(database)
++    try:
++        connection.execute("CREATE TABLE numbers (value INTEGER NOT NULL)")
++        connection.executemany("INSERT INTO numbers VALUES (?)", ((value,) for value in range(300)))
++        connection.commit()
++    finally:
++        connection.close()
++
++    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}}))
++    result = http_server.Handler._handle_db_query(None, "agent_state", "SELECT value FROM numbers ORDER BY value")
++
++    assert result["success"] is True
++    assert result["count"] == 100
++    assert result["rows"][0] == [0]
++    assert result["rows"][-1] == [99]

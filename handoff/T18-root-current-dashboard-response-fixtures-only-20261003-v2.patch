@@ -1,0 +1,18 @@
+diff --git a/tests/test_dashboard_polling_quality.py b/tests/test_dashboard_polling_quality.py
+--- a/tests/test_dashboard_polling_quality.py
++++ b/tests/test_dashboard_polling_quality.py
+@@ -159,3 +159,3 @@ def test_repeated_status_payload_does_not_trigger_redundant_render_work() -> Non
+           return path.startsWith('/api/live/status')
+-            ? {json: async () => first}
++            ? {ok: true, status: 200, json: async () => first}
+             : {ok: true, json: async () => ({cpu_count: 1, ram: {}, gpu: {}})};
+@@ -177,3 +177,3 @@ def test_hidden_status_response_cannot_commit_after_visibility_changes() -> None
+         apiFetch = async function() {
+-          return new Promise(resolve => { resolveStatus = () => resolve({json: async () => ({success: true})}); });
++          return new Promise(resolve => { resolveStatus = () => resolve({ok: true, status: 200, json: async () => ({success: true})}); });
+         }
+@@ -198,3 +198,3 @@ def test_failed_hardware_poll_retries_for_unchanged_status_until_success() -> No
+         apiFetch = async function(path) {
+-          if (path.startsWith('/api/live/status')) return {json: async () => status};
++          if (path.startsWith('/api/live/status')) return {ok: true, status: 200, json: async () => status};
+           hardwareAttempts++;
