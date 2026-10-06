@@ -568,3 +568,16 @@ separate unfinished snapshot without source editing. Their editing owner is
 still unconfirmed. Caller-provided repository/tenant identity must be reviewed
 against authenticated scope before release; this snapshot is not approval to
 trust it. Root runtime `agent_state.sqlite` remains uncommitted.
+
+#### T17 multimodal root integration
+
+Immutable synchronized packet `84cb230b` preserves original `a9d9afe8` and
+ordinary untracked checkpoint `774d1d8c`, with all unfinished acceptance in
+`handoff/t17-multimodal-resume-sync-20261006.md`. Root merge on `deda200a`
+completed without conflicts; 17 staged Python files parsed successfully and
+source/test whitespace checks passed. Fresh root command with root `src` on
+`PYTHONPATH`: `python -B -m pytest -q -p no:cacheprovider
+tests/test_vision_service.py tests/test_vision_contracts.py
+tests/test_http_vision_routes.py --tb=short --maxfail=4`:
+150 passed in 37.08 seconds. This does not supersede the owner's two remaining
+transcription failures or its unverified process/audio/browser acceptance.

@@ -54,6 +54,12 @@ const context = {
           ? "not-an-object"
           : changeKind === "commit-missing-artifact-id"
             ? {success: true, request_id: body.request_id, bundle_artifact_id: ""}
+        : changeKind === "commit-missing-request-id"
+          ? {success: true, bundle_artifact_id: "bundle-1"}
+        : changeKind === "commit-mismatched-request-id"
+          ? {success: true, request_id: "wrong-request-id", bundle_artifact_id: "bundle-1"}
+        : changeKind === "commit-mismatched-error-request-id"
+          ? {success: false, error_code: "capture_expired", request_id: "wrong-request-id"}
         : changeKind === "commit-in-progress"
           ? {success: false, error_code: "capture_in_progress"}
           : changeKind === "commit-timeout-response"
@@ -108,13 +114,17 @@ vm.runInNewContext(backgroundSource, context, {filename: sourcePath});
   } else if (changeKind === "lost-commit-response") {
     assert.equal(result.success, true);
     assert.equal(result.bundle_artifact_id, "bundle-1");
-    assert.equal(posts.filter((post) => post.path.endsWith("/commit")).length, 2);
+    const commits = posts.filter((post) => post.path.endsWith("/commit"));
+    assert.equal(commits.length, 2);
+    assert.deepEqual(commits[1].body, commits[0].body);
     assert.equal(posts.filter((post) => post.path.endsWith("/abandon")).length, 0);
     process.stdout.write(JSON.stringify({success: true, case: "lost-commit-response-reconciled"}));
   } else if (changeKind === "commit-5xx-response") {
     assert.equal(result.success, true);
     assert.equal(result.bundle_artifact_id, "bundle-1");
-    assert.equal(posts.filter((post) => post.path.endsWith("/commit")).length, 2);
+    const commits = posts.filter((post) => post.path.endsWith("/commit"));
+    assert.equal(commits.length, 2);
+    assert.deepEqual(commits[1].body, commits[0].body);
     assert.equal(posts.filter((post) => post.path.endsWith("/abandon")).length, 0);
     process.stdout.write(JSON.stringify({success: true, case: "commit-5xx-reconciled"}));
   } else if (changeKind === "commit-in-progress") {
@@ -136,12 +146,14 @@ vm.runInNewContext(backgroundSource, context, {filename: sourcePath});
     assert.equal(posts.filter((post) => post.path.endsWith("/commit")).length, 2);
     assert.equal(posts.filter((post) => post.path.endsWith("/abandon")).length, 0);
     process.stdout.write(JSON.stringify({success: true, case: "ambiguous-commit-left-uncancelled"}));
-  } else if (["commit-invalid-shape", "commit-missing-artifact-id", "commit-request-id-mismatch"].includes(changeKind)) {
+  } else if (["commit-request-id-mismatch", "commit-invalid-shape", "commit-missing-artifact-id", "commit-missing-request-id", "commit-mismatched-request-id", "commit-mismatched-error-request-id"].includes(changeKind)) {
     assert.equal(result.success, false);
     assert.equal(result.error_code, "commit_outcome_unknown");
     assert.equal(result.request_id, posts.find((post) => post.path.endsWith("/commit")).body.request_id);
     assert.equal(posts.filter((post) => post.path.endsWith("/commit")).length, 2);
     assert.equal(posts.filter((post) => post.path.endsWith("/abandon")).length, 0);
+    const commits = posts.filter((post) => post.path.endsWith("/commit"));
+    assert.deepEqual(commits[1].body, commits[0].body);
     process.stdout.write(JSON.stringify({success: true, case: "malformed-commit-remains-unknown"}));
   } else {
     assert.equal(result.success, false, "page change after staging must prevent commit");

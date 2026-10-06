@@ -1,0 +1,76 @@
+--- a/src/local_ai_hub/vision_contracts.py
++++ b/src/local_ai_hub/vision_contracts.py
+@@ -302,6 +302,7 @@
+ def parse_vision_result(
+     raw: str,
+     *,
++    strict_output_shape: bool = False,
+     require_observation_fields: bool = False,
+     valid_element_ids: set[str] | None = None,
+     observation_sources: dict[str, dict[str, dict[str, Any]]] | None = None,
+@@ -311,16 +312,25 @@
+         payload = json.loads(_json_text(raw))
+         if not isinstance(payload, dict) or not isinstance(payload.get("findings"), list):
+             return _terminal_error("findings must be a JSON array")
++        if strict_output_shape and set(payload) != {"summary", "findings", "unknowns", "recommended_checks"}:
++            return _terminal_error("vision output must contain only the required root fields")
+         findings = []
+         for item in payload["findings"]:
+             if not isinstance(item, dict):
+                 return _terminal_error("finding must be an object")
++            if strict_output_shape and set(item) != {
++                "id", "severity", "category", "problem", "observed",
++                "hypothesized", "uncertainty", "confidence", "element_ids",
++                "bbox", "evidence", "likely_cause", "fix_hint",
++                "needs_runtime_check", "observation_facts",
++            }:
++                return _terminal_error("finding must contain only the required finding fields")
+             missing = [
+                 name
+                 for name in ("id", "problem", "confidence")
+                 if name not in item or item[name] in (None, "")
+             ]
+-            if require_observation_fields:
++            if require_observation_fields or strict_output_shape:
+                 missing.extend(
+                     name
+                     for name in ("observed", "hypothesized", "uncertainty")
+@@ -345,6 +355,8 @@
+             for field_name in ("observed", "hypothesized"):
+                 if field_name in item and not isinstance(item[field_name], str):
+                     return _terminal_error(f"{field_name} must be a string")
++                if strict_output_shape and field_name in item and not item[field_name].strip():
++                    return _terminal_error(f"{field_name} must be a non-empty string")
+             raw_confidence = item.get("confidence", 0.0)
+             if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, (int, float)):
+                 return _terminal_error("confidence must be a number")
+--- a/src/local_ai_hub/services.py
++++ b/src/local_ai_hub/services.py
+@@ -2308,6 +2308,10 @@
+                 image_size = None
+             parsed = parse_vision_result(
+                 raw_output,
++                strict_output_shape=bool(
++                    self.config.get("ollama", {}).get("enabled", False)
++                    and not isinstance(schema, dict)
++                ),
+                 require_observation_fields=model_context is not None,
+                 valid_element_ids=valid_element_ids,
+                 observation_sources=observation_sources,
+--- a/tests/test_vision_contracts.py
++++ b/tests/test_vision_contracts.py
+@@ -553,3 +553,14 @@
+ 
+     assert packet["terminal"] is True
+     assert packet["error"]["code"] == "malformed_coder_context"
++
++
++def test_strict_vision_output_rejects_unknown_root_field() -> None:
++    result = parse_vision_result(
++        '{"summary":"No findings.","findings":[],"unknowns":[],'
++        '"recommended_checks":[],"extra":"ignored"}',
++        strict_output_shape=True,
++    )
++
++    assert result.terminal is True
++    assert "required root fields" in result.error["message"]

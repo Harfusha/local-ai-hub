@@ -3,6 +3,24 @@ from __future__ import annotations
 from local_ai_hub.frontend_review import build_coder_context
 
 
+def test_coder_context_preserves_numeric_zero_dom_id() -> None:
+    packet = build_coder_context(
+        {"summary": "Button needs attention", "findings": [{"finding_id": "f-1", "element_ids": ["0"]}]},
+        {
+            "prompt": "Review button",
+            "dom": {
+                "redaction": "none",
+                "elements": [{"element_id": 0, "tag": "button"}],
+            },
+        },
+    )
+
+    assert packet["success"] is True
+    assert packet["dom"]["elements"] == [
+        {"element_id": 0, "tag": "button"}
+    ]
+
+
 def test_coder_context_keeps_findings_relevant_dom_and_artifact_refs() -> None:
     packet = build_coder_context(
         {

@@ -1,0 +1,85 @@
+--- a/src/local_ai_hub/vision_contracts.py
++++ b/src/local_ai_hub/vision_contracts.py
+@@ -40,6 +40,13 @@
+ 
+ _DOM_MARKUP_RE = re.compile(
+     r"</?(?:a|article|aside|body|button|div|footer|form|h[1-6]|header|html|img|input|label|li|main|nav|ol|option|p|section|select|span|table|tbody|td|textarea|th|thead|tr|ul)\b[^>]*>",
++    re.IGNORECASE,
++)
++
++
++_EXPECTED_VALUE_MISMATCH_RE = re.compile(
++    r"\b(?:does not|doesn't|doesn’t)\s+match\s+(?:the\s+)?expected\s+"
++    r"(?:value|text|label)(?:\s+of)?\s+['\"\x60](?P<value>[^'\"\x60]{1,200})['\"\x60]",
+     re.IGNORECASE,
+ )
+ 
+@@ -452,6 +459,18 @@
+                 return _terminal_error(
+                     "every cited DOM element requires a verified observation fact"
+                 )
++            mismatch = _EXPECTED_VALUE_MISMATCH_RE.search(item["problem"])
++            if mismatch:
++                expected = " ".join(mismatch.group("value").casefold().split())
++                contradicts_fact = any(
++                    isinstance(fact.value, str)
++                    and " ".join(fact.value.casefold().split()) == expected
++                    for fact in facts
++                )
++                if contradicts_fact:
++                    return _terminal_error(
++                        "finding problem contradicts supplied observation fact"
++                    )
+             findings.append(
+                 VisionFinding(
+                     finding_id=str(item.get("id", "")),
+--- a/tests/test_vision_contracts.py
++++ b/tests/test_vision_contracts.py
+@@ -564,3 +564,47 @@
+ 
+     assert result.terminal is True
+     assert "required root fields" in result.error["message"]
++
++@pytest.mark.parametrize(("observed", "fact", "terminal"), [
++    ("The exact button text is 'Continue'.", "Continue", True),
++    ("The exact button text is 'Cancel'.", "Cancel", False),
++])
++def test_grounded_vision_checks_explicit_expected_value_mismatch(
++    observed: str, fact: str, terminal: bool,
++) -> None:
++    payload = {
++        "summary": "button mismatch",
++        "findings": [{
++            "id": "f1",
++            "severity": "low",
++            "category": "interaction",
++            "problem": "Button text does not match the expected value of 'Continue'.",
++            "observed": observed,
++            "hypothesized": "The label may be incorrect.",
++            "uncertainty": [],
++            "confidence": 0.7,
++            "element_ids": ["button-1"],
++            "bbox": None,
++            "evidence": [f"DOM text: {fact}"],
++            "observation_facts": [{
++                "source": "dom",
++                "element_id": "button-1",
++                "field": "text",
++                "value": fact,
++            }],
++        }],
++    }
++
++    result = parse_vision_result(
++        json.dumps(payload),
++        require_observation_fields=True,
++        valid_element_ids={"button-1"},
++        observation_sources={"dom": {"button-1": {"text": fact}}},
++        image_size=(800, 450),
++    )
++
++    assert result.terminal is terminal
++    if terminal:
++        assert "problem contradicts supplied observation fact" in result.error["message"]
++    else:
++        assert result.findings[0].observation_facts[0].value == fact
