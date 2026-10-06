@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import json
 from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
 from io import BytesIO
