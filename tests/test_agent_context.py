@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 import pytest
 
@@ -13,6 +15,7 @@ from local_ai_hub.agent_context import (
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
+from local_ai_hub.agent_memory import _memory_event_stream_id
 from local_ai_hub.agent_tasks import GoalContract, TaskStore
 from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
 
@@ -33,6 +36,8 @@ def compiler(tmp_path: Path) -> ContextCompiler:
             task_id="task-1",
             criterion="tests",
             passed=True,
+            evidence_id="E_agent_context_fixture",
+            command_id="cmd-agent-context-fixture",
             details={"output": "all passed"},
         )
     )
@@ -113,15 +118,135 @@ def test_preloads_are_bounded_and_deduplicated(tmp_path: Path):
     assert any(warning["code"] == "preload_missing_file" for warning in result.warnings)
 
 
+def test_memory_preload_drops_weaker_legacy_scope_fallback(tmp_path: Path):
+    from types import SimpleNamespace
+
+    state_store = AgentStateStore(tmp_path / "state.sqlite3")
+    calls = []
+    foreign_worktree = SimpleNamespace(
+        record_id="foreign-worktree-memory",
+        kind=SimpleNamespace(value="fact"),
+        key="foreign worktree",
+        value="must not enter context",
+        evidence_ids=(),
+        confidence=1.0,
+        updated_at=1.0,
+        scope="repository",
+        provenance={"root": str(tmp_path), "worktree_id": "other-worktree"},
+    )
+
+    class LegacyMemoryStore:
+        def find_for_context(self, *, root="", task_id="", limit=20):
+            calls.append((root, task_id, limit))
+            return [foreign_worktree]
+
+    compiler = ContextCompiler(
+        state_store,
+        memory_store=LegacyMemoryStore(),
+        config={"context": {"preloads": {"memory_kinds": ["fact"], "max_memory": 2}}},
+    )
+    warnings = []
+    elements = compiler._load_preloads(
+        ContextRequest(task_id="task-1", root=str(tmp_path), worktree_id="current-worktree"),
+        warnings,
+    )
+
+    assert calls == []
+    assert not any(element.source_kind == "preload_memory" for _, element in elements)
+    assert any(warning["code"] == "memory_preload_unavailable" for warning in warnings)
+
+
+def test_memory_preload_bounds_lazy_provider_iteration(tmp_path: Path):
+    from types import SimpleNamespace
+
+    state_store = AgentStateStore(tmp_path / "state.sqlite3")
+    consumed = []
+
+    def records():
+        for index in range(1000):
+            consumed.append(index)
+            yield SimpleNamespace(
+                record_id=f"memory-{index}",
+                kind=SimpleNamespace(value="fact"),
+                key=f"fact-{index}",
+                value="bounded value",
+                evidence_ids=(),
+                confidence=1.0,
+                updated_at=1.0,
+                scope="repository",
+                provenance={},
+            )
+
+    class LazyMemoryStore:
+        def find_for_context(self, **_kwargs):
+            return records()
+
+    compiler = ContextCompiler(
+        state_store,
+        memory_store=LazyMemoryStore(),
+        config={"context": {"preloads": {"memory_kinds": ["fact"], "max_memory": 2}}},
+    )
+    warnings = []
+    elements = compiler._load_preloads(
+        ContextRequest(task_id="task-1", root=str(tmp_path)),
+        warnings,
+    )
+
+    assert consumed == [0, 1]
+    assert len([element for _, element in elements if element.source_kind == "preload_memory"]) == 2
+
+
+def test_repository_memory_context_excludes_foreign_tenant(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    for tenant, value in (("tenant-a", "allowed memory"), ("tenant-b", "foreign secret")):
+        memory_store.record(MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope="repository",
+            scope_id=str(tmp_path),
+            key=f"fact-{tenant}",
+            value=value,
+            provenance={"root": str(tmp_path), "tenant": tenant},
+        ))
+    compiler = ContextCompiler(state_store, memory_store=memory_store)
+
+    result = compiler.compile(ContextRequest(
+        task_id="task-1",
+        root=str(tmp_path),
+        tenant="tenant-a",
+    ))
+
+    context = "\n".join(element.content for element in result.elements)
+    assert "allowed memory" in context
+    assert "foreign secret" not in context
+
+
+def test_memory_provider_failure_degrades_to_state_context_with_warning(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "state.sqlite3")
+
+    class FailedMemoryStore:
+        def find_for_context(self, **_kwargs):
+            raise OSError("memory backend unavailable")
+
+    compiler = ContextCompiler(state_store, memory_store=FailedMemoryStore())
+    result = compiler.compile(ContextRequest(task_id="task-1", root=str(tmp_path), tenant="tenant-a"))
+
+    assert result.stale is False
+    assert not any(element.source_kind == "memory_record" for element in result.elements)
+    assert any(warning["code"] == "memory_context_unavailable" for warning in result.warnings)
+
+
 def test_phase_pack_prioritizes_reuse_for_edit(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "state.sqlite3")
     memory_store = MemoryStore(state_store)
+    repo_root = str(tmp_path / "repository")
     memory_store.record(MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope="task",
         scope_id="task-1",
         key="broad fact",
         value="broad context",
+        provenance={"root": repo_root, "tenant": "tenant-1"},
     ))
     memory_store.record(MemoryRecord.create(
         kind=MemoryKind.REUSABLE_CANDIDATE,
@@ -130,10 +255,13 @@ def test_phase_pack_prioritizes_reuse_for_edit(tmp_path: Path):
         key="reuse candidate",
         value="use this exact implementation",
         symbol_refs=("module.fn",),
+        provenance={"root": repo_root, "tenant": "tenant-1"},
     ))
     compiler = ContextCompiler(state_store, memory_store=memory_store)
 
-    result = compiler.compile(ContextRequest(task_id="task-1", phase="edit", token_budget=80))
+    result = compiler.compile(ContextRequest(
+        task_id="task-1", root=repo_root, tenant="tenant-1", phase="edit", token_budget=80,
+    ))
 
     assert result.phase == "edit"
     assert result.elements[0].content.startswith("[REUSABLE_CANDIDATE]")
@@ -149,6 +277,100 @@ def test_delta_pack_returns_unchanged_etag(tmp_path: Path):
     assert unchanged.unchanged is True
     assert unchanged.delta_from == original.etag()
     assert unchanged.elements == []
+
+
+def test_context_etag_matches_legacy_canonical_json_without_json_dumps(monkeypatch):
+    from local_ai_hub import agent_context
+
+    pack = CompiledContext(
+        elements=[
+            ContextElement(
+                element_id="el-1",
+                source_kind="memory_record",
+                content="café 東京 " * 100,
+                estimated_tokens=17,
+                reason="scoped fact",
+                confidence=0.75,
+                freshness=0.5,
+                provenance={"tenant": "tenant-a", "nested": {"ids": [1, "two"]}},
+            ),
+            ContextElement(
+                element_id="el-2",
+                source_kind="task",
+                content="x" * 1024,
+                estimated_tokens=256,
+                reason="",
+            ),
+        ],
+        estimated_tokens=273,
+        token_budget=512,
+        phase="edit",
+        repo_revision="rev-1",
+        request_identity_digest="identity-1",
+    )
+    legacy = hashlib.sha1(usedforsecurity=False)
+    legacy.update(pack.phase.encode("utf-8"))
+    legacy.update(pack.repo_revision.encode("utf-8"))
+    legacy.update(pack.request_identity_digest.encode("ascii", errors="ignore"))
+    for element in pack.elements:
+        serialized = json.dumps(
+            element.to_dict(compact=False),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        legacy.update(serialized.encode("utf-8", errors="replace"))
+    expected = legacy.hexdigest()[:12]
+
+    def forbidden_dumps(*_args, **_kwargs):
+        raise AssertionError("etag should use the configured orjson fast path for large canonical elements")
+
+    if agent_context.json_backend_name() == "orjson":
+        monkeypatch.setattr(agent_context.json, "dumps", forbidden_dumps)
+    assert pack.etag() == expected
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        {"value": float("nan")},
+        {"value": float("inf")},
+        {"value": 1e-7},
+        {1: "integer key"},
+        {"value": 1 << 70},
+        {"value": object()},
+    ],
+)
+def test_context_etag_keeps_stdlib_spelling_for_noncanonical_values(provenance):
+    pack = CompiledContext(
+        elements=[
+            ContextElement(
+                element_id="el-nan",
+                source_kind="task",
+                content="non-finite fallback",
+                estimated_tokens=4,
+                reason="",
+                provenance=provenance,
+            ),
+        ],
+        estimated_tokens=4,
+        token_budget=32,
+    )
+    legacy = hashlib.sha1(usedforsecurity=False)
+    legacy.update(pack.phase.encode("utf-8"))
+    legacy.update(pack.repo_revision.encode("utf-8"))
+    legacy.update(pack.request_identity_digest.encode("ascii", errors="ignore"))
+    for element in pack.elements:
+        serialized = json.dumps(
+            element.to_dict(compact=False),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        legacy.update(serialized.encode("utf-8", errors="replace"))
+    assert pack.etag() == legacy.hexdigest()[:12]
 
 
 def test_disabled_agent_state_returns_stateless_repo_context_warning(tmp_path: Path):
@@ -185,7 +407,7 @@ def test_context_compile_marks_changed_repository_memory_stale(tmp_path: Path):
             key="compile-stale",
             value="old evidence",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(tmp_path), "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
+            provenance={"root": str(tmp_path), "tenant": "tenant-1", "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
         )
     )
     unrelated = memory_store.record(
@@ -195,7 +417,7 @@ def test_context_compile_marks_changed_repository_memory_stale(tmp_path: Path):
             key="compile-unrelated",
             value="keep evidence",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(tmp_path / "other"), "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
+            provenance={"root": str(tmp_path / "other"), "tenant": "tenant-1", "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
         )
     )
     compiler = ContextCompiler(state_store=state_store, memory_store=memory_store)
@@ -210,11 +432,16 @@ def test_context_compile_marks_changed_repository_memory_stale(tmp_path: Path):
     compiler.compile(request)
     compiler.compile(request)
 
-    assert memory_store.get(stale_candidate.record_id).status is MemoryStatus.STALE
-    assert memory_store.get(unrelated.record_id).status is MemoryStatus.CONFIRMED
-    assert [event.kind for event in state_store.events(
-        stream_id=f"memory:{stale_candidate.scope.value}:compile-stale"
-    )].count("memory.staled") == 1
+    assert memory_store.get(stale_candidate.record_id, scope="repository", root=str(tmp_path), tenant="tenant-1").status is MemoryStatus.STALE
+    assert memory_store.get(unrelated.record_id, scope="repository", root=str(tmp_path / "other"), tenant="tenant-1").status is MemoryStatus.CONFIRMED
+    events = state_store.events(
+        stream_id=_memory_event_stream_id(
+            stale_candidate.scope,
+            stale_candidate.scope_id,
+            stale_candidate.key or stale_candidate.record_id,
+        )
+    )
+    assert [event.kind for event in events].count("memory.staled") == 1
 
 
 def test_context_compile_caps_normalized_changed_paths_with_diagnostic(tmp_path: Path):
@@ -265,12 +492,12 @@ def test_stale_memory_is_excluded_from_authoritative_context(tmp_path: Path):
             key="fresh-finding",
             value="current evidence",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(tmp_path), "repository_revision": "rev-2", "path_refs": ["src/b.py"]},
+            provenance={"root": str(tmp_path), "tenant": "tenant-1", "repository_revision": "rev-2", "path_refs": ["src/b.py"]},
         )
     )
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
-        ContextRequest(task_id="task-1", root=str(tmp_path), token_budget=120)
+        ContextRequest(task_id="task-1", root=str(tmp_path), tenant="tenant-1", token_budget=120)
     )
 
     assert stale.record_id not in {element.element_id for element in context.elements}
@@ -289,12 +516,15 @@ def test_stale_memory_remains_visible_as_diagnostic(tmp_path: Path):
             key="stale-finding",
             value="old evidence",
             status=MemoryStatus.STALE,
-            provenance={"root": str(tmp_path), "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
+            provenance={"root": str(tmp_path), "tenant": "tenant-1", "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
         )
     )
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
-        ContextRequest(task_id="task-1", root=str(tmp_path), token_budget=120, include_diagnostics=True)
+        ContextRequest(
+            task_id="task-1", root=str(tmp_path), tenant="tenant-1",
+            token_budget=120, include_diagnostics=True,
+        )
     )
 
     diagnostics = [element for element in context.elements if element.source_kind == "memory_diagnostics"]
@@ -314,7 +544,7 @@ def test_memory_diagnostics_are_repository_scoped(tmp_path: Path):
             key="stale-a",
             value="old evidence A",
             status=MemoryStatus.STALE,
-            provenance={"root": repository_a, "repository_revision": "rev-1"},
+            provenance={"root": repository_a, "tenant": "tenant-1", "repository_revision": "rev-1"},
         )
     )
     stale_b = memory_store.record(
@@ -324,12 +554,15 @@ def test_memory_diagnostics_are_repository_scoped(tmp_path: Path):
             key="stale-b",
             value="old evidence B",
             status=MemoryStatus.STALE,
-            provenance={"root": repository_b, "repository_revision": "rev-1"},
+            provenance={"root": repository_b, "tenant": "tenant-1", "repository_revision": "rev-1"},
         )
     )
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
-        ContextRequest(task_id="task-a", root=repository_a, token_budget=120, include_diagnostics=True)
+        ContextRequest(
+            task_id="task-a", root=repository_a, tenant="tenant-1",
+            token_budget=120, include_diagnostics=True,
+        )
     )
 
     diagnostics = next(element for element in context.elements if element.source_kind == "memory_diagnostics")
@@ -338,7 +571,7 @@ def test_memory_diagnostics_are_repository_scoped(tmp_path: Path):
     assert "stale_count=1" in diagnostics.content
 
 
-def test_legacy_rootless_memory_is_only_authoritative_without_root(tmp_path: Path):
+def test_legacy_rootless_memory_is_not_included_without_root(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory_store = MemoryStore(state_store)
     concrete_root = str(tmp_path / "repository")
@@ -349,17 +582,21 @@ def test_legacy_rootless_memory_is_only_authoritative_without_root(tmp_path: Pat
             key="legacy-rootless",
             value="legacy evidence",
             status=MemoryStatus.CONFIRMED,
-            provenance={},
+            provenance={"tenant": "tenant-1"},
         )
     )
 
     rootless_context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
-        ContextRequest(task_id="task-1", token_budget=120)
+        ContextRequest(task_id="task-1", tenant="tenant-1", token_budget=120)
     )
-    assert legacy.record_id in {element.element_id for element in rootless_context.elements}
+    assert legacy.record_id not in {element.element_id for element in rootless_context.elements}
+    assert not any(element.source_kind == "memory_record" for element in rootless_context.elements)
 
     scoped_context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
-        ContextRequest(task_id="task-1", root=concrete_root, token_budget=120, include_diagnostics=True)
+        ContextRequest(
+            task_id="task-1", tenant="tenant-1", root=concrete_root,
+            token_budget=120, include_diagnostics=True,
+        )
     )
     scoped_ids = {element.element_id for element in scoped_context.elements}
     diagnostics = next(element for element in scoped_context.elements if element.source_kind == "memory_diagnostics")
@@ -559,6 +796,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="current-task",
             value="keep",
             status=MemoryStatus.CONFIRMED,
+            provenance={"root": current_root},
         )
     )
     wrong_task = memory_store.record(
@@ -569,6 +807,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="wrong-task",
             value="exclude",
             status=MemoryStatus.CONFIRMED,
+            provenance={"root": current_root},
         )
     )
     current_session = memory_store.record(
@@ -579,6 +818,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="current-session",
             value="keep",
             status=MemoryStatus.CONFIRMED,
+            provenance={"root": current_root},
         )
     )
     wrong_session = memory_store.record(
@@ -589,6 +829,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="wrong-session",
             value="exclude",
             status=MemoryStatus.CONFIRMED,
+            provenance={"root": current_root},
         )
     )
     unscoped_task = memory_store.record(
@@ -598,6 +839,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="unscoped-task",
             value="exclude",
             status=MemoryStatus.CONFIRMED,
+            provenance={"root": current_root},
         )
     )
     unscoped_session = memory_store.record(
@@ -607,11 +849,12 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="unscoped-session",
             value="exclude",
             status=MemoryStatus.CONFIRMED,
+            provenance={"root": current_root},
         )
     )
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
-        ContextRequest(task_id="task-1", tenant="session-1", root=current_root, token_budget=300)
+        ContextRequest(task_id="task-1", session_id="session-1", root=current_root, token_budget=300)
     )
     element_ids = {element.element_id for element in context.elements}
 

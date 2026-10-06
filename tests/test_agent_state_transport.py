@@ -39,7 +39,7 @@ enabled = true
         task_id="task-1",
     )
     # Save a memo
-    app.memory.put(str(tmp_path), "known", "memo_value", 3600)
+    app.memory.put(str(tmp_path), "known", "memo_value", "test", ttl_seconds=3600)
 
     # We mock or run directly via app or client
     # For transport test without network server, we can mock client request/get/post through app handlers or test client directly
@@ -413,6 +413,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             },
         ),
         rich_record,
+        MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-tenant-independent", value="global-value", provenance={"root": str(repo_one), "repository_id": "repository-global"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": "repository-two"}),
@@ -462,6 +463,25 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         assert [item["value"] for item in repository_id_without_scope["records"]] == ["repo-one"]
         tenant_without_scope = get(tenant="tenant-1", key="tenant-shared")
         assert [item["value"] for item in tenant_without_scope["records"]] == ["tenant-one"]
+        global_record = next(record for record in records if record.scope is AgentScope.GLOBAL)
+        global_for_codex = post({
+            "action": "get",
+            "record_id": global_record.record_id,
+            "scope": "global",
+            "tenant": "codex",
+            "root": str(repo_one),
+            "repository_id": "repository-global",
+        })
+        assert global_for_codex["record"]["value"] == "global-value"
+        global_deleted = post({
+            "action": "delete",
+            "record_id": global_record.record_id,
+            "scope": "global",
+            "tenant": "codex",
+            "root": str(repo_one),
+            "repository_id": "repository-global",
+        })
+        assert global_deleted["success"] is True and global_deleted["deleted"] is True
         rich_direct = post({
             "action": "get",
             "record_id": rich_record.record_id,
@@ -585,6 +605,99 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         finally:
             mcp_server.CLIENT = previous_mcp_client
             mcp_client.close()
+        with pytest.raises(urllib.error.HTTPError) as delete_mismatch:
+            post({
+                "action": "delete",
+                "record_id": rich_record.record_id,
+                "scope": "task",
+                "scope_id": "another-task",
+            })
+        assert delete_mismatch.value.code == 404
+        deleted = post({
+            "action": "delete",
+            "record_id": rich_record.record_id,
+            "scope": "task",
+            "scope_id": "task-rich",
+        })
+        assert deleted["success"] is True
+        assert deleted["deleted"] is True
+        with pytest.raises(urllib.error.HTTPError) as delete_without_scope:
+            post({"action": "delete", "record_id": records[-2].record_id})
+        assert delete_without_scope.value.code == 400
+        with pytest.raises(urllib.error.HTTPError) as delete_repository_mismatch:
+            post({
+                "action": "delete",
+                "record_id": records[-2].record_id,
+                "scope": "repository",
+                "root": str(repo_two),
+            })
+        assert delete_repository_mismatch.value.code == 404
+        deleted_by_root = post({
+            "action": "delete",
+            "record_id": records[-2].record_id,
+            "scope": "repository",
+            "root": str(repo_one),
+        })
+        assert deleted_by_root["deleted"] is True
+        deleted_by_repository_id = post({
+            "action": "delete",
+            "record_id": records[-1].record_id,
+            "scope": "repository",
+            "repository_id": "repository-two",
+        })
+        assert deleted_by_repository_id["deleted"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        gc.collect()
+        http_server.APP = previous
+        app.close()
+
+
+def test_http_verification_route_rejects_passed_receipt_without_evidence(tmp_path: Path):
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from local_ai_hub import http_server
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11502\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps({
+            "action": "receipt",
+            "receipt": {
+                "receipt_id": "route-receipt-no-evidence",
+                "task_id": "route-task",
+                "criterion": "focused test",
+                "passed": True,
+            },
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/verification",
+            data=payload,
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+        result = json.loads(error.value.read().decode("utf-8"))
+        assert error.value.code == 400
+        assert result["error"] == "passed verification receipt requires evidence_id"
+        assert result["terminal"] is True
+        assert result["retryable"] is False
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -932,3 +1045,64 @@ def test_dashboard_agent_os_tab():
     assert 'loadAgentOsView' in DASHBOARD_HTML
     assert 'renderAgentOsView' in DASHBOARD_HTML
     assert 'agentStateCard' in DASHBOARD_HTML
+
+
+def test_http_verification_route_requires_boolean_passed(tmp_path: Path):
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from local_ai_hub import http_server
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11501\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def post(receipt):
+        payload = json.dumps({"action": "receipt", "receipt": receipt}).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/verification",
+            data=payload,
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    try:
+        invalid_receipts = (
+            {"task_id": "route-task", "criterion": "focused test"},
+            {"task_id": "route-task", "criterion": "focused test", "passed": "false"},
+            {"receipt_id": "route-receipt-text", "task_id": "route-task", "criterion": "focused test", "passed": "false"},
+            {"receipt_id": "route-receipt-int", "task_id": "route-task", "criterion": "focused test", "passed": 1},
+        )
+        for receipt in invalid_receipts:
+            status, result = post(receipt)
+            assert status == 400
+            assert result["success"] is False
+            assert result["terminal"] is True
+            assert result["retryable"] is False
+
+        status, result = post({"task_id": "route-task", "criterion": "focused test", "passed": False})
+        assert status == 200
+        assert result["receipt"]["passed"] is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        gc.collect()
+        http_server.APP = previous
+        app.close()

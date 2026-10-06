@@ -16,6 +16,117 @@ def _cases():
     return [json.loads(line) for line in FIXTURE.read_text().splitlines() if line]
 
 
+def test_synthetic_quality_corpus_covers_required_workflows_and_compression_fields():
+    cases = _cases()
+    required_workflows = {"reason", "review", "compress", "complete", "scaffold"}
+    workflow_cases = [case for case in cases if case.get("workflow") in required_workflows]
+
+    assert required_workflows <= {case["workflow"] for case in workflow_cases}
+
+    # These records test deterministic evaluator behavior, not live-model quality.
+    for case in workflow_cases:
+        result = evaluate_case(**{key: case[key] for key in ("task", "evidence_paths", "output", "expected")})
+        assert result["schema_pass"] is True
+        assert result["hallucinated_paths"] == []
+        assert all(case["output"].get(key) == value for key, value in case["expected"].items())
+
+    compressed = next(case for case in cases if case["id"] == "compression_preserves_evidence")
+    # Synthetic fixture checks field retention only; it is not live-model grounding evidence.
+    assert compressed["output"]["facts"] == compressed["expected"]["facts"]
+    assert compressed["output"]["facts"][0]["evidence_ids"] == ["synthetic-compress-1"]
+    assert compressed["output"]["uncertainty"] == compressed["expected"]["uncertainty"]
+
+
+def test_quality_evaluator_rejects_compression_that_drops_required_fields():
+    case = next(case for case in _cases() if case["id"] == "compression_preserves_evidence")
+    required_fields = ("facts", "uncertainty")
+
+    for field in required_fields:
+        incomplete = dict(case["output"])
+        incomplete.pop(field)
+        result = evaluate_case(
+            task=case["task"],
+            evidence_paths=case["evidence_paths"],
+            output=incomplete,
+            expected=case["expected"],
+        )
+        assert result["schema_pass"] is False
+
+    incomplete_fact = dict(case["output"]["facts"][0])
+    incomplete_fact.pop("evidence_ids")
+    incomplete = {**case["output"], "facts": [incomplete_fact]}
+    result = evaluate_case(
+        task=case["task"],
+        evidence_paths=case["evidence_paths"],
+        output=incomplete,
+        expected=case["expected"],
+    )
+    assert result["schema_pass"] is False
+
+
+def test_quality_schema_checks_each_list_exemplar_and_last_shape_for_extras():
+    expected = {
+        "items": [
+            {"kind": "alpha", "score": 1},
+            {"kind": "beta", "label": "required"},
+        ]
+    }
+
+    def schema_passes(items):
+        return evaluate_case(
+            task="",
+            evidence_paths=[],
+            output={"items": items},
+            expected=expected,
+        )["schema_pass"]
+
+    assert schema_passes(
+        [
+            {"kind": "alpha", "score": 1},
+            {"kind": "beta", "label": "required"},
+        ]
+    ) is True
+    assert schema_passes(
+        [
+            {"kind": "alpha", "score": 1},
+            {"kind": "beta", "score": 2},
+        ]
+    ) is False
+    assert schema_passes(
+        [
+            {"kind": "alpha", "score": 1},
+            {"kind": "beta", "label": "required"},
+            {"kind": "gamma", "label": "extra"},
+        ]
+    ) is True
+    assert schema_passes(
+        [
+            {"kind": "alpha", "score": 1},
+            {"kind": "beta", "label": "required"},
+            {"kind": "gamma", "score": 3},
+        ]
+    ) is False
+
+def test_quality_schema_rejects_empty_required_lists_and_boolean_integers():
+    case = next(case for case in _cases() if case["id"] == "compression_preserves_evidence")
+    empty_facts = {**case["output"], "facts": []}
+    result = evaluate_case(
+        task=case["task"],
+        evidence_paths=case["evidence_paths"],
+        output=empty_facts,
+        expected=case["expected"],
+    )
+    assert result["schema_pass"] is False
+
+    result = evaluate_case(
+        task="validate integer field type",
+        evidence_paths=[],
+        output={"count": True},
+        expected={"count": 1},
+    )
+    assert result["schema_pass"] is False
+
+
 def test_model_case_records_grounding_and_schema_metrics():
     result = evaluate_case(
         task="classify input",

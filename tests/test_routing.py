@@ -24,7 +24,8 @@ EVIDENCE_ACTIONS = [
 ]
 
 EXPECTED_PAYLOAD = {
-    "required": True,
+    "required": False,
+    "advisory": True,
     "tool": "local_ai_task",
     "actions": [
         "delegate",
@@ -64,7 +65,8 @@ def test_status_disabled_handoff_omits_status_bypass_metadata():
     )
 
     assert hint == {
-        "required": True,
+        "required": False,
+        "advisory": True,
         "tool": "local_ai_task",
         "actions": EXPECTED_PAYLOAD["actions"],
     }

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-26",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_lease_path_normalization.py",
+  "route": "native_fallback_user_authorized",
+  "exit_code": 1,
+  "summary": "5 failed, 8 passed, 9 skipped in 3.84s",
+  "input_sha256_before": {
+    "tests/test_lease_path_normalization.py": "5562911FAEF6BA0D53EE7F45617CB27DD02D00FBAF080FCC39B78B010E62E8DC",
+    "src/local_ai_hub/leases.py": "AA94DD3459CB8E15E664ABDED714AA886437ECD34FD5936F051959B7137BE2A8"
+  },
+  "input_sha256_after": {
+    "tests/test_lease_path_normalization.py": "5562911FAEF6BA0D53EE7F45617CB27DD02D00FBAF080FCC39B78B010E62E8DC",
+    "src/local_ai_hub/leases.py": "AA94DD3459CB8E15E664ABDED714AA886437ECD34FD5936F051959B7137BE2A8"
+  },
+  "inputs_unchanged": true,
+  "owner_patch_sha256": "4D55496BBEA6DFEA1709290228FB1AD6CC14A8228F176CF01E15D79A1B819514",
+  "acceptance_scope": "T09 lease path normalization test module only; root leases.py remains at current preimage",
+  "failure_names": [
+    "tests/test_lease_path_normalization.py::test_windows_root_aliases_and_relative_paths_conflict_case_insensitively",
+    "tests/test_lease_path_normalization.py::test_windows_parent_child_scopes_conflict_in_both_claim_orders[src-src/file.py]",
+    "tests/test_lease_path_normalization.py::test_windows_parent_child_scopes_conflict_in_both_claim_orders[src/file.py-src]",
+    "tests/test_lease_path_normalization.py::test_windows_root_aliases_with_dot_segments_share_identity[C:\\\\Work\\\\Repo-c:\\\\work\\\\repo\\\\sub\\\\..]",
+    "tests/test_lease_path_normalization.py::test_windows_root_aliases_with_dot_segments_share_identity[\\\\\\\\server\\\\share\\\\repo-\\\\\\\\SERVER\\\\SHARE\\\\Repo\\\\sub\\\\..]"
+  ],
+  "log_path": "C:\\Users\\Adam\\.local-ai-hub\\handoff\\T20-CPU-SLOT-20261002-26\\01-t09-lease-path-normalization.log",
+  "log_sha256": "B07ECF58A23EDC7B2DA31F954B59499B4B4F0E5731BD9905FE289E8565B98B4A"
+}

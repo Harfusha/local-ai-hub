@@ -18,6 +18,49 @@ class RiskClass(str, Enum):
     PRIVILEGE_CHANGE = "privilege_change"
 
 
+POLICY_OWNER = "agent_policy"
+
+# Auxiliary command names are normalized at the policy boundary so callers
+# cannot lower their risk by supplying a read-only ActionRequest.
+AUXILIARY_ACTION_POLICIES: dict[str, tuple[RiskClass, str]] = {
+    "run": (RiskClass.WRITE, "process_execution"),
+    "run_affected": (RiskClass.WRITE, "process_execution"),
+    "cancel": (RiskClass.WRITE, "process_lifecycle"),
+    "classify": (RiskClass.READ, "command_metadata"),
+    "discover": (RiskClass.READ, "command_discovery"),
+    "stats": (RiskClass.READ, "command_metrics"),
+    "repair": (RiskClass.WRITE, "workspace_write"),
+    "repair_loop": (RiskClass.WRITE, "workspace_write"),
+    "auto_fix": (RiskClass.WRITE, "workspace_write"),
+    "lint_fix": (RiskClass.WRITE, "workspace_write"),
+    "patch_and_verify": (RiskClass.WRITE, "workspace_write"),
+    "format": (RiskClass.WRITE, "workspace_write"),
+    "spawn_daemon": (RiskClass.SYSTEM_CONFIG, "process_lifecycle"),
+    "stop_daemon": (RiskClass.SYSTEM_CONFIG, "process_lifecycle"),
+    "daemon_status": (RiskClass.READ, "process_status"),
+    "http_probe": (RiskClass.NETWORK, "network_access"),
+    "webhook_replay": (RiskClass.NETWORK, "network_access"),
+    "stash_save": (RiskClass.GIT_MUTATION, "git_mutation"),
+    "stash_restore": (RiskClass.GIT_MUTATION, "git_mutation"),
+    "diff_hunk_stage": (RiskClass.GIT_MUTATION, "git_mutation"),
+    "record_mock": (RiskClass.WRITE, "test_fixture_write"),
+    "replay_mock": (RiskClass.WRITE, "test_fixture_write"),
+    "mock_server": (RiskClass.NETWORK, "network_listener"),
+    "mock_server_start": (RiskClass.NETWORK, "network_listener"),
+    "mock_server_stop": (RiskClass.NETWORK, "network_listener"),
+    "mock_server_status": (RiskClass.READ, "process_status"),
+    "flaky_detect": (RiskClass.WRITE, "process_execution"),
+    "preflight": (RiskClass.WRITE, "process_execution"),
+    "speculative_lint": (RiskClass.WRITE, "process_execution"),
+    "bundle": (RiskClass.WRITE, "artifact_write"),
+    "bundle_create": (RiskClass.WRITE, "artifact_write"),
+    "config": (RiskClass.SYSTEM_CONFIG, "system_configuration"),
+    "config_update": (RiskClass.SYSTEM_CONFIG, "system_configuration"),
+    "model": (RiskClass.NETWORK, "model_execution"),
+    "model_inference": (RiskClass.NETWORK, "model_execution"),
+}
+
+
 @dataclass(frozen=True)
 class CapabilityDescriptor:
     name: str
@@ -109,6 +152,8 @@ class PolicyDecision:
     requires_approval: bool = False
     reason: str = ""
     receipt_id: str = ""
+    owner: str = POLICY_OWNER
+    side_effect_class: str = "read"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -116,6 +161,8 @@ class PolicyDecision:
             "requires_approval": self.requires_approval,
             "reason": self.reason,
             "receipt_id": self.receipt_id,
+            "owner": self.owner,
+            "side_effect_class": self.side_effect_class,
         }
 
 
@@ -126,8 +173,14 @@ from .sqlite_support import connect_sqlite, retry_busy
 
 
 class PolicyEngine:
-    def __init__(self, state_store: Any | None = None) -> None:
+    def __init__(
+        self,
+        state_store: Any | None = None,
+        *,
+        auxiliary_actions_enabled: bool = True,
+    ) -> None:
         self.state_store = state_store
+        self.auxiliary_actions_enabled = bool(auxiliary_actions_enabled)
         self._lock = threading.RLock()
         self._budgets: dict[str, Budget] = {}
         self._initialized = False
@@ -173,6 +226,34 @@ class PolicyEngine:
         task: TaskState,
         grant: CapabilityGrant | None = None,
     ) -> PolicyDecision:
+        action_name = request.action.strip().lower().replace("-", "_")
+        auxiliary_policy = AUXILIARY_ACTION_POLICIES.get(action_name)
+        auxiliary_marked = bool(request.details.get("auxiliary_action"))
+        side_effect_class = (
+            auxiliary_policy[1]
+            if auxiliary_policy
+            else ("unknown" if auxiliary_marked else request.risk_class.value)
+        )
+        risk_class = auxiliary_policy[0] if auxiliary_policy else request.risk_class
+
+        if auxiliary_policy and (
+            not self.auxiliary_actions_enabled
+            or request.details.get("policy_enabled") is False
+        ):
+            return PolicyDecision(
+                allowed=False,
+                reason="auxiliary action policy is disabled",
+                owner=POLICY_OWNER,
+                side_effect_class=side_effect_class,
+            )
+        if auxiliary_marked and auxiliary_policy is None:
+            return PolicyDecision(
+                allowed=False,
+                reason=f"unknown auxiliary action '{request.action}' denied",
+                owner=POLICY_OWNER,
+                side_effect_class="unknown",
+            )
+
         # 1. Check budget expiration
         if task and task.task_id:
             budget = self.get_budget(task.task_id)
@@ -181,23 +262,29 @@ class PolicyEngine:
                     allowed=False,
                     requires_approval=False,
                     reason=f"task budget exhausted ({task.task_id}): tokens={budget.used_tokens}/{budget.max_tokens}, time={budget.used_compute_seconds:.1f}/{budget.max_compute_seconds:.1f}s",
+                    owner=POLICY_OWNER,
+                    side_effect_class=side_effect_class,
                 )
 
         if grant is not None:
-            if request.action in grant.denied or request.risk_class.value in grant.denied:
+            if request.action in grant.denied or risk_class.value in grant.denied:
                 return PolicyDecision(
                     allowed=False,
                     requires_approval=False,
                     reason=f"action '{request.action}' explicitly denied by capability grant",
+                    owner=POLICY_OWNER,
+                    side_effect_class=side_effect_class,
                 )
-            if request.action in grant.allowed or request.risk_class.value in grant.allowed:
+            if request.action in grant.allowed or risk_class.value in grant.allowed:
                 return PolicyDecision(
                     allowed=True,
                     requires_approval=False,
                     reason="action permitted by capability grant",
+                    owner=POLICY_OWNER,
+                    side_effect_class=side_effect_class,
                 )
 
-        if request.risk_class in (
+        if risk_class in (
             RiskClass.WRITE,
             RiskClass.NETWORK,
             RiskClass.GIT_MUTATION,
@@ -208,13 +295,17 @@ class PolicyEngine:
             return PolicyDecision(
                 allowed=False,
                 requires_approval=True,
-                reason=f"{request.risk_class.value} requires explicit approval or grant",
+                reason=f"{risk_class.value} requires explicit approval or grant",
+                owner=POLICY_OWNER,
+                side_effect_class=side_effect_class,
             )
 
         return PolicyDecision(
             allowed=True,
             requires_approval=False,
             reason="read-only action permitted by default",
+            owner=POLICY_OWNER,
+            side_effect_class=side_effect_class,
         )
 
     def delegate(

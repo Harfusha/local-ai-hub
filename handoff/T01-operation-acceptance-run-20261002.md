@@ -1,0 +1,80 @@
+# T01 operation acceptance run — 2026-10-02
+
+Worktree: `C:\Users\Adam\.codex\worktrees\t01-coverage-main-verify\.local-ai-hub`
+HEAD: `689165fbe18101feacf5f489847a4890fc27ed1f`
+Hub calls: none. No root checkout writes.
+
+## Resumed dirty-state ownership
+
+At resumption, all existing paths below were already dirty/untracked. The assigned T01 candidate set is the inventory/doc update, operation acceptance tests, and `handoff/T01-*` evidence. Existing shared source/test edits in `mcp_server.py`, `test_reliability_integration.py`, and `test_vision_artifacts.py` were inherited into this continuation and preserved unchanged. This continuation's only tracked-file edit is the expected selector assertion in `tests/test_surface_inventory.py`; new handoff receipt/checkpoint files are T01-owned.
+
+## Change
+
+`tests/test_surface_inventory.py`: the synthetic operation-link test now expects `local_ai_repo(action="context")` to link exactly to `tests/test_operation_behavior.py::test_repo_context_dispatch`. The matcher explicitly includes conditional MCP actions in its known-action set; the prior negative assertion contradicted that behavior.
+
+## Validation receipts
+
+1. Six operation acceptance modules:
+
+```powershell
+$env:PYTHONPATH='src'; $env:PYTHONDONTWRITEBYTECODE='1'; & 'C:\Python313\python.exe' -B -m pytest -q -p no:cacheprovider --tb=short tests/test_client_operation_acceptance.py tests/test_http_route_operation_acceptance.py tests/test_hubctl_unlinked_operations.py tests/test_mcp_command_operation_acceptance.py tests/test_mcp_coord_operation_acceptance.py tests/test_rag_work_operation_acceptance.py
+```
+
+Result: `64 passed in 31.84s`.
+
+2. Inventory suite after correcting the stale assertion:
+
+```powershell
+$env:PYTHONPATH='src'; $env:PYTHONDONTWRITEBYTECODE='1'; & 'C:\Python313\python.exe' -B -m pytest -q -p no:cacheprovider --tb=short tests/test_surface_inventory.py
+```
+
+Result: `687 passed in 33.40s`. The initial run was `686 passed, 1 failed in 34.59s`; the sole failure was the stale conditional-action expectation. Exact selector retest: `1 passed in 6.50s`.
+
+3. Inventory drift check:
+
+```powershell
+$env:PYTHONPATH='src'; $env:PYTHONDONTWRITEBYTECODE='1'; & 'C:\Python313\python.exe' -B tools/surface_inventory.py --check
+```
+
+Result: `{"coverage_matches": true, "coverage_rows": 642, "drift": [], "success": true}`.
+
+4. Existing T01 rollback/negative-dispatch selectors: `2 passed in 2.82s` (recorded in `T01-operation-level-receipt-task-rollback-20261001.md`).
+
+`git diff --check` passed; Git emitted only LF-to-CRLF advisories for the pre-existing surface-inventory test and tool files.
+
+## Source pins
+
+- `tools/surface_inventory.py`: `375A804B517C36A24C83BD331FAD29351E7E75D9E2AC8422389D5C43749E683D`
+- `tests/test_surface_inventory.py`: `C1B378144FC942EFBD33617A217EEC73E2501AF0A57172CB4BEDD323C129A1AF`
+- `tests/test_client_operation_acceptance.py`: `5AA526D4AE0E1FA0CB390C4F1419AD76ED3C6791EF8262B8D57F8E958C2522D6`
+- `tests/test_http_route_operation_acceptance.py`: `330C91CDA532142C74C47E93CDAC624E5F2B0858F831586CE0509CF114973EC5`
+- `tests/test_hubctl_unlinked_operations.py`: `1D7D71FAD57A1FA41727C7673913CE30F66D798D31380C59C6EB52D650B91D1C`
+- `tests/test_mcp_command_operation_acceptance.py`: `08DF71D30970349E5DA3C2AC12CF0C034E22FA9856EDABFB4120C938F1CB9D20`
+- `tests/test_mcp_coord_operation_acceptance.py`: `2EA4B59D11DB9519C3FC1D2A98C22AAC78E68D67B8C31C802602F16D4FFC11B6`
+- `tests/test_rag_work_operation_acceptance.py`: `883BD3CC5FF366F7ECB0007DF5B5BBCA8835E5E17A400355EDDBF588B16EC51D`
+
+## Acceptance boundary
+
+The 642-row generated coverage document is drift-free; this is inventory consistency, not a claim that every row has a fresh operation-level receipt. T01's owner snapshot assigns its only operation row to conditional `/api/context/pack`, which remains excluded. Other operation gaps remain owner-assigned; T05/T06 transferred batches lack immutable row-mapped receipts and the T06 restart-stop failure remains. T14/T21 remain candidate-only. Do not mark the T01 review complete from these results.
+## Conservative join against the 446-row owner gap map
+
+Reproduction command: `$env:PYTHONDONTWRITEBYTECODE='1'; & 'C:\Python313\python.exe' -B handoff/T01-build-operation-test-link-delta-20261002.py`.
+
+Result: `operation_rows=446`, `candidate_linked_rows=1`, `candidate_rows_with_fresh_targeted_selectors=1`, `candidate_unlinked_rows=445`, `unique_linked_selectors=2`, `root_green_rows=0`. The unlinked split is T01=1 (`/api/context/pack`, explicitly excluded), other owners=444: T02=3, T03=14, T04=75, T05=10, T06=1, T08=63, T09=9, T10=159, T11=13, T12=8, T13=10, T14=5, T15=33, T16=3, T17=11, T18=20, T19=4, T20=2, T21=1. The sole joined row is `op-28d63e90525c`, `MCP action local_ai_coord::task_rollback`, primary owner `T08`; selectors are `test_local_ai_coord_feature_disabled_rejects_valid_action_before_backend_dispatch` and `test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint`. It remains a candidate worktree receipt, not root GREEN or an ownership transfer.
+
+- Builder SHA-256: `40FEE09B37F0B4FD536CBEA7F3F88F70CF2617575F127B06CB0D80127E86C521`
+- Candidate delta CSV SHA-256: `50DC1C7F2541984CB2B0229B271B1DE683C4486DD0A0A8C972E30E1C64E19ABD`
+- Candidate delta JSON SHA-256: `1F872A2A262C71B4C5E44B5D7279CE5BC8E52B768F22D4583E87AC8BAFA14315`
+
+The T01 acceptance criterion requires operation-level evidence across the inventory, so the 445 open gap rows remain a completion blocker. Ownership is separate: 444 rows are assigned to other tasks; T01 owns one conditional `/api/context/pack` row, explicitly excluded from implementation. T01 cannot close the global review until owner receipts are attached and gaps are recomputed. The 64 passing tests and 642-row drift check do not satisfy this criterion.
+## Owner receipt scan since prior checkpoint — 2026-10-02
+
+Reviewed only new T04, T03, and T17 owner evidence. No source/test files were copied or adopted.
+
+- **T04:** closeout SHA-256 `0646A75C775ADD0E81F58E25B54935DFF2E5339D91B74065EA3B247AB0008F4E`; checkpoint SHA-256 `EFBD36B7DF6E38E33A37AB005AB094274A181F4F628E44098CA6C70D4F5A7029`. Root-current batch: **120 passed / 63.70s**, HEAD `01df56605ccf484ebfe2808ac60d696c4e81dffc`. Receipt has aggregate command/files and source pins, but no exact per-operation selector list. Its 75 rows remain open and unmapped.
+- **T03:** checkpoint/manifest SHA-256 `8CED158874401F776E1ADDBEB0886FACE3580B763A6DCA4C2E30E9A94ED01A43`; patch SHA-256 `A5CA8543CA462B67D12C75343A794E23B1B225ADC796B2C44965125C572F04E6`. Candidate suite **97 passed / 28.07s**, not rerun; root preimages still match, integration pending. No exact row selectors were delivered; 14 rows remain open.
+- **T17:** receipt SHA-256 `6AF94C2B44A0B6D5D36E92B468CEE5271132466C100E93BF2FDBB76E8EF3CDAE`; one-line test fixture patch SHA-256 `431656D385BE76E22E523DA37126ED1DF23A1C8366474F4EB5713BAFE9A08966`. Selector `tests/test_transcription_contract.py::test_http_transcribe_route_preserves_requested_model` uses `POST /api/task/transcribe` (candidate test SHA `FA73A2967BDC8088BD03E81943B8909EA5A095F97822EA29B8980E1BB34D263D`), so exact row is **T13-owned `op-65970ac00a0a`**, not T17's `/api/transcribe` `op-acab25f2f575`. Candidate selector passed `1/1 in 4.54s`; temporary root-source overlay with the fixture patch passed `1/1 in 4.12s`. Integrated root selector remains pending; row is candidate-only, root GREEN false.
+
+No operation row closed. Candidate-only rows are `op-28d63e90525c` (T08 rollback) and `op-65970ac00a0a` (T13 transcribe with T17 candidate evidence). All **446** remain root-open; **444** have no exact selector mapping; root GREEN is **0**. T04's 75 and T03's 14 exact open operation IDs are listed in the generated delta JSON. T17's own 11 rows remain open; the mismatched `/api/transcribe` row remains unlinked.
+
+Latest deterministic map reproduction: `& 'C:\Python313\python.exe' -B handoff/T01-build-operation-test-link-delta-20261002.py`. Builder SHA-256 `DA8AFFB392B9D86D8C53E7EB7607F0B715EE40E9CCD62FDEF506E4D6A6B506BF`; CSV SHA-256 `4CC34613F85D5932825E8042D0024C5B1835A54238C2C7FA781EBE6BFA04CF80`; JSON SHA-256 `2B33C8E32608F2B2A25869296019D33043E3E26D595EC563CC8177F9FA6FEE05`.

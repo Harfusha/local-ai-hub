@@ -16,16 +16,16 @@ from local_ai_hub.services import LocalAIServices
 
 def test_revision_scoped_error_markers() -> None:
     # 1. ExternalCodeIntelligence
-    assert ExternalCodeIntelligence._is_revision_scoped_index_error("index", "codegraph index exited 1: No configuration file found. Using defaults.")
-    assert ExternalCodeIntelligence._is_revision_scoped_index_error("index", "codegraph index exited 1: Loaded configuration from: C:/project/.env")
-    assert ExternalCodeIntelligence._is_revision_scoped_index_error("index", "indexing exceeded 120s")
+    assert ExternalCodeIntelligence._is_revision_scoped_index_error("index", "Serena index exited 1: No configuration file found. Using defaults.")
+    assert not ExternalCodeIntelligence._is_revision_scoped_index_error("index", "Serena index exited 1: Loaded configuration from: C:/project/.env")
+    assert not ExternalCodeIntelligence._is_revision_scoped_index_error("index", "indexing exceeded 120s")
     assert not ExternalCodeIntelligence._is_revision_scoped_index_error("query", "No configuration file found")
 
     # 2. ProjectPreprocessor
     assert ProjectPreprocessor._external_error_is_revision_scoped("No configuration file found. Using defaults.")
-    assert ProjectPreprocessor._external_error_is_revision_scoped("indexing exceeded 120s")
-    assert ProjectPreprocessor._external_error_is_revision_scoped("codegraph index exited 1: Loaded configuration from: C:/project/.env")
-    assert ProjectPreprocessor._external_error_is_revision_scoped("no module named 'codegraphcontext'")
+    assert not ProjectPreprocessor._external_error_is_revision_scoped("indexing exceeded 120s")
+    assert not ProjectPreprocessor._external_error_is_revision_scoped("Serena index exited 1: Loaded configuration from: C:/project/.env")
+    assert not ProjectPreprocessor._external_error_is_revision_scoped("no module named 'codegraphcontext'")
 
 
 def test_command_broker_rejects_nonexistent_cwd(tmp_path: Path) -> None:
@@ -75,7 +75,6 @@ def test_preprocessor_external_index_degrades_and_skips_on_revision_error(tmp_pa
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},
         "preprocessing": {"enabled": True},
-        "code_intelligence": {"preprocess_codegraph": True},
     }
 
     mock_scheduler = MagicMock()
@@ -86,7 +85,7 @@ def test_preprocessor_external_index_degrades_and_skips_on_revision_error(tmp_pa
     mock_ext.backend_available.return_value = False
     mock_ext.index.return_value = {
         "success": False,
-        "backend": "codegraph",
+        "backend": "serena",
         "error": "No configuration file found. Using defaults.",
     }
 
@@ -101,21 +100,21 @@ def test_preprocessor_external_index_degrades_and_skips_on_revision_error(tmp_pa
     )
 
     try:
-        row = {"root": str(proj_dir), "workspace": "test-ws", "phase": "codegraph", "force_refresh": False}
+        row = {"root": str(proj_dir), "workspace": "test-ws", "phase": "serena", "force_refresh": False}
 
         # 1. First step should execute external_tools.index, record explicit unavailability, advance to next_phase
-        res1 = prep._step_external_index(row, "codegraph", "lexical")
+        res1 = prep._step_external_index(row, "serena", "lexical")
         assert res1 is True
         assert mock_ext.index.call_count == 1
 
         # 2. Subsequent step for same revision should be skipped immediately without calling external_tools.index again!
-        res2 = prep._step_external_index(row, "codegraph", "lexical")
+        res2 = prep._step_external_index(row, "serena", "lexical")
         assert res2 is True
         assert mock_ext.index.call_count == 1  # Not called again!
         with closing(prep._connect()) as con:
             state = con.execute(
                 "SELECT status,error FROM external_index_state WHERE root=? AND backend=?",
-                (str(proj_dir), "codegraph"),
+                (str(proj_dir), "serena"),
             ).fetchone()
         assert state[0] == "unavailable"
         assert "No configuration file found" in state[1]

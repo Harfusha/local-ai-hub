@@ -222,6 +222,7 @@ def validate_config(data: dict[str, Any]) -> None:
     intel = data.get("code_intelligence", {})
     for key in ("startup_timeout_seconds", "query_timeout_seconds", "index_timeout_seconds", "session_idle_ttl_seconds"):
         _number(intel, key, minimum=1, maximum=86400)
+    _number(intel, "soft_timeout_seconds", minimum=0.1, maximum=300)
     _number(intel, "max_sessions_per_backend", minimum=1, maximum=128)
     _number(intel, "failure_threshold", minimum=1, maximum=100)
 

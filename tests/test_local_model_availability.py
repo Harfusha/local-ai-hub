@@ -4,7 +4,52 @@ from types import SimpleNamespace
 import threading
 
 from local_ai_hub.model_policy import ModelExecutionPolicy
+from local_ai_hub.ollama import OllamaRuntime
 from local_ai_hub.services import LocalAIServices
+
+
+class _ConfiguredLlamaCpp:
+    def __init__(self, online: bool, models: list[str]) -> None:
+        self.online = online
+        self.models = models
+
+    def is_online(self) -> bool:
+        return self.online
+
+    def available_models(self) -> list[str]:
+        return list(self.models)
+
+
+def _runtime_for_availability(llama_cpp: _ConfiguredLlamaCpp) -> OllamaRuntime:
+    runtime = object.__new__(OllamaRuntime)
+    runtime.config = {"llama_cpp": {"fallback_to_ollama": False}}
+    runtime.llama_cpp = llama_cpp
+    runtime._meta_cache = {}
+    runtime._meta_cache_at = {}
+    return runtime
+
+
+def test_disabled_fallback_does_not_advertise_models_from_offline_llama_cpp() -> None:
+    runtime = _runtime_for_availability(_ConfiguredLlamaCpp(False, ["configured.gguf"]))
+
+    result = runtime.request("/api/tags")
+
+    assert "error" in result
+    assert result.get("models", []) == []
+
+
+def test_installed_models_ignores_configured_llama_cpp_models_when_backend_offline() -> None:
+    runtime = _runtime_for_availability(_ConfiguredLlamaCpp(False, ["configured.gguf"]))
+    runtime.request = lambda *_args, **_kwargs: {"error": "backend unavailable"}
+
+    assert runtime.installed_models() == []
+
+
+def test_installed_models_uses_llama_cpp_models_only_when_backend_online() -> None:
+    runtime = _runtime_for_availability(_ConfiguredLlamaCpp(True, ["configured.gguf"]))
+    runtime.request = lambda *_args, **_kwargs: {"error": "Ollama unavailable"}
+
+    assert runtime.installed_models() == ["configured.gguf"]
 
 
 class _OfflineRuntime:

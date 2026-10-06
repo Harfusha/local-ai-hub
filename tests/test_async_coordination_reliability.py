@@ -45,10 +45,12 @@ class _Artifacts:
 
 def test_async_jobs_retry_on_execution_failure(tmp_path: Path):
     call_count = 0
+    request_ids = []
 
     def _fail_first(action, payload, tenant):
         nonlocal call_count
         call_count += 1
+        request_ids.append(payload.get("request_id"))
         if call_count == 1:
             raise RuntimeError("transient worker crash")
         return {"success": True, "action": action}
@@ -59,7 +61,7 @@ def test_async_jobs_retry_on_execution_failure(tmp_path: Path):
         _Artifacts(),
         _fail_first,
     )
-    submitted = manager.submit("tenant-a", "reason", {"task": "retry-job"}, dispatch_delay_seconds=30.0)
+    submitted = manager.submit("tenant-a", "reason", {"request_id": "retry-job-001", "task": "retry-job"}, dispatch_delay_seconds=30.0)
     job_id = submitted["job_id"]
 
     # First attempt fails -> should requeue because attempts (1) < max_attempts (2)
@@ -67,12 +69,14 @@ def test_async_jobs_retry_on_execution_failure(tmp_path: Path):
     st = manager.status("tenant-a", job_id)
     assert st["state"] == "queued"
     assert st["attempts"] == 1
+    assert request_ids[0]
 
     # Second attempt succeeds
     manager._execute(job_id)
     st2 = manager.status("tenant-a", job_id)
     assert st2["state"] == "done"
     assert st2["attempts"] == 2
+    assert request_ids == [request_ids[0], request_ids[0]]
     manager.close()
 
 
@@ -103,7 +107,7 @@ def test_async_jobs_tick_reclaims_stuck_running_job(tmp_path: Path):
         _Artifacts(),
         lambda a, p, t: {"success": True},
     )
-    submitted = manager.submit("tenant-a", "reason", {"task": "stuck-job"}, dispatch_delay_seconds=30.0)
+    submitted = manager.submit("tenant-a", "reason", {"request_id": "stuck-job-001", "task": "stuck-job"}, dispatch_delay_seconds=30.0)
     job_id = submitted["job_id"]
 
     # Artificially set job to running with an expired lease
@@ -231,6 +235,7 @@ def test_unchanged_context_delta_reuses_revision_and_keeps_pack_useful():
 def test_legacy_context_validation_allows_omitted_guard_fields():
     assert mcp_mod._validate_context_pack_inputs(
         task_id="",
+        session_id="",
         phase="",
         focus=None,
         preload_profile="",
@@ -244,6 +249,15 @@ def test_legacy_context_validation_allows_omitted_guard_fields():
         max_tokens=512,
         token_budget=0,
     ) is None
+
+    invalid_phase = mcp_mod._validate_context_pack_inputs(
+        task_id="", session_id="", phase="invented-phase", focus=None,
+        preload_profile="", changed_paths=None, base="HEAD", staged=False,
+        guarded=True, since_hash="", approval="", override_reason="",
+        max_tokens=512, token_budget=0,
+    )
+    assert invalid_phase["success"] is False
+    assert invalid_phase["status_code"] == 400
 
 
 def test_mcp_server_client_root_normalization(monkeypatch):
@@ -275,7 +289,7 @@ def test_leases_norm_rel_windows_drive_rejection():
     assert _norm_rel("foo/bar/baz.txt") == "foo/bar/baz.txt"
 
 
-def test_leases_cross_tenant_release_by_id(tmp_path: Path):
+def test_leases_release_and_renew_require_owner_by_id(tmp_path: Path):
     store = ScopeLeaseStore(tmp_path)
     root = str(tmp_path)
 
@@ -288,8 +302,12 @@ def test_leases_cross_tenant_release_by_id(tmp_path: Path):
     claim2 = store.claim("tenant-2", root, ["src/worker.py"])
     assert claim2["success"] is False
 
-    # Cross-tenant release using http-default or * by lease_id
-    rel = store.release(tenant="http-default", lease_id=lease_id)
+    # Special tenant labels must not act as cross-tenant authorization.
+    for tenant in ("http-default", "system", "admin", "*"):
+        assert store.release(tenant=tenant, lease_id=lease_id)["released_rows"] == 0
+        assert store.renew(tenant=tenant, lease_id=lease_id)["success"] is False
+
+    rel = store.release(tenant="tenant-1", lease_id=lease_id)
     assert rel["success"] is True
     assert rel["released_rows"] >= 1
 

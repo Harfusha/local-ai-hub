@@ -15,7 +15,8 @@ import threading
 import time
 import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
+from enum import Enum
+from pathlib import Path, PureWindowsPath
 from typing import Any, Iterable, Mapping
 
 from .agent_tasks import GoalContract
@@ -49,6 +50,56 @@ _MEMORY_SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|token|password|secret|author
 _MEMORY_PROMPT_RE = re.compile(r"(?is)\bprompt\s*([=:])\s*.*$")
 
 
+class ContextPhase(str, Enum):
+    PLAN = "plan"
+    DISCOVER = "discover"
+    EDIT = "edit"
+    IMPLEMENTATION = "implementation"
+    REVIEW = "review"
+    TEST = "test"
+    HANDOFF = "handoff"
+
+
+_PHASE_ALIASES: dict[str, str] = {
+    "discovery": "discover",
+    "research": "discover",
+    "inspect": "discover",
+    "investigate": "discover",
+    "explore": "discover",
+    "analyze": "discover",
+    "analysis": "discover",
+    "planning": "plan",
+    "implement": "implementation",
+    "execution": "implementation",
+    "execute": "implementation",
+    "act": "implementation",
+    "verify": "test",
+    "verification": "test",
+    "testing": "test",
+    "tests": "test",
+    "validate": "test",
+    "validation": "test",
+    "reviewing": "review",
+    "code_review": "review",
+    "delivery": "handoff",
+    "hand_off": "handoff",
+}
+
+
+def normalize_context_phase(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("phase must be a string")
+    normalized = value.strip().lower()
+    if not normalized:
+        return ""
+    normalized = _PHASE_ALIASES.get(normalized, normalized)
+    try:
+        return ContextPhase(normalized).value
+    except ValueError as exc:
+        accepted = ", ".join(item.value for item in ContextPhase)
+        raise ValueError(f"phase must be one of: {accepted}") from exc
+
+
 def _text(value: Any, limit: int = _MAX_TEXT) -> str:
     if value is None:
         return ""
@@ -78,6 +129,78 @@ def _tuple(value: Any, limit: int = _MAX_ITEMS) -> tuple[str, ...]:
     except Exception:
         pass
     return tuple(output[:limit])
+
+
+def _repository_relative_path(root: str, value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} paths must be strings")
+    raw = value.strip().replace("\\", "/")
+    windows_path = PureWindowsPath(value.strip())
+    project_rooted = raw.startswith("/") and not raw.startswith("//")
+    if project_rooted:
+        raw = raw[1:]
+    if (
+        not raw or len(raw) > 240 or not raw.isprintable() or raw.startswith("/")
+        or (windows_path.is_absolute() and not project_rooted) or windows_path.drive
+        or any(part == ".." for part in raw.split("/"))
+    ):
+        raise ValueError(f"{field} paths must be repository-relative")
+    parts = [part for part in raw.split("/") if part not in {"", "."}]
+    if not parts:
+        raise ValueError(f"{field} paths must name a repository path")
+    normalized = "/".join(parts)
+    base = Path(root).expanduser().resolve(strict=False)
+    current = base
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"{field} paths cannot traverse symlinks")
+    try:
+        current.resolve(strict=False).relative_to(base)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{field} paths must remain inside the repository root") from exc
+    return normalized
+
+
+def _repository_relative_paths(root: str, value: Any, field: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise ValueError(f"{field} must be a list of paths")
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value[:64]:
+        normalized = _repository_relative_path(root, item, field)
+        if normalized.casefold() not in seen:
+            result.append(normalized)
+            seen.add(normalized.casefold())
+    return tuple(result)
+
+
+def _repository_relative_hints(root: str, value: Any) -> tuple[dict[str, str], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("path_hints must be a list")
+    result: list[dict[str, str]] = []
+    allowed = {"path", "purpose", "scope", "evidence_id", "provenance", "repository_revision", "config_digest", "expires_at"}
+    for hint in value[:64]:
+        if not isinstance(hint, Mapping):
+            raise ValueError("path_hints entries must be objects")
+        if not isinstance(hint.get("path"), str):
+            raise ValueError("path_hints entries require a string path")
+        normalized = {"path": _repository_relative_path(root, hint["path"], "path_hints")}
+        for key in allowed - {"path"}:
+            item = hint.get(key)
+            if item is None:
+                continue
+            if not isinstance(item, str):
+                raise ValueError(f"path_hints.{key} must be a string")
+            text = _text(item, 240).strip()
+            if text:
+                normalized[key] = text
+        result.append(normalized)
+    return tuple(result)
 
 
 def _bounded_sequence(value: Any, limit: int = _MAX_ITEMS) -> tuple[Any, ...]:
@@ -219,10 +342,16 @@ class ConsistencyRequest:
     preload_profile: str = ""
     token_budget: int = 2400
     changed_paths: tuple[str, ...] = ()
+    path_hints: tuple[dict[str, str], ...] = ()
+    directory_hints: tuple[str, ...] = ()
+    exclude_paths: tuple[str, ...] = ()
+    force_include_paths: tuple[str, ...] = ()
     base: str = "HEAD"
     staged: bool = False
     tenant: str = ""
     memory_revision: str = ""
+    session_id: str = ""
+    project_config_digest: str = ""
     override_reason: str = ""
     approval: str | bool = ""
 
@@ -230,16 +359,29 @@ class ConsistencyRequest:
         object.__setattr__(self, "root", _text(self.root, 400))
         object.__setattr__(self, "task_id", _text(self.task_id, 160))
         object.__setattr__(self, "query", _text(self.query, 800))
-        object.__setattr__(self, "phase", _text(self.phase, 80))
+        object.__setattr__(self, "phase", normalize_context_phase(self.phase))
         object.__setattr__(self, "focus", _tuple(self.focus, 16))
         object.__setattr__(self, "workspace", _text(self.workspace, 160))
         object.__setattr__(self, "preload_profile", _text(self.preload_profile, 120))
         object.__setattr__(self, "token_budget", max(128, min(_safe_int(self.token_budget, 2400), 20000)))
         object.__setattr__(self, "changed_paths", _tuple(self.changed_paths, 64))
+        object.__setattr__(self, "path_hints", _repository_relative_hints(self.root, self.path_hints))
+        object.__setattr__(self, "directory_hints", _repository_relative_paths(self.root, self.directory_hints, "directory_hints"))
+        object.__setattr__(self, "exclude_paths", _repository_relative_paths(self.root, self.exclude_paths, "exclude_paths"))
+        object.__setattr__(self, "force_include_paths", _repository_relative_paths(self.root, self.force_include_paths, "force_include_paths"))
         object.__setattr__(self, "base", _text(self.base, 160) or "HEAD")
         object.__setattr__(self, "staged", _safe_bool(self.staged))
         object.__setattr__(self, "tenant", _text(self.tenant, 160))
         object.__setattr__(self, "memory_revision", _text(self.memory_revision, 200))
+        object.__setattr__(self, "session_id", _text(self.session_id, 160))
+        digest = self.project_config_digest if isinstance(self.project_config_digest, str) else ""
+        digest = digest.strip().lower()
+        if digest and (
+            len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            digest = ""
+        object.__setattr__(self, "project_config_digest", digest)
         object.__setattr__(self, "override_reason", _text(self.override_reason, 500))
         if not isinstance(self.approval, bool):
             object.__setattr__(self, "approval", _text(self.approval, 240))
@@ -249,8 +391,12 @@ class ConsistencyRequest:
             "root": self.root, "task_id": self.task_id, "query": self.query,
             "phase": self.phase, "focus": list(self.focus), "workspace": self.workspace,
             "preload_profile": self.preload_profile, "token_budget": self.token_budget,
-            "changed_paths": list(self.changed_paths), "base": self.base, "staged": self.staged,
-            "tenant": self.tenant, "memory_revision": self.memory_revision,
+            "changed_paths": list(self.changed_paths), "path_hints": list(self.path_hints),
+            "directory_hints": list(self.directory_hints),
+            "exclude_paths": list(self.exclude_paths), "force_include_paths": list(self.force_include_paths),
+            "base": self.base, "staged": self.staged,
+            "tenant": self.tenant, "memory_revision": self.memory_revision, "session_id": self.session_id,
+            "project_config_digest": self.project_config_digest,
             "override_reason": self.override_reason, "approval": self.approval,
         }
 
@@ -675,7 +821,9 @@ class AgentConsistencyGuard:
         *,
         criterion: str = "",
         passed: bool = True,
+        verifier: Any | None = None,
         evidence_ids: Iterable[str] = (),
+        command_id: str = "",
         repository_revision: str = "",
         path_refs: Iterable[str] = (),
         confidence: float = 1.0,
@@ -686,8 +834,29 @@ class AgentConsistencyGuard:
         details: Mapping[str, Any] | None = None,
     ) -> Any:
         evidence_ids = tuple(_bounded_sequence(evidence_ids, 24))
+        if verifier is not None:
+            try:
+                passed = bool(verifier())
+            except Exception:
+                passed = False
         path_refs = tuple(_bounded_sequence(path_refs, 24))
         request_obj = self._request_from_metadata(request, root=root, task_id=task_id, phase=phase, changed_paths=path_refs)
+        should_record_receipt = (
+            request_obj is not None
+            and bool(request_obj.task_id)
+            and self.verification_store is not None
+            and callable(getattr(self.verification_store, "record", None))
+        )
+        command_id = _text(command_id, 200)
+        if should_record_receipt:
+            from .agent_verification import VerificationReceipt
+            receipt = VerificationReceipt.create(
+                request_obj.task_id, _text(criterion, 200), passed=passed,
+                evidence_id=next(iter(evidence_ids), ""), command_id=command_id,
+                repository_revision=self._revision(request_obj, repository_revision),
+                details={"kind": "consistency_validation"},
+            )
+            self.verification_store.record(receipt)
         saved = self._record_memory(
             "validation", request_obj,
             stable_key=stable_key or criterion or "validation",
@@ -695,16 +864,6 @@ class AgentConsistencyGuard:
             evidence_ids=evidence_ids, repository_revision=repository_revision, path_refs=path_refs,
             confidence=confidence, root=root, task_id=task_id, phase=phase,
         )
-        if request_obj is not None and request_obj.task_id and self.verification_store is not None and callable(getattr(self.verification_store, "record", None)):
-            try:
-                from .agent_verification import VerificationReceipt
-                self.verification_store.record(VerificationReceipt.create(
-                    request_obj.task_id, _text(criterion, 200), passed=passed,
-                    evidence_id=next(iter(evidence_ids), ""), repository_revision=self._revision(request_obj, repository_revision),
-                    details={"kind": "consistency_validation"},
-                ))
-            except Exception:
-                pass
         return saved
 
     def record_metric(self, category: str, amount: int = 1, *, severity: str = "") -> int:
@@ -749,7 +908,10 @@ class AgentConsistencyGuard:
         if isinstance(contract, GoalContract):
             return contract
         if isinstance(contract, Mapping):
-            return GoalContract.from_dict(contract)
+            try:
+                return GoalContract.from_dict(contract)
+            except ValueError:
+                pass
         # Guarded context can be requested for a lifecycle phase before a
         # durable task exists.  Keep that request valid without inventing
         # repository facts; derive a bounded synthetic goal from caller intent.

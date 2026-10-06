@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -11,6 +14,7 @@ import pytest
 
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.commands import CommandBroker
+from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.services import LocalAIServices
@@ -43,15 +47,73 @@ def make_broker(temp_dir: Path) -> CommandBroker:
         "server": {"state_dir": str(state_dir)},
     }
     broker = CommandBroker(config, artifacts, _RepoState())
+    broker._require_task_worktree = lambda *_args, **_kwargs: None
+    install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
     agent_state = AgentStateStore(state_dir / "agent_state.sqlite3")
     v_store = VerificationStore(agent_state)
     broker.set_verification_store(v_store)
     return broker
 
 
+def _init_test_repo(root: Path, files: dict[str, str]) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+    for relative, content in files.items():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=root, check=True)
+
+
+def _make_registered_task_worktree(
+    test_root: Path, broker: CommandBroker, task_id: str, files: dict[str, str]
+) -> Path:
+    source = test_root / "source"
+    worktree = test_root / "task-worktree"
+    _init_test_repo(source, files)
+    branch = f"test-{task_id}"
+    subprocess.run(
+        ["git", "-C", str(source), "worktree", "add", "--quiet", "-b", branch, str(worktree), "HEAD"],
+        check=True,
+    )
+    task = SimpleNamespace(
+        checkpoint=SimpleNamespace(
+            state_data={"worktree": {
+                "success": True,
+                "worktree_path": str(worktree),
+                "repo_root": str(source),
+                "branch": branch,
+            }}
+        )
+    )
+    broker.set_task_store(SimpleNamespace(get=lambda candidate: task if candidate == task_id else None))
+    # These tests cover repair-loop behavior; transaction isolation has dedicated coverage.
+    broker._transaction_root_for_context = lambda _transaction_id: worktree
+    broker._run_private_transaction = lambda **kwargs: kwargs["operation"](worktree, "a" * 32)
+    run_without_container = broker.run
+
+    def run_inside_test_transaction(command: str, cwd: str | Path, *args: Any, **kwargs: Any):
+        kwargs.pop("_transaction_context", None)
+        return run_without_container(command, cwd, *args, **kwargs)
+
+    broker.run = run_inside_test_transaction
+    return worktree
+
+
 def test_repair_loop_already_passing(temp_dir: Path):
     broker = make_broker(temp_dir)
-    res = broker.repair_loop(f"{sys.executable} -c \"print('ok')\"", temp_dir, "tenant-1")
+    task_id = "task-heal-passing"
+    worktree = _make_registered_task_worktree(
+        temp_dir, broker, task_id, {"unused.py": ""}
+    )
+    res = broker.repair_loop(
+        f"{sys.executable} -c \"print('ok')\"", worktree, "tenant-1",
+        task_id=task_id,
+        paths=["unused.py"],
+    )
     assert res["success"] is True
     assert res["repaired"] is False
     assert res["attempts"] == 0
@@ -59,11 +121,12 @@ def test_repair_loop_already_passing(temp_dir: Path):
 
 def test_repair_loop_successful_fix(temp_dir: Path):
     broker = make_broker(temp_dir)
-    test_file = temp_dir / "test_target.py"
-    test_file.write_text(
-        "import unittest\n\nclass T(unittest.TestCase):\n    def test_one(self):\n        self.assertEqual(1, 2)\n",
-        encoding="utf-8",
+    task_id = "task-heal-1"
+    initial_content = "import unittest\n\nclass T(unittest.TestCase):\n    def test_one(self):\n        self.assertEqual(1, 2)\n"
+    worktree = _make_registered_task_worktree(
+        temp_dir, broker, task_id, {"test_target.py": initial_content}
     )
+    test_file = worktree / "test_target.py"
 
     cmd = f"{sys.executable} -B -m unittest test_target"
 
@@ -72,7 +135,10 @@ def test_repair_loop_successful_fix(temp_dir: Path):
             "test_target.py": "import unittest\n\nclass T(unittest.TestCase):\n    def test_one(self):\n        self.assertEqual(1, 1)\n"
         }
 
-    res = broker.repair_loop(cmd, temp_dir, "tenant-1", fix_generator=generator, task_id="task-heal-1")
+    res = broker.repair_loop(
+        cmd, worktree, "tenant-1", fix_generator=generator, task_id=task_id,
+        paths=["test_target.py"],
+    )
     assert res["success"] is True
     assert res["repaired"] is True
     assert res["attempts"] == 1
@@ -80,16 +146,29 @@ def test_repair_loop_successful_fix(temp_dir: Path):
     assert res.get("verification_receipt") is not None
     assert res["verification_receipt"]["passed"] is True
     assert res["verification_receipt"]["task_id"] == "task-heal-1"
+    evidence = broker.artifacts.get(
+        res["verification_receipt"]["evidence_id"], tenant="tenant-1"
+    )
+    assert evidence["success"] is True
+    assert evidence["kind"] == "command_validation"
+    evidence_data = json.loads(evidence["text"])
+    assert evidence_data["schema"] == "local-ai-command-validation/v1"
+    assert evidence_data["exit_code"] == 0
+    assert "stdout" not in evidence_data and "stderr" not in evidence_data
+    assert "self.assertEqual" not in evidence["text"]
     assert "self.assertEqual(1, 1)" in test_file.read_text(encoding="utf-8")
 
 
 def test_repair_loop_rollback_on_failure(temp_dir: Path):
     broker = make_broker(temp_dir)
-    test_file = temp_dir / "test_broken.py"
     initial_content = (
         "import unittest\n\nclass T(unittest.TestCase):\n    def test_one(self):\n        self.assertEqual(1, 2)\n"
     )
-    test_file.write_text(initial_content, encoding="utf-8")
+    task_id = "task-heal-rollback"
+    worktree = _make_registered_task_worktree(
+        temp_dir, broker, task_id, {"test_broken.py": initial_content}
+    )
+    test_file = worktree / "test_broken.py"
 
     cmd = f"{sys.executable} -m unittest test_broken"
 
@@ -102,7 +181,11 @@ def test_repair_loop_rollback_on_failure(temp_dir: Path):
             "test_broken.py": f"import unittest\n\nclass T(unittest.TestCase):\n    def test_one(self):\n        self.assertEqual(1, {attempts_made + 2})\n"
         }
 
-    res = broker.repair_loop(cmd, temp_dir, "tenant-1", max_attempts=2, fix_generator=bad_generator)
+    res = broker.repair_loop(
+        cmd, worktree, "tenant-1", max_attempts=2, fix_generator=bad_generator,
+        task_id=task_id,
+        paths=["test_broken.py"],
+    )
     assert res["success"] is False
     assert res["repaired"] is False
     assert res["attempts"] == 2
@@ -112,33 +195,51 @@ def test_repair_loop_rollback_on_failure(temp_dir: Path):
 
 def test_repair_loop_does_not_dispatch_local_diagnosis_for_arbitrary_interpreter(temp_dir: Path):
     broker = make_broker(temp_dir)
-    script = temp_dir / "failing_command.py"
-    script.write_text("raise SystemExit('unclassified failure')\n", encoding="utf-8")
+    task_id = "task-heal-arbitrary"
+    worktree = _make_registered_task_worktree(
+        temp_dir, broker, task_id,
+        {
+            "failing_command.py": "raise SystemExit('unclassified failure')\n",
+            "candidate.py": "original = True\n",
+        },
+    )
+    script = worktree / "failing_command.py"
     services = object.__new__(LocalAIServices)
     services.config = {"models": {"fast_code": "qwen2.5-coder:1.5b"}}
     services.proxy_request = MagicMock(return_value={"response": '{"candidate.py": "value = 1\\n"}'})
 
     result = broker.repair_loop(
         f"{sys.executable} -B {script.name}",
-        temp_dir,
+        worktree,
         "tenant-1",
         max_attempts=3,
+        task_id=task_id,
         fix_generator=services._synthesize_repair_patch,
+        paths=["candidate.py"],
     )
 
     assert result["success"] is False
-    assert result["attempts"] == 3
+    assert result["attempts"] == 0
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is True
     services.proxy_request.assert_not_called()
 
 
-def test_command_run_auto_fix_flag(temp_dir: Path):
+def test_command_run_auto_fix_flag(temp_dir: Path, monkeypatch):
     broker = make_broker(temp_dir)
-    test_file = temp_dir / "test_app.py"
+    project = temp_dir / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "--quiet"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=project, check=True)
+    test_file = project / "test_app.py"
     test_file.write_text(
         "import unittest\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertEqual(10, 20)\n",
         encoding="utf-8",
     )
 
+    subprocess.run(["git", "add", "test_app.py"], cwd=project, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=project, check=True)
     cmd = f"{sys.executable} -B -m unittest test_app"
 
     def generator(cmd_str: str, cwd_path: str, fail_res: dict[str, Any]) -> dict[str, str]:
@@ -146,10 +247,141 @@ def test_command_run_auto_fix_flag(temp_dir: Path):
             "test_app.py": "import unittest\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertEqual(20, 20)\n"
         }
 
-    res = broker.run(cmd, temp_dir, "tenant-1", auto_fix=True, fix_generator=generator)
+    def execute(argv, cwd, timeout, *_args, **_kwargs):
+        completed = subprocess.run(
+            argv[-1], cwd=cwd, shell=True, capture_output=True, text=True, timeout=timeout,
+        )
+        return {
+            "success": completed.returncode == 0,
+            "exit_code": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "duration_ms": 1,
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+    monkeypatch.setattr(broker, "_execute", execute)
+
+    res = broker.run(
+        cmd, project, "tenant-1", task_id="task-auto-fix", paths=["test_app.py"],
+        auto_fix=True, fix_generator=generator,
+    )
     assert res["success"] is True
     assert res.get("repaired") is True
     assert "self.assertEqual(20, 20)" in test_file.read_text(encoding="utf-8")
+
+
+def test_repair_loop_requires_write_set_before_running_command(temp_dir: Path, monkeypatch):
+    broker = make_broker(temp_dir)
+    monkeypatch.setattr(broker, "run", MagicMock())
+
+    result = broker.repair_loop("python -m pytest", temp_dir, "tenant-1", task_id="task-1")
+
+    assert result["mutation_write_set_required"] is True
+    broker.run.assert_not_called()
+
+
+def test_repair_loop_rejects_patch_outside_write_set_before_writing(temp_dir: Path, monkeypatch):
+    broker = make_broker(temp_dir)
+    project = temp_dir / "project"
+    _init_test_repo(project, {"inside.py": "value = 0\n"})
+    outside = project / "outside.py"
+    calls = 0
+
+    def failed_run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {"success": False, "exit_code": 1}
+
+    monkeypatch.setattr(broker, "run", failed_run)
+    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+    result = broker.repair_loop(
+        "python -m pytest", project, "tenant-1", task_id="task-1",
+        paths=["inside.py"], fix_generator=lambda *_args: {"outside.py": "value = 1\n"},
+    )
+
+    assert result["mutation_write_set_violation"] is True
+    assert not outside.exists()
+    assert calls == 1
+
+
+def test_repair_loop_does_not_delete_undeclared_bytecode_cache(temp_dir: Path, monkeypatch):
+    broker = make_broker(temp_dir)
+    project = temp_dir / "project"
+    _init_test_repo(project, {"target.py": "value = 0\n"})
+    cache_file = project / "__pycache__" / "target.cpython-311.pyc"
+    cache_file.parent.mkdir()
+    cache_file.write_bytes(b"outside write set")
+    monkeypatch.setattr(broker, "run", lambda *_args, **_kwargs: {"success": False, "exit_code": 1})
+    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+
+    result = broker.repair_loop(
+        "python -m pytest", project, "tenant-1", task_id="task-1",
+        paths=["target.py"], fix_generator=lambda *_args: {"target.py": "value = 1\n"},
+        max_attempts=1,
+    )
+
+    assert result["success"] is False
+    assert cache_file.read_bytes() == b"outside write set"
+
+
+def test_repair_loop_skips_retry_after_failed_mutating_command(temp_dir: Path, monkeypatch):
+    broker = make_broker(temp_dir)
+    project = temp_dir / "project"
+    _init_test_repo(project, {"changed.py": "value = 0\n"})
+    calls: list[str] = []
+    generated: list[str] = []
+
+    def failed_run(command: str, *_args, **_kwargs):
+        calls.append(command)
+        return {"success": False, "exit_code": 1, "stderr": "partial mutation"}
+
+    def generator(command: str, *_args):
+        generated.append(command)
+        return {"changed.py": "value = 1\n"}
+
+    monkeypatch.setattr(broker, "run", failed_run)
+    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+    result = broker.repair_loop(
+        "git add changed.py", project, "tenant-1", task_id="task-1",
+        paths=["changed.py"], fix_generator=generator,
+    )
+
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is False
+    assert result["attempts"] == 0
+    assert calls == ["git add changed.py"]
+    assert generated == []
+
+
+def test_repair_loop_skips_retry_after_outcome_unknown_mutation(temp_dir: Path, monkeypatch):
+    broker = make_broker(temp_dir)
+    project = temp_dir / "project"
+    _init_test_repo(project, {"changed.py": "value = 0\n"})
+    calls: list[str] = []
+    generated: list[str] = []
+
+    def uncertain_run(command: str, *_args, **_kwargs):
+        calls.append(command)
+        return {"success": False, "outcome_unknown": True, "retryable": False}
+
+    def generator(command: str, *_args):
+        generated.append(command)
+        return {"changed.py": "value = 1\n"}
+
+    monkeypatch.setattr(broker, "run", uncertain_run)
+    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+    result = broker.repair_loop(
+        "git add changed.py", project, "tenant-1", task_id="task-1",
+        paths=["changed.py"], fix_generator=generator,
+    )
+
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is True
+    assert result["attempts"] == 0
+    assert calls == ["git add changed.py"]
+    assert generated == []
 
 
 def test_long_pytest_failure_has_artifact_and_first_failure_preview(temp_dir: Path):
