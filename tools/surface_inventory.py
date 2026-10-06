@@ -30,7 +30,36 @@ DYNAMIC_ROUTE_REGISTRY = (
         "method": "GET",
         "match": "exact",
         "classification": "registered_dynamic",
-        "note": "Handler implementation excluded from T01 inspection.",
+        "owner_task": "T01",
+        "note": "Agent 2 source release pending; T19 POST candidate behavior excluded.",
+        "owner_gate": "Agent 2 source release pending; T19 POST candidate behavior excluded",
+    },
+    {
+        "path": "/api/context/pack",
+        "method": "POST",
+        "match": "exact",
+        "classification": "registered_dynamic",
+        "owner_task": "T19",
+        "note": "T19 POST candidate only; behavior unverified pending owner/source release.",
+    },
+    {
+        "path": "/api/browser/",
+        "method": "OPTIONS",
+        "match": "prefix",
+        "prefix": "/api/browser/",
+        "classification": "registered_dynamic",
+        "handler": "do_OPTIONS",
+        "evidence": "src/local_ai_hub/http_server.py:1403",
+        "registry_only": True,
+    },
+    {
+        "path": "/api/vision/review",
+        "method": "OPTIONS",
+        "match": "exact",
+        "classification": "registered_dynamic",
+        "handler": "do_OPTIONS",
+        "evidence": "src/local_ai_hub/http_server.py:1403",
+        "registry_only": True,
     },
 )
 
@@ -43,10 +72,6 @@ HTTP_METHODS = {
     "do_OPTIONS": "OPTIONS",
 }
 MANIFEST_NAMES = {"manifest", "manifests", "generated_files", "output_files"}
-GENERATED_MANIFEST_REGISTRY = (
-    "docs/INSTALL_PROMPT.md",
-    "docs/UPDATE_PROMPT.md",
-)
 
 
 def _read_module(root: Path, key: str) -> tuple[str, ast.Module]:
@@ -341,6 +366,52 @@ def _extract_mcp(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], dic
     return sorted(tools, key=lambda item: item["name"]), action_aliases, conditional_actions
 
 
+def _conditional_list_action_gates(
+    tree: ast.Module, class_name: str, method_name: str
+) -> dict[str, str]:
+    """Return literal actions appended under feature-guarded branches."""
+    target = next(
+        (
+            member
+            for cls in tree.body
+            if isinstance(cls, ast.ClassDef) and cls.name == class_name
+            for member in cls.body
+            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and member.name == method_name
+        ),
+        None,
+    )
+    if target is None:
+        return {}
+
+    gates: dict[str, str] = {}
+    for branch in (node for node in ast.walk(target) if isinstance(node, ast.If)):
+        gate = next(
+            (
+                item.attr
+                for item in ast.walk(branch.test)
+                if isinstance(item, ast.Attribute)
+                and isinstance(item.value, ast.Name)
+                and item.value.id == "self"
+            ),
+            None,
+        )
+        if not gate:
+            continue
+        actions = {
+            value
+            for statement in branch.body
+            for call in ast.walk(statement)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "append"
+            for argument in call.args
+            for value in _literal_strings(argument)
+        }
+        gates.update({action: gate for action in actions})
+    return gates
+
+
 def _generated_mcp_schemas(root: Path) -> tuple[dict[str, dict[str, Any]], dict[str, str], list[str]]:
     schema_dir = root / "generated" / "schemas"
     schemas: dict[str, dict[str, Any]] = {}
@@ -539,7 +610,7 @@ def _extract_http(tree: ast.Module, path: str) -> list[dict[str, Any]]:
 def _dynamic_route_registry_drift(routes: list[dict[str, Any]]) -> list[str]:
     drift = []
     for entry in DYNAMIC_ROUTE_REGISTRY:
-        if entry["path"] == "/api/context/pack":
+        if entry["path"] == "/api/context/pack" or entry.get("registry_only"):
             continue
         prefix = entry.get("prefix")
         matched = any(
@@ -564,21 +635,25 @@ def _merge_dynamic_routes(routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             for key, route in list(merged.items()):
                 if key[0] == entry["method"] and route["path"] == prefix and route.get("match") == "prefix":
                     source_route = merged.pop(key)
+        contract = {
+            "method": entry["method"],
+            "path_pattern": entry["path"],
+            "match": entry["match"],
+            "action": (source_route or {}).get("action", []),
+        }
+        if owner_gate := entry.get("owner_gate"):
+            contract["owner_gate"] = owner_gate
         merged[(entry["method"], entry["path"])] = {
             "method": entry["method"],
             "path": entry["path"],
             "match": entry["match"],
             "prefix": prefix,
             "classification": entry["classification"],
-            "handler": (source_route or {}).get("handler", "dynamic registry handler not inspected"),
+            "owner_task": entry.get("owner_task"),
+            "handler": (source_route or {}).get("handler", entry.get("handler", "dynamic registry handler not inspected")),
             "action": (source_route or {}).get("action", []),
-            "contract": {
-                "method": entry["method"],
-                "path_pattern": entry["path"],
-                "match": entry["match"],
-                "action": (source_route or {}).get("action", []),
-            },
-            "evidence": "tools/surface_inventory.py:DYNAMIC_ROUTE_REGISTRY",
+            "contract": contract,
+            "evidence": entry.get("evidence", "tools/surface_inventory.py:DYNAMIC_ROUTE_REGISTRY"),
         }
     return sorted(merged.values(), key=lambda item: (item["method"], item["path"]))
 
@@ -612,6 +687,73 @@ def _client_http_method(call: ast.Call) -> str:
     return "ANY"
 
 
+def _urllib_request_target(
+    call: ast.Call, assignments: dict[str, ast.AST]
+) -> tuple[str, str] | None:
+    request_node = call.args[0] if call.args else next(
+        (item.value for item in call.keywords if item.arg == "url"), None
+    )
+    visited: set[str] = set()
+    while isinstance(request_node, ast.Name) and request_node.id in assignments:
+        if request_node.id in visited:
+            return None
+        visited.add(request_node.id)
+        request_node = assignments[request_node.id]
+    if not isinstance(request_node, ast.Call) or _call_name(request_node.func) != "Request":
+        return None
+    route_node = request_node.args[0] if request_node.args else next(
+        (item.value for item in request_node.keywords if item.arg == "url"), None
+    )
+    if route_node is None:
+        return None
+    visited.clear()
+    while isinstance(route_node, ast.Name) and route_node.id in assignments:
+        if route_node.id in visited:
+            return None
+        visited.add(route_node.id)
+        route_node = assignments[route_node.id]
+    route = _format_fstring(route_node)
+    if route is None:
+        return None
+    if route.startswith("{base_url}"):
+        route = route[len("{base_url}"):]
+    for query_suffix in ("{qs}", "{query}"):
+        if route.endswith(query_suffix):
+            route = route[:-len(query_suffix)]
+            break
+    if not route.startswith("/"):
+        return None
+
+    method_node = next(
+        (item.value for item in request_node.keywords if item.arg == "method"), None
+    )
+    if method_node is None and len(request_node.args) > 5:
+        method_node = request_node.args[5]
+    data_node = request_node.args[1] if len(request_node.args) > 1 else next(
+        (item.value for item in request_node.keywords if item.arg == "data"), None
+    )
+    visited.clear()
+    while isinstance(data_node, ast.Name) and data_node.id in assignments:
+        if data_node.id in visited:
+            data_node = None
+            break
+        visited.add(data_node.id)
+        data_node = assignments[data_node.id]
+    if isinstance(method_node, ast.Constant) and isinstance(method_node.value, str):
+        method = method_node.value.upper()
+    elif method_node is not None:
+        method = "ANY"
+    elif data_node is None or (
+        isinstance(data_node, ast.Constant) and data_node.value is None
+    ):
+        method = "GET"
+    elif isinstance(data_node, ast.Constant):
+        method = "POST"
+    else:
+        method = "ANY"
+    return method, route
+
+
 def _extract_client(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     methods: list[dict[str, Any]] = []
     targets: list[dict[str, Any]] = []
@@ -623,16 +765,78 @@ def _extract_client(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], 
                 argument.arg for argument in [*method.args.posonlyargs, *method.args.args, *method.args.kwonlyargs]
                 if argument.arg != "self"
             ]
+            parameter_names = set(parameters)
+            if method.args.vararg is not None:
+                parameter_names.add(method.args.vararg.arg)
+            if method.args.kwarg is not None:
+                parameter_names.add(method.args.kwarg.arg)
             methods.append({"name": method.name, "parameters": parameters, "evidence": f"{path}:{method.lineno}"})
+            assignments: dict[str, ast.AST] = {}
+            assignment_nodes = (
+                item for item in ast.walk(method) if isinstance(item, (ast.Assign, ast.AnnAssign))
+            )
+            ambiguous_assignment = "__ambiguous_assignment__"
+            for statement in sorted(assignment_nodes, key=lambda item: item.lineno):
+                if isinstance(statement, ast.Assign):
+                    for target in statement.targets:
+                        if isinstance(target, ast.Name):
+                            if target.id in parameter_names:
+                                assignments[target.id] = ast.Name(
+                                    id=ambiguous_assignment, ctx=ast.Load()
+                                )
+                                continue
+                            previous = assignments.get(target.id)
+                            if (
+                                previous is not None
+                                and ast.dump(previous) != ast.dump(statement.value)
+                            ):
+                                assignments[target.id] = ast.Name(
+                                    id=ambiguous_assignment, ctx=ast.Load()
+                                )
+                            elif not (
+                                isinstance(previous, ast.Name)
+                                and previous.id == ambiguous_assignment
+                            ):
+                                assignments[target.id] = statement.value
+                elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                    if statement.target.id in parameter_names:
+                        assignments[statement.target.id] = ast.Name(
+                            id=ambiguous_assignment, ctx=ast.Load()
+                        )
+                        continue
+                    previous = assignments.get(statement.target.id)
+                    if (
+                        previous is not None
+                        and statement.value is not None
+                        and ast.dump(previous) != ast.dump(statement.value)
+                    ):
+                        assignments[statement.target.id] = ast.Name(
+                            id=ambiguous_assignment, ctx=ast.Load()
+                        )
+                    elif not (
+                        isinstance(previous, ast.Name)
+                        and previous.id == ambiguous_assignment
+                    ):
+                        assignments[statement.target.id] = statement.value
             for call in ast.walk(method):
-                if not isinstance(call, ast.Call) or _call_name(call.func) not in {"_request", "request", "get", "post", "put", "patch", "delete"}:
+                if not isinstance(call, ast.Call):
                     continue
-                route_nodes = [arg for arg in call.args if isinstance(arg, (ast.Constant, ast.JoinedStr))]
-                for keyword in call.keywords:
-                    if keyword.arg in {"path", "url"}:
-                        route_nodes.append(keyword.value)
-                http_method = _client_http_method(call)
                 call_name = _call_name(call.func)
+                is_urllib_open = call_name == "urlopen"
+                if is_urllib_open:
+                    urllib_target = _urllib_request_target(call, assignments)
+                    if urllib_target is None:
+                        continue
+                    http_method, urllib_route = urllib_target
+                    route_nodes = [None]
+                elif call_name in {"_request", "request", "get", "post", "put", "patch", "delete"}:
+                    route_nodes = [arg for arg in call.args if isinstance(arg, (ast.Constant, ast.JoinedStr))]
+                    for keyword in call.keywords:
+                        if keyword.arg in {"path", "url"}:
+                            route_nodes.append(keyword.value)
+                    http_method = _client_http_method(call)
+                else:
+                    continue
                 timeout_value = next(
                     (ast.unparse(keyword.value) for keyword in call.keywords if keyword.arg == "timeout"),
                     None,
@@ -655,7 +859,7 @@ def _extract_client(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], 
                 else:
                     retry_policy = "client call does not declare retry policy; replay behavior unverified"
                 for route_node in route_nodes:
-                    route = _format_fstring(route_node)
+                    route = urllib_route if is_urllib_open else _format_fstring(route_node)
                     if route and route.startswith("/"):
                         targets.append({
                             "method": http_method,
@@ -664,7 +868,11 @@ def _extract_client(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], 
                             "parameters": parameters,
                             "timeout": timeout_value,
                             "retry_policy": retry_policy,
-                            "response_contract": "JSON decoded to dict[str, Any] by HubClient request wrapper",
+                            "response_contract": (
+                                "urllib HTTP response consumed by HubClient method"
+                                if is_urllib_open
+                                else "JSON decoded to dict[str, Any] by HubClient request wrapper"
+                            ),
                             "evidence": f"{path}:{call.lineno}",
                         })
     return methods, targets
@@ -832,22 +1040,43 @@ def _named_condition_evidence(trees: tuple[ast.Module, ...], names: list[str]) -
     return {name: sorted(lines) for name, lines in evidence.items() if lines}
 
 
-def _extract_manifests(tree: ast.Module, root: Path) -> list[dict[str, str]]:
+def _literal_path_expression(node: ast.AST) -> str | None:
+    parts = []
+    current = node
+    while isinstance(current, ast.BinOp) and isinstance(current.op, ast.Div):
+        if not isinstance(current.right, ast.Constant) or not isinstance(current.right.value, str):
+            return None
+        parts.append(current.right.value)
+        current = current.left
+    if not isinstance(current, ast.Name) or not parts:
+        return None
+    return "/".join(reversed(parts))
+
+
+def _extract_manifests(tree: ast.Module, root: Path) -> tuple[list[dict[str, str]], list[str]]:
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and any(_target_name(target) in MANIFEST_NAMES for target in node.targets):
             names.update(value for value in _literal_strings(node.value) if value.endswith((".md", ".json", ".toml")))
         if isinstance(node, ast.Call) and _call_name(node.func) in {"write_text", "write_bytes"}:
-            for value in _literal_strings(node):
+            receiver = node.func.value
+            if isinstance(receiver, ast.BinOp) and isinstance(receiver.op, ast.Div):
+                path = _literal_path_expression(receiver)
+                values = [path] if path else []
+            else:
+                values = _literal_strings(receiver)
+            for value in values:
                 if value.endswith((".md", ".json", ".toml")):
                     names.add(value)
     manifests = []
-    names.update(GENERATED_MANIFEST_REGISTRY)
+    missing = []
     for name in sorted(names):
         candidate = root / name
         if candidate.is_file():
             manifests.append({"path": name, "text": candidate.read_text(encoding="utf-8", errors="replace")})
-    return manifests
+        else:
+            missing.append(name)
+    return manifests, missing
 
 
 def _matches_route(target: dict[str, Any], routes: list[dict[str, Any]]) -> bool:
@@ -871,12 +1100,803 @@ def _matches_route(target: dict[str, Any], routes: list[dict[str, Any]]) -> bool
     return False
 
 
+def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, list[str]]:
+    """Link only asserted test calls that name a concrete inventoried operation."""
+    links: dict[str, set[str]] = {}
+    tests_root = root / "tests"
+    if not tests_root.is_dir():
+        return {}
+
+    tools = {item["name"] for item in inventory["mcp_tools"]}
+    client_methods = {item["name"] for item in inventory["client_methods"]}
+    aliases = inventory["mcp_action_aliases"]
+
+    def add(key: str, selector: str) -> None:
+        links.setdefault(key, set()).add(selector)
+
+    def string_value(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.JoinedStr):
+            return "".join(
+                item.value if isinstance(item, ast.Constant) and isinstance(item.value, str) else ""
+                for item in node.values
+            )
+        return None
+
+    def url_path(value: str) -> str | None:
+        match = re.search(r"(?:https?://[^/]+)?(/[^?#\s'\"]*)", value)
+        return match.group(1) if match else None
+
+    def route_matches(method: str, path: str, route: dict[str, Any]) -> bool:
+        if method != route["method"]:
+            return False
+        candidate = path.split("?", 1)[0]
+        template = route["path"]
+        if candidate == template:
+            return True
+        if "{" in template and "}" in template:
+            pattern = "^" + re.sub(r"\\\{[^{}]+\\\}", r"[^/]+", re.escape(template)) + "$"
+            return bool(re.match(pattern, candidate))
+        return route.get("match") == "prefix" and bool(route.get("prefix")) and candidate.startswith(route["prefix"])
+
+    def scoped_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:
+        nodes: list[ast.AST] = []
+        pending = list(function.body)
+        while pending:
+            node = pending.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue
+            nodes.append(node)
+            pending.extend(ast.iter_child_nodes(node))
+        return nodes
+
+    def test_functions(tree: ast.Module) -> list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, tuple[str, ...]]]:
+        functions: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, tuple[str, ...]]] = []
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+                functions.append((node, ()))
+            elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+                functions.extend(
+                    (member, (node.name,))
+                    for member in node.body
+                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and member.name.startswith("test_")
+                )
+        return functions
+
+    def names_in(node: ast.AST) -> set[str]:
+        return {item.id for item in ast.walk(node) if isinstance(item, ast.Name)}
+
+    def target_names(node: ast.AST) -> set[str]:
+        if isinstance(node, ast.Name):
+            return {node.id}
+        if isinstance(node, (ast.Tuple, ast.List)):
+            return set().union(*(target_names(item) for item in node.elts)) if node.elts else set()
+        return set()
+
+    def asserted_calls(nodes: list[ast.AST]) -> set[int]:
+        origins: dict[str, set[int]] = {}
+        asserted: set[int] = set()
+        ordered = sorted(nodes, key=lambda item: (getattr(item, "lineno", 0), getattr(item, "col_offset", 0)))
+        for node in ordered:
+            if isinstance(node, ast.Assert):
+                for name in names_in(node.test):
+                    asserted.update(origins.get(name, set()))
+                asserted.update(id(item) for item in ast.walk(node.test) if isinstance(item, ast.Call))
+                continue
+            if isinstance(node, ast.Assign):
+                names = set().union(*(target_names(target) for target in node.targets))
+                value = node.value
+            elif isinstance(node, ast.AnnAssign):
+                names = target_names(node.target)
+                value = node.value
+            elif isinstance(node, ast.NamedExpr):
+                names = target_names(node.target)
+                value = node.value
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        assigned = target_names(item.optional_vars)
+                        value_origins = {id(item.context_expr)} if isinstance(item.context_expr, ast.Call) else set()
+                        for name in names_in(item.context_expr):
+                            value_origins.update(origins.get(name, set()))
+                        for name in assigned:
+                            origins[name] = value_origins
+                continue
+            else:
+                continue
+            if value is None:
+                continue
+            value_origins = {id(item) for item in ast.walk(value) if isinstance(item, ast.Call)}
+            for name in names_in(value):
+                value_origins.update(origins.get(name, set()))
+            for name in names:
+                origins[name] = value_origins
+        return asserted
+
+    def hubclient_receivers(nodes: list[ast.AST], function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+        receivers = {
+            arg.arg for arg in (*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs)
+            if isinstance(arg.annotation, ast.Name) and arg.annotation.id == "HubClient"
+        }
+        ordered = sorted(nodes, key=lambda item: (getattr(item, "lineno", 0), getattr(item, "col_offset", 0)))
+        for node in ordered:
+            if isinstance(node, ast.Assign):
+                names = set().union(*(target_names(target) for target in node.targets))
+                value = node.value
+            elif isinstance(node, ast.AnnAssign):
+                names = target_names(node.target)
+                value = node.value
+                if isinstance(node.annotation, ast.Name) and node.annotation.id == "HubClient":
+                    receivers.update(names)
+            else:
+                continue
+            if value is None:
+                continue
+            is_hubclient = False
+            if isinstance(value, ast.Call):
+                if isinstance(value.func, ast.Name) and value.func.id == "HubClient":
+                    is_hubclient = True
+                elif isinstance(value.func, ast.Attribute) and value.func.attr == "__new__":
+                    is_hubclient = "HubClient" in names_in(value)
+            if is_hubclient or names_in(value) & receivers:
+                receivers.update(names)
+        return receivers
+
+    def http_client_receivers(nodes: list[ast.AST], function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+        client_types = {"Client", "AsyncClient", "TestClient", "FlaskClient", "WebTestClient"}
+        receivers = {
+            arg.arg for arg in (*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs)
+            if isinstance(arg.annotation, ast.Name) and arg.annotation.id in client_types
+            or isinstance(arg.annotation, ast.Attribute) and arg.annotation.attr in client_types
+        }
+        ordered = sorted(nodes, key=lambda item: (getattr(item, "lineno", 0), getattr(item, "col_offset", 0)))
+        for node in ordered:
+            if isinstance(node, ast.Assign):
+                names = set().union(*(target_names(target) for target in node.targets))
+                value = node.value
+            elif isinstance(node, ast.AnnAssign):
+                names = target_names(node.target)
+                value = node.value
+                annotation = node.annotation
+                if isinstance(annotation, ast.Name) and annotation.id in client_types:
+                    receivers.update(names)
+                elif isinstance(annotation, ast.Attribute) and annotation.attr in client_types:
+                    receivers.update(names)
+            else:
+                continue
+
+            if value is None:
+                continue
+
+            if isinstance(value, ast.Name) and value.id == "running_app_client":
+                for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                    if isinstance(target, (ast.Tuple, ast.List)) and target.elts:
+                        receivers.update(target_names(target.elts[0]))
+            elif isinstance(value, ast.Call):
+                called_type = (
+                    value.func.id if isinstance(value.func, ast.Name)
+                    else value.func.attr if isinstance(value.func, ast.Attribute)
+                    else ""
+                )
+                if called_type in client_types:
+                    receivers.update(names)
+            if names_in(value) & receivers:
+                receivers.update(names)
+        return receivers
+
+    def imported_symbols(statements: list[ast.stmt], module_path: str) -> dict[str, str]:
+        return {
+            alias.asname or alias.name: alias.name
+            for statement in statements
+            if isinstance(statement, ast.ImportFrom) and statement.module == module_path
+            for alias in statement.names
+        }
+
+    def urllib_request_imports(statements: list[ast.stmt]) -> tuple[set[str], dict[str, str]]:
+        modules: set[str] = set()
+        symbols: dict[str, str] = {}
+        for statement in statements:
+            if isinstance(statement, ast.Import):
+                for alias in statement.names:
+                    if alias.name == "urllib.request":
+                        modules.add(alias.asname or alias.name)
+            elif isinstance(statement, ast.ImportFrom):
+                if statement.module == "urllib":
+                    modules.update(alias.asname or alias.name for alias in statement.names if alias.name == "request")
+                elif statement.module == "urllib.request":
+                    symbols.update(
+                        {alias.asname or alias.name: alias.name for alias in statement.names
+                         if alias.name in {"Request", "urlopen"}}
+                    )
+        return modules, symbols
+
+    def is_urllib_request_call(
+        call: ast.Call,
+        name: str,
+        modules: set[str],
+        symbols: dict[str, str],
+    ) -> bool:
+        if isinstance(call.func, ast.Name):
+            return symbols.get(call.func.id) == name
+        qualified = dotted_name(call.func)
+        if not qualified or qualified.rsplit(".", 1)[-1] != name:
+            return False
+        return qualified.rsplit(".", 1)[0] in modules
+
+    def urllib_request_spec(call: ast.Call) -> tuple[ast.AST, str | None] | None:
+        url_node = call.args[0] if call.args else next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "url"), None
+        )
+        if url_node is None:
+            return None
+        method_node = next((keyword.value for keyword in call.keywords if keyword.arg == "method"), None)
+        if method_node is not None and not (isinstance(method_node, ast.Constant) and method_node.value is None):
+            method_value = string_value(method_node)
+            return url_node, method_value.upper() if method_value else None
+        data_node = call.args[1] if len(call.args) > 1 else next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "data"), None
+        )
+        if data_node is None or isinstance(data_node, ast.Constant) and data_node.value is None:
+            return url_node, "GET"
+        if isinstance(data_node, ast.Constant):
+            return url_node, "POST"
+        return url_node, None
+
+    def urllib_request_bindings(
+        nodes: list[ast.AST],
+        modules: set[str],
+        symbols: dict[str, str],
+    ) -> dict[str, list[tuple[tuple[int, int], tuple[ast.AST, str | None] | None]]]:
+        bindings: dict[str, list[tuple[tuple[int, int], tuple[ast.AST, str | None] | None]]] = {}
+        assignments = sorted(
+            (node for node in nodes if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr, ast.AugAssign))),
+            key=lambda node: (getattr(node, "lineno", 0), getattr(node, "col_offset", 0)),
+        )
+        for node in assignments:
+            if isinstance(node, ast.Assign):
+                targets = set().union(*(target_names(target) for target in node.targets))
+                value = node.value
+            elif isinstance(node, ast.AnnAssign):
+                targets, value = target_names(node.target), node.value
+            elif isinstance(node, ast.NamedExpr):
+                targets, value = target_names(node.target), node.value
+            else:
+                targets, value = target_names(node.target), None
+            if not targets:
+                continue
+            spec: tuple[ast.AST, str | None] | None = None
+            if isinstance(value, ast.Call) and is_urllib_request_call(value, "Request", modules, symbols):
+                spec = urllib_request_spec(value)
+            elif isinstance(value, ast.Name):
+                spec = urllib_request_binding_at(
+                    bindings, value.id, (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                )
+            position = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            for name in targets:
+                bindings.setdefault(name, []).append((position, spec))
+        return bindings
+
+    def urllib_request_binding_at(
+        bindings: dict[str, list[tuple[tuple[int, int], tuple[ast.AST, str | None] | None]]],
+        name: str,
+        before: tuple[int, int],
+    ) -> tuple[ast.AST, str | None] | None:
+        latest = None
+        for position, spec in bindings.get(name, []):
+            if position >= before:
+                break
+            latest = spec
+        return latest
+
+    def urllib_result_returned(call: ast.Call, nodes: list[ast.AST]) -> bool:
+        response_names: set[str] = set()
+        for node in nodes:
+            if isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.context_expr is call and item.optional_vars is not None:
+                        response_names.update(target_names(item.optional_vars))
+            elif isinstance(node, ast.Assign) and node.value is call:
+                response_names.update(set().union(*(target_names(target) for target in node.targets)))
+            elif isinstance(node, ast.AnnAssign) and node.value is call:
+                response_names.update(target_names(node.target))
+            elif isinstance(node, ast.Return) and node.value is not None:
+                if any(item is call for item in ast.walk(node.value)):
+                    return True
+        if not response_names:
+            return False
+        return any(
+            isinstance(node, ast.Return) and node.value is not None and bool(names_in(node.value) & response_names)
+            for node in nodes
+        )
+
+    def direct_http_handler_pairs(
+        nodes: list[ast.AST],
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        handler_types: set[str],
+    ) -> list[tuple[str, str]]:
+        ordered = sorted(nodes, key=lambda item: (getattr(item, "lineno", 0), getattr(item, "col_offset", 0)))
+        receivers = {
+            argument.arg
+            for argument in (*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs)
+            if (
+                isinstance(argument.annotation, ast.Name) and argument.annotation.id in handler_types
+                or dotted_name(argument.annotation) in handler_types
+            )
+        }
+        paths: dict[str, str] = {}
+        sinks: dict[str, set[str]] = {}
+        pairs: list[tuple[str, str]] = []
+        assertions = [node for node in ordered if isinstance(node, ast.Assert)]
+        for node in ordered:
+            if isinstance(node, ast.Assign):
+                targets, value = node.targets, node.value
+            elif isinstance(node, ast.AnnAssign):
+                targets, value = [node.target], node.value
+                if (
+                    isinstance(node.annotation, ast.Name) and node.annotation.id in handler_types
+                    or dotted_name(node.annotation) in handler_types
+                ):
+                    receivers.update(target_names(node.target))
+            else:
+                targets, value = [], None
+
+            for target in targets:
+                if isinstance(target, ast.Name) and isinstance(value, ast.Call):
+                    is_handler_constructor = (
+                        isinstance(value.func, ast.Name) and value.func.id in handler_types
+                        or dotted_name(value.func) in handler_types
+                    )
+                    is_handler_new = (
+                        isinstance(value.func, ast.Attribute) and value.func.attr == "__new__"
+                        and dotted_name(value.func.value) in handler_types
+                    )
+                    if is_handler_constructor or is_handler_new:
+                        receivers.add(target.id)
+                if not isinstance(target, ast.Attribute) or not isinstance(target.value, ast.Name):
+                    continue
+                receiver = target.value.id
+                if receiver not in receivers:
+                    continue
+                if target.attr == "path" and value is not None:
+                    path = string_value(value)
+                    if path:
+                        paths[receiver] = path
+                elif target.attr == "_send" and isinstance(value, ast.Lambda):
+                    sinks[receiver] = {
+                        call.func.value.id
+                        for call in ast.walk(value.body)
+                        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                        and call.func.attr == "append" and isinstance(call.func.value, ast.Name)
+                    }
+
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in {f"do_{method}" for method in HTTP_METHODS.values()}:
+                continue
+            if not isinstance(node.func.value, ast.Name):
+                continue
+            receiver = node.func.value.id
+            path = paths.get(receiver)
+            response_sinks = sinks.get(receiver, set())
+            if not path or not response_sinks:
+                continue
+            call_position = (node.lineno, node.col_offset)
+            if any(
+                (assertion.lineno, assertion.col_offset) > call_position
+                and names_in(assertion.test) & response_sinks
+                for assertion in assertions
+            ):
+                pairs.append((node.func.attr[3:], path))
+        return pairs
+
+    def cli_argv_operation(node: ast.AST) -> str | None:
+        if not isinstance(node, (ast.List, ast.Tuple)):
+            return None
+        values = [string_value(item) for item in node.elts]
+        if not values or any(value is None for value in values):
+            return None
+        if values[0].endswith(".py") and len(values) > 1:
+            return values[1]
+        return values[0]
+
+    def cli_argv_mutation_operation(node: ast.AST) -> str | None:
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Constant):
+            return None
+        if not isinstance(node.value.value, str):
+            return None
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Attribute)
+                and target.value.attr == "argv"
+                and isinstance(target.value.value, ast.Name)
+                and target.value.value.id == "sys"
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value == 1
+            ):
+                return node.value.value
+        return None
+
+    def is_cli_argv_index_mutation(node: ast.AST) -> bool:
+        return isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Subscript)
+            and isinstance(target.value, ast.Attribute)
+            and target.value.attr == "argv"
+            and isinstance(target.value.value, ast.Name)
+            and target.value.value.id == "sys"
+            and isinstance(target.slice, ast.Constant)
+            and target.slice.value == 1
+            for target in node.targets
+        )
+
+    def cli_argv_patch(node: ast.AST) -> ast.AST | None:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Attribute) and target.attr == "argv"
+            and isinstance(target.value, ast.Name) and target.value.id == "sys"
+            for target in node.targets
+        ):
+            return node.value
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) or node.func.attr != "setattr":
+            return None
+        if len(node.args) == 2 and string_value(node.args[0]) == "sys.argv":
+            return node.args[1]
+        if len(node.args) >= 3 and string_value(node.args[0]) == "sys.argv":
+            return node.args[1]
+        if (
+            len(node.args) >= 3 and isinstance(node.args[0], ast.Name) and node.args[0].id == "sys"
+            and string_value(node.args[1]) == "argv"
+        ):
+            return node.args[2]
+        return None
+
+    def module_import_bindings(statements: list[ast.stmt], module_path: str) -> tuple[set[str], set[str]]:
+        parent, leaf = module_path.rsplit(".", 1)
+        aliases: set[str] = set()
+        dotted_imports: set[str] = set()
+        for statement in statements:
+            if isinstance(statement, ast.Import):
+                for alias in statement.names:
+                    if alias.name == module_path:
+                        aliases.add(alias.asname or alias.name.split(".", 1)[0])
+                        dotted_imports.add(module_path)
+            elif isinstance(statement, ast.ImportFrom) and statement.module == parent:
+                aliases.update(
+                    alias.asname or alias.name for alias in statement.names if alias.name == leaf
+                )
+        return aliases, dotted_imports
+
+    def dotted_name(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            prefix = dotted_name(node.value)
+            return f"{prefix}.{node.attr}" if prefix else None
+        return None
+
+    def is_cli_main(
+        call: ast.Call,
+        imported_cli_modules: set[str],
+        imported_cli_paths: set[str],
+        imported_cli_functions: set[str],
+    ) -> bool:
+        if isinstance(call.func, ast.Name):
+            return call.func.id in imported_cli_functions
+        return (
+            isinstance(call.func, ast.Attribute) and call.func.attr == "main"
+            and (
+                isinstance(call.func.value, ast.Name) and call.func.value.id in imported_cli_modules
+                or dotted_name(call.func.value) in imported_cli_paths
+            )
+        )
+
+    def cli_operation_for_call(call: ast.Call, nodes: list[ast.AST]) -> str | None:
+        argv = call.args[0] if call.args else next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "argv"), None
+        )
+        operation = cli_argv_operation(argv) if argv is not None else None
+        if operation is not None:
+            return operation
+        call_position = (getattr(call, "lineno", 0), getattr(call, "col_offset", 0))
+        prior_events: list[tuple[tuple[int, int], str | None]] = []
+        for node in nodes:
+            position = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            if position >= call_position:
+                continue
+            patch = cli_argv_patch(node)
+            mutation = cli_argv_mutation_operation(node)
+            if patch is not None:
+                prior_events.append((position, cli_argv_operation(patch)))
+            elif is_cli_argv_index_mutation(node):
+                prior_events.append((position, mutation))
+        return max(prior_events, key=lambda item: item[0])[1] if prior_events else None
+
+    def mcp_tool_imports(statements: list[ast.stmt]) -> dict[str, str]:
+        imports: dict[str, str] = {}
+        for statement in statements:
+            if not isinstance(statement, ast.ImportFrom) or statement.module != "local_ai_hub.mcp_server":
+                continue
+            for alias in statement.names:
+                if alias.name in tools:
+                    imports[alias.asname or alias.name] = alias.name
+        return imports
+
+    for test_file in sorted(tests_root.rglob("test_*.py")):
+        if test_file.name == "test_surface_inventory.py":
+            continue
+        try:
+            tree = ast.parse(test_file.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, SyntaxError):
+            continue
+        relative = test_file.relative_to(root).as_posix()
+        imported_cli_modules, imported_cli_paths = module_import_bindings(tree.body, "tools.hubctl")
+        imported_mcp_modules, imported_mcp_paths = module_import_bindings(
+            tree.body, "local_ai_hub.mcp_server"
+        )
+        for function, class_path in test_functions(tree):
+            body_nodes = scoped_nodes(function)
+            cli_modules = set(imported_cli_modules)
+            local_cli_modules, local_cli_paths = module_import_bindings(body_nodes, "tools.hubctl")
+            cli_modules.update(local_cli_modules)
+            cli_paths = imported_cli_paths | local_cli_paths
+            imported_cli_functions = imported_symbols(tree.body, "tools.hubctl")
+            imported_cli_functions.update(imported_symbols(body_nodes, "tools.hubctl"))
+            imported_cli_main_names = {
+                alias for alias, imported_name in imported_cli_functions.items()
+                if imported_name == "main"
+            }
+            mcp_modules = set(imported_mcp_modules)
+            local_mcp_modules, local_mcp_paths = module_import_bindings(
+                body_nodes, "local_ai_hub.mcp_server"
+            )
+            mcp_modules.update(local_mcp_modules)
+            mcp_paths = imported_mcp_paths | local_mcp_paths
+            http_handler_imports = imported_symbols(tree.body, "local_ai_hub.http_server")
+            http_handler_imports.update(imported_symbols(body_nodes, "local_ai_hub.http_server"))
+            http_handler_modules, http_handler_paths = module_import_bindings(
+                tree.body, "local_ai_hub.http_server"
+            )
+            local_handler_modules, local_handler_paths = module_import_bindings(
+                body_nodes, "local_ai_hub.http_server"
+            )
+            http_handler_modules.update(local_handler_modules)
+            http_handler_paths.update(local_handler_paths)
+            http_handler_types = {
+                alias for alias, imported_name in http_handler_imports.items()
+                if imported_name == "Handler"
+            }
+            http_handler_types.update(f"{module}.Handler" for module in http_handler_modules | http_handler_paths)
+            imported_mcp_tools = mcp_tool_imports(tree.body)
+            imported_mcp_tools.update(mcp_tool_imports(body_nodes))
+            asserted = asserted_calls(body_nodes)
+            if not asserted and not any(isinstance(node, ast.Assert) for node in body_nodes):
+                continue
+            selector = f"{relative}::{'::'.join((*class_path, function.name))}"
+            calls = [node for node in body_nodes if isinstance(node, ast.Call)]
+            literals = {value for node in body_nodes if (value := string_value(node)) is not None}
+
+            for call in calls:
+                if id(call) not in asserted:
+                    continue
+                tool = imported_mcp_tools.get(call.func.id, "") if isinstance(call.func, ast.Name) else ""
+                protocol_arguments: dict[str, str | None] = {}
+                if (
+                    not tool and isinstance(call.func, ast.Attribute) and call.func.attr == "call_tool"
+                    and isinstance(call.func.value, ast.Attribute) and call.func.value.attr == "mcp"
+                    and (
+                        isinstance(call.func.value.value, ast.Name)
+                        and call.func.value.value.id in mcp_modules
+                        or dotted_name(call.func.value.value) in mcp_paths
+                    )
+                    and call.args
+                ):
+                    protocol_tool = string_value(call.args[0])
+                    if protocol_tool in tools:
+                        tool = protocol_tool
+                        if len(call.args) > 1 and isinstance(call.args[1], ast.Dict):
+                            protocol_arguments = {
+                                key_value: string_value(value)
+                                for key, value in zip(call.args[1].keys, call.args[1].values)
+                                if (key_value := string_value(key)) is not None
+                            }
+                if (
+                    not tool and isinstance(call.func, ast.Attribute) and call.func.attr in tools
+                    and (
+                        isinstance(call.func.value, ast.Name) and call.func.value.id in mcp_modules
+                        or dotted_name(call.func.value) in mcp_paths
+                    )
+                ):
+                    tool = call.func.attr
+                if tool not in tools:
+                    continue
+                add(f"MCP tool::{tool}", selector)
+                keyword_values = {
+                    keyword.arg: string_value(keyword.value)
+                    for keyword in call.keywords if keyword.arg
+                }
+                action = keyword_values.get("action") or protocol_arguments.get("action")
+                detail = keyword_values.get("detail") or protocol_arguments.get("detail")
+                if action:
+                    alias = aliases.get(tool, {}).get(action)
+                    if tool == "local_ai_repo" and (action == "context" or alias == "context"):
+                        continue
+                    if alias:
+                        add(f"MCP action alias {tool}::{action} (alias for {alias})", selector)
+                    else:
+                        add(f"MCP action {tool}::{action}", selector)
+                if detail:
+                    add(f"MCP detail {tool}::{detail}", selector)
+
+            receivers = hubclient_receivers(body_nodes, function)
+            for call in calls:
+                if id(call) not in asserted or not isinstance(call.func, ast.Attribute):
+                    continue
+                method = call.func.attr
+                if method not in client_methods or not isinstance(call.func.value, ast.Name):
+                    continue
+                if call.func.value.id not in receivers:
+                    continue
+                add(f"HubClient method::{method}", selector)
+                for target in inventory["client_targets"]:
+                    target_path = target["path"].split("?", 1)[0]
+                    if target["client_method"] == method and target_path in literals:
+                        target_name = f"{target['method']} {target['path']}"
+                        add(f"HubClient target::{target_name}::{method}", selector)
+
+            http_receivers = http_client_receivers(body_nodes, function)
+            http_request_helpers: dict[str, tuple[str, int]] = {}
+            urllib_modules, urllib_symbols = urllib_request_imports([*tree.body, *body_nodes])
+            request_specs = urllib_request_bindings(body_nodes, urllib_modules, urllib_symbols)
+            for helper in (node for node in function.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))):
+                helper_parameters = [
+                    argument.arg for argument in [*helper.args.posonlyargs, *helper.args.args, *helper.args.kwonlyargs]
+                ]
+                helper_nodes = scoped_nodes(helper)
+                helper_modules, helper_symbols = urllib_request_imports([*tree.body, *body_nodes, *helper_nodes])
+                helper_request_specs = urllib_request_bindings(helper_nodes, helper_modules, helper_symbols)
+                for helper_node in helper_nodes:
+                    if not isinstance(helper_node, ast.Call) or not is_urllib_request_call(
+                        helper_node, "urlopen", helper_modules, helper_symbols
+                    ):
+                        continue
+                    helper_url = helper_node.args[0] if helper_node.args else next(
+                        (keyword.value for keyword in helper_node.keywords if keyword.arg == "url"), None
+                    )
+                    if helper_url is None:
+                        continue
+                    request_name = helper_url.id if isinstance(helper_url, ast.Name) else None
+                    spec = urllib_request_binding_at(
+                        helper_request_specs,
+                        request_name or "",
+                        (getattr(helper_node, "lineno", 0), getattr(helper_node, "col_offset", 0)),
+                    )
+                    if isinstance(helper_url, ast.Call) and is_urllib_request_call(
+                        helper_url, "Request", helper_modules, helper_symbols
+                    ):
+                        spec = urllib_request_spec(helper_url)
+                    if (
+                        spec is None or not isinstance(spec[0], ast.JoinedStr) or not spec[1]
+                        or not urllib_result_returned(helper_node, helper_nodes)
+                    ):
+                        continue
+                    path_parameters = {
+                        name for part in spec[0].values if isinstance(part, ast.FormattedValue)
+                        for name in names_in(part.value) if name in helper_parameters
+                    }
+                    if len(path_parameters) == 1:
+                        http_request_helpers[helper.name] = (spec[1].upper(), helper_parameters.index(next(iter(path_parameters))))
+            pairs: list[tuple[str, str, ast.Call]] = []
+            for call in calls:
+                if id(call) not in asserted:
+                    continue
+                call_name = (
+                    call.func.attr if isinstance(call.func, ast.Attribute)
+                    else call.func.id if isinstance(call.func, ast.Name)
+                    else ""
+                )
+                method: str | None = None
+                url_node: ast.AST | None = None
+                if is_urllib_request_call(call, "urlopen", urllib_modules, urllib_symbols):
+                    request_arg = call.args[0] if call.args else next(
+                        (keyword.value for keyword in call.keywords if keyword.arg == "url"), None
+                    )
+                    if request_arg is None:
+                        continue
+                    request_spec = (
+                        urllib_request_binding_at(
+                            request_specs, request_arg.id,
+                            (getattr(call, "lineno", 0), getattr(call, "col_offset", 0)),
+                        ) if isinstance(request_arg, ast.Name)
+                        else urllib_request_spec(request_arg)
+                        if isinstance(request_arg, ast.Call) and is_urllib_request_call(
+                            request_arg, "Request", urllib_modules, urllib_symbols
+                        )
+                        else None
+                    )
+                    if request_spec is not None:
+                        url_node, method = request_spec
+                    else:
+                        url_node = request_arg
+                        data_node = call.args[1] if len(call.args) > 1 else next(
+                            (keyword.value for keyword in call.keywords if keyword.arg == "data"), None
+                        )
+                        if data_node is None or isinstance(data_node, ast.Constant) and data_node.value is None:
+                            method = "GET"
+                        elif isinstance(data_node, ast.Constant):
+                            method = "POST"
+                elif call_name == "request":
+                    if call.args:
+                        method_value = string_value(call.args[0])
+                        method = method_value.upper() if method_value else None
+                    url_node = call.args[1] if len(call.args) > 1 else None
+                    for keyword in call.keywords:
+                        if keyword.arg == "method":
+                            method_value = string_value(keyword.value)
+                            method = method_value.upper() if method_value else method
+                        elif keyword.arg in {"url", "path"}:
+                            url_node = keyword.value
+                elif call_name in http_request_helpers:
+                    method, argument_index = http_request_helpers[call_name]
+                    url_node = call.args[argument_index] if len(call.args) > argument_index else None
+                elif call_name in {"_get", "_post", "_put", "_patch", "_delete"}:
+                    method = call_name[1:].upper()
+                    url_node = call.args[0] if call.args else None
+                elif (
+                    call_name in {"get", "post", "put", "patch", "delete"}
+                    and isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id in http_receivers
+                ):
+                    method = call_name.upper()
+                    url_node = call.args[0] if call.args else None
+
+                if method in HTTP_METHODS.values() and url_node is not None:
+                    value = string_value(url_node)
+                    path = url_path(value) if value else None
+                    if path:
+                        pairs.append((method, path, call))
+
+            for method, path, call in pairs:
+                if id(call) not in asserted:
+                    continue
+                for route in inventory["http_routes"]:
+                    if route["path"] == "/api/context/pack":
+                        continue
+                    if route_matches(method, path, route):
+                        add(f"HTTP {route['method']}::{route['path']}", selector)
+
+            for method, path in direct_http_handler_pairs(body_nodes, function, http_handler_types):
+                for route in inventory["http_routes"]:
+                    if route["path"] == "/api/context/pack":
+                        continue
+                    if route_matches(method, path, route):
+                        add(f"HTTP {route['method']}::{route['path']}", selector)
+
+            for call in calls:
+                if id(call) not in asserted or not is_cli_main(
+                    call, cli_modules, cli_paths, imported_cli_main_names
+                ):
+                    continue
+                operation = cli_operation_for_call(call, body_nodes)
+                if operation in inventory["cli_operations"]:
+                    add(f"CLI operation::{operation}", selector)
+
+    return {key: sorted(selectors) for key, selectors in sorted(links.items())}
+
 def collect_inventory(root: Path | str) -> dict[str, Any]:
     root = Path(root).resolve()
     modules = {key: _read_module(root, key) for key in SOURCE_FILES}
     source_mcp_tools, mcp_action_aliases, conditional_mcp_actions = _extract_mcp(
         modules["mcp"][1], SOURCE_FILES["mcp"]
     )
+    conditional_command_actions = _conditional_list_action_gates(
+        modules["features"][1], "FeatureSet", "supported_command_actions"
+    )
+    if conditional_command_actions:
+        conditional_mcp_actions.setdefault("local_ai_command", {}).update(
+            conditional_command_actions
+        )
     source_tools_by_name = {item["name"]: item for item in source_mcp_tools}
     mcp_schemas, mcp_schema_evidence, schema_errors = _generated_mcp_schemas(root)
     mcp_tools = []
@@ -980,11 +2000,9 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
     drift.extend(_dynamic_route_registry_drift(source_http_routes))
     http_routes = _merge_dynamic_routes(source_http_routes)
     client_methods, client_targets = _extract_client(modules["client"][1], SOURCE_FILES["client"])
-    manifests = _extract_manifests(modules["generator"][1], root)
+    manifests, missing_manifests = _extract_manifests(modules["generator"][1], root)
     manifest_paths = {item["path"] for item in manifests}
-    for manifest in GENERATED_MANIFEST_REGISTRY:
-        if manifest not in manifest_paths:
-            drift.append(f"missing generated manifest {manifest}")
+    drift.extend(f"missing generated manifest {name}" for name in missing_manifests)
     feature_gates = _extract_features(modules["features"][1])
     for target in client_targets:
         if not _matches_route(target, http_routes):
@@ -1009,6 +2027,14 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
         "feature_gates": feature_gates,
         "feature_gate_evidence": _named_condition_evidence((modules["features"][1],), feature_gates),
         "generated_manifests": sorted(manifest_paths),
+        "behavioral_test_links": _behavioral_test_links(root, {
+            "mcp_tools": mcp_tools,
+            "mcp_action_aliases": mcp_action_aliases,
+            "client_methods": client_methods,
+            "client_targets": client_targets,
+            "http_routes": http_routes,
+            "cli_operations": cli_contract["operations"],
+        }),
         "drift": sorted(drift),
     }
 
@@ -1231,8 +2257,9 @@ def coverage_rows(findings: list[dict[str, Any]], task_id: str | None = None) ->
             duplicate_seed = f"{operation_seed}:duplicate-{duplicate_index}"
             operation_id = "op-" + hashlib.sha256(duplicate_seed.encode("utf-8")).hexdigest()[:12]
         used_operation_ids.add(operation_id)
-        metadata_only = not finding.get("test_ids")
-        test_ids = finding.get("test_ids") or [
+        behavioral_test_ids = finding.get("behavioral_test_ids") or []
+        metadata_only = not behavioral_test_ids and not finding.get("test_ids")
+        test_ids = behavioral_test_ids or finding.get("test_ids") or [
             f"tests/test_surface_inventory.py::test_operation_contract_metadata[{operation_id}]"
         ]
         contract = _normalize_unverified(
@@ -1246,18 +2273,33 @@ def coverage_rows(findings: list[dict[str, Any]], task_id: str | None = None) ->
             "status": evidence_status,
             "evidence_status": evidence_status,
             "owner": owner,
-            "owner_task": task_id or finding.get("owner_task") or "unassigned",
+            "owner_task": finding.get("owner_task") or task_id or "unassigned",
             "handler": _normalize_unverified(finding.get("handler") or finding["name"], "handler"),
-            "fixtures": _normalize_unverified(finding.get("fixtures") or ["not inventoried"], "fixtures"),
+            "fixtures": (
+                behavioral_test_ids
+                if behavioral_test_ids
+                else _normalize_unverified(finding.get("fixtures") or ["not inventoried"], "fixtures")
+            ),
             "access_classification": finding.get("access_classification") or _access_classification(finding["surface"]),
             "cache_key": _normalize_unverified(finding.get("cache_key") or "not statically identified", "cache_key"),
             "tenant_scope": _normalize_unverified(finding.get("tenant_scope") or "not statically identified", "tenant_scope"),
             "provenance": finding.get("provenance") or evidence,
             "test_ids": test_ids,
-            "test_coverage": finding.get("test_coverage") or (
-                "metadata only; operation behavior unverified"
-                if metadata_only
-                else "linked tests; operation behavior unverified"
+            "test_coverage": (
+                "behavioral tests linked; coverage bounded to cited assertions"
+                if behavioral_test_ids
+                else finding.get("test_coverage") or (
+                    "metadata only; operation behavior unverified"
+                    if metadata_only
+                    else "linked tests; operation behavior unverified"
+                )
+            ),
+            "behavioral_disposition": (
+                "asserted behavior test linked"
+                if behavioral_test_ids
+                else "test selector linked; behavior unverified"
+                if finding.get("test_ids")
+                else "no asserted operation test linked; behavior unverified"
             ),
             "benchmark_cohort": _normalize_unverified(finding.get("benchmark_cohort") or "not measured", "benchmark_cohort"),
             "state": finding.get("state") or {"confirmed": "verified", "conditional": "conditional", "refuted": "unsupported"}.get(evidence_status, "unsupported"),
@@ -1292,15 +2334,33 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     for route in inventory["http_routes"]:
+        candidate_context_pack_post = (
+            route["method"] == "POST" and route["path"] == "/api/context/pack"
+        )
+        owner_gate = (route.get("contract") or {}).get("owner_gate")
         findings.append(
             {
                 "surface": f"HTTP {route['method']}",
                 "name": route["path"],
-                "condition": route.get("classification"),
+                "condition": (
+                    "T21 owner/source release pending; candidate-only drift; current behavior unverified"
+                    if candidate_context_pack_post
+                    else owner_gate or route.get("classification")
+                ),
+                "evidence_status": (
+                    "conditional"
+                    if candidate_context_pack_post or owner_gate
+                    else "confirmed"
+                ),
                 "owner": SOURCE_FILES["http"] if route.get("classification") is None else "tools/surface_inventory.py",
+                "owner_task": route.get("owner_task"),
                 "handler": route.get("handler"),
                 "contract": route.get("contract", {}),
-                "acceptance": "HTTP method and path resolve to a handler or registered dynamic route.",
+                "acceptance": (
+                    "T19 candidate-only route metadata; current operation behavior is unverified pending Agent 2/T21 owner/source release."
+                    if candidate_context_pack_post
+                    else "HTTP method and path resolve to a handler or registered dynamic route."
+                ),
                 "evidence": [route["evidence"]],
             }
         )
@@ -1525,6 +2585,12 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
                 "evidence": [f"src/local_ai_hub/generator.py (manifest registry: {manifest})"],
             }
         )
+    behavioral_links = inventory.get("behavioral_test_links", {})
+    for finding in findings:
+        key = f"{finding['surface']}::{finding['name']}"
+        test_ids = behavioral_links.get(key)
+        if test_ids:
+            finding["behavioral_test_ids"] = test_ids
     return findings
 
 
@@ -1536,14 +2602,14 @@ def render_coverage(inventory: dict[str, Any], task_id: str | None = None) -> st
     header_cells = ["Surface", "Name", "Evidence status", "Owner", "Acceptance", "Reproduction", "Evidence"]
     header_cells.extend([
         "Operation ID", "State", "Owner task", "Handler", "Contract", "Contract gaps", "Fixtures",
-        "Access classification", "Cache key", "Tenant scope", "Provenance", "Test IDs", "Test coverage", "Benchmark cohort",
+        "Access classification", "Cache key", "Tenant scope", "Provenance", "Test IDs", "Test coverage", "Behavioral disposition", "Benchmark cohort",
     ])
     if task_id:
         header_cells.append("Task ID")
     lines = [
         "# API surface coverage",
         "",
-        "Deterministic source inventory. Evidence status is confirmed, conditional, or refuted; runtime behavior is unverified. `test_operation_contract_metadata` checks inventory metadata only.",
+        "Deterministic source inventory. Evidence status is confirmed, conditional, or refuted; behavioral disposition distinguishes asserted tests from metadata-only links. `test_operation_contract_metadata` checks inventory metadata only.",
         f"Reproduce with `{check_command}`.",
         "",
         "| " + " | ".join(header_cells) + " |",
@@ -1571,6 +2637,7 @@ def render_coverage(inventory: dict[str, Any], task_id: str | None = None) -> st
             json.dumps(row["provenance"], separators=(",", ":")),
             json.dumps(row["test_ids"], separators=(",", ":")),
             row["test_coverage"],
+            row["behavioral_disposition"],
             row["benchmark_cohort"],
         ]
         if task_id:

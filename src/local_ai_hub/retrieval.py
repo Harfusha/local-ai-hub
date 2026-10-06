@@ -19,7 +19,6 @@ def fuse_ranked_paths(
         "deterministic": 1.25,
         "code_index": 1.20,
         "serena": 1.15,
-        "codegraph": 0.0,
         "preprocessor": 1.00,
         "rag": 0.90,
         "lexical": 0.80,

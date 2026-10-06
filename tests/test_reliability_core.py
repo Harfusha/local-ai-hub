@@ -150,21 +150,22 @@ def test_external_sessions_are_bounded_lru(monkeypatch, tmp_path: Path):
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},
         "code_intelligence": {
-            "enabled": True, "serena_enabled": False, "codegraph_enabled": True,
-            "codegraph_command": sys.executable, "max_sessions_per_backend": 1, "session_idle_ttl_seconds": 3600,
+            "enabled": True, "serena_enabled": False,
+            "max_sessions_per_backend": 1, "session_idle_ttl_seconds": 3600,
         },
     }
     ext = ExternalCodeIntelligence(cfg)
+    ext._serena = sys.executable
     roots = [tmp_path / "a", tmp_path / "b"]
     for root in roots: root.mkdir()
-    ext.query_codegraph(str(roots[0]), "search", "x")
+    ext._serena_session(str(roots[0]))
     first = _FakeClient.instances[0]
-    ext.query_codegraph(str(roots[1]), "search", "x")
-    assert len(ext._codegraph_sessions) == 1
+    ext._serena_session(str(roots[1]))
+    assert len(ext._serena_sessions) == 1
     assert first.closed is True
     assert ext.status()["session_policy"]["max_per_backend"] == 1
     reset = ext.reset_sessions("all")
-    assert reset["success"] is True and reset["removed"]["codegraph"] == 1
+    assert reset["success"] is True and reset["removed"]["serena"] == 1
 
 
 def test_semantic_cache_blob_decode_has_stdlib_fallback():
@@ -448,7 +449,7 @@ def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path
         assert json.loads(body)["success"] is True
 
         # Broad public deterministic contract: every cheap repository/operator endpoint
-        # must remain usable without Ollama or external Serena/CodeGraph processes.
+        # must remain usable without Ollama or optional external processes.
         (repo / "main.py").write_text("class SampleService:\n    pass\n", encoding="utf-8")
         (repo / "pyproject.toml").write_text('[project]\nname="smoke"\nversion="0.1"\n', encoding="utf-8")
         def jpost(path, payload):

@@ -155,7 +155,7 @@ def main() -> int:
     if args.action == "dashboard":
         c = client(); print(c.base_url + "/dashboard"); return 0
     if args.action == "service-status":
-        path = Path(load_config(_config_arg())["server"]["state_dir"]) / "supervisor.status.json"
+        path = Path(load_config(_config_arg(args.config))["server"]["state_dir"]) / "supervisor.status.json"
         print(path.read_text(encoding="utf-8") if path.exists() else json.dumps({"running": False}, indent=2)); return 0
     if args.action == "agent-state":
         c = client()

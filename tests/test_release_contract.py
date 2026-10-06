@@ -7,6 +7,7 @@ from pathlib import Path
 
 from local_ai_hub import __version__
 from local_ai_hub.generator import write_all_generated
+from local_ai_hub.hardware import profile_overrides
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,7 +51,7 @@ def test_release_uses_only_current_local_ai_hub_contracts():
     for path in ROOT.rglob("*"):
         if path.is_file() and not any(part in {
             ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data",
-            "generated", "backups", "migration-backups",
+            "generated", "backups", "migration-backups", "dist", "build", "handoff",
         } for part in path.parts):
             assert not historical_name.search(path.name), f"historical release name: {path.relative_to(ROOT)}"
 
@@ -59,11 +60,78 @@ def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     assert source.count("@mcp.tool()") == 8
     assert "CALL THIS FIRST before broad repository reads" in source
     assert '"mode": "full" if mode == "full" else "adaptive" if mode == "adaptive" else "fast"' in source
-    assert "CodeGraphContext" in source and "handmade grep terms" in source
+    assert "CodeGraphContext" not in source and "handmade grep terms" in source
     write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
     skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
     assert "before native reads, grep" in skill
-    assert "semantic" in skill and "CodeGraphContext" in skill and "local_ai_command" in skill
+    assert "semantic" in skill and "CodeGraphContext" not in skill and "local_ai_command" in skill
+
+
+def test_canonical_prompts_share_profile_and_installation_docs_own_standalone_setup():
+    install = (ROOT / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8")
+    update = (ROOT / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
+    installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
+    sdk = (ROOT / "docs" / "PYTHON_SDK.md").read_text(encoding="utf-8")
+    install_routing = next(
+        line for line in install.splitlines()
+        if line.startswith("Local model routing starts")
+    )
+    update_routing = next(
+        line for line in update.splitlines()
+        if line.startswith("Local model routing starts")
+    )
+    assert install_routing == update_routing
+    for profile in ("integrated", "balanced", "high", "max"):
+        models = profile_overrides(profile)["models"]
+        route_keys = ("background_code", "fast_code", "general", "heavy_code", "reasoning", "vision")
+        assert all(models[key] in install_routing for key in route_keys), profile
+    assert "CodeGraphContext" not in install + update + sdk
+    assert "## Optional standalone tool: CodeGraphContext" in installation
+    assert "CodeGraphContext and KuzuDB are not Hub dependencies or backends" in installation
+    assert "install it directly in the target repository or environment" in installation
+    assert "T10 owns broader runtime" not in install + update
+
+
+def test_active_docs_and_historical_plan_do_not_claim_codegraph_as_hub_backend():
+    architecture = (ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    dashboard = (ROOT / "docs" / "DASHBOARD.md").read_text(encoding="utf-8")
+    feature_audit = (ROOT / "docs" / "FEATURE_AUDIT_V4.md").read_text(encoding="utf-8")
+    mcp = (ROOT / "docs" / "MCP_AND_AGENTS.md").read_text(encoding="utf-8")
+    old_plan = (ROOT / "docs" / "superpowers" / "plans" / "2026-09-22-adaptive-retrieval-orchestrator.md").read_text(encoding="utf-8")
+    assert "CodeGraphContext" not in architecture + dashboard + mcp
+    assert "CodeGraphContext (optional standalone tool)" in feature_audit
+    assert "Hub does not install, configure, preprocess, invoke, or report it" in feature_audit
+    assert "2026-09-21 audit snapshot" in feature_audit
+    assert "not current host status" in feature_audit
+    assert "**Superseded by T19" in old_plan
+    assert "not current Hub behavior" in old_plan
+    assert "do not establish current support or health" in old_plan
+
+
+def test_t20_acceptance_matrix_is_preintegration_and_records_blocking_gates():
+    plan = (ROOT / "docs" / "superpowers" / "plans" / "2026-09-25-t19-install-sdk-rollout.md").read_text(encoding="utf-8")
+    matrix = plan.split("## Cross-track release acceptance matrix", 1)[1].split("## Execution Ledger", 1)[0]
+    assert "PRE-INTEGRATION" in matrix
+    assert "T01–T19 are not integrated into one revision" in matrix
+    assert "API inventory is metadata only; operation behavior remains unverified" in matrix
+    assert "final pass cannot be given" in matrix
+    assert "clean-host Windows and Linux" in matrix
+    assert "60-minute mixed workload" in matrix
+    assert "verify_completion" in matrix
+
+
+def test_python_sdk_documents_seven_common_workflows():
+    sdk = (ROOT / "docs" / "PYTHON_SDK.md").read_text(encoding="utf-8")
+    for step in (
+        "/api/repo/callers",
+        "/api/context/pack",
+        "verify_completion",
+        "continue_conversation",
+        "/api/async-jobs",
+        "task_resume",
+        "/api/evidence/get",
+    ):
+        assert step in sdk
 
 
 def test_guarded_context_release_contract_documents_default_flow_and_fallbacks():
@@ -144,13 +212,16 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
     skip_parts = {
         ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data", "generated",
         ".agents", ".serena", ".superpowers", "agy-contextless-workspace",
-        "backups", "migration-backups", ".worktrees",
+        "backups", "migration-backups", ".worktrees", "dist", "build", "handoff",
     }
     skip_files = {"ORIGINAL_REQUEST.md", ".coverage"}
     for path in ROOT.rglob("*"):
         if not path.is_file():
             continue
         if any(part in skip_parts for part in path.parts) or path.name in skip_files or path.name.startswith(".coverage"):
+            continue
+        # MANIFEST.in excludes release-plan docs from the source distribution.
+        if path.relative_to(ROOT).parts[:2] == ("docs", "superpowers"):
             continue
         if path.suffix in {".pyc", ".sqlite3", ".db", ".zip", ".pkl"} or ".local-ai-hub-backup-" in path.name:
             continue

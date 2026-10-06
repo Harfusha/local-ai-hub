@@ -188,6 +188,11 @@ def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
     assert "Mutations never cache or single-flight" in descriptions["command"]
 
 
+def test_repo_surface_does_not_advertise_or_route_codegraph() -> None:
+    assert "CodeGraphContext" not in local_ai_mcp._desc_repo()
+    assert "graph" not in local_ai_mcp._REPO_ACTIONS
+
+
 def test_mcp_descriptions_support_on_demand_semantic_delegation() -> None:
     descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
     normalized = descriptions.lower()
