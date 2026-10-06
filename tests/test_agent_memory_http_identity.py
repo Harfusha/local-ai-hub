@@ -46,10 +46,17 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
         kind=MemoryKind.FACT,
         scope=AgentScope.GLOBAL,
         key="global-http-tenant",
-        value="shared global value",
+        value="root-bound global value",
         provenance={"root": str(repo_a), "repository_id": "repo-a"},
     )
     app.agent_memory.record(global_record, actor="user")
+    unowned_global_record = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.GLOBAL,
+        key="global-http-unowned",
+        value="shared global value",
+    )
+    app.agent_memory.record(unowned_global_record, actor="user")
     session_record = MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope=AgentScope.SESSION,
@@ -101,8 +108,17 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
             "tenant": "codex",
         }
         status, found = post(global_payload)
+        assert status == 404
+        assert found["success"] is False
+
+        status, found_unowned = post({
+            "action": "get",
+            "record_id": unowned_global_record.record_id,
+            "scope": "global",
+            "tenant": "codex",
+        })
         assert status == 200
-        assert found["record"]["record_id"] == global_record.record_id
+        assert found_unowned["record"]["record_id"] == unowned_global_record.record_id
 
         wrong_root = {**global_payload, "root": str(repo_b)}
         status, denied_root = post(wrong_root)
@@ -157,7 +173,7 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
 
         def reassign_identity_before_delete(*args, **kwargs):
             nonlocal rewritten
-            if not rewritten and args[0] == global_record.record_id and kwargs.get("root") == str(repo_a):
+            if not rewritten and args[0] == global_record.record_id and Path(kwargs.get("root", "")).resolve() == repo_a.resolve():
                 reassigned_provenance = dict(global_record.provenance)
                 reassigned_provenance.update({"root": str(repo_b), "repository_id": "repo-b"})
                 with closing(sqlite3.connect(app.agent_memory.state_store.db_path)) as con:
@@ -175,13 +191,13 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
         assert status == 404
         assert stale_identity_delete["success"] is False
         monkeypatch.setattr(app.agent_memory, "delete", original_delete)
-        assert app.agent_memory.get(
-            global_record.record_id,
-            scope=AgentScope.GLOBAL,
-            root=str(repo_b),
-            repository_id="repo-b",
-        ) is not None
         with closing(sqlite3.connect(app.agent_memory.state_store.db_path)) as con:
+            provenance = con.execute(
+                "SELECT provenance FROM agent_memory_records WHERE record_id = ?",
+                (global_record.record_id,),
+            ).fetchone()[0]
+            assert json.loads(provenance)["root"] == str(repo_b)
+            assert json.loads(provenance)["repository_id"] == "repo-b"
             con.execute(
                 "UPDATE agent_memory_records SET provenance = ? WHERE record_id = ?",
                 (json.dumps(global_record.provenance), global_record.record_id),
@@ -191,7 +207,14 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
         status, deleted = post(delete_payload)
         assert status == 200
         assert deleted["deleted"] is True
-        assert app.agent_memory.get(global_record.record_id) is None
+        assert app.agent_memory.get(
+            global_record.record_id,
+            scope=AgentScope.GLOBAL,
+            root=str(repo_a.resolve()),
+            repository_id="repo-a",
+            tenant="codex",
+            tenant_agnostic_global=True,
+        ) is None
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -283,10 +306,10 @@ def test_http_memory_get_and_mutations_bind_transport_tenant_and_project_identit
     memory = app.agent_memory if use_real_store else MemoryHarness()
     app.agent_memory = memory
 
-    def record(key, *, repository_id, tenant):
+    def record(key, *, repository_id, tenant, scope=AgentScope.GLOBAL):
         saved = MemoryRecord.create(
             kind=MemoryKind.FACT,
-            scope=AgentScope.GLOBAL,
+            scope=scope,
             key=key,
             value=f"private value for {key}",
             provenance={
@@ -494,6 +517,32 @@ def test_http_memory_get_and_mutations_bind_transport_tenant_and_project_identit
         assert status == 200
         assert deleted["deleted"] is True
         assert memory.get(victim.record_id) is None
+        foreign_promotable = record(
+            "foreign-promote-transport-identity",
+            repository_id="server-repo-a", tenant="victim",
+            scope=AgentScope.REPOSITORY,
+        )
+        status, denied_promote = request("POST", payload={
+            "action": "promote", "record_id": foreign_promotable.record_id,
+            "target_scope": "global", "scope": "repository",
+            "root": str(repo_a), "repository_id": "client-repository",
+            "tenant": "victim", "approver": "user",
+        })
+        assert status == 404
+        assert denied_promote["success"] is False
+        foreign_quarantinable = record(
+            "foreign-quarantine-transport-identity",
+            repository_id="server-repo-a", tenant="victim",
+            scope=AgentScope.REPOSITORY,
+        )
+        status, denied_quarantine = request("POST", payload={
+            "action": "quarantine", "record_id": foreign_quarantinable.record_id,
+            "scope": "repository", "root": str(repo_a),
+            "repository_id": "client-repository", "tenant": "victim",
+            "reason": "operator review",
+        })
+        assert status == 404
+        assert denied_quarantine["success"] is False
         assert project_resolutions
         assert all(state == state_dir.resolve() for _, state in project_resolutions)
     finally:
@@ -783,7 +832,7 @@ def test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries(t
             tenant="tenant-a",
         ) is not None
 
-        status, authorized_delete = request(
+        status, denied_tenant_delete = request(
             "POST",
             payload={
                 "action": "delete",
@@ -793,6 +842,19 @@ def test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries(t
                 "tenant": "tenant-a",
             },
             tenant="tenant-b",
+        )
+        assert status == 404
+        assert denied_tenant_delete["success"] is False
+        status, authorized_delete = request(
+            "POST",
+            payload={
+                "action": "delete",
+                "record_id": tenant_owned.record_id,
+                "scope": "global",
+                "root": str(repo_a),
+                "tenant": "spoofed-tenant",
+            },
+            tenant="tenant-a",
         )
         assert status == 200
         assert authorized_delete["deleted"] is True
