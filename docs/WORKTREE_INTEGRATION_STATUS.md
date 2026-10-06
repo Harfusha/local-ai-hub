@@ -823,3 +823,23 @@ acceptance.
   The goal's older 182/192 root snapshot was not reproduced in current status
   or as one exact stash; do not infer its disposition from counts alone.
   All 45 stash refs remain unchanged.
+
+## Current-master follow-up after T18 exact fingerprint
+
+- T18 added only the exact quoted `lease_waits` fingerprint plus focused tests;
+  owner commit `b89d5890` cherry-picked as `ac5f5230`.
+- Root command:
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_t18_lease_migration_fingerprint.py
+  tests/test_t18_backup_reservation_acl.py
+  tests/test_t05_agent_state_migrations.py::test_verified_backup_reserves_destination_and_only_cleans_its_file`
+  — **25 passed, 1 skipped in 1.53s** (POSIX-only permissions skipped on
+  Windows).
+- Repeated root-pinned T08 durable packet after the fix — **60 passed, 2
+  failed in 24.84s**. The lease-migration failure is resolved. Remaining:
+  `test_memory_append_result_error_rolls_back_projection` and
+  `test_expired_memory_delete_and_event_are_atomic`; both remain with T05
+  ownership and are not test-expected-value changes.
+- T18 reports a separate older diagnostic regression: a test expects literal
+  `unsupported`, receives a sanitized message. Not included in the passing T18
+  target; still requires adjudication. No full release acceptance.
