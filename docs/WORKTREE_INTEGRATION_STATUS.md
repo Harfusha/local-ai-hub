@@ -664,14 +664,17 @@ The WorkOrchestrator queue is now repaired in root: evidence-required test or
 benchmark criteria trigger final validation without file changes; handoff
 artifacts and cancelled terminal payloads include collected verification
 receipts. Regression suite `tests/test_work_orchestrator.py` passed **24/24**
-in 22.43 s, and `git diff --check` passed. The other six queues remain pending
-scoped implementation and acceptance.
+in 22.43 s, and `git diff --check` passed. Remaining TaskStore requirements
+and event-schema compatibility still need scoped implementation/acceptance.
 
 T08 receipt/generation source packet from Helmholtz (`t13-lifecycle-8429`)
-was verified and cherry-picked as master commit `ba538f65`. Follow-up static
-review found the original outer `Mapping` type guard in V04-H018 still absent.
-Added a top-level invalid-payload regression; it failed first for all four
-non-mapping inputs with `AttributeError`, then the explicit guard was added.
+was verified and cherry-picked as master commit `ba538f65`. The immutable-pin
+post-pin ledger `495e4d88dbb621ba991e7e9749cf5a02c8654d4d` records that this
+packet's V04-H018 outer `Mapping` guard was still absent at pin; H020/H021
+typed-field checks and H041 narrow error propagation were restored, H036
+blockers remain open. Root then added the top-level guard: a regression first
+failed for all four non-mapping inputs with `AttributeError`, then passed after
+the fix.
 The parser rejects non-mapping payloads, malformed `passed`, generation, and
 `details`; generation checkpoint handling tolerates only `KeyError`. Packet
 RED showed 33 failed / 17 passed; owner GREEN 50 passed; after the extra guard,
