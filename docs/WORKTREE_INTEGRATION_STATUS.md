@@ -931,3 +931,15 @@ despite stdout reporting 62 passed; another returned a truncated error
 envelope without an exit status. Neither is accepted as an authoritative test
 receipt; do not count 62 as verified. The fixture-specific T08 test already in
 master remains verified within the 45-test root suite above.
+
+#### Live state refresh
+
+At HEAD `fd9c3edc`, worktree census remains 60 total / 11 dirty and 45
+unchanged stashes. Four divergent branches now contain 39 branch-only commits;
+`git cherry master <branch>` marks 13 non-patch-equivalent commits. These are
+triage objects, not a count of unique missing features. Root has newly visible
+dirty `src/local_ai_hub/agent_memory.py` in addition to the previously recorded
+dirty `async_jobs.py`, `http_server.py`, and untracked `agent_state.sqlite`.
+The new change's owner/content is unknown and was not inspected, staged, or
+modified. Preserve all four entries pending exact attribution. Historical
+counts above remain snapshots at their stated integration boundaries.
