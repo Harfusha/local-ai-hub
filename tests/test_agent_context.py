@@ -672,12 +672,12 @@ def test_repository_root_aliases_match_context_scope(tmp_path: Path):
             key="aliased-root",
             value="same repository",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": aliased_root},
+            provenance={"root": aliased_root, "tenant": "tenant-a"},
         )
     )
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
-        ContextRequest(task_id="task-1", root=canonical_root, token_budget=120)
+        ContextRequest(task_id="task-1", root=canonical_root, tenant="tenant-a", token_budget=120)
     )
     assert record.record_id in {element.element_id for element in context.elements}
 
@@ -731,7 +731,7 @@ def test_context_filters_before_candidate_limit_with_many_excluded_records(tmp_p
                 key=f"other-{index}",
                 value="excluded",
                 status=MemoryStatus.CONFIRMED,
-                provenance={"root": other_root},
+                provenance={"root": other_root, "tenant": "tenant-a"},
             )
         )
     current = memory_store.record(
@@ -741,7 +741,7 @@ def test_context_filters_before_candidate_limit_with_many_excluded_records(tmp_p
             key="current",
             value="authoritative",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": current_root},
+            provenance={"root": current_root, "tenant": "tenant-a"},
         )
     )
 
@@ -750,7 +750,7 @@ def test_context_filters_before_candidate_limit_with_many_excluded_records(tmp_p
 
     monkeypatch.setattr(memory_store, "find", fail_unbounded_find)
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
-        ContextRequest(task_id="task-1", root=current_root, token_budget=120)
+        ContextRequest(task_id="task-1", root=current_root, tenant="tenant-a", token_budget=120)
     )
     assert current.record_id in {element.element_id for element in context.elements}
 
@@ -788,12 +788,12 @@ def test_memory_diagnostics_aggregate_beyond_context_candidate_limit(tmp_path: P
                     key=f"{status.value}-{index}",
                     value="excluded",
                     status=status,
-                    provenance={"root": str(tmp_path), "repository_revision": "rev-1", "path_refs": [f"src/{index}.py"]},
+                    provenance={"root": str(tmp_path), "tenant": "tenant-a", "repository_revision": "rev-1", "path_refs": [f"src/{index}.py"]},
                 )
             )
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
-        ContextRequest(task_id="task-1", root=str(tmp_path), token_budget=300, include_diagnostics=True)
+        ContextRequest(task_id="task-1", root=str(tmp_path), tenant="tenant-a", token_budget=300, include_diagnostics=True)
     )
 
     diagnostics = next(element for element in context.elements if element.source_kind == "memory_diagnostics")
@@ -819,7 +819,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="current-repository",
             value="keep",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": current_root, "repository_revision": "rev-1", "path_refs": ["src/current.py"]},
+            provenance={"root": current_root, "tenant": "tenant-a", "repository_revision": "rev-1", "path_refs": ["src/current.py"]},
         )
     )
     for index in range(25):
@@ -830,7 +830,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
                 key=f"excluded-{index}",
                 value="exclude",
                 status=MemoryStatus.STALE,
-                provenance={"root": current_root, "repository_revision": "rev-1", "path_refs": [f"src/{index}.py"]},
+                provenance={"root": current_root, "tenant": "tenant-a", "repository_revision": "rev-1", "path_refs": [f"src/{index}.py"]},
             )
         )
     wrong_root = memory_store.record(
@@ -840,7 +840,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="wrong-root",
             value="exclude",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": other_root, "repository_revision": "rev-1", "path_refs": ["src/wrong.py"]},
+            provenance={"root": other_root, "tenant": "tenant-a", "repository_revision": "rev-1", "path_refs": ["src/wrong.py"]},
         )
     )
     current_task = memory_store.record(
@@ -851,7 +851,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="current-task",
             value="keep",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": current_root},
+            provenance={"root": current_root, "tenant": "tenant-a"},
         )
     )
     wrong_task = memory_store.record(
@@ -862,7 +862,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="wrong-task",
             value="exclude",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": current_root},
+            provenance={"root": current_root, "tenant": "tenant-a"},
         )
     )
     current_session = memory_store.record(
@@ -873,7 +873,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="current-session",
             value="keep",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": current_root},
+            provenance={"root": current_root, "tenant": "tenant-a"},
         )
     )
     wrong_session = memory_store.record(
@@ -884,7 +884,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="wrong-session",
             value="exclude",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": current_root},
+            provenance={"root": current_root, "tenant": "tenant-a"},
         )
     )
     unscoped_task = memory_store.record(
@@ -894,7 +894,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="unscoped-task",
             value="exclude",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": current_root},
+            provenance={"root": current_root, "tenant": "tenant-a"},
         )
     )
     unscoped_session = memory_store.record(
@@ -904,12 +904,12 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
             key="unscoped-session",
             value="exclude",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": current_root},
+            provenance={"root": current_root, "tenant": "tenant-a"},
         )
     )
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
-        ContextRequest(task_id="task-1", session_id="session-1", root=current_root, token_budget=300)
+        ContextRequest(task_id="task-1", session_id="session-1", root=current_root, tenant="tenant-a", token_budget=300)
     )
     element_ids = {element.element_id for element in context.elements}
 

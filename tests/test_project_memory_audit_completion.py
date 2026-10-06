@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from local_ai_hub import trace_context
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_memory import AgentScope, MemoryKind, MemoryRecord, MemoryStatus
 from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint
@@ -38,20 +39,24 @@ def test_project_completion_rejects_skipped_memory_without_not_used_reason(
             key="stale-project-memory",
             value="stale evidence",
             status=MemoryStatus.STALE,
-            provenance={"root": str(project_root)},
+            provenance={"root": str(project_root), "tenant": "tenant-a"},
         )
     )
     task_id = "project-completion-skipped-memory"
-    app.agent_tasks.create(
-        GoalContract(
-            goal="complete with configured receipts",
-            acceptance_criteria=("required_commands",),
-        ),
-        ScopeContext(task_id=task_id, repository_id=str(project_root)),
-        task_id=task_id,
-        actor="agent",
-        repo_root=str(project_root),
-    )
+    token = trace_context.set_context(tenant="tenant-a")
+    try:
+        app.agent_tasks.create(
+            GoalContract(
+                goal="complete with configured receipts",
+                acceptance_criteria=("required_commands",),
+            ),
+            ScopeContext(task_id=task_id, repository_id=str(project_root)),
+            task_id=task_id,
+            actor="agent",
+            repo_root=str(project_root),
+        )
+    finally:
+        trace_context.reset_context(token)
     task = app.agent_tasks.get(task_id)
     assert task is not None
     assert any(
