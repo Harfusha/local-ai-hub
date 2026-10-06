@@ -6,7 +6,7 @@
 
 - Use a disposable snapshot VM and new local account with no synced profile, vault, personal configuration, or durable Hub state. The installer configures agent files in that account; uninstall removes Hub-managed entries and skills there.
 - Exactly one selected Python 3.11+ interpreter must be available to the bootstrap script. Stop if it would install Python or if the scratch path already exists.
-- Allow outbound traffic only to the configured Python package index. Keep Hub, Ollama, and model registries unreachable. Skip model pulls, optional tools/runtimes, and service registration.
+- Allow outbound traffic only to the configured Python package index. Keep external Hub, Ollama, and model registries unreachable. Skip model pulls, optional tools/runtimes, and service registration. `--skip-service` still runs setup's local `hubctl restart` path; capture it and stop if it reaches external providers.
 - Set `setup.install_dir` and `server.state_dir` under a unique scratch root. Preserve that root and the receipts; run no recursive cleanup.
 
 ## Windows PowerShell
@@ -84,5 +84,9 @@ mkdir -p "$STATE"; printf 'keep' > "$STATE/preserve.marker"
 "$PYTHON_BIN" "$SOURCE/tools/uninstall.py"
 test ! -e "$INSTALL"; test -f "$STATE/preserve.marker"
 ```
+
+## Cross-version upgrade acceptance
+
+The Windows and Linux snippets above cover first install, same-version reinstall, and uninstall only. Cross-version acceptance requires T20-selected baseline and target revisions, separate clean Git checkouts with verified 40-character SHAs, and revision-bound package hashes. Install the baseline into a fresh scratch install/state pair, record version and config/state hashes, then run the target installer with its matching expected revision against that same pair. Require target version, unchanged user config, and surviving durable state marker. Verify target uninstall preserves external state. Persistent service registration/restart needs a separate receipt. Use only the OS/Python combination assigned by T20; package artifact checks remain in T19_RELEASE_VALIDATION_RUNBOOK.md.
 
 Run one OS/Python combination per disposable VM with a fresh scratch path, only within the exact combination authorized by T20's serial slot. Request another assignment before validating another combination. Record artifact hash, exact commands and exit codes, CLI output, pre/post config hashes, install-tree removal, and survival of the external state marker. One passing cycle covers only that combination. T20 must record Windows and Linux receipts on the integrated candidate before this gate closes.

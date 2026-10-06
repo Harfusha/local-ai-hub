@@ -12,6 +12,7 @@ import json
 import os
 import platform
 import random
+import re
 import shutil
 import shlex
 import subprocess
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
-SCHEMA = "t15-command-broker-benchmark-v2"
+SCHEMA = "t15-command-broker-benchmark-v3"
 COMMAND = "git status --short"
 SINGLEFLIGHT_COMMAND = (
     f"{subprocess.list2cmdline([sys.executable])} -c \"import time; time.sleep(2.0)\""
@@ -350,16 +351,89 @@ def _capture_sample(
     }
 
 
+def _measure_preflight_validation(
+    broker: CommandBroker,
+    fixture_root: Path,
+    *,
+    samples: int,
+) -> dict[str, Any]:
+    """Measure structured positive and syntax-error preflight outcomes on fixed fixtures."""
+    if isinstance(samples, bool) or not isinstance(samples, int) or samples < 1:
+        raise ValueError("preflight validation samples must be a positive integer")
+    fixture_root = fixture_root.resolve()
+    fixture_root.mkdir(parents=True, exist_ok=True)
+    fixtures = {
+        "valid_syntax": (
+            fixture_root / "valid_syntax.py",
+            b"def candidate(value: int) -> int:\n    return value + 1\n",
+        ),
+        "invalid_syntax": (
+            fixture_root / "invalid_syntax.py",
+            b"def broken(:\n",
+        ),
+    }
+    for path, content in fixtures.values():
+        path.write_bytes(content)
+
+    samples_by_case: dict[str, list[float]] = {name: [] for name in fixtures}
+    outcomes: dict[str, dict[str, Any]] = {}
+    for name, (path, _content) in fixtures.items():
+        expected_clean = name == "valid_syntax"
+        for _ in range(samples):
+            elapsed, result = _timed(
+                lambda: broker.preflight(str(fixture_root), paths=[path.name])
+            )
+            if (
+                result.get("success") is not True
+                or result.get("clean") is not expected_clean
+                or result.get("checker") != "py_compile"
+                or result.get("errors_count") != (0 if expected_clean else 1)
+            ):
+                raise RuntimeError(f"{name} preflight returned an unexpected contract")
+            if not expected_clean and (
+                not result.get("errors")
+                or result["errors"][0].get("level") != "syntax_error"
+            ):
+                raise RuntimeError("invalid syntax preflight omitted its structured error")
+            samples_by_case[name].append(elapsed)
+            outcomes[name] = {
+                "success": result["success"],
+                "clean": result["clean"],
+                "checker": result["checker"],
+                "errors_count": result["errors_count"],
+            }
+
+    result: dict[str, Any] = {"fixture_root_is_temporary": True, "fixtures": {}}
+    for name, (path, content) in fixtures.items():
+        elapsed_ms = samples_by_case[name]
+        result[name] = {
+            "wall_ms": _summary(elapsed_ms),
+            "operations_per_second": round(samples / (sum(elapsed_ms) / 1000.0), 3),
+            "outcome": outcomes[name],
+        }
+        result["fixtures"][name] = {
+            "file": path.name,
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+    return result
+
+
 def run_benchmark(
     root: Path,
     light_samples: int,
     paired_runs: int,
     *,
+    expected_commands_sha256: str,
     order_seed: int = 0,
 ) -> dict[str, Any]:
     root = root.resolve(strict=True)
-    stable_hash, CommandBroker = _load_command_api(root)
     source_before = _source_snapshot(root)
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", expected_commands_sha256):
+        raise RuntimeError("expected commands.py SHA-256 must be 64 hexadecimal characters")
+    if source_before["commands_sha256"].lower() != expected_commands_sha256.lower():
+        raise RuntimeError("commands.py SHA-256 does not match expected pin")
+    stable_hash, CommandBroker = _load_command_api(root)
     execution_root_before = _git_identity(root)
     harness_before = _git_identity(REPOSITORY_ROOT)
     if harness_before["dirty"]:
@@ -386,6 +460,11 @@ def run_benchmark(
             "server": {"state_dir": str(Path(temp_dir) / "state")},
         }
         broker = CommandBroker(runtime_config)
+        preflight_validation = _measure_preflight_validation(
+            broker,
+            Path(temp_dir) / "preflight-fixtures",
+            samples=light_samples,
+        )
 
         classification_samples = []
         for _ in range(light_samples):
@@ -568,6 +647,7 @@ def run_benchmark(
                 "harness_git_head": harness_before["head"],
                 "harness_worktree_dirty": harness_before["dirty"],
                 "working_tree_commands_sha256": source_before["commands_sha256"],
+                "expected_commands_sha256": expected_commands_sha256.lower(),
                 "benchmark_script_sha256": source_before["benchmark_sha256"],
                 "harness_identity_unchanged": True,
                 "source_identity_unchanged": True,
@@ -590,6 +670,7 @@ def run_benchmark(
             },
             "stages": {
                 "classification": _summary(classification_samples),
+                "preflight_validation": preflight_validation,
                 "fingerprint_force": _summary(forced_fingerprint_samples),
                 "fingerprint_warm": _summary(warm_fingerprint_samples),
                 "command_cache_miss": _summary(paired_miss_samples),
@@ -638,6 +719,7 @@ def main() -> int:
     parser.add_argument("--light-samples", type=int, default=1000)
     parser.add_argument("--paired-runs", type=int, default=30)
     parser.add_argument("--pair-order-seed", type=int, default=0)
+    parser.add_argument("--expected-commands-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not 1 <= args.light_samples <= 10_000:
@@ -656,6 +738,7 @@ def main() -> int:
         root,
         args.light_samples,
         args.paired_runs,
+        expected_commands_sha256=args.expected_commands_sha256,
         order_seed=args.pair_order_seed,
     )
     try:

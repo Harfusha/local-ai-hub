@@ -120,6 +120,8 @@ def test_task_heartbeat_and_extended_reap(tmp_path: Path) -> None:
 
     trace_context.reset_context(tenant_token)
 
+    trace_context.reset_context(tenant_token)
+
     # Manually backdate heartbeats after transitions complete
     with closing(sqlite3.connect(db)) as con:
         con.execute(

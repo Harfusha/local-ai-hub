@@ -1,0 +1,46 @@
+diff --git a/tests/test_t16_cross_process_namespace_lease_recovery.py b/tests/test_t16_cross_process_namespace_lease_recovery.py
+index b298a79..5beb50b 100644
+--- a/tests/test_t16_cross_process_namespace_lease_recovery.py
++++ b/tests/test_t16_cross_process_namespace_lease_recovery.py
+@@ -63,9 +63,16 @@ if mode in {"claim", "busy", "independent", "reclaim"}:
+                 (root / "src" / "owned.txt").write_text("successor write\n", encoding="utf-8")
+                 (root / "commit-receipt.json").write_text(json.dumps({"owner": owner, "token": attempt.fencing_token}), encoding="utf-8")
+     receipt.write_text(json.dumps(result), encoding="utf-8")
+     print(json.dumps(result))
++elif mode == "refresh_release":
++    previous = json.loads(receipt.read_text(encoding="utf-8"))
++    lease_id = str(previous["claim"]["lease_id"])
++    scopes = ScopeLeaseStore(state)
++    renew = scopes.renew("owner-a", lease_id, ttl_seconds=120)
++    release = scopes.release("owner-a", lease_id)
++    print(json.dumps({"renew": renew, "release": release}))
+ elif mode == "stale":
+     old = json.loads(receipt.read_text(encoding="utf-8"))
+     fence_data = dict(old["fence"])
+     fence_data["paths"] = tuple(fence_data["paths"])
+     stale_fence = FencingLease(**fence_data)
+@@ -150,4 +157,24 @@ def test_two_process_linked_worktree_lease_expiry_reclaim_rejects_stale_commit(
+     assert (worktree_b / "src" / "owned.txt").read_text(encoding="utf-8") == "successor write\n"
+     assert json.loads((worktree_b / "commit-receipt.json").read_text(encoding="utf-8")) == {
+         "owner": "owner-b", "token": successor["attempt"]["fencing_token"]
+     }
++
++
++def test_cross_process_lease_refresh_and_release_survive_sqlite_reopen(
++    tmp_path: Path,
++) -> None:
++    root, _ = _linked_worktrees(tmp_path, "process-refresh-release")
++    state_dir = tmp_path / "shared-refresh-state"
++    state_dir.mkdir()
++    receipt = tmp_path / "owner-lease.json"
++
++    acquired = _run_child("claim", root, state_dir, receipt)
++    assert acquired["claim"]["success"] is True
++
++    refreshed = _run_child("refresh_release", root, state_dir, receipt)
++    assert refreshed["renew"]["success"] is True
++    assert refreshed["renew"]["expires_at"] > acquired["claim"]["expires_at"]
++    assert refreshed["release"]["released_rows"] == 1
++
++    successor = _run_child("busy", root, state_dir, tmp_path / "after-release.json")
++    assert successor["claim"]["success"] is True

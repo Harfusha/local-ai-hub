@@ -1,0 +1,47 @@
+--- a/tests/test_command_cache_singleflight_contract.py
++++ b/tests/test_command_cache_singleflight_contract.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import os
+ import subprocess
+ import threading
+ import time
+@@ -390,3 +391,37 @@
+     assert first["policy_blocked"] is True
+     assert warm["suppression_cache_hit"] is True
+     assert expired.get("suppression_cache_hit") is not True
++
++
++def test_command_result_cache_does_not_reuse_across_environment_values(
++    tmp_path, monkeypatch
++) -> None:
++    broker = _broker(tmp_path)
++    broker.config["commands"]["environment_keys"] = ["T15_CACHE_CONTEXT"]
++    monkeypatch.setattr(broker, "_unavailable_executable", lambda *_args: None)
++    monkeypatch.setattr(broker, "_tool_identity", lambda *_args: "fixed-tool")
++    monkeypatch.setenv("T15_CACHE_CONTEXT", "environment-one")
++    executions = 0
++
++    def execute(*_args, **_kwargs):
++        nonlocal executions
++        executions += 1
++        return {
++            "success": True,
++            "exit_code": 0,
++            "stdout": os.environ["T15_CACHE_CONTEXT"],
++            "stderr": "",
++            "duration_ms": 1,
++        }
++
++    monkeypatch.setattr(broker, "_execute", execute)
++    first = broker.run("python -m pytest -q", str(tmp_path), tenant="test")
++    warm = broker.run("python -m pytest -q", str(tmp_path), tenant="test")
++    monkeypatch.setenv("T15_CACHE_CONTEXT", "environment-two")
++    changed = broker.run("python -m pytest -q", str(tmp_path), tenant="test")
++
++    assert first["stdout"] == "environment-one"
++    assert warm["cache_hit"] is True
++    assert changed["cache_hit"] is False
++    assert changed["stdout"] == "environment-two"
++    assert executions == 2

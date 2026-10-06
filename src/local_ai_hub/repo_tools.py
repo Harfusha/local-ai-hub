@@ -26,7 +26,7 @@ from .process_utils import canonical_root, hidden_run_kwargs, terminate_tree
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
 _MAX_DIRECTORY_HINT_FILES = 64
 _MAX_PATH_CONTROLS = 64
-_HARD_SEARCH_DIRS = frozenset({".git", ".local-ai-hub", ".serena"})
+_HARD_SEARCH_DIRS = frozenset({".git", ".local-ai-hub", ".serena", ".codegraphcontext"})
 _SYMBOL_PATTERNS = [
     re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)"),
     re.compile(r"^\s*class\s+([A-Za-z_]\w*)"),
