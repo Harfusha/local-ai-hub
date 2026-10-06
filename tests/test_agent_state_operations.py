@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.app import LocalAIApp, BundleValidationError
-from local_ai_hub.agent_context import ContextRequest
 from local_ai_hub.agent_tasks import GoalContract, TaskStatus
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_memory import MemoryRecord, MemoryKind, MemoryStatus
@@ -87,6 +86,25 @@ def global_unapproved_record(app: LocalAIApp) -> MemoryRecord:
     return app.agent_memory.record(rec, actor="agent")
 
 
+def memory_export_context(record: MemoryRecord) -> dict[str, object]:
+    scope = getattr(record.scope, "value", record.scope)
+    provenance = record.provenance if isinstance(record.provenance, dict) else {}
+    context: dict[str, object] = {"scope": record.scope, "tenant": provenance.get("tenant")}
+    if scope == "repository":
+        context.update(root=provenance.get("root"), scope_id=record.scope_id)
+    elif scope == "task":
+        context.update(root=provenance.get("root"), task_id=record.scope_id)
+    elif scope == "session":
+        context["session_id"] = record.scope_id
+    elif scope == "clone":
+        context["clone_id"] = record.scope_id
+    elif scope == "worktree":
+        context["worktree_id"] = record.scope_id
+    elif scope == "branch":
+        context["branch"] = record.scope_id
+    return context
+
+
 def test_cleanup_removes_expired_terminal_records_but_never_active_task(tmp_path: Path):
     with app_with_agent_state(tmp_path) as app:
         created = app.agent_tasks.create(active_contract(), task_context())
@@ -103,6 +121,8 @@ def test_selective_export_rejects_record_with_disallowed_scope(tmp_path: Path):
 
 
 def test_selective_export_and_import_valid_records(tmp_path: Path):
+    repository_root = tmp_path / "repo1"
+    repository_root.mkdir()
     with app_with_agent_state(tmp_path / "app1") as app1:
         rec = MemoryRecord.create(
             kind=MemoryKind.FACT,
@@ -111,9 +131,13 @@ def test_selective_export_and_import_valid_records(tmp_path: Path):
             value={"architecture": "modular"},
             scope_id="repo1",
             status=MemoryStatus.CONFIRMED,
+            provenance={"root": str(tmp_path / "app1" / "repo"), "tenant": "tenant-a"},
         )
         saved = app1.agent_memory.record(rec, actor="user")
-        bundle_bytes = app1.export_bundle(agent_state_record_ids=[saved.record_id])
+        bundle_bytes = app1.export_bundle(
+            agent_state_record_ids=[saved.record_id],
+            agent_state_contexts={saved.record_id: memory_export_context(saved)},
+        )
         assert isinstance(bundle_bytes, bytes)
         assert len(bundle_bytes) > 0
 
@@ -121,15 +145,24 @@ def test_selective_export_and_import_valid_records(tmp_path: Path):
         res = app2.import_bundle(bundle_bytes)
         assert res["success"] is True
         assert res["restored_records"] == 1
-        found = app2.agent_memory.find(key="repo_fact")
+        found = app2.agent_memory.find(
+            scope=AgentScope.REPOSITORY,
+            scope_id="repo1",
+            root=str(tmp_path / "app1" / "repo"),
+            tenant="tenant-a",
+            key="repo_fact",
+        )
         assert len(found) == 1
         assert found[0].value == {"architecture": "modular"}
 
 
 def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
     expiry = time.time() + 3600
+    repository_root = tmp_path / "repo"
+    repository_root.mkdir()
     provenance = {
         "root": str(tmp_path / "repo"),
+        "tenant": "tenant-a",
         "repository_revision": "rev-7",
         "path_refs": ["src/parser.py"],
         "symbol_refs": ["Parser.parse"],
@@ -147,7 +180,7 @@ def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
                 status=MemoryStatus.CONFIRMED,
                 source="reviewer",
                 evidence_ids=("evidence-1", "evidence-2"),
-                sensitivity="sensitive",
+                sensitivity="normal",
                 provenance=provenance,
                 expires_at=expiry,
             ),
@@ -155,18 +188,28 @@ def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
             supersedes_record_id="record-older",
         )
         saved = app1.agent_memory.record(record, actor="user")
-        bundle_bytes = app1.export_bundle(agent_state_record_ids=[saved.record_id])
+        bundle_bytes = app1.export_bundle(
+            agent_state_record_ids=[saved.record_id],
+            agent_state_contexts={saved.record_id: memory_export_context(saved)},
+        )
 
     with app_with_agent_state(tmp_path / "target") as app2:
         result = app2.import_bundle(bundle_bytes)
         assert result["success"] is True
-        restored = app2.agent_memory.get(saved.record_id)
+        restored = app2.agent_memory.get(
+            saved.record_id, scope=AgentScope.REPOSITORY,
+            scope_id=saved.scope_id,
+            root=str(tmp_path / "repo"), tenant="tenant-a",
+        )
         assert restored is not None
-        assert restored.provenance == provenance
+        expected_provenance = dict(provenance)
+        expected_provenance["root"] = repository_root.as_posix()
+        expected_provenance["source_root"] = str(repository_root)
+        assert restored.provenance == expected_provenance
         assert restored.confidence == 0.63
         assert restored.evidence_ids == ("evidence-1", "evidence-2")
         assert restored.source == "reviewer"
-        assert restored.sensitivity == "sensitive"
+        assert restored.sensitivity == "normal"
         assert restored.expires_at == expiry
         assert restored.status is MemoryStatus.CONFIRMED
         assert restored.contradicts_record_id == "record-old"
@@ -181,6 +224,7 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
     expiry = time.time() + 3600
     provenance = {
         "root": str(source_repo),
+        "tenant": "tenant-a",
         "repository_revision": "rev-project",
         "path_refs": ["src/project.py"],
         "symbol_refs": ["Project.run"],
@@ -198,7 +242,7 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
                 status=MemoryStatus.CONFIRMED,
                 source="project-reviewer",
                 evidence_ids=("project-evidence",),
-                sensitivity="sensitive",
+                sensitivity="normal",
                 provenance=provenance,
                 expires_at=expiry,
             ),
@@ -206,12 +250,19 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
             supersedes_record_id="project-older",
         )
         saved = app1.agent_memory.record(record, actor="user")
-        bundle_bytes = app1.export_bundle(str(source_repo), agent_state_record_ids=[saved.record_id])
+        bundle_bytes = app1.export_bundle(
+            str(source_repo), tenant="tenant-a", agent_state_record_ids=[saved.record_id],
+            agent_state_contexts={saved.record_id: memory_export_context(saved)},
+        )
 
     with app_with_agent_state(tmp_path / "target-app") as app2:
         result = app2.import_bundle(bundle_bytes, str(target_repo))
         assert result["success"] is True
-        restored = app2.agent_memory.get(saved.record_id)
+        restored = app2.agent_memory.get(
+            saved.record_id, scope=AgentScope.REPOSITORY,
+            scope_id=saved.scope_id,
+            root=str(target_repo), tenant="tenant-a",
+        )
         assert restored is not None
         expected_provenance = dict(provenance)
         expected_provenance["root"] = target_repo.as_posix()
@@ -220,13 +271,13 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
         assert restored.confidence == 0.71
         assert restored.evidence_ids == ("project-evidence",)
         assert restored.source == "project-reviewer"
-        assert restored.sensitivity == "sensitive"
+        assert restored.sensitivity == "normal"
         assert restored.expires_at == expiry
         assert restored.status is MemoryStatus.CONFIRMED
         assert restored.contradicts_record_id == "project-old"
         assert restored.supersedes_record_id == "project-older"
         context = app2.agent_context.compile(
-            ContextRequest(task_id="task-project", root=str(target_repo), token_budget=400)
+            ContextRequest(task_id="task-project", root=str(target_repo), tenant="tenant-a", token_budget=400)
         )
         assert saved.record_id in {element.element_id for element in context.elements}
 
@@ -236,7 +287,7 @@ def test_project_bundle_rejects_foreign_repository_memory(tmp_path: Path):
     foreign_repo = tmp_path / "foreign-repo"
     source_repo.mkdir()
     foreign_repo.mkdir()
-    provenance = {"root": str(foreign_repo), "path_refs": ["src/foreign.py"]}
+    provenance = {"root": str(foreign_repo), "tenant": "tenant-a", "path_refs": ["src/foreign.py"]}
     with app_with_agent_state(tmp_path / "source-app") as app:
         record = app.agent_memory.record(
             MemoryRecord.create(
@@ -251,7 +302,10 @@ def test_project_bundle_rejects_foreign_repository_memory(tmp_path: Path):
             actor="user",
         )
         with pytest.raises(BundleValidationError, match="repository root"):
-            app.export_bundle(str(source_repo), agent_state_record_ids=[record.record_id])
+            app.export_bundle(
+                str(source_repo), tenant="tenant-a", agent_state_record_ids=[record.record_id],
+                agent_state_contexts={record.record_id: memory_export_context(record)},
+            )
 
 
 def test_project_bundle_rejects_repository_memory_without_root(tmp_path: Path):
@@ -270,7 +324,10 @@ def test_project_bundle_rejects_repository_memory_without_root(tmp_path: Path):
             actor="user",
         )
         with pytest.raises(BundleValidationError, match="provenance root"):
-            app.export_bundle(str(source_repo), agent_state_record_ids=[record.record_id])
+            app.export_bundle(
+                str(source_repo), tenant="tenant-a", agent_state_record_ids=[record.record_id],
+                agent_state_contexts={record.record_id: memory_export_context(record)},
+            )
 
 
 def test_project_bundle_import_rejects_repository_memory_without_root(tmp_path: Path):
@@ -289,11 +346,14 @@ def test_project_bundle_import_rejects_repository_memory_without_root(tmp_path: 
                 value="must not import",
                 scope_id="repo-import-rootless",
                 status=MemoryStatus.CONFIRMED,
-                provenance={"root": str(source_repo)},
+                provenance={"root": str(source_repo), "tenant": "tenant-a"},
             ),
             actor="user",
         )
-        raw = app1.export_bundle(str(source_repo), agent_state_record_ids=[record.record_id])
+        raw = app1.export_bundle(
+            str(source_repo), tenant="tenant-a", agent_state_record_ids=[record.record_id],
+            agent_state_contexts={record.record_id: memory_export_context(record)},
+        )
 
     with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
         payload = json.loads(zf.read("bundle.json"))
@@ -334,11 +394,14 @@ def test_project_bundle_rejects_tampered_agent_state_records(tmp_path: Path):
                 value="original",
                 scope_id="repo-tamper",
                 status=MemoryStatus.CONFIRMED,
-                provenance={"root": str(source_repo), "path_refs": ["src/tamper.py"]},
+                provenance={"root": str(source_repo), "tenant": "tenant-a", "path_refs": ["src/tamper.py"]},
             ),
             actor="user",
         )
-        raw = app1.export_bundle(str(source_repo), agent_state_record_ids=[record.record_id])
+        raw = app1.export_bundle(
+            str(source_repo), tenant="tenant-a", agent_state_record_ids=[record.record_id],
+            agent_state_contexts={record.record_id: memory_export_context(record)},
+        )
 
     with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
         payload = json.loads(zf.read("bundle.json"))
@@ -368,11 +431,14 @@ def test_project_bundle_rejects_removed_agent_state_integrity_data(tmp_path: Pat
                 key="removal-check",
                 value="original",
                 status=MemoryStatus.CONFIRMED,
-                provenance={"root": str(source_repo)},
+                provenance={"root": str(source_repo), "tenant": "tenant-a"},
             ),
             actor="user",
         )
-        raw = app1.export_bundle(str(source_repo), agent_state_record_ids=[record.record_id])
+        raw = app1.export_bundle(
+            str(source_repo), tenant="tenant-a", agent_state_record_ids=[record.record_id],
+            agent_state_contexts={record.record_id: memory_export_context(record)},
+        )
 
     with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
         payload = json.loads(zf.read("bundle.json"))
@@ -400,16 +466,23 @@ def test_standalone_bundle_honors_json_and_compressed_limits(tmp_path: Path, mon
                 key="limited",
                 value="payload",
                 scope_id="task-limited",
+                provenance={"root": str(tmp_path / "source"), "tenant": "tenant-a"},
             ),
             actor="user",
         )
         monkeypatch.setattr(app, "_bundle_limits", lambda: (1024 * 1024, 1, 10))
         with pytest.raises(ValueError, match="bundle.json exceeds configured limit"):
-            app.export_bundle(agent_state_record_ids=[record.record_id])
+            app.export_bundle(
+                agent_state_record_ids=[record.record_id],
+                agent_state_contexts={record.record_id: memory_export_context(record)},
+            )
 
         monkeypatch.setattr(app, "_bundle_limits", lambda: (1, 1024 * 1024, 10))
         with pytest.raises(ValueError, match="bundle exceeds configured compressed limit"):
-            app.export_bundle(agent_state_record_ids=[record.record_id])
+            app.export_bundle(
+                agent_state_record_ids=[record.record_id],
+                agent_state_contexts={record.record_id: memory_export_context(record)},
+            )
 
 
 
@@ -422,9 +495,13 @@ def test_bundle_requires_exact_current_application_version(tmp_path: Path):
             value="current-only",
             scope_id="repo1",
             status=MemoryStatus.CONFIRMED,
+            provenance={"root": str(tmp_path / "source" / "repo"), "tenant": "tenant-a"},
         )
         saved = app.agent_memory.record(rec, actor="user")
-        raw = app.export_bundle(agent_state_record_ids=[saved.record_id])
+        raw = app.export_bundle(
+            agent_state_record_ids=[saved.record_id],
+            agent_state_contexts={saved.record_id: memory_export_context(saved)},
+        )
 
     source = io.BytesIO(raw)
     with zipfile.ZipFile(source, "r") as zf:
@@ -439,8 +516,10 @@ def test_bundle_requires_exact_current_application_version(tmp_path: Path):
         assert result["success"] is False
         assert "must match Local AI Hub" in result["error"]
 
-def test_app_status_includes_agent_state_summary(tmp_path: Path):
+def test_app_status_includes_agent_state_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     with app_with_agent_state(tmp_path) as app:
+        monkeypatch.setattr(app.runtime, "is_online", lambda: False)
+        monkeypatch.setattr(app.runtime, "managed_profile_status", lambda: {})
         status = app.status()
         assert status["success"] is True
         assert status["agent_state"]["enabled"] is True
@@ -454,3 +533,52 @@ def test_app_status_includes_agent_state_summary(tmp_path: Path):
         assert ag_stat["active_tasks_count"] == 1
         assert ag_stat["tasks_count"] == 1
         assert ag_stat["retention_days"] == 14
+
+
+def test_t08_root_export_repository_without_record_context(tmp_path: Path):
+    repository_root = tmp_path / "repository"
+    repository_root.mkdir()
+    with app_with_agent_state(tmp_path / "source") as source:
+        record = source.agent_memory.record(MemoryRecord.create(
+            kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY,
+            scope_id="repo-t08", key="t08-export", value="verified",
+            status=MemoryStatus.CONFIRMED,
+            provenance={"root": str(repository_root), "tenant": "tenant-a"},
+        ), actor="user")
+        for tenant in ("other", None):
+            with pytest.raises(BundleValidationError, match="not found"):
+                source.export_bundle(str(repository_root), tenant=tenant,
+                                     agent_state_record_ids=[record.record_id])
+        bundle = source.export_bundle(str(repository_root), tenant="tenant-a",
+                                      agent_state_record_ids=[record.record_id])
+    with app_with_agent_state(tmp_path / "target") as target:
+        assert target.import_bundle(bundle)["success"] is True
+        restored = target.agent_memory.get(record.record_id,
+            scope=AgentScope.REPOSITORY, root=str(repository_root), tenant="tenant-a")
+        assert restored is not None and restored.value == "verified"
+
+
+def test_t08_root_export_global_with_project_root(tmp_path: Path):
+    repository_root = tmp_path / "repository"
+    repository_root.mkdir()
+    with app_with_agent_state(tmp_path / "source") as source:
+        record = source.agent_memory.record(MemoryRecord.create(
+            kind=MemoryKind.FACT, scope=AgentScope.GLOBAL,
+            key="t08-global-export", value="verified",
+            status=MemoryStatus.CONFIRMED, provenance={"tenant": "tenant-a"},
+        ), actor="user")
+        with pytest.raises(BundleValidationError, match="not found"):
+            source.export_bundle(str(repository_root), tenant="other",
+                                 agent_state_record_ids=[record.record_id])
+        with pytest.raises(BundleValidationError, match="not found"):
+            source.export_bundle(str(repository_root), tenant="tenant-a",
+                agent_state_record_ids=[record.record_id],
+                agent_state_contexts={record.record_id: {"scope": AgentScope.REPOSITORY,
+                    "root": str(repository_root), "tenant": "tenant-a"}})
+        bundle = source.export_bundle(str(repository_root), tenant="tenant-a",
+                                      agent_state_record_ids=[record.record_id])
+    with app_with_agent_state(tmp_path / "target") as target:
+        assert target.import_bundle(bundle)["success"] is True
+        restored = target.agent_memory.get(record.record_id,
+            scope=AgentScope.GLOBAL, tenant="tenant-a")
+        assert restored is not None and restored.value == "verified"

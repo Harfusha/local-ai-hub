@@ -4,7 +4,7 @@ import socket
 
 import pytest
 
-from tools import benchmark_context_pack_quality as benchmark
+from tools import benchmark_context_pack_live_quality as benchmark
 
 
 def test_network_guard_fails_closed_for_socket_and_subprocess() -> None:

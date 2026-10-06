@@ -4,13 +4,16 @@ from .json_utils import dumps as json_dumps
 
 import hashlib
 import json
+import os
 import sqlite3
+import stat
 import threading
+import uuid
 import time
 from collections import OrderedDict
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from . import __version__
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy, quick_sanity_check
@@ -18,11 +21,173 @@ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry
 
 _SQLITE_RECOVERY_LOCK = threading.RLock()
 _SQLITE_INITIALIZED_PATHS: set[str] = set()
+_CACHE_COORDINATION_LOCKS_GUARD = threading.Lock()
+_CACHE_COORDINATION_LOCKS: dict[str, threading.RLock] = {}
+_COMMAND_CACHE_LOCK_TIMEOUT_SECONDS = 2.0
 
 
 def stable_hash(value: Any) -> str:
     raw = json_dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+class _CommandCacheCoordinator:
+    """Cross-process generation and quarantine state outside the disposable DB."""
+
+    def __init__(self, path: Path, namespace: str):
+        resolved = path.expanduser().resolve(strict=False)
+        identity = stable_hash({"path": str(resolved), "namespace": namespace})
+        self.directory = resolved.parent / f".{resolved.name}.command-cache-coordination"
+        self.state_path = self.directory / f"{identity}.json"
+        self.fallback_state_path = self.directory / f"{identity}.fallback.json"
+        self.lock_path = self.directory / f"{identity}.lock"
+        lock_identity = str(self.lock_path)
+        with _CACHE_COORDINATION_LOCKS_GUARD:
+            self._thread_lock = _CACHE_COORDINATION_LOCKS.setdefault(lock_identity, threading.RLock())
+
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if self.directory.is_symlink() or getattr(self.directory, "is_junction", lambda: False)():
+            raise OSError("command-cache coordination directory cannot be a link")
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        with self._thread_lock:
+            fd = os.open(self.lock_path, flags, 0o600)
+            locked = False
+            try:
+                if not os.path.isfile(self.lock_path):
+                    raise OSError("command-cache lock is not a regular file")
+                if os.name == "nt":
+                    import msvcrt
+
+                    if os.fstat(fd).st_size == 0:
+                        os.write(fd, b"\0")
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+
+                    deadline = time.monotonic() + _COMMAND_CACHE_LOCK_TIMEOUT_SECONDS
+                    while True:
+                        try:
+                            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise TimeoutError("command-cache coordination lock timed out")
+                            time.sleep(min(0.01, remaining))
+                        else:
+                            break
+                locked = True
+                yield
+            finally:
+                if locked:
+                    try:
+                        if os.name == "nt":
+                            import msvcrt
+
+                            os.lseek(fd, 0, os.SEEK_SET)
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        else:
+                            import fcntl
+
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                    finally:
+                        os.close(fd)
+                else:
+                    os.close(fd)
+
+    def read_locked(self) -> tuple[int, bool]:
+        primary_generation, primary_poisoned = self._read_state_path(self.state_path)
+        fallback_generation, fallback_poisoned = self._read_state_path(self.fallback_state_path)
+        if primary_generation > fallback_generation:
+            return primary_generation, primary_poisoned
+        if fallback_generation > primary_generation:
+            return fallback_generation, fallback_poisoned
+        return primary_generation, primary_poisoned or fallback_poisoned
+
+    @staticmethod
+    def _read_state_path(path: Path) -> tuple[int, bool]:
+        try:
+            if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+                raise OSError("command-cache state cannot be a link")
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return 0, False
+        except (OSError, ValueError, TypeError) as exc:
+            raise OSError("command-cache coordination state is unreadable") from exc
+        generation = payload.get("generation") if isinstance(payload, dict) else None
+        poisoned = payload.get("poisoned") if isinstance(payload, dict) else None
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0 or not isinstance(poisoned, bool):
+            raise OSError("command-cache coordination state is invalid")
+        return generation, poisoned
+
+    def write_locked(self, generation: int, poisoned: bool) -> None:
+        self._write_state_path(self.state_path, generation, poisoned)
+
+    def write_fallback_locked(self, generation: int, poisoned: bool) -> None:
+        self._write_state_path(self.fallback_state_path, generation, poisoned)
+
+    def write_redundant_locked(self, generation: int, poisoned: bool) -> None:
+        errors: list[Exception] = []
+        for writer in (self.write_locked, self.write_fallback_locked):
+            try:
+                writer(generation, poisoned)
+            except Exception as exc:
+                errors.append(exc)
+        if len(errors) == 2:
+            # The cross-process lock excludes readers during direct publication.
+            # A torn write is unreadable, so readers fail closed rather than reuse old epoch.
+            for state_path in (self.state_path, self.fallback_state_path):
+                try:
+                    self._write_state_path_in_place(state_path, generation, poisoned)
+                except Exception:
+                    continue
+                return
+            raise OSError("all command-cache coordination sidecars failed") from errors[-1]
+
+    def _write_state_path_in_place(self, state_path: Path, generation: int, poisoned: bool) -> None:
+        payload = json.dumps({"generation": generation, "poisoned": poisoned}, separators=(",", ":")).encode("utf-8")
+        flags = os.O_CREAT | os.O_WRONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(state_path, flags, 0o600)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise OSError("command-cache state must be a single-link regular file")
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            with os.fdopen(fd, "wb", closefd=False) as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def _write_state_path(self, state_path: Path, generation: int, poisoned: bool) -> None:
+        payload = json.dumps({"generation": generation, "poisoned": poisoned}, separators=(",", ":"))
+        temporary = self.directory / f".{state_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(fd)
+            os.replace(temporary, state_path)
+            if os.name != "nt":
+                directory_fd = os.open(self.directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
 
 
 class MemoryLRUCache:
@@ -232,6 +397,9 @@ class SQLiteCache:
     def __init__(self, path: Path, namespace: str, ttl_seconds: int = 86400, max_entries: int = 5000, *, busy_timeout_seconds: float = 0.75, busy_retries: int = 3):
         self.path = path
         self.namespace = f"{__version__}:{namespace}"
+        self._command_cache_coordinator = (
+            _CommandCacheCoordinator(path, self.namespace) if namespace.startswith("command:") else None
+        )
         self.ttl_seconds = max(0, int(ttl_seconds))
         self.max_entries = max(1, int(max_entries))
         self._lock = threading.RLock()
@@ -410,12 +578,28 @@ class SQLiteCache:
                 con.commit()
         self._safe(op, None)
 
-    def delete(self, key: str) -> None:
+    def delete(self, key: str) -> bool:
+        def op() -> bool:
+            with self._lock, closing(self._connect()) as con:
+                con.execute("DELETE FROM cache_entries WHERE namespace=? AND cache_key=?", (self.namespace, key))
+                con.commit()
+            return True
+        return bool(self._safe(op, False))
+
+    def _delete_strict(self, key: str) -> None:
         def op() -> None:
             with self._lock, closing(self._connect()) as con:
                 con.execute("DELETE FROM cache_entries WHERE namespace=? AND cache_key=?", (self.namespace, key))
                 con.commit()
-        self._safe(op, None)
+        retry_busy(op, retries=self.busy_retries)
+
+    def _clear_strict(self) -> int:
+        def op() -> int:
+            with self._lock, closing(self._connect()) as con:
+                cur = con.execute("DELETE FROM cache_entries WHERE namespace=?", (self.namespace,))
+                con.commit()
+                return int(cur.rowcount or 0)
+        return int(retry_busy(op, retries=self.busy_retries))
 
     def clear(self) -> int:
         def op() -> int:
@@ -466,33 +650,135 @@ class TieredCache:
     def __init__(self, l2: SQLiteCache, l1_entries: int = 256, l1_ttl_seconds: int = 900):
         self.l2 = l2
         self.l1 = MemoryLRUCache(l1_entries, l1_ttl_seconds)
+        self._coordinator = getattr(l2, "_command_cache_coordinator", None)
+        self._l1_generation: int | None = None
         self.l1_hits = 0
         self.l2_hits = 0
         self.misses = 0
 
-    def get(self, key: str) -> Any | None:
+    def _sync_l1_generation(self, generation: int) -> None:
+        if self._l1_generation != generation:
+            self.l1.clear()
+            self._l1_generation = generation
+
+    def _recover_poisoned_namespace(self, generation: int) -> tuple[int, bool] | None:
+        if self._coordinator is None:
+            return generation, False
+        try:
+            self.l2._clear_strict()
+            recovered_generation = generation + 1
+            self._coordinator.write_redundant_locked(recovered_generation, False)
+        except Exception:
+            self.l1.clear()
+            self._l1_generation = None
+            return None
+        self.l1.clear()
+        self._l1_generation = recovered_generation
+        return recovered_generation, False
+
+    def get_checked(self, key: str) -> tuple[Any | None, bool]:
+        """Return cached value and whether coordination state was trustworthy."""
+        if self._coordinator is not None:
+            try:
+                with self._coordinator.locked():
+                    generation, poisoned = self._coordinator.read_locked()
+                    self._sync_l1_generation(generation)
+                    if poisoned:
+                        self.l1.clear()
+                        if self._recover_poisoned_namespace(generation) is None:
+                            self.misses += 1
+                            return None, False
+                        self.misses += 1
+                        return None, False
+                    value = self.l1.get(key)
+                    if value is not None:
+                        self.l1_hits += 1
+                        return value, True
+                    value = self.l2.get(key)
+                    if value is not None:
+                        self.l2_hits += 1
+                        self.l1.set(key, value)
+                        return value, True
+                    self.misses += 1
+                    return None, True
+            except Exception:
+                # Coordination failures fail closed; never fall back to an unvalidated L1.
+                self.l1.clear()
+                self._l1_generation = None
+                self.misses += 1
+                return None, False
         value = self.l1.get(key)
         if value is not None:
             self.l1_hits += 1
-            return value
+            return value, True
         value = self.l2.get(key)
         if value is not None:
-            self.l2_hits += 1
             self.l1.set(key, value)
-            return value
+            self.l2_hits += 1
+            return value, True
         self.misses += 1
-        return None
+        return None, True
+
+    def get(self, key: str) -> Any | None:
+        return self.get_checked(key)[0]
 
     def set(self, key: str, value: Any) -> None:
+        if self._coordinator is not None:
+            try:
+                with self._coordinator.locked():
+                    generation, poisoned = self._coordinator.read_locked()
+                    self._sync_l1_generation(generation)
+                    if poisoned:
+                        recovered = self._recover_poisoned_namespace(generation)
+                        if recovered is None:
+                            return
+                    self.l2.set(key, value)
+                    self.l1.set(key, value)
+                return
+            except Exception:
+                self.l1.clear()
+                self._l1_generation = None
+                return
         self.l2.set(key, value)
         self.l1.set(key, value)
 
-    def delete(self, key: str) -> None:
+    def delete(self, key: str) -> bool:
         self.l1.delete(key)
-        self.l2.delete(key)
+        if self._coordinator is not None:
+            try:
+                with self._coordinator.locked():
+                    generation, _poisoned = self._coordinator.read_locked()
+                    generation += 1
+                    self._coordinator.write_redundant_locked(generation, True)
+                    self.l1.clear()
+                    self._l1_generation = generation
+                    self.l2._delete_strict(key)
+                    generation += 1
+                    self._coordinator.write_redundant_locked(generation, False)
+                    self._l1_generation = generation
+                return True
+            except Exception:
+                self.l1.clear()
+                self._l1_generation = None
+                raise
+        return self.l2.delete(key) is not False
 
     def clear(self) -> int:
         self.l1.clear()
+        if self._coordinator is not None:
+            try:
+                with self._coordinator.locked():
+                    generation, _poisoned = self._coordinator.read_locked()
+                    generation += 1
+                    self._coordinator.write_redundant_locked(generation, True)
+                    cleared = self.l2._clear_strict()
+                    generation += 1
+                    self._coordinator.write_redundant_locked(generation, False)
+                    self._l1_generation = generation
+                    return cleared
+            except Exception:
+                self._l1_generation = None
+                raise
         return self.l2.clear()
 
     def stats(self) -> dict[str, Any]:

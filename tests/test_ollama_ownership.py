@@ -144,3 +144,26 @@ def test_generated_agent_instructions_define_ollama_ownership():
 
     assert "Never run `ollama serve`" in generated
     assert "headless.manage_ollama = false" in generated
+def test_gaming_unload_covers_every_loaded_ollama_model():
+    from types import SimpleNamespace
+
+    from local_ai_hub.ollama import OllamaRuntime
+
+    runtime = OllamaRuntime.__new__(OllamaRuntime)
+    runtime.config = {"ollama": {"enabled": True}, "models": {"chat": "configured:7b"}}
+    runtime.llama_cpp = SimpleNamespace()
+    runtime._invalidate_loaded_cache = lambda: None
+    unloads = []
+
+    def request(endpoint, payload=None, *, timeout=None, deadline=None, should_stop=None):
+        if endpoint == "/api/ps":
+            return {"models": [] if unloads else [{"name": "configured:7b"}, {"name": "", "model": "runtime-only:9b"}]}
+        unloads.append(payload["model"])
+        return {"done_reason": "unload"}
+
+    runtime.request = request
+
+    result = runtime.unload_configured_models()
+
+    assert result["success"] is True
+    assert unloads == ["configured:7b", "runtime-only:9b"]
