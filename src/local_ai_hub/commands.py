@@ -2524,6 +2524,33 @@ class CommandBroker:
                 "retryable": False,
             }
 
+        task = None
+        if task_id:
+            if self.task_store is None:
+                return {
+                    "success": False,
+                    "allowed": False,
+                    "reason": "task context unavailable for auxiliary action",
+                    "owner": "agent_policy",
+                    "side_effect_class": AUXILIARY_ACTION_POLICIES[action_name][1],
+                    "terminal": True,
+                    "retryable": False,
+                }
+            try:
+                task = self.task_store.get(task_id)
+            except Exception:
+                task = None
+            if task is None or str(getattr(task, "task_id", "")) != task_id:
+                return {
+                    "success": False,
+                    "allowed": False,
+                    "reason": "task context missing or mismatched for auxiliary action",
+                    "owner": "agent_policy",
+                    "side_effect_class": AUXILIARY_ACTION_POLICIES[action_name][1],
+                    "terminal": True,
+                    "retryable": False,
+                }
+
         grant = None
         if developer_authorized:
             grant = CapabilityGrant(
@@ -2540,7 +2567,7 @@ class CommandBroker:
                     "endpoint": str(endpoint),
                 },
             ),
-            task=None,
+            task=task,
             grant=grant,
         )
         result = decision.to_dict()

@@ -2023,7 +2023,11 @@ class Handler(BaseHTTPRequestHandler):
                     if reliability_success and request_evaluation is not None:
                         APP.telemetry.record_request_evaluation(request_evaluation, duration_ms=elapsed_ms)
                     if record_operational_error and err:
-                        APP.telemetry.record_error("http", path, err, request_id=str(getattr(self, "_trace_request_id", "")), tenant=self._tenant(), agent=self._agent(), retryable=status in {429, 500, 502, 503, 504})
+                        APP.telemetry.record_error(
+                            "http", path, err, request_id=str(getattr(self, "_trace_request_id", "")),
+                            tenant=self._tenant(), agent=self._agent(), error_type_override=outcome_error_type,
+                            error_code_override="http_request_failed", retryable=status in {429, 500, 502, 503, 504},
+                        )
                 self._telemetry_finished = True
             except Exception:
                 pass
@@ -2071,7 +2075,11 @@ class Handler(BaseHTTPRequestHandler):
                     degraded=False, route="stream", evidence_count=0, error_type="stream_error" if error else "",
                 )
                 if error:
-                    APP.telemetry.record_error("http", path, error, request_id=str(getattr(self, "_trace_request_id", "")), tenant=self._tenant(), agent=self._agent(), retryable=True)
+                    APP.telemetry.record_error(
+                        "http", path, error, request_id=str(getattr(self, "_trace_request_id", "")),
+                        tenant=self._tenant(), agent=self._agent(), error_type_override="HttpStreamError",
+                        error_code_override="http_stream_failed", retryable=True,
+                    )
                 self._telemetry_finished = True
             except Exception:
                 pass

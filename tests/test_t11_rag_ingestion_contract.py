@@ -7,6 +7,7 @@ import os
 import statistics
 import sqlite3
 import struct
+import subprocess
 import sys
 import time
 from contextlib import closing
@@ -18,6 +19,26 @@ from local_ai_hub.operational_mode import OperationalModeSnapshot
 from local_ai_hub.rag import RAGStore
 from local_ai_hub import reranker as reranker_module
 from local_ai_hub.reranker import Reranker
+
+
+def test_rag_import_does_not_require_unowned_policy_adapter():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.path.join(root, "src")
+    code = (
+        "import sys; "
+        "sys.modules['local_ai_hub.project_policy_adapter'] = None; "
+        "from local_ai_hub.rag import RAGStore"
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", code],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _store(tmp_path):

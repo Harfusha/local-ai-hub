@@ -1571,6 +1571,119 @@ def test_generation_task_preserves_explicit_dynamic_route_owner():
     assert matches[0]["owner_task"] == "T14"
     assert matches[0]["task_id"] == "T19"
 
+
+def test_operation_owner_tasks_follow_surface_families():
+    cases = (
+        ({"surface": "HTTP GET", "name": "/api/context/pack"}, "T14"),
+        ({"surface": "HTTP GET", "name": "/api/benchmark"}, "T02"),
+        ({"surface": "MCP tool", "name": "local_ai_repo"}, "T03"),
+        ({"surface": "HubClient method", "name": "get_health"}, "T04"),
+        ({"surface": "HTTP POST", "name": "/api/memory"}, "T05"),
+        ({"surface": "HTTP POST", "name": "/api/search"}, "T21"),
+        ({"surface": "MCP action local_ai_command", "name": "retry"}, "T07"),
+        ({"surface": "MCP action local_ai_coord", "name": "task_list"}, "T08"),
+        ({"surface": "HTTP POST", "name": "/api/evidence/verify"}, "T09"),
+        ({"surface": "MCP action local_ai_repo", "name": "context"}, "T10"),
+        ({"surface": "MCP action local_ai_rag", "name": "docset_search"}, "T11"),
+        ({"surface": "MCP action local_ai_task", "name": "delegate"}, "T12"),
+        ({"surface": "HTTP POST", "name": "/api/conversations/continue"}, "T13"),
+        ({"surface": "MCP action local_ai_artifact", "name": "get"}, "T14"),
+        ({"surface": "MCP action local_ai_work", "name": "submit"}, "T16"),
+        ({"surface": "HTTP POST", "name": "/api/vision/analyze"}, "T17"),
+        ({"surface": "MCP action local_ai_status", "name": "brief"}, "T18"),
+        ({"surface": "CLI operation", "name": "generate"}, "T19"),
+        ({"surface": "CLI operation", "name": "release-check"}, "T20"),
+        ({"surface": "HTTP GET", "name": "/api/project-config"}, "T21"),
+    )
+    assert all(MODULE._operation_owner_task(finding) == expected for finding, expected in cases)
+
+
+def test_http_route_evidence_status_captures_dynamic_and_backend_gates(tmp_path):
+    make_repo(tmp_path)
+    write(
+        tmp_path,
+        "src/local_ai_hub/http_server.py",
+        '''class Handler:
+    def do_GET(self):
+        if self.path.startswith("/api/jobs/"):
+            return self.job()
+        if self.path == "/api/agent-state/events":
+            if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
+                return self._send(403, {"error": "agent state disabled"})
+            return self.events()
+        if self.path in {"/", "/dashboard"}:
+            if not bool(APP.config.get("features", {}).get("dashboard", True)):
+                return self._send(404, {"error": "dashboard disabled"})
+            return self.dashboard()
+        if self.path == "/api/browser/capability":
+            if not APP.config.get("browser_bridge", {}).get("enabled", True):
+                return self._send(501, {"error": "browser bridge disabled"})
+            return self.capability()
+''',
+    )
+    inventory = MODULE.collect_inventory(tmp_path)
+    rows = MODULE.coverage_rows(MODULE._findings(inventory))
+    routes = {(route["method"], route["path"]): route for route in inventory["http_routes"]}
+    rows_by_target = {(row["surface"], row["name"]): row for row in rows}
+
+    assert routes[("GET", "/api/jobs/")]["match"] == "prefix"
+    assert routes[("GET", "/api/jobs/")]["evidence_status"] == "confirmed"
+    for path, gate in (
+        ("/api/agent-state/events", "agent_state.enabled"),
+        ("/dashboard", "features"),
+        ("/api/browser/capability", "browser_bridge"),
+    ):
+        route = routes[("GET", path)]
+        row = rows_by_target[("HTTP GET", path)]
+        assert route["evidence_status"] == "conditional"
+        assert any(gate in condition for condition in route["conditional_gates"])
+        assert row["evidence_status"] == "conditional"
+        assert row["state"] == "conditional"
+        assert gate in row["condition"]
+
+
+def test_context_pack_dynamic_route_remains_owner_gated(tmp_path):
+    make_repo(tmp_path)
+
+    inventory = MODULE.collect_inventory(tmp_path)
+    route = next(
+        item for item in inventory["http_routes"]
+        if item["method"] == "GET" and item["path"] == "/api/context/pack"
+    )
+
+    assert route["classification"] == "registered_dynamic"
+    assert route["contract"]["owner_gate"] == (
+        "Agent 2 source release pending; T19 POST candidate behavior excluded"
+    )
+
+
+def test_coverage_rows_dispose_behavioral_evidence_explicitly():
+    rows = MODULE.coverage_rows([
+        {
+            "surface": "HTTP GET",
+            "name": "/verified",
+            "evidence": ["src/local_ai_hub/http_server.py:10"],
+            "behavioral_test_ids": ["tests/test_http.py::test_verified"],
+        },
+        {
+            "surface": "HTTP GET",
+            "name": "/metadata",
+            "evidence": ["src/local_ai_hub/http_server.py:20"],
+        },
+        {
+            "surface": "HTTP GET",
+            "name": "/linked-unverified",
+            "evidence": ["src/local_ai_hub/http_server.py:30"],
+            "test_ids": ["tests/test_http.py::test_transport"],
+        },
+    ])
+
+    assert [row["behavioral_disposition"] for row in rows] == [
+        "asserted behavior test linked",
+        "no asserted operation test linked; behavior unverified",
+        "test selector linked; behavior unverified",
+    ]
+
 def test_behavioral_disposition_excludes_metadata_only_selectors():
     inventory = MODULE.collect_inventory(ROOT)
     rows = MODULE.coverage_rows(MODULE._findings(inventory), task_id=ROOT_TASK_ID)

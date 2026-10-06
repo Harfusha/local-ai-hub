@@ -191,7 +191,7 @@ def test_mcp_command_run_is_gated_as_heavy_and_repo_map_read_stays_lightweight(m
     monkeypatch.setattr(mcp_server.FEATURES, "repo", True)
     monkeypatch.setattr(mcp_server.CLIENT, "post", post)
     # This test covers action gating and dispatch; isolate background accounting.
-    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda *_args: None)
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "_send", lambda *_args, **_kwargs: None)
 
     command_result = mcp_server.local_ai_command(
         action="run", command="python -m pytest -q", cwd="."
@@ -537,3 +537,4 @@ def test_stdio_tools_list_hides_feature_disabled_tools(tmp_path) -> None:
     assert "local_ai_rag" not in wire_tools
     assert "local_ai_command" not in wire_tools
     assert all(tool.get("outputSchema") for tool in wire_tools.values())
+

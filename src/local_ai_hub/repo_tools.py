@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import fnmatch
 import json
+import math
 import os
 import re
 import shutil
@@ -2323,19 +2324,22 @@ class RepositoryTools:
         pieces: list[str] = []
         evidence: list[dict[str, Any]] = []
         candidate_tokens = 0
+        context_bytes = 0
         results = search.get("results", [])
+        token_limit = max(0, int(max_tokens)) if results else 0
         for item in results:
             header = f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
             candidate_tokens += estimate_tokens(header + item["text"] + "\n")
         for item in results:
             header = f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
             piece = header + item["text"] + "\n"
-            trial_context = "\n".join([*pieces, piece])
-            if estimate_tokens(trial_context) > max(0, int(max_tokens)):
+            trial_bytes = context_bytes + (1 if pieces else 0) + len(piece.encode("utf-8"))
+            if max(1, math.ceil(trial_bytes / 3.4)) > token_limit:
                 # Ranked order is authoritative; lower-ranked short snippets must
                 # not jump ahead of a higher-ranked excerpt that did not fit.
                 break
             pieces.append(piece)
+            context_bytes = trial_bytes
             ev = {k: item[k] for k in ("path", "start_line", "end_line", "score", "file_sha256")}
             ev["raw"] = item.get("text", "")
             evidence.append(ev)

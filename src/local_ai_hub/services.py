@@ -862,7 +862,9 @@ class LocalAIServices:
         vram_free = None
         if getattr(self, "vram_balancer", None):
             try:
-                vram_free = self.vram_balancer.status().get("vram_available_mb")
+                vram_status = self.vram_balancer.status()
+                if vram_status.get("available", "vram_available_mb" in vram_status):
+                    vram_free = vram_status.get("vram_available_mb")
             except Exception:
                 pass
         initial_profile = self.model_policy.profile(
@@ -952,8 +954,19 @@ class LocalAIServices:
 
             candidates = [requested_model] + self._fallback_models(requested_model)
             errors: list[str] = []
+            attempt_failures: list[dict[str, Any]] = []
             retryable_error = False
             timeout_error = False
+
+            def record_attempt_failures(*, recovered: bool) -> None:
+                for failed in attempt_failures:
+                    self.telemetry.record_error(
+                        "ollama", f"{source}:model_attempt", failed["error"], tenant=tenant,
+                        error_type_override=failed["error_type"],
+                        error_code_override=failed["error_code"],
+                        retryable=failed["retryable"], recovered=recovered,
+                    )
+
             admission_action = source.split(":", 1)[0].strip().replace("-", "_")
             known_actions = {
                 "delegate", "reason", "review", "review_diff", "second_opinion",
@@ -988,6 +1001,7 @@ class LocalAIServices:
                     candidate_hint = self.model_policy.profile(
                         candidate_model, role=role, input_tokens=prepared.estimated_tokens, output_tokens=max_tokens,
                         background=source.startswith("preprocess:"),
+                        vram_free_mb=vram_free,
                     )
                     candidate_prepared = fit_text(prepared.text, min(int(saving.get("max_local_input_tokens", 56000)), candidate_hint.prompt_budget_tokens))
                     payload, candidate_profile = self.model_policy.apply_payload(
@@ -997,6 +1011,7 @@ class LocalAIServices:
                          "options": {"num_predict": max_tokens, "temperature": float(temperature)}},
                         role=role, input_tokens=candidate_prepared.estimated_tokens, output_tokens=max_tokens,
                         background=source.startswith("preprocess:"), preserve_explicit_think=False,
+                        vram_free_mb=vram_free,
                     )
                     trace_observer = observer()
                     trace_payload = dict(payload)
@@ -1118,6 +1133,7 @@ class LocalAIServices:
                     result = {
                         "success": False,
                         "error": str(exc),
+                        "error_type": type(exc).__name__,
                         "model": candidate,
                         "terminal": False,
                         "retryable": True,
@@ -1132,7 +1148,7 @@ class LocalAIServices:
                 except Exception as exc:
                     retryable = is_retryable_local_backend_error(exc)
                     result = {
-                        "success": False, "error": str(exc), "model": candidate,
+                        "success": False, "error": str(exc), "error_type": type(exc).__name__, "model": candidate,
                         "retryable": retryable, "terminal": not retryable,
                         "error_code": "local_backend_transport" if retryable else "local_model_error",
                     }
@@ -1143,12 +1159,18 @@ class LocalAIServices:
                     self.breakers.success(breaker_key)
                     if candidate != requested_model:
                         self.fallback_count += 1
+                    record_attempt_failures(recovered=True)
                     return result
                 self.breakers.failure(breaker_key)
                 attempt_error = str(result.get("error", "failed"))
                 attempt_retries = int(result.get("_lah_retry_count", 0) or 0)
                 self.telemetry.record_stage(tenant=tenant, action=source, stage="model_attempt", model=candidate, success=False, degraded=index > 0, retry_count=attempt_retries, error_type="model_attempt_failed")
-                self.telemetry.record_error("ollama", f"{source}:model_attempt", attempt_error, tenant=tenant, retryable=True)
+                attempt_failures.append({
+                    "error": attempt_error,
+                    "error_type": str(result.get("error_type", "")),
+                    "error_code": str(result.get("error_code", "")),
+                    "retryable": bool(result.get("retryable", True)),
+                })
                 errors.append(f"{candidate}: {attempt_error}")
 
             # Same exact prompt may be served stale only as a resilience fallback.
@@ -1159,12 +1181,17 @@ class LocalAIServices:
                     reused["_lah_cache_origin"] = "stale"
                     reused["stale_fallback"] = True
                     reused["runtime_errors"] = errors[-3:]
+                    record_attempt_failures(recovered=True)
                     return reused
+            record_attempt_failures(recovered=False)
             failure = {
                 "success": False,
                 "error": "; ".join(errors) or "all local model attempts failed",
                 "model": requested_model,
             }
+            if attempt_failures:
+                failure["error_type"] = attempt_failures[-1]["error_type"]
+                failure["error_code"] = attempt_failures[-1]["error_code"]
             if retryable_error:
                 failure.update({"terminal": False, "retryable": True})
             if timeout_error:
@@ -1297,7 +1324,12 @@ class LocalAIServices:
             degraded=bool(result.get("stale_fallback", False) or result.get("fallback_used", False)), error_type=error_type,
         )
         if not success:
-            self.telemetry.record_error("ollama", source, result.get("error", "model request failed"), tenant=tenant, retryable=True)
+            self.telemetry.record_error(
+                "ollama", source, result.get("error", "model request failed"), tenant=tenant,
+                error_type_override=str(result.get("error_type", "")),
+                error_code_override=str(result.get("error_code", "")),
+                retryable=True,
+            )
         return result
 
     @staticmethod
@@ -5251,7 +5283,9 @@ class LocalAIServices:
         vram_free_mb = None
         try:
             if getattr(self, "vram_balancer", None):
-                vram_free_mb = self.vram_balancer.status().get("vram_available_mb")
+                vram_status = self.vram_balancer.status()
+                if vram_status.get("available", "vram_available_mb" in vram_status):
+                    vram_free_mb = vram_status.get("vram_available_mb")
         except Exception:
             vram_free_mb = None
         profile = self.model_policy.profile(
