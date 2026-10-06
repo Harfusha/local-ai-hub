@@ -943,3 +943,23 @@ dirty `async_jobs.py`, `http_server.py`, and untracked `agent_state.sqlite`.
 The new change's owner/content is unknown and was not inspected, staged, or
 modified. Preserve all four entries pending exact attribution. Historical
 counts above remain snapshots at their stated integration boundaries.
+
+#### T13 exact-witness report integration
+
+Cherry-picked documentation-only commit `a1082ceb` as master commit
+`179fa963`, adding `handoff/STASH-EXACT-WITNESS-INTEGRATION-20261006.md`.
+It records 653 tracked/index occurrences and 587 deduplicated versions against
+its immutable older pin `7c932b6f`: 96 integrated-current, 114 reconciled with
+concrete hunk proof, and 379 still preserved-only. Its caveat is binding:
+static Git/AST evidence is not runtime/function acceptance; it does not close
+the remaining 32 tracked/index, 22 direct-untracked, or 382 overlay queues.
+`git show --check` passed for the doc commit. The original branch commit is now
+patch-equivalent to master.
+
+At the resulting branch census, four divergent refs still contain 39
+branch-only commits; 12 are non-patch-equivalent (`hub-audit`: 3, `t13`: 0,
+`t17`: 7, `t18`: 2). The two T18 source/test commits' current `agent_events.py`
+and regression-test blobs already match master exactly. Current root dirty
+paths remain `agent_memory.py`, `async_jobs.py`, `http_server.py`, and
+`agent_state.sqlite`; ownership of the newly visible `agent_memory.py` change
+is still unknown. No dirty path or stash was changed.
