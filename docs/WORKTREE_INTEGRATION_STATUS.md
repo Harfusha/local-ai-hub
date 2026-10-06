@@ -912,3 +912,22 @@ checkouts after integration; finish T01-T21 and audit acceptance; run full
 release checks and installed-instance validation. The 10 non-equivalent
 branch commits are a triage queue, not automatically 10 required code changes.
 No stash was applied or dropped, and no release-complete claim is made.
+
+#### Follow-up: T08 queue packet and tool verification
+
+The integration-boundary master was `69fb0475` (not `a0852c22`, which is
+the T05 source commit immediately before the status-note commit). T08 commit
+`b652f91b` was attempted as an exact cherry-pick and became empty; it was
+skipped without creating an empty commit. Current master source and test blobs
+exactly equal that packet's `agent_tasks.py` and `test_task_store_t08_queue.py`
+blobs (`f685968b...` and `d18b8ea8...`), so those changes are already
+integrated by tree identity. Fresh root command
+`python -B -m pytest -q -p no:cacheprovider --tb=short
+tests/test_task_store_t08_queue.py` passed **41/41 in 7.56s**.
+
+The full candidate `test_agent_t08_durable_contract.py` produced inconsistent
+tool-layer receipts: one invocation returned `allowed:false,class:unknown`
+despite stdout reporting 62 passed; another returned a truncated error
+envelope without an exit status. Neither is accepted as an authoritative test
+receipt; do not count 62 as verified. The fixture-specific T08 test already in
+master remains verified within the 45-test root suite above.
