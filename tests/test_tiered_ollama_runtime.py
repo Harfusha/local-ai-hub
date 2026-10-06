@@ -7,15 +7,20 @@ class FakeRuntime:
     def __init__(self, loaded: list[dict] | None = None):
         self.loaded = list(loaded or [])
         self.events: list[tuple] = []
+        self.online = True
 
     def is_online(self) -> bool:
-        return True
+        return self.online
 
     def ensure_running(self) -> bool:
         self.events.append(("ensure_running",))
         return True
 
     def request(self, endpoint: str, payload: dict | None = None, timeout: float | None = None) -> dict:
+        if endpoint == "/api/ps":
+            if not self.online:
+                return {"error": "offline"}
+            return {"models": list(self.loaded)}
         self.events.append(("request", endpoint, (payload or {}).get("model")))
         return {"done": True}
 
@@ -114,3 +119,74 @@ def test_smart_request_does_not_unload_unknown_external_model(tmp_path: Path):
     assert result["retryable"] is True
     assert fast.events == []
     assert smart.events == [("ensure_running",)]
+
+
+def test_unload_managed_models_reports_only_verified_unload(tmp_path: Path):
+    from local_ai_hub.tiered_ollama import TieredOllamaRuntime
+
+    smart = FakeRuntime([{"name": "qwen3.5:9b"}])
+    runtime = TieredOllamaRuntime(_config(tmp_path), fast_runtime=FakeRuntime(), smart_runtime=smart)
+
+    result = runtime.unload_managed_models(timeout_seconds=0.2)
+
+    assert result["success"] is True
+    assert result["unloaded"] == ["qwen3.5:9b"]
+    assert result["remaining"] == []
+    assert smart.events == [("unload_model", "qwen3.5:9b")]
+
+
+def test_unload_managed_models_reports_runtime_failure(tmp_path: Path, monkeypatch):
+    from local_ai_hub.tiered_ollama import TieredOllamaRuntime
+
+    smart = FakeRuntime([{"name": "qwen3.5:9b"}])
+    monkeypatch.setattr(smart, "unload_model", lambda _model: False)
+    runtime = TieredOllamaRuntime(_config(tmp_path), fast_runtime=FakeRuntime(), smart_runtime=smart)
+
+    result = runtime.unload_managed_models(timeout_seconds=0.2)
+
+    assert result["success"] is False
+    assert result["unloaded"] == []
+    assert "cannot unload" in result["error"]
+
+
+def test_unload_managed_models_times_out_if_runtime_keeps_model_loaded(tmp_path: Path, monkeypatch):
+    from local_ai_hub.tiered_ollama import TieredOllamaRuntime
+
+    smart = FakeRuntime([{"name": "qwen3.5:9b"}])
+    monkeypatch.setattr(smart, "unload_model", lambda _model: True)
+    runtime = TieredOllamaRuntime(_config(tmp_path), fast_runtime=FakeRuntime(), smart_runtime=smart)
+
+    result = runtime.unload_managed_models(timeout_seconds=0.1)
+
+    assert result["success"] is False
+    assert result["remaining"] == ["qwen3.5:9b"]
+    assert "deadline" in result["error"]
+
+
+def test_unload_managed_models_does_not_claim_success_when_runtime_offline(tmp_path: Path):
+    from local_ai_hub.tiered_ollama import TieredOllamaRuntime
+
+    smart = FakeRuntime([{"name": "qwen3.5:9b"}])
+    smart.online = False
+    runtime = TieredOllamaRuntime(_config(tmp_path), fast_runtime=FakeRuntime(), smart_runtime=smart)
+
+    result = runtime.unload_managed_models(timeout_seconds=0.2)
+
+    assert result["success"] is False
+    assert "unavailable" in result["error"]
+    assert smart.events == []
+
+
+def test_unload_managed_models_does_not_trust_empty_cache_when_status_fails(tmp_path: Path, monkeypatch):
+    from local_ai_hub.tiered_ollama import TieredOllamaRuntime
+
+    smart = FakeRuntime([{"name": "qwen3.5:9b"}])
+    monkeypatch.setattr(smart, "unload_model", lambda _model: True)
+    statuses = iter(({"models": [{"name": "qwen3.5:9b"}]}, {"error": "status unavailable"}))
+    monkeypatch.setattr(smart, "request", lambda *_args, **_kwargs: next(statuses))
+    runtime = TieredOllamaRuntime(_config(tmp_path), fast_runtime=FakeRuntime(), smart_runtime=smart)
+
+    result = runtime.unload_managed_models(timeout_seconds=0.2)
+
+    assert result["success"] is False
+    assert "status unavailable" in result["error"]
