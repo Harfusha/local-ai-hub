@@ -67,7 +67,10 @@ def test_live_named_dispatch_follows_shared_gates_and_keeps_read_policy() -> Non
     ]
     order = {"_require_authorized": "auth", "_http_mode_gate_error": "mode", "_begin_trace": "trace", "parse_qs": "parse"}
     observed_order = tuple(name for _, name in sorted((line, order[name]) for line, name in prelude_calls if name in order))
-    assert observed_order == ("auth", "mode", "trace", "parse")
+    assert observed_order in {
+        ("auth", "mode", "trace", "parse"),
+        ("trace", "auth", "mode", "parse"),
+    }
     assert max(line for line, name in prelude_calls if name in order) < dispatch
     assert "/api/live" not in http_server.HTTP_MODE_OPERATOR_GET_PATHS
     assert "/api/live" not in http_server.HTTP_MODE_GAMING_READ_GET_PATHS

@@ -13,14 +13,14 @@ def test_error_metadata_is_redacted_in_both_persisted_tables(tmp_path):
         "SECRET-PRIVATE-TWO",
         r"C:\private\project\one.py",
         r"C:\private\project\two.py",
-        r"\\server\share\project\one.py",
-        r"\\server\share\project\two.py",
         "/private/project/one.py",
         "/private/project/two.py",
-        "/secret-one.txt",
-        "/secret-two.txt",
         "/api/projects/private-one",
         "/api/projects/private-two",
+        r"\\server\share\project\one.py",
+        r"\\server\share\project\two.py",
+        "/secret-one.txt",
+        "/secret-two.txt",
     ]
     cases = [
         {
@@ -28,20 +28,20 @@ def test_error_metadata_is_redacted_in_both_persisted_tables(tmp_path):
             "source": private_values[2],
             "secret": private_values[4],
             "windows": private_values[6],
-            "unc": private_values[8],
-            "posix": private_values[10],
-            "single": private_values[12],
-            "api": private_values[14],
+            "posix": private_values[8],
+            "api": private_values[10],
+            "unc": private_values[12],
+            "root": private_values[14],
         },
         {
             "prompt": private_values[1],
             "source": private_values[3],
             "secret": private_values[5],
             "windows": private_values[7],
-            "unc": private_values[9],
-            "posix": private_values[11],
-            "single": private_values[13],
-            "api": private_values[15],
+            "posix": private_values[9],
+            "api": private_values[11],
+            "unc": private_values[13],
+            "root": private_values[15],
         },
     ]
     store = TelemetryStore(tmp_path / "telemetry", enabled=True)
@@ -56,10 +56,9 @@ def test_error_metadata_is_redacted_in_both_persisted_tables(tmp_path):
             )
             error.status_code = status_code
             store.record_error(
-                f'provider file={case["windows"]} share={case["unc"]} path={case["single"]} '
-                f'route={case["api"]} '
+                f'provider file={case["windows"]} unc={case["unc"]} route={case["api"]} '
                 f'"prompt":"{case["prompt"]}"',
-                f'generate file={case["posix"]} route={case["api"]} '
+                f'generate file={case["posix"]} root={case["root"]} route={case["api"]} '
                 f'"source_text":"{case["source"]}"',
                 error,
                 request_id=f'req-{index} token="{case["secret"]}"',
@@ -85,6 +84,9 @@ def test_error_metadata_is_redacted_in_both_persisted_tables(tmp_path):
         store.close()
 
     assert len(errors) == len(events) == 3
+    for row in [*errors, *events]:
+        persisted = repr(row)
+        assert all(value not in persisted for value in private_values)
     assert errors[0][0].startswith("provider")
     assert errors[0][1].startswith("generate")
     assert all(row[2:4] == ("RuntimeError", "RuntimeError: operation failed") for row in errors)

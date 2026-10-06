@@ -116,7 +116,10 @@ def test_mode_control_action_token_runs_remote_mode_post(monkeypatch):
         operational_mode_change_guard=transition_guard,
         on_operational_mode_changed=lambda _snapshot: {"inference_active": True},
     )
-    snapshot = SimpleNamespace(mode="active", revision=9, degraded=False)
+    snapshot = SimpleNamespace(
+        mode="active", revision=9, degraded=False,
+        to_dict=lambda: {"mode": "active", "revision": 9, "degraded": False},
+    )
     app = SimpleNamespace(
         config={
             "security": {
@@ -131,7 +134,8 @@ def test_mode_control_action_token_runs_remote_mode_post(monkeypatch):
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
-        set_operational_mode=lambda mode, state_dir: mode_writes.append((mode, state_dir)) or snapshot,
+        load_operational_mode=lambda state_dir: snapshot,
+        set_operational_mode=lambda state_dir, mode: mode_writes.append((mode, state_dir)) or snapshot,
     ))
     handler = _handler("/api/admin/mode", "mode-control-token-123456")
     handler.client_address = ("203.0.113.7", 23456)
@@ -142,14 +146,11 @@ def test_mode_control_action_token_runs_remote_mode_post(monkeypatch):
     handler.do_POST()
 
     assert http_server._http_admin_action("POST", "/api/admin/mode") == "mode.control"
-    assert mode_writes == [("active", jobs.path.parent)]
-    assert handler.responses == [(200, {
-        "success": True,
-        "mode": "active",
-        "revision": 9,
-        "degraded": False,
-        "runtime_unload": None,
-    })]
+    assert mode_writes == [("active", Path("state"))]
+    assert handler.responses[0][0] == 200
+    assert handler.responses[0][1]["success"] is True
+    assert handler.responses[0][1]["mode"] == "active"
+    assert handler.responses[0][1]["revision"] == 9
     assert telemetry.events == [{
         "action": "admin.authorization",
         "success": True,

@@ -5,9 +5,7 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +51,24 @@ def _activity_mode_request(mode: str | None = None, *, config_path: str | None =
     try:
         c = HubClient(tenant="hubctl", config_path=config_path or _config_arg(), auto_start=False)
         if not c._online():
-            return {"success": False, "server_status": "offline", "not_contacted": True, "error": "Local AI Hub is offline"}
+            config = load_config(config_path or _config_arg())
+            server = config.get("server", {})
+            state_dir = server.get("state_dir") if isinstance(server, dict) else None
+            if not state_dir:
+                return {"success": False, "server_status": "offline", "error": "operational mode state directory is not configured"}
+            from local_ai_hub.operational_mode import load_operational_mode, set_operational_mode
+
+            snapshot = (
+                load_operational_mode(state_dir)
+                if mode is None
+                else set_operational_mode(state_dir, mode)
+            )
+            if snapshot.degraded:
+                return {"success": False, "server_status": "offline", "error": snapshot.error}
+            result = {"success": True, **snapshot.to_dict(), "server_status": "offline"}
+            if mode == "gaming":
+                result["runtime_unload"] = {"success": False, "backend_available": False}
+            return result
         if mode is None:
             result = c.get("/api/mode", timeout=3.0)
         else:
@@ -78,88 +93,6 @@ def _activity_mode_request(mode: str | None = None, *, config_path: str | None =
     return {**result, "success": True, "mode": confirmed_mode}
 
 
-def _activity_mode_local(mode: str | None = None, *, config_path: str | None = None) -> dict[str, Any]:
-    """Read or atomically update operational mode in the configured server state directory."""
-    try:
-        config = load_config(config_path or _config_arg())
-        state_dir = Path(config["server"]["state_dir"]).expanduser()
-        path = state_dir / "operational_mode.json"
-    except (OSError, KeyError, TypeError, ValueError) as exc:
-        return {"success": False, "error": f"cannot resolve operational mode state path: {exc}"}
-
-    missing = False
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        missing = True
-        raw = {"mode": "active", "revision": 0, "updated_at": None, "degraded": False, "error": ""}
-    except (OSError, json.JSONDecodeError, UnicodeError):
-        return {"success": False, "error": "operational mode state is unreadable or invalid"}
-    if not isinstance(raw, dict):
-        return {"success": False, "error": "operational mode state is invalid"}
-    current_mode = raw.get("mode")
-    revision = raw.get("revision")
-    if (
-        current_mode not in ACTIVITY_MODES
-        or isinstance(revision, bool)
-        or not isinstance(revision, int)
-        or (missing and revision != 0)
-        or (not missing and (revision < 1 or not isinstance(raw.get("updated_at"), str) or not raw["updated_at"]))
-    ):
-        return {"success": False, "error": "operational mode state is invalid"}
-    if mode is None:
-        return {"success": True, "mode": current_mode, "revision": revision, "source": "state_file"}
-    if mode not in ACTIVITY_MODES:
-        return {"success": False, "error": f"invalid mode: {mode!r}"}
-
-    try:
-        from local_ai_hub.operational_mode import set_operational_mode
-    except ModuleNotFoundError as exc:
-        if exc.name != "local_ai_hub.operational_mode":
-            return {"success": False, "error": "operational mode service is unavailable"}
-    else:
-        try:
-            snapshot = set_operational_mode(state_dir, mode)
-            data = snapshot if isinstance(snapshot, dict) else snapshot.to_dict()
-            confirmed_mode = data.get("mode")
-            if confirmed_mode != mode:
-                return {"success": False, "error": "operational mode service did not confirm requested mode"}
-            result = {"success": True, **data, "source": "state_file"}
-            if mode == "gaming":
-                result["runtime_unload"] = {"success": False, "backend_available": False}
-            return result
-        except (OSError, ValueError, TypeError, AttributeError):
-            return {"success": False, "error": "cannot persist operational mode"}
-
-    payload = {
-        "mode": mode,
-        "revision": revision + 1,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "degraded": False,
-        "error": "",
-    }
-    temporary_name = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary_name = tempfile.mkstemp(prefix=".operational_mode-", suffix=".tmp", dir=path.parent)
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(json.dumps(payload, separators=(",", ":"), sort_keys=True))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary_name, path)
-    except OSError as exc:
-        if temporary_name is not None:
-            try:
-                os.unlink(temporary_name)
-            except OSError:
-                pass
-        return {"success": False, "error": f"cannot persist operational mode: {exc}"}
-    result = {"success": True, **payload, "source": "state_file"}
-    if mode == "gaming":
-        result["runtime_unload"] = {"success": False, "backend_available": False}
-    return result
-
-
 def _activity_mode_error(result: dict[str, Any]) -> str:
     status_code = result.get("status_code")
     if status_code == 401:
@@ -170,6 +103,24 @@ def _activity_mode_error(result: dict[str, Any]) -> str:
         return f"server rejected mode (HTTP 400): {result.get('error', 'invalid mode')}"
     suffix = f" (HTTP {status_code})" if status_code else ""
     return f"mode request failed{suffix}: {result.get('error', 'unknown error')}"
+
+
+def _activity_mode_transition_failures(result: dict[str, Any], requested_mode: str | None) -> list[str]:
+    failures: list[str] = []
+    if requested_mode == "gaming":
+        unload = result.get("runtime_unload")
+        if not isinstance(unload, dict) or unload.get("success") is not True:
+            failures.append("VRAM unload")
+        accelerator_release = result.get("accelerator_release")
+        if not isinstance(accelerator_release, dict) or accelerator_release.get("success") is not True:
+            failures.append("accelerator release")
+    if requested_mode in {"gaming", "maintenance"}:
+        job_cancellation = result.get("job_cancellation")
+        if "job_cancellation" in result and (
+            not isinstance(job_cancellation, dict) or job_cancellation.get("success") is not True
+        ):
+            failures.append("job cancellation")
+    return failures
 
 
 def _service(action: str) -> bool:
@@ -272,23 +223,16 @@ def main() -> int:
         elif args.action == "resume":
             requested_mode = "active"
         result = _activity_mode_request(requested_mode, config_path=_config_arg(args.config))
-        offline_saved = False
-        if result.get("not_contacted") is True:
-            result = _activity_mode_local(requested_mode, config_path=_config_arg(args.config))
-            offline_saved = result.get("success") is True
         if result.get("success") is not True:
             print(_activity_mode_error(result), file=sys.stderr)
             return 1
         mode = str(result["mode"])
-        if requested_mode is None:
-            print(f"Activity mode: {mode}" + (" (offline state)" if offline_saved else ""))
-        else:
-            print(f"Mode saved offline: {mode}" if offline_saved else f"Mode set to {mode}")
-        if requested_mode == "gaming" and (
-            not isinstance(result.get("runtime_unload"), dict)
-            or result["runtime_unload"].get("success") is not True
-        ):
-            print("Gaming mode active, but VRAM unload was incomplete.", file=sys.stderr)
+        transition_failures = _activity_mode_transition_failures(result, requested_mode)
+        if transition_failures:
+            print(f"Mode persisted as {mode}.")
+            print(f"Mode transition incomplete: {', '.join(transition_failures)}.", file=sys.stderr)
+            return 1
+        print(f"Activity mode: {mode}" if requested_mode is None else f"Mode set to {mode}")
         return 0
     if args.action == "generate":
         cfg = load_config(_config_arg(args.config))
@@ -310,7 +254,7 @@ def main() -> int:
     if args.action == "dashboard":
         c = client(); print(c.base_url + "/dashboard"); return 0
     if args.action == "service-status":
-        path = Path(load_config(_config_arg())["server"]["state_dir"]) / "supervisor.status.json"
+        path = Path(load_config(_config_arg(args.config))["server"]["state_dir"]) / "supervisor.status.json"
         print(path.read_text(encoding="utf-8") if path.exists() else json.dumps({"running": False}, indent=2)); return 0
     if args.action == "agent-state":
         c = client()
@@ -492,25 +436,23 @@ def main() -> int:
     if args.action == "status":
         st = status(args.config)
         cfg = load_config(_config_arg(args.config))
-        mode_result = None
+        mode_result = _activity_mode_request(config_path=_config_arg(args.config))
         if st.get("running"):
-            mode_result = _activity_mode_request(config_path=_config_arg(args.config))
-        else:
-            mode_result = _activity_mode_local(config_path=_config_arg(args.config))
-        if mode_result is not None:
             st["activity_mode"] = mode_result.get("mode") if mode_result.get("success") is True else "unknown"
             if mode_result.get("success") is not True:
                 st["activity_mode_error"] = _activity_mode_error(mode_result)
+        elif mode_result.get("success") is True:
+            st["activity_mode"] = mode_result["mode"]
         if args.raw_json:
             print(json.dumps(st, indent=2, ensure_ascii=False))
-            return 0 if mode_result is None or mode_result.get("success") is True else 1
+            return 0
         if not st.get("running"):
             print("Local AI Hub: Offline (stopped)")
-            if mode_result and mode_result.get("success") is True:
+            if mode_result.get("success") is True:
                 print(f"Activity mode: {mode_result['mode']}")
             else:
-                print(f"Activity mode: Unknown ({_activity_mode_error(mode_result or {})})")
-            return 0 if mode_result and mode_result.get("success") is True else 1
+                print(f"Activity mode: Unknown ({_activity_mode_error(mode_result)})")
+            return 0
 
         pid = st.get("hub_pid", "N/A")
         ver = st.get("version", "unknown")
@@ -561,7 +503,7 @@ def main() -> int:
             print(f"GPU:          {gpu_name}{vram_str}")
         print(f"Cache:        {cache_hits} hits, {cache_misses} misses")
         print(f"Agent OS:     {tasks_cnt} tasks, {leases_cnt} leases active")
-        return 0 if mode_result and mode_result.get("success") is True else 1
+        return 0
     if args.action == "stop":
         ok = stop(); print("stopped" if ok else "stop failed"); return 0 if ok else 1
     if args.action == "start":

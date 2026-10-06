@@ -10,6 +10,9 @@ import local_ai_hub.app as app_module
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.telemetry import TelemetryStore
 
+
+
+
 _STATUS_EXECUTOR = None
 
 
@@ -322,6 +325,15 @@ def test_status_records_successful_probe_duration(monkeypatch):
     probe = result["dependency_status"]["runtime.online"]
     assert probe["degraded"] is False
     assert 10 <= probe["duration_ms"] < 100
+def test_realtime_status_reports_worker_capacity_exhaustion():
+    app = make_realtime_app()
+    app._status_dependency_slots = threading.BoundedSemaphore(0)
+
+    result = app.realtime_status(light=True)
+
+    assert result["success"] is False
+    assert result["dependency_status"]["runtime.online"]["reason"] == "worker_capacity_exhausted"
+    assert result["dependency_status"]["accelerators"]["reason"] == "worker_capacity_exhausted"
 
 
 def test_status_uses_one_deadline_across_slow_dependencies(monkeypatch):
@@ -347,6 +359,7 @@ def test_status_uses_one_deadline_across_slow_dependencies(monkeypatch):
     assert result["model_execution"] == {}
     assert result["background_gpu"] == {}
     assert result["scheduler"] == {"state": "ready"}
+    assert result["dependency_status"]["reranker"]["degraded"] is False
 
 
 def test_slow_accelerator_probe_degrades_within_deadline_and_keeps_shape(monkeypatch):

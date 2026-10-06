@@ -2,12 +2,12 @@ from local_ai_hub import http_server
 from local_ai_hub.dashboard import DASHBOARD_HTML
 
 
-def test_status_poller_extraction_preserves_dashboard_html_golden():
+def test_merged_dashboard_preserves_reviewed_html_golden():
     import hashlib
 
     html = DASHBOARD_HTML.encode("utf-8")
-    assert len(html) == 478549
-    assert hashlib.sha256(html).hexdigest() == "f61440138bb8bd55acc1b4fd9a05000566e9adb849a66358031dbf4e482740a5"
+    assert len(html) == 479461
+    assert hashlib.sha256(html).hexdigest() == "90854f090f6fe80024921886e91cbcb6bd71540523cec8fbe83f4411d8d0d411"
 
 
 def test_served_dashboard_discloses_trace_access_and_retention_policy():
@@ -60,16 +60,17 @@ def test_dashboard_exposes_activity_mode_and_reports_http_failures() -> None:
     fetch_start = DASHBOARD_HTML.index("async function apiFetch")
     fetch_end = DASHBOARD_HTML.index("function setFrontendVisionCaptureState", fetch_start)
     assert "X-LocalAI-Token" in DASHBOARD_HTML[fetch_start:fetch_end]
+    assert "X-LocalAI-Client" in DASHBOARD_HTML[fetch_start:fetch_end]
     assert "Active" in DASHBOARD_HTML
     assert "Gaming" in DASHBOARD_HTML
     assert "Maintenance" in DASHBOARD_HTML
-    assert "GAMING / PAUSED" in DASHBOARD_HTML
     assert 'id="activityModeSelect"' not in DASHBOARD_HTML
     assert 'id="activityModeApply"' not in DASHBOARD_HTML
     assert "button.onclick=()=>applyActivityMode(button.dataset.activityMode)" in DASHBOARD_HTML
     assert "buttons.forEach(button=>button.disabled=true)" in mode_source
     assert "Updating mode…" in mode_source
     assert "Checking mode…" in DASHBOARD_HTML
+    assert "gaming:'GAMING / PAUSED'" in DASHBOARD_HTML
 
 
 def test_dashboard_requires_server_confirmation_before_reporting_mode_update() -> None:

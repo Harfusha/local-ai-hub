@@ -174,7 +174,7 @@ class AgentProjector:
             "job_id", "prompt_budget", "semantic_similarity", "coalesced",
             "prompt_eval_duration_ns", "eval_duration_ns",
         ):
-            if key not in extra:
+            if key not in extra and not (task_kind == "status" and key in {"job_id", "coalesced"}):
                 data.pop(key, None)
 
         # Strip internal engine / plumbing metadata by default unless requested in extra_fields
@@ -388,7 +388,7 @@ class AgentProjector:
 
     @staticmethod
     def _clean_empty(val: Any, preserve_keys: set[str] | None = None) -> Any:
-        preserve = preserve_keys or {"results", "files", "symbols"}
+        preserve = preserve_keys or {"results", "files", "symbols", "active_tasks"}
         if isinstance(val, dict):
             cleaned = {}
             for k, v in val.items():
