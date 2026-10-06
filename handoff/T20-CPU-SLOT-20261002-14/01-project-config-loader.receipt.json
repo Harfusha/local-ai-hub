@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-14",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_project_config.py -k config_loader",
+  "route": "native_fallback_user_authorized",
+  "exit_code": 0,
+  "summary": "5 passed, 69 deselected in 0.27s",
+  "pre_run_receipt_sha256": "c6274860e6e583b42f8d9e263af52fd4cc6ebd4c98457faab2983fed1f8d0cad",
+  "input_sha256_before": {
+    "tests/test_project_config.py": "90a66b610b84faddf178147321362db91139ffce0fdc680e01aad9fbd1866270",
+    "src/local_ai_hub/project_config.py": "4238b6a6de1de00f55f4679ce0df7d431522ec1bafabfa272258c1662f13f713"
+  },
+  "input_sha256_after": {
+    "tests/test_project_config.py": "90a66b610b84faddf178147321362db91139ffce0fdc680e01aad9fbd1866270",
+    "src/local_ai_hub/project_config.py": "4238b6a6de1de00f55f4679ce0df7d431522ec1bafabfa272258c1662f13f713"
+  },
+  "inputs_unchanged": true,
+  "log_path": "C:\\Users\\Adam\\.local-ai-hub\\handoff\\T20-CPU-SLOT-20261002-14\\01-project-config-loader.log",
+  "log_sha256": "771c2cd42779870fa6c22532134c34bf36f68c5efba1bc8631005dde69dd50c0",
+  "receipt_fix": "Summary reconciled from existing log; no test rerun."
+}

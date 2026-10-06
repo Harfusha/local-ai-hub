@@ -11,6 +11,27 @@ from typing import Any
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
 
 
+def is_evidence_id(value: Any) -> bool:
+    """Check the syntactic shape of a content-addressed evidence reference."""
+    text = str(value or "")
+    return len(text) == 21 and text.startswith("E") and all(
+        char in "0123456789abcdefABCDEF" for char in text[1:]
+    )
+
+
+def is_current_evidence_id(value: Any, evidence_store: Any) -> bool:
+    """Accept an evidence reference only when its store proves current provenance."""
+    if not is_evidence_id(value) or evidence_store is None:
+        return False
+    validator = getattr(evidence_store, "validate_current", None)
+    if not callable(validator):
+        return False
+    try:
+        return validator(str(value)) is True
+    except Exception:
+        return False
+
+
 class EvidenceStore:
     """Content-addressed exact evidence slices shared by every local/cloud agent.
 
@@ -152,6 +173,30 @@ class EvidenceStore:
             except Exception:
                 stale = True
         return {"success": True, "evidence_id": evidence_id, "root": row["root"], "path": row["path"], "file_sha256": row["file_hash"], "start_line": row["start_line"], "end_line": row["end_line"], "text": row["text"], "stale": stale}
+
+    def validate_current(self, evidence_id: str) -> bool:
+        """Prove an evidence ID still matches its stored row and current source."""
+        if not is_evidence_id(evidence_id):
+            return False
+        try:
+            item = self.get(evidence_id, verify=True)
+            if (
+                not item.get("success")
+                or item.get("stale") is not False
+                or item.get("evidence_id") != evidence_id
+            ):
+                return False
+            expected = self._id(
+                str(item["root"]),
+                str(item["path"]),
+                str(item["file_sha256"]),
+                int(item["start_line"]),
+                int(item["end_line"]),
+                str(item["text"]),
+            )
+        except Exception:
+            return False
+        return expected == evidence_id
 
     def stats(self) -> dict[str, Any]:
         try:

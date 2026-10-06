@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-22",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_mcp_command_operation_acceptance.py",
+  "route": "native_fallback_user_authorized",
+  "exit_code": 1,
+  "summary": "1 failed, 9 passed in 3.09s",
+  "input_sha256_before": {
+    "tests/test_mcp_command_operation_acceptance.py": "717CF3D1F1B4B7DA389036D5C47FC76A71C74B30AEC113BA16B410247C8F494B",
+    "src/local_ai_hub/mcp_server.py": "16E64C3EBDF0C23B5AF133E44DE76AD2898AC290E78C4A23521B19C9217297E0"
+  },
+  "input_sha256_after": {
+    "tests/test_mcp_command_operation_acceptance.py": "717CF3D1F1B4B7DA389036D5C47FC76A71C74B30AEC113BA16B410247C8F494B",
+    "src/local_ai_hub/mcp_server.py": "16E64C3EBDF0C23B5AF133E44DE76AD2898AC290E78C4A23521B19C9217297E0"
+  },
+  "inputs_unchanged": true,
+  "owner_manifest_sha256": "57610EC4E0B5BFA5BF1B5A36F44A28EB713144A0881C5CBBECB4F64B590BAE70",
+  "acceptance_scope": "T01 bounded MCP command operation tests only; not full API acceptance",
+  "log_path": "C:\\Users\\Adam\\.local-ai-hub\\handoff\\T20-CPU-SLOT-20261002-22\\01-t01-mcp-command-acceptance.log",
+  "log_sha256": "EF41C373C85F3542498D2E5DBDCBEC701CFA989C656CE7D9A99468C4356D5060",
+  "failure": "test_mcp_command_auto_fix_forwards_bounded_repair_policy: unexpected telemetry tool-accounting backend call; no edit or rerun"
+}

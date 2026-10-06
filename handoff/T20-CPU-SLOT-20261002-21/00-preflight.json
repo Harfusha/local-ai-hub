@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-21",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_hubctl_unlinked_operations.py",
+  "route": "native_fallback_user_authorized",
+  "input_sha256_before": {
+    "tests/test_hubctl_unlinked_operations.py": "F2772E2C24289AB6F90A1ECFD7F81D6A557BB54458E94187F24C993AAE9C0C5A",
+    "tools/hubctl.py": "D587D80847152AA863A06D2850A60CBC2788409EB13EF94477DCE1791B9758F6"
+  },
+  "owner_manifest_sha256": "57610EC4E0B5BFA5BF1B5A36F44A28EB713144A0881C5CBBECB4F64B590BAE70",
+  "acceptance_scope": "T01 bounded CLI hubctl operation tests only; remaining MCP/HTTP/CLI surface rows unverified"
+}
