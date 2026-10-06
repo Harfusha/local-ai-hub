@@ -1,0 +1,60 @@
+diff --git a/src/local_ai_hub/app.py b/src/local_ai_hub/app.py
+--- a/src/local_ai_hub/app.py
++++ b/src/local_ai_hub/app.py
+@@ -882,6 +882,7 @@ class LocalAIApp:
+ 
+             def read(key, callback, fallback):
+                 nonlocal degraded
++                probe_started = time.monotonic()
+                 pending = pending_dependencies.pop(key, None)
+                 if pending is None:
+                     diagnostic: dict[str, Any] = {}
+@@ -893,16 +894,19 @@ class LocalAIApp:
+                 dependency_status[key] = {
+                     "degraded": not healthy,
+                     "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
++                    "duration_ms": max(0, int((time.monotonic() - probe_started) * 1000)),
+                     **diagnostic,
+                 }
+                 return value
+ 
+             runtime_diagnostic: dict[str, Any] = {}
++            runtime_probe_started = time.monotonic()
+             online, runtime_healthy = dependency("runtime.online", self.runtime.is_online, False, runtime_diagnostic)
+             degraded = degraded or not runtime_healthy
+             dependency_status["runtime.online"] = {
+                 "degraded": not runtime_healthy,
+                 "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
++                "duration_ms": max(0, int((time.monotonic() - runtime_probe_started) * 1000)),
+                 **runtime_diagnostic,
+             }
+             version = read("runtime.version", self.runtime.version, None) if online else None
+diff --git a/tests/test_status_snapshot_quality.py b/tests/test_status_snapshot_quality.py
+--- a/tests/test_status_snapshot_quality.py
++++ b/tests/test_status_snapshot_quality.py
+@@ -195,8 +195,25 @@ def test_slow_status_dependency_degrades_within_deadline_and_keeps_shape(monkeyp
+     assert result["scheduler"] == {"state": "ready"}
+     assert "degraded" not in result
+     assert result["dependency_status"]["runtime.online"]["reason"] == "probe_timeout"
++    assert 10 <= result["dependency_status"]["runtime.online"]["duration_ms"] < 100
+ 
+ 
++
++def test_status_records_successful_probe_duration(monkeypatch):
++    def slow_online():
++        time.sleep(0.02)
++        return True
++
++    runtime = RuntimeProbe()
++    runtime.is_online = slow_online
++    app = make_app(runtime=runtime)
++    monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.15, raising=False)
++
++    result = app.status()
++
++    probe = result["dependency_status"]["runtime.online"]
++    assert probe["degraded"] is False
++    assert 10 <= probe["duration_ms"] < 100
+ def test_status_dependency_reports_probe_exception_without_exception_text():
+     def broken_probe():
+         raise RuntimeError("private /home/user/config token=secret")

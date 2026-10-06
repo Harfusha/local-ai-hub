@@ -135,6 +135,7 @@ def build_context_request(
         preload_profile=_bounded_text(payload.get("preload_profile"), 120),
         repo_revision=repo_revision,
         since_hash=_bounded_text(payload.get("since_hash") or payload.get("etag"), 120),
+        scoped_task_only=bool(payload.get("_scoped_task_only", False)),
         settings_digest=effective_settings_digest,
         path_hints=request_hints,
     )

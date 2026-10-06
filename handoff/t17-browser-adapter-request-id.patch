@@ -1,0 +1,11 @@
+diff --git a/handoff/t17-browser-adapter-live-e2e.mjs b/handoff/t17-browser-adapter-live-e2e.mjs
+--- a/handoff/t17-browser-adapter-live-e2e.mjs
++++ b/handoff/t17-browser-adapter-live-e2e.mjs
+@@ -47,7 +47,7 @@ const server = http.createServer(async (req, res) => {
+     const attempts = state.calls.filter((item) => item.scenario === state.scenario && item.path.endsWith('/commit')).length;
+     if (state.scenario === 'replay' && attempts === 1) return respond(503, { success: false, error_code: 'temporary' });
+     if (state.scenario === 'expiry') return respond(410, { success: false, error_code: 'capture_expired' });
+-    return respond(200, { success: true, bundle_artifact_id: 'fake-bundle' });
++    return respond(200, { success: true, request_id: payload.request_id, bundle_artifact_id: 'fake-bundle' });
+   }
+   if (req.url.endsWith('/abandon')) return respond(200, { success: true });

@@ -15,8 +15,175 @@ from local_ai_hub.app import LocalAIApp
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.model_policy import ModelExecutionPolicy
 from local_ai_hub.services import LocalAIServices
+from local_ai_hub.vision_contracts import (
+    VISION_MAX_IMAGE_BYTES,
+    VISION_MAX_IMAGE_CHARS,
+    VISION_MAX_PROMPT_CHARS,
+    VISION_MAX_SCHEMA_CHARS,
+    VisionParseResult,
+)
+from local_ai_hub.vision_response import build_vision_request, vision_success_payload
 from local_ai_hub.vision_inputs import VisionInputs, prepare_vision_inputs
-from local_ai_hub.vision_contracts import VISION_MAX_IMAGE_BYTES, VISION_MAX_IMAGE_CHARS
+
+
+def test_vision_success_payload_assembles_review_without_runtime() -> None:
+    observation_sources = {
+        "dom": {"button-1": {"text": "Continue", "tag": "button"}}
+    }
+    parsed = VisionParseResult(
+        summary="button is available",
+        observation_sources=observation_sources,
+    )
+    result = vision_success_payload(
+        model="vision-local",
+        raw_output="raw response",
+        parsed=parsed,
+        prompt_context="review this button",
+        image_artifact_id="image-artifact",
+        bundle_artifact_id=None,
+        raw_output_artifact_id="raw-artifact",
+    )
+
+    assert result["success"] is True
+    assert result["review"]["observation_sources"] == observation_sources
+    assert result["response"] == "raw response"
+
+
+def test_build_vision_request_preserves_format_prompt_and_image_bounds() -> None:
+    built = build_vision_request(
+        model="vision-local",
+        prompt="review this page",
+        images=["aW1hZ2U="],
+        max_tokens=512,
+        schema=None,
+        ollama_enabled=True,
+        model_context=None,
+        bundle_context='{"dom": {}}',
+        image_size=(640, 360),
+    )
+
+    assert built.error is None
+    assert built.payload is not None
+    assert built.payload["format"]["required"] == [
+        "summary", "findings", "unknowns", "recommended_checks"
+    ]
+    finding = built.payload["format"]["properties"]["findings"]["items"]
+    assert "observation_facts" in finding["required"]
+    assert built.payload["prompt"] == built.prompt_context
+    assert "UNTRUSTED EVIDENCE ONLY" in built.prompt_context
+    assert "640 x 360 pixels" in built.prompt_context
+    assert built.payload["images"] == ["aW1hZ2U="]
+    assert built.payload["options"] == {"num_predict": 512}
+
+
+def test_build_vision_request_rejects_oversized_schema_and_prompt() -> None:
+    schema_error = build_vision_request(
+        model="vision-local",
+        prompt="review",
+        images=["aW1hZ2U="],
+        max_tokens=128,
+        schema={"description": "x" * VISION_MAX_SCHEMA_CHARS},
+        ollama_enabled=True,
+        model_context=None,
+        bundle_context="",
+        image_size=None,
+    )
+    assert schema_error.payload is None
+    assert schema_error.error == {
+        "success": False,
+        "terminal": True,
+        "retryable": False,
+        "error": "Vision JSON schema exceeds the bounded size limit.",
+        "error_code": "vision_input_error",
+    }
+
+    prompt_error = build_vision_request(
+        model="vision-local",
+        prompt="x" * VISION_MAX_PROMPT_CHARS,
+        images=["aW1hZ2U="],
+        max_tokens=128,
+        schema=None,
+        ollama_enabled=False,
+        model_context=None,
+        bundle_context="",
+        image_size=None,
+    )
+    assert prompt_error.payload is None
+    assert prompt_error.error is not None
+    assert prompt_error.error["error_code"] == "frontend_prompt_too_large"
+
+
+def test_build_vision_request_keeps_json_format_without_strict_schema() -> None:
+    built = build_vision_request(
+        model="vision-local",
+        prompt="review",
+        images=["aW1hZ2U="],
+        max_tokens=128,
+        schema=None,
+        ollama_enabled=False,
+        model_context=None,
+        bundle_context="",
+        image_size=None,
+    )
+
+    assert built.error is None
+    assert built.payload is not None
+    assert built.payload["format"] == "json"
+
+
+def test_prepare_vision_inputs_requires_an_image_fail_closed() -> None:
+    result = prepare_vision_inputs(
+        args={},
+        image_path="",
+        prompt="review",
+        tenant="tenant-a",
+        artifacts=MagicMock(),
+    )
+
+    assert result == {
+        "success": False,
+        "terminal": True,
+        "retryable": False,
+        "error": "Vision image path, base64 data, or image artifact is required.",
+        "error_code": "vision_input_error",
+    }
+
+
+def test_prepare_vision_inputs_artifact_store_failure_is_retryable() -> None:
+    artifacts = MagicMock()
+    artifacts.get_binary.side_effect = OSError("store unavailable")
+
+    result = prepare_vision_inputs(
+        args={"image_artifact_id": "image-1"},
+        image_path="",
+        prompt="review",
+        tenant="tenant-a",
+        artifacts=artifacts,
+    )
+
+    assert result == {
+        "success": False,
+        "terminal": False,
+        "retryable": True,
+        "error": "Vision artifact store is unavailable; retry the request.",
+    }
+
+
+def test_prepare_vision_inputs_normalizes_data_url_and_reads_dimensions() -> None:
+    encoded = base64.b64encode(_png()).decode("ascii")
+    data_url = f"data:image/png;base64,{encoded}"
+
+    prepared = prepare_vision_inputs(
+        args={"image": data_url},
+        image_path=data_url,
+        prompt="review this page",
+        tenant="tenant-a",
+        artifacts=MagicMock(),
+    )
+
+    assert isinstance(prepared, VisionInputs)
+    assert prepared.images == [encoded]
+    assert prepared.image_size == (640, 360)
 
 
 def _png(width: int = 640, height: int = 360) -> bytes:
@@ -524,10 +691,11 @@ def test_vision_image_only_response_matches_golden_contract(tmp_path: Path) -> N
             "recommended_checks": ("inspect after load",),
             "terminal": False,
             "error": {},
+            "observation_sources": None,
         },
         "prompt": payload["prompt"],
-        "image_artifact_id": None,
-        "bundle_artifact_id": None,
+        "image_artifact_id": "",
+        "bundle_artifact_id": "",
         "raw_output_artifact_id": "art_vision_raw",
     }
 

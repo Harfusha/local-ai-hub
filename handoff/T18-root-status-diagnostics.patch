@@ -1,0 +1,68 @@
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -1612,18 +1612,20 @@
+             if path == "/api/status":
+                 detail = str((query.get("detail") or [""])[0]).strip().lower()
+                 if detail == "agent_state":
++                    agent_state = getattr(APP, "agent_state", None)
++                    agent_state_enabled = bool(agent_state and getattr(agent_state, "enabled", False))
+                     tasks = APP.agent_tasks.list_tasks() if getattr(APP, "agent_tasks", None) else []
+                     active_tasks = [t.task_id for t in tasks if t.status == TaskStatus.ACTIVE]
+                     incidents = APP.agent_incidents.list_incidents() if getattr(APP, "agent_incidents", None) else []
+                     candidates = APP.agent_learning.list_candidates() if getattr(APP, "agent_learning", None) else []
+                     self._send(200, {
+                         "success": True,
+-                        "enabled": bool(getattr(APP, "agent_state", None) and APP.agent_state.enabled),
++                        "enabled": agent_state_enabled,
+                         "active_tasks": active_tasks,
+                         "tasks_count": len(tasks),
+                         "incidents_count": len(incidents),
+                         "candidates_count": len(candidates),
+-                        "status": "healthy",
++                        "status": "healthy" if agent_state_enabled else "disabled",
+                     }); return
+                 scope = str((query.get("scope") or ["process"])[0])
+                 status = APP.status(scope=scope)
+diff --git a/tests/test_http_status_diagnostics_t18.py b/tests/test_http_status_diagnostics_t18.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_http_status_diagnostics_t18.py
+@@ -0,0 +1,37 @@
++from __future__ import annotations
++
++from types import SimpleNamespace
++
++import pytest
++
++from local_ai_hub import http_server
++
++
++@pytest.mark.parametrize(
++    ("enabled", "expected_status"),
++    [(True, "healthy"), (False, "disabled")],
++)
++def test_agent_state_status_detail_reports_enabled_state(monkeypatch, enabled, expected_status):
++    monkeypatch.setattr(
++        http_server,
++        "APP",
++        SimpleNamespace(config={}, agent_state=SimpleNamespace(enabled=enabled)),
++    )
++    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
++    handler = http_server.Handler.__new__(http_server.Handler)
++    handler.path = "/api/status?detail=agent_state"
++    handler.client_address = ("127.0.0.1", 12345)
++    handler.headers = {}
++    handler.server = None
++    handler._begin_trace = lambda _path: None
++    handler._require_authorized = lambda: True
++    handler.responses = []
++    handler._send = lambda status, payload: handler.responses.append((status, payload))
++
++    handler.do_GET()
++
++    status, payload = handler.responses[0]
++    assert status == 200
++    assert payload["success"] is True
++    assert payload["enabled"] is enabled
++    assert payload["status"] == expected_status

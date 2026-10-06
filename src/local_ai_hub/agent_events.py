@@ -18,9 +18,6 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .json_utils import dumps as json_dumps
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
-
-from .json_utils import dumps as json_dumps
 from .sqlite_support import (
     DurableSchemaMismatchError,
     connect_sqlite,
@@ -244,6 +241,9 @@ class AgentStateStore:
         ("table", "lease_waits", "lease_waits"): {
             "a866368052df7b9433b7a44d47dc262c5a76a06058b878e0249ccee791dfb17c",
             "e9a38812fd120d00228269c2e5f28f02172702355abd9127562ccf78a5c93612",
+            # ScopeLeaseStore's namespace-key rebuild/rename quotes the table name.
+            # Same NOT NULL columns and root-inclusive PK; no SQL normalization widening.
+            "314dbe78e360c6c00133c85323b9349936d9cb2e87121e60c8ffb733b46d20aa",
         },
         ("table", "leases", "leases"): {
             "f7a165f4f68106fb33b5855d0a66532e63fde78b2675380b67fe8112096f8edd",
@@ -941,20 +941,33 @@ class AgentStateStore:
         identity = (info.st_dev, info.st_ino)
         try:
             if os.name == "nt":
-                account = subprocess.run(
-                    ["whoami"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=1.0,
-                ).stdout.strip()
-                subprocess.run(
-                    ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=1.0,
-                )
+                from .process_utils import run_hidden
+
+                try:
+                    # USERNAME is caller-controlled, not proof of the process account.
+                    account = run_hidden(
+                        ["whoami"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=1.0,
+                    ).stdout.strip()
+                    if (
+                        not account
+                        or len(account.split("\\")) != 2
+                        or not all(account.split("\\"))
+                        or any(character in account for character in "\r\n\x00")
+                    ):
+                        raise PermissionError("agent_state backup process account is unknown")
+                    run_hidden(
+                        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=1.0,
+                    )
+                except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+                    raise PermissionError("agent_state backup permissions could not be secured") from exc
             else:
                 os.fchmod(descriptor, 0o600)
                 if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o600:
@@ -963,12 +976,18 @@ class AgentStateStore:
             if not cls._backup_path_matches(path, identity):
                 raise RuntimeError("agent_state backup destination changed during secure creation")
             return identity
-        except Exception:
-            if cls._backup_path_matches(path, identity):
-                path.unlink()
+        except BaseException:
+            os.close(descriptor)
+            descriptor = -1
+            try:
+                if cls._backup_path_matches(path, identity):
+                    path.unlink()
+            except OSError:
+                pass
             raise
         finally:
-            os.close(descriptor)
+            if descriptor >= 0:
+                os.close(descriptor)
 
     @classmethod
     def _remove_owned_backup_artifacts(
@@ -1529,6 +1548,7 @@ class AgentStateStore:
             raise RuntimeError(f"{error['code']}: {message}")
         return [AgentEvent.from_dict(event) for event in page["events"]]
 
+
     def snapshot(self, stream_id: str, state: Mapping[str, Any], seq: int | None = None) -> int:
         if not self.enabled:
             return 0
@@ -1849,8 +1869,6 @@ class SwarmPubSub:
                     stream_id=f"pubsub:{clean_topic}",
                     kind="pubsub.message",
                     payload={
-                        "message_id": event_id,
-                        "topic": clean_topic,
                         "sender": sender,
                         "message": msg_payload,
                     },
@@ -1949,15 +1967,26 @@ class SwarmPubSub:
                 }
             messages = []
             for event in page["events"]:
-                payload = dict(event.payload)
-                messages.append({
-                    "id": str(payload.get("message_id") or event.event_id),
-                    "topic": clean_topic,
-                    "sender": str(payload.get("sender", event.actor)),
-                    "timestamp": event.created_at,
-                    "payload": payload.get("message", {}),
-                    "sequence": event.seq,
-                })
+                if isinstance(event, dict):
+                    payload = dict(event.get("payload") or {})
+                    messages.append({
+                        "id": str(payload.get("message_id") or event.get("event_id") or ""),
+                        "topic": clean_topic,
+                        "sender": str(payload.get("sender") or event.get("actor") or ""),
+                        "timestamp": float(event.get("created_at") or 0.0),
+                        "payload": payload.get("message", {}),
+                        "sequence": event.get("seq") or 0,
+                    })
+                else:
+                    payload = dict(getattr(event, "payload", {}) or {})
+                    messages.append({
+                        "id": str(payload.get("message_id") or getattr(event, "event_id", "")),
+                        "topic": clean_topic,
+                        "sender": str(payload.get("sender", getattr(event, "actor", ""))),
+                        "timestamp": float(getattr(event, "created_at", 0.0)),
+                        "payload": payload.get("message", {}),
+                        "sequence": getattr(event, "seq", 0),
+                    })
             return {
                 "success": True,
                 "topic": clean_topic,
@@ -1979,7 +2008,11 @@ class SwarmPubSub:
         with self._mu:
             self._prune_expired_locked(clean_topic, now)
             bucket = self._topics.get(clean_topic, [])
-            messages = [item for item in bucket if item["timestamp"] > since_timestamp][:page_limit]
+            messages = [
+                item for item in bucket
+                if item["timestamp"] > since_timestamp
+                and (after_seq <= 0 or (item.get("sequence") or 0) > after_seq)
+            ][:page_limit]
             first_timestamp = bucket[0]["timestamp"] if bucket else None
             retention_gap = bool(first_timestamp is not None and since_timestamp < first_timestamp and since_timestamp > 0)
         return {

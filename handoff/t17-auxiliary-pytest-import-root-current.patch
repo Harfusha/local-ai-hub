@@ -1,0 +1,11 @@
+--- a/tests/test_t17_auxiliary_formats.py
++++ b/tests/test_t17_auxiliary_formats.py
+@@ -9,6 +9,8 @@
+ import sqlite3
+ import subprocess
+ from pathlib import Path
++
++import pytest
+ 
+ from local_ai_hub.deterministic import DeterministicEngine
+ 

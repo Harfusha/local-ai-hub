@@ -1,4 +1,20 @@
+from local_ai_hub import http_server
 from local_ai_hub.dashboard import DASHBOARD_HTML
+
+
+def test_merged_dashboard_preserves_reviewed_html_golden():
+    import hashlib
+
+    html = DASHBOARD_HTML.encode("utf-8")
+    assert len(html) == 479461
+    assert hashlib.sha256(html).hexdigest() == "90854f090f6fe80024921886e91cbcb6bd71540523cec8fbe83f4411d8d0d411"
+
+
+def test_served_dashboard_discloses_trace_access_and_retention_policy():
+    html = http_server._dashboard_html_with_trace_notice()
+    assert "sensitive full prompt/output" in html
+    assert "protected access" in html
+    assert "separate retention policy" in html
 
 
 def test_operations_views_name_distinct_records_and_trace_availability() -> None:
@@ -7,6 +23,26 @@ def test_operations_views_name_distinct_records_and_trace_availability() -> None
     assert "Trace availability" in DASHBOARD_HTML
     assert "Agent task runs" in DASHBOARD_HTML
     assert "function requestTraceAvailability(request)" in DASHBOARD_HTML
+
+
+def test_dashboard_distinguishes_unknown_ollama_probe_from_offline() -> None:
+    start = DASHBOARD_HTML.index("function dashboardHealth(")
+    end = DASHBOARD_HTML.index("function dashboardFreshness(", start)
+    health_source = DASHBOARD_HTML[start:end]
+
+    assert "ollama_status" in health_source
+    assert "Ollama status is unknown" in health_source
+    assert "Ollama is offline" in health_source
+
+
+def test_dashboard_marks_degraded_live_status_and_retries_with_backoff() -> None:
+    start = DASHBOARD_HTML.index("async function pollStatus(")
+    end = DASHBOARD_HTML.index("const statusPoller=createDashboardStatusPoller", start)
+    poll_source = DASHBOARD_HTML[start:end]
+
+    assert "if(!r.ok)throw new Error(`status request failed (HTTP ${r.status})`)" in poll_source
+    assert "if(s.success===false){$('conn').textContent='degraded';$('conn').className='pill warn-t'" in poll_source
+    assert "return false;" in poll_source
 
 
 def test_dashboard_exposes_activity_mode_and_reports_http_failures() -> None:
@@ -45,6 +81,10 @@ def test_dashboard_requires_server_confirmation_before_reporting_mode_update() -
     assert "data.mode||mode" not in mode_source
     assert "const confirmed=data.mode;" in mode_source
     assert "!ACTIVITY_MODES.includes(confirmed)||confirmed!==mode" in mode_source
+    projection_start = DASHBOARD_HTML.index("function projectActivityModeTransition(confirmed,data){")
+    projection_end = DASHBOARD_HTML.index("\nasync function refreshActivityMode", projection_start)
+    projection_source = DASHBOARD_HTML[projection_start:projection_end]
+    assert "failures.push('VRAM unload incomplete')" in projection_source
 
 
 def _run_dashboard_apply_cases(cases):
@@ -197,6 +237,33 @@ def test_operator_surfaces_report_all_transition_failures() -> None:
     assert unauthorized["buttonsEnabled"] is True
 
 
+def test_dashboard_route_serves_live_http_document(monkeypatch) -> None:
+    import threading
+    import urllib.request
+    from types import SimpleNamespace
+
+    from local_ai_hub import http_server
+
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
+        "monitoring": {"dashboard_enabled": True},
+        "features": {"dashboard": True},
+    }))
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/dashboard", timeout=3) as response:
+            body = response.read().decode("utf-8")
+            assert response.status == 200
+            assert response.headers.get_content_type() == "text/html"
+        assert 'id="activityModeBadge"' in body
+        assert "Ollama is offline" in body
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
 def test_recent_request_table_reserves_trace_and_duration_columns() -> None:
     assert ".work-panel-3 th:nth-child(8){width:12%}" in DASHBOARD_HTML
     assert ".work-panel-3 th:nth-child(9){width:7%}" in DASHBOARD_HTML
@@ -244,6 +311,80 @@ def test_live_pollers_skip_overlapping_requests() -> None:
     assert "if(!isCurrent()||eventsPollInFlight)return false" in pollers
     assert "finally{tracesPollInFlight=false;" in trace_poller
     assert "finally{eventsPollInFlight=false;" in pollers
+
+
+def test_trace_inspector_consumes_pages_with_hard_response_budget() -> None:
+    start = DASHBOARD_HTML.index("async function openTrace(id)")
+    end = DASHBOARD_HTML.index("function openModal", start)
+    source = DASHBOARD_HTML[start:end]
+
+    assert "limit=100&max_bytes=8388608" in source
+    assert "max_bytes=134217728" not in source
+    assert "if(d.cursor_reset){traceSeq=0;traceEvents=[];traceEventTotal=0;}" in source
+    assert "if(d.terminal&&!d.has_more" in source
+
+
+def test_status_poller_respects_visibility_unchanged_state_and_jitter() -> None:
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+
+        pytest.skip("Node.js is required for dashboard poller behavior test")
+    poller_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function createDashboardStatusPoller") : DASHBOARD_HTML.index(
+            "async function apiFetch"
+        )
+    ]
+    harness = r"""
+const assert = require('node:assert/strict');
+let visible = true;
+let pollCount = 0;
+const outcomes = [false, false, true];
+const timers = [];
+const poller = createDashboardStatusPoller(async () => {
+  pollCount += 1;
+  return outcomes.shift();
+}, {
+  baseDelay: 1000,
+  maxDelay: 8000,
+  isVisible: () => visible,
+  setTimer: (callback, delay) => { const timer = {callback, delay, canceled: false}; timers.push(timer); return timer; },
+  clearTimer: timer => { timer.canceled = true; },
+  random: () => 0.25
+});
+const activeTimer = () => [...timers].reverse().find(timer => !timer.canceled);
+const settle = () => new Promise(resolve => setImmediate(resolve));
+(async () => {
+  assert.equal(shouldRefreshDashboardStatus({online: true}), true);
+  assert.equal(shouldRefreshDashboardStatus({online: true}), false);
+  assert.equal(shouldRefreshDashboardStatus({online: false}), true);
+  poller.start();
+  assert.equal(activeTimer().delay, 0);
+  activeTimer().callback(); await settle();
+  assert.equal(activeTimer().delay, 900);
+  activeTimer().callback(); await settle();
+  assert.equal(activeTimer().delay, 1800);
+  const hiddenTimer = activeTimer();
+  visible = false; poller.setVisible(false);
+  assert.equal(hiddenTimer.canceled, true);
+  hiddenTimer.callback(); await settle();
+  assert.equal(pollCount, 2);
+  visible = true; poller.setVisible(true);
+  assert.equal(activeTimer().delay, 0);
+  activeTimer().callback(); await settle();
+  assert.equal(activeTimer().delay, 900);
+  poller.refresh();
+  assert.equal(activeTimer().delay, 0);
+  activeTimer().callback(); await settle();
+  assert.equal(pollCount, 4);
+  poller.stop();
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run([node, "-e", poller_source + harness], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
 
 
 def test_dashboard_api_fetch_has_bounded_request_timeout() -> None:
@@ -306,28 +447,28 @@ def test_dashboard_ux_refinements_and_empty_states() -> None:
     assert '<div class="table-wrap"><table><thead><tr><th>Repository identity</th>' in DASHBOARD_HTML
 
 
-def test_dashboard_route_serves_live_http_document(monkeypatch) -> None:
-    import threading
-    import urllib.request
-    from types import SimpleNamespace
+def test_trajectory_inspector_uses_bounded_cursor_pages() -> None:
+    assert 'id="trajEventPager"' in DASHBOARD_HTML
+    assert "trajectorySnapshotSeq=null" in DASHBOARD_HTML
+    assert "stream_id:taskId" in DASHBOARD_HTML
+    assert "after_seq:String(trajectoryAfterSeq)" in DASHBOARD_HTML
+    assert "query.set('through_seq',String(trajectorySnapshotSeq))" in DASHBOARD_HTML
+    assert "(r.ok||r.status===413)&&trajectorySnapshotSeq===null&&Number.isFinite(Number(d.last_seq))" in DASHBOARD_HTML
+    assert "evs.filter(ev=>Number(ev.seq||0)<=trajectorySnapshotSeq)" in DASHBOARD_HTML
+    assert "limit:'100'" in DASHBOARD_HTML
+    assert "trajectoryAfterSeq=Number(d.next_seq||trajectoryAfterSeq)" in DASHBOARD_HTML
+    assert "trajectoryHasMore=Boolean(d.has_more)&&Number(trajectoryAfterSeq)<trajectorySnapshotSeq" in DASHBOARD_HTML
+    assert "data-load-traj-more" in DASHBOARD_HTML
+    assert "trajectoryGaps.push(...d.gap_ranges)" in DASHBOARD_HTML
+    assert "Missing retained events" in DASHBOARD_HTML
+    assert "trajectoryPageError?'Retry page':'Load next events'" in DASHBOARD_HTML
 
-    from local_ai_hub import http_server
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
-        "monitoring": {"dashboard_enabled": True},
-        "features": {"dashboard": True},
-    }))
-    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/dashboard", timeout=3) as response:
-            body = response.read().decode("utf-8")
-            assert response.status == 200
-            assert response.headers.get_content_type() == "text/html"
-        assert 'id="activityModeBadge"' in body
-        assert "Ollama is offline" in body
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=3)
+
+
+def test_dashboard_wires_status_refreshes_through_backoff_poller() -> None:
+    assert "const statusPoller=createDashboardStatusPoller(isCurrent=>pollStatus(isCurrent))" in DASHBOARD_HTML
+    assert "statusPoller.start()" in DASHBOARD_HTML
+    assert "statusPoller.setVisible(visible)" in DASHBOARD_HTML
+    assert "setInterval(()=>{if(isVisible)pollStatus();},1000)" not in DASHBOARD_HTML
+    assert "statusPoller.refresh()" in DASHBOARD_HTML

@@ -1,0 +1,72 @@
+diff --git a/src/local_ai_hub/services.py b/src/local_ai_hub/services.py
+--- a/src/local_ai_hub/services.py
++++ b/src/local_ai_hub/services.py
+@@ -2386,29 +2386,40 @@ class LocalAIServices:
+ 
+         whisper_cmd = shutil.which("whisper")
+         if whisper_cmd:
+-            cmd = [whisper_cmd, str(p), "--output_format", "txt", "--model", "tiny"]
++            from tempfile import TemporaryDirectory
+             from .process_utils import ProcessCancelledError, run_hidden
+ 
+             try:
+-                proc = run_hidden(
+-                    cmd,
+-                    capture_output=True,
+-                    text=True,
+-                    timeout=60,
+-                    check=False,
+-                    cancel_event=cancel_event,
+-                    cancel_grace_seconds=1.0,
+-                )
+-                if proc.returncode == 0:
+-                    txt_path = p.with_suffix(".txt")
+-                    text = txt_path.read_text(encoding="utf-8", errors="replace") if txt_path.exists() else proc.stdout
+-                    return {
+-                        "success": True,
+-                        "text": text.strip(),
+-                        "audio_path": str(p),
+-                        "model": model,
+-                        "engine": "whisper_cli",
+-                    }
++                with TemporaryDirectory(prefix="local-ai-hub-transcribe-") as output_dir:
++                    cmd = [
++                        whisper_cmd,
++                        str(p),
++                        "--output_format",
++                        "txt",
++                        "--model",
++                        "tiny",
++                        "--output_dir",
++                        output_dir,
++                    ]
++                    proc = run_hidden(
++                        cmd,
++                        capture_output=True,
++                        text=True,
++                        timeout=60,
++                        check=False,
++                        cancel_event=cancel_event,
++                        cancel_grace_seconds=1.0,
++                    )
++                    if proc.returncode == 0:
++                        txt_path = Path(output_dir) / f"{p.stem}.txt"
++                        text = txt_path.read_text(encoding="utf-8", errors="replace") if txt_path.exists() else proc.stdout
++                        return {
++                            "success": True,
++                            "text": text.strip(),
++                            "audio_path": str(p),
++                            "model": model,
++                            "engine": "whisper_cli",
++                        }
+             except ProcessCancelledError:
+                 return {
+                     "success": False,
+@@ -2435,7 +2446,6 @@ class LocalAIServices:
+             "degraded": True,
+             "note": "Local whisper CLI not installed in PATH; audio metadata processed.",
+         }
+-
+     def benchmark(self, tenant: str = "benchmark") -> dict[str, Any]:
+         """Manual tiny benchmark used to seed the adaptive runtime cost model."""
+         models=[]

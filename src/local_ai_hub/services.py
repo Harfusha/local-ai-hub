@@ -1882,9 +1882,28 @@ class LocalAIServices:
             priority=5,
         )
 
-        draft_code = gen_result.get("text") or gen_result.get("response") or ""
+        draft_value = gen_result.get("text") or gen_result.get("response") or ""
+        draft_code = draft_value.strip() if isinstance(draft_value, str) else ""
+        if gen_result.get("success") is False:
+            return {
+                "success": False,
+                "model": gen_result.get("model", fast_model),
+                "draft": "",
+                "verification": {"syntax_valid": False},
+                "validated": False,
+                "error": str(gen_result.get("error") or "Draft generation failed."),
+            }
+        if not draft_code:
+            return {
+                "success": False,
+                "model": gen_result.get("model", fast_model),
+                "draft": "",
+                "verification": {"syntax_valid": False},
+                "validated": False,
+                "error": "Model returned an empty draft.",
+            }
         verification: dict[str, Any] = {"syntax_valid": True}
-        if file_path.endswith(".py") and draft_code:
+        if file_path.endswith(".py"):
             import ast
             try:
                 clean_code = re.sub(r"^```[\w]*\n", "", draft_code.strip())
@@ -1895,7 +1914,12 @@ class LocalAIServices:
                 verification["syntax_valid"] = False
                 verification["syntax_error"] = str(e)
 
-        if bool(args.get("verify_tests", False)) and file_path and self.commands:
+        if (
+            bool(args.get("verify_tests", False))
+            and file_path
+            and self.commands
+            and verification["syntax_valid"]
+        ):
             aff = self.affected_tests(str(resolved_root), changed_paths=[file_path])
             if aff.get("suggested_command"):
                 cmd_res = self.commands.run(aff["suggested_command"], str(resolved_root), tenant)
@@ -1927,6 +1951,7 @@ class LocalAIServices:
             "model": fast_model,
             "draft": draft_code,
             "verification": verification,
+            "validated": bool(verification.get("tests_passed")) and verification["syntax_valid"],
             "duration_ms": gen_result.get("duration_ms", 0),
         }
 
@@ -2002,9 +2027,30 @@ class LocalAIServices:
             "scaffold",
             priority=5,
         )
-        draft_code = gen_result.get("text") or gen_result.get("response") or ""
+        if gen_result.get("success") is False:
+            return {
+                "success": False,
+                "code": "",
+                "language": language,
+                "model": gen_result.get("model", fast_model),
+                "tokens_generated": gen_result.get("tokens", 0),
+                "validated": False,
+                "error": str(gen_result.get("error") or "Code generation failed."),
+            }
+        draft_value = gen_result.get("text") or gen_result.get("response") or ""
+        draft_code = draft_value if isinstance(draft_value, str) else ""
         clean_code = re.sub(r"^```[\w]*\n", "", draft_code.strip())
         clean_code = re.sub(r"\n```$", "", clean_code)
+        if not clean_code.strip():
+            return {
+                "success": False,
+                "code": "",
+                "language": language,
+                "model": gen_result.get("model", fast_model),
+                "tokens_generated": gen_result.get("tokens", 0),
+                "validated": False,
+                "error": "Model returned an empty scaffold.",
+            }
 
         return {
             "success": True,
@@ -2012,6 +2058,7 @@ class LocalAIServices:
             "language": language,
             "model": gen_result.get("model", fast_model),
             "tokens_generated": gen_result.get("tokens", 0),
+            "validated": False,
         }
 
     @staticmethod
@@ -2206,7 +2253,6 @@ class LocalAIServices:
             },
             "additionalProperties": False,
         }
-
     def vision(
         self,
         args: dict[str, Any],
@@ -2620,7 +2666,6 @@ class LocalAIServices:
                 "reason": "timeout",
                 "error": "Whisper CLI timed out before transcription completed.",
             }
-
         except Exception:
             return {
                 "success": False,
@@ -6437,9 +6482,20 @@ class LocalAIServices:
         def compute() -> dict[str, Any]:
             res = self.scheduler.submit(model, tenant, "complete_code", lambda: self.runtime.request("/api/generate", payload, timeout=6.0))
             if isinstance(res, dict) and "error" in res:
-                return {"success": False, "error": res["error"]}
-            completion = str(res.get("response", "")) if isinstance(res, dict) else ""
-            return {"success": True, "model": model, "completion": completion}
+                return {"success": False, "error": res["error"], "validated": False}
+            response_value = res.get("response") if isinstance(res, dict) else None
+            if not isinstance(response_value, str) or not response_value.strip():
+                return {
+                    "success": False,
+                    "error": "Model returned an empty completion.",
+                    "validated": False,
+                }
+            return {
+                "success": True,
+                "model": model,
+                "completion": response_value,
+                "validated": False,
+            }
         raw, hit, coalesced = self.generation_cache.get_or_compute(cache_key, compute)
         result = copy.deepcopy(raw)
         result["cache_hit"] = hit or coalesced

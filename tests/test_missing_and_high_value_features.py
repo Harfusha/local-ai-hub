@@ -355,6 +355,34 @@ def test_incident_webhooks(tmp_path: Path):
     assert "http://127.0.0.1:9999/hook" not in incidents.webhook_urls
 
 
+def test_audio_transcription_service_without_whisper_is_not_false_success(tmp_path: Path, monkeypatch):
+    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+
+    dummy_audio = tmp_path / "voice.wav"
+    dummy_audio.write_bytes(b"RIFFdummywaveheader12345678")
+    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: None)
+
+    srv = LocalAIServices(
+        config={
+            "server": {"state_dir": str(tmp_path / "state")},
+            "models": {"general": "qwen2.5-coder:7b"},
+        },
+        runtime=MagicMock(),
+        scheduler=MagicMock(),
+        embeddings=MagicMock(),
+        artifacts=MagicMock(),
+        telemetry=MagicMock(),
+        repo_tools=MagicMock(),
+        deterministic=None,
+    )
+    res = srv.transcribe({"audio_path": str(dummy_audio)}, tenant="test")
+    assert res["success"] is False
+    assert res["reason"] == "cli_missing"
+    assert res["degraded"] is True
+    assert not res.get("text")
+
+
 def test_audio_transcription_service(tmp_path: Path, monkeypatch):
     from unittest.mock import MagicMock
     from types import SimpleNamespace
@@ -367,6 +395,7 @@ def test_audio_transcription_service(tmp_path: Path, monkeypatch):
         lambda *_args, **_kwargs: SimpleNamespace(
             returncode=0,
             stdout='{"text":"transcribed audio"}',
+            stderr="",
         ),
     )
 

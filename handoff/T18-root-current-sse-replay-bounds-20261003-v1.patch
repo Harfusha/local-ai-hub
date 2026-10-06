@@ -1,0 +1,79 @@
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -1952,27 +1952,67 @@
+             # are discarded by the sequence check below.
+             last_seq = after_seq
+             if stream_id and after_seq >= 0:
+-                past = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=1000)
+-                for ev in past:
+-                    if kind and ev.kind != kind:
+-                        continue
+-                    last_seq = max(last_seq, ev.seq or 0)
+-                    payload = json_dumps(ev.to_dict(), separators=(",", ":"))
+-                    msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
++                replay_cursor = after_seq
++                replay_through_seq = None
++                while True:
++                    page = APP.agent_state.event_page(
++                        stream_id=stream_id,
++                        after_seq=replay_cursor,
++                        limit=100,
++                        through_seq=replay_through_seq,
++                    )
++                    if page.get("success") is not True:
++                        stream_success = False
++                        stream_error = "event replay unavailable"
++                        payload = json_dumps(page, separators=(",", ":"))
++                        try:
++                            self.wfile.write(f"event: replay_error\ndata: {payload}\n\n".encode("utf-8"))
++                            self.wfile.flush()
++                        except OSError:
++                            stream_error = "client disconnected"
++                        return
++                    if replay_through_seq is None:
++                        replay_through_seq = int(page.get("last_seq", replay_cursor) or replay_cursor)
++                    page_payload = json_dumps(page, separators=(",", ":"))
++                    page_msg = f"id: {page.get('next_seq', replay_cursor)}\nevent: replay_page\ndata: {page_payload}\n\n".encode("utf-8")
+                     try:
+-                        self.wfile.write(msg)
++                        self.wfile.write(page_msg)
+                         self.wfile.flush()
+                     except OSError:
+                         stream_success = False
+                         stream_error = "client disconnected"
+                         return
++                    if page.get("cursor_reset") is True:
++                        first_retained = int(page.get("first_retained_seq", 0) or 0)
++                        last_seq = max(0, first_retained - 1)
++                    for raw_event in page.get("events", []):
++                        if not isinstance(raw_event, dict):
++                            continue
++                        event_seq = int(raw_event.get("seq", 0) or 0)
++                        event_kind = str(raw_event.get("kind", ""))
++                        if event_seq <= last_seq or (kind and event_kind != kind):
++                            continue
++                        last_seq = event_seq
++                        payload = json_dumps(raw_event, separators=(",", ":"))
++                        msg = f"id: {event_seq}\nevent: {event_kind}\ndata: {payload}\n\n".encode("utf-8")
++                        try:
++                            self.wfile.write(msg)
++                            self.wfile.flush()
++                        except OSError:
++                            stream_success = False
++                            stream_error = "client disconnected"
++                            return
++                    next_cursor = int(page.get("next_seq", replay_cursor) or 0)
++                    if page.get("has_more") is not True or next_cursor <= replay_cursor:
++                        break
++                    replay_cursor = next_cursor
+ 
+             start_time = time.monotonic()
+             while True:
+                 remaining = timeout - (time.monotonic() - start_time)
+                 if remaining <= 0:
+                     try:
+-                        timeout_msg = f"event: stream_timeout\ndata: {{\"reconnect\":true,\"last_seq\":{last_seq}}}\n\n".encode("utf-8")
++                        timeout_msg = f"event: stream_timeout\ndata: {{\"reconnect\":true,\"next_seq\":{last_seq},\"last_seq\":{last_seq}}}\n\n".encode("utf-8")
+                         self.wfile.write(timeout_msg)
+                         self.wfile.flush()
+                     except OSError:
