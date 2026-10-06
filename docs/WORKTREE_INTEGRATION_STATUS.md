@@ -561,3 +561,10 @@ remain intact. Fourteen have unmatched versions requiring manual hunk decisions:
 source/test/tool/document paths. Exact checkpoint preservation is not proof of
 integration. Separate existing workers now own the 22 active untracked candidates
 and the 32 tracked/index hunk disposition report. No duplicate task was created.
+
+Additional concurrent root writes appeared after `7715b1a1`: explicit caller
+`repository_id` fallback in memory GET/POST handling. They are preserved in a
+separate unfinished snapshot without source editing. Their editing owner is
+still unconfirmed. Caller-provided repository/tenant identity must be reviewed
+against authenticated scope before release; this snapshot is not approval to
+trust it. Root runtime `agent_state.sqlite` remains uncommitted.
