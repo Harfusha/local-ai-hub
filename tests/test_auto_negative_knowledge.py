@@ -45,20 +45,24 @@ def test_auto_mint_negative_knowledge_sqlite_lock(store: IncidentStore):
     assert "backoff" in (incident.verified_fix or "").lower()
 
 
-def test_find_negative_knowledge_by_query(store: IncidentStore):
+def test_find_negative_knowledge_by_query(store: IncidentStore, tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
     store.capture(ToolOutcome(
         tool_name="command",
         command="pytest",
         error="ModuleNotFoundError: No module named 'requests'",
         exit_code=1,
         state_revision="rev-3",
+        repository_root=str(root),
+        tenant="agent",
     ))
-    results = store.find_negative_knowledge("requests")
+    results = store.find_negative_knowledge("requests", root=str(root), tenant="agent")
     assert len(results) >= 1
     assert "requests" in results[0]["root_cause"]
 
 
-def test_command_broker_attaches_known_pitfalls(tmp_path: Path):
+def test_command_broker_skips_unscoped_known_pitfalls(tmp_path: Path):
     from local_ai_hub.commands import CommandBroker
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     store = IncidentStore(state_store)
@@ -78,5 +82,4 @@ def test_command_broker_attaches_known_pitfalls(tmp_path: Path):
     cb.classify = lambda *args, **kwargs: {"class": "validation", "cacheable": False, "allowed": True}
 
     res = cb.run("pytest tests/test_broken.py", str(tmp_path))
-    assert "known_pitfalls" in res
-    assert any("numpy" in str(p.get("root_cause", "")) for p in res["known_pitfalls"])
+    assert 'known_pitfalls' not in res

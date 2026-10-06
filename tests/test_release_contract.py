@@ -30,7 +30,11 @@ def test_release_uses_only_current_local_ai_hub_contracts():
     roots = [ROOT / "src", ROOT / "tools", ROOT / "docs", ROOT / "skills", ROOT / "tests"]
     files = [ROOT / name for name in ("README.md", "CHANGELOG.md", "FEATURES.md", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md")]
     for base in roots:
-        files.extend(path for path in base.rglob("*") if path.is_file() and path.suffix in {".py", ".md", ".toml", ".yml", ".yaml"})
+        for path in base.rglob("*"):
+            if path.is_file() and path.suffix in {".py", ".md", ".toml", ".yml", ".yaml"}:
+                if path.relative_to(ROOT).parts[:2] == ("docs", "superpowers"):
+                    continue
+                files.append(path)
 
     current_major = int(__version__.split(".", 1)[0])
     historical_majors = tuple(str(n) for n in range(1, current_major))
@@ -59,11 +63,16 @@ def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     assert source.count("@mcp.tool()") == 8
     assert "CALL THIS FIRST before broad repository reads" in source
     assert '"mode": "full" if mode == "full" else "adaptive" if mode == "adaptive" else "fast"' in source
-    assert "CodeGraphContext" in source and "handmade grep terms" in source
+    assert "CodeGraphContext" not in source and "handmade grep terms" in source
     write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
     skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
     assert "before native reads, grep" in skill
-    assert "semantic" in skill and "CodeGraphContext" in skill and "local_ai_command" in skill
+    assert "semantic" in skill and "CodeGraphContext" not in skill and "local_ai_command" in skill
+    installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
+    assert "## Optional standalone tool: CodeGraphContext" in installation
+    assert "CodeGraphContext and KuzuDB are not Hub dependencies or backends" in installation
+    assert "install it directly in the target repository or environment" in installation
+    assert "This connects an agent directly to CodeGraphContext; it does not configure Local AI Hub" in installation
 
 
 def test_guarded_context_release_contract_documents_default_flow_and_fallbacks():
@@ -144,7 +153,7 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
     skip_parts = {
         ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data", "generated",
         ".agents", ".serena", ".superpowers", "agy-contextless-workspace",
-        "backups", "migration-backups", ".worktrees",
+        "backups", "migration-backups", ".worktrees", "handoff",
     }
     skip_files = {"ORIGINAL_REQUEST.md", ".coverage"}
     for path in ROOT.rglob("*"):
