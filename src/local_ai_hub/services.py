@@ -4491,6 +4491,33 @@ class LocalAIServices:
                 traceable.append(traced)
             evidence = traceable
         context = str(lexical.get("context", ""))
+        # Keep the already budgeted, exact lexical rendering intact; only move
+        # its complete snippet blocks into the same order as their evidence.
+        rendered_positions: list[tuple[int, int]] = []
+        used_positions: set[int] = set()
+        for evidence_index, item in enumerate(evidence):
+            if not isinstance(item, dict) or not item.get("path"):
+                rendered_positions = []
+                break
+            header = (
+                f"--- {item['path']}:{item.get('start_line')}-{item.get('end_line')} "
+                f"score={item.get('score')} ---\n"
+            )
+            position = context.find(header)
+            while position in used_positions and position >= 0:
+                position = context.find(header, position + 1)
+            if position < 0:
+                rendered_positions = []
+                break
+            rendered_positions.append((evidence_index, position))
+            used_positions.add(position)
+        source_order = sorted(rendered_positions, key=lambda item: item[1])
+        if rendered_positions and len(rendered_positions) == len(evidence) and source_order[0][1] == 0:
+            blocks: dict[int, str] = {}
+            for offset, (evidence_index, start) in enumerate(source_order):
+                end = source_order[offset + 1][1] if offset + 1 < len(source_order) else len(context)
+                blocks[evidence_index] = context[start:end]
+            context = "".join(blocks[index] for index in range(len(evidence)))
         semantic_used = False
         per_path: dict[str, int] = {}
         for item in evidence:
