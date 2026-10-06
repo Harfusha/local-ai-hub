@@ -6154,11 +6154,11 @@ class CommandBroker:
                 "error": str(exc)[:512],
             }
         if not attempt_key:
-            attempt_key = self._attempt_key(command, str(source))
+            attempt_key = self._attempt_key(command, str(source), tenant=tenant, timeout=timeout)
         if not command_key:
             try:
                 command_key, _transaction_state = self._key(
-                    command, str(source), self.classify(command)
+                    command, str(source), self.classify(command), tenant=tenant, timeout=timeout,
                 )
             except (OSError, ValueError, RuntimeError):
                 command_key = ""
@@ -7769,8 +7769,14 @@ class CommandBroker:
             cache_invalidation_errors: list[str] = []
             try:
                 classification = self.classify(incident_command)
-                command_key, _state = self._key(incident_command, str(cwd_path), classification)
-                attempt_key = self._attempt_key(incident_command, str(cwd_path))
+                identity_timeout = max(1, int(timeout or self.timeout))
+                command_key, _state = self._key(
+                    incident_command, str(cwd_path), classification,
+                    tenant=tenant, timeout=identity_timeout,
+                )
+                attempt_key = self._attempt_key(
+                    incident_command, str(cwd_path), tenant=tenant, timeout=identity_timeout,
+                )
                 for cache, key in (
                     (self.success_cache, command_key),
                     (self.failure_cache, command_key),
