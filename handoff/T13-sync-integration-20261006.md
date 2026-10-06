@@ -54,7 +54,7 @@ Retained-T13 failure detail: one preprocessing test constructs a preprocessor wi
 
 Aggregate focused results: **104 passed, 37 failed**. Release acceptance is **NOT VERIFIED**. Historical receipts are not reused as fresh proof.
 
-Changed files versus pinned master: **1,372**, fully listed in `T13-sync-changed-files-20261006.json`. Runtime source changes are confined to `src/local_ai_hub/async_jobs.py` (three retained safety hunks) and `src/local_ai_hub/commands.py` (existing candidate fail-closed repair guard). Remaining changes are tests, source-history handoffs, one plan document and the validation-directory ignore file. Handoff source copies are committed preservation material, not imported runtime modules.
+Changed files versus pinned master: **1,372**, fully listed in `T13-sync-changed-files-20261006.json`. Runtime source changes are confined to `src/local_ai_hub/async_jobs.py` (three retained safety hunks) and `src/local_ai_hub/commands.py` (existing candidate fail-closed repair guard). Remaining changes are tests, source-history handoffs, HTTP documentation, one plan document and the validation-directory ignore file. Handoff source copies are committed preservation material, not imported runtime modules.
 
 ## Committed graph verification
 
