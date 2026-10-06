@@ -16,7 +16,7 @@ Token-economizer bounded slices used; requested `ensure-tools.ps1 -PlanOnly` fai
 - `original-inventory.json`: exact pre-merge porcelain status, all 16 tracked dirty paths and 399 untracked paths, size/SHA256, original HEAD, observed master, relevant paths and collisions.
 - `original-bytes.zip`: exact bytes of all 16 tracked dirty files and all 13 relevant new tests, original tracked binary diff and staged binary diff. Raw bytes avoid Git line-ending normalization ambiguity.
 - Seven untracked/master collisions were committed into the checkpoint before merge: agent memory context tenant isolation, HTTP identity, memory delete identity contract, T05 state migrations, cache clear durable state, delete artifacts, FTS atomicity test modules.
-- All 386 unrelated original untracked artifacts remain in place. `preservation-receipt.json` verifies every original unrelated hash and every archived raw source/test hash; contains exact original/current per-path hashes and remaining porcelain status.
+- All 386 unrelated original untracked artifacts remain in place. `preservation-receipt.json` verifies every original unrelated hash and every archived raw source/test hash; contains exact original/current per-path hashes and remaining original-untracked porcelain entries. It excludes stale intermediate merge status.
 - Runtime databases/cache created by tests remain uncommitted under ignored audit test directories. No original runtime state was removed or staged.
 
 ## Semantic conflict decisions and superseded hunks
@@ -55,4 +55,28 @@ Targeted validation only; no release suite. Commands use assigned source via PYT
 2. Intermediate 11-module run: 122 passed, 14 failed, 1 skipped in 68.84s. Three sequence fixture failures, two silent replay expectations and caller-forged promotion expectation reconciled with current master afterward. Source changed during this intermediate run; this is diagnostic evidence, not final-source acceptance.
 3. Preservation/compile check: all 29 raw backups verified, all 386 unrelated original artifacts unchanged; zero Python syntax errors; context pack AST equal to initial pin.
 
-Final targeted result and final pin will be appended before handoff. Commit records reconciled unfinished work; it does not assert feature acceptance.
+## Final snapshot and handoff
+
+- Initial merge commit: `c275990ad51b656ce52ccf16456610363d187b89`.
+- Final snapshot master pin merged exactly once: `9b794d7fa24abb179a17d87e14becdfa7fc8cd50` (read-only snapshot, no tracking of further master movement).
+- This final snapshot contains `fbc965f568105e1a8d3dc03ae4c9da5531a9617e` (verified ancestry), including the user's requested T03 test commit and subsequent already-published integrations.
+- Final snapshot merge has no conflicts. Final receipt is refreshed after committing the merge; its `integration_merge_head` identifies that merge. A following audit-only receipt commit completes the handoff.
+- Incremental review patches: `incremental-vs-initial-master.patch` and `incremental-vs-final-master.patch` (source/test/doc changes; self-generated audit payload excluded). Git's full diff also includes the committed audit/checkpoint materials.
+- Final targeted runtime suite NOT rerun: user explicitly directed no acceptance chase and committed handoff despite failures. Intermediate diagnostic result remains **122 passed, 14 failed, 1 skipped**; later merge/fixture adjustments are syntax/preservation checked only, not claimed runtime accepted.
+- Unaccepted diagnostic cases: newer context allows tenantless same-root records while older T05 tests expect exclusion; newer scoped lookup allows specific legacy TASK provenance cases; GLOBAL deletion ignores transport tenant; original HTTP/global fixtures mix older transport assumptions. Final source also retains snapshot/adoption tests not included in the 11-module diagnostic command. These require separately owned acceptance review; no new feature work added here.
+- Reconciled fixture issues after that run: duplicate provenance removed; deletion marker expects sequence 2 after public record; record replay expects ValueError after tombstone; HTTP payload `approver=user` expects 403 under trusted actor policy; qualified GLOBAL get no longer rejects already-matched provenance wholesale.
+- Remaining original artifacts: 386 untracked files, hashes unchanged; tracked source/task/test/docs committed. New pytest runtime artifacts stay ignored/uncommitted inside assigned worktree. Exact paths and hashes are receipt-backed.
+- Commit records reconciled unfinished work; it does not assert feature acceptance. No full release suite, publication, push, or master-ref mutation.
+
+Diagnostic command (run 1 used pytest-run1; run 2 used pytest-run2):
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+$env:PYTHONPATH=(Join-Path (Get-Location) 'src')
+python -m pytest -q --tb=short -p no:cacheprovider --basetemp=artifacts/sync-t05-20261006/pytest-run2 tests/test_agent_memory.py tests/test_t05_agent_state_migrations.py tests/test_t05_memory_delete_artifacts.py tests/test_t05_memory_fts_atomicity.py tests/test_identity_contracts.py tests/test_memory_scope_delete.py tests/test_memory_delete_identity_contract.py tests/test_agent_memory_context_tenant_isolation.py tests/test_t05_cache_clear_durable_state.py tests/test_t05_cache_state_isolation.py tests/test_agent_memory_http_identity.py
+python artifacts/sync-t05-20261006/preservation.py
+```
+
+Failed diagnostic node IDs: `test_agent_memory.py::{test_find_for_context_enforces_repository_tenant_and_task_identity,test_task_lookup_rejects_rootless_and_tenantless_memory,test_find_for_context_session_memory_requires_session_and_tenant,test_get_global_requires_unowned_or_matching_tenant}`; `test_t05_memory_delete_artifacts.py::{test_replaying_record_after_delete_does_not_restore_memory_or_fts,test_delete_cleanup_failure_rolls_back_memory_and_search_state[agent_entity_relations],test_delete_cleanup_failure_rolls_back_memory_and_search_state[agent_memory_embeddings],test_delete_cleanup_failure_rolls_back_memory_and_search_state[agent_memory_fts]}`; `test_agent_memory_context_tenant_isolation.py::test_find_for_context_without_tenant_returns_only_tenantless_global`; `test_agent_memory_http_identity.py::{test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope,test_http_memory_get_and_mutations_bind_transport_tenant_and_project_identity,test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries,test_http_unscoped_global_get_promote_and_delete,test_http_unscoped_global_delete_then_record_replay_keeps_tombstone}`.
+
+Skipped diagnostic node: `test_identity_contracts.py::test_workspace_memo_migration_*` symlink variant, Windows privilege 1314; no privilege workaround attempted.
