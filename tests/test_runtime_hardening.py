@@ -235,6 +235,8 @@ def test_registry_repair_reactivates_the_selected_project(tmp_path):
     processor._init_db()
 
     now = time.time()
+    # Registry repair discards missing roots; keep these projects valid so this
+    # fixture exercises slot rebalancing rather than runtime cleanup.
     older_path = tmp_path / "older-project"
     newest_path = tmp_path / "newest-project"
     older_path.mkdir()
