@@ -52,17 +52,25 @@ def _read_toml(path: Path, *, required: bool = False) -> dict[str, Any]:
     return value
 
 
-def _number(section: dict[str, Any], key: str, *, minimum: float | None = None, maximum: float | None = None) -> None:
+def _number(
+    section: dict[str, Any],
+    key: str,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    label: str | None = None,
+) -> None:
     if key not in section:
         return
     value = section[key]
+    setting = label or key
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ConfigError(f"{key} must be numeric")
+        raise ConfigError(f"{setting} must be numeric")
     numeric = float(value)
     if minimum is not None and numeric < minimum:
-        raise ConfigError(f"{key} must be >= {minimum:g}")
+        raise ConfigError(f"{setting} must be >= {minimum:g}")
     if maximum is not None and numeric > maximum:
-        raise ConfigError(f"{key} must be <= {maximum:g}")
+        raise ConfigError(f"{setting} must be <= {maximum:g}")
 
 
 def validate_config(data: dict[str, Any]) -> None:
@@ -133,7 +141,13 @@ def validate_config(data: dict[str, Any]) -> None:
     _number(server, "max_request_body_bytes", minimum=1024, maximum=512 * 1024 * 1024)
 
     headless = data.get("headless", {})
-    _number(headless, "health_probe_timeout_seconds", minimum=0.1, maximum=5.0)
+    _number(
+        headless,
+        "health_probe_timeout_seconds",
+        minimum=0.1,
+        maximum=5.0,
+        label="headless.health_probe_timeout_seconds",
+    )
 
     hardware = data.get("hardware", {})
     profile = str(hardware.get("profile", "auto") or "auto").lower()
