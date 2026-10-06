@@ -546,6 +546,8 @@ def test_transport_connection_refusal_marks_request_not_sent(tmp_path, monkeypat
         "request_not_sent": True,
         "outcome_unknown": False,
         "request_id": "stable-refused-id",
+        "terminal": True,
+        "retryable": False,
     }
 
 
@@ -606,6 +608,8 @@ def test_transport_write_failure_marks_outcome_unknown(tmp_path, monkeypatch):
         "error": "request outcome is unknown after a transport failure",
         "outcome_unknown": True,
         "request_id": "stable-write-id",
+        "terminal": True,
+        "retryable": False,
     }
 
 

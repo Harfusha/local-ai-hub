@@ -63,18 +63,18 @@ def _expected_root_tenant(client: HubClient, root: Path) -> str:
     return f"root-{digest}"
 
 
-def test_start_lock_sidecar_identity_lookup_failure_uses_live_pid_fallback(tmp_path, monkeypatch):
+def test_start_lock_identity_lookup_failure_uses_live_pid_fallback(tmp_path, monkeypatch):
     lock_path = tmp_path / "hub.start.lock"
-    lock_path.write_text("123 1 nonce test_start_id 7", encoding="ascii")
-    sidecar = lock_path.with_name(f"{lock_path.name}.nonce.pid")
-    sidecar.write_text("456 test_start_id 8", encoding="ascii")
+    lock_path.write_text("123 1 test_start_id 7", encoding="ascii")
     monkeypatch.setattr(client_module, "process_identity", lambda _pid: None)
-    monkeypatch.setattr(client_module, "pid_alive", lambda pid: pid == 456)
+    monkeypatch.setattr(client_module, "pid_alive", lambda pid: pid == 123)
 
-    assert client_module._live_start_lock(lock_path, stale_seconds=20) is True
+    assert client_module._acquire_start_lock(lock_path, stale_seconds=20) is None
 
     monkeypatch.setattr(client_module, "pid_alive", lambda _pid: False)
-    assert client_module._live_start_lock(lock_path, stale_seconds=20) is False
+    handle = client_module._acquire_start_lock(lock_path, stale_seconds=20)
+    assert handle is not None
+    handle.close()
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
