@@ -75,6 +75,29 @@ def test_daemon_environment_rejects_invalid_explicit_entries(
         broker._daemon_environment(extra_env)  # type: ignore[arg-type]
 
 
+def test_spawn_daemon_rejects_disallowed_command_when_policy_blocking_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path, policy_blocking=False)
+    monkeypatch.setattr(
+        broker,
+        "classify",
+        lambda _command: {"class": "mutating", "allowed": False, "reason": "restricted command"},
+    )
+    launches: list[object] = []
+
+    def fail_if_launched(*args: object, **_kwargs: object) -> None:
+        launches.append(args)
+        raise AssertionError("policy-disallowed daemon reached process launch")
+
+    monkeypatch.setattr(commands_module.subprocess, "Popen", fail_if_launched)
+    result = broker.spawn_daemon([sys.executable, "-c", "pass"], str(tmp_path), task_id="daemon-test")
+
+    assert result["success"] is False
+    assert result["policy_blocked"] is True
+    assert result["classification"]["allowed"] is False
+    assert not launches
+
 def test_spawn_daemon_requires_auxiliary_policy_before_process_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -274,7 +297,7 @@ def test_daemon_job_stops_descendants_after_leader_exits(
         return stop_tree(info)
 
     monkeypatch.setattr(commands_module, "_stop_daemon_tree", fail_once)
-    broker = _broker(tmp_path)
+    broker = _broker(tmp_path, allow_unknown=True)
     child_pid_file = tmp_path / "daemon-child.pid"
     parent_code = (
         "import pathlib, subprocess, sys; "
