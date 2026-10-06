@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hmac
+import inspect
+import hashlib
+import ipaddress
 import json
 import os
 import queue
@@ -51,14 +54,237 @@ os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 APP: LocalAIApp | None = None
 
+
+class _ActiveTranscriptionRegistry:
+    """Track synchronous Whisper calls and cancel them before gaming release."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition(threading.RLock())
+        self._active: dict[str, threading.Event] = {}
+        self._results: dict[str, dict[str, Any]] = {}
+        self._waiting: set[str] = set()
+        self._gaming = False
+        self._drained_callbacks: list[Any] = []
+
+    def enter_gaming(self) -> None:
+        with self._condition:
+            self._gaming = True
+            # Track before signaling: a cooperative worker may finish before
+            # cancel_and_wait takes its own active snapshot.
+            self._waiting.update(self._active)
+            for event in self._active.values():
+                event.set()
+            self._condition.notify_all()
+
+    def enter_active(self) -> None:
+        with self._condition:
+            self._gaming = False
+
+    def begin(self) -> tuple[str, threading.Event]:
+        token = uuid.uuid4().hex
+        event = threading.Event()
+        with self._condition:
+            if self._gaming:
+                self._waiting.add(token)
+                event.set()
+            self._active[token] = event
+            self._condition.notify_all()
+        return token, event
+
+    def finish(self, token: str, result: Any) -> None:
+        callbacks: list[Any] = []
+        with self._condition:
+            normalized = result if isinstance(result, dict) else {}
+            if token in self._waiting:
+                self._results[token] = {
+                    "cancelled": normalized.get("reason") == "cancelled" or normalized.get("cancelled") is True,
+                    "success": normalized.get("success") is True,
+                }
+            self._active.pop(token, None)
+            if not self._active:
+                callbacks, self._drained_callbacks = self._drained_callbacks, []
+                self._condition.notify_all()
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:
+                pass
+
+    def cancel_and_wait(self, timeout_seconds: float) -> dict[str, Any]:
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        with self._condition:
+            active_at_start = tuple(self._active)
+            self._waiting.update(active_at_start)
+            for event in self._active.values():
+                event.set()
+            while self._active and time.monotonic() < deadline:
+                self._condition.wait(max(0.0, deadline - time.monotonic()))
+            pending = len(self._active)
+            tracked = set(active_at_start) | set(self._waiting) | set(self._results)
+            results = [self._results.pop(token, {}) for token in tracked]
+            self._waiting.difference_update(tracked)
+        if pending:
+            return {"state": "timed_out", "inference_active": True, "active": pending}
+        if not tracked:
+            return {"state": "not_applicable", "inference_active": False, "active": 0}
+        cancelled = all(item.get("cancelled") is True for item in results)
+        return {
+            "state": "cancelled" if cancelled else "completed",
+            "inference_active": False,
+            "active": 0,
+            "cancelled": cancelled,
+        }
+
+    def when_drained(self, callback: Any) -> None:
+        with self._condition:
+            if self._active:
+                self._drained_callbacks.append(callback)
+                return
+        try:
+            callback()
+        except Exception:
+            pass
+
+    def active_count(self) -> int:
+        with self._condition:
+            return len(self._active)
+
+    def defer_process_cleanup(self, token: str, process: Any, *, tree_termination_confirmed: bool) -> None:
+        if not tree_termination_confirmed:
+            return
+
+        def observe_exit() -> None:
+            try:
+                process.wait()
+            except Exception:
+                return
+            self.finish(token, {"success": False, "reason": "cancelled", "cancelled": True})
+
+        try:
+            threading.Thread(target=observe_exit, name="whisper-cleanup-observer", daemon=True).start()
+        except Exception:
+            return
+
+
+_ACTIVE_TRANSCRIPTIONS = _ActiveTranscriptionRegistry()
+_ACTIVE_CONVERSATIONS = _ActiveTranscriptionRegistry()
+_GAMING_DRAIN_TIMEOUT_SECONDS = 4.5
+
+
+def _invoke_cancellable_request(registry: _ActiveTranscriptionRegistry, callback: Any, payload: dict[str, Any], tenant: str) -> Any:
+    token, cancel_event = registry.begin()
+    result: Any = {}
+    try:
+        try:
+            parameters = inspect.signature(callback).parameters.values()
+            supports_cancel = any(
+                parameter.name == "cancel_event"
+                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            supports_cancel = False
+        if cancel_event.is_set() and not supports_cancel:
+            result = {
+                "success": False,
+                "cancelled": True,
+                "preempted": True,
+                "reason": "cancelled",
+                "error": "request cancelled before an uncancellable handler could start",
+                "terminal": True,
+                "retryable": False,
+            }
+            return result
+        result = (
+            callback(payload, tenant, cancel_event=cancel_event)
+            if supports_cancel
+            else callback(payload, tenant)
+        )
+        return result
+    finally:
+        registry.finish(token, result)
+
 # Monitoring/control reads must never appear as workload. Keep this hard safety set
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
 MONITOR_PATHS = {
     "/health", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
-    "/api/status", "/api/capabilities", "/api/metrics", "/api/adoption", "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/audit/tail", "/api/control",
+    "/api/status", "/api/mode", "/api/admin/mode", "/api/capabilities", "/api/metrics", "/api/adoption", "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/audit/tail", "/api/control",
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
     "/api/debug-traces",
 }
+
+_HTTP_INFERENCE_ACTIONS = {
+    "/api/chat/completions": "delegate",
+    "/api/generate": "delegate",
+    "/api/chat": "delegate",
+    "/api/embed": "embed",
+    "/api/rerank": "rerank",
+    "/api/delegate": "delegate",
+    "/api/conversations/continue": "delegate",
+    "/api/benchmark/run": "benchmark",
+    "/api/delegate/repo": "delegate",
+    "/api/solve/repo": "solve",
+    "/api/route": "route",
+    "/api/delegate/batch": "batch",
+    "/api/review": "review",
+    "/api/review/diff": "review_diff",
+    "/api/reason": "reason",
+    "/api/second-opinion": "second_opinion",
+    "/api/compress": "compress",
+    "/api/generate_tests": "generate_tests",
+    "/api/complete": "complete_code",
+    "/api/task/speculative_draft": "speculative_draft",
+    "/api/speculative_draft": "speculative_draft",
+    "/api/task/scaffold": "scaffold",
+    "/api/scaffold": "scaffold",
+    "/api/task/vision": "vision",
+    "/api/task/transcribe": "transcribe",
+    "/api/transcribe": "transcribe",
+    "/api/task/eval_suite": "eval_suite",
+    "/api/task/prompt_eval": "prompt_eval",
+    "/api/task/eval_drift": "eval_drift",
+    "/api/vision/review": "vision",
+    "/api/rag/index": "embed",
+    "/api/rag/docset/index": "embed",
+    "/api/rag/docset_index": "embed",
+}
+
+
+def _http_inference_action(path: str, payload: dict[str, Any] | None = None) -> str | None:
+    action = _HTTP_INFERENCE_ACTIONS.get(path)
+    if action:
+        return action
+
+
+def _agent_operational_mode_rejection(
+    action: str, *, requires_heavy_work: bool = True
+) -> dict[str, Any] | None:
+    from .operational_mode import load_operational_mode, operational_mode_gate_error
+    from .state_paths import configured_state_dir
+
+    try:
+        state_dir = configured_state_dir(APP.config if APP is not None else None, create=False)
+        snapshot = load_operational_mode(state_dir)
+    except Exception:
+        snapshot = None
+    rejection = operational_mode_gate_error(
+        snapshot, action, requires_heavy_work=requires_heavy_work
+    )
+    if rejection is not None:
+        rejection["status_code"] = 423
+    return rejection
+    payload = payload or {}
+    if path == "/api/work-orders":
+        work_action = str(payload.get("action", "submit")).strip().lower().replace("-", "_")
+        if work_action in {"submit", "continue"}:
+            return "delegate"
+    if path in {"/api/rag/search", "/api/rag/docset/search", "/api/rag/docset_search"} and bool(payload.get("use_reranker", True)):
+        return "rerank"
+    if path == "/api/agent-state/swarm/dispatch":
+        return "batch"
+    if path == "/api/agent-state/swarm/step":
+        return "delegate"
+    return None
 
 
 def _json_bytes(data: Any) -> bytes:
@@ -812,17 +1038,154 @@ class Handler(BaseHTTPRequestHandler):
     def _agent(self) -> str:
         return self.headers.get("X-LocalAI-Agent") or "generic"
 
-    def _authorized(self) -> bool:
+    def _authorized(self, action: str | None = None) -> bool:
+        self._principal = None
+        self._permissions = frozenset()
         if APP is None:
-            return True
-        expected = str(APP.config.get("security", {}).get("api_token", ""))
-        if not expected:
-            return True
-        supplied = self.headers.get("X-LocalAI-Token", "")
-        auth = self.headers.get("Authorization", "")
+            return False
+
+        security = APP.config.get("security", {})
+        if not isinstance(security, dict):
+            return False
+        supplied = str(self.headers.get("X-LocalAI-Token", "") or "")
+        auth = str(self.headers.get("Authorization", "") or "")
         if auth.lower().startswith("bearer "):
             supplied = auth[7:].strip()
-        return hmac.compare_digest(supplied, expected)
+        if not supplied:
+            return False
+
+        credentials: list[tuple[str, str, frozenset[str], str]] = []
+        allowed_actions = {
+            "dashboard:read",
+            "api:read",
+            "agent_tasks:read",
+            "admin:write",
+            "agent_tasks:recover",
+            "training_data:export",
+        }
+        for key, principal, tenant_key in (
+            ("api_token", "service", "service_tenant"),
+            ("supervisor_token", "supervisor", "supervisor_tenant"),
+        ):
+            token = security.get(key, "")
+            if token:
+                if not isinstance(token, str) or not token.strip():
+                    return False
+                tenant = security.get(tenant_key, "http-default")
+                if not isinstance(tenant, str) or not tenant.strip():
+                    return False
+                credentials.append((principal, token, frozenset({"*"}), tenant))
+
+        users = security.get("users", {})
+        if not isinstance(users, dict):
+            return False
+        for principal, user in users.items():
+            if not isinstance(principal, str) or not principal.strip() or not isinstance(user, dict):
+                return False
+            token = user.get("token")
+            permissions = user.get("permissions")
+            if not isinstance(token, str) or not token.strip() or not isinstance(permissions, list):
+                return False
+            if any(not isinstance(item, str) or item not in allowed_actions for item in permissions):
+                return False
+            tenant = user.get("tenant", principal)
+            if not isinstance(tenant, str) or not tenant.strip():
+                return False
+            credentials.append((principal, token, frozenset(permissions), tenant))
+
+        matches = [entry for entry in credentials if hmac.compare_digest(supplied, entry[1])]
+        if len(matches) != 1:
+            return False
+        principal, _token, permissions, tenant = matches[0]
+        self._principal = principal
+        self._permissions = permissions
+        self._auth_tenant = tenant
+        return action is None or "*" in permissions or action in permissions
+
+    def _required_permission(self) -> str:
+        method = str(getattr(self, "command", "GET")).upper()
+        if method not in {"GET", "HEAD", "OPTIONS"}:
+            return "admin:write"
+        path = str(getattr(self, "path", "")).split("?", 1)[0]
+        if path.startswith("/api/agent-state/"):
+            return "agent_tasks:read"
+        if path in {
+            "/health",
+            "/api/live",
+            "/api/live/status",
+            "/api/status",
+            "/api/mode",
+            "/api/capabilities",
+            "/api/metrics",
+            "/api/adoption",
+            "/api/telemetry/report",
+            "/api/telemetry/tool-accounting",
+            "/api/telemetry/timeline",
+            "/api/audit/tail",
+        }:
+            return "dashboard:read"
+        return "api:read"
+
+    def _authenticated_tenant(self) -> str | None:
+        tenant = getattr(self, "_auth_tenant", None)
+        return tenant if isinstance(tenant, str) and tenant.strip() else None
+
+    def _require_loopback_client(self) -> bool:
+        try:
+            raw_host = str(self.client_address[0]).split("%", 1)[0]
+            address = ipaddress.ip_address(raw_host)
+            if getattr(address, "ipv4_mapped", None) is not None:
+                address = address.ipv4_mapped
+        except Exception:
+            address = None
+        if address is not None and address.is_loopback:
+            return True
+        self._send(403, {
+            "success": False,
+            "error": "local_control_requires_loopback",
+            "terminal": True,
+            "retryable": False,
+        })
+        return False
+
+    def _enter_inference_admission(self, action: str) -> bool:
+        manager = getattr(APP, "async_jobs", None) if APP is not None else None
+        admission_factory = getattr(manager, "inference_admission", None)
+        if not callable(admission_factory):
+            self._send(503, {
+                "success": False,
+                "error": "inference admission is unavailable",
+                "error_code": "inference_admission_unavailable",
+                "terminal": False,
+                "retryable": True,
+                "retry_after_seconds": 5,
+            })
+            return False
+        context = admission_factory(action)
+        try:
+            rejection = context.__enter__()
+        except Exception as exc:
+            self._send(503, {
+                "success": False,
+                "error": f"inference admission failed: {str(exc)[:180]}",
+                "error_code": "inference_admission_unavailable",
+                "terminal": False,
+                "retryable": True,
+                "retry_after_seconds": 5,
+            })
+            return False
+        if rejection is not None:
+            try:
+                context.__exit__(None, None, None)
+            except Exception:
+                pass
+            response = dict(rejection)
+            status = int(response.get("status_code", 423) or 423)
+            response["status_code"] = status
+            self._send(status, response)
+            return False
+        self._inference_admission_context = context
+        return True
 
     def _validate_host_and_origin(self) -> bool:
         """Validate Host and Origin headers to protect against DNS rebinding and cross-origin attacks."""
@@ -887,8 +1250,10 @@ class Handler(BaseHTTPRequestHandler):
     def _require_authorized(self) -> bool:
         if not self._validate_host_and_origin():
             return False
-        if not self._authorized():
-            self._send(401, {"success": False, "error": "unauthorized"})
+        if not self._authorized(action=self._required_permission()):
+            status = 403 if self._principal is not None else 401
+            error = "forbidden" if status == 403 else "unauthorized"
+            self._send(status, {"success": False, "error": error})
             return False
         if not self._tenant_binding_allowed():
             return False
@@ -986,7 +1351,10 @@ class Handler(BaseHTTPRequestHandler):
                         return value
             raise RequestBodyError(f"{name} is required")
 
-        if path == "/api/chat/completions":
+        if path == "/api/mode":
+            if payload.get("mode") not in {"active", "gaming", "maintenance"}:
+                raise RequestBodyError("mode must be active, gaming, or maintenance")
+        elif path == "/api/chat/completions":
             messages = payload.get("messages")
             if not isinstance(messages, list) or not messages or len(messages) > 128:
                 raise RequestBodyError("messages must be a non-empty list of at most 128 entries")
@@ -1212,6 +1580,16 @@ class Handler(BaseHTTPRequestHandler):
         return 200, result
 
     def _send(self, status: int, data: Any) -> None:
+        if isinstance(data, dict) and int(status) >= 400:
+            data = dict(data)
+            data.setdefault("success", False)
+            data.setdefault("status_code", int(status))
+            if int(status) >= 500:
+                data.setdefault("retryable", True)
+                data.setdefault("terminal", False)
+            elif int(status) >= 400:
+                data.setdefault("retryable", False)
+                data.setdefault("terminal", True)
         request_id = getattr(self, "_journal_request_id", None)
         if request_id and APP is not None and not getattr(self, "_journal_finished", False):
             try:
@@ -1271,6 +1649,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Connection", "close")
             self._common_headers()
+            if status in {423, 429, 503} and isinstance(data, dict) and data.get("retry_after_seconds"):
+                self.send_header("Retry-After", str(max(1, int(float(data["retry_after_seconds"])))))
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1438,6 +1818,32 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/favicon.ico":
                 self._telemetry_finished = True
                 self.send_response(204); self.end_headers(); return
+            if path == "/api/mode":
+                if not self._require_loopback_client():
+                    return
+                from .operational_mode import load_operational_mode
+
+                state_dir = APP.config.get("server", {}).get("state_dir")
+                snapshot = load_operational_mode(state_dir)
+                manager = getattr(APP, "async_jobs", None)
+                try:
+                    inference_active = bool(manager.foreground_busy()) if manager else False
+                except Exception:
+                    inference_active = True
+                preprocessor = getattr(APP, "preprocessor", None)
+                manual_pause = bool(getattr(getattr(preprocessor, "_paused", None), "is_set", lambda: False)())
+                self._send(200, {
+                    "success": True,
+                    "mode": snapshot.mode,
+                    "revision": snapshot.revision,
+                    "degraded": snapshot.degraded,
+                    "error": snapshot.error,
+                    "inference_active": inference_active,
+                    "preprocessing_paused": manual_pause or snapshot.mode != "active",
+                    "model_unload_state": (
+                        "deferred" if inference_active else "ready"
+                    ) if snapshot.mode == "gaming" else "not_requested",
+                }); return
             if path == "/api/live":
                 after = int((query.get("after") or [0])[0]); limit = int((query.get("limit") or [200])[0])
                 max_batch = int(APP.config.get("monitoring", {}).get("live_max_batch", 200))
@@ -1792,14 +2198,13 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
             if path == "/api/maintenance/optimize_db":
-                self._send(200, APP.services.optimize_databases())
+                self._send(405, {"success": False, "error": "method not allowed", "terminal": True, "retryable": False}, headers={"Allow": "POST"})
                 return
             if path == "/api/maintenance/purge_cache":
-                days = int((query.get("days") or [7])[0])
-                self._send(200, APP.services.purge_stale_cache(days))
+                self._send(405, {"success": False, "error": "method not allowed", "terminal": True, "retryable": False}, headers={"Allow": "POST"})
                 return
             if path == "/api/maintenance/resolve_errors":
-                self._send(200, APP.services.resolve_all_errors())
+                self._send(405, {"success": False, "error": "method not allowed", "terminal": True, "retryable": False}, headers={"Allow": "POST"})
                 return
             if path == "/api/config":
                 view = json.loads(json_dumps(APP.config, default=str))
@@ -1949,13 +2354,40 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self) -> None:
+        try:
+            self._do_POST_request()
+        except BaseException as exc:
+            context = getattr(self, "_inference_admission_context", None)
+            if context is not None:
+                del self._inference_admission_context
+                context.__exit__(type(exc), exc, exc.__traceback__)
+            raise
+        else:
+            context = getattr(self, "_inference_admission_context", None)
+            if context is not None:
+                del self._inference_admission_context
+                context.__exit__(None, None, None)
+
+    def _do_POST_request(self) -> None:
         if APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
         path = urlparse(self.path).path
-        self._begin_trace(path)
         if not self._require_authorized():
             return
+        if path == "/api/mode" and not self._require_loopback_client():
+            return
+        operator_posts = {
+            "/api/mode", "/api/admin/mode", "/api/control",
+            "/api/telemetry/report",
+        }
+        if path not in operator_posts and not path.startswith("/api/dashboard/"):
+            rejection = _agent_operational_mode_rejection(
+                path, requires_heavy_work=False
+            )
+            if rejection is not None:
+                self._send(int(rejection.get("status_code", 423)), rejection); return
+        self._begin_trace(path)
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if path == "/api/bundle/import":
             if content_type not in {"application/zip", "application/octet-stream"}:
@@ -1965,36 +2397,49 @@ class Handler(BaseHTTPRequestHandler):
                 raw_bundle = self._read_body(limit=limit)
                 query = parse_qs(urlparse(self.path).query)
                 target_root = (query.get("target_root") or [None])[0]
-                self._send(200, APP.import_bundle(raw_bundle, target_root)); return
+                self._journal_request_id = str(
+                    getattr(self, "_trace_request_id", "")
+                    or self.headers.get("X-LocalAI-Request-ID", "")
+                    or f"req_{uuid.uuid4().hex[:12]}"
+                )
+                self._journal_finished = False
+                identity = self._agent() or "agent"
+                bundle_receipt = {
+                    "sha256": hashlib.sha256(raw_bundle).hexdigest(),
+                    "target_root": target_root,
+                }
+                reservation = APP.recovery.begin(
+                    self._journal_request_id,
+                    self._tenant(),
+                    path,
+                    identity=identity,
+                    payload=bundle_receipt,
+                )
+                if not reservation.get("claimed"):
+                    self._journal_finished = True
+                    if reservation.get("response") is not None:
+                        self._send(int(reservation.get("status_code") or 200), reservation["response"]); return
+                    if reservation.get("state") == "conflict":
+                        self._send(409, {"success": False, "error": reservation.get("error", "request id conflict"), "terminal": True, "retryable": False}); return
+                    self._send(409, {"success": False, "error": "request outcome is unknown; bundle import was not replayed", "outcome_unknown": True, "terminal": True, "retryable": False}); return
+                try:
+                    self._send(200, APP.import_bundle(raw_bundle, target_root)); return
+                except Exception as exc:
+                    self._send(500, {"success": False, "error": str(exc)[:240]}); return
             except RequestBodyError as exc:
                 self._send(exc.status, {"success": False, "error": str(exc)}); return
+            except ValueError as exc:
+                self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+            except Exception as exc:
+                self._send(503, {"success": False, "error": f"request journal unavailable: {str(exc)[:180]}", "error_code": "request_journal_unavailable", "outcome_unknown": False, "terminal": False, "retryable": True, "retry_after_seconds": 5}); return
         try:
             payload = self._read_json()
             self._validate_payload(path, payload)
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
-        if path == "/api/telemetry/tool-accounting":
-            # Internal MCP reporter path: do not journal or recursively count this
-            # metadata transport as an agent workload/tool call.
-            self._telemetry_finished = True
-            accepted = 0
-            rejected = 0
-            rejection_reasons: dict[str, int] = {}
-            for event in payload.get("events", []):
-                try:
-                    APP.telemetry.record_tool_accounting(event)
-                    accepted += 1
-                except Exception as exc:
-                    rejected += 1
-                    reason = "invalid_event" if isinstance(exc, (TypeError, ValueError)) else "record_failed"
-                    rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
-                    continue
-            self._send(200, {
-                "success": True,
-                "accepted": accepted,
-                "rejected": rejected,
-                "rejection_reasons": rejection_reasons,
-            }); return
+        inference_action = _http_inference_action(path, payload)
+        if inference_action and not self._enter_inference_admission(inference_action):
+            return
         self._request_evaluation = payload.get("evaluation")
         if path == "/api/conversations/continue" or (
             path in {"/api/delegate", "/api/reason"} and bool(payload.get("conversation", False))
@@ -2013,28 +2458,295 @@ class Handler(BaseHTTPRequestHandler):
                 )
             trace_store.event(api_trace_id, "handler_started", {"action": path, "payload_keys": sorted(str(key) for key in payload)})
         tenant = self._tenant()
-        self._journal_request_id = str(getattr(self, "_trace_request_id", ""))
+        self._journal_request_id = str(
+            getattr(self, "_trace_request_id", "")
+            or self.headers.get("X-LocalAI-Request-ID", "")
+            or f"req_{uuid.uuid4().hex[:12]}"
+        )
         self._journal_finished = False
         try:
-            prior = APP.recovery.lookup(self._journal_request_id, tenant, path)
-            if prior and prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
-                self._journal_finished = True
-                self._send(int(prior.get("status_code") or (200 if prior.get("state") == "done" else 500)), prior["response"]); return
-            if prior and prior.get("state") == "running":
-                wait_seconds = min(2.0, max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))))
-                replay = APP.recovery.wait_for(self._journal_request_id, tenant, path, timeout_seconds=wait_seconds)
-                if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
+            identity = self._agent() or "agent"
+            payload_fingerprint = APP.recovery.fingerprint_payload(payload)
+            reservation = APP.recovery.begin(
+                self._journal_request_id,
+                tenant,
+                path,
+                identity=identity,
+                payload=payload,
+            )
+            if not reservation.get("claimed"):
+                prior = reservation
+                if prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
                     self._journal_finished = True
-                    self._send(int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500)), replay["response"]); return
+                    self._send(int(prior.get("status_code") or (200 if prior.get("state") == "done" else 500)), prior["response"]); return
+                if prior.get("state") == "running":
+                    wait_seconds = min(2.0, max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))))
+                    replay = APP.recovery.wait_for(
+                        self._journal_request_id,
+                        tenant,
+                        path,
+                        timeout_seconds=wait_seconds,
+                        identity=identity,
+                        payload_fingerprint=payload_fingerprint,
+                    )
+                    if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
+                        self._journal_finished = True
+                        self._send(int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500)), replay["response"]); return
+                    self._journal_finished = True
+                    if replay and replay.get("outcome_unknown"):
+                        self._send(409, {"success": False, "error": "request outcome is unknown; mutation was not replayed", "outcome_unknown": True, "terminal": True, "retryable": False}); return
+                    self._send(409, {"success": False, "error": "request with this id is already running", "retryable": True, "terminal": False, "in_progress": True, "retry_after_seconds": 1, "waited_seconds": wait_seconds}); return
+                if prior.get("state") == "conflict":
+                    self._journal_finished = True
+                    self._send(409, {"success": False, "error": prior.get("error", "request id conflict"), "terminal": True, "retryable": False}); return
+                if prior.get("outcome_unknown") or prior.get("state") in {"abandoned", "failed", "done"}:
+                    self._journal_finished = True
+                    self._send(409, {"success": False, "error": "request outcome is unknown; mutation was not replayed", "outcome_unknown": True, "terminal": True, "retryable": False}); return
                 self._journal_finished = True
-                self._send(409, {"success": False, "error": "request with this id is already running", "retryable": True, "in_progress": True, "retry_after_seconds": 1, "waited_seconds": wait_seconds}); return
-            if prior and prior.get("state") == "conflict":
-                self._journal_finished = True
-                self._send(409, {"success": False, "error": prior.get("error", "request id conflict")}); return
-            APP.recovery.begin(self._journal_request_id, tenant, path)
-        except Exception:
-            pass
+                self._send(409, {"success": False, "error": "request id could not be claimed", "terminal": True, "retryable": False}); return
+        except ValueError as exc:
+            self._journal_finished = True
+            self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        except Exception as exc:
+            self._journal_finished = True
+            self._send(503, {"success": False, "error": f"request journal unavailable: {str(exc)[:180]}", "error_code": "request_journal_unavailable", "outcome_unknown": False, "terminal": False, "retryable": True, "retry_after_seconds": 5}); return
+        if path == "/api/telemetry/tool-accounting":
+            # This metadata path is journaled for idempotent delivery but excluded
+            # from recursive HTTP/tool accounting.
+            self._telemetry_finished = True
+            accepted = 0
+            rejected = 0
+            rejection_reasons: dict[str, int] = {}
+            for event in payload.get("events", []):
+                try:
+                    APP.telemetry.record_tool_accounting(event)
+                    accepted += 1
+                except Exception as exc:
+                    rejected += 1
+                    reason = "invalid_event" if isinstance(exc, (TypeError, ValueError)) else "record_failed"
+                    rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+            self._send(200, {
+                "success": True,
+                "accepted": accepted,
+                "rejected": rejected,
+                "rejection_reasons": rejection_reasons,
+            }); return
         try:
+            if path == "/api/admin/mode":
+                manager = getattr(APP, "async_jobs", None)
+                if manager is None or not callable(getattr(manager, "operational_mode_change_guard", None)):
+                    self._send(503, {
+                        "success": False,
+                        "error": "mode transition coordinator is unavailable",
+                        "mode_changed": False,
+                        "terminal": False,
+                        "retryable": True,
+                        "retry_after_seconds": 5,
+                    }); return
+                from .operational_mode import (
+                    load_operational_mode,
+                    set_operational_mode,
+                    unload_ollama_models_for_gaming,
+                    unload_in_process_accelerators_for_gaming,
+                )
+
+                state_dir = APP.config.get("server", {}).get("state_dir")
+                snapshot = None
+                release_token = None
+                transition: dict[str, Any] = {
+                    "success": False,
+                    "inference_active": True,
+                    "models_unloaded": False,
+                }
+                try:
+                    with manager.operational_mode_change_guard():
+                        requested_mode = str(payload.get("mode", "")).strip().lower().replace("-", "_")
+                        current_mode = load_operational_mode(state_dir)
+                        active_checker = getattr(manager, "inference_actions_active", None)
+                        try:
+                            inference_still_active = bool(active_checker()) if callable(active_checker) else False
+                        except Exception:
+                            inference_still_active = True
+                        if (
+                            requested_mode == "active"
+                            and current_mode.mode == "gaming"
+                            and (manager.resource_release_active() or inference_still_active)
+                        ):
+                            self._send(423, {
+                                "success": False,
+                                "error": "cannot reactivate inference while mode release or inference is active",
+                                "error_code": "resource_release_in_progress" if manager.resource_release_active() else "inference_active",
+                                "mode_changed": False,
+                                "mode": current_mode.mode,
+                                "revision": current_mode.revision,
+                                "terminal": False,
+                                "retryable": True,
+                                "retry_after_seconds": 1,
+                            }); return
+                        snapshot = set_operational_mode(state_dir, str(payload["mode"]))
+                        if snapshot.mode == "gaming":
+                            _ACTIVE_TRANSCRIPTIONS.enter_gaming()
+                            _ACTIVE_CONVERSATIONS.enter_gaming()
+                        elif snapshot.mode == "active":
+                            _ACTIVE_TRANSCRIPTIONS.enter_active()
+                            _ACTIVE_CONVERSATIONS.enter_active()
+                        try:
+                            transition = manager.on_operational_mode_changed(snapshot)
+                        except Exception as exc:
+                            transition = {
+                                "success": False,
+                                "inference_active": True,
+                                "models_unloaded": False,
+                                "error": str(exc)[:180],
+                            }
+                        if snapshot.mode == "gaming":
+                            release_token = manager.begin_resource_release()
+                except ValueError as exc:
+                    self._send(400, {
+                        "success": False,
+                        "error": str(exc),
+                        "error_code": "invalid_mode_request",
+                        "terminal": True,
+                        "retryable": False,
+                    }); return
+                except Exception as exc:
+                    self._send(503, {
+                        "success": False,
+                        "error": f"cannot persist operational mode: {str(exc)[:180]}",
+                        "mode_changed": snapshot is not None,
+                        "terminal": False,
+                        "retryable": True,
+                        "retry_after_seconds": 5,
+                    }); return
+
+                preprocessing_active = False
+                preprocessor = getattr(APP, "preprocessor", None)
+                if preprocessor is not None:
+                    try:
+                        prep_status = preprocessor.status()
+                        if not isinstance(prep_status, dict) or prep_status.get("success") is not True:
+                            preprocessing_active = True
+                        else:
+                            preprocessing_active = any(
+                                isinstance(project, dict) and project.get("status") == "running"
+                                for project in prep_status.get("projects", [])
+                            )
+                    except Exception:
+                        preprocessing_active = True
+                whisper_release = {"state": "not_applicable", "inference_active": False}
+                conversation_release = {"state": "not_applicable", "inference_active": False}
+                admission_release = {"state": "not_applicable", "inference_active": False}
+                if snapshot.mode == "gaming":
+                    whisper_deadline = time.monotonic() + _GAMING_DRAIN_TIMEOUT_SECONDS
+                    whisper_release = _ACTIVE_TRANSCRIPTIONS.cancel_and_wait(
+                        max(0.0, whisper_deadline - time.monotonic())
+                    )
+                    conversation_release = _ACTIVE_CONVERSATIONS.cancel_and_wait(
+                        max(0.0, whisper_deadline - time.monotonic())
+                    )
+                    admission_wait = getattr(manager, "wait_for_inference_actions", None)
+                    if callable(admission_wait):
+                        try:
+                            admissions_drained = bool(admission_wait(
+                                {"transcribe", "delegate"},
+                                max(0.0, whisper_deadline - time.monotonic()),
+                            ))
+                        except Exception:
+                            admissions_drained = False
+                        admission_release = {
+                            "state": "drained" if admissions_drained else "timed_out",
+                            "inference_active": not admissions_drained,
+                        }
+                    else:
+                        admission_release = {
+                            "state": "unavailable", "inference_active": True,
+                            "reason": "inference_admission_tracking_unavailable",
+                        }
+                    release_timed_out = any(
+                        receipt.get("state") == "timed_out"
+                        or receipt.get("inference_active") is True
+                        for receipt in (whisper_release, conversation_release, admission_release)
+                    )
+                    if release_timed_out and release_token is not None:
+                        manager_token = release_token
+                        release_token = None
+                        wait_for_drain = getattr(manager, "when_inference_actions_drained", None)
+                        if callable(wait_for_drain):
+                            def release_after_drain() -> None:
+                                wait_for_drain(
+                                    {"transcribe", "delegate"},
+                                    lambda: manager.end_resource_release(manager_token),
+                                )
+                            _ACTIVE_TRANSCRIPTIONS.when_drained(
+                                lambda: _ACTIVE_CONVERSATIONS.when_drained(release_after_drain)
+                            )
+                        else:
+                            admission_release["release_ownership_retained"] = True
+
+                active_checker = getattr(manager, "inference_actions_active", None)
+                if snapshot.mode == "gaming" and callable(active_checker):
+                    try:
+                        inference_active = bool(active_checker(exclude_actions={"transcribe", "delegate"}))
+                    except Exception:
+                        inference_active = True
+                else:
+                    inference_active = bool(transition.get("inference_active", True))
+                inference_active = inference_active or preprocessing_active or bool(
+                    whisper_release.get("inference_active", False)
+                ) or bool(conversation_release.get("inference_active", False)) or bool(
+                    admission_release.get("inference_active", False)
+                )
+                transition["inference_active"] = inference_active
+                transition["preprocessing_active"] = preprocessing_active
+                unload = None
+                in_process_release = None
+                if snapshot.mode == "gaming":
+                    try:
+                        unload = unload_ollama_models_for_gaming(
+                            getattr(APP, "runtime", None),
+                            inference_active=inference_active,
+                        )
+                        in_process_release = unload_in_process_accelerators_for_gaming(
+                            getattr(APP, "embeddings", None),
+                            getattr(APP, "reranker", None),
+                            inference_active=inference_active,
+                            release_lifecycle=manager,
+                        )
+                    finally:
+                        if release_token is not None:
+                            manager.end_resource_release(release_token)
+                resources = {
+                    "ollama_unload": unload,
+                    "in_process_cuda_release": in_process_release or {"state": "not_requested", "verified": False},
+                    "whisper_process_release": {
+                        **whisper_release,
+                        "memory_scope": "process_scoped_cli_no_model_memory_claim",
+                        "verified": False,
+                    },
+                    "conversation_release": conversation_release,
+                    "inference_admission_release": admission_release,
+                }
+                unload_ok = (
+                    unload is None
+                    or unload.get("success") is True
+                    or unload.get("state") == "not_applicable"
+                )
+                release_ok = (
+                    in_process_release is None
+                    or in_process_release.get("success") is True
+                    or in_process_release.get("state") == "not_applicable"
+                )
+                whisper_ok = whisper_release.get("state") != "timed_out"
+                conversation_ok = conversation_release.get("state") != "timed_out"
+                self._send(200, {
+                    "success": bool(transition.get("success", False)) and unload_ok and release_ok and whisper_ok and conversation_ok,
+                    "mode_changed": True,
+                    "mode": snapshot.mode,
+                    "revision": snapshot.revision,
+                    "transition": transition,
+                    "unload": unload,
+                    "resources": resources,
+                }); return
             if path == "/api/work-orders":
                 if not getattr(APP, "work_orchestrator", None) or not APP.work_orchestrator.enabled:
                     self._send(403, {"success": False, "unsupported": True, "error": "work orchestrator is disabled", "terminal": True}); return
@@ -2128,7 +2840,11 @@ class Handler(BaseHTTPRequestHandler):
                         tenant=tenant,
                         tab_id=payload.get("tab_id"),
                         window_id=payload.get("window_id"),
-                        api_token_authorized=bool(APP.config.get("security", {}).get("api_token")) and self._authorized(),
+                        api_token_authorized=(
+                            bool(APP.config.get("security", {}).get("api_token"))
+                            and self._authorized()
+                            and self._principal == "service"
+                        ),
                     )
                 except Exception as exc:
                     code = getattr(exc, "error_code", "permission_denied")
@@ -2173,13 +2889,22 @@ class Handler(BaseHTTPRequestHandler):
             if delivery is not None:
                 self._send(*delivery); return
             if path == "/api/delegate":
+                if bool(payload.get("conversation", False)):
+                    result = _invoke_cancellable_request(
+                        _ACTIVE_CONVERSATIONS, APP.services.delegate, payload, tenant,
+                    )
+                    self._send(200, result); return
                 self._send(200, APP.services.delegate(payload, tenant)); return
             if path == "/api/conversations/continue":
-                self._send(200, APP.services.continue_conversation(payload, tenant)); return
+                result = _invoke_cancellable_request(
+                    _ACTIVE_CONVERSATIONS, APP.services.continue_conversation, payload, tenant,
+                )
+                self._send(200, result); return
             if path == "/api/async-jobs":
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 if action == "submit":
-                    self._send(200, APP.async_jobs.submit(tenant, str(payload.get("job_action", "reason")), payload)); return
+                    result = APP.async_jobs.submit(tenant, str(payload.get("job_action", "reason")), payload)
+                    self._send(int(result.get("status_code", 200)), result); return
                 if action == "status":
                     self._send(200, APP.async_jobs.status(tenant, str(payload.get("job_id", "")))); return
                 if action == "wait":
@@ -3723,7 +4448,47 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int(payload.get("limit", 100)) if isinstance(payload, dict) else 100
                 self._send(200, {"success": True, "timeline": APP.telemetry.get_timeline(limit)}); return
             if path in {"/api/task/transcribe", "/api/transcribe"}:
-                self._send(200, APP.services.transcribe(payload, tenant)); return
+                from .process_utils import ProcessCleanupUnverifiedError
+
+                token, cancel_event = _ACTIVE_TRANSCRIPTIONS.begin()
+                result: Any = {}
+                cleanup_deferred = False
+                try:
+                    transcribe = APP.services.transcribe
+                    try:
+                        parameters = inspect.signature(transcribe).parameters.values()
+                        supports_cancel = any(
+                            parameter.name == "cancel_event"
+                            or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                            for parameter in parameters
+                        )
+                    except (TypeError, ValueError):
+                        supports_cancel = False
+                    result = (
+                        transcribe(payload, tenant, cancel_event=cancel_event)
+                        if supports_cancel
+                        else transcribe(payload, tenant)
+                    )
+                    self._send(200, result); return
+                except ProcessCleanupUnverifiedError as exc:
+                    cleanup_deferred = True
+                    result = {
+                        "success": False,
+                        "reason": "cleanup_unverified",
+                        "error": str(exc),
+                        "terminal": False,
+                        "retryable": True,
+                        "cleanup_unverified": True,
+                    }
+                    _ACTIVE_TRANSCRIPTIONS.defer_process_cleanup(
+                        token,
+                        exc.process,
+                        tree_termination_confirmed=exc.tree_termination_confirmed,
+                    )
+                    self._send(503, result); return
+                finally:
+                    if not cleanup_deferred:
+                        _ACTIVE_TRANSCRIPTIONS.finish(token, result)
             if path in {"/api/repo/code_invariants", "/api/code_invariants"}:
                 self._send(200, APP.services.code_invariants(str(payload.get("root", ".")), payload.get("path"))); return
             if path in {"/api/repo/generate_dataset", "/api/generate_dataset"}:
@@ -3852,15 +4617,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def validate_network_security(config: dict[str, Any]) -> None:
     bind = str(config.get("server", {}).get("bind", "127.0.0.1")).strip().lower()
-    loopback = bind in {"127.0.0.1", "localhost", "::1"}
-    if loopback:
-        return
-    security = config.get("security", {})
-    if not bool(security.get("allow_remote", False)):
-        raise RuntimeError("Refusing non-loopback Local AI Hub bind: set [security].allow_remote=true explicitly")
-    token = str(security.get("api_token", ""))
-    if len(token) < 16:
-        raise RuntimeError("Remote Local AI Hub bind requires [security].api_token with at least 16 characters")
+    if bind != "127.0.0.1":
+        raise RuntimeError("Local AI Hub HTTP bind must be 127.0.0.1")
 
 
 def serve(config_path: str | None = None) -> None:

@@ -27,7 +27,7 @@ class Reranker:
         self.max_length = max(128, int(cpu_cfg.get("reranker_max_length", 1024)))
         self._model = None
         self._load_lock = threading.Lock()
-        self._predict_lock = threading.Lock()
+        self._predict_lock = threading.RLock()
         self._cpu_gate = CooperativePriorityGate(int(cpu_cfg.get("foreground_priority", 3)))
         self._load_error: str | None = None
         self._load_error_time: float = 0.0
@@ -148,25 +148,66 @@ class Reranker:
 
     def _predict(self, pairs: list[tuple[str, str]], *, priority: int) -> Any | None:
         while True:
-            if not self._ensure_model() or self._model is None:
-                return None
-            try:
-                with self._cpu_gate.slot(priority):
-                    with self._predict_lock:
-                        return self._model.predict(pairs, batch_size=self.batch_size, show_progress_bar=False)
-            except Exception as exc:
-                if self.backend == "openvino" and self.active_backend == "openvino":
-                    failed = self.active_device or "openvino"
-                    self._load_error = f"openvino/{failed} inference failed: {exc}"
-                    self._load_error_time = time.time()
-                    self._model = None
-                    self.active_backend = None
-                    self.active_device = None
-                    if self._ensure_model():
-                        continue
-                return None
+            with self._predict_lock:
+                if not self._ensure_model() or self._model is None:
+                    return None
+                model = self._model
+                try:
+                    with self._cpu_gate.slot(priority):
+                        return model.predict(pairs, batch_size=self.batch_size, show_progress_bar=False)
+                except Exception as exc:
+                    if self.backend == "openvino" and self.active_backend == "openvino":
+                        failed = self.active_device or "openvino"
+                        self._load_error = f"openvino/{failed} inference failed: {exc}"
+                        self._load_error_time = time.time()
+                        self._model = None
+                        self.active_backend = None
+                        self.active_device = None
+                        if self._ensure_model():
+                            continue
+                    return None
+
+    def release_accelerator(self, *, timeout_seconds: float = 1.0) -> dict[str, Any]:
+        """Drop a resident non-CPU model after bounded exclusion of predict calls."""
+        budget = min(1.5, max(0.0, float(timeout_seconds)))
+        started = time.monotonic()
+        if not self._predict_lock.acquire(timeout=budget):
+            return {"success": False, "state": "busy", "verified": False, "timeout_seconds": budget}
+        load_lock_acquired = False
+        try:
+            remaining = max(0.0, budget - (time.monotonic() - started))
+            load_lock_acquired = self._load_lock.acquire(timeout=remaining)
+            if not load_lock_acquired:
+                return {"success": False, "state": "busy", "verified": False, "timeout_seconds": budget}
+            model = self._model
+            backend = str(self.active_backend or "")
+            device = str(self.active_device or "").strip()
+            if model is None or not device or device.lower() == "cpu":
+                return {"success": True, "state": "not_applicable", "verified": False, "backend": backend, "device": device}
+            self._model = None
+            self.active_backend = None
+            self.active_device = None
+            self._candidate_index = -1
+            self._load_error = None
+            del model
+            return {
+                "success": True,
+                "state": "unloaded",
+                "verified": False,
+                "backend": backend,
+                "device": device,
+                "cuda_memory_possible": backend == "torch" and device.lower().startswith("cuda"),
+            }
+        finally:
+            if load_lock_acquired:
+                self._load_lock.release()
+            self._predict_lock.release()
 
     def rerank(self, query: str, documents: list[str], top_k: int | None = None, priority: int = 3) -> dict[str, Any]:
+        with self._predict_lock:
+            return self._rerank_locked(query, documents, top_k=top_k, priority=priority)
+
+    def _rerank_locked(self, query: str, documents: list[str], top_k: int | None = None, priority: int = 3) -> dict[str, Any]:
         if not documents:
             return {"success": True, "model": self.model_name, "results": []}
         if not self._ensure_model():

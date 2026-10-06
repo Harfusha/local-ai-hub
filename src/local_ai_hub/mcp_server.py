@@ -166,6 +166,31 @@ def _resolve_action(tool_kind: str, action: str) -> str:
     return tool_aliases.get(cleaned, cleaned)
 
 
+def _operational_mode_rejection(action: str, *, requires_heavy_work: bool = True) -> dict[str, Any] | None:
+    from local_ai_hub.operational_mode import (
+        load_operational_mode,
+        operational_mode_gate_error,
+    )
+
+    try:
+        snapshot = load_operational_mode(configured_state_dir(CFG, create=False))
+    except Exception:
+        snapshot = None
+    return operational_mode_gate_error(
+        snapshot, action, requires_heavy_work=requires_heavy_work
+    )
+
+
+def _mcp_operation_requires_heavy_work(tool_name: str, action: str) -> bool:
+    if tool_name == "local_ai_repo":
+        return action not in {"map", "code_index", "deterministic"}
+    if tool_name == "local_ai_rag":
+        return action not in {"list"}
+    if tool_name == "local_ai_task":
+        return action not in {"status", "wait", "result", "cancel", "evaluation_report"}
+    return True
+
+
 def _normalize_deterministic(val: Any) -> Any:
     """Sort dictionary keys and normalize microsecond timestamps to maintain stable prompt caches."""
     if isinstance(val, dict):
@@ -1042,6 +1067,16 @@ def _instrumented_tool():
                 arguments = dict(bound.arguments)
             except Exception:
                 arguments = dict(kwargs)
+            if fn.__name__ != "local_ai_status":
+                action = str(arguments.get("action") or fn.__name__)
+                maintenance_rejection = _operational_mode_rejection(
+                    action,
+                    requires_heavy_work=_mcp_operation_requires_heavy_work(
+                        fn.__name__, action
+                    ),
+                )
+                if maintenance_rejection is not None:
+                    return maintenance_rejection
             extra = arguments.get("extra_fields") or kwargs.get("extra_fields")
             token = _CURRENT_EXTRA_FIELDS.set(extra) if extra is not None else None
             response_token = _CURRENT_RESPONSE_OPTIONS.set({
@@ -1348,6 +1383,13 @@ def local_ai_task(
     local model. Skip when: local-model tasks are disabled or Codex-owned
     subagent orchestration is the right owner; Local AI Hub does not route or manage native Codex agents."""
     action = _resolve_action("task", action)
+    deterministic_actions = {"status", "wait", "result", "cancel", "evaluation_report"}
+    mode_rejection = _operational_mode_rejection(
+        action,
+        requires_heavy_work=action not in deterministic_actions,
+    )
+    if mode_rejection is not None:
+        return mode_rejection
     # The static contract requires summary, evidence, analysis, limitations
     # and next step. Requests below this floor routinely truncate after a
     # generic preamble, especially on 7b/9b models. Clamp instead of rejecting
@@ -1824,6 +1866,10 @@ def _local_ai_repo_impl(
     if not FEATURES.repo:
         return {"success": False, "unsupported": True, "error": "local_ai_repo is disabled in configuration"}
     action = _resolve_action("repo", action)
+    if action in {"route", "delegate", "solve", "review_diff", "generate_tests", "context"}:
+        mode_rejection = _operational_mode_rejection(action)
+        if mode_rejection is not None:
+            return mode_rejection
     if action in {"preprocess", "preprocess_refresh", "preprocess_cancel", "preprocess_unregister"}:
         candidate = Path(root).expanduser()
         if not candidate.is_absolute():
@@ -2320,6 +2366,14 @@ def local_ai_rag(
     if not FEATURES.rag:
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
     action = action.strip().lower().replace("-", "_")
+    if action in {"index", "docset_index", "ingest_document", "ingest_diagram"}:
+        mode_rejection = _operational_mode_rejection("embed")
+        if mode_rejection is not None:
+            return mode_rejection
+    elif action in {"search", "docset_search"}:
+        mode_rejection = _operational_mode_rejection("rerank")
+        if mode_rejection is not None:
+            return mode_rejection
     root = _client_root(root)
     effective_workspace = workspace.strip() or root
     if action == "index":

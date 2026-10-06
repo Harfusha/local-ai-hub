@@ -21,6 +21,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import load_config
+from .resilience import RecoveryJournal
 
 
 _DETACHED_CHILDREN_LOCK = threading.Lock()
@@ -155,11 +156,11 @@ class HubClient:
             result["retried"] = True
         return result
 
-    def _singleflight(self, key: str, timeout: float, execute: Any) -> dict[str, Any]:
+    def _singleflight(self, key: str, timeout: float, execute: Any, *, request_id: str = "") -> dict[str, Any]:
         with self._flight_lock:
             flight = self._flights.get(key)
             if flight is None:
-                flight = {"event": threading.Event(), "result": None, "error": None}
+                flight = {"event": threading.Event(), "result": None, "error": None, "request_id": request_id}
                 self._flights[key] = flight
                 owner = True
             else:
@@ -177,7 +178,9 @@ class HubClient:
                 raise flight["error"]
             return flight["result"]
         if not flight["event"].wait(timeout):
-            raise TimeoutError("coalesced hub request timed out")
+            error = TimeoutError("coalesced hub request timed out")
+            error.request_id = str(flight.get("request_id", ""))
+            raise error
         if flight["error"] is not None:
             raise flight["error"]
         result = copy.deepcopy(flight["result"])
@@ -334,14 +337,17 @@ class HubClient:
                     pass
         return None
 
-    def request(self, path: str, payload: dict[str, Any] | None = None, *, timeout: float = 30.0, replay_safe: bool = False) -> dict[str, Any]:
+    def request(self, path: str, payload: dict[str, Any] | None = None, *, timeout: float = 30.0, replay_safe: bool = False, request_id: str | None = None) -> dict[str, Any]:
         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
         clean_payload = payload or {}
         preflight = self._terminal_preflight(path, clean_payload)
         if preflight is not None:
             return preflight
         body = json_dumps(clean_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
-        request_id = f"req_{uuid.uuid4().hex[:12]}"
+        try:
+            request_id = RecoveryJournal.validate_request_id(request_id) if request_id is not None else f"req_{uuid.uuid4().hex[:12]}"
+        except ValueError as exc:
+            return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
 
         def once(attempt_timeout: float) -> dict[str, Any]:
             headers = {
@@ -400,6 +406,10 @@ class HubClient:
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return self._uncertain_response(request_id)
             except Exception as exc:
+                if not replay_safe:
+                    result = self._uncertain_response(request_id)
+                    result["error"] = f"request outcome is unknown after transport failure: {str(exc)[:180]}"
+                    return result
                 return {"success": False, "error": str(exc), "request_id": request_id}
 
         if not replay_safe:
@@ -407,14 +417,18 @@ class HubClient:
 
         key = f"POST|{self.tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
         try:
-            return self._singleflight(key, timeout, execute)
-        except TimeoutError:
+            return self._singleflight(key, timeout, execute, request_id=request_id)
+        except TimeoutError as exc:
+            owner_request_id = str(getattr(exc, "request_id", "") or request_id)
             return {
                 "success": False,
                 "error": "coalesced request timed out before result was available",
                 "retry_timeout": True,
+                "outcome_unknown": True,
+                "in_progress": True,
+                "retryable": True,
                 "coalesced": True,
-                "request_id": request_id,
+                "request_id": owner_request_id,
             }
 
     def get(self, path: str, timeout: float = 15.0) -> dict[str, Any]:
@@ -458,14 +472,15 @@ class HubClient:
 
         key = f"GET|{self.tenant}|{self.agent}|{path}"
         try:
-            return self._singleflight(key, timeout, execute)
-        except TimeoutError:
+            return self._singleflight(key, timeout, execute, request_id=request_id)
+        except TimeoutError as exc:
+            owner_request_id = str(getattr(exc, "request_id", "") or request_id)
             return {
                 "success": False,
                 "error": "coalesced request timed out before result was available",
                 "retry_timeout": True,
                 "coalesced": True,
-                "request_id": request_id,
+                "request_id": owner_request_id,
             }
 
     @staticmethod
@@ -501,9 +516,11 @@ class HubClient:
         }
         return action in read_actions.get(path, set())
 
-    def post(self, path: str, payload: dict[str, Any] | None = None, timeout: float = 360.0) -> dict[str, Any]:
+    def post(self, path: str, payload: dict[str, Any] | None = None, timeout: float = 360.0, *, request_id: str | None = None) -> dict[str, Any]:
         replay_safe = self._post_replay_safe(path, payload)
-        return self.request(path, payload, timeout=timeout, replay_safe=replay_safe)
+        if request_id is None:
+            return self.request(path, payload, timeout=timeout, replay_safe=replay_safe)
+        return self.request(path, payload, timeout=timeout, replay_safe=replay_safe, request_id=request_id)
 
     def status(self, detail: str = "brief", scope: str = "process") -> dict[str, Any]:
         if detail == "agent_state":

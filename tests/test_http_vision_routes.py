@@ -11,7 +11,7 @@ from local_ai_hub.app import LocalAIApp
 from local_ai_hub import http_server
 
 
-def _post(url: str, payload: dict, *, origin: str = "chrome-extension://fixture", tenant: str = "tenant-a", token: str | None = None) -> dict:
+def _post(url: str, payload: dict, *, origin: str = "chrome-extension://fixture", tenant: str = "tenant-a", token: str | None = "test-api-token") -> dict:
     headers = {
         "Content-Type": "application/json",
         "Origin": origin,
@@ -42,8 +42,11 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
                 'bind = "127.0.0.1"',
                 'port = 11498',
                 f'state_dir = "{state_dir.as_posix()}"',
+                '[security]',
+                'api_token = "test-api-token"',
                 '[browser_bridge]',
                 'enabled = true',
+                'tenant = "tenant-a"',
                 'allowed_origins = ["chrome-extension://fixture"]',
                 'max_payload_bytes = 200000',
             ]
@@ -92,7 +95,11 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
             tenant="tenant-b",
         )
         assert cross_tenant["success"] is False
-        assert cross_tenant["error_code"] in {"capability_tenant_mismatch", "capability_replayed"}
+        assert cross_tenant["error_code"] in {
+            "capability_tenant_mismatch",
+            "capability_replayed",
+            "tenant_binding_mismatch",
+        }
 
         capability = _post(
             f"{base}/api/browser/capability",

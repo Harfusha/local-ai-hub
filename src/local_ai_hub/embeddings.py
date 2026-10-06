@@ -5,6 +5,7 @@ from collections.abc import Mapping
 import json
 import math
 import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -37,6 +38,7 @@ class EmbeddingModel:
         self.batch_size = max(1, int(cpu_cfg.get("embedding_batch_size", 32)))
         self._model = None
         self._load_lock = threading.Lock()
+        self._model_use_lock = threading.RLock()
         self._cpu_gate = CooperativePriorityGate(int(cpu_cfg.get("foreground_priority", 3)))
         self._load_error: str | None = None
         self._load_error_time: float = 0.0
@@ -264,9 +266,14 @@ class EmbeddingModel:
         return self._ensure_st_model()
 
     def _encode_st_batch(self, batch_texts: list[str], *, query: bool, priority: int) -> tuple[list[list[float]] | None, str]:
+        with self._model_use_lock:
+            return self._encode_st_batch_locked(batch_texts, query=query, priority=priority)
+
+    def _encode_st_batch_locked(self, batch_texts: list[str], *, query: bool, priority: int) -> tuple[list[list[float]] | None, str]:
         while True:
             if self._model is None and not self._ensure_st_model(ollama_fallback=self.backend == "ollama"):
                 return None, self.active_backend or "sentence-transformers"
+
             model = self._model
             if model is None:
                 return None, self.active_backend or "sentence-transformers"
@@ -322,6 +329,44 @@ class EmbeddingModel:
                     if self._ensure_st_model():
                         continue
                 return None, self.active_backend or "sentence-transformers"
+
+    def release_accelerator(self, *, timeout_seconds: float = 1.0) -> dict[str, Any]:
+        """Drop a resident non-CPU model after bounded exclusion of encode calls."""
+        budget = min(1.5, max(0.0, float(timeout_seconds)))
+        started = time.monotonic()
+        if not self._model_use_lock.acquire(timeout=budget):
+            return {"success": False, "state": "busy", "verified": False, "timeout_seconds": budget}
+        load_lock_acquired = False
+        try:
+            remaining = max(0.0, budget - (time.monotonic() - started))
+            load_lock_acquired = self._load_lock.acquire(timeout=remaining)
+            if not load_lock_acquired:
+                return {"success": False, "state": "busy", "verified": False, "timeout_seconds": budget}
+            model = self._model
+            backend = str(self.active_backend or "")
+            device = str(self.active_device or "").strip()
+            if model is None or not device or device.lower() in {"cpu", "ollama"}:
+                return {"success": True, "state": "not_applicable", "verified": False, "backend": backend, "device": device}
+            self._model = None
+            self.active_backend = None
+            self.active_device = None
+            self._st_candidate_index = -1
+            self._load_error = None
+            self._active_cache_identity = None
+            self._active_embedding_dimension = None
+            del model
+            return {
+                "success": True,
+                "state": "unloaded",
+                "verified": False,
+                "backend": backend,
+                "device": device,
+                "cuda_memory_possible": backend != "openvino" and device.lower().startswith("cuda"),
+            }
+        finally:
+            if load_lock_acquired:
+                self._load_lock.release()
+            self._model_use_lock.release()
 
     @staticmethod
     def _encode_static_npu_batch(
@@ -395,6 +440,10 @@ class EmbeddingModel:
         return output
 
     def _encode_uncached(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
+        with self._model_use_lock:
+            return self._encode_uncached_locked(texts, query=query, priority=priority)
+
+    def _encode_uncached_locked(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
         if not texts:
             return {"success": True, "model": self.model_name, "backend": self.backend, "embeddings": []}
 

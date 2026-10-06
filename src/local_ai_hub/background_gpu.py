@@ -341,6 +341,27 @@ class IdleGPUWorker:
             background=True,
             preserve_explicit_think=False,
         )
+        # A queued executor may reach this worker after the foreground mode
+        # transition. Keep the check next to the actual Ollama handoff.
+        try:
+            from .operational_mode import load_operational_mode
+
+            state_dir = self.config.get("server", {}).get("state_dir")
+            mode = load_operational_mode(state_dir)
+            if mode.degraded or mode.mode != "active":
+                return {
+                    "success": False,
+                    "preempted": True,
+                    "error_code": "operational_mode_paused",
+                    "error": "background inference start blocked by operational mode",
+                }
+        except Exception:
+            return {
+                "success": False,
+                "preempted": True,
+                "error_code": "operational_mode_unavailable",
+                "error": "background inference start blocked because operational mode is unavailable",
+            }
         response = runtime.request_interruptible(
             "/api/generate", payload,
             self._foreground_requested if preemptible else (lambda: False), timeout=self.request_timeout,

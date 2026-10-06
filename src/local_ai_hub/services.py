@@ -815,6 +815,16 @@ class LocalAIServices:
                             self._semantic_scope_locks.pop(key, None)
             return lock
 
+    @staticmethod
+    def _trace_model_request(trace_observer: Any, payload: dict[str, Any], trace_system: str | None) -> None:
+        if trace_observer is None:
+            return
+        trace_payload = payload
+        if trace_system is not None:
+            trace_payload = dict(payload)
+            trace_payload["system"] = str(trace_system)
+        trace_observer.model_request(trace_payload)
+
     def _generate(
         self,
         model: str,
@@ -832,6 +842,8 @@ class LocalAIServices:
         internal: bool = False,
         use_cache: bool = True,
         format: Any = None,
+        cancel_event: threading.Event | None = None,
+        trace_system: str | None = None,
     ) -> dict[str, Any]:
         saving = self.config.get("token_saving", {})
         resilience = self.config.get("resilience", {})
@@ -932,6 +944,21 @@ class LocalAIServices:
                     continue
 
                 def run(candidate_model: str = candidate) -> dict[str, Any]:
+                    def cancelled_result() -> dict[str, Any]:
+                        return {
+                            "success": False,
+                            "cancelled": True,
+                            "preempted": True,
+                            "reason": "cancelled",
+                            "error": "conversation generation cancelled for resource release",
+                            "model": candidate_model,
+                            "terminal": True,
+                            "retryable": False,
+                            "_cacheable": False,
+                        }
+
+                    if cancel_event is not None and cancel_event.is_set():
+                        return cancelled_result()
                     # A smart->fast resilience fallback may have a smaller context window
                     # than the originally requested model. Re-fit locally instead of
                     # relying on implicit server truncation or turning an outage into OOM.
@@ -949,8 +976,41 @@ class LocalAIServices:
                         background=source.startswith("preprocess:"), preserve_explicit_think=False,
                     )
                     trace_observer = observer()
-                    if trace_observer is not None:
-                        trace_observer.model_request(payload)
+                    # Scheduler admission can happen while active and reach this
+                    # closure only after a mode transition. Recheck at the last
+                    # point before handing work to the model runtime.
+                    try:
+                        from .operational_mode import load_operational_mode
+
+                        mode = load_operational_mode(configured_state_dir(self.config, create=False))
+                        if mode.degraded or mode.mode != "active":
+                            return {
+                                "success": False,
+                                "error": "inference start blocked by operational mode",
+                                "error_code": "operational_mode_paused",
+                                "mode": mode.mode,
+                                "terminal": True,
+                                "retryable": False,
+                            }
+                    except Exception:
+                        return {
+                            "success": False,
+                            "error": "inference start blocked because operational mode is unavailable",
+                            "error_code": "operational_mode_unavailable",
+                            "terminal": True,
+                            "retryable": False,
+                        }
+                    interruptible = getattr(self.runtime, "request_interruptible", None)
+                    if cancel_event is not None and callable(interruptible):
+                        if trace_observer is not None:
+                            self._trace_model_request(trace_observer, payload, trace_system)
+                        response = interruptible(
+                            "/api/generate", payload, should_stop=cancel_event.is_set,
+                        )
+                        if trace_observer is not None and response.get("response"):
+                            trace_observer.output_delta(str(response["response"]))
+                    elif trace_observer is not None:
+                        self._trace_model_request(trace_observer, payload, trace_system)
                         response = self.runtime.request_stream(
                             "/api/generate", payload, trace_observer.output_delta,
                             # Keep mixed-version MCP workers alive while the
@@ -959,6 +1019,11 @@ class LocalAIServices:
                         )
                     else:
                         response = self.runtime.request("/api/generate", payload)
+                    if (
+                        (cancel_event is not None and cancel_event.is_set())
+                        or response.get("preempted") is True
+                    ):
+                        return cancelled_result()
                     if response.get("_lah_repetition_loop_detected"):
                         return {
                             "success": False,
@@ -1216,6 +1281,19 @@ class LocalAIServices:
             "in_progress": active,
         }
 
+    @staticmethod
+    def _conversation_cancelled(conversation_id: str) -> dict[str, Any]:
+        return {
+            "success": False,
+            "conversation_id": conversation_id,
+            "error": "conversation generation cancelled for resource release",
+            "reason": "cancelled",
+            "cancelled": True,
+            "preempted": True,
+            "terminal": True,
+            "retryable": False,
+        }
+
     def _start_conversation(
         self,
         *,
@@ -1227,23 +1305,24 @@ class LocalAIServices:
         temperature: float,
         source: str,
         priority: int,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        if cancel_event is not None and cancel_event.is_set():
+            return self._conversation_cancelled("")
         if estimate_tokens(prompt) + estimate_tokens(system) > self._conversation_prompt_limit():
             return self._conversation_error("", "conversation prompt limit exceeded")
-        conversation = self.conversations.start(tenant, {
+        conversation = self.conversations.start_reserved(tenant, {
             "model": route["model"], "system": system, "max_tokens": max_tokens,
             "temperature": temperature, "source": source, "priority": priority,
             "route": dict(route),
         })
         if conversation is None:
             return self._conversation_error("", "conversation capacity reached")
-        reserved, error = self.conversations.reserve(conversation.conversation_id, tenant)
-        if reserved is None:
-            return self._conversation_error(conversation.conversation_id, error or "conversation not found")
         try:
             result = self._generate(
                 route["model"], prompt, system, max_tokens, temperature, tenant, source, priority,
-                internal=True, use_cache=False,
+                internal=True, use_cache=False, cancel_event=cancel_event,
+                trace_system="[conversation system prompt redacted]",
             )
         except Exception:
             self.conversations.discard(conversation.conversation_id, tenant)
@@ -1251,6 +1330,9 @@ class LocalAIServices:
         if not result.get("success", "error" not in result):
             self.conversations.discard(conversation.conversation_id, tenant)
             return result
+        if cancel_event is not None and cancel_event.is_set():
+            self.conversations.discard(conversation.conversation_id, tenant)
+            return self._conversation_cancelled(conversation.conversation_id)
         if not self.conversations.complete(conversation.conversation_id, tenant, prompt, str(result.get("text", ""))):
             return self._conversation_error(
                 conversation.conversation_id,
@@ -1260,13 +1342,21 @@ class LocalAIServices:
         result["route"] = dict(route)
         return result
 
-    def continue_conversation(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def continue_conversation(
+        self,
+        args: dict[str, Any],
+        tenant: str,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         conversation_id = str(args.get("conversation_id", "")).strip()
         task = str(args.get("task", "")).strip()
         if not conversation_id:
             return self._conversation_error("", "conversation_id is required")
         if not task:
             return self._conversation_error(conversation_id, "task is required")
+        if cancel_event is not None and cancel_event.is_set():
+            return self._conversation_cancelled(conversation_id)
         conversation, error = self.conversations.reserve(conversation_id, tenant)
         if error:
             return self._conversation_error(conversation_id, error)
@@ -1281,7 +1371,8 @@ class LocalAIServices:
             result = self._generate(
                 str(settings["model"]), prompt, str(settings["system"]), int(settings["max_tokens"]),
                 float(settings["temperature"]), tenant, str(settings["source"]), int(settings["priority"]),
-                internal=True, use_cache=False,
+                internal=True, use_cache=False, cancel_event=cancel_event,
+                trace_system="[conversation system prompt redacted]",
             )
         except Exception:
             self.conversations.abort(conversation_id, tenant)
@@ -1289,6 +1380,9 @@ class LocalAIServices:
         if not result.get("success", "error" not in result):
             self.conversations.abort(conversation_id, tenant)
             return result
+        if cancel_event is not None and cancel_event.is_set():
+            self.conversations.abort(conversation_id, tenant)
+            return self._conversation_cancelled(conversation_id)
         if not self.conversations.complete(conversation_id, tenant, user_prompt, str(result.get("text", ""))):
             return self._conversation_error(
                 conversation_id,
@@ -1298,7 +1392,13 @@ class LocalAIServices:
         result["route"] = dict(settings["route"])
         return result
 
-    def delegate(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def delegate(
+        self,
+        args: dict[str, Any],
+        tenant: str,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         if bool(args.get("conversation", False)):
             if str(args.get("profile", "")).strip():
                 return self._conversation_error("", "conversations do not support profiles")
@@ -1345,7 +1445,7 @@ class LocalAIServices:
         if bool(args.get("conversation", False)):
             return self._start_conversation(
                 tenant=tenant, prompt=prompt, route=route, system=system, max_tokens=max_tokens,
-                temperature=temperature, source=source, priority=priority,
+                temperature=temperature, source=source, priority=priority, cancel_event=cancel_event,
             )
         format_val = args.get("format") or args.get("json_schema")
         result = self._generate(
@@ -1505,7 +1605,7 @@ class LocalAIServices:
         task = str(args.get("task", args.get("prompt", "")))
         file_path = str(args.get("file", args.get("path", "")))
         context = str(args.get("context", ""))
-        root = str(args.get("root", args.get("cwd", ".")))
+        root = str(args.get("root") or args.get("cwd") or ".")
         resolved_root = Path(root).resolve()
 
         if not task:
@@ -1583,7 +1683,7 @@ class LocalAIServices:
 
     def speculative_lint(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Run opt-in, read-only lint against only caller-supplied changed paths."""
-        root = str(args.get("root", args.get("cwd", ".")))
+        root = str(args.get("root") or args.get("cwd") or ".")
         try:
             paths = normalize_changed_paths(root, list(args.get("paths") or []))
         except ValueError as exc:
@@ -2372,7 +2472,13 @@ class LocalAIServices:
                 "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime failed; inspect the configured local backend and vision model.",
             }
 
-    def transcribe(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def transcribe(
+        self,
+        args: dict[str, Any],
+        tenant: str,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         """Transcribe audio recording to text via local Whisper / STT CLI or fallback."""
         audio_path = str(args.get("audio", args.get("audio_path", "")))
         model = str(args.get("model") or "whisper")
@@ -2383,19 +2489,54 @@ class LocalAIServices:
 
         whisper_cmd = shutil.which("whisper")
         if whisper_cmd:
-            cmd = [whisper_cmd, str(p), "--output_format", "txt", "--model", "tiny"]
+            from tempfile import TemporaryDirectory
+            from .process_utils import ProcessCancelledError, ProcessCleanupUnverifiedError, run_hidden
+
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False, **hidden_run_kwargs())
-                if proc.returncode == 0:
-                    txt_path = p.with_suffix(".txt")
-                    text = txt_path.read_text(encoding="utf-8", errors="replace") if txt_path.exists() else proc.stdout
-                    return {
-                        "success": True,
-                        "text": text.strip(),
-                        "audio_path": str(p),
-                        "model": model,
-                        "engine": "whisper_cli",
-                    }
+                with TemporaryDirectory(prefix="local-ai-hub-transcribe-") as output_dir:
+                    cmd = [
+                        whisper_cmd,
+                        str(p),
+                        "--output_format",
+                        "txt",
+                        "--model",
+                        "tiny",
+                        "--output_dir",
+                        output_dir,
+                    ]
+                    proc = run_hidden(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        check=False,
+                        cancel_event=cancel_event,
+                        cancel_grace_seconds=1.0,
+                    )
+                    if proc.returncode == 0:
+                        txt_path = Path(output_dir) / f"{p.stem}.txt"
+                        text = txt_path.read_text(encoding="utf-8", errors="replace") if txt_path.exists() else proc.stdout
+                        return {
+                            "success": True,
+                            "text": text.strip(),
+                            "audio_path": str(p),
+                            "model": model,
+                            "engine": "whisper_cli",
+                        }
+            except ProcessCleanupUnverifiedError:
+                raise
+            except ProcessCancelledError:
+                return {
+                    "success": False,
+                    "audio_path": str(p),
+                    "model": model,
+                    "engine": "whisper_cli",
+                    "reason": "cancelled",
+                    "cancelled": True,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": "Whisper CLI was cancelled for resource release.",
+                }
             except Exception:
                 pass
 
@@ -2410,7 +2551,6 @@ class LocalAIServices:
             "degraded": True,
             "note": "Local whisper CLI not installed in PATH; audio metadata processed.",
         }
-
     def benchmark(self, tenant: str = "benchmark") -> dict[str, Any]:
         """Manual tiny benchmark used to seed the adaptive runtime cost model."""
         models=[]
@@ -5318,7 +5458,7 @@ class LocalAIServices:
         if action == "stats":
             return {"success": True, "stats": self.commands.stats()}
         if action == "discover":
-            root = str(args.get("root", args.get("cwd", ".")))
+            root = str(args.get("root") or args.get("cwd") or ".")
             profile = self.repo_profile(root)
             deterministic = self.deterministic_query(root, "test lint build validation commands dependencies", 40) if self.deterministic is not None else {}
             scripts = deterministic.get("scripts", []) if isinstance(deterministic, dict) else []

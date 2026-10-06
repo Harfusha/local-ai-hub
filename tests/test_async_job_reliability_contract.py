@@ -1,10 +1,26 @@
 from __future__ import annotations
 
+import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+import local_ai_hub.async_jobs as async_jobs
 from local_ai_hub.async_jobs import AsyncJobManager
+
+
+@pytest.fixture(autouse=True)
+def _active_operational_mode(monkeypatch):
+    snapshot = SimpleNamespace(
+        mode="active", revision=0, updated_at=time.time(), degraded=False, error=""
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "load_operational_mode",
+        lambda _state_dir: snapshot,
+        raising=False,
+    )
 
 
 class _ArtifactStore:
@@ -153,6 +169,7 @@ def test_restart_retries_running_job_with_same_request_id(manager_factory, monke
 @pytest.mark.parametrize(
     ("action", "request_id", "expected_state"),
     [
+        ("reason", None, "queued"),
         ("batch", None, "outcome_unknown"),
         ("batch", "t13-stable-request-004", "queued"),
         ("speculative_lint", "t13-unclassified-command-001", "outcome_unknown"),
@@ -174,6 +191,15 @@ def test_retryable_executor_failure_requeues_only_with_safe_action_identity(
     payload["command"] = "ruff check"
     submitted = manager.submit("tenant-a", action, payload, dispatch_delay_seconds=30)
     _cancel_delayed_dispatch(manager, submitted["job_id"])
+    con = manager._connect()
+    try:
+        persisted_payload = con.execute(
+            "SELECT payload_json FROM async_jobs WHERE job_id=?",
+            (submitted["job_id"],),
+        ).fetchone()[0]
+    finally:
+        con.close()
+    assert manager._request_id(persisted_payload) == (request_id or "")
 
     manager._execute(submitted["job_id"])
 
@@ -283,6 +309,60 @@ def test_worker_exception_does_not_overwrite_terminal_success(manager_factory) -
     assert manager.result("tenant-a", submitted["job_id"])["result"]["value"] == "saved"
 
 
+def test_worker_retry_after_shutdown_does_not_reopen_state_db(manager_factory, monkeypatch) -> None:
+    manager = manager_factory(lambda _action, _payload, _tenant: {"success": True})
+    submitted = manager.submit(
+        "tenant-a", "batch", {"request_id": "t13-shutdown-retry-001"}, dispatch_delay_seconds=30
+    )
+    _cancel_delayed_dispatch(manager, submitted["job_id"])
+    con = manager._connect()
+    try:
+        con.execute(
+            "UPDATE async_jobs SET state='running',attempts=1,cancel_requested=0 WHERE job_id=?",
+            (submitted["job_id"],),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    manager.close()
+    monkeypatch.setattr(manager, "_connect", lambda: pytest.fail("closed manager reopened its state database"))
+
+    manager._release_for_retry(submitted["job_id"], "late worker exception")
+
+
+@pytest.mark.parametrize(
+    ("attempts", "expected_state", "expected_recovered"),
+    [(0, "queued", 1), (1, "outcome_unknown", 0)],
+)
+def test_recovery_distinguishes_unstarted_from_interrupted_reason_without_request_id(
+    manager_factory, monkeypatch, attempts, expected_state, expected_recovered
+) -> None:
+    execute = lambda _action, _payload, _tenant: {"success": True}
+    first_manager = manager_factory(execute)
+    submitted = first_manager.submit(
+        "tenant-a", "reason", {"task": "restart boundary"}, dispatch_delay_seconds=30
+    )
+    _cancel_delayed_dispatch(first_manager, submitted["job_id"])
+    con = first_manager._connect()
+    try:
+        con.execute(
+            "UPDATE async_jobs SET state='running',attempts=?,cancel_requested=0 WHERE job_id=?",
+            (attempts, submitted["job_id"]),
+        )
+        con.commit()
+    finally:
+        con.close()
+    first_manager._shutdown.set()
+
+    restarted = manager_factory(execute)
+    dispatched = []
+    monkeypatch.setattr(restarted, "_dispatch", dispatched.append)
+    assert restarted.recover() == expected_recovered
+    assert restarted.status("tenant-a", submitted["job_id"])["state"] == expected_state
+    assert dispatched == ([submitted["job_id"]] if expected_recovered else [])
+
+
 @pytest.mark.parametrize("recovery_path", ["restart", "expired_lease"])
 def test_restart_does_not_replay_running_job_without_request_id(manager_factory, monkeypatch, recovery_path) -> None:
     executions: list[str] = []
@@ -298,6 +378,11 @@ def test_restart_does_not_replay_running_job_without_request_id(manager_factory,
     _cancel_delayed_dispatch(first_manager, submitted["job_id"])
     con = first_manager._connect()
     try:
+        payload_json = con.execute(
+            "SELECT payload_json FROM async_jobs WHERE job_id=?",
+            (submitted["job_id"],),
+        ).fetchone()[0]
+        assert first_manager._request_id(payload_json) == ""
         con.execute(
             "UPDATE async_jobs SET state='running',attempts=1,cancel_requested=0 WHERE job_id=?",
             (submitted["job_id"],),

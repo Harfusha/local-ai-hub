@@ -2784,6 +2784,18 @@ class CommandBroker:
                 "message": "command passed without repair",
             }
 
+        command_class = self.classify(command).get("class", "unknown")
+        if initial.get("outcome_unknown") or initial.get("timed_out") or command_class in {"mutating", "unknown"}:
+            return {
+                "success": False,
+                "repaired": False,
+                "repair_skipped": True,
+                "outcome_unknown": True,
+                "attempts": 0,
+                "result": initial,
+                "message": "repair skipped because the failed command may have changed state",
+            }
+
         original_files: dict[Path, str | None] = {}
         attempt_history: list[dict[str, Any]] = []
         last_result = initial

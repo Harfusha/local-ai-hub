@@ -59,7 +59,7 @@ def test_async_jobs_retry_on_execution_failure(tmp_path: Path):
         _Artifacts(),
         _fail_first,
     )
-    submitted = manager.submit("tenant-a", "reason", {"task": "retry-job"}, dispatch_delay_seconds=30.0)
+    submitted = manager.submit("tenant-a", "reason", {"task": "retry-job", "request_id": "retry-job-id"}, dispatch_delay_seconds=30.0)
     job_id = submitted["job_id"]
 
     # First attempt fails -> should requeue because attempts (1) < max_attempts (2)
@@ -103,14 +103,14 @@ def test_async_jobs_tick_reclaims_stuck_running_job(tmp_path: Path):
         _Artifacts(),
         lambda a, p, t: {"success": True},
     )
-    submitted = manager.submit("tenant-a", "reason", {"task": "stuck-job"}, dispatch_delay_seconds=30.0)
+    submitted = manager.submit("tenant-a", "reason", {"task": "stuck-job", "request_id": "stuck-job-id"}, dispatch_delay_seconds=30.0)
     job_id = submitted["job_id"]
 
     # Artificially set job to running with an expired lease
     from contextlib import closing
     with manager._lock, closing(manager._connect()) as con:
         con.execute(
-            "UPDATE async_jobs SET state = 'running', lease_until = ? WHERE job_id = ?",
+            "UPDATE async_jobs SET state = 'running', attempts = 1, lease_until = ? WHERE job_id = ?",
             (time.time() - 100, job_id),
         )
         con.commit()
