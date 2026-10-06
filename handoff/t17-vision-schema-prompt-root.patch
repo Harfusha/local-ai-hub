@@ -1,0 +1,170 @@
+--- a/src/local_ai_hub/services.py
++++ b/src/local_ai_hub/services.py
+@@ -2096,6 +2096,11 @@
+                 return input_error("Vision JSON schema is invalid.")
+             if len(schema_text) > VISION_MAX_SCHEMA_CHARS:
+                 return input_error("Vision JSON schema exceeds the bounded size limit.")
++        try:
++            prompt_image_size = image_dimensions(base64.b64decode(images[0], validate=True))
++        except (ValueError, TypeError):
++            prompt_image_size = None
++
+         prompt_suffix = (
+             "\n\nReturn only a JSON object matching this contract: "
+             "{\"summary\": string, \"findings\": [{\"id\": string, "
+@@ -2108,8 +2113,21 @@
+             "\"bbox\": [x, y, width, height] in image pixels or null, "
+             "\"evidence\": [string], \"likely_cause\": string, \"fix_hint\": string, "
+             "\"needs_runtime_check\": boolean}], "
+-            "\"unknowns\": [string], \"recommended_checks\": [string]} ."
++            "\"unknowns\": [string], \"recommended_checks\": [string]} . "
++            "Grounding rules: use only element_ids present in supplied DOM. Without DOM, keep "
++            "element_ids empty and ground each finding with a bbox in source-image pixels "
++            "(origin top-left; right/bottom exclusive). Confidence must be between 0 and 1. "
++            "Treat supplied DOM and accessibility fields as authoritative; never claim a "
++            "label, name, or attribute is missing when supplied values show it. observed "
++            "must contain a non-empty directly observed fact. When a DOM id grounds a "
++            "finding, set bbox to null."
+         )
++        if prompt_image_size is not None:
++            prompt_suffix += (
++                f" Image 0 dimensions are {prompt_image_size[0]} x {prompt_image_size[1]} pixels; "
++                f"bbox coordinates must stay within x=0..{prompt_image_size[0]} and "
++                f"y=0..{prompt_image_size[1]}."
++            )
+         prompt_context = prompt
+         if model_context is not None:
+             prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + json_dumps(
+@@ -2129,7 +2147,90 @@
+             "prompt": prompt_context,
+             "images": images,
+             "stream": False,
+-            "format": schema if isinstance(schema, dict) else "json",
++            "format": schema if isinstance(schema, dict) else {
++                "type": "object",
++                "required": ["summary", "findings", "unknowns", "recommended_checks"],
++                "properties": {
++                    "summary": {"type": "string", "minLength": 1, "pattern": r"\S"},
++                    "findings": {
++                        "type": "array",
++                        "items": {
++                            "type": "object",
++                            "required": [
++                                "id", "severity", "category", "problem", "observed",
++                                "hypothesized", "uncertainty", "confidence", "element_ids",
++                                "bbox", "evidence", "likely_cause", "fix_hint",
++                                "needs_runtime_check", "observation_facts",
++                            ],
++                            "properties": {
++                                "id": {"type": "string", "minLength": 1, "pattern": r"\S"},
++                                "severity": {
++                                    "type": "string",
++                                    "enum": ["blocker", "high", "medium", "low", "info"],
++                                },
++                                "category": {
++                                    "type": "string",
++                                    "enum": [
++                                        "layout", "responsive", "accessibility",
++                                        "interaction", "visual-regression", "runtime",
++                                    ],
++                                },
++                                "problem": {"type": "string", "minLength": 1, "pattern": r"\S"},
++                                "observed": {"type": "string", "minLength": 1, "pattern": r"\S"},
++                                "hypothesized": {"type": "string", "minLength": 1, "pattern": r"\S"},
++                                "uncertainty": {"type": "array", "items": {"type": "string"}},
++                                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
++                                "element_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": r"\S"}},
++                                "bbox": {
++                                    "anyOf": [
++                                        {
++                                            "type": "array",
++                                            "items": {"type": "number"},
++                                            "minItems": 4,
++                                            "maxItems": 4,
++                                        },
++                                        {"type": "null"},
++                                    ],
++                                },
++                                "evidence": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": r"\S"}, "minItems": 1},
++                                "likely_cause": {"type": "string"},
++                                "fix_hint": {"type": "string"},
++                                "needs_runtime_check": {"type": "boolean"},
++                                "observation_facts": {
++                                    "type": "array",
++                                    "items": {
++                                        "type": "object",
++                                        "required": ["source", "element_id", "field", "value"],
++                                        "properties": {
++                                            "source": {
++                                                "type": "string",
++                                                "enum": [
++                                                    "dom", "accessibility",
++                                                    "computed_styles", "runtime",
++                                                ],
++                                            },
++                                            "element_id": {"type": "string", "minLength": 1, "pattern": r"\S"},
++                                            "field": {"type": "string", "minLength": 1, "pattern": r"\S"},
++                                            "value": {
++                                                "anyOf": [
++                                                    {"type": "string"},
++                                                    {"type": "number"},
++                                                    {"type": "boolean"},
++                                                ],
++                                            },
++                                        },
++                                        "additionalProperties": False,
++                                    },
++                                },
++                            },
++                            "additionalProperties": False,
++                        },
++                    },
++                    "unknowns": {"type": "array", "items": {"type": "string"}},
++                    "recommended_checks": {"type": "array", "items": {"type": "string"}},
++                },
++                "additionalProperties": False,
++            } if bool(self.config.get("ollama", {}).get("enabled", False)) else "json",
+             "options": {"num_predict": max_tokens},
+         }
+         payload, _profile = self.model_policy.apply_payload(
+--- a/tests/test_vision_service.py
++++ b/tests/test_vision_service.py
+@@ -798,3 +798,38 @@
+     assert profile.tier == "vision"
+     assert profile.parallel_limit == 1
+     assert override_profile.tier == "vision"
++
++def test_vision_ollama_schema_and_grounding_prompt_contract(tmp_path: Path) -> None:
++    services, runtime, image = _services(tmp_path)
++    image.write_bytes(
++        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
++        b"\x00\x00\x00\x01\x00\x00\x00\x01"
++    )
++    services.config["ollama"] = {"enabled": True}
++    runtime.request.return_value = {
++        "response": json.dumps({
++            "summary": "No findings.",
++            "findings": [],
++            "unknowns": [],
++            "recommended_checks": [],
++        })
++    }
++
++    result = services.vision({"image": str(image), "prompt": "Review UI"}, "t")
++
++    assert result["success"] is True
++    payload = runtime.request.call_args.args[1]
++    schema = payload["format"]
++    assert isinstance(schema, dict)
++    assert schema["additionalProperties"] is False
++    finding = schema["properties"]["findings"]["items"]
++    assert "observation_facts" in finding["required"]
++    assert finding["properties"]["observation_facts"]["items"]["required"] == [
++        "source", "element_id", "field", "value"
++    ]
++    prompt = payload["prompt"]
++    assert '"observation_facts"' in prompt
++    assert "Grounding rules:" in prompt
++    assert "Without DOM, keep element_ids empty" in prompt
++    assert "Image 0 dimensions are 1 x 1 pixels" in prompt
++

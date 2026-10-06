@@ -1,0 +1,47 @@
+diff --git a/tests/test_speculative_draft_and_split.py b/tests/test_speculative_draft_and_split.py
+index 412ced7..d563214 100644
+--- a/tests/test_speculative_draft_and_split.py
++++ b/tests/test_speculative_draft_and_split.py
+@@ -148,3 +148,42 @@
+     assert services.commands.run.call_args.args[2] == "test-tenant"
+     assert verified["verification"]["tests_passed"] is True
+     assert verified["verification"]["test_summary"] == "tests passed"
++
++def test_speculative_draft_failures_never_run_or_claim_validation(tmp_path: Path) -> None:
++    cases = (
++        ({"success": False, "error": "provider unavailable"}, False, False),
++        ({"response": "def answer(:\n    return 42\n"}, True, False),
++    )
++    for index, (generation, expected_success, expected_syntax_valid) in enumerate(cases):
++        case_root = tmp_path / str(index)
++        services = LocalAIServices(
++            config={"server": {"state_dir": str(case_root)}, "models": {"fast_code": "fast"}},
++            runtime=MagicMock(),
++            scheduler=MagicMock(),
++            embeddings=MagicMock(),
++            artifacts=MagicMock(),
++            telemetry=MagicMock(),
++            repo_tools=MagicMock(),
++            deterministic=None,
++        )
++        services._generate = MagicMock(return_value=generation)
++        services.commands = MagicMock()
++        services.affected_tests = MagicMock(
++            return_value={"suggested_command": "pytest -q"}
++        )
++
++        result = services.speculative_draft(
++            {
++                "task": "write answer function",
++                "file": "answer.py",
++                "root": str(case_root),
++                "verify_tests": True,
++            },
++            tenant="test",
++        )
++
++        assert result["success"] is expected_success
++        assert result["verification"]["syntax_valid"] is expected_syntax_valid
++        assert result["validated"] is False
++        services.affected_tests.assert_not_called()
++        services.commands.run.assert_not_called()
