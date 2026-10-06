@@ -783,3 +783,22 @@ acceptance.
   Windows. Live ACL/runtime recovery remains unverified.
 - T18 worktree has five untracked temporary/evidence paths; preserved, not
   merged or deleted. Their contents still need owner-level classification.
+
+## Priority stash packet c36ddae1 current-master recheck
+
+- Candidate commit `c36ddae1fd70b18844e4cade5e3c27c58b50e81a` remains in
+  `codex/sync-hub-audit-repairs-20261006`, not merged. It adds the 2,192-line
+  pinned stash disposition report and T05/T08/T09 tests. Its own frozen-packet
+  run reported 67 passed, 19 failed; not release-ready.
+- Re-ran only `tests/test_agent_t08_durable_contract.py` with imports explicitly
+  pinned to root master `6b3c9a5e` (confirmed source path
+  `C:\Users\Adam\.local-ai-hub\src\local_ai_hub\__init__.py`).
+  Result: **59 passed, 3 failed in 29.79s**. Failures:
+  `test_memory_append_result_error_rolls_back_projection`,
+  `test_expired_memory_delete_and_event_are_atomic`, and
+  `test_scope_leases_migrate_into_versioned_agent_state_database` (strict
+  `lease_waits` schema fingerprint rejection). First two routed to T05;
+  schema compatibility routed to T18/T08. No tests or allowlists weakened.
+- Keep candidate tests/report in their owner branch until failures are
+  adjudicated. This recheck does not prove the other candidate tests pass on
+  current master; no stash was applied or dropped.
