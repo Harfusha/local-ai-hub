@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-15",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_tiered_ollama_runtime.py::test_post_unload_admission_capability_delegates_to_selected_runtime tests/test_tiered_ollama_runtime.py::test_model_prepare_forwards_cancellation_controls_to_selected_runtime tests/test_tiered_ollama_runtime.py::test_interruptible_request_forwards_deadline_to_selected_runtime",
+  "route": "native_fallback_user_authorized",
+  "input_sha256_before": {
+    "src/local_ai_hub/tiered_ollama.py": "FB209A13B54FD8D7A6CC198F49C90C0BE22004BDBE65A7095DAF12916C360DD2",
+    "tests/test_tiered_ollama_runtime.py": "C02362CEDD4C3378C95CEEA4850FB8291DA5B0293A1FF4D808493FACFF8F8D02"
+  },
+  "selectors": [
+    "test_post_unload_admission_capability_delegates_to_selected_runtime",
+    "test_model_prepare_forwards_cancellation_controls_to_selected_runtime",
+    "test_interruptible_request_forwards_deadline_to_selected_runtime"
+  ],
+  "t02_gate": "-05 review-only, no runnable pins, no benchmark run",
+  "queue_snapshot": "T01 and T19 active on non-test work; no validation command active"
+}

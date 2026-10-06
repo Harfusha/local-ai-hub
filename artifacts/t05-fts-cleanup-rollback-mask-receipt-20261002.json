@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "task": "T05-owned FTS cleanup integration for T08 rollback-masking selector",
+  "status": "patch-ready; exact selector deferred until T20 releases T02 CPU slot",
+  "t05_candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub",
+  "t05_candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "t05_agent_memory_sha256": "784116FF1ADA548979126F9639C4B795016540AF5ED85D1897C6963DFA6AC73E",
+  "t05_existing_fts_cleanup": "T05 delete() already removes embeddings and agent_memory_fts after successful identity-scoped row deletion.",
+  "t08_receipt": {
+    "path": "artifacts/t08-memory-delete-selector-receipt-20261002.json",
+    "sha256": "025A41AEEC76E880280F41D10304A48134DCCAF176B5EC9C055AB9E2E6DF7280",
+    "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+    "candidate_agent_memory_sha256": "8FD845109C5DD9105EE0AEF74C80337AEB9AD1D9A934996EBBA09382D13E72B5",
+    "selector": "tests/test_agent_memory_t08_rollback_masking.py::test_delete_preserves_primary_fts_error_when_rollback_also_fails",
+    "result": "3 passed, 1 failed in 4.23s",
+    "failure": "Failed: DID NOT RAISE sqlite3.OperationalError; candidate lacks T05-owned FTS cleanup hunk.",
+    "rollback_masking_test_sha256": "555A16A3FA67E1244C75C6EE1289E46C95960131B251B5FA9821888547B5D726"
+  },
+  "patch": {
+    "path": "artifacts/t05-memory-delete-fts-cleanup-20261002.patch",
+    "sha256": "1F9CA4876671700A7123DC1ACDCFF53530E4547F931D60F4EB403BFD71D0B3DB",
+    "change": "after T08 identity-validated record/relation deletion, delete embedding by record_id; conditionally delete FTS row by record_id before COMMIT",
+    "apply_check_t08": "PASS against exact T08 source preimage",
+    "apply_check_t05_overlay": "PASS in clean T05-owned overlay",
+    "applypatch_overlay": "PASS; overlay source hash BFF7481D7F2620164B366D8CC52FA2208EEF4846B3945BCE6A6E93E44ADF7158",
+    "T08_tombstone_hunk_modified": false
+  },
+  "identity_safety": "FTS/embedding cleanup executes only after T08 scope/root/tenant predicates match and record DELETE rowcount is positive.",
+  "exception_safety": "T08 catches primary exception, attempts ROLLBACK, swallows only secondary rollback exception, then re-raises primary FTS error.",
+  "validation": {
+    "exact_selector": "tests/test_agent_memory_t08_rollback_masking.py::test_delete_preserves_primary_fts_error_when_rollback_also_fails",
+    "result": "PENDING: T02 holds exclusive CPU measurement slot; user instruction forbids test until T02 receipts or T20 release.",
+    "active_test_or_benchmark_processes": 0,
+    "root_modified_by_T05": false,
+    "t08_checkout_modified_by_T05": false
+  }
+}

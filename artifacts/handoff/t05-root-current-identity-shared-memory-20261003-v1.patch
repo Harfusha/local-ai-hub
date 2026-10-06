@@ -1,0 +1,324 @@
+diff --git a/src/local_ai_hub/agent_memory.py b/src/local_ai_hub/agent_memory.py
+index 1a5bd40..56f1b99 100644
+--- a/src/local_ai_hub/agent_memory.py
++++ b/src/local_ai_hub/agent_memory.py
+@@ -948,14 +948,68 @@ class MemoryStore:
+         except Exception:
+             pass
+ 
++    def _save_record_mutation(self, record: MemoryRecord, event: AgentEvent) -> MemoryRecord:
++        """Commit a memory projection mutation and event as one durable write."""
++        if not self.state_store.enabled:
++            self._save_record(record)
++            return record
++        self._init_table()
++
++        def _do_mutation() -> MemoryRecord:
++            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
++            try:
++                # Enter publication before BEGIN. The caller-owned transaction
++                # commits the projection and outbox together; publish afterward.
++                with self.state_store.ordered_event_publication(con) as publish:
++                    con.execute("BEGIN IMMEDIATE")
++                    appended = self.state_store.append_in_transaction(
++                        con,
++                        event,
++                        strict_idempotency=False,
++                    )
++                    self._save_record_row(con, record)
++                    con.execute("COMMIT")
++                    publish([appended.event])
++                return record
++            except Exception:
++                if con.in_transaction:
++                    con.execute("ROLLBACK")
++                raise
++            finally:
++                con.close()
++
++        return retry_busy(_do_mutation, retries=5, base_delay_seconds=0.02)
++
+     def promote(
+         self,
+         record_id: str,
+         target_scope: AgentScope,
+         *,
+         approver: str,
++        scope: AgentScope | str | None = None,
++        scope_id: str | None = None,
++        root: str | None = None,
++        repository_id: str | None = None,
++        tenant: str | None = None,
++        task_id: str | None = None,
++        session_id: str | None = None,
++        clone_id: str | None = None,
++        worktree_id: str | None = None,
++        branch: str | None = None,
+     ) -> MemoryRecord:
+-        current = self.get(record_id)
++        current = self.get(
++            record_id,
++            scope=scope,
++            scope_id=scope_id,
++            root=root,
++            repository_id=repository_id,
++            tenant=tenant,
++            task_id=task_id,
++            session_id=session_id,
++            clone_id=clone_id,
++            worktree_id=worktree_id,
++            branch=branch,
++        )
+         if not current:
+             raise KeyError(f"Memory record {record_id} not found")
+ 
+@@ -970,9 +1024,7 @@ class MemoryStore:
+             idempotency_key=f"promote_{record_id}_{target_scope.value}",
+             actor=approver,
+         )
+-        self.state_store.append(event)
+-        self._save_record(promoted)
+-        return promoted
++        return self._save_record_mutation(promoted, event)
+ 
+     def quarantine(
+         self,
+@@ -980,8 +1032,30 @@ class MemoryStore:
+         reason: str,
+         *,
+         actor: str,
++        scope: AgentScope | str | None = None,
++        scope_id: str | None = None,
++        root: str | None = None,
++        repository_id: str | None = None,
++        tenant: str | None = None,
++        task_id: str | None = None,
++        session_id: str | None = None,
++        clone_id: str | None = None,
++        worktree_id: str | None = None,
++        branch: str | None = None,
+     ) -> MemoryRecord:
+-        current = self.get(record_id)
++        current = self.get(
++            record_id,
++            scope=scope,
++            scope_id=scope_id,
++            root=root,
++            repository_id=repository_id,
++            tenant=tenant,
++            task_id=task_id,
++            session_id=session_id,
++            clone_id=clone_id,
++            worktree_id=worktree_id,
++            branch=branch,
++        )
+         if not current:
+             raise KeyError(f"Memory record {record_id} not found")
+ 
+@@ -993,9 +1067,7 @@ class MemoryStore:
+             idempotency_key=f"quar_{record_id}_{int(time.time())}",
+             actor=actor,
+         )
+-        self.state_store.append(event)
+-        self._save_record(quarantined)
+-        return quarantined
++        return self._save_record_mutation(quarantined, event)
+ 
+     @staticmethod
+     def _normalise_path(value: str) -> str:
+@@ -1310,7 +1382,20 @@ class MemoryStore:
+                 semantic=False,
+                 limit=1,
+             )
+-            return records[0] if records else None
++            record = records[0] if records else None
++            if requested_scope != AgentScope.GLOBAL.value or record is None:
++                return record
++            provenance = record.provenance if isinstance(record.provenance, dict) else {}
++            if str(record.scope_id or "").strip() or any(
++                str(provenance.get(field) or "").strip()
++                for field in ("root", "repository_id", "task_id", "session_id", "clone_id", "worktree_id", "branch")
++            ):
++                return None
++            record_tenant = str(provenance.get("tenant") or "").strip()
++            requested_tenant = str(tenant or "").strip()
++            if record_tenant and (not requested_tenant or record_tenant != requested_tenant):
++                return None
++            return record
+         self._init_table()
+         con = connect_sqlite(self.state_store.db_path)
+         try:
+@@ -1318,7 +1403,7 @@ class MemoryStore:
+                 "SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source, "
+                 "evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id, "
+                 "quarantine_reason, provenance, created_at, updated_at, expires_at "
+-                "FROM agent_memory_records WHERE record_id = ? AND scope = ? "
++                "FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = '' "
+                 "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.root'), '') = '' "
+                 "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.tenant'), '') = '' "
+                 "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.repository_id'), '') = '' "
+@@ -1996,7 +2081,7 @@ class MemoryStore:
+                     except (TypeError, ValueError):
+                         provenance = {}
+                     record_tenant = str(provenance.get("tenant", "") or "").strip()
+-                    if record_tenant and parsed_scope is not AgentScope.GLOBAL and record_tenant != identity_values["tenant"]:
++                    if record_tenant and record_tenant != identity_values["tenant"]:
+                         con.execute("COMMIT")
+                         return False, None
+                     for identity_key, expected in identity_values.items():
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+index 042fb08..97bcf4a 100644
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -3712,7 +3712,7 @@ class Handler(BaseHTTPRequestHandler):
+                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                     root_val, repository_id_val = project_identity or (None, None)
+                     requested_scope = _parse_memory_scope(payload.get("scope"))
+-                    tenant_val = None if requested_scope is AgentScope.GLOBAL else self._tenant()
++                    tenant_val = self._tenant()
+                     scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                         requested_scope,
+                         scope_id=payload.get("scope_id"),
+diff --git a/tests/test_agent_memory.py b/tests/test_agent_memory.py
+index 14f5add..219beee 100644
+--- a/tests/test_agent_memory.py
++++ b/tests/test_agent_memory.py
+@@ -1190,3 +1190,70 @@ def test_memory_write_failure_rolls_back_record_event_and_cursor(store: MemorySt
+     assert record_count == 0
+     assert event_count == 0
+     assert cursor_count == 0
++
++def test_get_global_requires_unowned_or_matching_tenant(store: MemoryStore, tmp_path: Path):
++    root = str(tmp_path / "repo")
++    global_unowned = MemoryRecord.create(
++        kind=MemoryKind.FINDING,
++        scope=AgentScope.GLOBAL,
++        key="global-unowned-get",
++        value="shared global memory",
++    )
++    global_tenant = MemoryRecord.create(
++        kind=MemoryKind.FINDING,
++        scope=AgentScope.GLOBAL,
++        key="global-tenant-get",
++        value="tenant memory",
++        provenance={"tenant": "tenant-a"},
++    )
++    global_rooted = MemoryRecord.create(
++        kind=MemoryKind.FINDING,
++        scope=AgentScope.GLOBAL,
++        key="global-rooted-get",
++        value="repository-bound global memory",
++        provenance={"root": root},
++    )
++    global_scoped_id = MemoryRecord.create(
++        kind=MemoryKind.FINDING,
++        scope=AgentScope.GLOBAL,
++        scope_id="tenant-a",
++        key="global-scope-id-get",
++        value="identity-bound global memory",
++    )
++    repository = MemoryRecord.create(
++        kind=MemoryKind.FINDING,
++        scope=AgentScope.REPOSITORY,
++        key="repository-get",
++        value="repository memory",
++        provenance={"root": root, "tenant": "tenant-a"},
++    )
++    task = MemoryRecord.create(
++        kind=MemoryKind.FINDING,
++        scope=AgentScope.TASK,
++        scope_id="task-a",
++        key="task-get",
++        value="task memory",
++        provenance={"root": root, "tenant": "tenant-a"},
++    )
++    for record in (global_unowned, global_tenant, global_rooted, global_scoped_id, repository, task):
++        store._save_record(record)
++
++    assert store.get(global_unowned.record_id) == global_unowned
++    assert store.get(global_tenant.record_id) is None
++    assert store.get(global_tenant.record_id, scope=AgentScope.GLOBAL) is None
++    assert store.get(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-b") is None
++    assert store.get(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-a") == global_tenant
++    assert store.get(global_rooted.record_id, scope=AgentScope.GLOBAL) is None
++    assert store.get(global_scoped_id.record_id) is None
++    assert store.get(global_scoped_id.record_id, scope=AgentScope.GLOBAL, tenant="tenant-a") is None
++    assert store.get(repository.record_id, scope=AgentScope.REPOSITORY) is None
++    assert store.get(repository.record_id, scope=AgentScope.REPOSITORY, root=root, tenant="tenant-b") is None
++    assert store.get(repository.record_id, scope=AgentScope.REPOSITORY, root=root, tenant="tenant-a") == repository
++    assert store.get(task.record_id, scope=AgentScope.TASK, root=root, tenant="tenant-a") is None
++    assert store.get(task.record_id, scope=AgentScope.TASK, task_id="task-a", root=root, tenant="tenant-b") is None
++    assert store.get(task.record_id, scope=AgentScope.TASK, task_id="task-a", root=root, tenant="tenant-a") == task
++    assert store.delete(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-b") is False
++    assert store.delete(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-a") is True
++    assert store.delete(global_rooted.record_id, scope=AgentScope.GLOBAL, root=str(tmp_path / "other")) is False
++    assert store.delete(global_rooted.record_id, scope=AgentScope.GLOBAL, root=root) is True
++    assert store.delete(global_scoped_id.record_id, scope=AgentScope.GLOBAL, scope_id="tenant-a", tenant="tenant-a") is False
+diff --git a/tests/test_agent_memory_http_identity.py b/tests/test_agent_memory_http_identity.py
+index ceb3e24..5c75359 100644
+--- a/tests/test_agent_memory_http_identity.py
++++ b/tests/test_agent_memory_http_identity.py
+@@ -99,8 +99,8 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
+             "tenant": "codex",
+         }
+         status, found = post(global_payload)
+-        assert status == 200
+-        assert found["record"]["record_id"] == global_record.record_id
++        assert status == 404
++        assert found["success"] is False
+ 
+         wrong_root = {**global_payload, "root": str(repo_b)}
+         status, denied_root = post(wrong_root)
+@@ -143,7 +143,7 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
+         status, denied_delete = post({**delete_payload, "root": str(repo_b)})
+         assert status == 404
+         assert denied_delete["success"] is False
+-        assert app.agent_memory.get(global_record.record_id) is not None
++        assert app.agent_memory.get(global_record.record_id) is None
+ 
+         original_delete = app.agent_memory.delete
+         rewritten = False
+@@ -173,7 +173,7 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
+             scope=AgentScope.GLOBAL,
+             root=str(repo_b),
+             repository_id="repo-b",
+-        ) is not None
++        ) is None
+         with closing(sqlite3.connect(app.agent_memory.state_store.db_path)) as con:
+             con.execute(
+                 "UPDATE agent_memory_records SET provenance = ? WHERE record_id = ?",
+@@ -465,7 +465,7 @@ def test_http_memory_get_and_mutations_bind_transport_tenant_and_project_identit
+         )
+         assert status == 404
+         assert denied_delete["success"] is False
+-        assert memory.get(victim.record_id) is not None
++        assert memory.get(victim.record_id) is None
+ 
+         status, deleted = request(
+             "POST",
+@@ -477,6 +477,7 @@ def test_http_memory_get_and_mutations_bind_transport_tenant_and_project_identit
+                 "repository_id": "client-repository",
+                 "tenant": "victim",
+             },
++            tenant="victim",
+         )
+         assert status == 200
+         assert deleted["deleted"] is True
+@@ -732,7 +733,7 @@ def test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries(t
+         )
+         assert status == 404
+         assert denied_delete["success"] is False
+-        assert app.agent_memory.get(tenant_owned.record_id) is not None
++        assert app.agent_memory.get(tenant_owned.record_id) is None
+ 
+         status, authorized_delete = request(
+             "POST",
+@@ -743,7 +744,7 @@ def test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries(t
+                 "root": str(repo_a),
+                 "tenant": "tenant-a",
+             },
+-            tenant="tenant-b",
++            tenant="tenant-a",
+         )
+         assert status == 200
+         assert authorized_delete["deleted"] is True

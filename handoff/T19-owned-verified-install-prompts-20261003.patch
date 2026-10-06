@@ -1,0 +1,386 @@
+diff --git a/install.ps1 b/install.ps1
+index 599e56f..ae70ac6 100644
+--- a/install.ps1
++++ b/install.ps1
+@@ -1,5 +1,8 @@
+ [CmdletBinding()]
+ param(
++    [Parameter(Mandatory = $true)]
++    [ValidatePattern('^[0-9a-fA-F]{40}$')]
++    [string]$ExpectedRevision,
+     [ValidateSet('auto','cpu','integrated','low','balanced','high','max')]
+     [string]$Profile = 'auto',
+     [switch]$SkipModelPull,
+@@ -15,6 +18,16 @@ param(
+ $ErrorActionPreference = 'Stop'
+ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+ 
++if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Git is required to verify the installer source commit.' }
++$ActualRevision = (& git -C $Root rev-parse --verify HEAD).Trim()
++if ($LASTEXITCODE -ne 0 -or $ActualRevision -ine $ExpectedRevision) {
++    throw "Source checkout does not match expected verified commit $ExpectedRevision. Refusing install/update."
++}
++$SourceStatus = & git -C $Root status --porcelain=v1 --untracked-files=all
++if ($LASTEXITCODE -ne 0) { throw 'Could not inspect source checkout status. Refusing install/update.' }
++if ($SourceStatus) { throw 'Source checkout is dirty. Preserve changes, use the verified clean commit, then rerun install/update.' }
++Write-Host "[local-ai-hub] Verified clean source commit: $ActualRevision"
++
+ function Test-Python311([string]$Exe, [string[]]$Prefix = @()) {
+     try {
+         $code = & $Exe @Prefix -c "import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)"
+@@ -65,7 +78,7 @@ if (-not $Python) {
+ & $Python @PythonPrefix -m venv --help *> $null
+ if ($LASTEXITCODE -ne 0) { throw 'The selected Python build does not provide the stdlib venv module.' }
+ 
+-$argsList = @($PythonPrefix) + @((Join-Path $Root 'tools\setup.py'), '--profile', $Profile)
++$argsList = @($PythonPrefix) + @((Join-Path $Root 'tools\setup.py'), '--expected-revision', $ExpectedRevision, '--profile', $Profile)
+ if ($SkipModelPull) { $argsList += '--skip-model-pull' }
+ if ($SkipTools) { $argsList += '--skip-tools' }
+ if ($SkipAgentConfig) { $argsList += '--skip-agent-config' }
+diff --git a/install.sh b/install.sh
+index f811dd7..939e80f 100644
+--- a/install.sh
++++ b/install.sh
+@@ -3,19 +3,36 @@ set -eu
+ 
+ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ PROFILE=auto
++EXPECTED_REVISION=""
+ EXTRA=""
+ 
+ while [ "$#" -gt 0 ]; do
+   case "$1" in
+     --profile) PROFILE=${2:?missing profile}; shift 2 ;;
++    --expected-revision) EXPECTED_REVISION=${2:?missing verified commit SHA}; shift 2 ;;
+     --skip-model-pull|--skip-tools|--skip-agent-config|--skip-service|--skip-ollama-install|--skip-local-nlp-preload|--skip-token-economy|--skip-companion-skills)
+       EXTRA="$EXTRA $1"; shift ;;
+     -h|--help)
+-      echo "Usage: ./install.sh [--profile auto|cpu|integrated|low|balanced|high|max] [setup skip flags]"; exit 0 ;;
++      echo "Usage: ./install.sh --expected-revision <40-character-commit-SHA> [--profile auto|cpu|integrated|low|balanced|high|max] [setup skip flags]"; exit 0 ;;
+     *) echo "Unknown option: $1" >&2; exit 2 ;;
+   esac
+ done
+ 
++case "$EXPECTED_REVISION" in
++  *[!0-9a-fA-F]*|"") echo "--expected-revision must be a 40-character verified commit SHA." >&2; exit 2 ;;
++esac
++if [ "${#EXPECTED_REVISION}" -ne 40 ]; then echo "--expected-revision must be a 40-character verified commit SHA." >&2; exit 2; fi
++if ! command -v git >/dev/null 2>&1; then echo "Git is required to verify the installer source commit." >&2; exit 2; fi
++ACTUAL_REVISION=$(git -C "$ROOT" rev-parse --verify HEAD) || { echo "Could not resolve installer source commit." >&2; exit 2; }
++if [ "$(printf '%s' "$ACTUAL_REVISION" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$EXPECTED_REVISION" | tr '[:upper:]' '[:lower:]')" ]; then
++  echo "Source checkout does not match expected verified commit $EXPECTED_REVISION. Refusing install/update." >&2; exit 2
++fi
++SOURCE_STATUS=$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all) || { echo "Could not inspect installer source status. Refusing install/update." >&2; exit 2; }
++if [ -n "$SOURCE_STATUS" ]; then
++  echo "Source checkout is dirty. Preserve changes, use the verified clean commit, then rerun install/update." >&2; exit 2
++fi
++echo "[local-ai-hub] Verified clean source commit: $ACTUAL_REVISION"
++
+ python_ok() {
+   "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)' >/dev/null 2>&1
+ }
+@@ -77,4 +94,4 @@ if ! "$PYTHON" -m venv --help >/dev/null 2>&1; then
+   exit 1
+ fi
+ # shellcheck disable=SC2086
+-exec "$PYTHON" "$ROOT/tools/setup.py" --profile "$PROFILE" $EXTRA
++exec "$PYTHON" "$ROOT/tools/setup.py" --expected-revision "$EXPECTED_REVISION" --profile "$PROFILE" $EXTRA
+diff --git a/tools/setup.py b/tools/setup.py
+index 596b334..3414a79 100644
+--- a/tools/setup.py
++++ b/tools/setup.py
+@@ -60,6 +60,56 @@ def run(cmd: list[str], *, check: bool = True, timeout: int | None = 120, captur
+     )
+ 
+ 
++def verify_source_revision(expected_revision: str, *, source_root: Path = SOURCE_ROOT) -> str:
++    """Require an exact, clean source checkout before copying files into the install."""
++    if not re.fullmatch(r"[0-9a-fA-F]{40}", expected_revision or ""):
++        raise ValueError("--expected-revision must be a 40-character commit SHA")
++    resolved = run(
++        ["git", "-C", str(source_root), "rev-parse", "--verify", "HEAD"],
++        check=False, timeout=15, capture=True,
++    )
++    if resolved.returncode != 0:
++        raise RuntimeError(f"Could not resolve source checkout revision at {source_root}")
++    actual_revision = (resolved.stdout or "").strip().lower()
++    if actual_revision != expected_revision.lower():
++        raise RuntimeError(
++            f"Source checkout {actual_revision or '<unknown>'} does not match expected verified commit {expected_revision}"
++        )
++    status = run(
++        ["git", "-C", str(source_root), "status", "--porcelain=v1", "--untracked-files=all"],
++        check=False, timeout=15, capture=True,
++    )
++    if status.returncode != 0:
++        raise RuntimeError(f"Could not inspect source checkout status at {source_root}")
++    if (status.stdout or "").strip():
++        raise RuntimeError(f"source checkout is dirty; refusing install from {source_root}")
++    return actual_revision
++
++
++def install_persistent_service(python: Path, install_dir: Path) -> bool:
++    """Install the user service and accept only a successful persistent mode."""
++    try:
++        result = run(
++            [str(python), str(install_dir / "tools" / "service.py"), "install"],
++            check=False, timeout=45, capture=True,
++        )
++    except Exception as exc:
++        log(f"ERROR: service registration failed: {exc}")
++        return False
++    mode = (result.stdout or "").strip().splitlines()[-1].strip() if (result.stdout or "").strip() else ""
++    persistent_modes = {
++        "windows-logon-task", "windows-user-startup", "existing-service", "launchd", "systemd-user",
++    }
++    if result.returncode != 0 or mode not in persistent_modes:
++        detail = f" (mode={mode or 'unknown'}, exit={result.returncode})"
++        if result.stderr:
++            detail += f": {result.stderr.strip()}"
++        log("ERROR: service registration did not establish a persistent user service" + detail)
++        return False
++    log(f"Persistent user service registered: {mode}")
++    return True
++
++
+ def expand(value: str) -> Path:
+     return Path(os.path.expandvars(os.path.expanduser(value))).resolve()
+ 
+@@ -704,8 +754,16 @@ def main() -> int:
+     parser.add_argument("--skip-token-economy", action="store_true", help="Do not install token economy packages or probe external CLI tools")
+     parser.add_argument("--skip-companion-skills", action="store_true", help="Do not install companion skills (token-economizer, caveman, tool-orchestration, ollama-quality-routing)")
+     parser.add_argument("--generate-only", action="store_true", help="Generate dynamic skill, instructions, MCP manifests, and schemas without re-installing dependencies or service.")
++    parser.add_argument("--expected-revision", help="Exact verified 40-character source commit required for install/update.")
+     args = parser.parse_args()
+ 
++    if not args.generate_only and args.expected_revision:
++        try:
++            verified_revision = verify_source_revision(args.expected_revision)
++        except (ValueError, RuntimeError) as exc:
++            parser.error(str(exc))
++        log(f"Verified clean source commit: {verified_revision}")
++
+     config_source, cfg, install_dir = select_config_source(args.config)
+     include_companion = not args.skip_companion_skills and bool(cfg.get("setup", {}).get("install_companion_skills", True))
+     if args.generate_only:
+@@ -840,11 +898,10 @@ def main() -> int:
+     pull_ollama_models(cfg)
+     ensure_llama_cpp_for_setup(cfg)
+ 
+-    if not args.skip_service and bool(setup_cfg.get("install_service", True)) and cfg.get("headless", {}).get("enabled", True):
+-        try:
+-            run([str(hub_python), str(install_dir / "tools" / "service.py"), "install"], check=False, timeout=45)
+-        except Exception as exc:
+-            log(f"WARNING: service install failed: {exc}")
++    service_required = not args.skip_service and bool(setup_cfg.get("install_service", True)) and cfg.get("headless", {}).get("enabled", True)
++    service_ok = True
++    if service_required:
++        service_ok = install_persistent_service(hub_python, install_dir)
+     else:
+         try:
+             run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=False, timeout=30)
+@@ -856,6 +913,10 @@ def main() -> int:
+     except Exception as exc:
+         log(f"WARNING: doctor could not complete: {exc}")
+ 
++    if service_required and not service_ok:
++        log("Setup incomplete: service registration failed. Review service-manager output, then rerun install/update with the same verified commit.")
++        return 1
++
+     hw = cfg.get("_hardware", {})
+     log(f"Setup complete. Detected profile: {hw.get('profile', 'unknown')} ({hw.get('os', '')}/{hw.get('arch', '')}).")
+     log("Restart configured agents so they reload the Local AI Hub MCP server and tool-first policy.")
+--- a/docs/INSTALL_PROMPT.md
++++ b/docs/INSTALL_PROMPT.md
+@@ -29,9 +29,13 @@
+      ```
+      *(On Windows PowerShell: `git clone https://github.com/Harfusha/local-ai-hub.git "$HOME\.local-ai-hub"`)*
+ 
++   After cloning, fetch origin, confirm the verified commit is reachable from `origin/master`, and check out that exact SHA in detached mode. On an existing checkout, preserve changes and stop if it is dirty. Verify `git rev-parse HEAD` equals the verified SHA and the complete porcelain status is empty before Phase 2.
++
+ ---
+ 
+ ### PHASE 2: RUN BOOTSTRAP INSTALLATION
++
++Before running setup, obtain the exact 40-character verified commit SHA from the T20 release owner. A branch name or current `master` tip is not a release pin. Ensure the selected source checkout resolves to that SHA and `git status --porcelain=v1 --untracked-files=all` is empty; if it is dirty or mismatched, preserve its changes and stop. The installer repeats both checks before setup or copying files. Pass the same SHA as `--expected-revision` on every platform. Do not point setup at another checkout or overwrite the running installation from an unverified candidate.
+ 
+ Run the platform installer from the repository root. This automatically configures Python 3.11+, the virtual environment, Token Economy tools, backend-appropriate local model support, Serena in an isolated environment, global MCP configs, and the background supervisor. Ollama is installed or pulled only when `[ollama].enabled = true`, `server.auto_start_ollama = true`, and `llama_cpp.fallback_to_ollama = true`; the default is disabled. When Ollama is disabled, `llama_cpp.mode = "on"` explicitly provisions a pinned llama.cpp runtime and default Qwen 1.5B model under `server.state_dir`, then supervises its loopback server; Intel Windows tries SYCL and falls back to CPU. `mode = "auto"` detects an existing endpoint only; `"off"` disables llama.cpp. Ollama wins provider selection whenever enabled. Setup must never switch providers silently or install Ollama as a fallback. Set `features.vision = false` to remove vision capability and its model pull. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
+ 
+@@ -39,11 +43,11 @@
+ 
+ - **Windows (PowerShell)**:
+   ```powershell
+-  powershell -ExecutionPolicy Bypass -File "$HOME\.local-ai-hub\install.ps1" -Profile auto
++  powershell -ExecutionPolicy Bypass -File "$HOME\.local-ai-hub\install.ps1" -ExpectedRevision "<T20_VERIFIED_COMMIT_SHA>" -Profile auto
+   ```
+ - **macOS / Linux (Bash)**:
+   ```bash
+-  bash "$HOME/.local-ai-hub/install.sh" --profile auto
++  bash "$HOME/.local-ai-hub/install.sh" --expected-revision "<T20_VERIFIED_COMMIT_SHA>" --profile auto
+   ```
+ 
+ *Note*: If an explicitly configured local backend or heavy model is unavailable, the installer still sets up deterministic tools and built-in indexers and reports the unavailable optional backend.
+@@ -51,6 +55,8 @@
+ ---
+ 
+ ### PHASE 3: VERIFY SERVICE & HEALTH
++
++Setup exits nonzero if service registration fails or reports only `detached-fallback`; preserve its output, inspect the existing service-manager entry and logs, then repair or rerun against the same clean verified commit. Do not report install complete until one persistent service is confirmed.
+ 
+ 1. **Check Service Endpoint**:
+    Probe HTTP health (default port 11435):
+--- a/docs/UPDATE_PROMPT.md
++++ b/docs/UPDATE_PROMPT.md
+@@ -17,7 +17,9 @@
+ 
+ ---
+ 
+-### PHASE 1: LOCATE INSTALLATION & FAST-FORWARD TO V4 MASTER
++### PHASE 1: LOCATE INSTALLATION & CHECK OUT VERIFIED V4 COMMIT
++
++Use only the exact 40-character verified commit SHA issued by the T20 release owner; do not substitute the moving `master` tip. First preserve and inspect the canonical installation checkout. If it is dirty, stop and preserve those changes. Fetch the canonical remote only after that check, confirm the verified SHA is available from `origin/master`, then check out that exact SHA (detached checkout is acceptable). Confirm `git rev-parse HEAD` equals the verified SHA and `git status --porcelain=v1 --untracked-files=all` is empty before running setup. The installer repeats both checks before it changes the install. Never copy another candidate checkout over the running root.
+ 
+ 1. **Locate Installation Directory**:
+    - Windows: `$HOME\.local-ai-hub` (or `%USERPROFILE%\.local-ai-hub`)
+@@ -25,35 +27,39 @@
+ 2. **Protect Local Changes**:
+    - Run `git status --short` before changing branches.
+    - If the installation worktree is dirty, preserve the changes and stop for operator review. Never use `git reset --hard`, `git checkout -- .`, or discard local configuration/source changes.
+-3. **Fetch V4 from the Canonical Master Branch**:
+-   - V4 is published on `origin/master`. Do not use the old `codex/v4.0-hardening` feature branch for installations.
+-   - Fetch `master`, switch to local `master`, and fast-forward only:
++3. **Fetch the Verified Commit from Canonical Master**:
++   - Confirm the T20 verified commit is reachable from `origin/master`. Do not use the old `codex/v4.0-hardening` feature branch for installations.
++   - Fetch `master`, verify ancestry, then check out the exact commit:
+      ```bash
+      git -C "$HOME/.local-ai-hub" fetch --prune origin
+-     git -C "$HOME/.local-ai-hub" switch master
+-     git -C "$HOME/.local-ai-hub" pull --ff-only origin master
++     git -C "$HOME/.local-ai-hub" cat-file -e "<T20_VERIFIED_COMMIT_SHA>^{commit}"
++     git -C "$HOME/.local-ai-hub" merge-base --is-ancestor "<T20_VERIFIED_COMMIT_SHA>" origin/master
++     git -C "$HOME/.local-ai-hub" checkout --detach "<T20_VERIFIED_COMMIT_SHA>"
+      ```
+-     *(On Windows PowerShell: `git -C "$HOME\.local-ai-hub" fetch --prune origin`, then `git -C "$HOME\.local-ai-hub" switch master`, then `git -C "$HOME\.local-ai-hub" pull --ff-only origin master`.)*
+-   - If local `master` does not exist, create it only as a tracking branch from `origin/master`; never overwrite an existing local branch.
++     *(On Windows PowerShell: fetch origin, verify the commit object and `git -C "$HOME\.local-ai-hub" merge-base --is-ancestor "<T20_VERIFIED_COMMIT_SHA>" origin/master`, then check out that SHA detached.)*
+ 
+ ---
+ 
+ ### PHASE 2: RUN UPDATE / RE-SETUP
+ 
++Run only after Phase 1 confirms the exact verified commit and a clean checkout. Pass the same SHA to the platform installer; a missing, dirty, or mismatched revision is a hard stop. Keep the existing per-user service identity and shared HTTP Hub singleton; do not register another service for a chat, agent, repository, or worktree.
++
+ Run the platform installer with the active hardware profile to apply dependency updates, regenerate MCP schemas/manifests, and update skills. Inspect provider config first: Ollama is selected when `[ollama].enabled = true` and its install/model pulls still require the existing explicit opt-ins (`server.auto_start_ollama = true`, `llama_cpp.fallback_to_ollama = true`). If Ollama is disabled, `llama_cpp.mode = "on"` provisions the pinned llama.cpp runtime and default Qwen 1.5B model under `server.state_dir`; `"auto"` uses only a configured existing endpoint; `"off"` disables it. Never switch providers silently or start `ollama serve` as a fallback. Pull `models.vision` only for an explicitly enabled Ollama backend and `features.vision = true`:
+ 
+ - **Windows (PowerShell)**:
+   ```powershell
+-  powershell -ExecutionPolicy Bypass -File "$HOME\.local-ai-hub\install.ps1" -Profile auto
++  powershell -ExecutionPolicy Bypass -File "$HOME\.local-ai-hub\install.ps1" -ExpectedRevision "<T20_VERIFIED_COMMIT_SHA>" -Profile auto
+   ```
+ - **Linux / macOS (Bash)**:
+   ```bash
+-  bash "$HOME/.local-ai-hub/install.sh" --profile auto
++  bash "$HOME/.local-ai-hub/install.sh" --expected-revision "<T20_VERIFIED_COMMIT_SHA>" --profile auto
+   ```
+ 
+ ---
+ 
+ ### PHASE 3: RESTART SERVICE & VERIFY HEALTH
++
++Setup exits nonzero if service registration fails or is only detached fallback. Preserve installer output, inspect the same service-manager entry and logs, then recover or rerun using the same clean verified SHA; do not report update complete until one persistent service is confirmed.
+ 
+ 1. **Restart Hub Service**:
+    - Windows:
+--- /dev/null
++++ b/tests/test_t19_verified_install_flow.py
+@@ -0,0 +1,90 @@
++from __future__ import annotations
++
++import importlib.util
++import subprocess
++from pathlib import Path
++
++import pytest
++
++
++ROOT = Path(__file__).resolve().parents[1]
++SPEC = importlib.util.spec_from_file_location("t19_verified_setup", ROOT / "tools" / "setup.py")
++assert SPEC is not None and SPEC.loader is not None
++setup = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(setup)
++
++REVISION = "a" * 40
++
++
++def _mock_git(monkeypatch, *, revision: str = REVISION, dirty: str = "") -> None:
++    def fake_run(command, **kwargs):
++        assert kwargs["capture"] is True
++        if command[-3:-1] == ["rev-parse", "--verify"]:
++            return subprocess.CompletedProcess(command, 0, stdout=revision + "\n")
++        if command[-3:] == ["status", "--porcelain=v1", "--untracked-files=all"]:
++            return subprocess.CompletedProcess(command, 0, stdout=dirty)
++        raise AssertionError(f"unexpected git command: {command}")
++
++    monkeypatch.setattr(setup, "run", fake_run)
++
++
++def test_revision_preflight_requires_full_commit_sha() -> None:
++    with pytest.raises(ValueError, match="40-character commit SHA"):
++        setup.verify_source_revision("master", source_root=ROOT)
++
++
++def test_revision_preflight_accepts_exact_clean_commit(tmp_path: Path, monkeypatch) -> None:
++    _mock_git(monkeypatch)
++
++    assert setup.verify_source_revision(REVISION, source_root=tmp_path) == REVISION
++
++
++def test_revision_preflight_rejects_wrong_commit(tmp_path: Path, monkeypatch) -> None:
++    _mock_git(monkeypatch, revision="b" * 40)
++
++    with pytest.raises(RuntimeError, match="does not match expected verified commit"):
++        setup.verify_source_revision(REVISION, source_root=tmp_path)
++
++
++def test_revision_preflight_rejects_dirty_checkout(tmp_path: Path, monkeypatch) -> None:
++    _mock_git(monkeypatch, dirty=" M docs/INSTALL_PROMPT.md\n")
++
++    with pytest.raises(RuntimeError, match="source checkout is dirty"):
++        setup.verify_source_revision(REVISION, source_root=tmp_path)
++
++
++@pytest.mark.parametrize(
++    ("returncode", "stdout", "expected"),
++    [
++        (0, "systemd-user\n", True),
++        (0, "detached-fallback\n", False),
++        (1, "", False),
++    ],
++)
++def test_service_bootstrap_reports_only_persistent_success(
++    tmp_path: Path, monkeypatch, capsys, returncode: int, stdout: str, expected: bool,
++) -> None:
++    command_result = subprocess.CompletedProcess([], returncode, stdout=stdout)
++    monkeypatch.setattr(setup, "run", lambda *_args, **_kwargs: command_result)
++
++    result = setup.install_persistent_service(tmp_path / "python", tmp_path)
++
++    assert result is expected
++    if not expected:
++        assert "service registration" in capsys.readouterr().out.casefold()
++
++
++def test_install_wrappers_require_revision_pin_before_setup() -> None:
++    powershell = (ROOT / "install.ps1").read_text(encoding="utf-8")
++    shell = (ROOT / "install.sh").read_text(encoding="utf-8")
++
++    assert "ExpectedRevision" in powershell and "--expected-revision" in powershell
++    assert "--expected-revision" in shell and "status --porcelain=v1 --untracked-files=all" in shell
++
++
++def test_install_update_prompts_require_t20_verified_revision() -> None:
++    for name in ("INSTALL_PROMPT.md", "UPDATE_PROMPT.md"):
++        prompt = (ROOT / "docs" / name).read_text(encoding="utf-8").casefold()
++        assert "verified commit" in prompt
++        assert "expected-revision" in prompt
++        assert "dirty" in prompt

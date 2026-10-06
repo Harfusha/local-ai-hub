@@ -196,31 +196,6 @@ def test_disjoint_paths_can_coexist_but_overlapping_paths_cannot(tmp_path: Path)
         store.release_attempt(overlap_attempt)
 
 
-def test_namespace_writer_token_starts_above_legacy_physical_token(tmp_path: Path) -> None:
-    root = tmp_path / "repo"
-    root.mkdir()
-    store = FencingLeaseStore(tmp_path / "fences.sqlite3")
-    legacy_scope = os.path.normcase(str(root.resolve()))
-    with closing(store._connect()) as con:
-        con.execute(
-            "INSERT INTO writer_fence_leases(lease_id,resource,owner_id,fencing_token,expires_at,paths_json,attempt_id,attempt_token,scope_id,active) "
-            "VALUES(?,?,?,?,?,?,?,?,?,0)",
-            ("legacy-lease", legacy_scope, "old-owner", 8, 0, '["src/shared.py"]', "", 0, legacy_scope),
-        )
-    coordination_id = "tenant-new"
-    attempt = store.claim_attempt(
-        root, "work-new", "owner-new", ttl_seconds=30,
-        coordination_id=coordination_id,
-    )
-
-    lease = store.acquire(
-        root, "owner-new", ["src/shared.py"], ttl_seconds=30,
-        attempt=attempt, coordination_id=coordination_id,
-    )
-
-    assert lease.fencing_token > 8
-
-
 @pytest.mark.skipif(os.name != "nt", reason="Windows paths are case-insensitive")
 def test_case_aliases_cannot_claim_same_windows_path(tmp_path: Path) -> None:
     root = tmp_path / "repo"
@@ -299,7 +274,9 @@ def test_rooted_scope_resolves_symlink_alias_to_same_path(tmp_path: Path) -> Non
     try:
         alias.symlink_to(root / "real", target_is_directory=True)
     except OSError as exc:
-        pytest.skip(f"directory symlink unavailable: {exc}")
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege unavailable (WinError 1314); symlink normalization behavior unverified")
+        raise
 
     assert normalize_paths(["alias/file.py"], root=root) == normalize_paths(
         ["real/file.py"], root=root
@@ -399,6 +376,31 @@ def test_stale_owner_cannot_renew_or_release_reacquired_lease(tmp_path: Path) ->
         store.renew_attempt(stale_attempt, ttl_seconds=30)
     store.release_attempt(stale_attempt)
     store.assert_current(current, ["a.py"])
+
+
+def test_namespace_writer_token_starts_above_legacy_physical_token(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    store = FencingLeaseStore(tmp_path / "fences.sqlite3")
+    legacy_scope = os.path.normcase(str(root.resolve()))
+    with closing(store._connect()) as con:
+        con.execute(
+            "INSERT INTO writer_fence_leases(lease_id,resource,owner_id,fencing_token,expires_at,paths_json,attempt_id,attempt_token,scope_id,active) "
+            "VALUES(?,?,?,?,?,?,?,?,?,0)",
+            ("legacy-lease", legacy_scope, "old-owner", 8, 0, '["src/shared.py"]', "", 0, legacy_scope),
+        )
+    coordination_id = "tenant-new"
+    attempt = store.claim_attempt(
+        root, "work-new", "owner-new", ttl_seconds=30,
+        coordination_id=coordination_id,
+    )
+
+    lease = store.acquire(
+        root, "owner-new", ["src/shared.py"], ttl_seconds=30,
+        attempt=attempt, coordination_id=coordination_id,
+    )
+
+    assert lease.fencing_token > 8
 
 
 def test_subprocess_attempt_supersession_rejects_stale_commit_with_monotonic_tokens(

@@ -1,0 +1,142 @@
+diff --git a/src/local_ai_hub/agent_tasks.py b/src/local_ai_hub/agent_tasks.py
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -998,35 +998,39 @@
+         return retry_busy(_fetch_count, retries=5, base_delay_seconds=0.02)
+ 
+     def add_verification_receipt(self, task_id: str, criterion: str, receipt_id: str) -> TaskState:
+-        current = self.get(task_id)
+-        if not current:
++        if not self._db_path_available():
++            raise RuntimeError("agent task storage is unavailable")
++        self._init_projection_table()
++        published: list[AgentEvent] = []
++        result: list[TaskState | None] = []
++
++        def _write() -> None:
++            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
++            try:
++                con.execute("BEGIN IMMEDIATE")
++                state, event = self.add_verification_receipt_in_transaction(
++                    con, task_id, criterion, receipt_id
++                )
++                con.execute("COMMIT")
++                result.append(state)
++                if event is not None:
++                    published.append(event)
++            except Exception:
++                try:
++                    con.execute("ROLLBACK")
++                except Exception:
++                    pass
++                raise
++            finally:
++                con.close()
++
++        with self.state_store._append_publish_lock:
++            retry_busy(_write, retries=5, base_delay_seconds=0.02)
++            for event in published:
++                self.state_store._publish(event)
++        if not result or result[0] is None:
+             raise KeyError(f"Task {task_id} not found")
+-        if current.verification_receipts.get(criterion) == receipt_id:
+-            return current
+-        new_receipts = dict(current.verification_receipts)
+-        new_receipts[criterion] = receipt_id
+-        now = time.time()
+-        updated = TaskState(
+-            task_id=current.task_id,
+-            status=current.status,
+-            contract=current.contract,
+-            context=current.context,
+-            owner=current.owner,
+-            lease_id=current.lease_id,
+-            created_at=current.created_at,
+-            updated_at=now,
+-            heartbeat_expires_at=current.heartbeat_expires_at,
+-            checkpoint=current.checkpoint,
+-            verification_receipts=new_receipts,
+-        )
+-        event = AgentEvent.create(
+-            stream_id=f"task:{task_id}",
+-            kind="task.verified",
+-            payload={"criterion": criterion, "receipt_id": receipt_id},
+-            idempotency_key=f"ver_{task_id}_{criterion}_{receipt_id}",
+-            actor="verifier",
+-        )
+-        return self._commit_update(current, updated, event)
++        return result[0]
+ 
+     def add_verification_receipt_in_transaction(
+         self,
+@@ -1110,6 +1114,7 @@
+         return updated, appended.event if not appended.duplicate else None
+ 
+     def _verify_completion(self, task: TaskState) -> None:
++        self._validate_memory_audit(task)
+         if not task.contract.acceptance_criteria:
+             return
+ 
+diff --git a/tests/test_agent_t08_durable_contract.py b/tests/test_agent_t08_durable_contract.py
+--- a/tests/test_agent_t08_durable_contract.py
++++ b/tests/test_agent_t08_durable_contract.py
+@@ -434,3 +434,29 @@
+         "verification.receipt_recorded"
+     ]
+     assert state_store.events("task:missing-task") == []
++
++def test_add_verification_receipt_wrapper_rolls_back_when_event_append_fails(tmp_path, monkeypatch):
++    db_path = tmp_path / "agent_state.sqlite3"
++    state_store = AgentStateStore(db_path)
++    tasks = TaskStore(state_store)
++    task = tasks.create(GoalContract(goal="atomic receipt wrapper"), ScopeContext())
++    stream_id = f"task:{task.task_id}"
++    before = state_store.event_page(stream_id)["events"]
++    subscriber = state_store.subscribe()
++    append = state_store.append_in_transaction
++
++    def fail_receipt_append(con, event, *, strict_idempotency=False):
++        if event.kind == "task.verified":
++            raise RuntimeError("injected receipt append failure")
++        return append(con, event, strict_idempotency=strict_idempotency)
++
++    monkeypatch.setattr(state_store, "append_in_transaction", fail_receipt_append)
++    with pytest.raises(RuntimeError, match="injected receipt append failure"):
++        tasks.add_verification_receipt(task.task_id, "criterion", "receipt-1")
++
++    persisted = tasks.get(task.task_id)
++    assert persisted is not None
++    assert persisted.verification_receipts == {}
++    assert state_store.event_page(stream_id)["events"] == before
++    assert subscriber.empty()
++    state_store.unsubscribe(subscriber)
+diff --git a/tests/test_agent_t08_live_order.py b/tests/test_agent_t08_live_order.py
+--- a/tests/test_agent_t08_live_order.py
++++ b/tests/test_agent_t08_live_order.py
+@@ -102,7 +102,7 @@
+     tasks = TaskStore(state_store)
+     task_id = f"task-live-order-{task_writer}"
+     stream_id = f"task:{task_id}"
+-    if task_writer == "update":
++    if task_writer in {"update", "receipt"}:
+         tasks.create(
+             GoalContract(goal="preserve event order"),
+             ScopeContext(task_id=task_id),
+@@ -161,7 +161,7 @@
+                     ScopeContext(task_id=task_id),
+                     task_id=task_id,
+                 )
+-            else:
++            elif task_writer == "update":
+                 tasks.transition(
+                     task_id,
+                     TaskStatus.ACTIVE,
+@@ -169,6 +169,8 @@
+                     actor="test",
+                     idempotency_key="task-live-order-update",
+                 )
++            else:
++                tasks.add_verification_receipt(task_id, "live-order", "receipt-1")
+         except BaseException as exc:
+             errors.append(exc)
+ 

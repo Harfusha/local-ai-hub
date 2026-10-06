@@ -191,7 +191,7 @@ def test_rollback_rejects_junction_before_restoring_any_file(tmp_path: Path) -> 
 
     try:
         assert junction.is_junction()
-        with pytest.raises(RuntimeError, match="symlink or junction"):
+        with pytest.raises(ValueError, match="symlink or reparse"):
             WorkOrchestrator._rollback(root, journal)
 
         assert first.read_bytes() == b"first postimage\n"

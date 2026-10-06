@@ -1,0 +1,46 @@
+{
+  "date": "2026-10-05",
+  "task": "T19 source-side install, update, SDK, clean-host checklist, rollback acceptance",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "worktree_state": "detached; 78 pre-existing dirty status entries; root untouched",
+  "source_change": {
+    "file": "tests/test_t19_packaged_sdk_smoke.py",
+    "pre_sha256": "cf0889e223467d5606161270ff9831005971e4f1bfff315d1201e50bd9f46144",
+    "post_sha256": "6fd82a734dbc75876dfe9a2d99d27a6e5c7eee280ee1e4b9e8f3c6f8e22428a9",
+    "change": "Build preflight probes setuptools/wheel/pip using the exact -I -B child interpreter. Missing isolated deps become explicit skip; no network/global install. Assertions unchanged."
+  },
+  "targeted_command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t19_install_contracts.py tests/test_t19_verified_install_flow.py tests/test_t19_prompt_profile_parity.py tests/test_t19_sdk_docs.py tests/test_t19_sdk_wrapper_payloads.py tests/test_t19_sdk_scenarios.py tests/test_t19_packaging_contract.py tests/test_t19_rollback_contract.py tests/test_t19_rollback_snapshot.py tests/test_t19_packaged_sdk_smoke.py",
+  "targeted_result": {
+    "exit_code": 0,
+    "summary": "40 passed, 2 skipped, 3 subtests passed in 12.41s",
+    "skips": [
+      "Rollback symlink test requires Windows privilege: WinError 1314.",
+      "Packaged SDK build smoke skipped: isolated setuptools/wheel unavailable; no install attempted."
+    ]
+  },
+  "clean_host_acceptance": {
+    "status": "BLOCKED_NOT_RUN",
+    "requirements": [
+      "T20 frozen clean source revision",
+      "revision-bound sdist receipt with source/archive/artifact SHA-256",
+      "explicit serial disposable-host slot",
+      "Windows and Linux install/update/doctor evidence"
+    ]
+  },
+  "checklist_and_rollback_docs": {
+    "files": [
+      "docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md",
+      "docs/T19_RELEASE_VALIDATION_RUNBOOK.md"
+    ],
+    "summary": "Runbook gates clean install, same-version reinstall, uninstall, rollback snapshot/restore, cross-version update, service/MCP; external host gates remain not run."
+  },
+  "files_sha256": {
+    "tests/test_t19_packaged_sdk_smoke.py": "6fd82a734dbc75876dfe9a2d99d27a6e5c7eee280ee1e4b9e8f3c6f8e22428a9",
+    "docs/INSTALL_PROMPT.md": "3f953083bfa668f78c62f9e3b216a8672d46f92bfb6f36604dc5b15fe0b4fe5e",
+    "docs/UPDATE_PROMPT.md": "e163c2a146ce4156465ca0bfa59d54d655422c910292efe4f6c3c95fbffe9e03",
+    "docs/PYTHON_SDK.md": "424b6208a5fc263401d0104128a431d203fd48cd00a36ad12114cc9d042cc250",
+    "docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md": "df49d3d60f56e306cfb0fa8f79d85eb5c4d21a79d46fe45aad44ffa618a7e2db",
+    "docs/T19_RELEASE_VALIDATION_RUNBOOK.md": "30ffac9815df2ae201d71ff1cc79c87642d18a072aff76a2b6b9b80f4b698a39"
+  },
+  "effects": "No Hub installation/upgrade, package build, network, service, user config, or root changes. Pytest used temp-only fixtures."
+}
