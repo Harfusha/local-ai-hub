@@ -59,6 +59,7 @@ def model_conclusion(scope: AgentScope = AgentScope.TASK) -> MemoryRecord:
 
 
 def confirmed_repository_record(store: MemoryStore) -> MemoryRecord:
+    provenance = {"root": "C:/repository", "tenant": "tenant-a"}
     rec = MemoryRecord.create(
         kind=MemoryKind.CONVENTION,
         scope=AgentScope.REPOSITORY,
@@ -67,7 +68,7 @@ def confirmed_repository_record(store: MemoryStore) -> MemoryRecord:
         confidence=0.95,
         source="user",
         status=MemoryStatus.CONFIRMED,
-        provenance={"root": "C:/repo", "tenant": "tenant-a"},
+        provenance=provenance,
     )
     return store.record(rec, actor="user", idempotency_key="rec-repo-1")
 
@@ -1509,6 +1510,58 @@ def test_scoped_memory_delete_requires_matching_tenant(store: MemoryStore):
     ) is None
 
 
+def test_global_memory_get_ignores_transport_tenant_but_honors_other_identity(store: MemoryStore, tmp_path: Path):
+    repo = tmp_path / "repo"
+    global_record = store.record(MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.GLOBAL,
+        key="global-codex-contract",
+        value="global value",
+        provenance={"root": str(repo), "repository_id": "repo-global", "tenant": "legacy-tenant"},
+    ))
+
+    assert store.get(
+        global_record.record_id,
+        scope=AgentScope.GLOBAL,
+        tenant="codex",
+        root=str(repo),
+        repository_id="repo-global",
+    ) == global_record
+    assert store.get(
+        global_record.record_id,
+        scope=AgentScope.GLOBAL,
+        tenant="codex",
+        root=str(tmp_path / "other-repo"),
+    ) is None
+    assert store.get(
+        global_record.record_id,
+        scope=AgentScope.GLOBAL,
+        tenant="codex",
+        repository_id="other-repository",
+    ) is None
+
+    session_record = store.record(MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.SESSION,
+        scope_id="codex",
+        key="tenant-scoped-contract",
+        value="tenant value",
+        provenance={"tenant": "codex"},
+    ))
+    assert store.get(
+        session_record.record_id,
+        scope=AgentScope.SESSION,
+        scope_id="codex",
+        tenant="codex",
+    ) == session_record
+    assert store.get(
+        session_record.record_id,
+        scope=AgentScope.SESSION,
+        scope_id="codex",
+        tenant="other-tenant",
+    ) is None
+
+
 def test_memory_identity_indexes_exist_for_bounded_filtered_queries(store: MemoryStore):
     con = connect_sqlite(store.state_store.db_path)
     try:
@@ -1575,6 +1628,19 @@ def test_global_promotion_succeeds_with_user_approval(store: MemoryStore):
     )
     assert promoted.scope is AgentScope.GLOBAL
     assert promoted.status is MemoryStatus.CONFIRMED
+
+
+def test_promotion_requires_matching_repository_identity(store: MemoryStore):
+    record = confirmed_repository_record(store)
+    with pytest.raises(KeyError, match="not found"):
+        store.promote(
+            record.record_id,
+            AgentScope.GLOBAL,
+            approver="user",
+            scope=AgentScope.REPOSITORY,
+            root="C:/repository",
+            tenant="another-tenant",
+        )
 
 
 def test_conflicting_high_confidence_records_are_quarantined(store: MemoryStore):
@@ -2096,6 +2162,27 @@ def test_mark_stale_batch_rolls_back_and_repeats_idempotently(store: MemoryStore
     assert store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/batch-0.py", "src/batch-1.py"]) == 0
 
 
+def test_delete_rejects_repository_record_with_missing_root_provenance(store: MemoryStore):
+    root = Path.cwd()
+    record = store.record(MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.REPOSITORY,
+        scope_id=str(root),
+        key="missing-root-provenance",
+        value="must remain",
+        provenance={"tenant": "tenant-a"},
+    ))
+
+    deleted = store.delete(
+        record.record_id,
+        scope=AgentScope.REPOSITORY,
+        scope_id=str(root),
+        root=str(root),
+        tenant="tenant-a",
+    )
+
+    assert deleted is False
+    assert store.get(record.record_id) is not None
 def test_memory_write_failure_rolls_back_record_event_and_cursor(store: MemoryStore, monkeypatch):
     idempotency_key = "memory-write-rollback"
     stream_ids: list[str] = []

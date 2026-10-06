@@ -17,6 +17,7 @@ from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_incidents import IncidentStore
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskState, TaskStatus, TaskStore
+from local_ai_hub import trace_context
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.leases import ScopeLeaseStore
 from local_ai_hub.rag import RAGStore
@@ -115,6 +116,7 @@ def test_task_heartbeat_and_extended_reap(tmp_path: Path) -> None:
     t_blocked = task_store.create(contract, context, task_id="task_block", repo_root=str(tmp_path))
     task_store.transition(t_blocked.task_id, TaskStatus.ACTIVE, reason="act", actor="agent", idempotency_key="act_b")
     task_store.transition(t_blocked.task_id, TaskStatus.BLOCKED, reason="block", actor="agent", idempotency_key="block_b")
+    trace_context.reset_context(tenant_token)
 
     trace_context.reset_context(tenant_token)
 

@@ -46,6 +46,7 @@ class ContextRequest:
     preload_profile: str = ""
     repo_revision: str = ""
     since_hash: str = ""
+    coordination_id: str = ""
     settings_digest: str | None = None
     path_hints: tuple[ContextPathHint, ...] = ()
     identity: str = ""
@@ -241,6 +242,16 @@ def _memory_record_matches_tenant(record: Any, tenant: str) -> bool:
     return bool(record_tenant) and record_tenant == requested_tenant
 
 
+def _rollback_after_failure(connection: Any, *, operation: str) -> None:
+    try:
+        connection.execute("ROLLBACK")
+    except Exception as cleanup_error:
+        logging.getLogger(__name__).warning(
+            "agent_context transaction rollback failed operation=%s error_type=%s",
+            operation,
+            type(cleanup_error).__name__,
+        )
+
 class ContextCompiler:
     def __init__(
         self,
@@ -353,14 +364,7 @@ class ContextCompiler:
                     "knowledge_link_save",
                     type(exc).__name__,
                 )
-                try:
-                    con.execute("ROLLBACK")
-                except Exception as cleanup_error:
-                    logging.getLogger(__name__).warning(
-                        "agent_context transaction rollback failed operation=%s error_type=%s",
-                        "knowledge_link_save",
-                        type(cleanup_error).__name__,
-                    )
+                _rollback_after_failure(con, operation="knowledge_link_save")
                 raise
             finally:
                 con.close()
@@ -431,14 +435,7 @@ class ContextCompiler:
                     "knowledge_link_invalidate",
                     type(exc).__name__,
                 )
-                try:
-                    con.execute("ROLLBACK")
-                except Exception as cleanup_error:
-                    logging.getLogger(__name__).warning(
-                        "agent_context transaction rollback failed operation=%s error_type=%s",
-                        "knowledge_link_invalidate",
-                        type(cleanup_error).__name__,
-                    )
+                _rollback_after_failure(con, operation="knowledge_link_invalidate")
                 raise
             finally:
                 con.close()
@@ -862,6 +859,7 @@ class ContextCompiler:
                         clone_id=request.clone_id,
                         worktree_id=request.worktree_id,
                         branch=request.branch,
+                        coordination_id=request.coordination_id,
                         limit=20,
                     )
                 except Exception as exc:
@@ -1078,8 +1076,12 @@ class ContextCompiler:
                                     },
                                 ),
                             ))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "agent_context blackboard lookup failed board_id=%s error_type=%s",
+                        b_id,
+                        type(exc).__name__,
+                    )
 
         if request.include_kinds:
             allowed_kinds = {str(kind).strip().lower() for kind in request.include_kinds if str(kind).strip()}

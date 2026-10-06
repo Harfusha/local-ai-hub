@@ -874,7 +874,9 @@ class IncidentStore:
                 WITH ranked AS (
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, root_cause, verified_fix, confidence,
-                           SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
+                           SUM(attempts) OVER (
+                               PARTITION BY operation_class, error_class, signature_hash, repository_key, tenant_key
+                           ) AS attempts,
                            affected_paths, updated_at, ignored,
                            ROW_NUMBER() OVER (
                                PARTITION BY operation_class, error_class, signature_hash
@@ -956,25 +958,23 @@ class IncidentStore:
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, root_cause, verified_fix, confidence,
                            SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
-                           updated_at, affected_paths, ignored, expires_at,
-                           repository_key, tenant_key,
+                           updated_at, affected_paths, ignored, expires_at, repository_key, tenant_key,
                            ROW_NUMBER() OVER (
-                               PARTITION BY operation_class, error_class, signature_hash
-                               {', repository_key, tenant_key' if scoped else ''}
+                               PARTITION BY operation_class, error_class, signature_hash, repository_key, tenant_key
                                ORDER BY updated_at DESC, incident_id DESC
                            ) AS row_num
                     FROM agent_incidents
-                    {scope_sql}
+                    WHERE repository_key = ? AND tenant_key = ?
                 )
                 SELECT incident_id, operation_class, error_class, redacted_message, state_revision,
                        root_cause, verified_fix, confidence, attempts, updated_at, affected_paths,
                        repository_key, tenant_key
                 FROM ranked
                 WHERE ignored = 0 AND row_num = 1
-                  {"AND (expires_at IS NULL OR expires_at > ?)" if scoped else ""}
+                  AND (expires_at IS NULL OR expires_at > ?)
                 ORDER BY updated_at DESC
-                """
-                , (*scope_params, time.time()) if scoped else ()
+                """,
+                (*scope_params, time.time()),
             )
             q_norm = str(query or "").strip().lower()
             results: list[dict[str, Any]] = []
@@ -1005,11 +1005,10 @@ class IncidentStore:
                     "attempts": int(r[8] or 1),
                     "updated_at": float(r[9] or 0.0),
                 }
-                if scoped:
-                    item["provenance"] = {
-                        "repository_key": str(r[11] or ""),
-                        "tenant_key": str(r[12] or ""),
-                    }
+                item["provenance"] = {
+                    "repository_key": str(r[11] or ""),
+                    "tenant_key": str(r[12] or ""),
+                }
                 results.append(item)
                 if len(results) >= limit:
                     break

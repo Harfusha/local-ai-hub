@@ -62,7 +62,7 @@ def test_swarm_pubsub_publish_appends_to_state_store(tmp_path: Path):
     try:
         rows = con.execute("SELECT kind, payload FROM agent_events WHERE stream_id='pubsub:test_channel'").fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == "pubsub_message"
+        assert rows[0][0] == "pubsub.message"
     finally:
         con.close()
 

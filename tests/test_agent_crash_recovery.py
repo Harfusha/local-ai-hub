@@ -5,7 +5,7 @@ import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -191,6 +191,7 @@ def test_os_exit_after_task_event_insert_rolls_back_projection_and_event(tmp_pat
     )
 
     child_code = """
+import inspect
 import os
 import sys
 from local_ai_hub.agent_events import AgentStateStore

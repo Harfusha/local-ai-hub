@@ -51,6 +51,51 @@ enabled = true
         app.close()
 
 
+def test_http_coord_pubsub_poll_honors_sequence_cursor(tmp_path: Path, monkeypatch):
+    import json
+    import threading
+    import urllib.request
+
+    from local_ai_hub import http_server
+    from local_ai_hub.agent_events import SwarmPubSub
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11489\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(config_path))
+    monkeypatch.setattr(SwarmPubSub, "_instance", None)
+    app.services.pubsub_publish("cursor-test", {"n": 1})
+    app.services.pubsub_publish("cursor-test", {"n": 2})
+
+    previous_app = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps({"topic": "cursor-test", "after_seq": 1}).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/coord/pubsub_poll",
+            data=payload,
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        http_server.APP = previous_app
+        app.close()
+
+    assert [item["sequence"] for item in result["messages"]] == [2]
+    assert result["after_seq"] == 1
+
+
 def test_coord_task_checkpoint_action_preserves_existing_memo_actions(running_app_client):
     client, app = running_app_client
     # Directly test client coord dispatch logic
@@ -417,6 +462,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": "repository-two"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-tenant-independent", value="global-value", provenance={"root": str(repo_one), "repository_id": "repository-global", "tenant": "legacy-tenant"}),
     )
     for record in records:
         app.agent_memory.record(record, actor="user")

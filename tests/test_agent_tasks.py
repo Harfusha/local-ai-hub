@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
+import subprocess
+import sys
+from types import ModuleType, SimpleNamespace
+import pytest
+
+from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 import sys
 import threading
 from types import ModuleType, SimpleNamespace
@@ -23,6 +30,8 @@ from local_ai_hub.agent_tasks import (
 )
 from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
 from local_ai_hub.sqlite_support import connect_sqlite
+import local_ai_hub.agent_tasks as agent_tasks_module
+from local_ai_hub import trace_context
 
 
 @pytest.fixture
@@ -42,6 +51,60 @@ def contract_with_criteria(*criteria: str) -> GoalContract:
         scope=AgentScope.TASK,
     )
 
+
+def make_trusted_repository(parent: Path) -> tuple[Path, str]:
+    root = parent / "repo"
+    root.mkdir()
+    (root / ".local-ai.toml").write_text(
+        '[commands.test]\nargv = ["python", "-B", "-c", "print(1)"]\n'
+        '[verification_rules]\ntests = ["test"]\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "T08 test"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "t08-test@example.invalid"], cwd=root, check=True)
+    subprocess.run(["git", "add", ".local-ai.toml"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "test project config"], cwd=root, check=True)
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    return root, revision
+
+
+def prepare_project_rule_completion(
+    store: TaskStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    with_revision: bool = True,
+) -> TaskState:
+    repo_root, revision = make_trusted_repository(tmp_path)
+    task = store.create(contract_with_criteria("tests"), task_context())
+    store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
+    store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
+    state_data = {
+        "worktree": {"repo_root": str(repo_root)},
+        "repo_root": str(repo_root),
+    }
+    if with_revision:
+        state_data["repository_revision"] = revision
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(state_data=state_data),
+        actor="agent",
+        idempotency_key="project-root",
+    )
+    VerificationStore(store.state_store, task_store=store).record(
+        VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests")
+    )
+    project_config = ModuleType("local_ai_hub.project_config")
+    project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
+        settings=SimpleNamespace(
+            verification_rules={"tests": ("test",)}, commands={"test": "pytest"}
+        )
+    )
+    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
+    return task
 
 from local_ai_hub import trace_context
 
@@ -81,6 +144,69 @@ def test_task_creation_and_retrieval(store: TaskStore):
     assert fetched is not None
     assert fetched.task_id == "t-1"
     assert fetched.contract.goal == "Implement feature"
+
+
+
+
+def test_transition_idempotency_reuse_by_different_actor_is_rejected(store: TaskStore):
+    task = store.create(contract_with_criteria(), task_context())
+    store.transition(
+        task.task_id,
+        TaskStatus.ACTIVE,
+        reason="R",
+        actor="agent-one",
+        idempotency_key="shared-transition-key",
+    )
+
+    with pytest.raises(ValueError, match="^idempotency key was already used$"):
+        store.transition(
+            task.task_id,
+            TaskStatus.VERIFYING,
+            reason="start",
+            actor="agent-two",
+            idempotency_key="shared-transition-key",
+        )
+
+    persisted = store.get(task.task_id)
+    assert persisted is not None and persisted.status is TaskStatus.ACTIVE
+    assert len(store.state_store.events(f"task:{task.task_id}")) == 2
+
+
+def test_same_status_transition_rejects_idempotency_key_owned_by_another_actor(store: TaskStore):
+    task = store.create(contract_with_criteria(), task_context())
+    active = store.transition(
+        task.task_id,
+        TaskStatus.ACTIVE,
+        reason="R",
+        actor="agent-one",
+        idempotency_key="shared-transition-key",
+    )
+    with pytest.raises(ValueError, match="^idempotency key was already used$"):
+        store.transition(
+            task.task_id,
+            TaskStatus.ACTIVE,
+            reason="R",
+            actor="agent-two",
+            idempotency_key="shared-transition-key",
+        )
+
+    same_actor_retry = store.transition(
+        task.task_id,
+        TaskStatus.ACTIVE,
+        reason="R",
+        actor="agent-one",
+        idempotency_key="shared-transition-key",
+    )
+    assert same_actor_retry == active
+
+    with pytest.raises(ValueError, match="idempotency key was already used"):
+        store.transition(
+            task.task_id,
+            TaskStatus.ACTIVE,
+            reason="changed reason",
+            actor="agent-one",
+            idempotency_key="shared-transition-key",
+        )
 
 
 def test_task_query_bounds_rows_scanned(store: TaskStore):
@@ -202,10 +328,23 @@ def test_completed_requires_all_criteria_to_have_fresh_receipts(store: TaskStore
         store.transition(task.task_id, TaskStatus.COMPLETED, reason="claimed", actor="agent", idempotency_key="c")
 
 
-def test_completed_succeeds_when_verified(store: TaskStore):
+def test_completed_succeeds_when_verified(
+    store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    repo_root, revision = make_trusted_repository(tmp_path)
     task = store.create(contract_with_criteria("tests"), task_context())
     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
     store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(state_data={
+            "worktree": {"repo_root": str(repo_root)},
+            "repo_root": str(repo_root),
+            "repository_revision": revision,
+        }),
+        actor="agent",
+        idempotency_key="project-root",
+    )
     # Completion requires durable verification evidence, not projection-only receipt IDs.
     store.checkpoint(
         task.task_id,
@@ -237,97 +376,334 @@ def test_completed_succeeds_when_verified(store: TaskStore):
             evidence_type="test",
         )
     )
+
+    project_config = ModuleType("local_ai_hub.project_config")
+    project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
+        settings=SimpleNamespace(verification_rules={}, commands={})
+    )
+    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
+
+    class CurrentVerifierAdapter:
+        def completion(
+            self,
+            task_id,
+            *,
+            current_revision,
+            current_mutation_generation,
+            verification_rules,
+            configured_criteria,
+        ):
+            assert verification_rules == {}
+            assert configured_criteria == ()
+            return VerificationStore(store.state_store, task_store=store).completion(
+                task_id, current_revision=current_revision
+            )
+
+    store.set_verification_store(CurrentVerifierAdapter())
     completed = store.transition(task.task_id, TaskStatus.COMPLETED, reason="all passed", actor="agent", idempotency_key="c")
     assert completed.status == TaskStatus.COMPLETED
 
 
-def test_transition_idempotency_reuse_by_different_actor_is_rejected(store: TaskStore):
-    task = store.create(contract_with_criteria(), task_context())
-    store.transition(
+def test_completed_forwards_project_rules_to_verification_completion(
+    store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    repo_root, revision = make_trusted_repository(tmp_path)
+    task = store.create(
+        contract_with_criteria("tests"),
+        ScopeContext(repository_id=str(repo_root), branch="main", task_id="task-1"),
+    )
+    store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
+    store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
+    store.checkpoint(
         task.task_id,
-        TaskStatus.ACTIVE,
-        reason="start",
-        actor="agent-one",
-        idempotency_key="shared-transition-key",
+        TaskCheckpoint(state_data={
+            "repository_revision": revision,
+            "mutation_generation": 4,
+        }),
+        actor="agent",
+        idempotency_key="project-root",
+    )
+    VerificationStore(store.state_store, task_store=store).record(
+        VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests")
     )
 
-    with pytest.raises(ValueError, match="^idempotency key was already used$"):
+    resolved = {}
+
+    def resolve_project_context(root, state_dir):
+        resolved.update(root=root, state_dir=state_dir)
+        return SimpleNamespace(
+            settings=SimpleNamespace(
+                verification_rules={"tests": ("test",)},
+                commands={"test": "pytest"},
+            )
+        )
+
+    project_config = ModuleType("local_ai_hub.project_config")
+    project_config.resolve_project_context = resolve_project_context
+    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
+
+    class RecordingVerifier:
+        def __init__(self):
+            self.calls = []
+
+        def completion(
+            self,
+            task_id,
+            *,
+            current_revision,
+            current_mutation_generation,
+            verification_rules,
+            configured_criteria,
+        ):
+            self.calls.append((
+                task_id,
+                current_revision,
+                current_mutation_generation,
+                verification_rules,
+                configured_criteria,
+            ))
+            return SimpleNamespace(complete=True, unsatisfied_criteria=(), stale_criteria=())
+
+    verifier = RecordingVerifier()
+    store.set_verification_store(verifier)
+
+    completed = store.transition(
+        task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"
+    )
+
+    assert completed.status is TaskStatus.COMPLETED
+    assert Path(resolved["root"]) == repo_root
+    assert Path(resolved["state_dir"]) == store.state_store.db_path.parent
+    assert verifier.calls == [(task.task_id, revision, 4, {"tests": ("test",)}, ("test",))]
+
+
+def test_completed_skips_nonapplicable_project_rules_without_repository_revision(
+    store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    repo_root, _revision = make_trusted_repository(tmp_path)
+    context = ScopeContext(repository_id=str(repo_root), branch="main", task_id="task-1")
+    task = store.create(contract_with_criteria("tests"), context)
+    store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
+    store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(state_data={"mutation_generation": 4}),
+        actor="agent",
+        idempotency_key="project-rules-without-revision",
+    )
+    verifications = VerificationStore(store.state_store, task_store=store)
+    verifications.record(VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests"))
+
+    project_config = ModuleType("local_ai_hub.project_config")
+    project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
+        settings=SimpleNamespace(
+            verification_rules={"lint": ("lint",)}, commands={"lint": "ruff"}
+        )
+    )
+    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
+
+    calls = []
+
+    class NonapplicableRuleVerifier:
+        def completion(
+            self,
+            task_id,
+            *,
+            current_revision,
+            current_mutation_generation,
+            verification_rules,
+            configured_criteria,
+        ):
+            calls.append((
+                current_revision,
+                current_mutation_generation,
+                verification_rules,
+                configured_criteria,
+            ))
+            return verifications.completion(task_id, current_revision=current_revision)
+
+    store.set_verification_store(NonapplicableRuleVerifier())
+    completed = store.transition(
+        task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"
+    )
+
+    assert completed.status is TaskStatus.COMPLETED
+    assert calls == [("", 4, {"lint": ("lint",)}, ("lint",))]
+
+
+def test_completed_requires_repository_revision_for_active_project_rule(
+    store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    task = prepare_project_rule_completion(
+        store, tmp_path, monkeypatch, with_revision=False
+    )
+    calls = []
+
+    class ProjectRuleVerifier:
+        def completion(
+            self,
+            task_id,
+            *,
+            current_revision,
+            current_mutation_generation,
+            verification_rules,
+            configured_criteria,
+        ):
+            calls.append(task_id)
+            return SimpleNamespace(complete=True, unsatisfied_criteria=(), stale_criteria=())
+
+    store.set_verification_store(ProjectRuleVerifier())
+
+    with pytest.raises(CompletionGateError, match="trusted repository_revision is unavailable"):
         store.transition(
             task.task_id,
-            TaskStatus.VERIFYING,
-            reason="start",
-            actor="agent-two",
-            idempotency_key="shared-transition-key",
+            TaskStatus.COMPLETED,
+            reason="verified",
+            actor="agent",
+            idempotency_key="c",
         )
 
     persisted = store.get(task.task_id)
-    assert persisted is not None and persisted.status is TaskStatus.ACTIVE
-    assert len(store.state_store.events(f"task:{task.task_id}")) == 2
+    assert persisted is not None
+    assert persisted.status is TaskStatus.VERIFYING
+    assert calls == []
 
 
-def test_same_status_transition_rejects_idempotency_key_owned_by_another_actor(
-    store: TaskStore,
+def test_completed_rejects_generic_kwargs_evaluator_for_project_rules(
+    store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    task = store.create(contract_with_criteria(), task_context())
-    store.transition(
-        task.task_id,
-        TaskStatus.ACTIVE,
-        reason="start",
-        actor="agent-one",
-        idempotency_key="shared-transition-key",
-    )
+    task = prepare_project_rule_completion(store, tmp_path, monkeypatch)
 
-    with pytest.raises(ValueError, match="^idempotency key was already used$"):
+    class GenericKwargsVerifier:
+        def completion(self, task_id, **kwargs):
+            return SimpleNamespace(complete=True, unsatisfied_criteria=(), stale_criteria=())
+
+    store.set_verification_store(GenericKwargsVerifier())
+
+    with pytest.raises(CompletionGateError, match="does not support project rules"):
         store.transition(
-            task.task_id,
-            TaskStatus.ACTIVE,
-            reason="retry start",
-            actor="agent-two",
-            idempotency_key="shared-transition-key",
+            task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"
         )
 
-    persisted = store.get(task.task_id)
-    assert persisted is not None and persisted.status is TaskStatus.ACTIVE
-    assert persisted.owner == "agent-one"
-    assert len(store.state_store.events(f"task:{task.task_id}")) == 2
 
-
-def test_same_status_transition_rejects_reused_key_with_different_payload(
+@pytest.mark.parametrize("complete", ["false", 1])
+def test_completed_rejects_non_boolean_verifier_result(
     store: TaskStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    complete: object,
 ):
-    task = store.create(contract_with_criteria(), task_context())
-    store.transition(
-        task.task_id,
-        TaskStatus.ACTIVE,
-        reason="start",
-        actor="agent-one",
-        idempotency_key="shared-transition-key",
-    )
+    task = prepare_project_rule_completion(store, tmp_path, monkeypatch)
 
-    with pytest.raises(ValueError, match="^idempotency key was already used$"):
+    class MalformedResultVerifier:
+        def completion(
+            self,
+            task_id,
+            *,
+            current_revision,
+            current_mutation_generation,
+            verification_rules,
+            configured_criteria,
+        ):
+            return {"complete": complete}
+
+    store.set_verification_store(MalformedResultVerifier())
+
+    with pytest.raises(CompletionGateError, match="rejected completion"):
         store.transition(
-            task.task_id,
-            TaskStatus.ACTIVE,
-            reason="different reason",
-            actor="agent-one",
-            idempotency_key="shared-transition-key",
+            task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"
         )
 
-    persisted = store.get(task.task_id)
-    assert persisted is not None and persisted.status is TaskStatus.ACTIVE
-    assert len(store.state_store.events(f"task:{task.task_id}")) == 2
 
-
-def test_resume_replay_with_same_idempotency_key_does_not_append_event(
+@pytest.mark.parametrize("failure_mode", ["rejected", "raises"])
+def test_completion_verifier_failure_does_not_complete_task_or_add_receipt(
     store: TaskStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
 ):
-    task = store.create(contract_with_criteria(), task_context())
+    task = prepare_project_rule_completion(store, tmp_path, monkeypatch)
+    before = store.get(task.task_id)
 
-    first = store.resume(task.task_id, actor="agent-one", idempotency_key="resume-key")
-    replay = store.resume(task.task_id, actor="agent-one", idempotency_key="resume-key")
+    class FailingVerifier:
+        def completion(
+            self,
+            task_id,
+            *,
+            current_revision,
+            current_mutation_generation,
+            verification_rules,
+            configured_criteria,
+        ):
+            if failure_mode == "raises":
+                raise RuntimeError("verification command failed")
+            return {"complete": False, "unsatisfied_criteria": ("tests",)}
 
-    assert replay == first
-    assert len(store.state_store.events(f"task:{task.task_id}")) == 2
+    store.set_verification_store(FailingVerifier())
+    expected_message = "evaluator failed" if failure_mode == "raises" else "rejected completion"
+
+    with pytest.raises(CompletionGateError, match=expected_message):
+        store.transition(
+            task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"
+        )
+
+    after = store.get(task.task_id)
+    assert after.status == TaskStatus.VERIFYING
+    assert after.verification_receipts == before.verification_receipts
+    assert all(
+        event.payload.get("to_status") != TaskStatus.COMPLETED.value
+        for event in store.state_store.events(f"task:{task.task_id}")
+    )
+
+
+def test_completed_fails_closed_when_project_config_cannot_resolve(
+    store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    repo_root, revision = make_trusted_repository(tmp_path)
+    task = store.create(contract_with_criteria("tests"), task_context())
+    store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
+    store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(state_data={
+            "worktree": {"repo_root": str(repo_root)},
+            "repo_root": str(repo_root),
+            "repository_revision": revision,
+        }),
+        actor="agent",
+        idempotency_key="project-root",
+    )
+    VerificationStore(store.state_store, task_store=store).record(
+        VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests")
+    )
+
+    project_config = ModuleType("local_ai_hub.project_config")
+
+    def fail_resolution(root, state_dir):
+        raise RuntimeError("project config missing")
+
+    project_config.resolve_project_context = fail_resolution
+    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
+
+    with pytest.raises(CompletionGateError, match="project verification config"):
+        store.transition(
+            task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"
+        )
+
+
+def test_completed_uses_receipts_when_no_project_root_is_available(store: TaskStore):
+    task = store.create(contract_with_criteria("tests"), task_context())
+    store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
+    store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
+    VerificationStore(store.state_store, task_store=store).record(
+        VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests")
+    )
+
+    completed = store.transition(
+        task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"
+    )
+
+    assert completed.status is TaskStatus.COMPLETED
 
 
 def test_completed_uses_task_context_repo_root_without_worktree_checkpoint(
@@ -520,6 +896,23 @@ def test_resume_abandoned_task(store: TaskStore, tmp_path: Path):
         store.resume(task.task_id, actor="different-actor", idempotency_key="res-1")
     with pytest.raises(ValueError, match="idempotency key was already used"):
         store.transition(task.task_id, TaskStatus.ACTIVE, reason="different", actor="agent", idempotency_key="res-1")
+    assert len(store.state_store.events(stream_id)) == events_after_resume
+
+    stream_id = f"task:{task.task_id}"
+    events_after_resume = len(store.state_store.events(stream_id))
+    replayed = store.resume(task.task_id, actor="agent", idempotency_key="res-1")
+    assert replayed == resumed
+    assert len(store.state_store.events(stream_id)) == events_after_resume
+    with pytest.raises(ValueError, match="idempotency key was already used"):
+        store.resume(task.task_id, actor="different-actor", idempotency_key="res-1")
+    with pytest.raises(ValueError, match="idempotency key was already used"):
+        store.transition(
+            task.task_id,
+            TaskStatus.ACTIVE,
+            reason="different",
+            actor="agent",
+            idempotency_key="res-1",
+        )
     assert len(store.state_store.events(stream_id)) == events_after_resume
 
 
