@@ -40,6 +40,12 @@ def _ids(records: list[MemoryRecord]) -> set[str]:
     return {record.record_id for record in records}
 
 
+def _seed_memory_projections(memory: MemoryStore, records) -> None:
+    """Seed lookup projections directly; event publication is outside these tests."""
+    for record in records:
+        memory._save_record(record)
+
+
 def test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_global(tmp_path: Path):
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory = MemoryStore(state)
@@ -73,18 +79,18 @@ def test_find_for_context_without_tenant_returns_only_tenantless_global(tmp_path
     memory = MemoryStore(state)
     root = tmp_path / "repo"
     root.mkdir()
-    records = (
-        _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", key="repo-tenant"),
-        _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-a", key="task-tenant"),
-        _record(scope=AgentScope.GLOBAL, tenant="tenant-a", key="global-tenant"),
-        _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
-    )
-    for record in records:
-        memory.record(record, actor="user")
+    records = {
+        "repo_tenantless": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, key="repo-tenantless"),
+        "repo_owned": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", key="repo-owned"),
+        "task_tenantless": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, key="task-tenantless"),
+        "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
+        "global_owned": _record(scope=AgentScope.GLOBAL, tenant="tenant-a", key="global-owned"),
+    }
+    _seed_memory_projections(memory, records.values())
 
-    found = memory.find_for_context(root=str(root), task_id="shared-task")
-
-    assert {record.key for record in found} == {"global-tenantless"}
+    assert _ids(memory.find_for_context(root=str(root), task_id="shared-task")) == {
+        records["global_tenantless"].record_id,
+    }
 
 
 def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_path: Path):
@@ -121,12 +127,12 @@ def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_pat
         records["global_tenantless"].record_id,
     }
 
-    unscoped = compiler.compile(
+    unscoped_compiled = compiler.compile(
         ContextRequest(task_id="shared-task", root=str(root), tenant="")
     )
     unscoped_memory_ids = {
         element.element_id
-        for element in unscoped.elements
+        for element in unscoped_compiled.elements
         if element.source_kind == "memory_record"
     }
     assert unscoped_memory_ids == {records["global_tenantless"].record_id}

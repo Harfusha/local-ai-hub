@@ -12,9 +12,11 @@ from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlencode
 
+import pytest
+
 from local_ai_hub import http_server
 from local_ai_hub.agent_identity import AgentScope
-from local_ai_hub.agent_memory import MemoryKind, MemoryRecord
+from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus
 from local_ai_hub.app import LocalAIApp
 
 
@@ -801,3 +803,156 @@ def test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries(t
         server.server_close()
         http_server.APP = previous_app
         app.close()
+
+
+def test_http_unscoped_global_get_promote_and_delete(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 39132\nstate_dir = "{state_dir.as_posix()}"\n\n'
+        "[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(config_path))
+    record = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.GLOBAL,
+        key="http-shared-global-unscoped-operations",
+        value="shared memory",
+    )
+    app.agent_memory.record(record, actor="user", idempotency_key="http-shared-global")
+
+    previous_app = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def post(payload):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-LocalAI-Tenant": "transport-tenant",
+                "Connection": "close",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    try:
+        shared_global = {"record_id": record.record_id, "scope": "global"}
+        status, found = post({**shared_global, "action": "get"})
+        assert status == 200
+        assert found["record"]["record_id"] == record.record_id
+
+        status, promoted = post({
+            **shared_global,
+            "action": "promote",
+            "target_scope": "global",
+            "approver": "user",
+        })
+        assert status == 403
+        assert promoted["success"] is False
+
+        status, deleted = post({**shared_global, "action": "delete"})
+        assert status == 200
+        assert deleted["deleted"] is True
+        assert app.agent_memory.get(
+            record.record_id,
+            scope=AgentScope.GLOBAL,
+            tenant="transport-tenant",
+        ) is None
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        http_server.APP = previous_app
+        app.close()
+
+
+def test_http_unscoped_global_delete_then_record_replay_keeps_tombstone(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 39133\nstate_dir = "{state_dir.as_posix()}"\n\n'
+        "[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(config_path))
+    record = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.GLOBAL,
+        key="http-global-delete-replay-tombstone",
+        value="shared searchable memory",
+    )
+    app.agent_memory.record(record, actor="user", idempotency_key="http-delete-replay")
+    assert app.agent_memory.set_embedding(record.record_id, [0.25, 0.75])
+    stream_id = "memory:" + "".join(
+        f"{len(part)}:{part}" for part in (record.scope.value, record.scope_id or "", record.key or record.record_id)
+    )
+
+    previous_app = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
+        data=json.dumps({"action": "delete", "record_id": record.record_id, "scope": "global"}).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "X-LocalAI-Tenant": "transport-tenant",
+            "Connection": "close",
+        },
+        method="POST",
+    )
+    try:
+        try:
+            with urllib.request.urlopen(request) as response:
+                status, deleted = response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            status, deleted = exc.code, json.loads(exc.read().decode("utf-8"))
+        assert status == 200
+        assert deleted["deleted"] is True
+
+        with pytest.raises(ValueError, match="memory record was deleted and cannot be replayed"):
+            app.agent_memory.record(record, actor="user", idempotency_key="http-delete-replay")
+        assert app.agent_memory.get(
+            record.record_id,
+            scope=AgentScope.GLOBAL,
+            tenant="transport-tenant",
+            include_expired=True,
+        ) is None
+        assert [event.kind for event in app.agent_memory.state_store.events(stream_id)] == [
+            "memory.recorded",
+            "memory.deleted",
+        ]
+        with closing(sqlite3.connect(app.agent_memory.state_store.db_path)) as con:
+            assert con.execute(
+                "SELECT COUNT(*) FROM agent_memory_embeddings WHERE record_id = ?",
+                (record.record_id,),
+            ).fetchone()[0] == 0
+            fts_exists = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_memory_fts'"
+            ).fetchone() is not None
+            if fts_exists:
+                assert con.execute(
+                    "SELECT COUNT(*) FROM agent_memory_fts WHERE record_id = ?",
+                    (record.record_id,),
+                ).fetchone()[0] == 0
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        http_server.APP = previous_app
+        app.close()
+
