@@ -965,3 +965,11 @@ and regression-test blobs already match master exactly. Current root dirty
 paths remain `agent_memory.py`, `async_jobs.py`, `http_server.py`, and
 `agent_state.sqlite`; ownership of the newly visible `agent_memory.py` change
 is still unknown. No dirty path or stash was changed.
+
+Release gate attempt on this state: `python -B tools/release_check.py` exited
+1 after 9.28s. It rejected pre-existing `tests/__pycache__/` and many `.pyc`
+payloads under `tests/` and `tools/`. The command used `-B` and did not create
+bytecode; caches were not removed because their ownership/pre-existence was
+not attributable to this run. Re-run release check after an explicitly scoped
+cache cleanup or packaging-only exclusion is authorized; do not weaken the
+release checker without proving the packaged artifact excludes these files.
