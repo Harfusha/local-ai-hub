@@ -184,6 +184,8 @@ class VerificationReceipt:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> VerificationReceipt:
+        if not isinstance(data, Mapping):
+            raise TypeError("verification receipt data must be a mapping")
         passed = data.get("passed")
         if type(passed) is not bool:
             raise ValueError("verification receipt passed must be a boolean")
