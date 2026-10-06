@@ -493,6 +493,35 @@ def test_recovery_rollback_failure_fails_closed_and_preserves_journal(
         recovered.close()
 
 
+def test_rollback_refuses_windows_reparse_point_without_path_is_junction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    safe = root / "safe.txt"
+    safe.write_bytes(b"postimage\n")
+    junction = root / "junction"
+    junction.mkdir()
+    original_lstat = Path.lstat
+
+    def mark_reparse(path: Path):
+        if path == junction:
+            return SimpleNamespace(st_mode=0, st_file_attributes=0x400)
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", mark_reparse)
+    monkeypatch.delattr(Path, "is_junction", raising=False)
+    journal = [
+        _JournalEntry("safe.txt", True, b"preimage\n"),
+        _JournalEntry("junction/victim.txt", True, b"preimage\n"),
+    ]
+
+    with pytest.raises(ValueError, match="reparse|symlink|junction"):
+        WorkOrchestrator._rollback(root, journal)
+
+    assert safe.read_bytes() == b"postimage\n"
+
+
 def test_rollback_refuses_unrecognized_same_path_postimage_and_keeps_journal(
     tmp_path: Path,
 ) -> None:
