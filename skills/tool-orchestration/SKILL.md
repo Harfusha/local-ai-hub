@@ -19,7 +19,7 @@ Coordinate available tools and capabilities systematically across six distinct e
 ### 1. Discover
 - Clarify domain, objective, and requirements.
 - Identify project boundaries, configuration, and technology stack.
-- **Local AI Hub Adaptive Retrieval — mandatory first repository step**: call `local_ai_repo(action="context", mode="adaptive")` with the task/context before native reads, grep, planning, editing, review or tests. The orchestrator fuses deterministic/indexed evidence, CodeIndex, Serena, CodeGraphContext, bounded lexical search and RAG; it ranks agreement, deduplicates and preserves path diversity. Send the task/context directly; do not manufacture a long grep-term list.
+- **Local AI Hub Adaptive Retrieval — mandatory first repository step**: call `local_ai_repo(action="context", mode="adaptive")` with the task/context before native discovery, planning, editing, review or tests. The orchestrator fuses deterministic/indexed evidence, CodeIndex, Serena, bounded lexical search and RAG; it ranks agreement, deduplicates and preserves path diversity. Send the task/context directly; do not manufacture a long grep-term list. Bounded native reads of a known path and slice remain permitted when needed.
 - Use `local_ai_repo(action="solve")` only after the grounded context pack when bounded implementation reasoning is needed.
 - For external library questions: query **Context7** (`resolve-library-id`, `query-docs`).
 - For codebase overview: list project structure, active Git branch (`local_ai_repo(action="git_status")`), and recent changes.
@@ -61,3 +61,11 @@ Coordinate available tools and capabilities systematically across six distinct e
 - Review unified diff of changed files (`local_ai_repo(action="review_diff")` or `git diff`).
 - Run `local_ai_repo(action="security_audit")` for secrets or injection risks.
 - Clean and commit changes with a concise, descriptive commit message.
+
+### MCP Response Economy
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.

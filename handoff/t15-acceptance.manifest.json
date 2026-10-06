@@ -1,0 +1,238 @@
+{
+  "base_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+  "evidence_path": "C:\\Users\\Adam\\.codex\\worktrees\\t15-command-config\\.local-ai-hub\\handoff\\t15-acceptance-evidence.json",
+  "evidence_sha256": "979bfce12457f77d8724c1bedc85f7f725e988378385f424c2441e94867b96b8",
+  "notes": "Refreshed T15 continuation handoff. T20 integrated bypass guard patch; T15 made no root writes. Current candidate receipts and root inventory recorded in evidence.",
+  "patch_bytes": 27344,
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t15-command-config\\.local-ai-hub\\handoff\\t15-acceptance.patch",
+  "patch_paths": [
+    "src/local_ai_hub/commands.py",
+    "src/local_ai_hub/services.py",
+    "tests/test_command_concurrency_contract.py",
+    "tests/test_project_config_service_integration.py"
+  ],
+  "patch_sha256": "8408ca60b348676ca2887854c2e77c04fe707f77b537cc4f7cae5054bd44afa3",
+  "preexisting_root_project_command_test": "identical bytes (git blob 6848fc9f968d1d970a79a65f0035a18a12becf02); omitted from patch to avoid overwrite",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_dry_apply_check": "passed",
+  "root_file_sha256_after": {
+    "src/local_ai_hub/commands.py": "38a2c7feea7178cd7f1e8076c82cc2e14ad652b002e28fd9c52c08f98ff926aa",
+    "src/local_ai_hub/services.py": "7846a6a87dc79299acf58dcb064a4f5cc124f24fd88c4bebfd330faafe8f35b0",
+    "tests/test_command_concurrency_contract.py": null,
+    "tests/test_project_command_broker.py": "d2659cb47205acd6daa73001b01e0891e0f2b75f83416508e811ab6c38737182",
+    "tests/test_project_config_service_integration.py": "184cf0c60b4be4c771920f7f3a493d83e2bc1aea7a8e63c4b39377a406c4ca5d"
+  },
+  "root_file_sha256_before": {
+    "src/local_ai_hub/commands.py": "38a2c7feea7178cd7f1e8076c82cc2e14ad652b002e28fd9c52c08f98ff926aa",
+    "src/local_ai_hub/services.py": "7846a6a87dc79299acf58dcb064a4f5cc124f24fd88c4bebfd330faafe8f35b0",
+    "tests/test_command_concurrency_contract.py": null,
+    "tests/test_project_command_broker.py": "d2659cb47205acd6daa73001b01e0891e0f2b75f83416508e811ab6c38737182",
+    "tests/test_project_config_service_integration.py": "184cf0c60b4be4c771920f7f3a493d83e2bc1aea7a8e63c4b39377a406c4ca5d"
+  },
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_unchanged": true,
+  "t06_boundary": "T06 owns process-group/recovery, rollback and write-set safety. User-approved persisted process_group_id recovery contract remains. Latest T06 update is rechecking T20/T08 and current diff; no exact write-set hunk/test receipt yet. T20 requires exact T06 handoff for any commands.py caller hunk. No T15 commands.py edit.",
+  "t15_worktree": "C:\\Users\\Adam\\.codex\\worktrees\\t15-command-config\\.local-ai-hub",
+  "worktree_blobs": {
+    "src/local_ai_hub/commands.py": "e65ed7e2ae68a3a8fd547e1b38955d46fe3b570c",
+    "src/local_ai_hub/services.py": "88a14b8c32ca2ace0279657775298a3d897868f6",
+    "tests/test_command_concurrency_contract.py": "edd5f1433ea2dd992190e2b841b5a58c5b994f8e",
+    "tests/test_project_command_broker.py": "6848fc9f968d1d970a79a65f0035a18a12becf02",
+    "tests/test_project_config_service_integration.py": "f9b8126e0aaf128fcfffaff8528c0420bb3ec84d"
+  },
+  "benchmark_baseline_path": "handoff/t15-command-broker-baseline.json",
+  "benchmark_baseline_sha256": "fc2a815971cb2b8f71c9e735eeb3bfa83441a5624f1defe4e780e0df5e0c3ca3",
+  "benchmark_candidate_path": "handoff/t15-command-broker-candidate.json",
+  "benchmark_candidate_sha256": "b03f83b769b90748bcab89879313b31befa1f837a175e4209f9f54f037d92655",
+  "benchmark_harness_sha256": "8aef9b315b44b1a15bad0a52b79213f2f4a319e6bcd84dda240778f2c32930ab",
+  "current_candidate_state": "Detached dirty T15 candidate at 824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11. Owned config/mapping/streaming/replay suite passes 114 tests. Bounded in-memory config resolution cache with overlay signature and exact Git-HEAD invalidation passes. Seven-pair microbench is pre-cache/historical, no retiming before T20 slot; root direct receipt stale; T06 acceptance open.",
+  "external_acceptance_gap": "Performance benchmark remains unverified because no explicit T15 slot and no clean revision-matched baseline/integrated candidate were assigned. T06 POSIX/write-set acceptance remains owner-controlled.",
+  "owner_hunk_map_path": "handoff/t15-owner-hunk-map.md",
+  "owner_hunk_map_sha256": "8a783560b90ce169fc747d096d67d36272b6e9c017266f953eded7c97aaf0a5b",
+  "owner_hunk_map_state": "Read-only current-root inventory: T15-owned symbols/tests present; no safe missing patch. Root service dispatch is newer; project config overlaps T21; rollback/write-set/process-group overlap belongs T06. See evidence root_integration_inventory.",
+  "rebenchmark_gate": "Do not run until T20 provides explicit slot and clean revision-matched baseline/integrated candidate; runbook also requires two hardware profiles and randomized paired measurement.",
+  "merge_ready_handoff_path": "handoff/t15-merge-ready-handoff.md",
+  "merge_ready_handoff_sha256": "dcfc5527d591ea8f224e4f88e28b6a64459c71e5e7aee04a0c48bccfbef6031b",
+  "current_root_compatible_patch_path": "handoff/t15-root-compatible.patch",
+  "current_root_compatible_patch_sha256": "fcce360431c14d5e608946d792847cb9b7700ccff11fd5edcb8b9169e8cb198c",
+  "current_root_compatible_patch_check": {
+    "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "patch_path": "handoff/t15-root-compatible.patch",
+    "patch_sha256": "fcce360431c14d5e608946d792847cb9b7700ccff11fd5edcb8b9169e8cb198c",
+    "result": "stale/not applicable; current root context differs and patch targets partly already exist; not applied by T15"
+  },
+  "current_scoped_test_results": [
+    {
+      "result": "89 passed in 3.85s",
+      "log_sha256": "6b87f80bce4a7f4cfaaad69fc6ef1de2835176e3864405d987a908d506452bcb"
+    },
+    {
+      "result": "45 passed in 11.46s",
+      "log_sha256": "55b3021a09ddeb068b58ff59e02c907c7a2902059baf95a561ce42834b1cff3b"
+    }
+  ],
+  "bypass_guard_patch_path": "handoff/t15-root-cache-bypass-guards.patch",
+  "bypass_guard_patch_sha256": "93ddaa9b6175108e9e52e17146f31330a301fcdffb9c592faef4044a2f713c02",
+  "root_bypass_selector_receipt": "T20-reported: 2 passed in 0.38s; T15 made no root writes or root test runs.",
+  "benchmark_runbook_path": "handoff/t15-benchmark-runbook.md",
+  "benchmark_runbook_sha256": "8ab1007ac1d7087347b0a4619c94d9e4e3fc5a888ba6b484218c3ae34a1e709f",
+  "benchmark_current_state": "baseline confirmed; measurements pending clean integrated candidate/harness, exclusive CPU slot, and second profile",
+  "root_test_slot_request": "T20 explicit exclusive root test slot pending; direct read-only probes are recorded in parity receipt; T15 did not run root pytest.",
+  "baseline_ref_preflight": "T20 confirmed 824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11; immutable tree and source blob recorded, no detached clean worktree created.",
+  "benchmark_pin_preflight_path": "handoff/t15-benchmark-pin-preflight.json",
+  "benchmark_pin_preflight_sha256": "c8b1042ac6f84d000e020a3903f9f78451f244fc04918b4670ba4e670833bc34",
+  "root_current_snapshot": {
+    "date": "2026-10-01",
+    "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "root_dirty_path_count": 279,
+    "root_current_file_sha256": {
+      "src/local_ai_hub/commands.py": "1b27f83872d439b9167c9b2323bf4be71279e688df6094c002ca20934f761b67",
+      "src/local_ai_hub/project_config.py": "4238b6a6de1de00f55f4679ce0df7d431522ec1bafabfa272258c1662f13f713",
+      "src/local_ai_hub/services.py": "1556edbe4336e1d0fecdac86d79593ab6f62be12a1f13841537cac453721dcc1"
+    },
+    "root_harness_tracked": false,
+    "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "candidate_dirty_path_count": 17,
+    "candidate_current_file_sha256": {
+      "src/local_ai_hub/commands.py": "1fe384b1f5498a8736c76c89974ace103cfe94f780aaa75b4022cc9893bbbcf0",
+      "src/local_ai_hub/project_config.py": "eec7e2920ed905e902d3699a5259d19e23ef9d4b7f17a285e160e97f63ec4686",
+      "src/local_ai_hub/services.py": "7394f38919b5f3b421110c6cb88e841d386cc8b6c848c410b501549ab4029add",
+      "tests/test_command_concurrency_contract.py": "fa895efb5f631dc2248233a41b006b7913111527911334cf198d3b082d09734d",
+      "tests/test_project_command_broker.py": "c59054823d3b6b6189463c870e707b827ce4c2872c4e1758505095f5832c818c",
+      "tools/benchmark_command_broker.py": "36c4f8eb8084f237683271c4fa12222717909fe5a0207c16e89384c7dddbca8f",
+      "tests/test_benchmark_command_broker.py": "25b33ea6e03851175207e87296314991d3eee22c132933d717dd43f166f6d810",
+      "tools/prepare_command_broker_fixtures.py": "4c83e5472c55c790e8f767bf4f54aeadc5024bf76f4299cf0fdb581b70255a74"
+    },
+    "candidate_harness_tracked": false,
+    "t02_exclusive_slot": "T02 waiting for slot; no T02 run active in observed owner update; T15 must not launch tests or benchmarks during that slot",
+    "t15_root_writes": false,
+    "t15_tests_or_benchmarks_run_this_continuation": false,
+    "clean_integrated_candidate_or_harness_pin_assigned": false,
+    "exclusive_t15_benchmark_slot_assigned": false,
+    "second_hardware_profile_assigned": false,
+    "root_harness_same_as_candidate_after_newline_normalization": true,
+    "candidate_harness_line_endings": "LF",
+    "root_harness_line_endings": "CRLF",
+    "candidate_harness_sha256": "e8fad3f7fa40c8472b14c71ae1b9999e9a68dc9a801294cf5db17305101f67eb",
+    "root_harness_sha256": "ad99e187f625eeebac64ff7d71be34ca63e850959e7ea4879ab62eb65b55aff0",
+    "root_t15_direct_probe_freshness": "stale for project_config.py and services.py drift",
+    "root_pytest_run": false,
+    "microbenchmark_acceptance": false
+  },
+  "candidate_performance_change": {
+    "title": "Event-driven command log dispatcher shutdown",
+    "diagnosis": "The previous dispatcher polled Queue.get(timeout=0.05) after pipe readers completed. Existing candidate-only capture p50/p95 was 109.013/110.824 ms; historical reports are invalid for acceptance.",
+    "implementation": "Use blocking Queue.get plus a non-blocking None sentinel after both readers finish. If the bounded queue is full, drain queued callbacks then exit when readers_done is set and queue is empty.",
+    "owned_paths": [
+      "src/local_ai_hub/commands.py capture dispatcher hunk",
+      "tests/test_command_concurrency_contract.py T15 dispatcher test"
+    ],
+    "regression_test": "test_log_dispatcher_waits_for_queue_signal_without_polling",
+    "test_status": "written, not run; T02 shared-slot gate",
+    "TDD_status": "test written before implementation; RED/GREEN runs deferred by explicit no-test slot gate",
+    "bench_target": "stages.dual_stream_capture.wall_ms; compare paired baseline/candidate p50/p95, verify dropped_chunks=0, dispatch_incomplete=false, callback bytes equal captured output",
+    "benchmark_status": "not run; wait for T02 slot release and T20 clean pin/profile assignment",
+    "root_written": false,
+    "candidate_sha256": "1fe384b1f5498a8736c76c89974ace103cfe94f780aaa75b4022cc9893bbbcf0",
+    "test_sha256": "fa895efb5f631dc2248233a41b006b7913111527911334cf198d3b082d09734d"
+  },
+  "candidate_dirty_paths_current": 17,
+  "candidate_current_file_sha256": {
+    "src/local_ai_hub/commands.py": "bfbcab237130e44a58c2aaf54105d9e6ea737b4953f954cb2b962674989309fc",
+    "tests/test_command_concurrency_contract.py": "fa895efb5f631dc2248233a41b006b7913111527911334cf198d3b082d09734d",
+    "tests/test_benchmark_command_broker.py": "25b33ea6e03851175207e87296314991d3eee22c132933d717dd43f166f6d810",
+    "tools/benchmark_command_broker.py": "8aef9b315b44b1a15bad0a52b79213f2f4a319e6bcd84dda240778f2c32930ab",
+    "tools/prepare_command_broker_fixtures.py": "4c83e5472c55c790e8f767bf4f54aeadc5024bf76f4299cf0fdb581b70255a74",
+    "tests/test_t15_root_parity_acceptance.py": "5ff44f13e0ff706a64d607e293dd6900e14906dec89b850f7a963214f1260e76",
+    "tests/test_new_capabilities_and_hardening.py": "a2888333798b60ae71c97d639dc3b82b1ef44caf5aaeafa8600593a5f8ff8627",
+    "tools/t15_config_parity_microbench.py": "d98a711534b6165196331605558a14a6d28cbf4d4c12b480d8c1dca469564720",
+    "handoff/t15-config-parity-microbench.json": "46180794e458d14c7d383685b656c84176793f4cca859dd47154da47f94fee11",
+    "tests/test_project_command_broker.py": "076d523c49c12ea222fafdcefb41787836a1d45393e828f79c51f4928f96eb8c",
+    "handoff/t15-root-current-parity-receipt.json": "2ce362a51375a7a28ece8b4d76f10347640c7b6020c66ea53f43bf9186ef1837",
+    "handoff/t15-benchmark-runbook.md": "8ab1007ac1d7087347b0a4619c94d9e4e3fc5a888ba6b484218c3ae34a1e709f",
+    "handoff/t15-root-current-parity-tests.patch": "989949eaacd06e117c2d9b6024eaa8166f12d3a6b9456bdfc3eded476d11e435"
+  },
+  "master_plan_audit_sha256": "979bfce12457f77d8724c1bedc85f7f725e988378385f424c2441e94867b96b8",
+  "consumer_acceptance_receipt_path": "handoff/t15-consumer-behavior-receipt.json",
+  "consumer_acceptance_receipt_sha256": "dd4d615797f77ff14b2871095ce19525da1d693cb6e41a113addaafa5549387a",
+  "root_parity_test_path": "tests/test_t15_root_parity_acceptance.py",
+  "root_parity_test_sha256": "5ff44f13e0ff706a64d607e293dd6900e14906dec89b850f7a963214f1260e76",
+  "root_parity_test_patch_path": "handoff/t15-root-current-parity-tests.patch",
+  "root_parity_test_patch_sha256": "989949eaacd06e117c2d9b6024eaa8166f12d3a6b9456bdfc3eded476d11e435",
+  "root_parity_receipt_path": "handoff/t15-root-current-parity-receipt.json",
+  "root_parity_receipt_sha256": "17f63338dd87a8db69c88955847f8959d5e737d7349bfa39ea05e806e7b3674f",
+  "root_parity_status": "Candidate tests pass 114; root direct parity receipt stale for root project_config/services changes; root pytest not run.",
+  "current_root_snapshot": {
+    "date": "2026-10-01",
+    "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "root_dirty_path_count": 279,
+    "root_current_file_sha256": {
+      "src/local_ai_hub/commands.py": "1b27f83872d439b9167c9b2323bf4be71279e688df6094c002ca20934f761b67",
+      "src/local_ai_hub/project_config.py": "4238b6a6de1de00f55f4679ce0df7d431522ec1bafabfa272258c1662f13f713",
+      "src/local_ai_hub/services.py": "1556edbe4336e1d0fecdac86d79593ab6f62be12a1f13841537cac453721dcc1"
+    },
+    "t15_root_writes": false,
+    "t15_root_pytest_run": false,
+    "direct_root_probes_passed": 4,
+    "candidate_parity_tests_passed": 4,
+    "root_parity_receipt_path": "handoff/t15-root-current-parity-receipt.json",
+    "root_parity_receipt_sha256": "712b106285b76aed39805cb3ed8e6bf5a758795b9c28cb6e2bfb90ceccd3a76c",
+    "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "candidate_dirty_path_count": 17,
+    "root_patch_apply_check": "PASS; not applied",
+    "benchmark_run": false,
+    "root_dirty_path_count_after_probes": 271,
+    "root_tracked_hashes_unchanged": true,
+    "root_t15_direct_probe_freshness": "stale for project_config.py hash drift",
+    "root_pytest_run": false,
+    "microbenchmark_acceptance": false
+  },
+  "config_microbenchmark_path": "handoff/t15-config-parity-microbench.json",
+  "config_microbenchmark_sha256": "46180794e458d14c7d383685b656c84176793f4cca859dd47154da47f94fee11",
+  "config_microbenchmark_harness_path": "tools/t15_config_parity_microbench.py",
+  "config_microbenchmark_harness_sha256": "d98a711534b6165196331605558a14a6d28cbf4d4c12b480d8c1dca469564720",
+  "config_microbenchmark_acceptance": false,
+  "t20_large_performance_slot_thread": "01a0d322-b3bd-7930-b552-14e9b7020fec",
+  "resolver_cache_path": "src/local_ai_hub/commands.py",
+  "resolver_cache_sha256": "bfbcab237130e44a58c2aaf54105d9e6ea737b4953f954cb2b962674989309fc",
+  "resolver_cache_tests": "2 invalidation tests pass; full scoped candidate suite 114 passed",
+  "resolver_cpu_probe": {
+    "scope": "one actual candidate CommandBroker._resolve_project_command invocation on a non-Git temporary project; instrumentation counted stage calls; no repeated loop or saved raw paths",
+    "total_wall_ms": 129.572,
+    "total_process_cpu_ms": 15.625,
+    "stages": {
+      "git_common_dir": {
+        "calls": 1,
+        "wall_ms": 127.9788,
+        "cpu_ms": 15.625,
+        "operation": "git rev-parse --git-common-dir"
+      },
+      "resolve_config_layers": {
+        "calls": 1,
+        "wall_ms": 0.8929
+      },
+      "config_file_read": {
+        "calls": 1,
+        "wall_ms": 0.2277
+      },
+      "config_path_validation": {
+        "calls": 1,
+        "wall_ms": 0.2878
+      },
+      "path_resolve": {
+        "calls": 8,
+        "wall_ms": 1.1707
+      },
+      "path_exists": {
+        "calls": 2,
+        "wall_ms": 0.1471
+      },
+      "subprocess_run": {
+        "calls": 1
+      }
+    },
+    "pathnames_persisted": false,
+    "conclusion": "The single Git identity subprocess dominated this non-Git fixture; parsing and Path.resolve were sub-millisecond/low-ms."
+  },
+  "config_microbenchmark_currentness": "historical pre-cache candidate, pre-latest-root sources; acceptance false"
+}

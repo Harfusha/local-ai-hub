@@ -1,0 +1,38 @@
+diff --git a/src/local_ai_hub/process_utils.py b/src/local_ai_hub/process_utils.py
+--- a/src/local_ai_hub/process_utils.py
++++ b/src/local_ai_hub/process_utils.py
+@@ -537,8 +537,23 @@
+ 
+     try:
+         return process.communicate(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+     except subprocess.TimeoutExpired as drain_error:
++        try:
++            terminate_tree(process.pid, **cleanup_kwargs)
++        except Exception:
++            pass
++        final_output = drain_error.output
++        final_stderr = drain_error.stderr
++        try:
++            return process.communicate(timeout=_POST_TERMINATION_DRAIN_SECONDS)
++        except subprocess.TimeoutExpired as final_drain_error:
++            if final_drain_error.output is not None:
++                final_output = final_drain_error.output
++            if final_drain_error.stderr is not None:
++                final_stderr = final_drain_error.stderr
++        except Exception:
++            pass
+         for stream in (process.stdout, process.stderr):
+             if stream is not None:
+                 try:
+                     stream.close()
+@@ -551,9 +566,9 @@
+         try:
+             process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+         except (OSError, subprocess.TimeoutExpired):
+             pass
+-        return drain_error.output, drain_error.stderr
++        return final_output, final_stderr
+     except Exception:
+         try:
+             process.kill()
+         except OSError:

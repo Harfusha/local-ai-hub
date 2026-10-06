@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "task": "T15 command broker paired benchmark pin preparation",
+  "created_date": "2026-10-02",
+  "status": "PREPARED_WAITING_FOR_T20_INTEGRATED_PIN_AND_SERIAL_SLOTS",
+  "candidate_owner_worktree": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t15-command-config\\.local-ai-hub",
+    "head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "dirty_paths_before_manifest": 68,
+    "dirty_paths_preserved": true
+  },
+  "baseline": {
+    "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "commands_sha256": "5E3FD81C4AB55633A165237AE5C828CA2B73ACE353DA403DB67C98C65128E1D3",
+    "checkout": "C:\\Users\\Adam\\.codex\\worktrees\\t15-pin-baseline-20261002",
+    "clean": true
+  },
+  "candidate": {
+    "head": "b38981611868221755ff899e9f5e40aa68a6c88e",
+    "parent": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "checkout": "C:\\Users\\Adam\\.codex\\worktrees\\t15-pin-candidate-20261002",
+    "clean": true,
+    "files": {
+      "src/local_ai_hub/commands.py": "845348F2E362852561AE2EBB1B3F5458C8915E0134B1EC884F47356132B9FECB",
+      "src/local_ai_hub/command_transactions.py": "247E49200044B4ACF2A1B261412F187C4688DE3CF0C9672AE582FD14EA1F029D",
+      "src/local_ai_hub/work_fencing.py": "C93C22210A479DA74A8ACD19134BAE2BC80979BDDD55E9E5FA08A50042ECBDD0"
+    },
+    "dependency_basis": "commands.py imports command_transactions and work_fencing, absent at baseline; AST scan found no further missing modules/symbols; runtime not verified"
+  },
+  "root_pins": {
+    "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "tracked_diff_sha256": "C631B7C1B0D37A2BE7FC4EE99C8344AFEB27D7BCDFFE19E03DA549F3E884D94D",
+    "untracked_manifest_sha256": "4E0358385B3548F9DFE522DC960EB292D46F152D86A5471DCF1D2761FA3E2226",
+    "benchmark_inputs": {
+      "src/local_ai_hub/commands.py": "845348F2E362852561AE2EBB1B3F5458C8915E0134B1EC884F47356132B9FECB",
+      "tests/test_surface_benchmarks.py": "F4E0D299384B3B3C9443390EC1001ED6B6F38D5606C0B45D8D774DED816DCF00",
+      "tools/benchmark_surfaces.py": "DCAED06CF711090E692D4B44555C6E76FF37F06093275B63C121D7CCE0AD3DE0"
+    },
+    "t15_runner_dependency": "commands.py only; surface test/runner files are T02 harness inputs, not consumed by T15 command broker runner"
+  },
+  "t02_manifest": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\manifest.json",
+    "sha256": "ED14D6D5C906B393D5EEAED9BDAFA2D9650605CA8C91392A318C6DE78C2003D9",
+    "source_pins_baseline": null,
+    "source_pins_candidate": null
+  },
+  "t15_v2_harness": {
+    "commit": null,
+    "owner_patch_sha256": "7475C37D7ABB018EB7578E6DE28D271D2D917AF4F1BE5994103225CC859EB02D",
+    "current_files": {
+      "tools/benchmark_command_broker.py": "8AEF9B315B44B1A15BAD0A52B79213F2F4A319E6BCD84DDA240778F2C32930AB",
+      "tools/prepare_command_broker_fixtures.py": "4C83E5472C55C790E8F767BF4F54AEADC5024BF76F4299CF0FDB581B70255A74",
+      "tests/test_benchmark_command_broker.py": "EF6694A482A2ADCA37CD6824F74CA492166C1F698F01BBD1F71FB16483753909",
+      "handoff/t15-command-broker-benchmark-runbook.md": "AA92A3EA303CAF66826417E1C5FC3DB3B1283F843F2510A175BC5661C9B12354"
+    },
+    "expected_commands_sha256_guard": "IMPLEMENTED_UNVERIFIED_BEFORE_IMPORT",
+    "new_guard_test": "tests/test_benchmark_command_broker.py::test_run_benchmark_rejects_wrong_commands_pin_before_loading_api",
+    "current_runner_sha256": "EBEB3CB11265BE699D0836E95564D2289AAE3093392AD698B82DDD50F6EBCB8F",
+    "baseline_commands_raw_sha256": "5E3FD81C4AB55633A165237AE5C828CA2B73ACE353DA403DB67C98C65128E1D3",
+    "candidate_commands_raw_sha256": "845348F2E362852561AE2EBB1B3F5458C8915E0134B1EC884F47356132B9FECB",
+    "contract_selectors": [
+      "tests/test_benchmark_command_broker.py::test_run_benchmark_rejects_wrong_commands_pin_before_loading_api",
+      "tests/test_benchmark_command_broker.py::test_revision_gate_requires_clean_matching_checkouts"
+    ],
+    "clean_committed_harness_checkout": "REQUIRED_NOT_PREPARED",
+    "correctness_slot": "08_OUTCOME_UNKNOWN_REQ_C346AA085510_NO_RETRY_NATIVE_FALLBACK",
+    "correctness_slot_receipt_sha256": "658F1EA53F0EEFCC549E38B0FAEFFFCD45CEA9688F31741ACDB0477EE20AB4FA",
+    "paired_benchmark_slot": "LATER_SEPARATE_T20_ASSIGNMENT",
+    "integrated_candidate_pin": "T20_REQUIRED",
+    "benchmark": "NOT_RUN"
+  },
+  "prior_candidate_receipts": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_benchmark_command_broker.py",
+    "result": "14 passed in 2.17s; prior candidate only",
+    "current_scratch_receipt": "NONE"
+  },
+  "gate": {
+    "required": "T02 explicitly reports green paired-matrix contract and releases serial slot",
+    "t02_slot_05": "INTERRUPTED_BASELINE_ONLY_NO_PAIRED_RECEIPT",
+    "t11_slot_05": "93_PASSED_SLOT_RELEASED",
+    "t15_correctness_slot": "08_RELEASED_OUTCOME_UNKNOWN_NO_VERIFIABLE_TEST_RESULT",
+    "t15_paired_benchmark_slot": "SEPARATE_LATER_ASSIGNMENT_REQUIRED",
+    "hub_command": "request_not_sent=true, outcome_unknown=false; terminal/retryable absent",
+    "native_test": "NOT_RUN",
+    "benchmark": "NOT_RUN",
+    "root_modified": false
+  }
+}

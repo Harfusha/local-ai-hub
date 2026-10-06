@@ -1,0 +1,31 @@
+{
+  "task": "T19 docs correction: serial validation slot policy",
+  "date": "2026-10-02",
+  "owner": "T19",
+  "changed_file": "docs/T19_RELEASE_VALIDATION_RUNBOOK.md",
+  "file_sha256": "fc8a799f1a79f09dc34c89f0f04ca833d077a475eb4a3e1056728214d53caa01",
+  "patch": {
+    "path": "handoff/T19-runbook-serial-slot-policy-20261002.patch",
+    "sha256": "0520fe902186f7e1d74deea92f45d5d61c42b1a433725301d5cf1958cb52feb9",
+    "preimage_reconstructed_sha256": "948a6e826f0944478ca586298d47861140d4291e93f858b03984df9bd7874700",
+    "postimage_sha256": "fc8a799f1a79f09dc34c89f0f04ca833d077a475eb4a3e1056728214d53caa01"
+  },
+  "change": "Replace obsolete T02 shared-slot instructions with T20-owned explicit serial assignment required for frozen-source pytest, Windows/Linux package builds, and install smoke.",
+  "verification": {
+    "isolated_apply_check": "passed against reconstructed pre-edit runbook",
+    "git_diff_check": "passed",
+    "tests": "not run",
+    "install_runtime": "not run",
+    "root": "unchanged"
+  },
+  "reason": "Current T20 queue owns central validation slots; prior slot release does not authorize a new run.",
+  "root_current_patch": {
+    "path": "handoff/T19-release-validation-runbook-root-current-20261002.patch",
+    "sha256": "e9cb89a3006f3b701bebe867f1758859840bd20054b6417e4f3a18225852d243",
+    "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "root_preimage": "absent",
+    "root_postimage_sha256": "fc8a799f1a79f09dc34c89f0f04ca833d077a475eb4a3e1056728214d53caa01",
+    "git_apply_check": "passed",
+    "applied": "false"
+  }
+}

@@ -1,0 +1,2217 @@
+{
+  "original_head": "94337de7309b66c63ff427cce8cd3a49e6414d73",
+  "dirty_checkpoint": "348ce8ac",
+  "raw_untracked_count": 107,
+  "entries": [
+    {
+      "path": "docs/command-broker-safety.md",
+      "variant": "git-blob",
+      "sha256": "671d37ba9aed7684ba30b3ed4b0b36794e2946fa119254fd5b7dc252c5bcbfc9"
+    },
+    {
+      "path": "docs/command-broker-safety.md",
+      "variant": "crlf-variant",
+      "sha256": "89d8d1ea595cdb80a72e096a6106425a1b9261415e04d37b9d4c6a77633f7c68"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-29-command-broker-transaction-isolation-plan.md",
+      "variant": "git-blob",
+      "sha256": "d74019d26258097caa77cd826f5944e76dc3e3ba9fe1ab1a7202fae73cb2b58e"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-29-command-broker-transaction-isolation-plan.md",
+      "variant": "crlf-variant",
+      "sha256": "ba052a1288d23b3bbb8a5573d063caf34958ca48f9f936cbce54a23798e1db5e"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-29-command-broker-transaction-isolation-design.md",
+      "variant": "git-blob",
+      "sha256": "6abc907b9c358623f26a6dafe45009158c722f83ee1391e4093f185327104867"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-29-command-broker-transaction-isolation-design.md",
+      "variant": "crlf-variant",
+      "sha256": "d4329db9b56bffcdcb0a04031f58e6c578f423b659104654691d3bea65654801"
+    },
+    {
+      "path": "handoff/T06-T09-command-execution-provenance-contract-v1.md",
+      "variant": "git-blob",
+      "sha256": "0e80d852b16df1491a482b83e135edbc04daf7f3dca781b180ceb83f8a06f8e5"
+    },
+    {
+      "path": "handoff/T06-T09-command-execution-provenance-contract-v1.md",
+      "variant": "crlf-variant",
+      "sha256": "b7210f3d6a9f4d7fc53501cca059c31da296b8d3e9fdef7fea5b16aa855450fc"
+    },
+    {
+      "path": "handoff/T06-T09-durable-provenance-fail-closed-matrix-v1.md",
+      "variant": "git-blob",
+      "sha256": "ae846f03cf69bc553c647391e6ab4a97c7abfbca00ae0257ef74504de1ac58d1"
+    },
+    {
+      "path": "handoff/T06-T09-durable-provenance-fail-closed-matrix-v1.md",
+      "variant": "crlf-variant",
+      "sha256": "03837ed1922986e87588a9b29f31df940c15e5c0c80275d00c625001d4ec37b0"
+    },
+    {
+      "path": "handoff/T06-T09-durable-provenance-seam-v1.md",
+      "variant": "git-blob",
+      "sha256": "3bcf8ed11e0d7ed8d052f709fbafdc47a7bef3be6a3270580e619c8d3ad39509"
+    },
+    {
+      "path": "handoff/T06-T09-durable-provenance-seam-v1.md",
+      "variant": "crlf-variant",
+      "sha256": "a05a80000af41006eba230bbf3aeaadc45df90de3be0c1cf2c9358822d991c3a"
+    },
+    {
+      "path": "handoff/T06-T09-validation-receipts-v2.md",
+      "variant": "git-blob",
+      "sha256": "d78be82a531445d987aa0819da0988c61c0098a7e17aed478f1c6e0863748350"
+    },
+    {
+      "path": "handoff/T06-T09-validation-receipts-v2.md",
+      "variant": "crlf-variant",
+      "sha256": "907c1b3d02acc1262f7ecfea96d5adc2d811a298143f25625ae3b46f799a8f70"
+    },
+    {
+      "path": "handoff/T06-T09-validation-receipts.md",
+      "variant": "git-blob",
+      "sha256": "4e5af2647a5ed6bf1edc77dbedbbce339543de846d0e8bca86bc35638263c422"
+    },
+    {
+      "path": "handoff/T06-T09-validation-receipts.md",
+      "variant": "crlf-variant",
+      "sha256": "6fa99aba8387e0c25a08db64a7c64f57b55859401a4eb38b73c97469216e056e"
+    },
+    {
+      "path": "handoff/T06-attempt-fence-isolated-receipt-20261001.md",
+      "variant": "git-blob",
+      "sha256": "8450e7a951f5f7fad8789a204a45f8678aa7664f1fc42405c6224a204ba6c068"
+    },
+    {
+      "path": "handoff/T06-attempt-fence-isolated-receipt-20261001.md",
+      "variant": "crlf-variant",
+      "sha256": "502129ee5b282eb1d0daf13a6a55c34cc94b193a61322abc97abfa7af5053567"
+    },
+    {
+      "path": "handoff/T06-cache-sidecar-fail-closed-root-current.md",
+      "variant": "git-blob",
+      "sha256": "401f2f5ea393aa83ba8b1bf0f6e3ca4c2bfbe704d93e4fc5e8bc7c85941a92e0"
+    },
+    {
+      "path": "handoff/T06-cache-sidecar-fail-closed-root-current.md",
+      "variant": "crlf-variant",
+      "sha256": "20806ee81adc634b18128d475a5755a8d26ca43338a6201a3fbaff9e4e8a4302"
+    },
+    {
+      "path": "handoff/T06-command-proof-contract-v1.md",
+      "variant": "git-blob",
+      "sha256": "45cc863fc03f1a74375437c6ad241b877a04dfc7462dcb7fae3131d0d7487bbe"
+    },
+    {
+      "path": "handoff/T06-command-proof-contract-v1.md",
+      "variant": "crlf-variant",
+      "sha256": "63736c4ddbef7e50da1a18acb565810410e948c2a8065e34ec0998625c08f34a"
+    },
+    {
+      "path": "handoff/T06-command-proof-contract-v2.md",
+      "variant": "git-blob",
+      "sha256": "e57c56ba0817f6ac4c937c273ca58151fc03087883cfe36d42144807b93e4678"
+    },
+    {
+      "path": "handoff/T06-command-proof-contract-v2.md",
+      "variant": "crlf-variant",
+      "sha256": "0986385c7104f73495583dd0294b11716d94aa3b147aa4d329fdca8bb24ec8ae"
+    },
+    {
+      "path": "handoff/T06-command-proof-contract-v3.md",
+      "variant": "git-blob",
+      "sha256": "93e5ae869528d2f91efdfabfd072898bd64d6cc5e9d53e10fa2c21deaec8d81d"
+    },
+    {
+      "path": "handoff/T06-command-proof-contract-v3.md",
+      "variant": "crlf-variant",
+      "sha256": "45e6e57552af455ee803d52e5d8e9a04c196aee6366d549db6de4a7bd3cc5fe6"
+    },
+    {
+      "path": "handoff/T06-daemon-tree-ownership-design.md",
+      "variant": "git-blob",
+      "sha256": "c2db96951a26858e2fb1f0a9eca27698b001b47cc8576c66e65f9e595f41cba3"
+    },
+    {
+      "path": "handoff/T06-daemon-tree-ownership-design.md",
+      "variant": "crlf-variant",
+      "sha256": "12bf2c837554ff3a04554b1a98242605873844dff0b59b4fd160d1b587d10a94"
+    },
+    {
+      "path": "handoff/T06-daemon-tree-ownership-plan.md",
+      "variant": "git-blob",
+      "sha256": "51ba7d96010d5fd1b1a22ff95614294a89767a03213f51f7aaeb27cddc744c4c"
+    },
+    {
+      "path": "handoff/T06-daemon-tree-ownership-plan.md",
+      "variant": "crlf-variant",
+      "sha256": "23beba55c909c9c740e07a21ab22d11f483779611d9579cbc69bd7f9edee2304"
+    },
+    {
+      "path": "handoff/T06-durable-command-provenance-v1.md",
+      "variant": "git-blob",
+      "sha256": "a56b2491fcbc258c7df2d06afd5a71c31f5a5b6b3d67595d2dc7d41363979513"
+    },
+    {
+      "path": "handoff/T06-durable-command-provenance-v1.md",
+      "variant": "crlf-variant",
+      "sha256": "3430ca485945941df2be031b62b64461a0b601f370c6ab7d01de832ad6431184"
+    },
+    {
+      "path": "handoff/T06-namespace-bridge-v2-acceptance.md",
+      "variant": "git-blob",
+      "sha256": "e04634dbb859106c63f6d92afffcc9ab2eb3ff811254fa970067a75c29f6d17d"
+    },
+    {
+      "path": "handoff/T06-namespace-bridge-v2-acceptance.md",
+      "variant": "crlf-variant",
+      "sha256": "0ccd97935ede83d7eb29b38557b141f03e4c11b240fad92801d0207e0fe98e18"
+    },
+    {
+      "path": "handoff/T06-root-current-acceptance-manifest-v1.md",
+      "variant": "git-blob",
+      "sha256": "d9653a25dca5f65df83c2f502c32f57c42cf7ff711fa4bc645618726ea24ed56"
+    },
+    {
+      "path": "handoff/T06-root-current-acceptance-manifest-v1.md",
+      "variant": "crlf-variant",
+      "sha256": "6507cb704044678a76fdf434d8584f917fe1eb3ce1fe03c1331b2c3f22cab213"
+    },
+    {
+      "path": "handoff/T06-root-current-spawn-journal-durability-20261002.md",
+      "variant": "git-blob",
+      "sha256": "6698e8742d87724c129a0e8a49c2aeaad523db988b3656d36f83609165bdfd75"
+    },
+    {
+      "path": "handoff/T06-root-current-spawn-journal-durability-20261002.md",
+      "variant": "crlf-variant",
+      "sha256": "52818a447660152f05f11c008589992ade9e475376f49dead2768a671c2c8ff6"
+    },
+    {
+      "path": "handoff/T06-root-current-write-set.md",
+      "variant": "git-blob",
+      "sha256": "be169cef57e17cf8c8ddf67bfd1beebe574ecb6d3e3f0fbc1d90e96ae0d4027f"
+    },
+    {
+      "path": "handoff/T06-root-current-write-set.md",
+      "variant": "crlf-variant",
+      "sha256": "155bc5f1b1674ece2755b0e728d5186ffa5c9e56fb8ac2b00099a674a6ed3c4d"
+    },
+    {
+      "path": "handoff/T06-safe-mutation-remaining-ownership-v1.md",
+      "variant": "git-blob",
+      "sha256": "67fc05ee6f18d8cc5d9bb3c8952077440bfd3de4a58aaede85d201fc6d545e1f"
+    },
+    {
+      "path": "handoff/T06-safe-mutation-remaining-ownership-v1.md",
+      "variant": "crlf-variant",
+      "sha256": "325ac81919cf1e4f0fbc41d6e5bd223518b9dfc03694f00da74fda73f8b79539"
+    },
+    {
+      "path": "handoff/T06-targeted-security-receipt-20261001.md",
+      "variant": "git-blob",
+      "sha256": "8d7e72e951bc9e346ae3d5c2e54ee2734683b7c0ed8370f01c1f0857ad85c3d4"
+    },
+    {
+      "path": "handoff/T06-targeted-security-receipt-20261001.md",
+      "variant": "crlf-variant",
+      "sha256": "1899ff0ad04999937f8e6c0ddccdb5b8068701de0249d6cd35e10dfa48f40723"
+    },
+    {
+      "path": "handoff/T06-transaction-isolation-acceptance-v4.md",
+      "variant": "git-blob",
+      "sha256": "5aa1dd24d1d71e155f3dfc83bcbde0e6ece1d4dea951547240d00d01812f550e"
+    },
+    {
+      "path": "handoff/T06-transaction-isolation-acceptance-v4.md",
+      "variant": "crlf-variant",
+      "sha256": "cf5e53eed2a36d6f94c4180563496abb9419e6a934f3950c1993db4185d76bde"
+    },
+    {
+      "path": "handoff/T08-unused-request-id-root-current.md",
+      "variant": "git-blob",
+      "sha256": "a811e395d7bcb5ff5865c9d6b84b8483852ce57eb0e605a613dce92468455787"
+    },
+    {
+      "path": "handoff/T08-unused-request-id-root-current.md",
+      "variant": "crlf-variant",
+      "sha256": "c87f3c0484e7bf2b0f7bbadc30268fd77ac92d64e397c9c197a617af8dcd5e89"
+    },
+    {
+      "path": "handoff/build_t06_receipts_v7.py",
+      "variant": "git-blob",
+      "sha256": "913d06bc256630edbd2019a9b63418e2bf2ab2b40a99d8573bf5332e192f997d"
+    },
+    {
+      "path": "handoff/build_t06_receipts_v7.py",
+      "variant": "crlf-variant",
+      "sha256": "0dcbb0170a6003a70aea3e57e5848d1634ae056af3a96afad3ae396123370a71"
+    },
+    {
+      "path": "handoff/build_t06_receipts_v8.py",
+      "variant": "git-blob",
+      "sha256": "268953dd28749090f8b9f07cce03cad0c53d69f950047c943c6217798ea395c6"
+    },
+    {
+      "path": "handoff/build_t06_receipts_v8.py",
+      "variant": "crlf-variant",
+      "sha256": "d6868b872e7ca426cd6fc1df68a287c1e968bee0804d6ea7928ee75e8e306506"
+    },
+    {
+      "path": "handoff/run_t06_namespace_bridge_root_overlay.py",
+      "variant": "git-blob",
+      "sha256": "df669dab0c06ed29076060b3b16359ec2e2a247c9446a5ceceb535b4046e18e1"
+    },
+    {
+      "path": "handoff/run_t06_namespace_bridge_root_overlay.py",
+      "variant": "crlf-variant",
+      "sha256": "5cd4a252dc3e024c63cdc80a8a3a09e4b621278af8aeefa3973861879da34543"
+    },
+    {
+      "path": "src/local_ai_hub/agent_tasks.py",
+      "variant": "git-blob",
+      "sha256": "1ee8e1303c808e7684367d5b33cb248f3ac3eb7f86fb6f8c54b03963cd02ed8b"
+    },
+    {
+      "path": "src/local_ai_hub/agent_tasks.py",
+      "variant": "crlf-variant",
+      "sha256": "62b8ab2ffb3a5680633f4e16299db7dc8d2477db5f524c59dbd89379c8875614"
+    },
+    {
+      "path": "src/local_ai_hub/cache.py",
+      "variant": "git-blob",
+      "sha256": "f95135ab1c0206baf52a06d61322b385d7d3c4fdcc5510125119756d922dd3b5"
+    },
+    {
+      "path": "src/local_ai_hub/cache.py",
+      "variant": "crlf-variant",
+      "sha256": "537b0582c57d2e1f51acc1404d0751d9acd5e006a026ac72fcd9cf31f140f556"
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "variant": "git-blob",
+      "sha256": "fdfde6764e2d0b9e045b3fd1156574a12f1e5610f9f0c1f14ed2a55b3e0e9969"
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "variant": "crlf-variant",
+      "sha256": "d582ac4181ae89146e8c0a66e07c5a1a2d262725827cbed0a06cbb623e5d948f"
+    },
+    {
+      "path": "src/local_ai_hub/command_transactions.py",
+      "variant": "git-blob",
+      "sha256": "cffc36198fd402754e9f4b2bac4472351fc9313ab5ec65bb1d6a6fcc95ce86fa"
+    },
+    {
+      "path": "src/local_ai_hub/command_transactions.py",
+      "variant": "crlf-variant",
+      "sha256": "247e49200044b4acf2a1b261412f187c4688de3cf0c9672ae582fd14ea1f029d"
+    },
+    {
+      "path": "src/local_ai_hub/commands.py",
+      "variant": "git-blob",
+      "sha256": "eea13314350c0462d421af9472b99f69a340916141b91ad3db631ca696103860"
+    },
+    {
+      "path": "src/local_ai_hub/commands.py",
+      "variant": "crlf-variant",
+      "sha256": "0380780646c39322704d84342528ee5a6bb62b4842d116d8984f720fc81dfe35"
+    },
+    {
+      "path": "src/local_ai_hub/http_server.py",
+      "variant": "git-blob",
+      "sha256": "b2d5722351b268e3a9e58634317bd2da9b7d1fe038b63bd3da989f7fea54bce6"
+    },
+    {
+      "path": "src/local_ai_hub/http_server.py",
+      "variant": "crlf-variant",
+      "sha256": "5cb6e6d3544d18e7f93f32579fbd3d92a854228dfb38912b157d3fef08046bd6"
+    },
+    {
+      "path": "src/local_ai_hub/process_utils.py",
+      "variant": "git-blob",
+      "sha256": "cda7da668cad1485b08cd14e25aaef13523fe97f6a24b3512bb5343244efdcc7"
+    },
+    {
+      "path": "src/local_ai_hub/process_utils.py",
+      "variant": "crlf-variant",
+      "sha256": "766d5378cd8b838d50cfa2b36b0091d30b5bcfdb620c9d37934aa3ce76d914e2"
+    },
+    {
+      "path": "src/local_ai_hub/services.py",
+      "variant": "git-blob",
+      "sha256": "b5b6a028e47e95627125f2528b1492a07c79a799aaf17a4c6d1ffaa932b23700"
+    },
+    {
+      "path": "src/local_ai_hub/services.py",
+      "variant": "crlf-variant",
+      "sha256": "89029f4446613e5b8a808f3c5a5403c48626ba93f2a8580c4c357b4339af3f41"
+    },
+    {
+      "path": "tests/fencing_lease_support.py",
+      "variant": "git-blob",
+      "sha256": "1b004127bf8e1a6b2b774035d655b36d8146641111fcae0b36138a17388a1cf7"
+    },
+    {
+      "path": "tests/fencing_lease_support.py",
+      "variant": "crlf-variant",
+      "sha256": "dde8b5755e9639d7d267f7ab136c965889aae3001925346f97561eb6a4691e7b"
+    },
+    {
+      "path": "tests/test_agent_os_enhancements.py",
+      "variant": "git-blob",
+      "sha256": "05d95065750687d36dd20d18ce1f29dc5e52070dca898230d6e945d3d99809dc"
+    },
+    {
+      "path": "tests/test_agent_os_enhancements.py",
+      "variant": "crlf-variant",
+      "sha256": "0e08647d5722017ed1c75f5ad7bf0ca62bc6412db8c9b3f0133f7e8f5da995c2"
+    },
+    {
+      "path": "tests/test_all_advanced_improvements.py",
+      "variant": "git-blob",
+      "sha256": "67df31a1f160330cbfc04744e4377150f30cb6374bdabfd69f2f28b11f86b425"
+    },
+    {
+      "path": "tests/test_all_advanced_improvements.py",
+      "variant": "crlf-variant",
+      "sha256": "5d3b63f8a9950a6e26359f157d3317402f1a36d8b0a7832b92e3e6e90f4de321"
+    },
+    {
+      "path": "tests/test_architectural_extensions.py",
+      "variant": "git-blob",
+      "sha256": "efe069136530bcf0c06e6174e49a732762da3ffd74df8ec82487976678a59d9b"
+    },
+    {
+      "path": "tests/test_architectural_extensions.py",
+      "variant": "crlf-variant",
+      "sha256": "b47ae661f5aebfb99e68d2914a18b758784a4c890e5937beed7d983935253693"
+    },
+    {
+      "path": "tests/test_audit_fixes.py",
+      "variant": "git-blob",
+      "sha256": "66013c19dca0c84e2fb176d7c1aa2fe5896d0e29e7e9103d30d8e0e71fab878b"
+    },
+    {
+      "path": "tests/test_audit_fixes.py",
+      "variant": "crlf-variant",
+      "sha256": "ae83cdfdd02d154a35f8681bd849218f6534f73f6a036cafe124775e34acd04b"
+    },
+    {
+      "path": "tests/test_auto_fix_repair_loop.py",
+      "variant": "git-blob",
+      "sha256": "96be85f0264e7cb18ff501674efaad729b8ada08f46d7dde2e7dfcd1aa66914b"
+    },
+    {
+      "path": "tests/test_auto_fix_repair_loop.py",
+      "variant": "crlf-variant",
+      "sha256": "40a3ada909c41d28cd12d27f8bbb888cfc23b322e902616760fd345e26a3eff1"
+    },
+    {
+      "path": "tests/test_auxiliary_action_policy.py",
+      "variant": "git-blob",
+      "sha256": "f225b71a565077136c465dabaea69e704b81b7b81045941cbc700078b9cc1d0f"
+    },
+    {
+      "path": "tests/test_auxiliary_action_policy.py",
+      "variant": "crlf-variant",
+      "sha256": "661e319df5623f498e7ba69361b8ea64b649a74a23aceb88d8e6388f847b25c5"
+    },
+    {
+      "path": "tests/test_cache_invalidation.py",
+      "variant": "git-blob",
+      "sha256": "c2867595fcc8fb06379b2ede4a1ead9c05d5cddb158bc5929a03a4236f480587"
+    },
+    {
+      "path": "tests/test_cache_invalidation.py",
+      "variant": "crlf-variant",
+      "sha256": "5c051b34ff1f3f7084bda3b034a0e2817060cdb1310a76d355d2dd56922e5b51"
+    },
+    {
+      "path": "tests/test_cloud_model_accelerators.py",
+      "variant": "git-blob",
+      "sha256": "156836a39bc849d0d5b3ad8b6c75c03fe822de57227d7a646a07526e0c61899a"
+    },
+    {
+      "path": "tests/test_cloud_model_accelerators.py",
+      "variant": "crlf-variant",
+      "sha256": "2aa7056a920f639dbb355d2c013f6c08d26c4f99746c27400f412d15f9c21ec0"
+    },
+    {
+      "path": "tests/test_command_replay_policy.py",
+      "variant": "git-blob",
+      "sha256": "198af98f0178c9dbf5d3818fb1a17d14b424e3b9aa9087d803ad4853f9c7d08d"
+    },
+    {
+      "path": "tests/test_command_replay_policy.py",
+      "variant": "crlf-variant",
+      "sha256": "feca97a6800897b8578e9ba418b5c86bb6d477a8d40e7885fb8ef1b145948a6e"
+    },
+    {
+      "path": "tests/test_command_rollback.py",
+      "variant": "git-blob",
+      "sha256": "0cd0443826ca42a13665c9f07f49ca01bff9922b78bc579404f5f06abd948a8c"
+    },
+    {
+      "path": "tests/test_command_rollback.py",
+      "variant": "crlf-variant",
+      "sha256": "3b8675ebed395f643ba60bd956ad321b1b5aeea7eacd017b0124b87ef0472f65"
+    },
+    {
+      "path": "tests/test_command_timeout_cache_contract.py",
+      "variant": "git-blob",
+      "sha256": "666eb9706a95d2d4fc962df0ee054b9c34048d67877f9ce4d0b57a58e65a9331"
+    },
+    {
+      "path": "tests/test_command_timeout_cache_contract.py",
+      "variant": "crlf-variant",
+      "sha256": "070f8720d042159ff95302f85532ba390923bc7965df144467196bc265eec882"
+    },
+    {
+      "path": "tests/test_command_transaction_snapshot.py",
+      "variant": "git-blob",
+      "sha256": "e47bc0b46f7abbfdb708783e66f9912245a0ca51dd55ba858fe7c52a00262bc4"
+    },
+    {
+      "path": "tests/test_command_transaction_snapshot.py",
+      "variant": "crlf-variant",
+      "sha256": "1f1d9ebf17a86bb1a957c3ef2a73fed26780a982bb7a5888726abc2f424a989e"
+    },
+    {
+      "path": "tests/test_command_unblocked.py",
+      "variant": "git-blob",
+      "sha256": "d3de9597f7a7847d0cc71ca0ae82d8738cd649d774a289f2762746ff82b78258"
+    },
+    {
+      "path": "tests/test_command_unblocked.py",
+      "variant": "crlf-variant",
+      "sha256": "7c71c89eaa09f43bba340e7b38adf2b285be03223f967adc636e6e9c6bc5bb06"
+    },
+    {
+      "path": "tests/test_daemon_lifecycle_hardening.py",
+      "variant": "git-blob",
+      "sha256": "3dd54e107570e1223ba32322d544eb451c58b9d01d3adda8a40d78ce50324245"
+    },
+    {
+      "path": "tests/test_daemon_lifecycle_hardening.py",
+      "variant": "crlf-variant",
+      "sha256": "cc0c62218100e93f650aaa85f98a226eff94b7d356002e157feac64744cfc91c"
+    },
+    {
+      "path": "tests/test_feature_suite.py",
+      "variant": "git-blob",
+      "sha256": "4c9960c0ee80aa30a6bb306f497fb9f567a42411195af8a1fb58c44925a220e4"
+    },
+    {
+      "path": "tests/test_feature_suite.py",
+      "variant": "crlf-variant",
+      "sha256": "0204588d52144b71da212485cd8ab4ee259905001c93a160a1f21007b3800908"
+    },
+    {
+      "path": "tests/test_missing_and_high_value_features.py",
+      "variant": "git-blob",
+      "sha256": "062cb0097e2ec670e98386dd92f6caf26aa9d15b45c167a4c468c6eb678ef34c"
+    },
+    {
+      "path": "tests/test_missing_and_high_value_features.py",
+      "variant": "crlf-variant",
+      "sha256": "b775527765c4ee53f6b9276bd4c59d49f4ce65d0715c47f58be70c03e6f2c6d6"
+    },
+    {
+      "path": "tests/test_mutation_replay.py",
+      "variant": "git-blob",
+      "sha256": "9c112028ea8d4e8473130195de6987bb5fa771dbd6275ded97a19522aa6d3a23"
+    },
+    {
+      "path": "tests/test_mutation_replay.py",
+      "variant": "crlf-variant",
+      "sha256": "fdddeb9bcba5c262efa0332bb3947e2b8156b77110f490240f69382031fad239"
+    },
+    {
+      "path": "tests/test_new_capabilities_and_hardening.py",
+      "variant": "git-blob",
+      "sha256": "00f6babe25f01fd09a6629cf307b63711b23619817e19201d5b7d1f3137d87f4"
+    },
+    {
+      "path": "tests/test_new_capabilities_and_hardening.py",
+      "variant": "crlf-variant",
+      "sha256": "184519c3ce47f73b8b179af8f0f49382d9056094b61b34603d79c14bcf9a9d51"
+    },
+    {
+      "path": "tests/test_process_utils.py",
+      "variant": "git-blob",
+      "sha256": "ff1e072d72c3a265ecdd141391d50e555fefa2ac7a51a7f42ff2f8a8c67c8e71"
+    },
+    {
+      "path": "tests/test_process_utils.py",
+      "variant": "crlf-variant",
+      "sha256": "f83869a2b00624b4156696bd577bcee144bbbb40abe35eafa172cceeb073a957"
+    },
+    {
+      "path": "tests/test_storage_service_reliability.py",
+      "variant": "git-blob",
+      "sha256": "4af6ae781d856095433ff98e074dc5bdb3c12ea24411f579a51ee50cd935b8da"
+    },
+    {
+      "path": "tests/test_storage_service_reliability.py",
+      "variant": "crlf-variant",
+      "sha256": "4d7a5e21dd811d376f13620e8c25858442ea29a5ecb1eb633e0a24262f2d371a"
+    },
+    {
+      "path": "tests/test_t06_command_cache_read_fail_closed.py",
+      "variant": "git-blob",
+      "sha256": "b094d484183840181e49e2fc0389bd9380b9225f6ea5c23dcf133697bc6d9ec9"
+    },
+    {
+      "path": "tests/test_t06_command_cache_read_fail_closed.py",
+      "variant": "crlf-variant",
+      "sha256": "c3c1b2fbfd3c0a76a0243909683e78b6588f59c1a22488fb4b789e623554103e"
+    },
+    {
+      "path": "tests/test_t06_project_namespace_bridge.py",
+      "variant": "git-blob",
+      "sha256": "dd5b34ea7f0033f9f001f8ede64cba3d3713e1c9bfad3d43a22bc4580bbda3fe"
+    },
+    {
+      "path": "tests/test_t06_project_namespace_bridge.py",
+      "variant": "crlf-variant",
+      "sha256": "8134e5cfcfe1013d31494d85f4dce8730fac07f235f4e8ae20dc2db5468bdd72"
+    },
+    {
+      "path": "tests/test_t06_project_validation_receipts.py",
+      "variant": "git-blob",
+      "sha256": "229f76d40205048a27258dd12f08f8add34cddb7d194b4c23337876d06563942"
+    },
+    {
+      "path": "tests/test_t06_project_validation_receipts.py",
+      "variant": "crlf-variant",
+      "sha256": "898a435576cd02f39c04ecc998e43812c3db5e9407835e39b2b1052405d7c010"
+    },
+    {
+      "path": "tests/test_t06_server_command_provenance.py",
+      "variant": "git-blob",
+      "sha256": "eb09fe47247f87c8164310d424e6c5b1fe7123dd47a858351ca1ec73fb1ae1b8"
+    },
+    {
+      "path": "tests/test_t06_server_command_provenance.py",
+      "variant": "crlf-variant",
+      "sha256": "2e6fb0c1933172d36373c1f2bb9046ad2cb08043d61709188d906923cbe8b40e"
+    },
+    {
+      "path": "tests/test_t06_t09_validation_receipts.py",
+      "variant": "git-blob",
+      "sha256": "ca93e49088000feed56fa0ae022b504449f9870623024bcefac468d0cf3bd03f"
+    },
+    {
+      "path": "tests/test_t06_t09_validation_receipts.py",
+      "variant": "crlf-variant",
+      "sha256": "d8d7227e584ccb44888b0417a99f11ae43f2da4c3986d6bab89e70d6491862a3"
+    },
+    {
+      "path": "tests/test_t06_worktree_subprocess_tracking.py",
+      "variant": "git-blob",
+      "sha256": "42065c5d61673ce855196822c8ffef85145f9621dda91ee0f2651f6ed729fffa"
+    },
+    {
+      "path": "tests/test_t06_worktree_subprocess_tracking.py",
+      "variant": "crlf-variant",
+      "sha256": "d5909772c3716edc8c03834b0fb01fed190b9c1acd79f044b0cac957a8eab837"
+    },
+    {
+      "path": "tests/test_task_worktree_cleanup_contract.py",
+      "variant": "git-blob",
+      "sha256": "4d2e549f1c1ed8bb99b8ed5988ef01a5c6e37c580a44e16a59668d2ef9f63156"
+    },
+    {
+      "path": "tests/test_task_worktree_cleanup_contract.py",
+      "variant": "crlf-variant",
+      "sha256": "a6fec7708057ba5f31fe0777b791058ed2a6adb13700c3e869ebddc4579bce19"
+    },
+    {
+      "path": "handoff/.gitignore",
+      "variant": "original-untracked-raw",
+      "sha256": "b6c49034a97bd2244d99a42541d66ae7875a3158095c88c1dd807804f82c4e4a"
+    },
+    {
+      "path": "handoff/T06-T09-validation-receipts-v2.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "99a0c65f38d90fb6203170222411419bc2b838fab71159fbf4f952f26ddd9034"
+    },
+    {
+      "path": "handoff/T06-T09-validation-receipts-v3-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "3420d8991e434635e85b5a7be0cdc2550dbd36b37d0698a6f9e54028ba692a7e"
+    },
+    {
+      "path": "handoff/T06-T09-validation-receipts-v4-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "cda1aaafb23534b388840efe3e6d1323f4f0ae04e024892d49517f3598541eb1"
+    },
+    {
+      "path": "handoff/T06-T09-validation-receipts-v5-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "5df757412d731300d94ce9282d3996bb6c2cc544d3dbd9ae168f4a0594887c3a"
+    },
+    {
+      "path": "handoff/T06-T09-validation-receipts-v6-root-namespace-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "643cb692d8b185d153e8f364f2e32d076c993f21ceb1d4993001eaff89701974"
+    },
+    {
+      "path": "handoff/T06-T09-validation-receipts-v7-root-namespace-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "eaeb030cfed30c7a5e085e1d940989902ab1b3cdf0bbd166c9ad42a616871327"
+    },
+    {
+      "path": "handoff/T06-T09-validation-receipts-v8-root-namespace-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "87695e0aeb40a56a88f90f27b5cd2113493ac8887b2fd0f84acb78a7a13de335"
+    },
+    {
+      "path": "handoff/T06-T09-validation-receipts.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "99a0c65f38d90fb6203170222411419bc2b838fab71159fbf4f952f26ddd9034"
+    },
+    {
+      "path": "handoff/T06-cache-sidecar-fail-closed-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "1fc8ba3cf9fdc20c5bc36590d176746658d11eedb5d7c41a911897737790b13e"
+    },
+    {
+      "path": "handoff/T06-daemon-command-policy-work-verification.json",
+      "variant": "original-untracked-raw",
+      "sha256": "86e30f522d8fad9b1455d8357010c3f8063ad359fe45d97c31c659139d396ff3"
+    },
+    {
+      "path": "handoff/T06-daemon-owner-poll-followup-receipt.json",
+      "variant": "original-untracked-raw",
+      "sha256": "873926bdabd2e82ccf995fdd537c358d3eaf095ff815880c8421a9164c6fafc3"
+    },
+    {
+      "path": "handoff/T06-daemon-spawn-owner-work-verification.json",
+      "variant": "original-untracked-raw",
+      "sha256": "8ea45cc614d08a1888325af4da6035fc7651b25c57c8db5add198c22b506cb64"
+    },
+    {
+      "path": "handoff/T06-daemon-task-ownership-receipts.json",
+      "variant": "original-untracked-raw",
+      "sha256": "662b838913dec4e4d33cba8966d534fd0214d60aaa24e987f56b120ad50d3382"
+    },
+    {
+      "path": "handoff/T06-durable-command-provenance-root-pinned-v1.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "ae64bf67614ca9f3aead82f8bc812aadeb60abe0952e8444f3af78b9423fe3fe"
+    },
+    {
+      "path": "handoff/T06-durable-command-provenance-root-pinned-v2.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "962fd53023df48ce6f3201e585247270c4d1eb557cffb6ad8dadbd9e773fcc32"
+    },
+    {
+      "path": "handoff/T06-namespace-bridge-v1-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "09b9fa454b72c7ee9ae6d7ccf7f10ba9a5d6ad1a570cb6fe35228382ed1348db"
+    },
+    {
+      "path": "handoff/T06-namespace-bridge-v2-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "bf5032933e30ba3dcfa5c416929520807721339bd9e68acb4efa06f39171dad8"
+    },
+    {
+      "path": "handoff/T06-posix-concurrent-process-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "c1ed8f3c3b92480b47e08ada4d1a1188477f04264f557b3a64e947a07f9a5b3f"
+    },
+    {
+      "path": "handoff/T06-posix-rollback-atomic-exchange-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "f0e40fe51772a5f5468e198e8a47d5b1474dbe32853eecda6d1c9a52443eda57"
+    },
+    {
+      "path": "handoff/T06-posix-rollback-platform-blocker-receipt.json",
+      "variant": "original-untracked-raw",
+      "sha256": "fb83500a9c3ca6ddce2f8621ca7b48741fd8bc7ac38432c812704dfbbca24b54"
+    },
+    {
+      "path": "handoff/T06-posix-rollback-replacement-test-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "028ee2c63c5d504a0c2769f319f95c69f45c765294ac92b9e52d233cb9b0404b"
+    },
+    {
+      "path": "handoff/T06-posix-selector-collection-work-verification.json",
+      "variant": "original-untracked-raw",
+      "sha256": "903195df3a5b4b21fbd51fc9839654520351a5f1661f76df0a7f63871ecbc89a"
+    },
+    {
+      "path": "handoff/T06-process-group-recovery-root-current.manifest.json",
+      "variant": "original-untracked-raw",
+      "sha256": "1785d95d47c2669fe47ffb9aa37f862d86381c23660487a7585c4c7bc92ee59e"
+    },
+    {
+      "path": "handoff/T06-process-group-recovery-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "8cd6cda5734a293b36d147e8a76bcecda01d8b482dcfef73b5064d48bb334e76"
+    },
+    {
+      "path": "handoff/T06-provenance-worktree-hardening-v1.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "6c815507de824540aa1ba2fd202c31c1cefbed18120bd2e4fd145f95d8e31168"
+    },
+    {
+      "path": "handoff/T06-repair-loop-outcome-unknown.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "36d09bb4f17b35bf9d29c7fc847f5e4487e7edd990d97fdc9ca53fd635bad526"
+    },
+    {
+      "path": "handoff/T06-repair-loop-safe-mutation-receipts.json",
+      "variant": "original-untracked-raw",
+      "sha256": "044d0c406082dd718876b005e3e61cf8686f4fbc14f5bb9d0aa05a436ad4c2f3"
+    },
+    {
+      "path": "handoff/T06-rollback-daemon-acceptance-manifest.json",
+      "variant": "original-untracked-raw",
+      "sha256": "8b75d3ec7c8cdd412dcc5f8a08853f97396e930387b1ca7f1266c877d3c91f46"
+    },
+    {
+      "path": "handoff/T06-rollback-proof-and-fence-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "e4ef0df5d5d6eca1335afcadb6e3fa65f9efe1f7a01fd0c8bb2a178888cfcfc3"
+    },
+    {
+      "path": "handoff/T06-rollback-result-contract.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "964f0e49d3b85fb3796b02298a465c7a814ea47526a10d53c7d6bad75eaa65a4"
+    },
+    {
+      "path": "handoff/T06-rollback-windows-race-work-verification.json",
+      "variant": "original-untracked-raw",
+      "sha256": "47577c00cdb0314ea278f6a6e052952222b586db9be0f92357dbc896ececa7e5"
+    },
+    {
+      "path": "handoff/T06-rollback-write-set-work-verification.json",
+      "variant": "original-untracked-raw",
+      "sha256": "57a9e2ce27d9f64113ca34f8417db7537a5e8f4f1e54d62b22793d6b153a50e4"
+    },
+    {
+      "path": "handoff/T06-root-cache.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "9c2344e442002095934fe9332fc1edb1fb3bb2c74852812ca2f41fc431167be7"
+    },
+    {
+      "path": "handoff/T06-root-commands.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "ecc78a03f74d8615e2170846d7761cce44e1d1b952a34230b15b14225989131c"
+    },
+    {
+      "path": "handoff/T06-root-correction-preview.commands.py",
+      "variant": "original-untracked-raw",
+      "sha256": "0479c8eb564621b7bcfc686febbed23fa81b39c374f3f76ac1feec5a6232aa21"
+    },
+    {
+      "path": "handoff/T06-root-correction.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "bfa2c5778f789285e8788713efe46e603d6bb7bb69d14be846129cfed9c87a99"
+    },
+    {
+      "path": "handoff/T06-root-correction2-preview.commands.py",
+      "variant": "original-untracked-raw",
+      "sha256": "6df332d27f8a0c9a3f5b55b44ea008198205d6d29fb3862f4086e4c62d4f0b44"
+    },
+    {
+      "path": "handoff/T06-root-correction2.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "502b64ccdaf3cc0a5a4e582a397e6b98881ec72c4dc51cf38cdabb00ac9337e1"
+    },
+    {
+      "path": "handoff/T06-root-correction3-preview.commands.py",
+      "variant": "original-untracked-raw",
+      "sha256": "22371f2e93e7e69dc4c17059891f2f0b25d7a8113531bdc358041dff4f6d933c"
+    },
+    {
+      "path": "handoff/T06-root-correction3.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "41c4f14232aacd0a9618ca981d688a449014161e716b682299dec87ef895703d"
+    },
+    {
+      "path": "handoff/T06-root-correction4-preview.commands.py",
+      "variant": "original-untracked-raw",
+      "sha256": "a444ff12a3dfa4be564454b2d1ece5c2602d72cf57c534f9d71e0ef3c763f173"
+    },
+    {
+      "path": "handoff/T06-root-correction4.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "e41811b801f18f69665e742ce368fba214aba913f00e2ba97d059b7eb7898809"
+    },
+    {
+      "path": "handoff/T06-root-correction5-preview.commands.py",
+      "variant": "original-untracked-raw",
+      "sha256": "9fc1eebec05a22ae6ddc9a92c17783e149fa312cc54a5692ef3ce598b2d04a11"
+    },
+    {
+      "path": "handoff/T06-root-correction5.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "5c79185dbdf75178fc2289a9eab7890f4f40dd4036fea861d5aebc0efbd1ed60"
+    },
+    {
+      "path": "handoff/T06-root-correction6.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "f166984886970567733ef66f1cae4ac7284e7fc3b8497bb365b7a4af7a818c3b"
+    },
+    {
+      "path": "handoff/T06-root-correction7.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "a818c9cccc09d7d4c4f46140a630014c9e625ca40e0b17e1013965facd0b71a4"
+    },
+    {
+      "path": "handoff/T06-root-correction8.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "5eab0a15c99dd75e6bd2513210a03de2653c437ae3b46ecc67d46bc43da8d59a"
+    },
+    {
+      "path": "handoff/T06-root-current-broker-fence.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "c1c215dd114a6c03a464eed2a0e2a3300204c131e02f14e67ac985330a57f906"
+    },
+    {
+      "path": "handoff/T06-root-current-daemon-no-orphan.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "1e348315403173910f06f922f79ce1db9fc70421e9792e63222110a10272b898"
+    },
+    {
+      "path": "handoff/T06-root-current-expired-attempt-test.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "c0081a58378117733048119035805ad239bfd1f42f6dbf24b4876adf4b8c2e28"
+    },
+    {
+      "path": "handoff/T06-root-current-fenced-recovery-required.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "ae69bba93821d481b9bca3b5a47b9075291d2a21035679de79a4488880e9aa1d"
+    },
+    {
+      "path": "handoff/T06-root-current-minimal-safety-receipt.json",
+      "variant": "original-untracked-raw",
+      "sha256": "c2cfd4300a48088d0dd1e6de975475a54cd1c160192fb2bb178b28d686f7a436"
+    },
+    {
+      "path": "handoff/T06-root-current-owned.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "6da7ac0853dcc19e63e87205f22a981047d5aa492c8ba36a3ae3bc88efeacb9f"
+    },
+    {
+      "path": "handoff/T06-root-current-production.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "94c2f903e9eb9f75811a6e9badb0cc58bc1554b930403ff2b9f6c6f7e0ec84f9"
+    },
+    {
+      "path": "handoff/T06-root-current-spawn-journal-durability-20261002.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "074e55c9b5c9b778db09561a46fc634ec92e5e262a7ae815b835905581e35140"
+    },
+    {
+      "path": "handoff/T06-root-current-tests.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "c88f418395879dae7ba55b824030fd98116cae267cb959f1cdac6105b80f070f"
+    },
+    {
+      "path": "handoff/T06-root-current-write-set.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "353c867b072b258c953df65d7871abbb1da22d2ab61de8cd47069f2b19905194"
+    },
+    {
+      "path": "handoff/T06-root-daemon-task-identity-followup.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "58b57160403d10464590c65780c1ba4264a4d397b9689471b513ae87fd9511f2"
+    },
+    {
+      "path": "handoff/T06-root-daemon-task-identity-receipt.json",
+      "variant": "original-untracked-raw",
+      "sha256": "1cc096f94463f3194c40e4d2773d997c0528e1cb719ae7f35b62f52d8274a275"
+    },
+    {
+      "path": "handoff/T06-root-daemon-task-identity.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "9b9e44492a5667c4d44768bd089281ba01d865073d3bd8e63432cb42dc24a7ea"
+    },
+    {
+      "path": "handoff/T06-root-daemon-task-owner-poll-followup.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "ce1c36719c996438ee053fe2af532ae892040be5988eb1a927617b837d9b0857"
+    },
+    {
+      "path": "handoff/T06-root-daemon-task-ownership-followup-receipts.json",
+      "variant": "original-untracked-raw",
+      "sha256": "7964d122cf978f6fa10a175a6550eb2302071f43f9d6283b02bbec902675b695"
+    },
+    {
+      "path": "handoff/T06-root-private-transaction-test.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "93865f01c04d65cd17ebe0e43cb2d302bc079b97147340f0aab0a2d97cc34dfe"
+    },
+    {
+      "path": "handoff/T06-root-private-transactions.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "83fcdf507487861697673619da50924d075c545426e0d7b854d1dd7e715d7be7"
+    },
+    {
+      "path": "handoff/T06-root-rebased-worktree-cleanup.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "9ea1520e7b3cbdd5cca2e9e9bf6ba2e2341db20902ab0ffc9f0d2b00f59a96e6"
+    },
+    {
+      "path": "handoff/T06-root-rollback-cache.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "9c2344e442002095934fe9332fc1edb1fb3bb2c74852812ca2f41fc431167be7"
+    },
+    {
+      "path": "handoff/T06-root-rollback-command.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "9523667c094e8f9885bf7be8ea0d544d20225ac78774740d26c9393ab033a5f5"
+    },
+    {
+      "path": "handoff/T06-root-rollback-error.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "a551381bd9b80a956f0c2f1e57734ce84c02b917f4e929f3be8dfb1387d2fbf2"
+    },
+    {
+      "path": "handoff/T06-root-rollback-test.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "2304ee29a8240b2d9379ca50028831ab7bd63fe6ebb981c8edb3ec0244c90304"
+    },
+    {
+      "path": "handoff/T06-root-rollback-tests.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "a3ea92936e03d3f8c5f50740ac4dc18ffa5c4a725a9259cbe3fde90098343922"
+    },
+    {
+      "path": "handoff/T06-root-task-id-adapters-receipt.json",
+      "variant": "original-untracked-raw",
+      "sha256": "a85d9f45ad3a2273ed4f6d840afc5f191526ef0457b63477eaec7b2610ca718c"
+    },
+    {
+      "path": "handoff/T06-root-task-id-adapters.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "6b2c5765288cd8fa8518fa343ce9c81703723e1a6bfe8fb683281d046d0f5f48"
+    },
+    {
+      "path": "handoff/T06-root-task-stop.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "1a742f2e3cf09a458123ba7de3c0be90dab3bbf7ab57f25376dd57d379bdd299"
+    },
+    {
+      "path": "handoff/T06-root-test-fence-adapter.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "392e23cb89b02792103de5b79e56f3bf92548bdf7fd7cf9e0a341ce5c6804b02"
+    },
+    {
+      "path": "handoff/T06-root.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "b375c046aae2f2879bdebef67096a35d91962f907d3d76e5123fe3f555855699"
+    },
+    {
+      "path": "handoff/T06-singleflight-timeout-waiter.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "69027f11d517ea13d6e92ebcb7a4eea2496c3206be36e61cdade295a4df502c9"
+    },
+    {
+      "path": "handoff/T06-task-worktree-cleanup-ownership.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "6134b45b72a41ea9ca1f96f2f6163eb23d11695bc88ba254fe32514eacd5a03a"
+    },
+    {
+      "path": "handoff/T06-task-worktree-registration.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "da5636a379f1a2182818a398483a987e3153f6c6365252cd9c847c3128fc870b"
+    },
+    {
+      "path": "handoff/T06-transaction-durable-import-work-verification.json",
+      "variant": "original-untracked-raw",
+      "sha256": "19f491484c2cbba9fd56b0180bcc5bfc91574fb87e3aa3951e7df9fdf4de9e7d"
+    },
+    {
+      "path": "handoff/T06-windows-rollback-path-replacement-test-hunk.txt",
+      "variant": "original-untracked-raw",
+      "sha256": "d76395cae9de086a257ccb7d6a8ac2357f537254b5e22d993d4a0f328fcf3883"
+    },
+    {
+      "path": "handoff/T06-windows-rollback-path-replacement-test-root-current-v2.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "db14a688e7d18759bcb0728c77b85125ec3690b370e059a8b38d2fd9b2511d64"
+    },
+    {
+      "path": "handoff/T06-windows-rollback-path-replacement-test-root-current.json",
+      "variant": "original-untracked-raw",
+      "sha256": "f3d9d506a918e0045dc5acb165ea81fae01a2ee71e0ef610301a031462823a10"
+    },
+    {
+      "path": "handoff/T06-windows-rollback-path-replacement-test-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "3276b60eb6bc32b32bd07419b113c44c41da53dba279843b1b71c87d13383cf1"
+    },
+    {
+      "path": "handoff/T08-unused-request-id-root-current.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "0eea1290c3964ed3849fafbbae796b76bf6437e1e7cb46b70947bf8de2896891"
+    },
+    {
+      "path": "handoff/root-merge-work/cache.integrated",
+      "variant": "original-untracked-raw",
+      "sha256": "c0549546064c44c6f71b3a4b5685571eb761b3fecb1936e7cf5226f274b11632"
+    },
+    {
+      "path": "handoff/root-merge-work/cache.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "9c2344e442002095934fe9332fc1edb1fb3bb2c74852812ca2f41fc431167be7"
+    },
+    {
+      "path": "handoff/root-merge-work/commands.integrated",
+      "variant": "original-untracked-raw",
+      "sha256": "2893e64cc22c34d76caa4a2a5501e6a4e919545b818a4a852e165c6b4a514c7a"
+    },
+    {
+      "path": "handoff/root-merge-work/commands.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "ecc78a03f74d8615e2170846d7761cce44e1d1b952a34230b15b14225989131c"
+    },
+    {
+      "path": "handoff/root-merge-work/commands.private.integrated",
+      "variant": "original-untracked-raw",
+      "sha256": "3344f8bd494ded3a1b4846490553506ca5adcf41d843cc644ea4c8d9f25f11b6"
+    },
+    {
+      "path": "handoff/root-merge-work/rollback-command.integrated",
+      "variant": "original-untracked-raw",
+      "sha256": "f78bb5805c62a932b496c84bfe990952a4bef6361a155552d49d631e9d454786"
+    },
+    {
+      "path": "handoff/root-merge-work/rollback-command.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "9523667c094e8f9885bf7be8ea0d544d20225ac78774740d26c9393ab033a5f5"
+    },
+    {
+      "path": "handoff/root-merge-work/rollback-test-minimal.integrated",
+      "variant": "original-untracked-raw",
+      "sha256": "3b27900d24d23c4954f9ce7c081bdc7d1b71535bb6ff446e733f3da05176dbdf"
+    },
+    {
+      "path": "handoff/root-merge-work/rollback-test-minimal.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "2304ee29a8240b2d9379ca50028831ab7bd63fe6ebb981c8edb3ec0244c90304"
+    },
+    {
+      "path": "handoff/root-merge-work/rollback-test.private.integrated",
+      "variant": "original-untracked-raw",
+      "sha256": "9fe19fed6576509ce4d36e1f7fb0d4b37128a29ebc857d5eee19c6e677a7b639"
+    },
+    {
+      "path": "handoff/root-merge-work/rollback-test.private.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "86f3853553c355247cb36d2014bf33f680a7fa3d0f8fb7b06296595dad4644a3"
+    },
+    {
+      "path": "handoff/root-merge-work/rollback-tests.integrated",
+      "variant": "original-untracked-raw",
+      "sha256": "95bd896b3fbdffcea592d4d5d088a2f9c021ba4a1d342cc62b24f700e04da1ac"
+    },
+    {
+      "path": "handoff/root-merge-work/rollback-tests.patch",
+      "variant": "original-untracked-raw",
+      "sha256": "a3ea92936e03d3f8c5f50740ac4dc18ffa5c4a725a9259cbe3fde90098343922"
+    },
+    {
+      "path": "handoff/root-merge-work/src__local_ai_hub__cache.py.commonbase.merged",
+      "variant": "original-untracked-raw",
+      "sha256": "94eae11e29244aea0a1c27dcd25e70b8e65b4294dab821ccfcf4a60103c3d5a2"
+    },
+    {
+      "path": "handoff/root-merge-work/src__local_ai_hub__cache.py.merged",
+      "variant": "original-untracked-raw",
+      "sha256": "dce29903bfe3898a526afd5405184afeadff172572655b721a0e81a099484240"
+    },
+    {
+      "path": "handoff/root-merge-work/src__local_ai_hub__cache.py.roothead.merged",
+      "variant": "original-untracked-raw",
+      "sha256": "3d3bc6681f8d96ac910855653e6a380e48e5445eb8e7ba8a07af7499df87a346"
+    },
+    {
+      "path": "handoff/root-merge-work/src__local_ai_hub__commands.py.commonbase.merged",
+      "variant": "original-untracked-raw",
+      "sha256": "cf215dcc3d3f4f29c22b6f4cf00bda65ed01a535ec05f59269b12d57a5eeccce"
+    },
+    {
+      "path": "handoff/root-merge-work/src__local_ai_hub__commands.py.merged",
+      "variant": "original-untracked-raw",
+      "sha256": "2093e284e8106f8bce1c411aff02c089fd6ad2a9983d62f69a09ade423072999"
+    },
+    {
+      "path": "handoff/root-merge-work/src__local_ai_hub__commands.py.roothead.merged",
+      "variant": "original-untracked-raw",
+      "sha256": "680f1c1dd785fd9ba9e69f0336f17033edb586ac00a5942cf1c4b132b125c94a"
+    },
+    {
+      "path": "handoff/root-merge-work/tests__test_command_rollback.py.commonbase.merged",
+      "variant": "original-untracked-raw",
+      "sha256": "813bfa39deb66ec9cd6e6258abb9af9c9be50fe2973314d1852dd41d06953f94"
+    },
+    {
+      "path": "handoff/root-merge-work/tests__test_command_rollback.py.merged",
+      "variant": "original-untracked-raw",
+      "sha256": "a3c57697c249c93c324121508cb3070d1b16eac9b559ca4cb50ddec8c1f6a7b1"
+    },
+    {
+      "path": "handoff/root-merge-work/tests__test_command_rollback.py.roothead.merged",
+      "variant": "original-untracked-raw",
+      "sha256": "6cec9ebd88a9925de9b43fd43ed548a5fc341920fad738313658100203ffe022"
+    }
+  ],
+  "excluded_preserved_in_place": [
+    ".pytest_cache/.gitignore",
+    ".pytest_cache/CACHEDIR.TAG",
+    ".pytest_cache/README.md",
+    ".pytest_cache/v/cache/lastfailed",
+    ".pytest_cache/v/cache/nodeids",
+    ".serena/.gitignore",
+    ".serena/cache/python/document_symbols.pkl",
+    ".serena/cache/python/raw_document_symbols.pkl",
+    ".serena/project.local.yml",
+    ".serena/project.yml",
+    ".tmp-state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers1/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers1/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers2/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers2/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers3/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers3/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers4/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers4/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers5/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers5/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers6/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_builtin_python_and_powers6/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_cached_success_does_not_m0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_cached_success_does_not_m0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_command_verification_reco0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_command_verification_reco0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_compound_validation_repla0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_compound_validation_repla0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_disjoint_private_transact0/source/",
+    "handoff/t06-sync-test-temp-v2/test_disjoint_private_transact0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_disjoint_private_transact0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/source/",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/state/.cache.sqlite3.command-cache-coordination/049f40943c85c7deba4ba35bcfb199e2c2088686ebdc915e2a066dc933d6d4b1.fallback.json",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/state/.cache.sqlite3.command-cache-coordination/049f40943c85c7deba4ba35bcfb199e2c2088686ebdc915e2a066dc933d6d4b1.json",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/state/.cache.sqlite3.command-cache-coordination/049f40943c85c7deba4ba35bcfb199e2c2088686ebdc915e2a066dc933d6d4b1.lock",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/state/.cache.sqlite3.command-cache-coordination/3b7b3aeb7d2ffbc5e401f7078c5c882e481c00d63c49e6a0e0a9c434f4845d18.fallback.json",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/state/.cache.sqlite3.command-cache-coordination/3b7b3aeb7d2ffbc5e401f7078c5c882e481c00d63c49e6a0e0a9c434f4845d18.json",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/state/.cache.sqlite3.command-cache-coordination/3b7b3aeb7d2ffbc5e401f7078c5c882e481c00d63c49e6a0e0a9c434f4845d18.lock",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/state/.cache.sqlite3.command-cache-coordination/af28f266aed64e3737705d77eac0f3fdbf035c4f2ff807568d2f3acc1872bf17.fallback.json",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/state/.cache.sqlite3.command-cache-coordination/af28f266aed64e3737705d77eac0f3fdbf035c4f2ff807568d2f3acc1872bf17.json",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/state/.cache.sqlite3.command-cache-coordination/af28f266aed64e3737705d77eac0f3fdbf035c4f2ff807568d2f3acc1872bf17.lock",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/state/command-transactions/49715b6e6245419184db2557f266739f/",
+    "handoff/t06-sync-test-temp-v2/test_expired_transaction_lease0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_fenced_transaction_recove0/source/",
+    "handoff/t06-sync-test-temp-v2/test_fenced_transaction_recove0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_fenced_transaction_recove0/state/command-transactions/crashed-transaction.journal.json",
+    "handoff/t06-sync-test-temp-v2/test_fenced_transaction_recove0/state/command-transactions/crashed-transaction/",
+    "handoff/t06-sync-test-temp-v2/test_fenced_transaction_recove0/state/command-transactions/work-fencing.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_fenced_transaction_recove0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/hub.toml",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/repo/.local-ai.toml",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/repo/lint_target.py",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/repo/tests/test_smoke.py",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/.cache.sqlite3.command-cache-coordination/bf517b36d358214f2e59516465acd30d92b9a45fab24b3c847628c17ce7a9bf3.lock",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/adoption_metrics.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/agent_state.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/artifacts.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/async_jobs.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/code-index.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/debug_traces.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/deterministic.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/evidence.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/learning.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/preprocess.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/rag.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/recovery.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/semantic-cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/telemetry.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/work_fencing.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/work_orders.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_generic_test_receipt_cann0/state/workspace_memory.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_mutating_run_executes_pri0/source/",
+    "handoff/t06-sync-test-temp-v2/test_mutating_run_executes_pri0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_mutating_run_executes_pri0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_mutating_run_rejects_unde0/source/",
+    "handoff/t06-sync-test-temp-v2/test_mutating_run_rejects_unde0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_mutating_run_rejects_unde0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_mutating_run_requires_aut0/source/",
+    "handoff/t06-sync-test-temp-v2/test_mutating_run_requires_aut0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_mutating_run_requires_aut0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_mutating_run_requires_enf0/source/",
+    "handoff/t06-sync-test-temp-v2/test_mutating_run_requires_enf0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_mutating_run_requires_enf0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_patch_and_verify_runs_and0/source/",
+    "handoff/t06-sync-test-temp-v2/test_patch_and_verify_runs_and0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_patch_and_verify_runs_and0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_private_snapshot_does_not0/source/",
+    "handoff/t06-sync-test-temp-v2/test_private_snapshot_does_not0/transaction/",
+    "handoff/t06-sync-test-temp-v2/test_private_snapshot_preserve0/source/",
+    "handoff/t06-sync-test-temp-v2/test_private_snapshot_preserve0/transaction/",
+    "handoff/t06-sync-test-temp-v2/test_private_snapshot_rejects_0/source/",
+    "handoff/t06-sync-test-temp-v2/test_private_transaction_requi0/source/",
+    "handoff/t06-sync-test-temp-v2/test_private_transaction_requi0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_private_transaction_requi0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_python_inline_unverified_0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_python_inline_unverified_0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_python_inline_unverified_1/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_python_inline_unverified_1/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_python_inline_unverified_2/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_python_inline_unverified_2/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_python_inline_unverified_3/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_python_inline_unverified_3/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_python_inline_unverified_4/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_python_inline_unverified_4/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_python_inline_unverified_5/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_python_inline_unverified_5/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_repair_loop_honors_explic0/candidate.py",
+    "handoff/t06-sync-test-temp-v2/test_repair_loop_honors_explic0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_repair_loop_honors_explic0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_repair_loop_keeps_retryin0/candidate.py",
+    "handoff/t06-sync-test-temp-v2/test_repair_loop_keeps_retryin0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_repair_loop_keeps_retryin0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_repair_loop_keeps_retryin1/candidate.py",
+    "handoff/t06-sync-test-temp-v2/test_repair_loop_keeps_retryin1/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_repair_loop_keeps_retryin1/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_repair_loop_skips_validat0/candidate.py",
+    "handoff/t06-sync-test-temp-v2/test_repair_loop_skips_validat0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_repair_loop_skips_validat0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_singleflight_waiter_prese0/state/.cache.sqlite3.command-cache-coordination/174879224577ada5699f45b3416c598039be480851b5d0c7468b464a328927c5.lock",
+    "handoff/t06-sync-test-temp-v2/test_singleflight_waiter_prese0/state/.cache.sqlite3.command-cache-coordination/646d103690d7f1bb655609a85a2b86d53a2ae6709844a94fc42f1411fd93021c.lock",
+    "handoff/t06-sync-test-temp-v2/test_singleflight_waiter_prese0/state/.cache.sqlite3.command-cache-coordination/8dfd63a44a58e2bed23cbd9312410512c08d7ddf7081ccef729919695b009589.lock",
+    "handoff/t06-sync-test-temp-v2/test_singleflight_waiter_prese0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_singleflight_waiter_prese0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/hub.toml",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/repo/.local-ai.toml",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/repo/lint_target.py",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/repo/tests/test_smoke.py",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/.cache.sqlite3.command-cache-coordination/0bddc8faa541977c407669e8c39c58173f4ce1780acdcec1edc875fbc42830bd.lock",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/adoption_metrics.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/agent_state.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/artifacts.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/async_jobs.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/code-index.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/command-transactions/execution-records/f292d6f1a5aec9b4198d91555ea1174183dc844cc93b73b5db4a416553bfd806.json",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/debug_traces.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/deterministic.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/evidence.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/learning.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/logs/hub.log",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/preprocess.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/rag.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/recovery.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/semantic-cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/telemetry.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/work_fencing.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/work_orders.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_structured_project_valida0/state/workspace_memory.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep0/state/.cache.sqlite3.command-cache-coordination/53d50666ce5850305f4f59c19bba390bbd458bd7bd4a92b15b21ef23d5e40697.lock",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep0/state/.cache.sqlite3.command-cache-coordination/c6b6b0f8206a5229871dec32a8fb62abe2fc86e29010f4d58852a9c90c9bc4f5.lock",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep0/state/.cache.sqlite3.command-cache-coordination/e7fc3b119a3f3a8fd134b9b850319778068393d65797354f5d24d463df56e1e1.lock",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep1/state/.cache.sqlite3.command-cache-coordination/1e7ae80af4826045978f84b36d0dac7c046ba7ede630e1d3a66f81a06160e84f.lock",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep1/state/.cache.sqlite3.command-cache-coordination/92db5db34ba684947385789fcaf8d789f9cf78c6906b2bb94ca6727b0e39828f.lock",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep1/state/.cache.sqlite3.command-cache-coordination/e257ca99fb4a4cadb795c79bde375fa95016a373e686d39a1db25c0a1bd47f82.lock",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep1/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep1/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep2/state/.cache.sqlite3.command-cache-coordination/11561a8e72a24725c8171dd763ec4dcdbd8133525a5ecc1a415131af69167828.lock",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep2/state/.cache.sqlite3.command-cache-coordination/2461edd74c13427102a9c9b3af11bfdbdb9e92567f816c5a3ba0cf0de15a261b.lock",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep2/state/.cache.sqlite3.command-cache-coordination/7abcc6bf0c4bdbc75230d077b92aa2fce8550bb6ca5913a6ef50eef1a22c3f60.lock",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep2/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_timeout_and_cancelled_rep2/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_output_record0/source/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_output_record0/transaction/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_output_reject0/source/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_output_reject0/transaction/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_output_return0/source/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_output_return0/transaction/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_comp0/source/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_comp0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_comp0/state/command-transactions/work-fencing.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_comp0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_pres0/source/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_pres0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_pres0/state/command-transactions/crashed-transaction.journal.json",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_pres0/state/command-transactions/crashed-transaction/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_pres0/state/command-transactions/work-fencing.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_pres0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_repo0/source/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_repo0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_repo0/state/command-transactions/work-fencing.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_repo0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_repo1/source/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_repo1/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_repo1/state/command-transactions/crashed-transaction.journal.json",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_repo1/state/command-transactions/crashed-transaction/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_repo1/state/command-transactions/work-fencing.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_recovery_repo1/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_transaction_source_change0/source/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_source_change0/transaction/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_source_unrela0/source/",
+    "handoff/t06-sync-test-temp-v2/test_transaction_source_unrela0/transaction/",
+    "handoff/t06-sync-test-temp-v2/test_user_whitelisted_validati0/candidate.py",
+    "handoff/t06-sync-test-temp-v2/test_user_whitelisted_validati0/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_user_whitelisted_validati0/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_user_whitelisted_validati1/candidate.py",
+    "handoff/t06-sync-test-temp-v2/test_user_whitelisted_validati1/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_user_whitelisted_validati1/state/leases.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_user_whitelisted_validati2/candidate.py",
+    "handoff/t06-sync-test-temp-v2/test_user_whitelisted_validati2/state/cache.sqlite3",
+    "handoff/t06-sync-test-temp-v2/test_user_whitelisted_validati2/state/leases.sqlite3",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__init__.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__main__.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__pycache__/__init__.cpython-313.pyc",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__pycache__/agent_events.cpython-313.pyc",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__pycache__/agent_incidents.cpython-313.pyc",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__pycache__/cache.cpython-313.pyc",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__pycache__/commands.cpython-313.pyc",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__pycache__/features.cpython-313.pyc",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__pycache__/json_utils.cpython-313.pyc",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__pycache__/operation_contracts.cpython-313.pyc",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__pycache__/process_utils.cpython-313.pyc",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__pycache__/repo_state.cpython-313.pyc",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__pycache__/sqlite_support.cpython-313.pyc",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/__pycache__/state_paths.cpython-313.pyc",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/accelerators.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/adoption_metrics.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/agent_blackboard.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/agent_consistency.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/agent_context.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/agent_events.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/agent_identity.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/agent_incidents.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/agent_learning.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/agent_memory.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/agent_policy.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/agent_routing.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/agent_tasks.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/agent_verification.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/app.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/artifacts.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/async_jobs.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/autotune.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/background_gpu.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/benchmark.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/browser_bridge.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/budget.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/cache.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/client.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/code_index.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/commands.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/compact.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/config.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/context_ledger.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/conversations.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/dashboard.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/debug_traces.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/defaults.toml",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/delivery.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/deterministic.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/diff_parsers.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/doctor_support.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/embeddings.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/evidence.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/evidence_contract.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/external_tools.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/features.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/frontend_review.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/generator.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/gpu_monitor.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/hardware.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/http_server.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/json_utils.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/learning.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/leases.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/llama_cpp.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/llama_cpp_runtime.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/logging_setup.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/mcp_server.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/memory.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/model_lifecycle.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/model_policy.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/model_quality.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/normalizer.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/ollama.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/ollama_subagents.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/operation_contracts.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/operational_mode.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/performance_probe.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/pipeline.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/planner.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/preprocess.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/priority_gate.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/process_utils.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/project_config.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/projection.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/prompt_contracts.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/rag.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/repo_state.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/repo_tools.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/repository_test_impact.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/reranker.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/resilience.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/response_budget.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/response_protocol.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/retrieval.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/router.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/routing.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/scheduler.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/semantic_cache.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/semantic_quality.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/services.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/speculative_lint.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/sqlite_support.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/state_paths.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/supervisor.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/swarm.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/task_context.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/telemetry.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/tiered_ollama.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/token_accounting.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/token_economy.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/token_router.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/tool_agent.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/trace_context.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/treesitter_parser.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/verification_rules.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/vision_contracts.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/vram_balancer.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/work_orchestrator.py",
+    "handoff/verify-root-final-95ylfgzj/src/local_ai_hub/worktrees.py",
+    "handoff/verify-root-final-95ylfgzj/tests/__pycache__/test_command_rollback.cpython-313-pytest-9.0.2.pyc",
+    "handoff/verify-root-final-95ylfgzj/tests/test_command_rollback.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__init__.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__main__.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__pycache__/__init__.cpython-313.pyc",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__pycache__/agent_events.cpython-313.pyc",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__pycache__/agent_incidents.cpython-313.pyc",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__pycache__/cache.cpython-313.pyc",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__pycache__/commands.cpython-313.pyc",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__pycache__/features.cpython-313.pyc",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__pycache__/json_utils.cpython-313.pyc",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__pycache__/operation_contracts.cpython-313.pyc",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__pycache__/process_utils.cpython-313.pyc",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__pycache__/repo_state.cpython-313.pyc",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__pycache__/sqlite_support.cpython-313.pyc",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/__pycache__/state_paths.cpython-313.pyc",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/accelerators.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/adoption_metrics.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/agent_blackboard.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/agent_consistency.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/agent_context.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/agent_events.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/agent_identity.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/agent_incidents.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/agent_learning.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/agent_memory.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/agent_policy.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/agent_routing.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/agent_tasks.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/agent_verification.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/app.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/artifacts.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/async_jobs.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/autotune.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/background_gpu.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/benchmark.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/browser_bridge.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/budget.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/cache.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/client.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/code_index.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/commands.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/compact.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/config.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/context_ledger.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/conversations.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/dashboard.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/debug_traces.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/defaults.toml",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/delivery.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/deterministic.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/diff_parsers.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/doctor_support.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/embeddings.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/evidence.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/evidence_contract.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/external_tools.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/features.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/frontend_review.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/generator.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/gpu_monitor.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/hardware.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/http_server.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/json_utils.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/learning.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/leases.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/llama_cpp.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/llama_cpp_runtime.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/logging_setup.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/mcp_server.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/memory.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/model_lifecycle.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/model_policy.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/model_quality.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/normalizer.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/ollama.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/ollama_subagents.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/operation_contracts.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/operational_mode.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/performance_probe.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/pipeline.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/planner.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/preprocess.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/priority_gate.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/process_utils.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/project_config.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/projection.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/prompt_contracts.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/rag.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/repo_state.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/repo_tools.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/repository_test_impact.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/reranker.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/resilience.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/response_budget.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/response_protocol.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/retrieval.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/router.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/routing.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/scheduler.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/semantic_cache.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/semantic_quality.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/services.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/speculative_lint.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/sqlite_support.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/state_paths.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/supervisor.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/swarm.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/task_context.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/telemetry.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/tiered_ollama.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/token_accounting.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/token_economy.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/token_router.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/tool_agent.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/trace_context.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/treesitter_parser.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/verification_rules.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/vision_contracts.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/vram_balancer.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/work_orchestrator.py",
+    "handoff/verify-root-minimal-nwnilmii/src/local_ai_hub/worktrees.py",
+    "handoff/verify-root-minimal-nwnilmii/tests/__pycache__/test_command_rollback.cpython-313-pytest-9.0.2.pyc",
+    "handoff/verify-root-minimal-nwnilmii/tests/test_command_rollback.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__init__.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__main__.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/__init__.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/agent_events.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/agent_incidents.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/cache.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/command_transactions.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/commands.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/features.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/json_utils.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/leases.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/operation_contracts.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/process_utils.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/repo_state.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/sqlite_support.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/__pycache__/state_paths.cpython-313.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/accelerators.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/adoption_metrics.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/agent_blackboard.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/agent_consistency.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/agent_context.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/agent_events.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/agent_identity.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/agent_incidents.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/agent_learning.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/agent_memory.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/agent_policy.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/agent_routing.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/agent_tasks.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/agent_verification.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/app.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/artifacts.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/async_jobs.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/autotune.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/background_gpu.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/benchmark.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/browser_bridge.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/budget.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/cache.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/client.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/code_index.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/command_transactions.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/commands.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/compact.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/config.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/context_ledger.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/conversations.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/dashboard.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/debug_traces.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/defaults.toml",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/delivery.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/deterministic.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/diff_parsers.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/doctor_support.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/embeddings.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/evidence.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/evidence_contract.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/external_tools.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/features.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/frontend_review.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/generator.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/gpu_monitor.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/hardware.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/http_server.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/json_utils.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/learning.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/leases.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/llama_cpp.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/llama_cpp_runtime.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/logging_setup.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/mcp_server.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/memory.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/model_lifecycle.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/model_policy.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/model_quality.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/normalizer.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/ollama.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/ollama_subagents.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/operation_contracts.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/operational_mode.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/performance_probe.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/pipeline.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/planner.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/preprocess.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/priority_gate.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/process_utils.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/project_config.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/projection.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/prompt_contracts.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/rag.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/repo_state.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/repo_tools.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/repository_test_impact.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/reranker.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/resilience.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/response_budget.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/response_protocol.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/retrieval.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/router.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/routing.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/scheduler.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/semantic_cache.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/semantic_quality.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/services.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/speculative_lint.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/sqlite_support.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/state_paths.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/supervisor.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/swarm.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/task_context.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/telemetry.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/tiered_ollama.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/token_accounting.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/token_economy.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/token_router.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/tool_agent.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/trace_context.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/treesitter_parser.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/verification_rules.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/vision_contracts.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/vram_balancer.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/work_orchestrator.py",
+    "handoff/verify-root-rollback-_nbj9j92/src/local_ai_hub/worktrees.py",
+    "handoff/verify-root-rollback-_nbj9j92/tests/__pycache__/test_command_rollback.cpython-313-pytest-9.0.2.pyc",
+    "handoff/verify-root-rollback-_nbj9j92/tests/test_command_rollback.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/__init__.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/__main__.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/accelerators.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/adoption_metrics.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/agent_blackboard.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/agent_consistency.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/agent_context.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/agent_events.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/agent_identity.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/agent_incidents.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/agent_learning.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/agent_memory.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/agent_policy.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/agent_routing.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/agent_tasks.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/agent_verification.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/app.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/artifacts.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/async_jobs.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/autotune.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/background_gpu.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/benchmark.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/browser_bridge.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/budget.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/cache.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/client.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/code_index.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/commands.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/compact.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/config.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/context_ledger.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/conversations.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/dashboard.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/debug_traces.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/defaults.toml",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/delivery.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/deterministic.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/diff_parsers.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/doctor_support.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/embeddings.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/evidence.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/evidence_contract.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/external_tools.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/features.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/frontend_review.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/generator.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/gpu_monitor.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/hardware.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/http_server.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/json_utils.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/learning.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/leases.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/llama_cpp.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/llama_cpp_runtime.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/logging_setup.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/mcp_server.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/memory.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/model_lifecycle.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/model_policy.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/model_quality.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/normalizer.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/ollama.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/ollama_subagents.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/operation_contracts.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/operational_mode.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/performance_probe.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/pipeline.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/planner.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/preprocess.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/priority_gate.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/process_utils.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/project_config.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/projection.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/prompt_contracts.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/rag.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/repo_state.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/repo_tools.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/repository_test_impact.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/reranker.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/resilience.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/response_budget.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/response_protocol.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/retrieval.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/router.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/routing.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/scheduler.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/semantic_cache.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/semantic_quality.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/services.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/speculative_lint.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/sqlite_support.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/state_paths.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/supervisor.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/swarm.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/task_context.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/telemetry.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/tiered_ollama.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/token_accounting.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/token_economy.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/token_router.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/tool_agent.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/trace_context.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/treesitter_parser.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/verification_rules.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/vision_contracts.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/vram_balancer.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/work_orchestrator.py",
+    "handoff/verify-sequential-lpwutn00/src/local_ai_hub/worktrees.py",
+    "handoff/verify-sequential-lpwutn00/tests/test_command_rollback.py",
+    "src/local_ai_hub/__pycache__/__init__.cpython-311.pyc",
+    "src/local_ai_hub/__pycache__/__init__.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/accelerators.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/adoption_metrics.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/agent_blackboard.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/agent_consistency.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/agent_context.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/agent_events.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/agent_identity.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/agent_incidents.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/agent_learning.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/agent_memory.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/agent_policy.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/agent_routing.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/agent_tasks.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/agent_verification.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/app.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/artifacts.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/async_jobs.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/autotune.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/background_gpu.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/benchmark.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/browser_bridge.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/budget.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/cache.cpython-311.pyc",
+    "src/local_ai_hub/__pycache__/cache.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/client.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/code_index.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/command_transactions.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/commands.cpython-311.pyc",
+    "src/local_ai_hub/__pycache__/commands.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/compact.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/config.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/context_ledger.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/conversations.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/dashboard.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/debug_traces.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/delivery.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/deterministic.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/diff_parsers.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/doctor_support.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/embeddings.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/evidence.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/evidence_contract.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/external_tools.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/features.cpython-311.pyc",
+    "src/local_ai_hub/__pycache__/features.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/frontend_review.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/generator.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/gpu_monitor.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/hardware.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/http_server.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/json_utils.cpython-311.pyc",
+    "src/local_ai_hub/__pycache__/json_utils.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/learning.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/leases.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/llama_cpp.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/llama_cpp_runtime.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/logging_setup.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/mcp_server.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/memory.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/model_policy.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/model_quality.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/normalizer.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/ollama.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/ollama_subagents.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/performance_probe.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/pipeline.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/planner.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/preprocess.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/priority_gate.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/process_utils.cpython-311.pyc",
+    "src/local_ai_hub/__pycache__/process_utils.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/projection.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/prompt_contracts.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/rag.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/repo_state.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/repo_tools.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/reranker.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/resilience.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/response_budget.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/response_protocol.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/retrieval.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/router.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/routing.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/scheduler.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/semantic_cache.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/semantic_quality.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/services.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/speculative_lint.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/sqlite_support.cpython-311.pyc",
+    "src/local_ai_hub/__pycache__/sqlite_support.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/state_paths.cpython-311.pyc",
+    "src/local_ai_hub/__pycache__/state_paths.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/supervisor.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/swarm.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/task_context.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/telemetry.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/tiered_ollama.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/token_accounting.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/token_economy.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/token_router.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/tool_agent.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/trace_context.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/treesitter_parser.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/vision_contracts.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/vram_balancer.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/work_orchestrator.cpython-313.pyc",
+    "src/local_ai_hub/__pycache__/worktrees.cpython-313.pyc",
+    "tests/__pycache__/conftest.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/fencing_lease_support.cpython-313.pyc",
+    "tests/__pycache__/test_action_aliases.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_adaptive_retrieval.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_adoption_metrics.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_affected_tests.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_blackboard_crdt.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_consistency.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_context.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_event_drop_metrics.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_events.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_identity.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_incidents.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_learning.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_memory.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_os_enhancements.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_policy.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_routing.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_state_e2e.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_state_operations.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_state_reliability.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_state_transport.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_task_cas.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_tasks.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_agent_verification.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_all_advanced_improvements.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_all_categories_expanded.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_architectural_extensions.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_artifact_json_pagination_contract.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_ast_compaction.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_ast_refactor_and_format.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_async_coordination_reliability.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_async_job_reliability_contract.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_async_jobs.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_async_jobs_tasks.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_async_review_sla.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_audit_enhancements.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_audit_fixes.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_audit_round2_enhancements.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_auto_fix_repair_loop.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_auto_negative_knowledge.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_autotune.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_auxiliary_action_policy.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_batch_delegate.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_benchmark_suite.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_breaking_changes_diff.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_browser_artifact_atomicity.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_browser_bridge.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_browser_bridge_runtime.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_bundle_import_recovery.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_cache_decision_telemetry.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_cache_invalidation.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_call_graph_diff.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_canonical_root.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_client_preflight.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_client_transport.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_cloud_model_accelerators.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_codegraph_package_policy.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_command_network_safety.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_command_remediation.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_command_replay_policy.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_command_rollback.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_command_streaming.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_command_suppression.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_command_terse_output.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_command_timeout_cache_contract.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_command_transaction_snapshot.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_command_transport.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_command_unblocked.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_commit_synthesis_receipts.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_completion_model_routing.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_config_hardware.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_context_backend_budget.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_context_deduplication.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_context_delivery.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_context_knapsack.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_context_ledger.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_conversation_continue_route_contract.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_conversations.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_cross_repo_federation.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_cross_worktree_hash.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_cython_experiment.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_daemon_lifecycle_hardening.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_daemon_lifecycle_hardening.cpython-313.pyc",
+    "tests/__pycache__/test_dashboard_custom_modals.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_dashboard_operational_surfaces.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_dashboard_polling_quality.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_dashboard_vision_review.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_debug_trace_request_summary.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_debug_traces.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_deeper_hardening.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_delivery_policy.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_delta_context.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_doctor_support.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_embedding_batch_deduplication.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_embedding_cache.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_evaluation_records.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_evidence_contract.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_external_tools.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_feature_expansion.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_feature_foundation.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_feature_suite.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_feature_surface_parity.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_features.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_find_listening_pid.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_frontend_coder_context.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_frontend_repair_loop.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_frontend_review.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_frontend_review_e2e.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_generate_mocks_and_multi_lang.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_generation_cache_keys.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_generator.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_git_incremental_cache.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_gpu_monitor.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_hardening.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_http_admission.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_http_phase_telemetry.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_http_telemetry_outcomes.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_http_tool_accounting_rejections.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_http_vision_routes.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_hubctl_ports.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_hubctl_start.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_identity_contracts.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_incident_regression_watchdog.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_integrated_acceleration.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_json_serialization_contract.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_json_utils.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_lease_atomic_deadlock.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_llama_cpp_routing.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_llama_cpp_runtime.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_local_model_availability.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_logging_setup.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_mcp_agent_routing.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_mcp_compact_transport.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_mcp_nested_compaction_contract.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_mcp_response_budget.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_memory_compaction.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_memory_http_validation.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_migration_3_to_4.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_missing_and_high_value_features.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_model_policy_repetition.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_model_policy_sampling_floor.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_model_quality.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_model_residency.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_model_routing.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_mutation_replay.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_new_capabilities_and_hardening.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_ollama_ownership.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_ollama_subagents.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_ollama_tracing.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_performance.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_performance_probe.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_php_js_ts_support.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_pipeline.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_planner.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_preprocessed_metrics_and_sessions.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_preprocessing_overhaul.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_preprocessor_and_deterministic.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_prewarm_reliability.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_process_utils.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_production_readiness_repairs.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_projection_extra_fields.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_prompt_contracts.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_provider_diagnostics.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_rag_dedup.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_rag_fragment_cache.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_rag_hybrid.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_rag_quality_contract.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_regressions.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_release_contract.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_release_hardening.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_release_runtime.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_reliability_core.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_reliability_extended.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_reliability_integration.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_reliability_runtime.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_repetition_watchdog_streaming.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_repo_cache_outcomes.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_repo_tools.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_repo_topology.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_reranker_cache_identity.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_resilience_defaults.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_resource_backpressure.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_response_budget.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_response_delta.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_review_consensus.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_review_diff_chunking.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_rollout_controls.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_root_family_budget.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_router.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_routing.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_runtime_hardening.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_security_boundaries.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_semantic_quality.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_service_startup.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_setup.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_slot_rebalance_and_stuck_fixes.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_speculative_draft_and_split.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_speculative_lint.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_sqlite_optimize.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_sqlite_resilience.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_sse_events_stream.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_status_snapshot_quality.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_storage_service_reliability.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_stuck_preprocessing_and_dashboard_fixes.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_surface_and_packaging.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_surface_benchmarks.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_surface_inventory.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_swarm_orchestrator.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_t06_command_cache_read_fail_closed.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_t06_project_namespace_bridge.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_t06_project_validation_receipts.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_t06_server_command_provenance.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_t06_t09_validation_receipts.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_t06_worktree_subprocess_tracking.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_t17_auxiliary_formats.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_task_context_task_integration.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_task_worktree_cleanup_contract.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_telemetry_cohorts.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_telemetry_contract.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_telemetry_self_accounting.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_telemetry_tail_latency.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_terse_local_output.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_tiered_ollama_runtime.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_token_accounting.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_token_economy_tools.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_token_efficiency.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_transcription_contract.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_uncovered_domains.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_unified_task_context.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_unified_task_context_transport.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_vision_artifacts.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_vision_contracts.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_vision_service.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_vram_balancer.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_weak_spots_hardened.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_work_orchestrator.cpython-313-pytest-9.0.2.pyc",
+    "tests/__pycache__/test_worktree_discovery.cpython-313-pytest-9.0.2.pyc",
+    "tools/__pycache__/__init__.cpython-313.pyc",
+    "tools/__pycache__/benchmark_surfaces.cpython-313.pyc",
+    "tools/__pycache__/clean.cpython-313.pyc",
+    "tools/__pycache__/hubctl.cpython-313.pyc",
+    "tools/__pycache__/release_check.cpython-313.pyc",
+    "tools/__pycache__/service.cpython-313.pyc",
+    "tools/__pycache__/setup.cpython-313.pyc",
+    "tools/__pycache__/surface_inventory.cpython-313.pyc"
+  ],
+  "newline_limit": "Initial tracked bytes were Git-normalized before raw snapshot. LF Git blobs and CRLF variants recover content, but exact original newline identity is unverified."
+}

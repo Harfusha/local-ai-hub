@@ -264,6 +264,7 @@ tbody tr.click:hover{background:#162338}
       <span class="brand">Local AI Hub</span>
     </div>
     <span id="conn" class="pill warn-t"><span class="pulse-dot"></span>connecting</span>
+    <span id="activityModeBadge" class="pill warn-t" data-mode="unknown">Mode: Unknown</span>
     <span id="updated" class="tiny"></span>
     <label class="tiny">SLO <select id="sloScope"><option value="process" selected>Since restart</option><option value="window">Last 30 days</option></select></label>
     <span class="tiny spacer">Agent debug traces · bounded prompt/output retention</span>
@@ -278,6 +279,11 @@ tbody tr.click:hover{background:#162338}
         <button class="btn" id="doctorBtn">Run diagnostics</button>
         <button class="btn" id="pauseEvents">Pause live events</button>
         <div class="tiny muted">Runtime control</div>
+        <div class="tiny muted">Set activity mode</div>
+        <button class="btn" id="activityModeActive" data-activity-mode="active" aria-pressed="false">Active</button>
+        <button class="btn" id="activityModeGaming" data-activity-mode="gaming" aria-pressed="false">Gaming</button>
+        <button class="btn" id="activityModeMaintenance" data-activity-mode="maintenance" aria-pressed="false">Maintenance</button>
+        <span id="activityModeStatus" class="tiny muted" role="status" aria-live="polite">Checking mode…</span>
         <button class="btn warn" id="prepToggle">Pause preprocessing</button>
         <button class="btn" id="restartHub" data-control-action="restart_hub">Restart hub service</button>
         <div class="tiny muted">Destructive maintenance</div>
@@ -517,7 +523,7 @@ tbody tr.click:hover{background:#162338}
 <div id="reliability" class="page">
   <section class="section" id="reliabilitySummary"><h2>Operational severity <span class="tiny">Aggregates current failures, restart history, and request health.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Failure trend unavailable until telemetry arrives.</div><div style="display:flex;gap:8px;align-items:center"><button class="btn ok" id="resolveErrorsBtn" style="display:none;padding:4px 10px">Resolve all errors</button><button class="btn" id="reliabilityAction">Open affected requests</button></div></div></section>
   <div class="split">
-    <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
+    <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Diagnostic</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
     <section class="section"><h2>Runtime / scheduler counters</h2><div id="runtimeCounters" class="kv"></div></section>
   </div>
   <section class="section">
@@ -789,7 +795,7 @@ function createDashboardStatusPoller(poll,options={}){
   const setTimer=options.setTimer||((fn,delay)=>setTimeout(fn,delay));
   const clearTimer=options.clearTimer||((id)=>clearTimeout(id));
   const random=options.random||Math.random;
-  let timer=null,started=false,running=false,pending=false,visible=true,generation=0,failures=0;
+  let timer=null,started=false,running=false,pending=false,visible=true,generation=0,failures=0,unchangedSuccesses=0;
   const current=token=>started&&visible&&isVisible()&&generation===token;
   function clear(){if(timer!==null){clearTimer(timer);timer=null}}
   function schedule(delay){clear();if(started&&visible&&isVisible())timer=setTimer(()=>{timer=null;void run()},delay)}
@@ -798,14 +804,19 @@ function createDashboardStatusPoller(poll,options={}){
     if(running){pending=true;return}
     running=true;
     const token=generation;
-    let succeeded=false;
-    try{succeeded=await poll(()=>current(token))!==false}catch{}
+    let succeeded=false,unchanged=false;
+    try{
+      const outcome=await poll(()=>current(token));
+      succeeded=outcome!==false&&!(outcome&&outcome.ok===false);
+      unchanged=succeeded&&Boolean(outcome&&outcome.changed===false);
+    }catch{}
     finally{
       running=false;
       if(current(token)){
         pending=false;
-        failures=succeeded?0:Math.min(failures+1,maxFailures);
-        const backoff=Math.min(maxDelay,baseDelay*2**Math.max(0,failures-1));
+        if(succeeded){failures=0;unchangedSuccesses=unchanged?Math.min(unchangedSuccesses+1,maxFailures):0}
+        else{failures=Math.min(failures+1,maxFailures);unchangedSuccesses=0}
+        const backoff=succeeded?Math.min(maxDelay,baseDelay*2**unchangedSuccesses):Math.min(maxDelay,baseDelay*2**Math.max(0,failures-1));
         const sample=Math.min(0.999999,Math.max(0,Number(random())||0));
         schedule(Math.min(maxDelay,Math.round(backoff*(0.8+sample*0.4))));
       }else if(pending&&started&&visible&&isVisible()){
@@ -822,16 +833,18 @@ function createDashboardStatusPoller(poll,options={}){
 }
 
 let lastDashboardStatusSnapshot=null;
+let lastDashboardStatusChanged=false;
 let hardwareRefreshPending=false;
 function shouldRefreshDashboardStatus(status){
-  const snapshot=JSON.stringify(status);
+  const stableStatus={...(status||{})};delete stableStatus.status_age_ms;delete stableStatus.snapshot_cached;
+  const snapshot=JSON.stringify(stableStatus);
   if(snapshot===lastDashboardStatusSnapshot)return false;
   lastDashboardStatusSnapshot=snapshot;
   return true;
 }
 
 async function apiFetch(path,opts={}){
-  opts={...opts};const h=new Headers(opts.headers||{});if(apiToken)h.set('X-LocalAI-Token',apiToken);opts.headers=h;
+  opts={...opts};const h=new Headers(opts.headers||{});h.set('X-LocalAI-Client','dashboard');if(apiToken)h.set('X-LocalAI-Token',apiToken);opts.headers=h;
   const request=async requestOpts=>{
     const next={...requestOpts};let controller=null,timer=null;
     if(!next.signal&&typeof AbortController==='function'){
@@ -1668,6 +1681,8 @@ $('secretScanBtn')?.addEventListener('click',async()=>{
 
 // ── Bundles ────────────────────────────────────────────────────────────────────
 
+let sseSource=null,sseEventCount=0,sseEvents=[],sseDebounceTimer=0,sseLastEventId='';
+try{sseLastEventId=sessionStorage.getItem('agentOsStreamLastEventId')||''}catch(e){}
 function connectAgentOsStream(){
   if(sseSource){
     try{ sseSource.close(); }catch(e){}
@@ -1676,7 +1691,10 @@ function connectAgentOsStream(){
   const badge=$('sseStreamBadge');
   if(badge){ badge.className='badge-status badge-waiting'; badge.textContent='Connecting…'; }
   const token=getSavedToken()||apiToken;
-  const url='/api/agent-state/events/stream'+(token?'?token='+encodeURIComponent(token):'');
+  const params=new URLSearchParams();
+  if(token)params.set('token',token);
+  if(sseLastEventId)params.set('last_event_id',sseLastEventId);
+  const query=params.toString(),url='/api/agent-state/events/stream'+(query?'?'+query:'');
   try{
     sseSource=new EventSource(url);
     sseSource.onopen=()=>{
@@ -1686,6 +1704,10 @@ function connectAgentOsStream(){
       if(badge){ badge.className='badge-status badge-error'; badge.textContent='🔴 Disconnected (Retrying…)'; }
     };
     sseSource.onmessage=(e)=>{
+      if(e.lastEventId){
+        sseLastEventId=String(e.lastEventId);
+        try{sessionStorage.setItem('agentOsStreamLastEventId',sseLastEventId)}catch(err){}
+      }
       try{
         const data=JSON.parse(e.data);
         handleAgentOsStreamEvent(data);
@@ -1697,6 +1719,8 @@ function connectAgentOsStream(){
 }
 
 function handleAgentOsStreamEvent(ev){
+  const eventId=String(ev?.event_id||'');
+  if(eventId&&sseEvents.some(item=>String(item?.event_id||'')===eventId))return;
   sseEventCount++;
   sseEvents.unshift(ev);
   if(sseEvents.length>200) sseEvents.pop();
@@ -1899,7 +1923,7 @@ function clickableRow(obj,html,type='',idAttr=''){
   return `<tr class="click" data-detail="${id}" data-type="${esc(resolvedType)}" ${entityId?`data-id="${esc(entityId)}"`:''}>${html}</tr>`;
 }
 
-let traceTimer=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null,traceRevealRedactedDetails=false,traceOptionalDetailsOpen=false,tracePollGeneration=0,tracePollInFlight=0,traceEventTotal=0;
+let traceDetailPoller=null,tracePollAbortController=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null,traceRevealRedactedDetails=false,traceOptionalDetailsOpen=false,tracePollGeneration=0,traceEventTotal=0,traceFullPayloadInFlightId='';
 const traceEventBufferLimit=200;
 function traceAppendEvents(current,incoming,eventsTotal=0){const existing=Array.isArray(current)?current:[],seen=new Set(existing.map(event=>event&&Number.isFinite(event.seq)?event.seq:null).filter(seq=>seq!==null)),fresh=(Array.isArray(incoming)?incoming:[]).filter(event=>{const seq=event&&Number.isFinite(event.seq);if(!seq)return true;if(seen.has(event.seq))return false;seen.add(event.seq);return true}),merged=existing.concat(fresh);return {events:merged.slice(-traceEventBufferLimit),eventsTotal:Math.max(Number(eventsTotal)||0,merged.length)};}
 function traceFiniteSequence(candidate,prior){return typeof candidate==='number'&&Number.isFinite(candidate)&&candidate>=prior?candidate:prior;}
@@ -2669,18 +2693,94 @@ function traceHumanTitle(model){
   if(titleEl)titleEl.textContent=traceHumanTitle(model);
   if(liveEl){liveEl.textContent=d?.terminal?'finished':'● live · updating';liveEl.className='tiny '+(d?.terminal?'ok':'trace-running');}
   const state=model.lifecycle.state,displayState=traceStatus(s),stateClass=(displayState==='failed'||displayState==='error')?'bad':(displayState==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
-  const revealLabel=traceRevealRedactedDetails?'Hide unredacted details':'Reveal redacted details',revealState=traceRevealRedactedDetails?'Unredacted trace details shown locally.':'Trace details are redacted by default.';
+  const revealLabel=traceRevealRedactedDetails?'Hide unredacted details':'Reveal redacted details',revealState=traceRevealRedactedDetails?'Unredacted values visible in this browser session.':'Recognized sensitive values are masked in this dashboard by default.',traceRetentionNotice='<div class="trace-content-notice" role="note" style="padding:10px 12px;margin:8px 0;border:1px solid var(--warn);border-radius:10px;color:var(--muted);font-size:12px">When enabled, trace capture stores prompts, model output, request bodies, and responses within configured size and retention limits. The dashboard masks recognized sensitive values for display only; stored records and the authenticated admin API may contain raw values. Reveal shows stored values in this browser.</div>',contentNotice=d?.full_payload_error?`<div class="trace-content-notice" role="note" style="padding:10px 12px;margin:8px 0;border:1px solid var(--warn);border-radius:10px;color:var(--muted);font-size:12px">Full trace retrieval stopped: ${esc(d.full_payload_error)}. More content remains available through the paged debug trace API.</div>`:d?.payload_truncated?'<div class="trace-content-notice" role="note" style="padding:10px 12px;margin:8px 0;border:1px solid var(--warn);border-radius:10px;color:var(--muted);font-size:12px">Trace detail responses are paged to stay within the configured response cap. Reveal loads retained content in bounded chunks, up to 8 MiB of text per Reveal action. Content removed by storage limits at capture cannot be recovered.</div>':'';
+  const historyControls=d?.has_older_events||d?.has_newer_events?`<div class="trace-metrics" aria-label="Trace event history">${d?.has_older_events?'<button type="button" class="btn" data-trace-event-page="older">Load older events</button>':''}${d?.has_newer_events?'<button type="button" class="btn" data-trace-event-page="newer">Load newer events</button>':''}</div>`:'';
   const header=`<div class="trace-inspector-head"><div><div class="trace-kicker">Request trace</div><strong>${esc(traceHumanTitle(model))}</strong><div class="tiny">${esc(s.action||s.source||'Trace')} · ${esc(s.agent||'unknown actor')}${s.model?` · ${esc(s.model)}`:''}</div></div><div class="trace-inspector-context"><span class="trace-project-label">${esc(model.project||'Project not recorded')}</span><span class="badge ${stateClass}">${esc(state)}</span></div></div><div class="trace-metrics"><span>${esc(model.project||'Project not recorded')}</span><button type="button" class="btn" data-trace-reveal aria-pressed="${traceRevealRedactedDetails}" aria-describedby="trace-reveal-status">${esc(revealLabel)}</button><span id="trace-reveal-status" class="tiny" aria-live="polite">${esc(revealState)}</span></div>`;
   const panels=model.panels.filter(panel=>panel.available),universalSummary=traceSummary(model,unavailableCopy),panelMarkup=panels.map(panel=>{const selected=panel.id===traceView,content=selected?panel.render():'';return `<div id="trace-panel-${esc(panel.id)}" class="trace-view" role="tabpanel" aria-labelledby="trace-tab-${esc(panel.id)}"${selected?'':' hidden'}>${content}</div>`}).join('');
    const presentationMarkup=renderTracePresentation(model),primaryMarkup=tracePrimaryFallback(presentationMarkup,panels,model);
    const optionalMarkup=`<details class="trace-optional-details" id="traceTechnicalDetails"${traceOptionalDetailsOpen?' open':''}><summary>Technical details · ${panels.length} optional views</summary><div class="trace-optional-body">${universalSummary}<nav class="trace-tabs" role="tablist" aria-label="Trace views">${panels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
    const traceBodyEl=$('tracePageBody');
-   if(traceBodyEl){traceBodyEl.className='trace-page-body';traceBodyEl.innerHTML=`<div class="human-shell">${header}${primaryMarkup}${optionalMarkup}</div>`;}
+  if(traceBodyEl){traceBodyEl.className='trace-page-body';traceBodyEl.innerHTML=`<div class="human-shell">${header}${historyControls}${traceRetentionNotice}${contentNotice}${primaryMarkup}${optionalMarkup}</div>`;}
     const restore=()=>{restoreTracePrimaryGroups($('tracePageBody'),primaryGroupsState);restoreTraceCollapsibleDetails($('tracePageBody'),collapsibleDetailsState);restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const nextMain=$('tracePageBody')?.closest('.trace-main');if(nextMain){nextMain.scrollTop=mainScrollTop;nextMain.scrollLeft=mainScrollLeft}};
    if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
 }
 function setTraceView(view){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!model.panels.some(panel=>panel.available&&panel.id===view))return;traceView=view;renderTraceDetail(activeTraceData)}
-function toggleTraceReveal(){if(!activeTraceData)return;traceRevealRedactedDetails=!traceRevealRedactedDetails;renderTraceDetail(activeTraceData)}
+function appendBoundedTraceEvents(target,page,limit=traceEventBufferLimit){
+  const incoming=Array.isArray(page)?page:[];target.push(...incoming);if(target.length>limit)target.splice(0,target.length-limit);return incoming.length;
+}
+const traceRevealMaxBytes=8*1024*1024;
+async function fetchTraceContentPages(traceId,field,budget={used:0,limit:traceRevealMaxBytes}){
+  let offset=0;const chunks=[];let encoding='text',storageTruncated=false;
+  for(;;){
+    const path='/api/debug-traces/'+encodeURIComponent(traceId)+'?full=1&content_field='+encodeURIComponent(field)+'&content_offset='+offset;
+    const response=await apiFetch(path,{cache:'no-store'}),data=await response.json();
+    if(!data.success||!data.content_page)throw new Error(data.error||'Trace content page unavailable');
+    const page=data.content_page;if(Number(page.offset)!==offset)throw new Error('Trace content cursor changed');
+    encoding=page.encoding||encoding;storageTruncated=storageTruncated||Boolean(page.storage_truncated);const pageText=String(page.text||''),pageBytes=pageText.length*2;if(budget.used+pageBytes>budget.limit)throw new Error('Dashboard reveal limit exceeded (8 MiB); use the paged debug trace API for remaining content');budget.used+=pageBytes;chunks.push(pageText);
+    if(!page.has_more)break;
+    const next=Number(page.next_offset);if(!Number.isSafeInteger(next)||next<=offset)throw new Error('Trace content cursor did not advance');offset=next;
+  }
+  const text=chunks.join('');
+  if(encoding==='text')return {value:text,storageTruncated:storageTruncated||text.endsWith('[trace output truncated]')};
+  if(!text)return {value:{},storageTruncated};
+  try{const value=JSON.parse(text);return {value,storageTruncated:storageTruncated||Boolean(value&&typeof value==='object'&&value.truncated===true&&typeof value.preview==='string')}}
+  catch{return {value:{},storageTruncated:true}}
+}
+async function fetchFullTracePayload(traceId){
+  let cursor=0,more=true,first=null,eventsSeen=0;const events=[],revealBudget={used:0,limit:traceRevealMaxBytes};
+  while(more){
+    const path='/api/debug-traces/'+encodeURIComponent(traceId)+'?since_seq='+cursor+'&limit=500&full=1';
+    const response=await apiFetch(path,{cache:'no-store'}),data=await response.json();
+    if(!data.success)throw new Error(data.error||'Trace detail unavailable');
+    if(!first)first=data;
+    eventsSeen+=appendBoundedTraceEvents(events,data.events);
+    const next=Number(data.next_seq||cursor);more=Boolean(data.events_has_more);
+    if(more&&next<=cursor)throw new Error('Trace event cursor did not advance');
+    cursor=next;
+  }
+  const visibleEvents=events,session={...(first?.session||{})};let storedTruncation=false;
+  for(const field of ['request','effective_payload','output','response']){
+    const loaded=await fetchTraceContentPages(traceId,field,revealBudget);session[field]=loaded.value;storedTruncation=storedTruncation||loaded.storageTruncated;
+  }
+  for(const event of visibleEvents){
+    const loaded=await fetchTraceContentPages(traceId,'event:'+event.seq,revealBudget);event.payload=loaded.value;storedTruncation=storedTruncation||loaded.storageTruncated;
+  }
+  return {...first,session,events:visibleEvents,next_seq:cursor,events_has_more:false,events_before_seq:visibleEvents[0]?.seq||0,has_older_events:eventsSeen>visibleEvents.length,has_newer_events:false,full_payload_requested:true,payload_truncated:storedTruncation,truncated:storedTruncation};
+}
+async function loadTraceEventPage(direction){
+  if(!activeTraceId||!traceEvents.length)return;
+  const older=direction==='older',firstSeq=Number(traceEvents[0]?.seq||0),lastSeq=Number(traceEvents[traceEvents.length-1]?.seq||0),cursor=older?firstSeq:lastSeq;
+  if(!cursor)return;
+  try{
+    const pageCursor=older?'before_seq='+cursor:'since_seq='+cursor;
+    const response=await apiFetch('/api/debug-traces/'+encodeURIComponent(activeTraceId)+'?'+pageCursor+'&limit=500&full='+(traceRevealRedactedDetails?'1':'0'),{cache:'no-store'}),data=await response.json();
+    if(!data.success)throw new Error(data.error||'Trace event page unavailable');
+    const events=Array.isArray(data.events)?data.events:[];let storedTruncation=false;
+    if(traceRevealRedactedDetails){
+      const revealBudget={used:0,limit:traceRevealMaxBytes};for(const event of events){const loaded=await fetchTraceContentPages(activeTraceId,'event:'+event.seq,revealBudget);event.payload=loaded.value;storedTruncation=storedTruncation||loaded.storageTruncated;}
+    }
+    if(!events.length)return;
+    traceEvents=events;const more=Boolean(data.events_has_more);
+    activeTraceData={...activeTraceData,...data,session:activeTraceData.session,events:traceEvents,events_total:traceEventTotal,events_before_seq:events[0].seq,has_older_events:older?more:Boolean(activeTraceData.has_older_events),has_newer_events:older?true:more,payload_truncated:Boolean(activeTraceData.payload_truncated||storedTruncation)};
+    renderTraceDetail(activeTraceData);
+  }catch(error){openModal({error:String(error?.message||error)},'Trace history unavailable');}
+}
+async function toggleTraceReveal(){
+  if(!activeTraceData)return;
+  const reveal=!traceRevealRedactedDetails;
+  if(reveal&&activeTraceId&&(!activeTraceData.full_payload_requested||activeTraceData.full_payload_error)&&traceFullPayloadInFlightId!==activeTraceId){
+    const requestingTraceId=activeTraceId;
+    traceFullPayloadInFlightId=requestingTraceId;
+    try{
+      const d=await fetchFullTracePayload(requestingTraceId);
+      if(activeTraceId!==requestingTraceId)return;
+      traceEvents=d.events||[];traceSeq=Math.max(traceSeq,Number(d.next_seq||0));traceEventTotal=Math.max(traceEventTotal,traceSeq);
+      activeTraceData={...activeTraceData,...d,events:traceEvents,events_total:traceEventTotal,full_payload_error:''};
+    }catch(error){if(activeTraceId===requestingTraceId)activeTraceData={...activeTraceData,full_payload_error:String(error?.message||error),payload_truncated:true};}
+    finally{if(traceFullPayloadInFlightId===requestingTraceId)traceFullPayloadInFlightId='';}
+  }
+  traceRevealRedactedDetails=reveal;renderTraceDetail(activeTraceData);
+}
 function setTraceDetailsOpen(open){const body=$('tracePageBody');if(!body)return;body.querySelectorAll('details[data-trace-collapsible],#traceTechnicalDetails').forEach(detail=>{detail.open=Boolean(open)});}
 function copyTraceFinalResponse(btn){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!traceRecorded(model.output)){if(btn){btn.textContent='No final response';setTimeout(()=>{btn.textContent='Copy final response'},1500)}return;}copyText(promptText(model.output),btn);}
 function moveTraceTab(tab,key){
@@ -2698,23 +2798,31 @@ function moveTraceTab(tab,key){
 async function openTrace(id){
   const pollTraceId=String(id||''),pollGeneration=++tracePollGeneration;activeTraceId=pollTraceId;traceSeq=0;traceEvents=[];traceEventTotal=0;traceOpenSteps=new Set();traceView='timeline';activeTraceData=null;traceRevealRedactedDetails=false;traceOptionalDetailsOpen=false;
   renderTraceList(lastTraces);switchTab('traceInspector');
-  if(traceTimer){clearInterval(traceTimer);traceTimer=null}
-  let pollInFlight=false;
-  const poll=async()=>{
-    if(!activeTraceId||pollTraceId!==activeTraceId||pollGeneration!==tracePollGeneration||pollInFlight||tracePollInFlight===pollGeneration)return;
-    pollInFlight=true;tracePollInFlight=pollGeneration;
+  if(traceDetailPoller){traceDetailPoller.stop();traceDetailPoller=null}
+  let pollInFlight=false,lastTracePollSignature='';
+  const poll=async isCurrent=>{
+    if(!activeTraceId||pollTraceId!==activeTraceId||pollGeneration!==tracePollGeneration||pollInFlight||!isCurrent())return false;
+    pollInFlight=true;
+    const controller=typeof AbortController==='function'?new AbortController():null;
+    tracePollAbortController=controller;
     try{
-      const sinceSeq=traceSeq,r=await apiFetch('/api/debug-traces/'+encodeURIComponent(pollTraceId)+'?since_seq='+sinceSeq,{cache:'no-store'}),d=await r.json();
-      if(pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return;
+      const sinceSeq=traceSeq,opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
+      const r=await apiFetch('/api/debug-traces/'+encodeURIComponent(pollTraceId)+'?since_seq='+sinceSeq,opts),d=await r.json();
+      if(!isCurrent()||pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return false;
       if(d.success){
-        traceSeq=traceFiniteSequence(d.next_seq,traceSeq);traceEventTotal=Math.max(traceEventTotal,traceSeq,Number(d.events_total||d.eventsTotal||0));const next=traceAppendEvents(traceEvents,d.events,traceEventTotal);traceEvents=next.events;traceEventTotal=next.eventsTotal;renderTraceDetail({...d,events:traceEvents,events_total:traceEventTotal});
-        if(d.terminal&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){clearInterval(traceTimer);traceTimer=null}
-      }else if(d.retryable){const lEl=$('tracePageLive');if(lEl){lEl.textContent='● live · retrying…';lEl.className='tiny trace-running';}return;
-      }else{openModal(d,'Trace error');clearInterval(traceTimer);traceTimer=null}
-    }catch(e){if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){const lEl=$('tracePageLive');if(lEl)lEl.textContent='refresh failed: '+e.message;}
-    }finally{if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){pollInFlight=false;tracePollInFlight=false}}
+        const signature=JSON.stringify([d.state,d.terminal,d.next_seq,d.events_total,d.updated_at,d.error]);
+        const changed=signature!==lastTracePollSignature;lastTracePollSignature=signature;
+        traceSeq=traceFiniteSequence(d.next_seq,traceSeq);traceEventTotal=Math.max(traceEventTotal,traceSeq,Number(d.events_total||d.eventsTotal||0));const next=traceAppendEvents(traceEvents,d.events,traceEventTotal);traceEvents=next.events;traceEventTotal=next.eventsTotal;
+        if(changed)renderTraceDetail({...d,events:traceEvents,events_total:traceEventTotal,has_older_events:traceEventTotal>traceEvents.length,events_before_seq:traceEvents[0]?.seq||0,has_newer_events:false});
+        if(d.terminal&&!d.events_has_more&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){traceDetailPoller?.stop();traceDetailPoller=null}
+        return {changed};
+      }else if(d.retryable){const lEl=$('tracePageLive');if(lEl){lEl.textContent='● live · retrying…';lEl.className='tiny trace-running';}return false;
+      }else{openModal(d,'Trace error');traceDetailPoller?.stop();traceDetailPoller=null;return false}
+    }catch(e){if(isCurrent()&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId&&!controller?.signal.aborted){const lEl=$('tracePageLive');if(lEl)lEl.textContent='refresh failed: '+e.message;}return false;
+    }finally{pollInFlight=false;if(tracePollAbortController===controller)tracePollAbortController=null}
   };
-  await poll();if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId)traceTimer=setInterval(poll,1000);
+  traceDetailPoller=createDashboardStatusPoller(poll,{baseDelay:1000,maxDelay:30000});
+  traceDetailPoller.start();
 }
 function openModal(obj,title='',entityType=''){
   if($('modalLive'))$('modalLive').textContent='';
@@ -3949,6 +4057,7 @@ function renderErrorFingerprintModal(err){
           <div class="kv" style="padding:0">
             <div>Component</div><div><b>${esc(err.component||'—')}</b></div>
             <div>Operation</div><div><b>${esc(err.operation||'—')}</b></div>
+            <div>Diagnostic</div><div>${esc(String(err.safe_message||'Diagnostic unavailable').slice(0,96))}</div>
             <div>Total Occurrences</div><div class="bad-t"><b>${n(err.count||0)}</b></div>
             <div>Recovered Count</div><div class="ok"><b>${n(err.recovered_count||0)}</b></div>
             <div>Last Seen</div><div>${err.last_seen?new Date(err.last_seen*1000).toLocaleString():'—'}</div>
@@ -4459,7 +4568,7 @@ function renderHttpRequestModal(r){
   `;
 }
 
-if($('modalClose'))$('modalClose').onclick=()=>{if($('modalBg'))$('modalBg').classList.remove('open');activeTraceId='';activeTraceData=null;if(traceTimer)clearInterval(traceTimer);traceTimer=null};
+if($('modalClose'))$('modalClose').onclick=()=>{if($('modalBg'))$('modalBg').classList.remove('open');activeTraceId='';activeTraceData=null;traceDetailPoller?.stop();traceDetailPoller=null;tracePollAbortController?.abort();tracePollAbortController=null};
 if($('modalBg'))$('modalBg').onclick=e=>{if(e.target===$('modalBg'))$('modalClose')?.click()};
 
 document.addEventListener('click',e=>{
@@ -4472,6 +4581,7 @@ document.addEventListener('click',e=>{
   const expandAll=e.target.closest?.('[data-trace-expand-all]');if(expandAll){setTraceDetailsOpen(true);return}
   const collapseAll=e.target.closest?.('[data-trace-collapse-all]');if(collapseAll){setTraceDetailsOpen(false);return}
   const reveal=e.target.closest?.('[data-trace-reveal]');if(reveal){toggleTraceReveal();return}
+  const eventPage=e.target.closest?.('[data-trace-event-page]');if(eventPage){loadTraceEventPage(eventPage.dataset.traceEventPage);return}
   const tab=e.target.closest?.('[data-trace-view]');if(tab){setTraceView(tab.dataset.traceView);return}
   const pageTrace=e.target.closest?.('[data-trace-page-id]');if(pageTrace){openTrace(pageTrace.dataset.tracePageId);return}
   const back=e.target.closest?.('[data-trace-back]');if(back){switchTab('work');return}
@@ -4522,6 +4632,83 @@ window.addEventListener('hashchange',()=>switchTab(location.hash.replace('#','')
 $('pauseEvents').onclick=e=>{paused=!paused;e.target.textContent=paused?'Resume live events':'Pause live events'};
 async function post(path,payload){const r=await apiFetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});return await r.json()}
 
+const ACTIVITY_MODES=['active','gaming','maintenance'];
+let activityModeStatusPolls=0;
+let activityModeTransitionNotice=null;
+const activityModeLabels={active:'Active',gaming:'GAMING / PAUSED',maintenance:'Maintenance'};
+function renderActivityMode(mode){
+  const badge=$('activityModeBadge');if(!badge)return;
+  const valid=ACTIVITY_MODES.includes(String(mode||''));
+  const value=valid?String(mode):'unknown';
+  badge.dataset.mode=value;badge.className=`pill ${value==='active'?'ok':value==='unknown'?'warn-t':''}`;
+  badge.textContent=`Mode: ${valid?activityModeLabels[value]:'Unknown'}`;
+  document.querySelectorAll('[data-activity-mode]').forEach(button=>button.setAttribute('aria-pressed',String(valid&&button.dataset.activityMode===value)));
+}
+function activityModeFailure(response,data){
+  if(response?.status===401)return 'Unauthorized (HTTP 401); check the API token.';
+  if(response?.status===400)return `Invalid mode: ${data?.error||'server rejected request'}`;
+  if(response&&!response.ok)return `Mode request failed (HTTP ${response.status}).`;
+  return data?.error||'Mode request failed.';
+}
+function projectActivityModeTransition(confirmed,data){
+  const failures=[];
+  if(confirmed==='gaming'){
+    const unload=data.runtime_unload;
+    if(!unload||unload.state!=='pending'&&unload.success!==true)failures.push('VRAM unload incomplete');
+    const acceleratorRelease=data.accelerator_release;
+    if(!acceleratorRelease||acceleratorRelease.success!==true)failures.push('accelerator release incomplete');
+    if(unload?.state==='pending')failures.push('VRAM unload pending');
+  }
+  if(data.job_cancellation&&data.job_cancellation.success!==true)failures.push('job cancellation incomplete');
+  const persisted=`Mode persisted as ${activityModeLabels[confirmed]}.`;
+  return {
+    modePersisted:true,
+    partial:failures.length>0,
+    failures,
+    status:failures.length?`${persisted} Mode transition incomplete: ${failures.join('; ')}.`:`Mode set to ${activityModeLabels[confirmed]}.`,
+  };
+}
+async function refreshActivityMode(){
+  const status=$('activityModeStatus');
+  try{
+    const response=await apiFetch('/api/mode',{cache:'no-store',timeoutMs:5000});
+    const data=await response.json().catch(()=>null);
+    if(!response.ok||!data||data.success!==true){renderActivityMode('unknown');if(status)status.textContent=`Mode unavailable: ${activityModeFailure(response,data)}`;return false;}
+    if(!ACTIVITY_MODES.includes(data.mode)){renderActivityMode('unknown');if(status)status.textContent='Mode unavailable: invalid mode returned by server.';return false;}
+    renderActivityMode(data.mode);
+    if(activityModeTransitionNotice&&activityModeTransitionNotice.mode!==data.mode)activityModeTransitionNotice=null;
+    const notice=activityModeTransitionNotice?.mode===data.mode?activityModeTransitionNotice:null;
+    if(notice&&data.mode==='gaming'&&data.runtime_unload?.state!=='pending'){
+      const unloadState=data.runtime_unload?.success===true?'complete':'incomplete';
+      notice.text=notice.text.replace(/VRAM unload (?:pending|incomplete)/,`VRAM unload ${unloadState}`);
+    }
+    if(status){const unload=data.runtime_unload;status.textContent=notice?.text??(data.mode==='gaming'&&unload?(unload.success===true?'Gaming mode active. VRAM unload complete.':unload.state==='pending'?'Gaming mode active. VRAM unload in progress.':'Gaming mode active. VRAM unload incomplete.'):'Mode loaded.');}
+    if(data.mode==='gaming'&&data.runtime_unload?.state==='pending'&&activityModeStatusPolls<8){activityModeStatusPolls++;setTimeout(refreshActivityMode,1500);}else if(data.runtime_unload?.state!=='pending'){activityModeStatusPolls=0;}
+    return true;
+  }catch(_){renderActivityMode('unknown');if(status)status.textContent='Mode unavailable: Hub offline or unreachable.';return false;}
+}
+async function applyActivityMode(mode){
+  const buttons=Array.from(document.querySelectorAll('[data-activity-mode]')),status=$('activityModeStatus');
+  mode=String(mode||'');
+  if(!ACTIVITY_MODES.includes(mode)){if(status)status.textContent='Invalid mode selected.';return false;}
+  activityModeTransitionNotice=null;
+  buttons.forEach(button=>button.disabled=true);if(status)status.textContent='Updating mode…';
+  try{
+    const response=await apiFetch('/api/admin/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode}),timeoutMs:5000});
+    const data=await response.json().catch(()=>null);
+    if(!response.ok||!data||data.success!==true){if(status)status.textContent=activityModeFailure(response,data);return false;}
+    const confirmed=data.mode;
+    if(!ACTIVITY_MODES.includes(confirmed)||confirmed!==mode){if(status)status.textContent='Mode update rejected: invalid mode returned by server.';return false;}
+    renderActivityMode(confirmed);
+    const transition=projectActivityModeTransition(confirmed,data);
+    if(transition.partial)activityModeTransitionNotice={mode:confirmed,text:transition.status};
+    if(status)status.textContent=transition.status;
+    if(confirmed==='gaming'&&data.runtime_unload?.state==='pending'){activityModeStatusPolls=0;setTimeout(refreshActivityMode,800);}
+    return true;
+  }catch(_){if(status)status.textContent='Mode update failed: Hub offline or unreachable.';return false;}
+  finally{buttons.forEach(button=>button.disabled=false);}
+}
+
 async function loadConfigView(){
   try{
     const r=await apiFetch('/api/config',{cache:'no-store'}),d=await r.json();
@@ -4531,7 +4718,7 @@ async function loadConfigView(){
     $('cfgPreprocess').checked=c.preprocessing?.enabled!==false&&feat.preprocessing!==false;
     $('cfgIntel').checked=c.code_intelligence?.enabled!==false&&feat.code_intelligence!==false;
     $('cfgSerena').checked=!!c.code_intelligence?.serena_enabled;
-    
+
     if($('cfgFeatStatus'))$('cfgFeatStatus').checked=feat.status!==false;
     if($('cfgFeatRepo'))$('cfgFeatRepo').checked=feat.repo!==false;
     if($('cfgFeatTasks'))$('cfgFeatTasks').checked=feat.tasks!==false;
@@ -4554,7 +4741,7 @@ $('cfgSave').onclick=async()=>{
     'preprocessing.enabled':$('cfgPreprocess').checked,
     'code_intelligence.enabled':$('cfgIntel').checked,
     'code_intelligence.serena_enabled':$('cfgSerena').checked,
-    
+
     'features.status':$('cfgFeatStatus')?$('cfgFeatStatus').checked:true,
     'features.repo':$('cfgFeatRepo')?$('cfgFeatRepo').checked:true,
     'features.tasks':$('cfgFeatTasks')?$('cfgFeatTasks').checked:true,
@@ -4620,6 +4807,10 @@ async function setPreprocessing(action){
 function togglePreprocessing(){return setPreprocessing(last?.preprocessing?.paused?'resume':'pause')}
 $('prepToggle').onclick=togglePreprocessing;
 $('prepAllToggle').onclick=togglePreprocessing;
+document.querySelectorAll('[data-activity-mode]').forEach(button=>button.onclick=()=>applyActivityMode(button.dataset.activityMode));
+refreshActivityMode();
+setInterval(()=>{if(document.visibilityState!=='hidden')refreshActivityMode()},30000);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='hidden')refreshActivityMode()});
 
 function refreshProjectList(){renderProjects(last?.preprocessing?.projects||[])}
 $('projectSearch').oninput=e=>{projectQuery=e.target.value;refreshProjectList()};
@@ -4633,7 +4824,7 @@ const PHASES = [
   {id:'code_index', name:'AST Symbols', icon:'🌲', desc:'Symbol & callgraph extraction'},
   {id:'deterministic', name:'Declarative Facts', icon:'📋', desc:'Routes, models & configs'},
   {id:'serena', name:'Serena', icon:'S', desc:'Semantic/LSP project index'},
-  
+
   {id:'lexical', name:'Full-Text Search', icon:'🔍', desc:'FTS5 lexical keyword index'},
   {id:'rag', name:'Vector RAG', icon:'🧠', desc:'768-dim CPU code embeddings'},
   {id:'files', name:'Semantic Cards', icon:'📄', desc:'cached semantic context cards'},
@@ -4656,11 +4847,7 @@ function renderStepper(currIdx, isComplete, status) {
 
 let projectQuery='',projectFilter='all',projectSort='priority';
 function projectIdentity(project){
-  const root=String(project?.canonical_root||project?.root||project?.project||'').replace(/\\/g,'/').replace(/\/+$/,'');
-  const worktreeAt=root.toLowerCase().indexOf('/.worktrees/');
-  if(worktreeAt>=0)return root.slice(0,worktreeAt)||root;
-  const gitWorktreeAt=root.toLowerCase().indexOf('/worktrees/');
-  return gitWorktreeAt>=0?root.slice(0,gitWorktreeAt)||root:root;
+  return String(project?.git_common_dir||project?.canonical_root||project?.root||project?.project||'').replace(/\\/g,'/').replace(/\/+$/,'');
 }
 function projectState(x){
   const progress=Number(x.overall_progress_pct||0);
@@ -4674,7 +4861,7 @@ function projectState(x){
 
 function groupedProjects(items){
   const list=Array.isArray(items)?items:[];
-  if(!$('projectGroupWorktrees')?.checked)return list.map(x=>({...x,repository_identity:projectIdentity(x),variants:[x]}));
+  if(!$('projectGroupWorktrees')?.checked)return list.map(x=>({...x,repository_identity:x.root||x.project||'',variants:[x]}));
   const groups=new Map();
   list.forEach(item=>{
     const identity=projectIdentity(item)||String(item.project||'unknown');
@@ -4683,7 +4870,7 @@ function groupedProjects(items){
   const rank={error:0,running:1,waiting:2,queued:3,paused:4,ready:5};
   return [...groups.entries()].map(([identity,variants])=>{
     const ordered=[...variants].sort((a,b)=>(rank[projectState(a)]??9)-(rank[projectState(b)]??9));
-    return {...ordered[0],canonical_root:identity,repository_identity:identity,variants};
+    return {...ordered[0],canonical_root:ordered[0].root||identity,repository_identity:ordered[0].root||identity,variants};
   });
 }
 
@@ -4703,7 +4890,7 @@ function renderProjects(items){
   const summary=$('projectSummary');
   if(summary)summary.textContent=`${visible.length} of ${source.length} repository identities · ${entries.length} project entries`;
   rows('projectsBody',visible,x=>{
-    const state=projectState(x),tot=Math.max(1,Number(x.files||0)),ragFiles=Number(x.rag_files||0),cards=Number(x.file_cards||0),ragPct=Math.round(ragFiles/tot*100),cardPct=Math.round(cards/tot*100),overall=Math.max(0,Math.min(100,Number(x.overall_progress_pct||0))),phasePct=Math.max(0,Math.min(100,Number(x.phase_progress_pct||0))),isComplete=state==='ready',isWorktree=(x.root||'').toLowerCase().includes('worktree');
+    const state=projectState(x),tot=Math.max(1,Number(x.files||0)),ragFiles=Number(x.rag_files||0),cards=Number(x.file_cards||0),ragPct=Math.round(ragFiles/tot*100),cardPct=Math.round(cards/tot*100),overall=Math.max(0,Math.min(100,Number(x.overall_progress_pct||0))),phasePct=Math.max(0,Math.min(100,Number(x.phase_progress_pct||0))),isComplete=state==='ready',isWorktree=x.is_worktree===true;
     const badge={running:['badge-running','Running','<span class="pulse-dot"></span>'],waiting:['badge-waiting','Waiting',''],paused:['badge-paused','Paused',''],error:['badge-error','Error',''],ready:['badge-complete','Ready','✓ ']}[state]||['badge-waiting','Queued',''];
     const activityText=x.active_detail||(isComplete?'100% synchronized · real-time sync':state==='paused'?(x.global_paused?'Globally paused':'Project paused'):state==='waiting'?'Waiting for preprocessing slot':state==='error'?(x.last_error_short||'Pipeline error'):'Processing queue');
     const activityCls=isComplete?'ok':state==='error'?'bad-t':state==='paused'?'warn-t':state==='waiting'?'muted':'';
@@ -5044,7 +5231,7 @@ function render(s){
   rows('blockedReasons',Object.entries(cmd.blocked_by_reason||{}),x=>clickableRow({reason:x[0],count:x[1]},`<td>${esc(x[0])}</td><td>${n(x[1])}</td>`,'blocked_reason'),2);
 
   renderReliabilitySummary(s);
-  rows('errors',o.recent_errors||[],x=>clickableRow(x,`<td>${esc(x.component)}</td><td>${esc(x.operation)}</td><td>${n(x.count)}</td><td>${n(x.recovered_count)}</td><td>${x.last_seen?new Date(x.last_seen*1000).toLocaleTimeString():'—'}</td>`,'error'),5);
+  rows('errors',o.recent_errors||[],x=>clickableRow(x,`<td>${esc(x.component)}</td><td>${esc(x.operation)}</td><td>${esc(String(x.safe_message||'Diagnostic unavailable').slice(0,96))}</td><td>${n(x.count)}</td><td>${n(x.recovered_count)}</td><td>${x.last_seen?new Date(x.last_seen*1000).toLocaleTimeString():'—'}</td>`,'error'),6);
   $('runtimeCounters').innerHTML=`<div>Scheduler submitted</div><div>${n(ss.submitted)}</div><div>Completed / failed</div><div>${n(ss.completed)} / ${n(ss.failed)}</div><div>Model switches</div><div>${n(ss.model_switches)}</div><div>Queue rejections</div><div>${n(ss.queue_rejections)}</div><div>Caller timeouts</div><div>${n(ss.caller_timeouts)}</div><div>Background yields</div><div>${n(ss.background_yields)}</div><div>Supervisor restarts</div><div>${n(h.restarts)}</div>`;
 
   if($('hubHealthCard'))$('hubHealthCard').onclick=()=>switchTab('reliability');
@@ -5109,7 +5296,21 @@ function renderTraceList(items){
   $('traceSideSummary').textContent=`${sidebarVisible.length} trace${sidebarVisible.length===1?'':'s'} · click to inspect`;
   $('traceSidebarList').innerHTML=sidebarVisible.length?sidebarVisible.map(x=>{const state=traceStatus(x),label=state==='interrupted'?'Interrupted':state,cls=state==='interrupted'?'interrupted':(state==='failed'||state==='error'?'failed':(x.terminal||state==='completed'||state==='succeeded'?'done':'')),kindLabel=x.kind==='api_request'?'API request':humanLabel(x.kind||'trace'),context=traceContextLabel({...x,kind:'',model:''}),project=traceProjectLabel(x)||'Project not recorded';return `<button class="trace-side-item ${String(x.trace_id)===activeTraceId?'active':''}" data-trace-page-id="${esc(x.trace_id)}"><span class="trace-side-top"><span class="trace-side-state ${cls}"></span><span class="trace-side-action">${esc(x.action||x.kind||'Trace')}</span><span class="tiny spacer">${esc(label)}</span></span><span class="trace-side-meta">${esc(project)} · ${esc(context||x.agent||'unknown agent')}</span><span class="trace-side-meta">${esc(x.agent||'unknown agent')} · ${esc(kindLabel)} · ${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'} · ${esc(x.tenant||'no tenant')}</span></button>`}).join(''):'<div class="empty-human">No retained traces</div>';
 }
-async function pollTraces(){if(tracesPollInFlight)return;tracesPollInFlight=true;try{const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',r=await apiFetch('/api/debug-traces?limit=200'+suffix,{cache:'no-store'}),d=await r.json();if(d.success){lastTraces=d.items||[];renderTraceList(lastTraces)}}catch(e){console.warn('trace refresh failed',e)}finally{tracesPollInFlight=false}}
+async function pollTraces(isCurrent=()=>document.visibilityState!=='hidden'){
+  if(!isCurrent()||tracesPollInFlight)return false;
+  tracesPollInFlight=true;
+  const controller=typeof AbortController==='function'?new AbortController():null;
+  tracesPollAbortController=controller;
+  try{
+    const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
+    const r=await apiFetch('/api/debug-traces?limit=200'+suffix,opts);if(!isCurrent())return false;
+    const d=await r.json();if(!isCurrent()||!d.success)return false;
+    const items=Array.isArray(d.items)?d.items:[],changed=JSON.stringify(items)!==JSON.stringify(lastTraces);
+    if(changed){lastTraces=items;renderTraceList(lastTraces)}
+    return {changed};
+  }catch(e){if(isCurrent()&&!controller?.signal.aborted)console.warn('trace refresh failed',e);return false}
+  finally{tracesPollInFlight=false;if(tracesPollAbortController===controller)tracesPollAbortController=null}
+}
 $('traceRefresh')?.addEventListener('click',pollTraces);$('traceKind')?.addEventListener('change',()=>renderTraceList(lastTraces));
 $('traceHistorySearch')?.addEventListener('input',()=>renderTraceList(lastTraces));$('traceHistoryState')?.addEventListener('change',()=>renderTraceList(lastTraces));
 
@@ -5130,11 +5331,18 @@ async function pollStatus(isCurrent=()=>document.visibilityState!=='hidden'){
     const opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
     const r=await apiFetch('/api/live/status?light=1&scope='+sloScope,opts);
     if(!current())return false;
+    if(!r.ok)throw new Error(`status request failed (HTTP ${r.status})`);
     const s=await r.json();
     if(!current())return false;
+    if(s.snapshot_warming===true){
+      lastDashboardStatusChanged=false;
+      if(!hasLiveStatus){$('conn').textContent='warming';$('conn').className='pill warn-t'}
+      return false;
+    }
+    const statusDegraded=s.snapshot_stale===true||s.degraded===true||s.success===false;
     const changed=shouldRefreshDashboardStatus(s);
     if(changed)render(s);
-    hasLiveStatus=true;$('conn').textContent='live';$('conn').className='pill ok';if(changed)$('updated').textContent='updated '+new Date().toLocaleTimeString();
+    hasLiveStatus=true;$('conn').textContent=s.snapshot_stale===true?'stale':statusDegraded?'degraded':'live';$('conn').className=statusDegraded?'pill warn-t':'pill ok';if(changed)$('updated').textContent='updated '+new Date().toLocaleTimeString();
     if(changed||hardwareRefreshPending)try{
       const hardwareOpts={cache:'no-store'};if(controller)hardwareOpts.signal=controller.signal;
       const gr=await apiFetch('/api/hardware/system',hardwareOpts);
@@ -5175,7 +5383,8 @@ document.addEventListener('visibilitychange',()=>{
   if(!visible&&statusPollAbortController)statusPollAbortController.abort();
 });
 statusPoller.start();
-let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false;
+let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false,eventsPollHasLoaded=false;
+let eventsPollAbortController=null,tracesPollAbortController=null;
 function eventSeverity(event){
   if(event?.success===false||/fail|error|crash|reject/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'failure';
   if(/warn|retry|degrad|stale/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'warning';
@@ -5193,19 +5402,34 @@ function renderEvents(events=liveEvents){
 }
 $('eventSeverity')?.addEventListener('change',()=>renderEvents([]));
 $('eventSource')?.addEventListener('input',()=>renderEvents([]));
-async function pollEvents(){if(eventsPollInFlight)return;eventsPollInFlight=true;try{const r=await apiFetch('/api/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}finally{eventsPollInFlight=false}}
+async function pollEvents(isCurrent=()=>document.visibilityState!=='hidden'){
+  if(!isCurrent()||eventsPollInFlight)return false;
+  eventsPollInFlight=true;
+  const controller=typeof AbortController==='function'?new AbortController():null;
+  eventsPollAbortController=controller;
+  try{
+    const previousCursor=cursor,opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
+    const r=await apiFetch('/api/live?after='+cursor+'&limit=200',opts);if(!isCurrent())return false;
+    const d=await r.json();if(!isCurrent()||!d.success)return false;
+    const events=Array.isArray(d.events)?d.events:[];cursor=Number(d.cursor||cursor);
+    const changed=!eventsPollHasLoaded||cursor!==previousCursor||events.length>0;eventsPollHasLoaded=true;
+    if(changed)renderEvents(events);
+    return {changed};
+  }catch{return false}
+  finally{eventsPollInFlight=false;if(eventsPollAbortController===controller)eventsPollAbortController=null}
+}
+const eventsPoller=createDashboardStatusPoller(pollEvents,{baseDelay:1000,maxDelay:30000});
+const tracesPoller=createDashboardStatusPoller(pollTraces,{baseDelay:2000,maxDelay:30000});
 
-probeHealth();pollStatus();pollEvents();pollTraces();
+if(!document.hidden)probeHealth();
+eventsPoller.start();tracesPoller.start();
 let isVisible=!document.hidden;
 document.addEventListener('visibilitychange',()=>{
   isVisible=!document.hidden;
-  if(isVisible){probeHealth();pollStatus();pollEvents();pollTraces();}
+  if(!isVisible){eventsPollAbortController?.abort();tracesPollAbortController?.abort();tracePollAbortController?.abort();}
+  eventsPoller.setVisible(isVisible);tracesPoller.setVisible(isVisible);traceDetailPoller?.setVisible(isVisible);
+  if(isVisible)probeHealth();
 });
-setInterval(()=>{if(isVisible)probeHealth();},5000);
-setInterval(()=>{if(isVisible)pollStatus();},1000);
-setInterval(()=>{if(isVisible)pollEvents();},1000);
-setInterval(()=>{if(isVisible)pollTraces();},2000);
-
 // ── Bundles ────────────────────────────────────────────────────────────────────
 function renderBundles(s){
   const projs=groupedProjects(s?.preprocessing?.projects||[]);
@@ -5533,7 +5757,7 @@ function renderTrajectories(){
 $('trajSearch')?.addEventListener('input',renderTrajectories);
 $('trajRefreshBtn')?.addEventListener('click',loadTrajectories);
 
-async function viewTrajectory(taskId){
+async function viewTrajectory(taskId, afterSeq=0, append=false){
   if(!taskId)return;
   const task=cachedTrajTasks.find(t=>t.task_id===taskId);
   const panel=$('trajDetailPanel');
@@ -5542,37 +5766,181 @@ async function viewTrajectory(taskId){
   if(!panel||!list||!title)return;
   panel.style.display='block';
   title.innerHTML=`Trajectory Inspection: <code>${esc(taskId)}</code> — <span class="muted">${esc(task?.contract?.goal||'')}</span>`;
-  list.innerHTML='<div class="tiny muted">Loading event stream & trajectory steps…</div>';
+  if(!append)list.innerHTML='<div class="tiny muted">Loading event stream & trajectory steps…</div>';
+  else list.querySelector('.trajectory-load-more')?.remove();
 
   try{
-    const r=await apiFetch('/api/agent-state/events?stream_id='+encodeURIComponent(taskId),{cache:'no-store'});
-    const d=await r.json();
-    const evs=d.events||[];
-    if(!evs.length){
+    const params=new URLSearchParams({stream_id:taskId,limit:'100'});
+    if(afterSeq>0)params.set('after_seq',String(afterSeq));
+    const r=await apiFetch('/api/agent-state/events?'+params.toString(),{cache:'no-store'});
+    const responseText=await r.text();
+    const d=JSON.parse(responseText);
+    const evs=Array.isArray(d.events)?d.events:[];
+    const gapRanges=Array.isArray(d.gap_ranges)?d.gap_ranges.slice():[];
+    const gapMetadataUnavailable=d.retention_gap_metadata_available===false||
+      !Array.isArray(d.gap_ranges);
+    if(!append)list.innerHTML='';
+    if(gapMetadataUnavailable&&!gapRanges.length&&!list.querySelector('.trajectory-gap')){
+      const gap=document.createElement('div');
+      gap.className='trace-event trajectory-gap';
+      gap.style.cssText='border-left:2px solid #f0ad4e;padding:8px;margin-bottom:8px;color:#f0ad4e';
+      gap.textContent='Retention gap metadata unavailable; cannot verify history completeness.';
+      list.appendChild(gap);
+    }
+    if(!evs.length&&!append){
       const cp=task?.checkpoint||{};
       const receipts=Object.entries(task?.verification_receipts||{});
-      list.innerHTML=`<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px">
+      list.insertAdjacentHTML('beforeend',`<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px">
         <div style="font-weight:600;font-size:12px;margin-bottom:4px">Phase: ${esc(cp.phase||'init')} ➔ Next: ${esc(cp.next_action||'—')}</div>
         <div class="tiny muted">Affected Paths: ${esc((cp.affected_paths||[]).join(', ')||'none')}</div>
         <div class="tiny muted">Evidence IDs: ${esc((cp.evidence_ids||[]).join(', ')||'none')}</div>
         ${receipts.length?`<div style="margin-top:6px;font-size:11px"><b>Receipts:</b> ${receipts.map(([k,v])=>`<span class="chip ok">${esc(k)}</span>`).join(' ')}</div>`:''}
-      </div>`;
-      return;
+      </div>`);
     }
-    list.innerHTML=evs.map(ev=>{
+    const skipQuotedString=(jsonText,start)=>{
+      let escaped=false;
+      for(let i=start+1;i<jsonText.length;i++){
+        const ch=jsonText[i];
+        if(escaped)escaped=false;
+        else if(ch==='\\')escaped=true;
+        else if(ch==='"')return i;
+      }
+      return jsonText.length;
+    };
+    const readRawInteger=(jsonText,key)=>{
+      let depth=0;
+      for(let i=0;i<jsonText.length;i++){
+        if(jsonText[i]==='"'){
+          const end=skipQuotedString(jsonText,i);
+          if(depth===1){
+            const name=JSON.parse(jsonText.slice(i,end+1));
+            let valueIndex=end+1;
+            while(/\s/.test(jsonText[valueIndex]||''))valueIndex++;
+            if(name===key&&jsonText[valueIndex++]===':'){
+              while(/\s/.test(jsonText[valueIndex]||''))valueIndex++;
+              const number=/^-?\d+/.exec(jsonText.slice(valueIndex));
+              if(!number)return null;
+              const delimiter=jsonText[valueIndex+number[0].length];
+              return delimiter&&/[.eE\d]/.test(delimiter)?null:number[0];
+            }
+          }
+          i=end;
+          continue;
+        }
+        if(jsonText[i]==='{'||jsonText[i]==='[')depth++;
+        else if(jsonText[i]==='}'||jsonText[i]===']')depth--;
+      }
+      return null;
+    };
+    const readTopLevelArrayObjects=(jsonText,key)=>{
+      let depth=0;
+      for(let i=0;i<jsonText.length;i++){
+        if(jsonText[i]==='"'){
+          const end=skipQuotedString(jsonText,i);
+          if(depth===1){
+            const name=JSON.parse(jsonText.slice(i,end+1));
+            let valueIndex=end+1;
+            while(/\s/.test(jsonText[valueIndex]||''))valueIndex++;
+            if(name===key&&jsonText[valueIndex++]===':'){
+              while(/\s/.test(jsonText[valueIndex]||''))valueIndex++;
+              if(jsonText[valueIndex]!=='[')return [];
+              const items=[];
+              for(let itemIndex=valueIndex+1;itemIndex<jsonText.length;){
+                while(/[\s,]/.test(jsonText[itemIndex]||''))itemIndex++;
+                if(jsonText[itemIndex]===']')return items;
+                if(jsonText[itemIndex]!=='{')return [];
+                const start=itemIndex;
+                let objectDepth=0;
+                for(;itemIndex<jsonText.length;itemIndex++){
+                  if(jsonText[itemIndex]==='"'){
+                    itemIndex=skipQuotedString(jsonText,itemIndex);
+                    continue;
+                  }
+                  if(jsonText[itemIndex]==='{')objectDepth++;
+                  else if(jsonText[itemIndex]==='}'&&--objectDepth===0){
+                    items.push(jsonText.slice(start,itemIndex+1));
+                    itemIndex++;
+                    break;
+                  }
+                }
+              }
+              return [];
+            }
+          }
+          i=end;
+          continue;
+        }
+        if(jsonText[i]==='{'||jsonText[i]==='[')depth++;
+        else if(jsonText[i]==='}'||jsonText[i]===']')depth--;
+      }
+      return [];
+    };
+    const readRawArrayIntegers=(jsonText,arrayKey,fieldKey)=>
+      readTopLevelArrayObjects(jsonText,arrayKey).map(item=>readRawInteger(item,fieldKey));
+    const exactEventSeqs=readRawArrayIntegers(responseText,'events','seq');
+    const exactGapStarts=readRawArrayIntegers(responseText,'gap_ranges','from_seq');
+    const exactGapEnds=readRawArrayIntegers(responseText,'gap_ranges','to_seq');
+    const exactFirstRetainedSeq=readRawInteger(responseText,'first_retained_seq')??d.first_retained_seq;
+    const timeline=[
+      ...evs.map((ev,index)=>({type:'event',seq:exactEventSeqs[index]??ev.seq,ev})),
+      ...gapRanges.map((range,index)=>({
+        type:'gap',seq:exactGapStarts[index]??range.from_seq,
+        fromSeq:exactGapStarts[index]??range.from_seq,
+        toSeq:exactGapEnds[index]??range.to_seq,range,
+      })),
+    ];
+    timeline.sort((left,right)=>{
+      try{
+        const a=BigInt(String(left.seq??0));
+        const b=BigInt(String(right.seq??0));
+        return a<b?-1:(a>b?1:0);
+      }catch{
+        return String(left.seq??0).localeCompare(String(right.seq??0),undefined,{numeric:true});
+      }
+    });
+    timeline.forEach(item=>{
+      if(item.type==='gap'){
+        const gap=document.createElement('div');
+        gap.className='trace-event trajectory-gap';
+        gap.style.cssText='border-left:2px solid #f0ad4e;padding:8px;margin-bottom:8px;color:#f0ad4e';
+        gap.textContent=`Event history gap: expired #${item.fromSeq}–#${item.toSeq}; first retained #${exactFirstRetainedSeq??'unknown'}.`;
+        list.appendChild(gap);
+        return;
+      }
+      const ev=item.ev;
       const kind=esc(ev.event_type||ev.kind||'event');
-      const time=ev.timestamp?new Date(ev.timestamp*1000).toLocaleTimeString():'';
-       const payload=traceOutputValueMarkup(ev.payload, null, 5000);
-      return `<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px;background:#0d1219;border-radius:4px">
+      const timestamp=ev.created_at??ev.timestamp;
+      const time=timestamp?new Date(timestamp*1000).toLocaleTimeString():'';
+      const payload=traceOutputValueMarkup(ev.payload, null, 5000);
+      list.insertAdjacentHTML('beforeend',`<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px;background:#0d1219;border-radius:4px">
         <div style="display:flex;justify-content:space-between;margin-bottom:4px">
           <span class="chip"><b>${kind}</b></span>
-          <span class="tiny muted">#${ev.seq||0} · ${time}</span>
+          <span class="tiny muted">#${esc(item.seq||0)} · ${time}</span>
         </div>
-         <div style="margin:0;font-size:11px;color:#d7e2ef;max-height:220px;overflow:auto">${payload}</div>
-      </div>`;
-    }).join('');
+        <div style="margin:0;font-size:11px;color:#d7e2ef;max-height:220px;overflow:auto">${payload}</div>
+      </div>`);
+    });
+    const cursorToken=readRawInteger(responseText,'next_seq')??String(d.next_seq??afterSeq);
+    let cursorAdvances=false;
+    try{cursorAdvances=BigInt(cursorToken)>BigInt(String(afterSeq));}catch{}
+    if(d.has_more&&cursorAdvances){
+      const button=document.createElement('button');
+      button.type='button';
+      button.className='trajectory-load-more';
+      button.style.cssText='margin:8px 0;padding:6px 10px';
+      button.textContent='Load more events';
+      button.onclick=()=>viewTrajectory(taskId,cursorToken,true);
+      list.appendChild(button);
+    }
   }catch(err){
-    list.innerHTML=`<div class="bad-t">Failed to load trajectory events: ${esc(err.message||err)}</div>`;
+    if(append){
+      const error=document.createElement('div');
+      error.className='bad-t';
+      error.textContent=`Failed to load trajectory events: ${err.message||err}`;
+      list.appendChild(error);
+    }else{
+      list.innerHTML=`<div class="bad-t">Failed to load trajectory events: ${esc(err.message||err)}</div>`;
+    }
   }
 }
 

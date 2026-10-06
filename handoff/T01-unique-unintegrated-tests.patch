@@ -1,0 +1,844 @@
+--- /dev/null
++++ b/tests/test_http_route_operation_acceptance.py
+@@ -0,0 +1,317 @@
++"""Operation-level HTTP acceptance for selected unlinked route families."""
++
++from __future__ import annotations
++
++import json
++import threading
++from types import SimpleNamespace
++from urllib import request as urllib_request
++
++import pytest
++
++from local_ai_hub import http_server
++from local_ai_hub.app import LocalAIApp
++
++
++@pytest.fixture
++def running_http_hub(tmp_path):
++    config_path = tmp_path / "config.toml"
++    state_dir = tmp_path / "state"
++    config_path.write_text(
++        "\n".join(
++            [
++                "[server]",
++                'bind = "127.0.0.1"',
++                "port = 11435",
++                f'state_dir = "{state_dir.as_posix()}"',
++                "[security]",
++                'api_token = "acceptance-secret"',
++                "[agent_state]",
++                "enabled = true",
++            ]
++        ),
++        encoding="utf-8",
++    )
++    app = LocalAIApp(str(config_path))
++    previous_app = http_server.APP
++    http_server.APP = app
++    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++    try:
++        yield f"http://127.0.0.1:{server.server_address[1]}", app
++    finally:
++        server.shutdown()
++        server.server_close()
++        thread.join(timeout=2)
++        http_server.APP = previous_app
++        app.close()
++
++
++def test_http_get_agent_state_blackboard_forwards_board_and_section(
++    running_http_hub, monkeypatch
++):
++    base_url, app = running_http_hub
++    calls = []
++
++    def get_board(board_id, *, section=None):
++        calls.append((board_id, section))
++        return {"success": True, "board_id": board_id, "section": section, "content": "value"}
++
++    monkeypatch.setattr(app, "agent_blackboard", SimpleNamespace(get=get_board))
++    url = f"{base_url}/api/agent-state/blackboard?board_id=task-31&section=plan"
++    request = urllib_request.Request(
++        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
++    )
++
++    with urllib_request.urlopen(request) as response:
++        status = response.status
++        result = json.loads(response.read().decode("utf-8"))
++
++    assert request.get_method() == "GET"
++    assert url == f"{base_url}/api/agent-state/blackboard?board_id=task-31&section=plan"
++    assert status == 200
++    assert calls == [("task-31", "plan")]
++    assert result["success"] is True
++    assert result["content"] == "value"
++
++
++def test_http_get_agent_state_events_forwards_stream_cursor_and_limit(
++    running_http_hub, monkeypatch
++):
++    base_url, app = running_http_hub
++    calls = []
++    event = SimpleNamespace(
++        to_dict=lambda: {"seq": 8, "kind": "task.updated", "stream_id": "stream-31"}
++    )
++
++    def list_events(*, stream_id="", after_seq=0, limit=100):
++        calls.append((stream_id, after_seq, limit))
++        return [event]
++
++    monkeypatch.setattr(app.agent_state, "events", list_events)
++    url = f"{base_url}/api/agent-state/events?stream_id=stream-31&after_seq=4&limit=9"
++    request = urllib_request.Request(
++        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
++    )
++
++    with urllib_request.urlopen(request) as response:
++        status = response.status
++        result = json.loads(response.read().decode("utf-8"))
++
++    assert request.get_method() == "GET"
++    assert url == f"{base_url}/api/agent-state/events?stream_id=stream-31&after_seq=4&limit=9"
++    assert status == 200
++    assert calls == [("stream-31", 4, 9)]
++    assert result["success"] is True
++    assert result["events"] == [{"seq": 8, "kind": "task.updated", "stream_id": "stream-31"}]
++
++
++def test_http_get_agent_state_swarm_forwards_state_and_limit(running_http_hub, monkeypatch):
++    base_url, app = running_http_hub
++    calls = []
++
++    def list_swarms(*, state=None, limit=50):
++        calls.append((state, limit))
++        return {"success": True, "swarms": [{"swarm_id": "swarm-31", "state": state}]}
++
++    monkeypatch.setattr(app, "swarm", SimpleNamespace(list_swarms=list_swarms))
++    url = f"{base_url}/api/agent-state/swarm?state=running&limit=6"
++    request = urllib_request.Request(
++        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
++    )
++
++    with urllib_request.urlopen(request) as response:
++        status = response.status
++        result = json.loads(response.read().decode("utf-8"))
++
++    assert request.get_method() == "GET"
++    assert url == f"{base_url}/api/agent-state/swarm?state=running&limit=6"
++    assert status == 200
++    assert calls == [("running", 6)]
++    assert result["swarms"] == [{"swarm_id": "swarm-31", "state": "running"}]
++
++
++def test_http_get_agent_state_swarm_detail_forwards_swarm_id(running_http_hub, monkeypatch):
++    base_url, app = running_http_hub
++    calls = []
++
++    def get_status(swarm_id):
++        calls.append(swarm_id)
++        return {"success": True, "swarm_id": swarm_id, "step": 3}
++
++    monkeypatch.setattr(app, "swarm", SimpleNamespace(get_status=get_status))
++    url = f"{base_url}/api/agent-state/swarm/swarm-31"
++    request = urllib_request.Request(
++        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
++    )
++
++    with urllib_request.urlopen(request) as response:
++        status = response.status
++        result = json.loads(response.read().decode("utf-8"))
++
++    assert request.get_method() == "GET"
++    assert url == f"{base_url}/api/agent-state/swarm/swarm-31"
++    assert status == 200
++    assert calls == ["swarm-31"]
++    assert result["swarm_id"] == "swarm-31"
++    assert result["step"] == 3
++
++
++def test_http_get_config_redacts_configured_token(running_http_hub):
++    base_url, _app = running_http_hub
++    url = f"{base_url}/api/config"
++    request = urllib_request.Request(
++        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
++    )
++
++    with urllib_request.urlopen(request) as response:
++        status = response.status
++        result = json.loads(response.read().decode("utf-8"))
++
++    assert request.get_method() == "GET"
++    assert url == f"{base_url}/api/config"
++    assert status == 200
++    assert result["success"] is True
++    assert result["config"]["security"]["api_token"] == "***configured***"
++
++
++def test_http_get_capabilities_returns_surface_and_features(running_http_hub):
++    base_url, _app = running_http_hub
++    url = f"{base_url}/api/capabilities"
++    request = urllib_request.Request(
++        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
++    )
++
++    with urllib_request.urlopen(request) as response:
++        status = response.status
++        result = json.loads(response.read().decode("utf-8"))
++
++    assert request.get_method() == "GET"
++    assert url == f"{base_url}/api/capabilities"
++    assert status == 200
++    assert result["success"] is True
++    assert result["mcp_surface"] == "compact"
++    assert "features" in result
++
++
++def test_http_get_audit_tail_forwards_limit(running_http_hub, monkeypatch):
++    base_url, app = running_http_hub
++    calls = []
++
++    def tail(limit):
++        calls.append(limit)
++        return [{"kind": "request.completed", "seq": 31}]
++
++    monkeypatch.setattr(app.telemetry, "tail", tail)
++    url = f"{base_url}/api/audit/tail?limit=3"
++    request = urllib_request.Request(
++        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
++    )
++
++    with urllib_request.urlopen(request) as response:
++        status = response.status
++        result = json.loads(response.read().decode("utf-8"))
++
++    assert request.get_method() == "GET"
++    assert url == f"{base_url}/api/audit/tail?limit=3"
++    assert status == 200
++    assert calls == [3]
++    assert result["events"] == [{"kind": "request.completed", "seq": 31}]
++
++
++def test_http_get_audit_dependencies_forwards_root(running_http_hub, monkeypatch):
++    base_url, app = running_http_hub
++    calls = []
++
++    def audit_dependencies(root):
++        calls.append(root)
++        return {"success": True, "root": root, "issues": ["missing-import"]}
++
++    monkeypatch.setattr(
++        app, "deterministic", SimpleNamespace(audit_dependencies=audit_dependencies)
++    )
++    url = f"{base_url}/api/audit_dependencies?root=%2Fworkspace%2Frepo"
++    request = urllib_request.Request(
++        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
++    )
++
++    with urllib_request.urlopen(request) as response:
++        status = response.status
++        result = json.loads(response.read().decode("utf-8"))
++
++    assert request.get_method() == "GET"
++    assert url == f"{base_url}/api/audit_dependencies?root=%2Fworkspace%2Frepo"
++    assert status == 200
++    assert calls == ["/workspace/repo"]
++    assert result["issues"] == ["missing-import"]
++
++
++def test_http_get_affected_tests_forwards_root_and_repeated_paths(
++    running_http_hub, monkeypatch
++):
++    base_url, app = running_http_hub
++    calls = []
++
++    def affected_tests(root, *, changed_paths=None):
++        calls.append((root, changed_paths))
++        return {"success": True, "affected": ["tests/test_routes.py"]}
++
++    monkeypatch.setattr(app, "deterministic", SimpleNamespace())
++    monkeypatch.setattr(app.services, "affected_tests", affected_tests)
++    url = (
++        f"{base_url}/api/affected_tests?root=%2Fworkspace%2Frepo"
++        "&path=src%2Fhttp_server.py&path=tests%2Ftest_routes.py"
++    )
++    request = urllib_request.Request(
++        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
++    )
++
++    with urllib_request.urlopen(request) as response:
++        status = response.status
++        result = json.loads(response.read().decode("utf-8"))
++
++    assert request.get_method() == "GET"
++    assert url == (
++        f"{base_url}/api/affected_tests?root=%2Fworkspace%2Frepo"
++        "&path=src%2Fhttp_server.py&path=tests%2Ftest_routes.py"
++    )
++    assert status == 200
++    assert calls == [("/workspace/repo", ["src/http_server.py", "tests/test_routes.py"])]
++    assert result["affected"] == ["tests/test_routes.py"]
++
++
++def test_http_post_affected_tests_forwards_json_paths(running_http_hub, monkeypatch):
++    base_url, app = running_http_hub
++    calls = []
++
++    def affected_tests(root, *, changed_paths=None):
++        calls.append((root, changed_paths))
++        return {"success": True, "affected": ["tests/test_agent_state.py"]}
++
++    monkeypatch.setattr(app, "deterministic", SimpleNamespace())
++    monkeypatch.setattr(app.services, "affected_tests", affected_tests)
++    body = json.dumps(
++        {"root": "/workspace/repo", "paths": ["src/agent_state.py"]}
++    ).encode("utf-8")
++    url = f"{base_url}/api/affected_tests"
++    request = urllib_request.Request(
++        url,
++        data=body,
++        headers={
++            "Content-Type": "application/json",
++            "X-LocalAI-Token": "acceptance-secret",
++        },
++        method="POST",
++    )
++
++    with urllib_request.urlopen(request) as response:
++        status = response.status
++        result = json.loads(response.read().decode("utf-8"))
++
++    assert request.get_method() == "POST"
++    assert url == f"{base_url}/api/affected_tests"
++    assert status == 200
++    assert calls == [("/workspace/repo", ["src/agent_state.py"])]
++    assert result["success"] is True
++    assert result["affected"] == ["tests/test_agent_state.py"]
+--- /dev/null
++++ b/tests/test_mcp_command_operation_acceptance.py
+@@ -0,0 +1,322 @@
++from __future__ import annotations
++
++from typing import Any
++
++from local_ai_hub import mcp_server
++
++
++class _CommandBackend:
++    def __init__(self, response: dict[str, Any]) -> None:
++        self.response = response
++        self.calls: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
++
++    def post(self, path: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
++        self.calls.append((path, payload, kwargs))
++        return self.response
++
++
++def _enable_command(monkeypatch: Any, backend: _CommandBackend) -> None:
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
++    monkeypatch.setattr(mcp_server.FEATURES, "tasks", False)
++    monkeypatch.setattr(mcp_server, "_timeout", lambda kind: 77.0)
++
++
++def _expected_payload(action: str, root: str, command: str, **overrides: Any) -> dict[str, Any]:
++    payload: dict[str, Any] = {
++        "action": action,
++        "command": command,
++        "cwd": root,
++        "root": root,
++        "timeout": 25,
++        "force": False,
++        "task_id": "",
++        "criterion": "",
++        "auto_fix": False,
++        "max_attempts": 3,
++        "stream": False,
++        "stream_id": "",
++        "execution_id": "",
++        "snapshot": False,
++        "rollback_on_failure": False,
++        "paths": None,
++        "patch": "",
++        "auto_rollback": True,
++    }
++    payload.update(overrides)
++    return payload
++
++
++def test_mcp_command_auto_fix_forwards_bounded_repair_policy(monkeypatch: Any, tmp_path: Any) -> None:
++    response = {"success": True, "status": "fixed", "changed_paths": ["src/parser.py"], "attempts": 2}
++    backend = _CommandBackend(response)
++    _enable_command(monkeypatch, backend)
++    root = str(tmp_path)
++
++    result = mcp_server.local_ai_command(
++        action="auto_fix",
++        command="pytest tests/test_parser.py",
++        cwd=root,
++        timeout=25,
++        task_id="task-1",
++        criterion="parser regression passes",
++        auto_fix=True,
++        max_attempts=2,
++        auto_rollback=False,
++    )
++
++    assert backend.calls == [
++        (
++            "/api/command",
++            _expected_payload(
++                "auto_fix",
++                root,
++                "pytest tests/test_parser.py",
++                task_id="task-1",
++                criterion="parser regression passes",
++                auto_fix=True,
++                max_attempts=2,
++                auto_rollback=False,
++            ),
++            {"timeout": 77.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_command_cancel_targets_execution_and_returns_cancel_state(monkeypatch: Any, tmp_path: Any) -> None:
++    response = {"success": True, "status": "cancelled", "cancelled": True, "execution_id": "exec-42"}
++    backend = _CommandBackend(response)
++    _enable_command(monkeypatch, backend)
++    root = str(tmp_path)
++
++    result = mcp_server.local_ai_command(
++        action="cancel", cwd=root, timeout=25, execution_id="exec-42", stream_id="stream-42"
++    )
++
++    assert backend.calls == [
++        (
++            "/api/command",
++            _expected_payload(
++                "cancel", root, "", execution_id="exec-42", stream_id="stream-42"
++            ),
++            {"timeout": 77.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_command_classify_preserves_classification_result(monkeypatch: Any, tmp_path: Any) -> None:
++    response = {
++        "success": True,
++        "classification": {"kind": "read_only", "confidence": 0.98, "requires_confirmation": False},
++    }
++    backend = _CommandBackend(response)
++    _enable_command(monkeypatch, backend)
++    root = str(tmp_path)
++
++    result = mcp_server.local_ai_command(
++        action="classify",
++        command="git status --short",
++        cwd=root,
++        timeout=25,
++        extra_fields=["classification"],
++    )
++
++    assert backend.calls == [
++        ("/api/command", _expected_payload("classify", root, "git status --short"), {"timeout": 77.0})
++    ]
++    assert result == response
++
++
++def test_mcp_command_discover_returns_command_candidates(monkeypatch: Any, tmp_path: Any) -> None:
++    response = {"success": True, "status": "discovered", "candidates": ["ruff check", "ruff format"]}
++    backend = _CommandBackend(response)
++    _enable_command(monkeypatch, backend)
++    root = str(tmp_path)
++
++    result = mcp_server.local_ai_command(action="discover", command="ruff", cwd=root, timeout=25)
++
++    assert backend.calls == [
++        ("/api/command", _expected_payload("discover", root, "ruff"), {"timeout": 77.0})
++    ]
++    assert result == response
++
++
++def test_mcp_command_flaky_detect_forwards_test_selector_and_attempt_limit(
++    monkeypatch: Any, tmp_path: Any
++) -> None:
++    response = {
++        "success": True,
++        "status": "analyzed",
++        "flaky_tests": [{"selector": "tests/test_cache.py::test_refresh", "failures": 2, "runs": 8}],
++    }
++    backend = _CommandBackend(response)
++    _enable_command(monkeypatch, backend)
++    root = str(tmp_path)
++
++    result = mcp_server.local_ai_command(
++        action="flaky_detect",
++        command="tests/test_cache.py::test_refresh",
++        cwd=root,
++        timeout=25,
++        max_attempts=8,
++    )
++
++    assert backend.calls == [
++        (
++            "/api/command",
++            _expected_payload(
++                "flaky_detect", root, "tests/test_cache.py::test_refresh", max_attempts=8
++            ),
++            {"timeout": 77.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_command_format_maps_source_path_and_accepts_budget_metadata(
++    monkeypatch: Any, tmp_path: Any
++) -> None:
++    response = {
++        "success": True,
++        "status": "formatted",
++        "formatted_paths": ["src/parser.py"],
++        "artifact_id": "format-run-9",
++    }
++    backend = _CommandBackend(response)
++    _enable_command(monkeypatch, backend)
++    root = str(tmp_path)
++
++    result = mcp_server.local_ai_command(
++        action="format",
++        command="src/parser.py",
++        cwd=root,
++        timeout=25,
++        max_response_tokens=300,
++        response_profile="compact",
++        reuse_key="command:format:parser",
++    )
++
++    assert backend.calls == [
++        (
++            "/api/command",
++            _expected_payload("format", root, "src/parser.py", paths=["src/parser.py"]),
++            {"timeout": 77.0},
++        )
++    ]
++    core_result = {key: value for key, value in result.items() if key not in {"response_budget", "token_efficiency"}}
++    assert core_result == response
++    if "response_budget" in result:
++        assert result["response_budget"]["requested_tokens"] == 300
++        assert result["response_budget"]["returned_tokens"] <= 300
++
++
++def test_mcp_command_http_probe_forwards_target_and_returns_probe_status(monkeypatch: Any, tmp_path: Any) -> None:
++    response = {"success": True, "status": "reachable", "status_code": 204, "target": "https://hub.test/health"}
++    backend = _CommandBackend(response)
++    _enable_command(monkeypatch, backend)
++    root = str(tmp_path)
++
++    result = mcp_server.local_ai_command(
++        action="http_probe", command="https://hub.test/health", cwd=root, timeout=25, force=True
++    )
++
++    assert backend.calls == [
++        (
++            "/api/command",
++            _expected_payload("http_probe", root, "https://hub.test/health", force=True),
++            {"timeout": 77.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_command_run_affected_forwards_task_acceptance_context(monkeypatch: Any, tmp_path: Any) -> None:
++    response = {
++        "success": True,
++        "status": "passed",
++        "task_id": "task-affected-3",
++        "affected_tests": ["tests/test_command.py::test_router"],
++        "exit_code": 0,
++    }
++    backend = _CommandBackend(response)
++    _enable_command(monkeypatch, backend)
++    root = str(tmp_path)
++
++    result = mcp_server.local_ai_command(
++        action="run_affected",
++        command="pytest -q",
++        cwd=root,
++        timeout=25,
++        task_id="task-affected-3",
++        criterion="command router behavior",
++    )
++
++    assert backend.calls == [
++        (
++            "/api/command",
++            _expected_payload(
++                "run_affected",
++                root,
++                "pytest -q",
++                task_id="task-affected-3",
++                criterion="command router behavior",
++            ),
++            {"timeout": 77.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_command_mock_server_start_uses_dedicated_endpoint_and_port(monkeypatch: Any, tmp_path: Any) -> None:
++    response = {"success": True, "status": "started", "port": 11441, "pid": 912}
++    backend = _CommandBackend(response)
++    _enable_command(monkeypatch, backend)
++    root = str(tmp_path)
++
++    result = mcp_server.local_ai_command(
++        action="mock_server_start", command="11441", cwd=root, criterion="tests/fixtures/openapi.json"
++    )
++
++    assert backend.calls == [
++        (
++            "/api/command/mock_server",
++            {"action": "start", "root": root, "port": 11441, "spec_path": "tests/fixtures/openapi.json"},
++            {"timeout": 77.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_command_speculative_lint_submits_bounded_paths_and_job_identity(
++    monkeypatch: Any, tmp_path: Any
++) -> None:
++    response = {"success": True, "status": "queued", "lint_job_id": "lint-job-7"}
++    backend = _CommandBackend(response)
++    _enable_command(monkeypatch, backend)
++    root = str(tmp_path)
++
++    result = mcp_server.local_ai_command(
++        action="speculative_lint",
++        command="ruff check",
++        cwd=root,
++        paths=["src/parser.py", "tests/test_parser.py"],
++        lint_action="submit",
++        job_id="lint-job-7",
++    )
++
++    assert backend.calls == [
++        (
++            "/api/speculative-lint",
++            {
++                "action": "submit",
++                "root": root,
++                "paths": ["src/parser.py", "tests/test_parser.py"],
++                "command": "ruff check",
++                "job_id": "lint-job-7",
++            },
++            {"timeout": 77.0},
++        )
++    ]
++    assert result == response
+--- /dev/null
++++ b/tests/test_mcp_coord_operation_acceptance.py
+@@ -0,0 +1,196 @@
++"""Operation-specific behavior coverage for unlinked local_ai_coord actions."""
++
++from local_ai_hub import mcp_server
++
++
++class CoordBackend:
++    def __init__(self, response):
++        self.response = response
++        self.calls = []
++
++    def coord(self, **payload):
++        self.calls.append(payload)
++        return self.response
++
++
++class ApiBackend:
++    def __init__(self, response):
++        self.response = response
++        self.calls = []
++
++    def post(self, path, payload, **kwargs):
++        self.calls.append((path, payload, kwargs))
++        return self.response
++
++
++def test_local_ai_coord_task_get_forwards_task_and_root_identity(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = CoordBackend(
++        {"success": True, "summary": "task t-get-1 is active", "task": {"task_id": "t-get-1", "status": "active"}}
++    )
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++
++    result = mcp_server.local_ai_coord(
++        action="task_get", task_id="t-get-1", root=root, include_stale=True
++    )
++
++    assert backend.calls == [{
++        "action": "task_get", "task_id": "t-get-1", "contract": None,
++        "checkpoint": None, "status": "", "reason": "", "root": root,
++        "ttl_seconds": 0, "include_stale": True,
++    }]
++    assert result["success"] is True
++    assert result["summary"] == "task t-get-1 is active"
++
++
++def test_local_ai_coord_task_checkpoint_preserves_checkpoint_payload(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    checkpoint = {"phase": "verify", "next_action": "run focused suite", "revision": "r17"}
++    backend = CoordBackend({"success": True, "summary": "checkpoint recorded for t-check-1"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++
++    result = mcp_server.local_ai_coord(
++        action="task_checkpoint", task_id="t-check-1", checkpoint=checkpoint, root=root
++    )
++
++    assert backend.calls == [{
++        "action": "task_checkpoint", "task_id": "t-check-1", "contract": None,
++        "checkpoint": checkpoint, "status": "", "reason": "", "root": root,
++        "ttl_seconds": 0, "include_stale": False,
++    }]
++    assert result["success"] is True
++    assert result["summary"] == "checkpoint recorded for t-check-1"
++
++
++def test_local_ai_coord_task_transition_forwards_target_state_and_reason(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = CoordBackend({"success": True, "summary": "task t-transition-1 moved to verifying"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++
++    result = mcp_server.local_ai_coord(
++        action="task_transition", task_id="t-transition-1", status="verifying",
++        reason="focused checks are ready", root=root,
++    )
++
++    assert backend.calls == [{
++        "action": "task_transition", "task_id": "t-transition-1", "contract": None,
++        "checkpoint": None, "status": "verifying", "reason": "focused checks are ready",
++        "root": root, "ttl_seconds": 0, "include_stale": False,
++    }]
++    assert result["success"] is True
++    assert result["summary"] == "task t-transition-1 moved to verifying"
++
++
++def test_local_ai_coord_task_list_forwards_status_and_stale_filter(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = CoordBackend({"success": True, "summary": "one active task", "tasks": [{"task_id": "t-list-1"}]})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++
++    result = mcp_server.local_ai_coord(
++        action="task_list", status="active", root=root, include_stale=True
++    )
++
++    assert backend.calls == [{
++        "action": "task_list", "task_id": "", "contract": None,
++        "checkpoint": None, "status": "active", "reason": "", "root": root,
++        "ttl_seconds": 0, "include_stale": True,
++    }]
++    assert result["success"] is True
++    assert result["summary"] == "one active task"
++
++
++def test_local_ai_coord_task_complete_forwards_reason_and_identity(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = CoordBackend({"success": True, "summary": "task t-done-1 completed"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++
++    result = mcp_server.local_ai_coord(
++        action="task_complete", task_id="t-done-1", reason="acceptance receipts attached", root=root
++    )
++
++    assert backend.calls == [{
++        "action": "task_complete", "task_id": "t-done-1", "contract": None,
++        "checkpoint": None, "status": "", "reason": "acceptance receipts attached",
++        "root": root, "ttl_seconds": 0, "include_stale": False,
++    }]
++    assert result["success"] is True
++    assert result["summary"] == "task t-done-1 completed"
++
++
++def test_local_ai_coord_memo_put_posts_root_key_value_and_ttl(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = ApiBackend({"success": True, "summary": "memo stored", "key": "handoff:cli"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++
++    result = mcp_server.local_ai_coord(
++        action="memo_put", root=root, key="handoff:cli", value="CLI audit complete",
++        ttl_seconds=3600,
++    )
++
++    assert backend.calls == [(
++        "/api/memory/put",
++        {"root": root, "key": "handoff:cli", "value": "CLI audit complete", "ttl_seconds": 3600},
++        {},
++    )]
++    assert result["success"] is True
++    assert result["summary"] == "memo stored"
++
++
++def test_local_ai_coord_memo_search_posts_query_with_root_scope(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = ApiBackend({"success": True, "summary": "one matching memo", "records": [{"key": "handoff:cli"}]})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++
++    result = mcp_server.local_ai_coord(
++        action="memo_search", root=root, query="CLI audit"
++    )
++
++    assert backend.calls == [(
++        "/api/memory/search", {"root": root, "query": "CLI audit", "limit": 12}, {}
++    )]
++    assert result["success"] is True
++    assert result["summary"] == "one matching memo"
++
++
++def test_local_ai_coord_memo_delete_posts_exact_root_and_key(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = ApiBackend({"success": True, "summary": "memo deleted", "key": "handoff:old"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++
++    result = mcp_server.local_ai_coord(
++        action="memo_delete", root=root, key="handoff:old"
++    )
++
++    assert backend.calls == [
++        ("/api/memory/delete", {"root": root, "key": "handoff:old"}, {})
++    ]
++    assert result["success"] is True
++    assert result["summary"] == "memo deleted"
++
++
++def test_local_ai_coord_claim_forwards_owned_paths_and_lease_identity(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    paths = ["tools/surface_inventory.py", "tests/test_surface_inventory.py"]
++    backend = ApiBackend({"success": True, "summary": "lease granted", "lease_id": "lease-42"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++
++    result = mcp_server.local_ai_coord(
++        action="claim", root=root, paths=paths, ttl_seconds=1200, value="T01 matcher tests"
++    )
++
++    assert backend.calls == [(
++        "/api/leases/claim_batch",
++        {"root": root, "paths": paths, "ttl_seconds": 1200, "purpose": "T01 matcher tests"},
++        {},
++    )]
++    assert result["success"] is True
++    assert result["summary"] == "lease granted"

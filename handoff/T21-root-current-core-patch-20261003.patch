@@ -1,0 +1,221 @@
+--- a/src/local_ai_hub/project_config.py
++++ b/src/local_ai_hub/project_config.py
+@@ -897,6 +897,8 @@
+ ) -> Path | None:
+     """Return contained, existing path only when hint scope and freshness match."""
+     try:
++        if not isinstance(hint, PathHint):
++            return None
+         relative = _relative_pattern(hint.path)
+         if any(char in relative for char in "*?[]"):
+             return None
+--- a/src/local_ai_hub/agent_consistency.py
++++ b/src/local_ai_hub/agent_consistency.py
+@@ -351,6 +351,7 @@
+     tenant: str = ""
+     memory_revision: str = ""
+     session_id: str = ""
++    project_config_digest: str = ""
+     override_reason: str = ""
+     approval: str | bool = ""
+ 
+@@ -373,6 +374,14 @@
+         object.__setattr__(self, "tenant", _text(self.tenant, 160))
+         object.__setattr__(self, "memory_revision", _text(self.memory_revision, 200))
+         object.__setattr__(self, "session_id", _text(self.session_id, 160))
++        digest = self.project_config_digest if isinstance(self.project_config_digest, str) else ""
++        digest = digest.strip().lower()
++        if digest and (
++            len(digest) != 64
++            or any(character not in "0123456789abcdef" for character in digest)
++        ):
++            digest = ""
++        object.__setattr__(self, "project_config_digest", digest)
+         object.__setattr__(self, "override_reason", _text(self.override_reason, 500))
+         if not isinstance(self.approval, bool):
+             object.__setattr__(self, "approval", _text(self.approval, 240))
+@@ -387,6 +396,7 @@
+             "exclude_paths": list(self.exclude_paths), "force_include_paths": list(self.force_include_paths),
+             "base": self.base, "staged": self.staged,
+             "tenant": self.tenant, "memory_revision": self.memory_revision, "session_id": self.session_id,
++            "project_config_digest": self.project_config_digest,
+             "override_reason": self.override_reason, "approval": self.approval,
+         }
+ 
+--- a/tests/test_agent_consistency.py
++++ b/tests/test_agent_consistency.py
+@@ -927,3 +927,23 @@
+     assert clean["input_savings_source"] == ""
+     assert clean["output_savings_source"] == ""
+     assert clean["savings_breakdown_json"] == '{"response_compaction":3}'
++
++
++def test_consistency_request_preserves_project_config_digest_identity() -> None:
++    first_digest = "a" * 64
++    second_digest = "b" * 64
++
++    first = ConsistencyRequest(root="/repo", project_config_digest=first_digest)
++    second = ConsistencyRequest(root="/repo", project_config_digest=second_digest)
++
++    assert first.project_config_digest == first_digest
++    assert first.to_dict()["project_config_digest"] == first_digest
++    assert second.to_dict()["project_config_digest"] == second_digest
++    assert first.to_dict() != second.to_dict()
++
++
++def test_consistency_request_drops_malformed_project_config_digest() -> None:
++    request = ConsistencyRequest(root="/repo", project_config_digest="../private")
++
++    assert request.project_config_digest == ""
++    assert request.to_dict()["project_config_digest"] == ""
+--- a/tests/test_project_path_hints.py
++++ b/tests/test_project_path_hints.py
+@@ -675,3 +675,148 @@
+         ).fetchall()
+ 
+     assert rows == [("revision-1",), ("revision-2",)]
++
++
++def test_path_hint_normalizes_windows_separators_and_outer_whitespace(
++    tmp_path: Path,
++) -> None:
++    candidate = tmp_path / "templates" / "element" / "button.php"
++    candidate.parent.mkdir(parents=True)
++    candidate.write_text("button()", encoding="utf-8")
++    hint = PathHint(
++        r" templates\element\button.php ",
++        "repository_search",
++        "repo_search",
++    )
++
++    resolved = validate_path_hint(
++        tmp_path,
++        hint,
++        purpose="repository_search",
++        scope="repo_search",
++        repository_revision="rev-1",
++        config_digest="digest-1",
++    )
++
++    assert resolved == candidate.resolve()
++
++
++def test_path_hint_rejects_absolute_and_dot_paths(
++    tmp_path: Path,
++) -> None:
++    root = tmp_path / "repo"
++    candidate = root / "src" / "main.py"
++    candidate.parent.mkdir(parents=True)
++    candidate.write_text("main()", encoding="utf-8")
++    expected = {
++        "purpose": "repository_search",
++        "scope": "repo_search",
++        "repository_revision": "rev-1",
++        "config_digest": "digest-1",
++    }
++
++    assert validate_path_hint(
++        root,
++        PathHint(str(candidate), "repository_search", "repo_search"),
++        **expected,
++    ) is None
++    assert validate_path_hint(
++        root,
++        PathHint(".", "repository_search", "repo_search"),
++        **expected,
++    ) is None
++
++
++def test_path_hint_rejects_absolute_and_relative_paths_outside_root(
++    tmp_path: Path,
++) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    outside = tmp_path / "outside.py"
++    outside.write_text("outside", encoding="utf-8")
++    expected = {
++        "purpose": "repository_search",
++        "scope": "repo_search",
++        "repository_revision": "rev-1",
++        "config_digest": "digest-1",
++    }
++
++    for path in (str(outside), "../outside.py"):
++        assert validate_path_hint(
++            root,
++            PathHint(path, "repository_search", "repo_search"),
++            **expected,
++        ) is None
++
++
++def test_path_hint_requires_exact_purpose_and_scope(tmp_path: Path) -> None:
++    candidate = tmp_path / "src" / "main.py"
++    candidate.parent.mkdir()
++    candidate.write_text("x", encoding="utf-8")
++    hint = PathHint("src/main.py", "search", "repository_search")
++    expected = {
++        "repository_revision": "rev-1",
++        "config_digest": "digest-1",
++    }
++
++    assert validate_path_hint(
++        tmp_path, hint, purpose="other", scope="repository_search", **expected
++    ) is None
++    assert validate_path_hint(
++        tmp_path, hint, purpose="search", scope="other", **expected
++    ) is None
++
++
++def test_path_hint_rejects_absolute_unc_and_glob_paths(tmp_path: Path) -> None:
++    for path in ("C:/private/secret.py", "//server/share/secret.py", "src/*.py"):
++        assert validate_path_hint(
++            tmp_path,
++            PathHint(path, "search", "repo"),
++            purpose="search",
++            scope="repo",
++            repository_revision="rev-1",
++            config_digest="digest-1",
++        ) is None
++
++
++def test_path_hint_rejects_symlink_target_outside_root(
++    tmp_path: Path, monkeypatch
++) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    alias = root / "src" / "alias.py"
++    alias.parent.mkdir()
++    alias.write_text("inside", encoding="utf-8")
++    outside = tmp_path / "outside.py"
++    outside.write_text("outside", encoding="utf-8")
++    original_resolve = Path.resolve
++
++    def resolve_escape(path: Path, *args, **kwargs) -> Path:
++        if path == alias:
++            return outside
++        return original_resolve(path, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "resolve", resolve_escape)
++
++    assert validate_path_hint(
++        root,
++        PathHint("src/alias.py", "search", "repo"),
++        purpose="search",
++        scope="repo",
++        repository_revision="rev-1",
++        config_digest="digest-1",
++    ) is None
++
++
++def test_path_hint_rejects_non_path_hint_values(tmp_path: Path) -> None:
++    target = tmp_path / "source.py"
++    target.write_text("safe", encoding="utf-8")
++
++    assert validate_path_hint(
++        tmp_path,
++        object(),  # type: ignore[arg-type]
++        purpose="search",
++        scope="repo",
++        repository_revision="rev-1",
++        config_digest="digest-1",
++    ) is None

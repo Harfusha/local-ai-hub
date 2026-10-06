@@ -1,0 +1,25 @@
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -3205,16 +3205,20 @@
+                     }
+             except Exception:
+                 pass
+         try:
++            execute_options: dict[str, Any] = {}
++            if argv_override is not None:
++                execute_options["argv_override"] = argv_override
++            if _environment_overrides:
++                execute_options["environment_overrides"] = _environment_overrides
+             result = self._execute(
+                 command,
+                 cwd,
+                 int(timeout or self.timeout),
+                 cancel_event,
+                 log_callback=log_callback,
+-                argv_override=argv_override,
+-                environment_overrides=_environment_overrides,
++                **execute_options,
+             )
+             # CPython compileall reports missing targets as a diagnostic while
+             # still exiting 0. A green exit code must not hide that no target
+             # was compiled.

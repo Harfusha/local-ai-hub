@@ -1,0 +1,43 @@
+{
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "overlay": "C:\\Users\\Adam\\.codex\\worktrees\\4816\\.local-ai-hub\\.handoff\\T12-model-free-root-overlay-v3-20261001",
+  "patch": "C:\\Users\\Adam\\.codex\\worktrees\\4816\\.local-ai-hub\\.handoff\\T12-model-free-harness-root-current-v3-20261001.patch",
+  "root_preimages": {
+    "tools/t12_model_free_harness.py": "MISSING",
+    "tests/test_t12_model_free_harness.py": "MISSING"
+  },
+  "candidate_postimages": {
+    "tools/t12_model_free_harness.py": "51091A7778D2C24555BF4258E27E203A8A746B3246284BF171D16EE7A3FBD9D8",
+    "tests/test_t12_model_free_harness.py": "19660CF9842551B386D362C24134893E3F97104FDAFEC6F6BD2214A28B73613B"
+  },
+  "dependency_hashes": {
+    "src/local_ai_hub/hardware.py": "91621DEC38E68E611ED6F89D71508600D9C59A6F5AAC087678B4DDDC17069A8E",
+    "src/local_ai_hub/router.py": "AC089C43BD6A3CBEE26F3A742D80C92E7252D5A803491842EA7CB5D9C2E74B49",
+    "src/local_ai_hub/scheduler.py": "7AE7979652DD07FDD092139AA2CFCC8980F8AA0087956975354C79E41EF4C9DA"
+  },
+  "patch_sha256": "EAD5246BD34A062D1B3897D22FF95222E3205D8A765DD66CBF9A67C3ACE05879",
+  "validation": {
+    "test_command": "$env:PYTHONPATH='src'; python -B -m pytest -q -p no:cacheprovider --tb=short -c pyproject.toml tests/test_t12_model_free_harness.py",
+    "root_postimages": {
+      "tools/t12_model_free_harness.py": "FAC3E7A5668B3BAD6F6187938B0A66FB95BAD32C9C23958A976475511D7DC9F6",
+      "tests/test_t12_model_free_harness.py": "464D8003FF81857A67D5F769B3A50A92CB51733E8B6EEF4DAC795F7A32DB7261"
+    },
+    "test_result": null,
+    "cli_result": "completed all four profiles; queue wait 25.386-25.729 ms; load count 1 per model; 2 model switches; queue_limit rejection; synthetic fairness 1000/2000 ms",
+    "strict_apply_check": "PASS",
+    "candidate_test_result": "1 passed in 4.68s",
+    "root_source_overlay_test_result": "1 passed in 4.58s; matrix covers integrated/balanced/high/max",
+    "pyflakes": "passed with no output",
+    "scope": [
+      "tools/t12_model_free_harness.py",
+      "tests/test_t12_model_free_harness.py"
+    ],
+    "limitations": [
+      "no live inference",
+      "no VRAM measurement",
+      "no quality scoring",
+      "does not replace T02 baseline or live profile comparison"
+    ]
+  }
+}

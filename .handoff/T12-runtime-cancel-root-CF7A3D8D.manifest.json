@@ -1,0 +1,15 @@
+{
+  "root_preimage_path": "C:\\Users\\Adam\\.local-ai-hub\\tests\\test_t12_runtime_scenarios.py",
+  "root_preimage_sha256": "CF7A3D8DA97F82AE77022AF36061A3962FD2BA57238AD0F18F06482A8DA55736",
+  "candidate_path": "C:\\Users\\Adam\\.codex\\worktrees\\4816\\.local-ai-hub\\tests\\test_t12_runtime_scenarios.py",
+  "candidate_sha256": "739AEF80F31546231A23D3ED68A0503E7078A02F221AC1189D1B3788EC14F16B",
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\4816\\.local-ai-hub\\.handoff\\T12-runtime-cancel-root-CF7A3D8D.patch",
+  "patch_sha256": "B48F47C0127767627AE1CA1AEC2627C2F3A37AAD7E3A4D8C9830AEB0A5C0B734",
+  "isolated_copy_preimage_sha256": "CF7A3D8DA97F82AE77022AF36061A3962FD2BA57238AD0F18F06482A8DA55736",
+  "isolated_apply_check": "PASS",
+  "isolated_apply": "PASS",
+  "isolated_result_sha256": "885EE75E4389CED0A30B184672F2A26D77434C78EF3E3657BAE5E8CBF4A36DBA",
+  "changed_path": "tests/test_t12_runtime_scenarios.py",
+  "selector": "def test_t12_runtime_cancel_holds_admission_until_child_inference_exits() -> None:",
+  "scope": "single added test hunk; no root edit"
+}

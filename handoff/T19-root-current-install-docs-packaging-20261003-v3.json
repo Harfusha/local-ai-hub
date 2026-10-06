@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-03",
+  "scope": "T19 root-current install/update/docs/CodeGraph standalone packaging patch",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "root_writes": false,
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\T19-root-current-install-docs-packaging-20261003-v3.patch",
+  "patch_sha256": "8d2970b6ed9b24f8148c49710d3dd18d7e44dd7ac96626e047726bb50e39a3a3",
+  "patch_bytes": 37915,
+  "supersedes": "v2 overlay; v3 adds current-root quality-floor wording to both prompts",
+  "changed_paths": [
+    "docs/INSTALL_PROMPT.md",
+    "docs/UPDATE_PROMPT.md",
+    "docs/PYTHON_SDK.md",
+    "docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md",
+    "docs/T19_RELEASE_VALIDATION_RUNBOOK.md"
+  ],
+  "preimage_sha256_worktree": {
+    "docs/INSTALL_PROMPT.md": "7e5da693aebdfe0bd2f025aa6176e75284701eb4b92fedf636e64a88d7c6573b",
+    "docs/UPDATE_PROMPT.md": "50ce34f25602653652235a8267e6ea2d85953bb6541c2ec66de7c40d22a31c97",
+    "docs/PYTHON_SDK.md": null,
+    "docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md": "a037dae1d9942c76f15b7f0801f647e9fc5879b74b9e41d206d308432a0ad49a",
+    "docs/T19_RELEASE_VALIDATION_RUNBOOK.md": "53ec31aa3f646308c21c0f5101123880b583513597389f5b32e8bc5541972d63"
+  },
+  "postimage_sha256_lf": {
+    "docs/INSTALL_PROMPT.md": "fe19e808419c2cbd4f40c7893df356ac1e59c3b1a6991aa24864b034c5a3c17a",
+    "docs/UPDATE_PROMPT.md": "832a0347680d23d2d49a1f27072750a760d3fc0f7840c0dc16168056aba5f4f8",
+    "docs/PYTHON_SDK.md": "f974fc2cefc2c2be56945ec713af94223790fc44418ba583a5a7eafc510819e2",
+    "docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md": "2346381bd256cd24bbc57cca1815ad035229926e10613449edecf787bdaf9855",
+    "docs/T19_RELEASE_VALIDATION_RUNBOOK.md": "369429b1957885b913da9d18ecd78ca10cfd55f3668bc28af62e353083c2b7c6"
+  },
+  "verified_contracts": [
+    "HTTP /health returns success, hub_online and package version; does not identify source revision",
+    "install.ps1/install.sh/tools/setup.py do not enforce expected-revision; prompts require manual T20 SHA and clean-tree verification",
+    "setup performs its configured service reconcile/restart path; update prompt avoids a second unconditional restart",
+    "HubClient docs match 42 public methods, 48 literal API paths, all six pyproject extras, request transport kwargs and typed path_hints",
+    "T12 router checks override against configured model tiers and rejects model rank below the routed quality floor; both prompts carry this wording",
+    "CodeGraph setup removal retained; docs retain standalone package/MCP promotion and prompts link to it",
+    "MANIFEST.in already recursively includes docs/*.md for sdist; no MANIFEST edit needed"
+  ],
+  "unchanged_contracts": [
+    "T20 GO required before tests/install/update runtime acceptance",
+    "persistent service acceptance separate; clean-host snippets use --skip-service",
+    "cross-version update requires T20 baseline/target artifact pair",
+    "reported MCP/daemon loaded-code mismatch remains unresolved",
+    "no runtime files or inherited root docs overwritten"
+  ],
+  "package_scope": {
+    "MANIFEST.in_sha256": "bcbb4d098a772c2c6bfd57feddcd5ce5daf65da69ee1ac7c9d74f1bcc306e854",
+    "rule": "recursive-include docs *.md",
+    "edit_required": false,
+    "SDK_in_sdist": true
+  },
+  "checks": {
+    "static_AST_text_contracts": "PASS; 13 checks plus direct router AST source assertion",
+    "git_apply_check": {
+      "command": "git -C 'C:\\Users\\Adam\\.local-ai-hub' apply --check 'C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\T19-root-current-install-docs-packaging-20261003-v3.patch'",
+      "result": "PASS (exit 0, no output)",
+      "root_changed_by_check": false,
+      "verified_at_utc": "2026-10-03T19:43:23Z"
+    },
+    "tests": "not run; await T20 GO",
+    "install_update_acceptance": "not run; await T20 GO"
+  },
+  "root_dirty_status": "Existing dirty files preserved; only read/status/hash checks; patch remains unapplied."
+}
