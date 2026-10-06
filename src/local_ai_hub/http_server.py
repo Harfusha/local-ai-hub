@@ -2069,6 +2069,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False})
             return
 
+        # EventSource reconnects carry the last numeric event ID automatically.
+        # It is safe to apply only with an explicit stream filter; an unscoped
+        # cursor could otherwise resume one stream inside another.
+        headers = getattr(self, "headers", {})
+        last_event_id = str(headers.get("Last-Event-ID", "") or "").strip()
+        if stream_id and last_event_id.isascii() and last_event_id.isdecimal():
+            try:
+                resume_seq = int(last_event_id)
+            except (TypeError, ValueError, OverflowError):
+                resume_seq = -1
+            if 0 <= resume_seq <= (1 << 63) - 1:
+                after_seq = resume_seq
+
         # Bound maximum stream duration to prevent holding worker threads indefinitely
         app_cfg = getattr(APP, "config", {}) or {}
         max_duration = float(app_cfg.get("server", {}).get("max_stream_duration_seconds", 300.0) if isinstance(app_cfg, dict) else 300.0)
