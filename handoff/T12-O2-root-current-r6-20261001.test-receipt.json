@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "artifact": "T12-O2-root-current-r6-20261001",
+  "patch_path": "handoff/T12-O2-root-current-r6-20261001.patch",
+  "patch_sha256": "BF483E47DA2585363A79CA62D60379EB13CC2528B53D9483D4BBFA5E7AF9114B",
+  "regression": {
+    "test": "test_strict_model_inventory_raises_when_deadline_expires_before_http",
+    "clock": [
+      50,
+      51
+    ],
+    "deadline": 50.5,
+    "red_before_fix": "1 failed in 0.13s; DID NOT RAISE TimeoutError; strict inventory returned empty mapping",
+    "behavior_after_first_patch": "strict TimeoutError was wrapped as RuntimeError; regression retained timeout type",
+    "green_after_fix": "1 passed in 0.04s"
+  },
+  "suite": {
+    "command": "python -B handoff/.t12-r5-rebuild-20261001/run_tests.py",
+    "result": "26 passed in 2.09s",
+    "source_root": "handoff/.t12-r5-rebuild-20261001/overlay",
+    "import_origins": [
+      "handoff/.t12-r5-rebuild-20261001/overlay/src/local_ai_hub/services.py",
+      "handoff/.t12-r5-rebuild-20261001/overlay/src/local_ai_hub/ollama.py",
+      "handoff/.t12-r5-rebuild-20261001/overlay/src/local_ai_hub/llama_cpp.py"
+    ]
+  },
+  "apply_check": {
+    "command": "git apply --check handoff/T12-O2-root-current-r6-20261001.patch",
+    "result": "pass on isolated copy of root preimages",
+    "scratch_apply": "pass; 7/7 files match overlay after CRLF normalization",
+    "root_written": false
+  },
+  "limits": [
+    "No GPU, Hub, or benchmark execution.",
+    "physical_vram_reclaimed remains false."
+  ]
+}

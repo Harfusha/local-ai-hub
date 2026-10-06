@@ -1,0 +1,44 @@
+{
+  "receipt": "T05 HTTP memory identity binding",
+  "version": 2,
+  "date": "2026-10-01",
+  "status": "candidate_unit_pass_root_integration_pending",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub",
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "contract": "GET and POST get/find plus writes use transport tenant; explicit GLOBAL DELETE remains transport-tenant agnostic and uses server-resolved root/repository guards. Client reserved root/repository_id/tenant values are discarded before server binding and only their field names are retained.",
+  "candidate_selector": {
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_memory_http_identity.py::test_http_memory_get_and_mutations_bind_transport_tenant_and_project_identity",
+    "result": "1 passed in 4.49s",
+    "proof_scope": "candidate HTTP handler against a narrow MemoryHarness; covers tenant isolation, project identity fail-closed, nested provenance root binding, write sanitization, wrong-root GLOBAL DELETE denial and tenant-agnostic authorized GLOBAL DELETE."
+  },
+  "root_overlay_selector": {
+    "status": "pending T20/shared test-slot release",
+    "required": "rerun the same selector in a fresh overlay: candidate http_server.py and agent_memory.py, root app.py/agent_events.py/state_paths.py; assert actual SQLite provenance persistence and source origins."
+  },
+  "root_patch": {
+    "source": "artifacts/t05-root-current-http-memory-identity-v4.patch",
+    "sha256": "F19F62E761244B10F3383B4E08897051A0438482032271A3D76A8B11231CFFED",
+    "apply_check": "PASS against root http_server.py SHA-256 4B635B978EF556A69863507D9B7672604068997BE32C55CEFA1E1C1CCCC9C8BE"
+  },
+  "test_patch": {
+    "path": "artifacts/t05-root-current-http-memory-identity-test-v6.patch",
+    "sha256": "D45B296D3EA3AC9828109DECC3178FDA54BFCC50C9D6E4AB96F8CFFB599F9237",
+    "apply_check": "PASS; test remains unapplied at root."
+  },
+  "sha256": {
+    "candidate_http_server.py": "B3DAC25FB3ACA47D4D57EC3BACCD7857CA348CBCAA09BDFF32A6DCEB8E72AEDE",
+    "candidate_agent_memory.py": "91D7FDCF4A5E6815C328ADA69D3866D9953F84B85BBA8E70179C2FDFD5E3A6A9",
+    "candidate_test.py": "CAD65431390C7168561017FC95014436B71F298501FC8FAD54F0CE645B3F24A3",
+    "root_http_server_preimage.py": "4B635B978EF556A69863507D9B7672604068997BE32C55CEFA1E1C1CCCC9C8BE",
+    "root_agent_events.py": "02A25102B888B23FE99B8C508F59AEDD846BA24FD38A268BCC6893B0877E0A38",
+    "source_patch": "F19F62E761244B10F3383B4E08897051A0438482032271A3D76A8B11231CFFED",
+    "test_patch": "D45B296D3EA3AC9828109DECC3178FDA54BFCC50C9D6E4AB96F8CFFB599F9237"
+  },
+  "limits": [
+    "Unit harness is not SQLite or root integration evidence.",
+    "T20 owns root changes and integration; neither patch has been applied.",
+    "Existing 29-pass suite remains unrun."
+  ]
+}

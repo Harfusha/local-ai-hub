@@ -1,0 +1,298 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-02",
+  "task": "T08 complete Agent OS atomicity, durable events, crash recovery acceptance",
+  "status": "prepared_not_run",
+  "tests_run": false,
+  "test_gate": "Do not run until T20 explicitly assigns T08 a serial slot after slots 08-12. Current T20 status: slot 10 on hold after Hub failures; T08 has no assignment.",
+  "root_current": {
+    "path": "C:\\Users\\Adam\\.local-ai-hub",
+    "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "sources": {
+      "src/local_ai_hub/agent_events.py": {
+        "sha256": "09B31135FF2493F2B8E236074DBF7FB2C9CC274BC2DD5841ECDDD07F974ADA5A",
+        "exists": true
+      },
+      "src/local_ai_hub/agent_tasks.py": {
+        "sha256": "79487FCE9F8A477A9DE888A6C7FEF77C3526F9B63151EF69FF0CE2019502BA45",
+        "exists": true
+      },
+      "src/local_ai_hub/agent_verification.py": {
+        "sha256": "FB477438FF110AB80FE6F2D486FFA5D87AAB1A855735FCD94592F8080EAF0017",
+        "exists": true
+      },
+      "src/local_ai_hub/agent_memory.py": {
+        "sha256": "2168D2442E271F26EDD10DF5EBBA19C011E4C66ADAE3C4C204DDCE725BF79018",
+        "exists": true
+      },
+      "src/local_ai_hub/agent_blackboard.py": {
+        "sha256": "9222A5084BBB0A937CADB79A091134CABD4CA3A73B7A1321F0035DB4DC78E2D1",
+        "exists": true
+      },
+      "src/local_ai_hub/swarm.py": {
+        "sha256": "8E2E0A4A7289B1308295A6B87A988921FFA56271C6079752CA361FD39C950513",
+        "exists": true
+      },
+      "src/local_ai_hub/leases.py": {
+        "sha256": "173842B7359C8579868D72F448F52984A62E08B5FFEEE33A6EDC185481865793",
+        "exists": true
+      }
+    },
+    "test_inputs": {
+      "tests/test_agent_t08_durable_contract.py": {
+        "sha256": "2B75E1FBB4EF0DCBC7B82BDFA811DE688E54B90A9D23D74F0D4A29BC1A9B2725",
+        "exists": true
+      },
+      "tests/test_agent_t08_cache_isolation.py": {
+        "sha256": "C132EF4F7CA3EBD6FD072B10C4AC5835501EC6660D23D62F95690697561E8E75",
+        "exists": true
+      },
+      "tests/test_agent_t08_receipt_transaction.py": {
+        "sha256": "D27745D7407DD7596F8ED1C1F7DFFE65660DD3C29D7787657D9478A3DA940699",
+        "exists": true
+      },
+      "tests/test_agent_t08_event_page_snapshot.py": {
+        "sha256": "32A481ED12F35D309A53E6A2203FFB278837FF6E71E432CFF5AC5D582B74ED66",
+        "exists": true
+      },
+      "tests/test_agent_t08_migration_recovery.py": {
+        "sha256": "7218D318223FCEC6705B1514EB0820A4B88FB635CAB21C1BF35AFBE259022E73",
+        "exists": true
+      },
+      "tests/test_agent_t08_live_order.py": {
+        "sha256": "23472C0021DD415622882E2942F6DC99C153632D93CCA5728808AAC402F17BF9",
+        "exists": true
+      },
+      "tests/test_agent_t08_crash_after_commit.py": {
+        "sha256": "9C949A0CB2D9FC5F58FA7264EF1E8F5DEF13BB657328998591D0A97918849E8F",
+        "exists": true
+      },
+      "tests/test_agent_crash_recovery.py": {
+        "sha256": "210B0C5B3BA41D836DFFF5D30CBB5CEA2639B4935C1613D294DBDB6EAD371D9C",
+        "exists": true
+      },
+      "tests/test_agent_state_e2e.py": {
+        "sha256": "152E7FA69B3CEBD42F01539FBB71D88F776FFD6C479D8742756A2A34695A6390",
+        "exists": true
+      },
+      "tests/test_agent_state_reliability.py": {
+        "sha256": "3FFF9085D5D7261E5863144391080C75CAAB068155DC10D6C02146BF690A3ECF",
+        "exists": true
+      },
+      "tests/test_swarm_orchestrator.py": {
+        "sha256": "7240C7ECF7BDCDE44DE90E0BDE0D7DD15DFAAA5880DE195E63F480FFB12A70F5",
+        "exists": true
+      },
+      "tests/test_sse_events_stream.py": {
+        "sha256": "BCEE7A41E7A561DE6E1F4C5F7C663CCFE518CAC9616F48064A5CD86CB67EEECC",
+        "exists": true
+      },
+      "tests/test_agent_verification.py": {
+        "sha256": "0BBD285D18251355A54A9652A0BE16B6BD2DA98658DBDF267DFB9CC888193E96",
+        "exists": true
+      },
+      "tests/test_agent_tasks.py": {
+        "sha256": "20E3203F037185F1C6CF1C2165088F485FB6AB70DBC158229AF18353FD2DF1A1",
+        "exists": true
+      },
+      "tests/test_agent_task_memory_adoption.py": {
+        "sha256": "FFE89E25A765C2727A3DA7B4BD5ABD369B1F05936DC8F711D5521B95A31CD467",
+        "exists": true
+      },
+      "tests/test_t09_command_execution_completion.py": {
+        "sha256": "E90EA9C7EDAEE6DC64203FE30FAE2706269C4028135B68E5D023492EDCF5F91F",
+        "exists": true
+      },
+      "tests/test_lease_atomic_deadlock.py": {
+        "sha256": "083EA21B0DAB45BC590207ACAC54097DCAA47A1A013E35D1B709C08195E328F5",
+        "exists": true
+      }
+    }
+  },
+  "T08_candidate": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+    "head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+    "sources": {
+      "src/local_ai_hub/agent_events.py": {
+        "sha256": "B00AAF9A109B697CE7D3A8756EF3E88BD72772D2F36DEC30BF3ACDA76E6BABE3",
+        "exists": true
+      },
+      "src/local_ai_hub/agent_tasks.py": {
+        "sha256": "1D59F3E1FA8A6082EAA439F4EC3D4C542BBAD47FA5F2664D76570462FB505D25",
+        "exists": true
+      },
+      "src/local_ai_hub/agent_verification.py": {
+        "sha256": "468E4B18117CF77CE0BB34CFE08F9D1898EE0BDA43C5494BEAF7AE23F418645D",
+        "exists": true
+      },
+      "src/local_ai_hub/agent_memory.py": {
+        "sha256": "BFC91D7958654D6BD0669E1C92C391C6E93A9A42D1E134A44A8E04868F4C9E70",
+        "exists": true
+      },
+      "src/local_ai_hub/agent_blackboard.py": {
+        "sha256": "9222A5084BBB0A937CADB79A091134CABD4CA3A73B7A1321F0035DB4DC78E2D1",
+        "exists": true
+      },
+      "src/local_ai_hub/swarm.py": {
+        "sha256": "8E2E0A4A7289B1308295A6B87A988921FFA56271C6079752CA361FD39C950513",
+        "exists": true
+      },
+      "src/local_ai_hub/leases.py": {
+        "sha256": "08864C962783D530B255EBB6EEEB3154E496492AF12D869CD8CA45EC45577F89",
+        "exists": true
+      }
+    },
+    "test_inputs": {
+      "tests/test_agent_t08_durable_contract.py": {
+        "sha256": "D47741E331210A18D369677C1942081BDF9BDD229117A631D6853BDF4212AA90",
+        "exists": true
+      },
+      "tests/test_agent_t08_cache_isolation.py": {
+        "sha256": "75A289CB3027A623F3D2CBEC50E530DCA801EBE15ED8FA09538D156E98127F4C",
+        "exists": true
+      },
+      "tests/test_agent_t08_receipt_transaction.py": {
+        "sha256": "D07BFDF7781F42C93730E867AEFB66FD04CD528E23D222AF7A69DCB5EEBCA118",
+        "exists": true
+      },
+      "tests/test_agent_t08_event_page_snapshot.py": {
+        "sha256": "5D5E6F946D8165F640F0798129F45C70BA27D396C0A90F2BCA9846D01B3CA7DA",
+        "exists": true
+      },
+      "tests/test_agent_t08_migration_recovery.py": {
+        "sha256": "F4843E29CC70F5DF8376EDE39503E955F2E56855E6E885DEC80519A7ED5185FD",
+        "exists": true
+      },
+      "tests/test_agent_t08_live_order.py": {
+        "sha256": "385F014E54BA9DFCFAD9194B658C7103B6FE1962393C5B8D92F268571D565D9A",
+        "exists": true
+      },
+      "tests/test_agent_t08_crash_after_commit.py": {
+        "sha256": "AEE9E6B7A74E3E16C7985BF5C7843B0DDC420F26D748DA9881E33451C0BC8541",
+        "exists": true
+      },
+      "tests/test_agent_crash_recovery.py": {
+        "sha256": "5D74703C2AB77D2C3B59412C3E7FB6BCDE505764BBF7F9BADB4FB85B44BC0FBF",
+        "exists": true
+      },
+      "tests/test_agent_state_e2e.py": {
+        "sha256": "ED96F5FADC1F116B02A52AB15139438256C5B066ED3A98F825C69A48F23D0E38",
+        "exists": true
+      },
+      "tests/test_agent_state_reliability.py": {
+        "sha256": "3FFF9085D5D7261E5863144391080C75CAAB068155DC10D6C02146BF690A3ECF",
+        "exists": true
+      },
+      "tests/test_swarm_orchestrator.py": {
+        "sha256": "F0D5FBFA674654D4DC5864B380DBCB595B020281BE62E3C31B971548119F2F3A",
+        "exists": true
+      },
+      "tests/test_sse_events_stream.py": {
+        "sha256": "795CD62852901AA08DCD140F5124079657F20CA37E99FC9742CCA2E3E7C55182",
+        "exists": true
+      },
+      "tests/test_agent_verification.py": {
+        "sha256": "A95129488A04FD3E0FC5513A25EC9C7F1A5E8AF3604015996DC0C85BCC10CF24",
+        "exists": true
+      },
+      "tests/test_agent_tasks.py": {
+        "sha256": "552F5FA6C5E4E5DEAF2067B98ADD684D18D10824FADC6B94D81A21FB54663234",
+        "exists": true
+      },
+      "tests/test_agent_task_memory_adoption.py": {
+        "sha256": "58E6ACBDC568F020BE1CF6CD399890AFB1B12F0FB89E85FC56BB776CD6CF221F",
+        "exists": true
+      },
+      "tests/test_t09_command_execution_completion.py": {
+        "sha256": null,
+        "exists": false
+      },
+      "tests/test_lease_atomic_deadlock.py": {
+        "sha256": "F0A0768CBF17B8AC2A4C0DFA9B47003C79EC147B48060C5C727C699BD11C8A70",
+        "exists": true
+      }
+    }
+  },
+  "T09_contract": {
+    "patch": "C:/Users/Adam/.codex/worktrees/t08-agent-os/.local-ai-hub/artifacts/t08-t09-compatible-event-provider-root-current.patch",
+    "sha256": "949BAD3D3C752290875714D36A2C6BA760636CBA5309447C40B3EA2890019C77",
+    "T09_review_receipt": "artifacts/t08-t09-provider-contract-handoff-20261002-r4.json",
+    "status": "T09 approved preserve legacy cursor/provider contract; patch is not applied."
+  },
+  "acceptance_coverage": {
+    "atomic_event_projection_receipt": [
+      "tests/test_agent_t08_durable_contract.py",
+      "tests/test_agent_t08_receipt_transaction.py",
+      "tests/test_agent_verification.py",
+      "tests/test_t09_command_execution_completion.py::test_actual_broker_receipt_completes_agent_task"
+    ],
+    "CAS_and_owner_conflicts": [
+      "tests/test_swarm_orchestrator.py",
+      "tests/test_agent_tasks.py actor-owned idempotency selectors",
+      "tests/test_agent_task_memory_adoption.py::test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope"
+    ],
+    "durable_replay_sequence_and_retention": [
+      "tests/test_agent_t08_event_page_snapshot.py",
+      "tests/test_agent_t08_live_order.py",
+      "tests/test_agent_state_reliability.py",
+      "tests/test_sse_events_stream.py"
+    ],
+    "SSE_race_disconnect_slow_consumer_overflow": [
+      "tests/test_sse_events_stream.py"
+    ],
+    "durable_schema_and_disposable_cache": [
+      "tests/test_agent_t08_migration_recovery.py",
+      "tests/test_agent_t08_cache_isolation.py"
+    ],
+    "crash_rollback_restart_every_write_phase": [
+      "tests/test_agent_crash_recovery.py",
+      "tests/test_agent_t08_crash_after_commit.py"
+    ],
+    "e2e_resume_completion_and_recovery": [
+      "tests/test_agent_state_e2e.py",
+      "tests/test_agent_state_reliability.py",
+      "tests/test_t09_command_execution_completion.py actual broker success and forged/missing receipt selectors"
+    ]
+  },
+  "pytest_args": [
+    "-B",
+    "-m",
+    "pytest",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "--tb=short",
+    "tests/test_agent_t08_durable_contract.py",
+    "tests/test_agent_t08_cache_isolation.py",
+    "tests/test_agent_t08_receipt_transaction.py",
+    "tests/test_agent_t08_event_page_snapshot.py",
+    "tests/test_agent_t08_migration_recovery.py",
+    "tests/test_agent_t08_live_order.py",
+    "tests/test_agent_t08_crash_after_commit.py",
+    "tests/test_agent_crash_recovery.py",
+    "tests/test_agent_state_e2e.py",
+    "tests/test_agent_state_reliability.py",
+    "tests/test_swarm_orchestrator.py",
+    "tests/test_sse_events_stream.py",
+    "tests/test_agent_verification.py",
+    "tests/test_agent_tasks.py::test_transition_idempotency_reuse_by_different_actor_is_rejected",
+    "tests/test_agent_tasks.py::test_checkpoint_idempotency_replay_requires_same_actor",
+    "tests/test_agent_tasks.py::test_same_status_transition_rejects_idempotency_key_owned_by_another_actor",
+    "tests/test_agent_tasks.py::test_completed_uses_task_context_repo_root_without_worktree_checkpoint",
+    "tests/test_agent_task_memory_adoption.py::test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope",
+    "tests/test_t09_command_execution_completion.py::test_actual_broker_receipt_completes_agent_task",
+    "tests/test_t09_command_execution_completion.py::test_actual_broker_completion_rejects_missing_or_forged_sidecar",
+    "tests/test_lease_atomic_deadlock.py"
+  ],
+  "owner_boundaries": {
+    "T05": "validate integrated memory reads without editing agent_memory owner hunks",
+    "T09": "validate receipt helper; patch approved, preserve T09 changes",
+    "T18": "validate event paging/pubsub mixed tests; preserve T18 hunks",
+    "T21": "validate root-current orchestration changes; do not edit T21 hunks"
+  },
+  "limits": [
+    "All hashes are preparation-time pins, not validated current values until immediately before slot execution.",
+    "Broader integration inputs can change before T08 gets slot; rehash and resolve exact current command then.",
+    "No Test, Hub call, Hub fallback, or source checkout mutation performed while slot is on hold."
+  ]
+}

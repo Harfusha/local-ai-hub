@@ -1,0 +1,17 @@
+{
+  "artifact": "handoff/t15-execute-compat-followup.patch",
+  "artifact_sha256": "5a04d196524c58ce991f17a6ddccc12f3c2ca8d7f3c94be8b885d27fdaaa0132",
+  "current_commands_blob": "c49bb6e3c8ed846f9b993436c7c6f0df053dc851",
+  "metrics_artifact": "handoff/t15-acceptance-evidence.json",
+  "metrics_sha256": "8468a41013e1227014ff3a565faa938085796ac4cc6159e300237948f7346d89",
+  "patch_base": "previous T15 alias candidate; src/local_ai_hub/commands.py blob 0ed1027fccf411dd857f0b15e0f649c008f69f6a",
+  "patch_scope": "One _execute keyword compatibility hunk only; no timeout/cache hunk; no test files.",
+  "root_apply_check": "passed",
+  "root_commands_sha256_after": "a2e27094022171a6af3911365c86be7a94cf747f9572cf8caf45865c02fa6ba9",
+  "root_commands_sha256_before": "a2e27094022171a6af3911365c86be7a94cf747f9572cf8caf45865c02fa6ba9",
+  "root_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+  "root_target": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_unchanged": true,
+  "t06_boundary": "The other candidate cache hunk was excluded: root already contains T06 uncertain_outcome guard; no T06-owned rollback/write-set/grant code changed.",
+  "worktree_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11"
+}

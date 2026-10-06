@@ -957,13 +957,20 @@ def test_http_binary_artifact_get_returns_complete_payload(tmp_path: Path) -> No
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/artifact/get",
             data=json.dumps({"artifact_id": artifact_id, "binary": True}).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-LocalAI-Tenant": "other-tenant"},
+            headers={
+                "Content-Type": "application/json",
+                "X-LocalAI-Tenant": "other-tenant",
+                "X-LocalAI-Request-ID": "t17-cross-tenant-artifact-request",
+            },
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
             cross_tenant_payload = json.loads(response.read().decode("utf-8"))
-        cross_tenant_payload.pop("request_id", None)
-        assert cross_tenant_payload == {"success": False, "error": "artifact not found or expired"}
+        assert cross_tenant_payload == {
+            "success": False,
+            "error": "artifact not found or expired",
+            "request_id": "t17-cross-tenant-artifact-request",
+        }
     finally:
         server.shutdown()
         server.server_close()

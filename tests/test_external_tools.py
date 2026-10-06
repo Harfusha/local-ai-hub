@@ -35,6 +35,7 @@ def test_serena_index_uses_upstream_per_file_timeout(monkeypatch, tmp_path: Path
     ext = ExternalCodeIntelligence(cfg, telemetry=None)
     captured = []
     monkeypatch.setattr(ext, "_resolve_command", lambda backend: "serena.exe" if backend == "serena" else None)
+    ext.refresh_discovery()
     monkeypatch.setattr(
         ext,
         "_run_index",
@@ -48,6 +49,69 @@ def test_serena_index_uses_upstream_per_file_timeout(monkeypatch, tmp_path: Path
     assert captured[0][timeout_index + 1] == "10"
 
 
+def test_codegraph_stale_config_does_not_register_runtime_backend(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    ext = ExternalCodeIntelligence(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "code_intelligence": {
+                "enabled": True,
+                "serena_enabled": False,
+                "codegraph_enabled": True,
+                "codegraph_command": sys.executable,
+            },
+        },
+        telemetry=None,
+    )
+
+    assert "codegraph" not in ext.status()
+    assert not hasattr(ext, "codegraph_enabled")
+    assert not hasattr(ext, "_codegraph")
+    expected = {"success": False, "backend": "codegraph", "unavailable": True, "error": "unsupported backend: codegraph"}
+    assert ext.index("codegraph", str(root)) == expected
+    assert ext.query(str(root), "caller", backend="codegraph") == expected
+    assert ext.reset_sessions("codegraph") == {"success": False, "error": "unknown backend: codegraph"}
+
+
+@pytest.mark.skip(reason="codegraph backend excised from application")
+def test_codegraph_query_fails_after_bounded_operation_lock_wait(monkeypatch, tmp_path: Path):
+    import threading
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    ext = ExternalCodeIntelligence(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "code_intelligence": {
+                "enabled": True,
+                "serena_enabled": False,
+                "codegraph_enabled": True,
+                "query_timeout_seconds": 0.02,
+            },
+        },
+        telemetry=None,
+    )
+    monkeypatch.setattr(ext, "_query_codegraph_locked", lambda *_args: {"success": True})
+    results = []
+    finished = threading.Event()
+
+    def query():
+        try:
+            results.append(ext.query_codegraph(str(root), "calls", "sample"))
+        finally:
+            finished.set()
+
+    with ext._backend_operation("codegraph", str(root)):
+        worker = threading.Thread(target=query)
+        worker.start()
+        bounded_wait = finished.wait(0.5)
+    worker.join(1)
+
+    assert bounded_wait is True
+    assert worker.is_alive() is False
+    assert results[0]["success"] is False
+    assert "timed out" in results[0]["error"].lower()
 
 
 FAKE_MCP = r'''
@@ -136,6 +200,7 @@ def test_serena_tool_error_is_counted_as_backend_failure(monkeypatch, tmp_path: 
         "code_intelligence": {"enabled": True, "serena_enabled": True},
     }
     ext = ExternalCodeIntelligence(cfg, telemetry=None)
+    ext._serena = sys.executable
 
     class RejectedSerenaClient:
         def tool_names(self):
@@ -162,6 +227,7 @@ def test_serena_structured_tool_error_is_counted_as_backend_failure(monkeypatch,
         "code_intelligence": {"enabled": True, "serena_enabled": True},
     }
     ext = ExternalCodeIntelligence(cfg, telemetry=None)
+    ext._serena = sys.executable
 
     class RejectedSerenaClient:
         def tool_names(self):
@@ -346,13 +412,15 @@ def test_serena_search_uses_available_symbol_tool_when_pattern_tool_missing(monk
 
 
 
-def test_managed_context_intelligence_defaults_expose_needed_tools(tmp_path: Path):
+def test_managed_context_intelligence_defaults_expose_serena_only():
     from local_ai_hub.config import load_config
 
     cfg = load_config()
     ext = ExternalCodeIntelligence(cfg)
     try:
         assert cfg["code_intelligence"]["serena_context"] == "codex"
+        assert "serena" in ext.status()
+        assert "codegraph" not in ext.status()
     finally:
         ext.close()
 

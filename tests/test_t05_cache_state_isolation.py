@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -17,6 +18,24 @@ from local_ai_hub.agent_verification import VerificationReceipt, VerificationSto
 from local_ai_hub.cache import SQLiteCache
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.leases import ScopeLeaseStore
+
+
+def _assert_task_memory_access(store: MemoryStore, memory: MemoryRecord, task_id: str) -> None:
+    assert store.get(
+        memory.record_id,
+        scope=memory.scope,
+        scope_id=task_id,
+    ) is None
+    restored = store.get(
+        memory.record_id,
+        scope=memory.scope,
+        scope_id=task_id,
+        task_id=task_id,
+        root=memory.provenance["root"],
+        tenant=memory.provenance["tenant"],
+    )
+    assert restored is not None
+    assert restored.value == memory.value
 
 
 @pytest.mark.parametrize("derived_db", ["cache", "code-index"])
@@ -44,8 +63,9 @@ def test_derived_sqlite_recovery_preserves_agent_state_and_leases(tmp_path, deri
         key="durable-marker",
         value="keep across derived database recovery",
         source="test",
+        provenance={"root": str(repository), "tenant": "t05-cache-recovery"},
     )
-    memories.record(memory, actor="test")
+    memories._save_record(memory)
 
     verifications = VerificationStore(state, task_store=tasks)
     receipt = VerificationReceipt.create(
@@ -84,11 +104,7 @@ def test_derived_sqlite_recovery_preserves_agent_state_and_leases(tmp_path, deri
 
     assert reopened_tasks.get(task.task_id).contract.goal == "preserve durable state"
     assert reopened_state.events(task.task_id) == [event.with_seq(1)]
-    assert reopened_memories.get(
-        memory.record_id,
-        scope=memory.scope,
-        scope_id=task.task_id,
-    ).value == "keep across derived database recovery"
+    _assert_task_memory_access(reopened_memories, memory, task.task_id)
     with closing(sqlite3.connect(state_dir / "agent_state.sqlite3")) as connection:
         assert connection.execute(
             "SELECT receipt_id FROM agent_verification_receipts WHERE receipt_id = ?",
@@ -109,19 +125,19 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         key="identity-marker",
         value="keep until owner deletes",
         source="test",
+        provenance={"tenant": "tenant-a"},
     )
-    memories.record(record, actor="test")
-    related = memories.record(
-        MemoryRecord.create(
-            kind=MemoryKind.FACT,
-            scope=AgentScope.WORKTREE,
-            scope_id="t05-worktree",
-            key="related-marker",
-            value="linked memory",
-            source="test",
-        ),
-        actor="test",
+    memories._save_record(record)
+    related = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.WORKTREE,
+        scope_id="t05-worktree",
+        key="related-marker",
+        value="linked memory",
+        source="test",
+        provenance={"tenant": "tenant-a"},
     )
+    memories._save_record(related)
     memories.record_relation(record.record_id, "relates_to", related.record_id)
     original_relations = memories.find_relations(source_entity=record.record_id)
     assert original_relations
@@ -131,11 +147,24 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="another-worktree",
+        tenant="tenant-a",
+    ) is False
+    assert memories.delete(
+        record.record_id,
+        scope=AgentScope.WORKTREE,
+        scope_id="t05-worktree",
+        tenant="tenant-b",
     ) is False
     assert memories.get(
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
+    ) is None
+    assert memories.get(
+        record.record_id,
+        scope=AgentScope.WORKTREE,
+        scope_id="t05-worktree",
+        tenant="tenant-a",
     ).value == "keep until owner deletes"
     assert memories.find_relations(source_entity=record.record_id) == original_relations
 
@@ -143,11 +172,13 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
+        tenant="tenant-a",
     ) is True
     assert memories.get(
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
+        tenant="tenant-a",
     ) is None
     assert memories.find_relations(source_entity=record.record_id) == []
 
@@ -166,6 +197,73 @@ def test_sqlite_cache_recovers_corruption_after_first_initialization(tmp_path):
 
     cache.set("after-recovery", {"value": "cache operational"})
     assert cache.get("after-recovery") == {"value": "cache operational"}
+
+
+def test_cache_rebuild_failure_keeps_durable_state_intact_and_retries(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    durable_path = state_dir / "agent_state.sqlite3"
+    state = AgentStateStore(durable_path)
+    tasks = TaskStore(state)
+    task = tasks.create(
+        GoalContract(goal="survive failed cache rebuild", acceptance_criteria=("event",)),
+        ScopeContext(task_id="t05-cache-rebuild-failure"),
+        task_id="t05-cache-rebuild-failure",
+    )
+    event = AgentEvent.create(
+        task.task_id,
+        "cache.rebuild.sentinel",
+        {"durable": True},
+        "t05-cache-rebuild-event",
+    )
+    state.append(event)
+    with closing(sqlite3.connect(durable_path)) as connection:
+        connection.execute(
+            "INSERT INTO agent_snapshots(stream_id, seq, state, created_at) VALUES (?, ?, ?, ?)",
+            (task.task_id, 1, '{"durable":true}', 1.0),
+        )
+        connection.commit()
+
+    cache_path = state_dir / "cache.sqlite3"
+    cache_path.write_bytes(b"corrupt disposable cache")
+    durable_files = tuple(
+        path.read_bytes() if path.is_file() else None
+        for path in (durable_path, Path(f"{durable_path}-wal"), Path(f"{durable_path}-shm"))
+    )
+    original_create_schema = SQLiteCache._create_schema
+    create_attempts = 0
+
+    def fail_rebuild_after_quarantine(cache):
+        nonlocal create_attempts
+        create_attempts += 1
+        if create_attempts == 1:
+            return original_create_schema(cache)
+        raise sqlite3.OperationalError("injected cache schema rebuild failure")
+
+    monkeypatch.setattr(SQLiteCache, "_create_schema", fail_rebuild_after_quarantine)
+    with pytest.raises(sqlite3.OperationalError, match="injected cache schema rebuild failure"):
+        SQLiteCache(cache_path, "t05-rebuild-failure")
+
+    assert create_attempts == 2
+    quarantined = list(state_dir.glob("cache.sqlite3.corrupt-*"))
+    assert len(quarantined) == 1
+    assert not list(state_dir.glob("agent_state.sqlite3.corrupt-*"))
+    assert tuple(
+        path.read_bytes() if path.is_file() else None
+        for path in (durable_path, Path(f"{durable_path}-wal"), Path(f"{durable_path}-shm"))
+    ) == durable_files
+
+    monkeypatch.setattr(SQLiteCache, "_create_schema", original_create_schema)
+    cache = SQLiteCache(cache_path, "t05-rebuild-failure")
+    cache.set("after-retry", {"ready": True})
+    assert cache.get("after-retry") == {"ready": True}
+    reopened = AgentStateStore(durable_path)
+    assert TaskStore(reopened).get(task.task_id).contract.goal == "survive failed cache rebuild"
+    assert reopened.events(task.task_id) == [event.with_seq(1)]
+    with closing(sqlite3.connect(durable_path)) as connection:
+        assert connection.execute(
+            "SELECT state FROM agent_snapshots WHERE stream_id=? AND seq=1", (task.task_id,)
+        ).fetchone()[0] == '{"durable":true}'
 
 
 def test_process_crash_after_cache_rebuild_preserves_durable_agent_state(tmp_path):
@@ -187,8 +285,9 @@ def test_process_crash_after_cache_rebuild_preserves_durable_agent_state(tmp_pat
         key="crash-marker",
         value="keep after cache rebuild crash",
         source="test",
+        provenance={"root": str(state_dir), "tenant": "t05-cache-crash"},
     )
-    memories.record(memory, actor="test")
+    memories._save_record(memory)
     verifications = VerificationStore(state, task_store=tasks)
     receipt = VerificationReceipt.create(
         task_id=task.task_id,
@@ -222,7 +321,7 @@ def test_process_crash_after_cache_rebuild_preserves_durable_agent_state(tmp_pat
     reopened_verifications = VerificationStore(reopened_state, task_store=reopened_tasks)
     assert reopened_tasks.get(task.task_id).contract.goal == task.contract.goal
     assert reopened_state.events(task.task_id) == events_before
-    assert reopened_memories.get(memory.record_id, scope=memory.scope, scope_id=task.task_id).value == memory.value
+    _assert_task_memory_access(reopened_memories, memory, task.task_id)
     with closing(sqlite3.connect(state_dir / "agent_state.sqlite3")) as connection:
         assert connection.execute(
             "SELECT receipt_id FROM agent_verification_receipts WHERE receipt_id = ?",
@@ -249,8 +348,9 @@ def test_concurrent_derived_recovery_preserves_durable_agent_state(tmp_path, der
         key="concurrent-recovery-marker",
         value="durable memory survives concurrent derived recovery",
         source="test",
+        provenance={"root": str(state_dir), "tenant": "t05-concurrent-recovery"},
     )
-    memories.record(memory, actor="test")
+    memories._save_record(memory)
 
     derived_name = "cache.sqlite3" if derived_db == "cache" else "code-index.sqlite3"
     derived_path = state_dir / derived_name
@@ -272,15 +372,19 @@ def test_concurrent_derived_recovery_preserves_durable_agent_state(tmp_path, der
         "        raise TimeoutError('parent did not release recovery workers')\n"
         "    time.sleep(0.01)\n"
         "if database_kind == 'cache':\n"
-        "    from local_ai_hub.cache import SQLiteCache\n"
+        "    import local_ai_hub.cache as loaded_module\n"
+        "    assert Path(loaded_module.__file__).resolve().is_relative_to(Path(source_dir).resolve())\n"
+        "    SQLiteCache = loaded_module.SQLiteCache\n"
         "    SQLiteCache(Path(database_path), 't05-concurrent-recovery')\n"
         "else:\n"
-        "    from local_ai_hub.code_index import CodeIndex\n"
+        "    import local_ai_hub.code_index as loaded_module\n"
+        "    assert Path(loaded_module.__file__).resolve().is_relative_to(Path(source_dir).resolve())\n"
+        "    CodeIndex = loaded_module.CodeIndex\n"
         "    CodeIndex({'server': {'state_dir': str(Path(database_path).parent)}}, repo_tools=None)\n"
         "with sqlite3.connect(database_path) as connection:\n"
         "    assert connection.execute('PRAGMA quick_check').fetchone() == ('ok',)\n"
     )
-    source_dir = Path(__file__).resolve().parents[1] / "src"
+    source_dir = Path(os.environ.get("T05_ROOT_SOURCE_DIR", Path(__file__).resolve().parents[1] / "src")).resolve()
     workers = []
     try:
         for ready_path in ready_paths:
@@ -330,8 +434,4 @@ def test_concurrent_derived_recovery_preserves_durable_agent_state(tmp_path, der
     reopened_tasks = TaskStore(reopened_state)
     reopened_memories = MemoryStore(reopened_state)
     assert reopened_tasks.get(task.task_id).contract.goal == "survive concurrent derived recovery"
-    assert reopened_memories.get(
-        memory.record_id,
-        scope=AgentScope.TASK,
-        scope_id=task.task_id,
-    ).value == memory.value
+    _assert_task_memory_access(reopened_memories, memory, task.task_id)

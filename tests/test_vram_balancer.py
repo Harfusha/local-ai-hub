@@ -272,6 +272,30 @@ def test_status_wait_timeout_returns_conservative_unavailable_without_second_sam
         assert not sampler.is_alive()
 
 
+def test_first_status_times_out_to_unavailable_without_cache():
+    balancer = VRAMBalancer()
+    balancer._sample_wait_timeout_seconds = 0.01
+    probe_entered = threading.Event()
+    release_probe = threading.Event()
+
+    def blocked_probe():
+        probe_entered.set()
+        assert release_probe.wait(timeout=2.0)
+        return {"available": True, "vram_total_mb": 8192.0, "vram_used_mb": 1024.0}
+
+    with patch("local_ai_hub.vram_balancer.get_gpu_telemetry", side_effect=blocked_probe):
+        try:
+            result = balancer.status(force=True)
+
+            assert probe_entered.wait(timeout=1.0)
+            assert result["available"] is False
+            assert result["pressure_level"] == "unknown"
+            assert result["dynamic_context_tokens"] == 0
+            assert result["telemetry_wait_timed_out"] is True
+        finally:
+            release_probe.set()
+
+
 def test_status_wait_timeout_returns_conservative_stale_cache():
     balancer = VRAMBalancer()
     cached_gpu = {

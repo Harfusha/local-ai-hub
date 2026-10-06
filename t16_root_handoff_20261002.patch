@@ -1,0 +1,191 @@
+diff --git a/src/local_ai_hub/leases.py b/src/local_ai_hub/leases.py
+--- a/src/local_ai_hub/leases.py
++++ b/src/local_ai_hub/leases.py
+@@ -99,34 +99,41 @@
+                         )"""
+                     )
+                     con.execute("CREATE INDEX IF NOT EXISTS idx_leases_root ON leases(root_id, expires_at)")
+-                    con.execute(
+-                        """CREATE TABLE IF NOT EXISTS lease_waits (
+-                            tenant TEXT NOT NULL,
+-                            blocked_by TEXT NOT NULL,
+-                            root_id TEXT NOT NULL,
+-                            requested_path TEXT NOT NULL,
+-                            updated_at REAL NOT NULL,
+-                            PRIMARY KEY(root_id, tenant, blocked_by, requested_path)
+-                        )"""
+-                    )
+-                    wait_columns = con.execute("PRAGMA table_info(lease_waits)").fetchall()
+-                    root_is_keyed = any(str(row[1]) == "root_id" and int(row[5]) > 0 for row in wait_columns)
+-                    if not root_is_keyed:
++                    con.execute("BEGIN IMMEDIATE")
++                    try:
+                         con.execute(
+-                            "CREATE TABLE lease_waits_namespace_v2 ("
+-                            "tenant TEXT NOT NULL, blocked_by TEXT NOT NULL, root_id TEXT NOT NULL, "
+-                            "requested_path TEXT NOT NULL, updated_at REAL NOT NULL, "
+-                            "PRIMARY KEY(root_id, tenant, blocked_by, requested_path))"
++                            """CREATE TABLE IF NOT EXISTS lease_waits (
++                                tenant TEXT NOT NULL,
++                                blocked_by TEXT NOT NULL,
++                                root_id TEXT NOT NULL,
++                                requested_path TEXT NOT NULL,
++                                updated_at REAL NOT NULL,
++                                PRIMARY KEY(root_id, tenant, blocked_by, requested_path)
++                            )"""
+                         )
+-                        con.execute(
+-                            "INSERT OR REPLACE INTO lease_waits_namespace_v2 "
+-                            "(tenant,blocked_by,root_id,requested_path,updated_at) "
+-                            "SELECT tenant,blocked_by,root_id,requested_path,updated_at FROM lease_waits"
+-                        )
+-                        con.execute("DROP TABLE lease_waits")
+-                        con.execute("ALTER TABLE lease_waits_namespace_v2 RENAME TO lease_waits")
+-                    con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_tenant ON lease_waits(tenant)")
+-                    con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_blocked ON lease_waits(blocked_by)")
++                        wait_columns = con.execute("PRAGMA table_info(lease_waits)").fetchall()
++                        root_is_keyed = any(str(row[1]) == "root_id" and int(row[5]) > 0 for row in wait_columns)
++                        if not root_is_keyed:
++                            con.execute(
++                                "CREATE TABLE lease_waits_namespace_v2 ("
++                                "tenant TEXT NOT NULL, blocked_by TEXT NOT NULL, root_id TEXT NOT NULL, "
++                                "requested_path TEXT NOT NULL, updated_at REAL NOT NULL, "
++                                "PRIMARY KEY(root_id, tenant, blocked_by, requested_path))"
++                            )
++                            con.execute(
++                                "INSERT OR REPLACE INTO lease_waits_namespace_v2 "
++                                "(tenant,blocked_by,root_id,requested_path,updated_at) "
++                                "SELECT tenant,blocked_by,root_id,requested_path,updated_at FROM lease_waits"
++                            )
++                            con.execute("DROP TABLE lease_waits")
++                            con.execute("ALTER TABLE lease_waits_namespace_v2 RENAME TO lease_waits")
++                        con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_tenant ON lease_waits(tenant)")
++                        con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_blocked ON lease_waits(blocked_by)")
++                        con.execute("COMMIT")
++                    except BaseException:
++                        if con.in_transaction:
++                            con.execute("ROLLBACK")
++                        raise
+             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+             self._initialized = True
+ 
+diff --git a/tests/test_t16_lease_wait_namespace_isolation.py b/tests/test_t16_lease_wait_namespace_isolation.py
+--- a/tests/test_t16_lease_wait_namespace_isolation.py
++++ b/tests/test_t16_lease_wait_namespace_isolation.py
+@@ -1,6 +1,8 @@
+ from __future__ import annotations
+ 
+ import sqlite3
++import queue
++import threading
+ import time
+ from pathlib import Path
+ 
+@@ -92,3 +94,107 @@
+     assert {key: legacy_waits[0][key] for key in ("tenant", "blocked_by", "requested_path")} == {
+         "tenant": "waiter", "blocked_by": "blocker", "requested_path": "src/shared.py"
+     }
++
++
++def test_concurrent_legacy_wait_migrations_do_not_rename_over_new_table(tmp_path: Path) -> None:
++    state_dir = tmp_path / "concurrent-legacy-state"
++    state_dir.mkdir()
++    db_path = state_dir / "leases.sqlite3"
++    con = sqlite3.connect(db_path)
++    try:
++        con.execute(
++            "CREATE TABLE lease_waits (tenant TEXT NOT NULL, blocked_by TEXT NOT NULL, "
++            "root_id TEXT NOT NULL, requested_path TEXT NOT NULL, updated_at REAL NOT NULL, "
++            "PRIMARY KEY(tenant,blocked_by,requested_path))"
++        )
++        con.execute(
++            "INSERT INTO lease_waits VALUES(?,?,?,?,?)",
++            ("waiter", "blocker", "project:legacy", "src/shared.py", time.time()),
++        )
++        con.commit()
++    finally:
++        con.close()
++
++    dropped_legacy_table = threading.Event()
++    allow_rename = threading.Event()
++    second_progress: queue.Queue[str] = queue.Queue()
++    second_done = threading.Event()
++    errors: list[tuple[str, str]] = []
++
++    class PauseBeforeRename(sqlite3.Connection):
++        def execute(self, sql: str, parameters=()):
++            cursor = super().execute(sql, parameters)
++            if sql.strip().upper() == "DROP TABLE LEASE_WAITS":
++                dropped_legacy_table.set()
++                if not allow_rename.wait(timeout=10):
++                    raise TimeoutError("migration interleave was not released")
++            return cursor
++
++    class ObserveSecondInitializer(sqlite3.Connection):
++        def execute(self, sql: str, parameters=()):
++            normalized = " ".join(sql.strip().upper().split())
++            if normalized == "BEGIN IMMEDIATE":
++                second_progress.put("begin-immediate")
++            cursor = super().execute(sql, parameters)
++            if normalized.startswith("CREATE TABLE IF NOT EXISTS LEASE_WAITS"):
++                second_progress.put("created-lease-waits")
++            return cursor
++
++    first = object.__new__(ScopeLeaseStore)
++    first.path = db_path
++    first._lock = threading.RLock()
++    first._initialized = False
++    first._connect = lambda: sqlite3.connect(
++        db_path, timeout=0.75, isolation_level=None, factory=PauseBeforeRename
++    )
++    second = object.__new__(ScopeLeaseStore)
++    second.path = db_path
++    second._lock = threading.RLock()
++    second._initialized = False
++    second._connect = lambda: sqlite3.connect(
++        db_path, timeout=0.75, isolation_level=None, factory=ObserveSecondInitializer
++    )
++
++    def initialize(name: str, store: ScopeLeaseStore, *, done: threading.Event | None = None) -> None:
++        try:
++            store._init_db()
++        except BaseException as exc:
++            errors.append((name, repr(exc)))
++        finally:
++            if done is not None:
++                done.set()
++
++    first_thread = threading.Thread(target=initialize, args=("first", first))
++    second_thread = threading.Thread(
++        target=initialize, args=("second", second), kwargs={"done": second_done}
++    )
++    first_thread.start()
++    try:
++        assert dropped_legacy_table.wait(timeout=5), "first migration did not reach legacy-table rename"
++        second_thread.start()
++        progress = second_progress.get(timeout=5)
++        assert progress in {"begin-immediate", "created-lease-waits"}
++        if progress == "created-lease-waits":
++            assert second_done.wait(timeout=5), "second initializer did not finish legacy-table recreation"
++    finally:
++        allow_rename.set()
++        first_thread.join(timeout=10)
++        if second_thread.ident is not None:
++            second_thread.join(timeout=10)
++
++    assert not first_thread.is_alive(), "first migration thread did not finish"
++    assert not second_thread.is_alive(), "second migration thread did not finish"
++    assert errors == [], errors
++
++    con = sqlite3.connect(db_path)
++    try:
++        info = con.execute("PRAGMA table_info(lease_waits)").fetchall()
++        primary_key = tuple(str(row[1]) for row in sorted(info, key=lambda row: int(row[5])) if int(row[5]) > 0)
++        rows = con.execute(
++            "SELECT root_id,tenant,blocked_by,requested_path FROM lease_waits"
++        ).fetchall()
++    finally:
++        con.close()
++
++    assert primary_key == ("root_id", "tenant", "blocked_by", "requested_path")
++    assert rows == [("project:legacy", "waiter", "blocker", "src/shared.py")]

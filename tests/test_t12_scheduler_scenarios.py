@@ -665,6 +665,168 @@ def test_t12_scheduler_close_signals_running_job_cancellation() -> None:
         caller.join(1)
 
 
+def test_t12_preempt_hook_obeys_caller_deadline_before_dispatch() -> None:
+    import threading
+
+    from local_ai_hub.scheduler import SchedulerTimeoutError
+
+    class Runtime:
+        def resource_status(self) -> dict[str, Any]:
+            return {"pressure_level": "nominal", "context_budget_factor": 1.0}
+
+        def loaded_model_details(self) -> list[dict[str, Any]]:
+            return [{"name": "fast", "context_length": 131072}]
+
+        def loaded_models(self) -> list[str]:
+            return ["fast"]
+
+        def cache_stats(self) -> dict[str, int]:
+            return {}
+
+    hook_started = threading.Event()
+    release_hook = threading.Event()
+    execution_started = threading.Event()
+    outcome: list[dict[str, Any]] = []
+    scheduler = AffinityScheduler(
+        Runtime(),
+        {"models": {"fast_code": "fast"}, "scheduler": {"max_parallel": 1}},
+    )
+
+    def preempt() -> None:
+        hook_started.set()
+        release_hook.wait(2)
+
+    scheduler.set_foreground_preempt_hook(preempt)
+
+    def submit() -> None:
+        try:
+            result = scheduler.submit(
+                "fast", "tenant", "deadline-preempt", lambda: execution_started.set() or {"success": True},
+                wait_timeout=0.05,
+            )
+            outcome.append({"result": result})
+        except SchedulerTimeoutError as exc:
+            outcome.append({"timed_out": True, "state": exc.state})
+
+    caller = threading.Thread(target=submit)
+    caller.start()
+    try:
+        assert hook_started.wait(1)
+        caller.join(0.5)
+        assert not caller.is_alive(), "caller deadline must bound the preempt hook wait"
+        assert outcome == [{"timed_out": True, "state": "pending"}]
+        assert not execution_started.is_set(), "foreground execution must wait for preemption"
+    finally:
+        release_hook.set()
+        caller.join(1)
+        scheduler.close()
+
+
+def test_t12_active_cancel_keeps_worker_admission_until_child_exits() -> None:
+    import threading
+
+    from local_ai_hub.scheduler import SchedulerCancelledError
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.prepared: list[str] = []
+
+        def resource_status(self) -> dict[str, Any]:
+            return {"pressure_level": "nominal", "context_budget_factor": 1.0}
+
+        def loaded_model_details(self) -> list[dict[str, Any]]:
+            return [{"name": "fast", "context_length": 131072}]
+
+        def loaded_models(self) -> list[str]:
+            return ["fast"]
+
+        def cache_stats(self) -> dict[str, int]:
+            return {}
+
+        def prepare_model(self, model: str, **_kwargs: Any) -> list[str]:
+            self.prepared.append(model)
+            return []
+
+    runtime = Runtime()
+    scheduler = AffinityScheduler(
+        runtime,
+        {
+            "models": {"fast_code": "fast"},
+            "scheduler": {"max_parallel": 1},
+            "resilience": {"scheduler_wait_timeout_seconds": 5},
+        },
+    )
+    with scheduler._cond:
+        scheduler._active_model = "fast"
+
+    first_started = threading.Event()
+    release_first = threading.Event()
+    cancel_first = threading.Event()
+    second_started = threading.Event()
+    first_outcome: list[dict[str, Any]] = []
+    second_outcome: list[dict[str, Any]] = []
+
+    def first_execute() -> dict[str, Any]:
+        first_started.set()
+        release_first.wait(2)
+        return {"success": True}
+
+    def first_submit() -> None:
+        try:
+            first_outcome.append(
+                scheduler.submit(
+                    "fast", "tenant", "child-inference", first_execute,
+                    wait_timeout=5, cancel_event=cancel_first,
+                )
+            )
+        except SchedulerCancelledError as exc:
+            first_outcome.append({"cancelled": True, "state": exc.state})
+
+    def second_execute() -> dict[str, Any]:
+        second_started.set()
+        return {"success": True}
+
+    def second_submit() -> None:
+        second_outcome.append(
+            scheduler.submit("fast", "tenant", "next-inference", second_execute, wait_timeout=5)
+        )
+
+    first_caller = threading.Thread(target=first_submit)
+    second_caller = threading.Thread(target=second_submit)
+    try:
+        first_caller.start()
+        assert first_started.wait(1)
+        cancel_first.set()
+        first_caller.join(1)
+        assert not first_caller.is_alive()
+        assert first_outcome == [{"cancelled": True, "state": "running"}]
+
+        with scheduler._cond:
+            assert scheduler._inflight == 1
+            assert scheduler.prewarm("replacement") is False
+        assert runtime.prepared == []
+
+        second_caller.start()
+        assert second_caller.is_alive()
+        assert not second_started.wait(0.1)
+        with scheduler._cond:
+            assert scheduler._inflight == 1
+            assert scheduler.prewarm("replacement") is False
+        assert runtime.prepared == []
+
+        release_first.set()
+        assert second_started.wait(1)
+        second_caller.join(1)
+        assert not second_caller.is_alive()
+        assert second_outcome[0]["success"] is True
+    finally:
+        cancel_first.set()
+        release_first.set()
+        scheduler.close()
+        first_caller.join(1)
+        second_caller.join(1)
+
+
 def test_t12_cancelled_dispatched_job_does_not_start_execute() -> None:
     import threading
     from local_ai_hub.scheduler import Job

@@ -1,0 +1,353 @@
+# T18-only hunk map
+
+Artifact: T18-only.patch, generated against local master without modifying candidate source files. Patch includes only verified T18-owned hunks. It is a review artifact, not an integration/merge.
+
+## Candidate identity
+
+- Branch: t18-candidate-2b33602-review
+- Base / local master: 2b33602adef0d030fea66cdcc04ca742c60b2e32
+- HEAD: ec0a79cf9ec92cb4af8bff7ed802f0d64f9307bc
+- Commits audited: 6313f92, 3d60aba, ec0a79c
+- Full working tree vs master SHA-256: aed25f7100e0d35ba77aafc585a922010cb278ba0b7028d611e97744cbac9afc
+- Unstaged diff vs HEAD SHA-256: 729353424549a1951f9a654e615cb3b481184281f3eef487cf747ec8726672a0
+- T18-only patch SHA-256: 189cb87c32b9009d344384d207bd6912ea1001fd45835998e5d5fc78c4a1d5be
+- Patch file paths: 19
+
+## Ownership boundaries
+
+- T18: status dependency snapshots (app.py::LocalAIApp.status, _status_dependency); incident/admin bounds; dashboard polling/trace display/trajectory event-page GET; debug-trace paging/response caps; telemetry accounting/timeline; read-only database query budgets; action-specific admin guards and bounded lifecycle; matching T18 tests/docs.
+- T08: agent_events.py durable schema/cursor writes and all SwarmPubSub publish/subscribe/replay hunks; services.py PubSub state-store binding and publish/poll cursor forwarding; http_server.py PubSub POST after_seq route; test_operational_api_contracts.py every test_pubsub_* block. These are excluded from T18-only.patch.
+- T08/T18 seam: AgentStateStore.event_page is T18 read-side; event-page GET route and dashboard cursor reads are T18, confirmed by T08. T18 agent_incidents.py::IncidentStore.resolve_all calls state_store.append_in_transaction(con, event) and reads AppendResult.retryable. That requires T08 public provider API; T18 HEAD agent_events.py only has append(event), so the filtered T18 patch is not self-contained until T08 provider lands. T08 signature accepts (con, event, *, strict_idempotency=False) and returns AppendResult fields seq, duplicate, event, retryable, error.
+- T18 services/admin: services.py optimize_databases, purge_stale_cache, resolve_all_errors plus is_busy_error import. T08 PubSub hunks at the same file's pubsub_publish/pubsub_poll are excluded. LocalAIServices.transcribe has no candidate hunk; T17 ownership preserved.
+- T12: docs/INSTALL_PROMPT.md profile-aware local-model routing hunks (127, 167, 178) and docs/UPDATE_PROMPT.md routing-policy hunk (5) are excluded from T18 patch.
+- T19: no T19-owned hunk confirmed in the 21-path candidate diff. Install/update prompt hunks are model-policy changes and are classified T12; owner reply pending.
+- T09 compatibility: T09 agent_verification.py calls append_in_transaction(con, event, strict_idempotency=True) at lines 890, 1019, 1076 and consumes error/event; this is API-compatible with the T08 public provider, but T09 worktree currently has only _append_event_in_transaction on its AgentStateStore. Integrate the T08 provider before T09/T18 callers can pass end-to-end. No T09 file is included in the T18 patch.
+- T02: no T02-owned path in candidate patch. T02's reported tests/test_agent_state_operations.py::test_app_status_includes_agent_state_summary failure is external; T18 owns app.py status symbols, T02 owns that test/fixture. No source change made from the unexplained success=False.
+- Cross-surface test: test_status_action_aliases_match_live_and_generated_schemas tests the T18 status API against T03 schema; retained as an acceptance test. No T03 production file is included.
+
+## Filtered patch contents
+
+Full T18-owned files and verified T18 hunks in mixed files only. Excluded prompt-routing docs and PubSub write/replay/call-site/test hunks. The new test_operational_api_contracts.py in this patch omits T08 test_pubsub_* functions.
+
+Selected paths:
+- docs/DASHBOARD.md
+- docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md
+- src/local_ai_hub/agent_events.py
+- src/local_ai_hub/agent_incidents.py
+- src/local_ai_hub/app.py
+- src/local_ai_hub/dashboard.py
+- src/local_ai_hub/debug_traces.py
+- src/local_ai_hub/http_server.py
+- src/local_ai_hub/services.py
+- src/local_ai_hub/telemetry.py
+- tests/test_all_advanced_improvements.py
+- tests/test_dashboard_custom_modals.py
+- tests/test_dashboard_operational_surfaces.py
+- tests/test_dashboard_polling_quality.py
+- tests/test_debug_traces.py
+- tests/test_operational_api_contracts.py
+- tests/test_reliability_core.py
+- tests/test_status_snapshot_quality.py
+- tests/test_telemetry_tail_latency.py
+
+## Exact commit hunk ranges
+
+Ranges below are new-side line ranges at each commit; zero-count insert/delete hunks are called out as boundaries. Context labels are Git's exact hunk labels, not inferred symbol ownership.
+
+### 6313f92
+- docs/DASHBOARD.md: new 28-28; Each trace uses a request-specific primary presentation. Useful result
+- docs/DASHBOARD.md: new 30-30; Primary views omit empty or none-like values, internal identifiers and
+- docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md: new 344-349; T03 je závislost transportních změn T04/T05/T19. T06 předchází mutujíc
+- src/local_ai_hub/agent_incidents.py: new 501-501; class IncidentStore:
+- src/local_ai_hub/agent_incidents.py: new 505-506; class IncidentStore:
+- src/local_ai_hub/agent_incidents.py: new 508-511; class IncidentStore:
+- src/local_ai_hub/agent_incidents.py: new 513-556; class IncidentStore:
+- src/local_ai_hub/app.py: new 68-68; _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
+- src/local_ai_hub/app.py: new 72-72; _STATUS_MAX_INFLIGHT_DEPENDENCIES = 8
+- src/local_ai_hub/app.py: new 74-76; def _status_dependency(callback, fallback, *, key, lock, inflight, slo
+- src/local_ai_hub/app.py: new 105-105; def _status_dependency(callback, fallback, *, key, lock, inflight, slo
+- src/local_ai_hub/app.py: new 545-545; class LocalAIApp:
+- src/local_ai_hub/app.py: new 549-551; class LocalAIApp:
+- src/local_ai_hub/app.py: new 553-575; class LocalAIApp:
+- src/local_ai_hub/app.py: new 583-589; class LocalAIApp:
+- src/local_ai_hub/app.py: new 598-620; class LocalAIApp:
+- src/local_ai_hub/app.py: new 622-626; class LocalAIApp:
+- src/local_ai_hub/app.py: new 645-646; class LocalAIApp:
+- src/local_ai_hub/app.py: new 651-651; class LocalAIApp:
+- src/local_ai_hub/app.py: new 657-663; class LocalAIApp:
+- src/local_ai_hub/app.py: new 674-674; class LocalAIApp:
+- src/local_ai_hub/app.py: new 676-677; class LocalAIApp:
+- src/local_ai_hub/app.py: new 685-686; class LocalAIApp:
+- src/local_ai_hub/app.py: new 689-691; class LocalAIApp:
+- src/local_ai_hub/app.py: new 698-698; class LocalAIApp:
+- src/local_ai_hub/app.py: new 700-705; class LocalAIApp:
+- src/local_ai_hub/app.py: new 712-713; class LocalAIApp:
+- src/local_ai_hub/app.py: new 752-752; class LocalAIApp:
+- src/local_ai_hub/app.py: new 757-758; class LocalAIApp:
+- src/local_ai_hub/app.py: new 773-773; class LocalAIApp:
+- src/local_ai_hub/app.py: new 831-833; class LocalAIApp:
+- src/local_ai_hub/dashboard.py: new 269-269; tbody tr.click:hover{background:#162338}
+- src/local_ai_hub/dashboard.py: new 782-782; function createDashboardStatusPoller(poll,options={}){
+- src/local_ai_hub/dashboard.py: new 791-796; function createDashboardStatusPoller(poll,options={}){
+- src/local_ai_hub/dashboard.py: new 801-803; function createDashboardStatusPoller(poll,options={}){
+- src/local_ai_hub/dashboard.py: new 820-820; let lastDashboardStatusSnapshot=null;
+- src/local_ai_hub/dashboard.py: new 823-824; function shouldRefreshDashboardStatus(status){
+- src/local_ai_hub/dashboard.py: new 1836-1836; async function runDbQuery(){
+- src/local_ai_hub/dashboard.py: new 1899-1899; function clickableRow(obj,html,type='',idAttr=''){
+- src/local_ai_hub/dashboard.py: new 2669-2670; function traceHumanTitle(model){
+- src/local_ai_hub/dashboard.py: new 2676-2676; function traceHumanTitle(model){
+- src/local_ai_hub/dashboard.py: new 2681-2756; function setTraceView(view){if(!activeTraceData)return;const model=tra
+- src/local_ai_hub/dashboard.py: new 2783-2784; async function openTrace(id){
+- src/local_ai_hub/dashboard.py: new 4548-4548; document.addEventListener('click',e=>{
+- src/local_ai_hub/dashboard.py: new 5209-5209; async function pollStatus(isCurrent=()=>document.visibilityState!=='hi
+- src/local_ai_hub/dashboard.py: new 5245-5248; async function pollStatus(isCurrent=()=>document.visibilityState!=='hi
+- src/local_ai_hub/dashboard.py: new 5275-5275; async function pollEvents(){if(eventsPollInFlight)return;eventsPollInF
+- src/local_ai_hub/dashboard.py: new 5279-5279; document.addEventListener('visibilitychange',()=>{
+- src/local_ai_hub/dashboard.py: delete old 5194-5194 (new boundary 5281); setInterval(()=>{if(isVisible)probeHealth();},5000);
+- src/local_ai_hub/debug_traces.py: new 34-43; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 355-438; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 441-461; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 465-474; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 477-511; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 513-529; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 531-587; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 592-599; class DebugTraceStore:
+- src/local_ai_hub/http_server.py: new 20-21; from . import __version__
+- src/local_ai_hub/http_server.py: new 54-59; APP: LocalAIApp | None = None
+- src/local_ai_hub/http_server.py: new 75-88; def _json_bytes(data: Any) -> bytes:
+- src/local_ai_hub/http_server.py: new 446-462; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 574-574; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 576-576; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 578-579; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 582-593; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 605-605; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 607-612; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 614-614; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 618-618; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 620-634; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 638-638; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 640-641; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 643-643; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 647-647; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 651-655; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 657-687; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 689-689; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 692-694; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 763-766; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 992-992; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1007-1007; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1010-1062; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1087-1087; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1117-1118; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1180-1186; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1381-1382; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1442-1443; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1625-1638; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1640-1642; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1644-1647; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1844-1844; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1853-1853; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1857-1860; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1865-1866; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1872-1873; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1879-1880; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1882-1896; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1902-1902; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1977-1978; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1981-1983; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 1986-1989; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 2008-2011; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 2014-2018; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 2021-2024; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 2027-2028; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 2185-2186; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 2190-2190; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 2194-2195; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 2203-2203; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 2286-2290; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 2329-2333; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 2346-2349; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 3526-3529; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 3532-3536; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 3539-3542; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 3906-3908; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 3910-3912; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 3914-3914; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 3916-3925; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 3985-3988; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/http_server.py: new 4031-4031; class Handler(BaseHTTPRequestHandler):
+- src/local_ai_hub/services.py: new 35-35; from .router import ModelRouter, review_diff_complexity
+- src/local_ai_hub/services.py: new 5571-5573; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5577-5578; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5581-5585; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5587-5587; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5593-5598; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5600-5605; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5613-5613; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5618-5618; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5620-5621; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5625-5628; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5630-5632; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5635-5635; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5637-5638; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5640-5642; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5644-5664; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5668-5669; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5671-5689; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5692-5693; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5697-5698; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5700-5701; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5705-5719; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5722-5724; class LocalAIServices:
+- src/local_ai_hub/services.py: new 5727-5727; class LocalAIServices:
+- src/local_ai_hub/telemetry.py: new 68-70; def _percentile(values: list[float], pct: float) -> float:
+- src/local_ai_hub/telemetry.py: new 250-251; class TelemetryStore:
+- src/local_ai_hub/telemetry.py: new 1136-1136; class TelemetryStore:
+- src/local_ai_hub/telemetry.py: new 1140-1149; class TelemetryStore:
+- src/local_ai_hub/telemetry.py: new 1151-1167; class TelemetryStore:
+- src/local_ai_hub/telemetry.py: new 1237-1241; class TelemetryStore:
+- src/local_ai_hub/telemetry.py: new 1938-1939; class TelemetryStore:
+- src/local_ai_hub/telemetry.py: new 1941-1941; class TelemetryStore:
+- src/local_ai_hub/telemetry.py: new 1944-1951; class TelemetryStore:
+- src/local_ai_hub/telemetry.py: new 1953-1953; class TelemetryStore:
+- src/local_ai_hub/telemetry.py: new 1955-1963; class TelemetryStore:
+- src/local_ai_hub/telemetry.py: new 1976-1976; class TelemetryStore:
+- src/local_ai_hub/telemetry.py: new 1978-1986; class TelemetryStore:
+- tests/test_all_advanced_improvements.py: new 275-286; def test_read_only_db_query_safety(monkeypatch: pytest.MonkeyPatch, tm
+- tests/test_all_advanced_improvements.py: new 292-292; def test_read_only_db_query_safety(monkeypatch: pytest.MonkeyPatch, tm
+- tests/test_all_advanced_improvements.py: new 302-302; def test_read_only_db_query_safety(monkeypatch: pytest.MonkeyPatch, tm
+- tests/test_all_advanced_improvements.py: new 308-310; def test_read_only_db_query_safety(monkeypatch: pytest.MonkeyPatch, tm
+- tests/test_dashboard_custom_modals.py: new 822-822; def test_trace_inspector_keeps_universal_summary_inside_optional_panel
+- tests/test_dashboard_custom_modals.py: new 877-877; def test_trace_inspector_exposes_core_panels_when_human_presentation_i
+- tests/test_dashboard_custom_modals.py: new 916-916; def test_trace_inspector_dispatches_primary_body_before_optional_techn
+- tests/test_dashboard_custom_modals.py: new 973-973; def test_trace_detail_runtime_keeps_primary_first_and_technical_detail
+- tests/test_dashboard_custom_modals.py: new 1108-1108; def test_trace_inspector_keeps_optional_details_open_and_summary_visib
+- tests/test_dashboard_operational_surfaces.py: new 48-48; def test_live_pollers_skip_overlapping_requests() -> None:
+- tests/test_dashboard_polling_quality.py: new 57-183; def _run_polling_javascript(scenario: str, *, include_status: bool = F
+- tests/test_dashboard_polling_quality.py: new 227-247; def test_poll_failures_use_jittered_exponential_backoff_with_a_hard_ca
+- tests/test_debug_traces.py: new 61-141; def test_trace_detail_preserves_ordered_full_debug_content(tmp_path):
+- tests/test_debug_traces.py: new 155-208; def test_trace_detail_since_seq_and_list_filters_are_bounded(tmp_path)
+- tests/test_debug_traces.py: new 257-257; def test_dashboard_and_favicon_are_monitor_paths():
+- tests/test_debug_traces.py: new 261-277; def test_dashboard_and_favicon_are_monitor_paths():
+- tests/test_debug_traces.py: new 334-334; def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
+- tests/test_debug_traces.py: new 342-342; def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
+- tests/test_debug_traces.py: new 345-345; def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
+- tests/test_debug_traces.py: new 353-383; def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
+- tests/test_operational_api_contracts.py: new 1-527; 
+- tests/test_reliability_core.py: new 424-424; def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_
+- tests/test_reliability_core.py: new 429-429; def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_
+- tests/test_status_snapshot_quality.py: new 170-172; def test_slow_status_dependency_degrades_within_deadline_and_keeps_sha
+- tests/test_status_snapshot_quality.py: new 193-193; def test_slow_agent_state_summary_uses_dependency_deadline(monkeypatch
+- tests/test_status_snapshot_quality.py: new 195-226; def test_timed_out_agent_state_is_reused_across_status_cache_hits(monk
+- tests/test_status_snapshot_quality.py: delete old 217-228 (new boundary 227); def test_timed_out_agent_state_is_reused_across_status_cache_hits(monk
+- tests/test_status_snapshot_quality.py: new 229-260; def test_timed_out_agent_state_is_reused_across_status_cache_hits(monk
+- tests/test_telemetry_tail_latency.py: new 22-22; def test_report_exposes_http_action_and_cache_layer_tail_percentiles(t
+
+### 3d60aba
+- src/local_ai_hub/debug_traces.py: new 446-446; class DebugTraceStore:
+- src/local_ai_hub/telemetry.py: new 1949-1949; class TelemetryStore:
+- tests/test_debug_traces.py: new 6-7; import time
+- tests/test_debug_traces.py: new 157-168; def test_trace_detail_since_seq_and_list_filters_are_bounded(tmp_path)
+- tests/test_telemetry_tail_latency.py: new 5-6; import time
+- tests/test_telemetry_tail_latency.py: new 30-43; def test_report_exposes_http_action_and_cache_layer_tail_percentiles(t
+
+### ec0a79c
+- docs/DASHBOARD.md: new 28-28; Each trace uses a request-specific primary presentation. Useful result
+- docs/DASHBOARD.md: new 30-30; Primary views omit empty or none-like values, internal identifiers and
+- docs/INSTALL_PROMPT.md: new 127-127; Delegation is the default for any task with useful bounded independent
+- docs/INSTALL_PROMPT.md: new 167-167; For durable work, create one `local_ai_coord(action="task_create")` co
+- docs/INSTALL_PROMPT.md: new 178-178; Local model policy: use `qwen2.5-coder:0.5b` only for preprocessing, `
+- docs/UPDATE_PROMPT.md: new 5-5; Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, 
+- src/local_ai_hub/agent_events.py: new 350-404; class AgentStateStore:
+- src/local_ai_hub/agent_events.py: new 567-567; class SwarmPubSub:
+- src/local_ai_hub/agent_events.py: new 599-599; class SwarmPubSub:
+- src/local_ai_hub/agent_events.py: new 601-602; class SwarmPubSub:
+- src/local_ai_hub/agent_events.py: new 605-625; class SwarmPubSub:
+- src/local_ai_hub/agent_events.py: new 627-627; class SwarmPubSub:
+- src/local_ai_hub/agent_events.py: new 630-630; class SwarmPubSub:
+- src/local_ai_hub/agent_events.py: new 633-634; class SwarmPubSub:
+- src/local_ai_hub/agent_events.py: new 660-663; class SwarmPubSub:
+- src/local_ai_hub/agent_events.py: new 665-673; class SwarmPubSub:
+- src/local_ai_hub/agent_events.py: new 675-718; class SwarmPubSub:
+- src/local_ai_hub/debug_traces.py: new 30-32; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 54-56; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 86-102; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 123-188; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 211-212; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 247-249; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 253-255; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 259-261; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 263-277; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: delete old 191-239 (new boundary 300); class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 303-377; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: delete old 356-361 (new boundary 491); class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 494-495; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 498-498; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 507-507; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 510-527; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 529-554; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: delete old 397-399 (new boundary 556); class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 614-615; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 623-623; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 631-635; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 642-646; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 654-656; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 662-662; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 666-671; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 673-691; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: delete old 513-513 (new boundary 692); class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 694-700; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 709-711; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: new 713-714; class DebugTraceStore:
+- src/local_ai_hub/debug_traces.py: delete old 531-531 (new boundary 715); class DebugTraceStore:
+- src/local_ai_hub/http_server.py: delete old 20-20 (new boundary 19); from . import __version__
+- src/local_ai_hub/http_server.py: new 53-53; APP: LocalAIApp | None = None
+- src/local_ai_hub/services.py: new 3258-3258; class LocalAIServices:
+- src/local_ai_hub/services.py: new 3260-3260; class LocalAIServices:
+- src/local_ai_hub/services.py: new 3262-3262; class LocalAIServices:
+- tests/test_debug_traces.py: new 5-5; import time
+- tests/test_debug_traces.py: new 122-185; def test_full_payload_content_pages_reconstruct_retained_session_and_e
+- tests/test_operational_api_contracts.py: new 489-532; def test_pubsub_service_uses_app_store_and_preserves_sequence_gap(monk
+
+## Current uncommitted T18 hunk ranges vs HEAD
+
+
+- src/local_ai_hub/agent_incidents.py
+  - @@ -537 +537 @@ class IncidentStore:
+  - @@ -552,0 +553 @@ class IncidentStore:
+  - @@ -554,3 +555,4 @@ class IncidentStore:
+
+- src/local_ai_hub/dashboard.py
+  - @@ -5612 +5612 @@ $('trajRefreshBtn')?.addEventListener('click',loadTrajectories);
+  - @@ -5621 +5621,2 @@ async function viewTrajectory(taskId){
+  - @@ -5624 +5625,3 @@ async function viewTrajectory(taskId){
+  - @@ -5626,2 +5629,18 @@ async function viewTrajectory(taskId){
+  - @@ -5630 +5649 @@ async function viewTrajectory(taskId){
+  - @@ -5635,2 +5654 @@ async function viewTrajectory(taskId){
+  - @@ -5638 +5656 @@ async function viewTrajectory(taskId){
+  - @@ -5640,2 +5658,3 @@ async function viewTrajectory(taskId){
+  - @@ -5645 +5664 @@ async function viewTrajectory(taskId){
+  - @@ -5647 +5666 @@ async function viewTrajectory(taskId){
+  - @@ -5649 +5668,13 @@ async function viewTrajectory(taskId){
+  - @@ -5651 +5682,8 @@ async function viewTrajectory(taskId){
+
+- src/local_ai_hub/debug_traces.py
+  - @@ -794,6 +794,10 @@ class DebugTraceStore:
+
+- src/local_ai_hub/http_server.py
+  - @@ -1807,4 +1807,34 @@ class Handler(BaseHTTPRequestHandler):
+  - @@ -1877 +1907 @@ class Handler(BaseHTTPRequestHandler):
+
+- tests/test_dashboard_polling_quality.py
+  - @@ -56,0 +57,101 @@ def _run_polling_javascript(scenario: str, *, include_status: bool = False) -> N
+
+- tests/test_debug_traces.py
+  - @@ -221,0 +222,37 @@ def test_trace_detail_since_seq_and_list_filters_are_bounded(tmp_path):
+
+- tests/test_operational_api_contracts.py
+  - @@ -42,0 +43,75 @@ def test_telemetry_query_window_clamps_unbounded_days(tmp_path):
+  - @@ -60,0 +136,20 @@ def test_trace_detail_is_paginated_and_response_bytes_are_capped(tmp_path):
+  - @@ -167,0 +263,68 @@ def test_incident_resolution_deadline_rolls_back(monkeypatch, tmp_path):
+  - @@ -187 +350 @@ def test_incident_resolution_rolls_back_when_audit_event_cannot_append(tmp_path,
+  - @@ -188,0 +352 @@ def test_incident_resolution_rolls_back_when_audit_event_cannot_append(tmp_path,
+  - @@ -371,0 +536,35 @@ def test_admin_action_requires_exact_route_and_payload_action():

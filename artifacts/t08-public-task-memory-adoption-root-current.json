@@ -1,0 +1,15 @@
+{
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_test_preimage_sha256": "A6D23744CED963A1B9BECAAFDED9EDF764E1DE687AD2EB674E5492664080B564",
+  "candidate_test_sha256": "99798DF10C07B182506C00987B7C8D2BB3E17ADAE12DE901B1022565618DBCCB",
+  "patch_sha256": "3678BAD000E47C05077068FED80B1F2398D7465E76DEAD2445D3CC14AF7031F9",
+  "patch_scope": [
+    "tests/test_t08_http_memory_context_immutable.py"
+  ],
+  "candidate_validation": {
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_task_memory_adoption.py tests/test_t08_http_memory_context_immutable.py",
+    "result": "13 passed in 13.80s"
+  },
+  "root_write": false,
+  "root_test_run": false
+}

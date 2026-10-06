@@ -8,7 +8,7 @@
 
 ## Local API security
 
-The Hub binds to `127.0.0.1` by default. A non-loopback bind requires `security.allow_remote = true` and `security.api_token` with at least 16 characters. On loopback, an empty token leaves HTTP data/control routes unauthenticated; set `security.api_token` to protect them. Send it in `X-LocalAI-Token` or `Authorization: Bearer`; `/health` and the dashboard shell are public. This candidate does not implement `allowed_roots`, per-token permissions, principal-to-root HMAC tenant derivation, or tenant-label consistency enforcement. Tenant labels are not authorization. See [Security model](SECURITY_MODEL.md) for current behavior and pending T13 scope.
+The Hub binds to `127.0.0.1` by default. A non-loopback bind requires `security.allow_remote = true` and `security.api_token` with at least 16 characters. On loopback, an empty token leaves HTTP data/control routes unauthenticated; set `security.api_token` to protect them. Send it in `X-LocalAI-Token` or `Authorization: Bearer`; `/health` and the dashboard shell are public. The client validates configured `allowed_roots` and root-derived task/memory tenant consistency. This does not establish a general server-enforced principal-to-root authorization boundary or per-token permissions. Tenant labels are not authorization. See [Security model](SECURITY_MODEL.md) for current behavior and pending T13 scope.
 
 ## Bootstrap & One-Command Setup
 
@@ -21,9 +21,9 @@ When `[ollama].enabled = false` (the default), setup and the supervisor do not i
 
 Useful flags: `--profile cpu|integrated|low|balanced|high|max`, `--skip-token-economy`, `--skip-companion-skills`, `--skip-model-pull`, `--skip-tools`, `--skip-agent-config`, and `--skip-service`. `--skip-service` skips per-user service-manager registration, but setup still restarts the Hub as a user process with `hubctl`; it does not suppress Hub startup. Rerunning setup preserves an existing installed configuration unless `--config` is explicitly supplied.
 
-Target shared runtime uses one per-user Hub install, one configured `server.state_dir`, and one user-level supervisor/daemon for all Codex chats and worktrees under that OS account. Every enabled agent uses a lightweight stdio proxy. Acceptance: clean install registers exactly one user service; update reuses or reconciles that same registration. Never install or register a daemon per agent, chat, repository, or worktree. The generated global Codex `local-ai` entry starts `python -m local_ai_hub.mcp_server` as a stdio adapter; each active Codex MCP session may own one adapter process. The adapter forwards Hub calls through `HubClient` over HTTP. It creates bounded protocol/metadata helpers, but must not create `LocalAIApp`, `HubServices`, `ProjectPreprocessor`, `CodeIndex`, `RAGStore`, or model pools. Multiple adapter processes do not prove duplicate daemons; inspect parent/command line and the OS service identity. The single per-user supervisor starts the HTTP daemon at logon/session startup. Global Codex `cwd=install_dir` is not the caller's project root, and setup injects no project-root environment. Current candidate maps missing or `.` roots to the MCP working directory for most repository/RAG actions; preprocessing alone rejects a missing absolute root. Always pass the caller's explicit project root. Release acceptance stays blocked until T03 rejects rootless repository-scoped actions or a tested adapter supplies caller root explicitly. T03/T04/T13 integration remains pending in this T19 candidate, so this is an acceptance contract, not proof of current runtime behavior. `HubClient` autostart is bounded and cross-process locked; a managed supervisor, live supervisor PID, or occupied port blocks another daemon launch. Generated agent command, arguments, working directory and environment remain authoritative. Project-local MCP manifests use `target_root` as `cwd`; global manifests use `install_dir`. Every global repository, task, or memory request must set the `root` field to the caller's project root and preserve task context. Both MCP API and `HubClient` send that root explicitly; never infer it from `install_dir` or process cwd. The server derives effective tenant from principal and canonical root; caller tenant metadata is consistency-only. T13 auth/lifecycle implementation remains candidate-only and untested. The service manager starts the daemon when the user session starts after reboot (Windows logon task, macOS LaunchAgent, or Linux user service). `--skip-service` leaves only a session process; it does not configure reboot startup.
+Target shared runtime uses one per-user Hub install, one configured `server.state_dir`, and one user-level supervisor/daemon for all Codex chats and worktrees under that OS account. Every enabled agent uses a lightweight stdio proxy. Acceptance: clean install registers exactly one user service; update reuses or reconciles that same registration. Never install or register a daemon per agent, chat, repository, or worktree. The generated global Codex `local-ai` entry starts `python -m local_ai_hub.mcp_server` as a stdio adapter; each active Codex MCP session may own one adapter process. The adapter forwards Hub calls through `HubClient` over HTTP. It creates bounded protocol/metadata helpers, but must not create `LocalAIApp`, `HubServices`, `ProjectPreprocessor`, `CodeIndex`, `RAGStore`, or model pools. Multiple adapter processes do not prove duplicate daemons; inspect parent/command line and the OS service identity. The single per-user supervisor starts the HTTP daemon at logon/session startup. Global Codex `cwd=install_dir` is not the caller's project root, and setup injects no project-root environment. Current candidate maps missing or `.` roots to the MCP working directory for most repository/RAG actions; preprocessing alone rejects a missing absolute root. Always pass the caller's explicit project root. Release acceptance stays blocked until T03 rejects rootless repository-scoped actions or a tested adapter supplies caller root explicitly. Client identity/transport and operational-mode source contracts do not prove installed runtime acceptance. `HubClient` autostart is bounded and cross-process locked; a managed supervisor, live supervisor PID, or occupied port blocks another daemon launch. Generated agent command, arguments, working directory and environment remain authoritative. Project-local MCP manifests use `target_root` as `cwd`; global manifests use `install_dir`. Every global repository, task, or memory request must set the `root` field to the caller's project root and preserve task context. Both MCP API and `HubClient` send that root explicitly; never infer it from `install_dir` or process cwd. The target server contract requires effective tenant derived from principal and canonical root, with caller metadata used only for consistency. Current client preflight is not proof of server-enforced isolation. Installed auth/lifecycle acceptance requires separate revision-bound runtime evidence. The service manager starts the daemon when the user session starts after reboot (Windows logon task, macOS LaunchAgent, or Linux user service). `--skip-service` leaves only a session process; it does not configure reboot startup.
 
-During migration or update, rerun setup to refresh the managed Hub MCP entries while preserving unrelated agent entries. Project-local manifests use `target_root` as their working directory; global manifests use the Hub `install_dir`. Every global repository, task, or memory request must set `root` to the caller's project root and preserve task context; never treat `install_dir` as the repository root. The server derives effective tenant; caller tenant metadata only checks consistency. Back up affected agent MCP configuration files with the Hub installation, `config.toml`, and `server.state_dir`. Record the single platform user-service identity and enabled state separately; registration is external to the file snapshot. On rollback, reconcile that same service once with the matching release before starting it; do not register per agent or worktree. See [Operations rollback](OPERATIONS.md#rollback-and-durable-state-recovery) for a matched snapshot and rollback procedure.
+During migration or update, rerun setup to refresh the managed Hub MCP entries while preserving unrelated agent entries. Project-local manifests use `target_root` as their working directory; global manifests use the Hub `install_dir`. Every global repository, task, or memory request must set `root` to the caller's project root and preserve task context; never treat `install_dir` as the repository root. Client identity checks do not establish server-enforced effective-tenant isolation. Back up affected agent MCP configuration files with the Hub installation, `config.toml`, and `server.state_dir`. Record the single platform user-service identity and enabled state separately; registration is external to the file snapshot. On rollback, reconcile that same service once with the matching release before starting it; do not register per agent or worktree. See [Operations rollback](OPERATIONS.md#rollback-and-durable-state-recovery) for a matched snapshot and rollback procedure.
 
 See [TOKEN_ECONOMY.md](TOKEN_ECONOMY.md) for full details on token optimization.
 
@@ -37,32 +37,42 @@ Use `--profile integrated` to force the conservative shared-memory profile on a 
 
 ## Optional standalone tool: CodeGraphContext
 
-CodeGraphContext and KuzuDB are not Hub dependencies or backends; both are separate from Local AI Hub. Any CodeGraphContext installation or MCP setup below is optional standalone tooling outside Hub. Hub does not discover, report, or use the standalone installation.
+CodeGraphContext is an independent CLI and MCP server. Local AI Hub does not install, configure, invoke, monitor or fall back to it. Hub setup and operation use Hub-managed features such as the built-in code index; CodeGraphContext has its own package, database, configuration and process lifecycle.
 
-For users who independently choose standalone CodeGraphContext for deep call-graph analysis, install it directly in the target repository or environment. This is separate from Hub installation:
-
-- **Benefits**: Deep call graphs, caller/callee tracing, blast-radius impact analysis, and dead code detection.
-- **Standalone installation**:
-  ```bash
-  pip install "codegraphcontext[gcf]==0.6.13"
-  ```
-- **Standalone Agent MCP configuration** (e.g. in `.cursor/mcp.json`, `claude_desktop_config.json`, or Codex configuration). This connects an agent directly to CodeGraphContext; it does not configure Local AI Hub:
-  ```json
-  {
-    "mcpServers": {
-      "codegraph": {
-        "command": "codegraphcontext",
-        "args": ["mcp", "start"]
-      }
-    }
-  }
-  ```
-- **Local AI Hub analysis**: Built-in AST indexing and symbol analysis remain available independently. CodeGraphContext is not a Hub backend and does not trigger a Hub fallback path.
+Install CodeGraphContext only if you want that separate tool. Use its [official installation guide](https://codegraphcontext.github.io/getting-started/installation/) and, if needed, its [MCP setup guide](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/docs/docs/getting-started/mcp-setup.md). Configure it directly with the agent that should use it; it is not part of the Hub's `local-ai` MCP entry.
 
 ## Python package
 
-For development/package installation use `pip install .` or `pip install ".[token-economy]"`. CLI tools `tokcount`, `trim-run`, `repo-map`, and `local-ai-hub` are registered automatically. `local-ai-hub --config /path/config.toml` starts the service. See [Python SDK](PYTHON_SDK.md) for the `HubClient` API.
+From the repository root, install the core package with `python -m pip install .`. For development, use `python -m pip install ".[dev]"`; to combine development and Token Economy dependencies, use `python -m pip install ".[dev,token-economy]"`. For Python client usage, see [Python SDK](PYTHON_SDK.md). CLI tools `tokcount`, `trim-run`, `repo-map`, and `local-ai-hub` are registered automatically. `local-ai-hub --config /path/config.toml` starts the service.
+
+When `HubClient` has no explicit `config_path`, it uses `LOCAL_AI_CONFIG` when set; otherwise an existing installed home config takes priority, followed by repository-root `config.toml` for a source checkout, then the home config path as the default.
+
+### Optional Python extras
+
+Install one or more extras with `python -m pip install ".[extra-name]"`; combine names with commas, for example `python -m pip install ".[local-nlp,performance]"`. These are package dependencies from `pyproject.toml`; setup-managed tools, agent configuration, and service installation remain separate.
+
+| Extra | Declared packages |
+| --- | --- |
+| `local-nlp` | `sentence-transformers` |
+| `intel-accelerators` | `sentence-transformers[openvino]`, `openvino` |
+| `token-economy` | `tiktoken`, `files-to-prompt`, `grep-ast` |
+| `performance` | `orjson`, `msgspec`, `Cython` |
+| `profiling` | `py-spy`, `scalene` |
+| `dev` | `pytest`, `pyflakes`, `coverage[toml]` |
 
 ## Verification
 
-Run `python tools/doctor.py`, `python tools/selftest.py`, `python tools/hubctl.py clean`, and `python -m pytest -q`. The lightweight `/health` endpoint must return the same version as the package.
+After setup, activate the installed `.venv` and run from the active installation root:
+
+```text
+python tools/doctor.py --json
+python tools/hubctl.py status --json
+```
+
+The lightweight `/health` endpoint must return the same version as the package. Its default URL is `http://127.0.0.1:11435/health`; use the active config's bind address and port when they differ. From the activated venv, compare the running service and installed package with:
+
+```text
+python -c 'import importlib.metadata as m,json,urllib.request; h=json.load(urllib.request.urlopen("http://127.0.0.1:11435/health", timeout=3)); p=m.version("local-ai-hub"); print({"health_version":h["version"],"package_version":p}); assert h["version"] == p'
+```
+
+`python tools/selftest.py` and `python -m pytest -q` are source-checkout checks, separate from installed-instance verification. `python tools/hubctl.py clean` removes repository caches and build artifacts; it is not an installation check.

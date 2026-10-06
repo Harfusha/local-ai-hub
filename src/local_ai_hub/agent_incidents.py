@@ -550,32 +550,65 @@ class IncidentStore:
         *,
         verified_fix: str = "Resolved by operator",
         root_cause: str | None = None,
+        timeout_seconds: float = 2.0,
     ) -> int:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return 0
+        timeout_seconds = max(0.01, min(10.0, float(timeout_seconds)))
+        deadline = time.monotonic() + timeout_seconds
         self._init_table()
+        self.state_store._ensure_schema()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("incident resolution time budget exceeded")
+        connection_timeout = min(1.0, remaining)
         now = time.time()
-        with closing(connect_sqlite(self.state_store.db_path)) as con:
-            with con:
-                cur = con.execute(
-                    """
-                    UPDATE agent_incidents
-                    SET resolved = 1, ignored = 0, verified_fix = COALESCE(verified_fix, ?),
-                        root_cause = COALESCE(root_cause, ?), updated_at = ?
-                    WHERE resolved = 0
-                    """,
-                    (verified_fix, root_cause or "Operator cleared unresolved incidents", now),
-                )
-                count = cur.rowcount
-        if count > 0 and self.state_store.enabled:
-            event = AgentEvent.create(
-                stream_id="incident:all",
-                kind="incident.all_resolved",
-                payload={"verified_fix": verified_fix, "resolved_count": count},
-                idempotency_key=f"inc_res_all_{int(now)}",
-                actor="operator",
-            )
-            self.state_store.append(event)
+        event_to_publish: AgentEvent | None = None
+        try:
+            with closing(connect_sqlite(self.state_store.db_path, timeout_seconds=connection_timeout)) as con:
+                con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                try:
+                    with con:
+                        cur = con.execute(
+                            """
+                            UPDATE agent_incidents
+                            SET resolved = 1, ignored = 0, verified_fix = COALESCE(verified_fix, ?),
+                                root_cause = COALESCE(root_cause, ?), updated_at = ?
+                            WHERE resolved = 0
+                            """,
+                            (verified_fix, root_cause or "Operator cleared unresolved incidents", now),
+                        )
+                        count = cur.rowcount
+                        if count > 0:
+                            event = AgentEvent.create(
+                                stream_id="incident:all",
+                                kind="incident.all_resolved",
+                                payload={"verified_fix": verified_fix, "resolved_count": count},
+                                idempotency_key=f"inc_res_all_{uuid.uuid4().hex}",
+                                actor="operator",
+                            )
+                            appended = self.state_store.append_in_transaction(con, event)
+                            if appended.retryable:
+                                raise TimeoutError("incident resolution event append timed out")
+                            if appended.error:
+                                raise RuntimeError(appended.error)
+                            if not appended.duplicate:
+                                event_to_publish = appended.event
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("incident resolution time budget exceeded")
+                finally:
+                    con.set_progress_handler(None, 0)
+        except Exception as exc:
+            message = str(exc).lower()
+            if isinstance(exc, TimeoutError) or time.monotonic() >= deadline or "interrupt" in message or "locked" in message or "busy" in message:
+                raise TimeoutError("incident resolution time budget exceeded") from exc
+            raise
+        # The durable commit is final; publish wakes live streams and cannot change its outcome.
+        if event_to_publish is not None:
+            try:
+                self.state_store._publish(event_to_publish)
+            except Exception:
+                pass
         return count
 
     def set_ignored(self, incident_id: str, ignored: bool = True) -> IncidentRecord:
@@ -874,7 +907,9 @@ class IncidentStore:
                 WITH ranked AS (
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, root_cause, verified_fix, confidence,
-                           SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
+                           SUM(attempts) OVER (
+                               PARTITION BY operation_class, error_class, signature_hash, repository_key, tenant_key
+                           ) AS attempts,
                            affected_paths, updated_at, ignored,
                            ROW_NUMBER() OVER (
                                PARTITION BY operation_class, error_class, signature_hash
@@ -956,25 +991,23 @@ class IncidentStore:
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, root_cause, verified_fix, confidence,
                            SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
-                           updated_at, affected_paths, ignored, expires_at,
-                           repository_key, tenant_key,
+                           updated_at, affected_paths, ignored, expires_at, repository_key, tenant_key,
                            ROW_NUMBER() OVER (
-                               PARTITION BY operation_class, error_class, signature_hash
-                               {', repository_key, tenant_key' if scoped else ''}
+                               PARTITION BY operation_class, error_class, signature_hash, repository_key, tenant_key
                                ORDER BY updated_at DESC, incident_id DESC
                            ) AS row_num
                     FROM agent_incidents
-                    {scope_sql}
+                    WHERE repository_key = ? AND tenant_key = ?
                 )
                 SELECT incident_id, operation_class, error_class, redacted_message, state_revision,
                        root_cause, verified_fix, confidence, attempts, updated_at, affected_paths,
                        repository_key, tenant_key
                 FROM ranked
                 WHERE ignored = 0 AND row_num = 1
-                  {"AND (expires_at IS NULL OR expires_at > ?)" if scoped else ""}
+                  AND (expires_at IS NULL OR expires_at > ?)
                 ORDER BY updated_at DESC
-                """
-                , (*scope_params, time.time()) if scoped else ()
+                """,
+                (*scope_params, time.time()),
             )
             q_norm = str(query or "").strip().lower()
             results: list[dict[str, Any]] = []
@@ -1005,11 +1038,10 @@ class IncidentStore:
                     "attempts": int(r[8] or 1),
                     "updated_at": float(r[9] or 0.0),
                 }
-                if scoped:
-                    item["provenance"] = {
-                        "repository_key": str(r[11] or ""),
-                        "tenant_key": str(r[12] or ""),
-                    }
+                item["provenance"] = {
+                    "repository_key": str(r[11] or ""),
+                    "tenant_key": str(r[12] or ""),
+                }
                 results.append(item)
                 if len(results) >= limit:
                     break

@@ -56,14 +56,35 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
             {
                 "task": "inspect",
                 "api_key": "api-secret",
-                "nested": {"authorization": "Bearer authorization-secret", "safe": "kept"},
+                "client_secret": "client-secret",
+                "clientSecret": "camel-secret",
+                "X-LocalAI-Token": "local-token",
+                "nested": {
+                    "authorization": "Bearer authorization-secret",
+                    "auth.token": "dot-token-secret",
+                    "credentials.apiKey": "dotted-camel-secret",
+                    "safe": "kept",
+                },
+                "headers": {"x-api-key": "header-api-secret"},
             }
         )
 
         self.assertEqual(captured["api_key"], "[redacted]")
+        self.assertEqual(captured["client_secret"], "[redacted]")
+        self.assertEqual(captured["clientSecret"], "[redacted]")
+        self.assertEqual(captured["X-LocalAI-Token"], "[redacted]")
         self.assertEqual(captured["nested"]["authorization"], "[redacted]")
+        self.assertEqual(captured["nested"]["auth.token"], "[redacted]")
+        self.assertEqual(captured["nested"]["credentials.apiKey"], "[redacted]")
+        self.assertEqual(captured["headers"]["x-api-key"], "[redacted]")
         self.assertEqual(captured["nested"]["safe"], "kept")
         self.assertNotIn("api-secret", json.dumps(captured))
+        self.assertNotIn("client-secret", json.dumps(captured))
+        self.assertNotIn("camel-secret", json.dumps(captured))
+        self.assertNotIn("local-token", json.dumps(captured))
+        self.assertNotIn("dot-token-secret", json.dumps(captured))
+        self.assertNotIn("dotted-camel-secret", json.dumps(captured))
+        self.assertNotIn("header-api-secret", json.dumps(captured))
         self.assertEqual(Handler._safe_debug_trace_request(b"\x00\x01")["capture_status"], "omitted")
         self.assertEqual(
             Handler._safe_debug_trace_request({"body": "x" * (Handler.DEBUG_TRACE_REQUEST_CAPTURE_BYTES + 1)})[

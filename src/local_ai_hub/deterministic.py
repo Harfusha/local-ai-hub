@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import ast
 import json
+import math
 import os
 import re
 import sqlite3
@@ -22,6 +23,7 @@ from typing import Any
 
 from . import __version__
 from .cache import MemoryLRUCache, SQLiteCache, stable_hash
+from .code_index import _mask_non_code
 from .normalizer import tokenize_query_terms
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
 from .diff_parsers import (
@@ -149,7 +151,7 @@ class DeterministicEngine:
         self._query_l2_max_per_root = int(cfg.get("query_cache_l2_max_entries_per_root", 4000))
         audit_cfg = config.get("dependency_audit", {})
         self._osv_cache = SQLiteCache(
-            configured_state_dir(config) / "cache.sqlite3", "dependency-audit:osv",
+            configured_state_dir(config) / "cache.sqlite", "dependency-audit:osv",
             ttl_seconds=max(60, int(audit_cfg.get("osv_cache_ttl_seconds", 6 * 3600))), max_entries=20000,
         )
         self._fact_blob_max = int(cfg.get("fact_blob_max_entries", 100000))
@@ -1982,7 +1984,28 @@ class DeterministicEngine:
                 graph = self.code_index.query(root_s, query, limit or 24)
             except Exception:
                 graph = {"success": False, "confidence": 0.0}
+            if intent == "callers" and graph.get("symbols") and callable(getattr(self.code_index, "find_callers", None)):
+                query_folded = query.casefold()
+                direct_symbols = [
+                    item for item in graph["symbols"]
+                    if re.search(rf"(?<!\w){re.escape(str(item.get('name') or '').casefold())}(?!\w)", query_folded)
+                    if item.get("name")
+                ]
+                target = (direct_symbols or graph["symbols"])[0]
+                caller_result = self.code_index.find_callers(root_s, str(target["name"]), limit or 24)
+                graph = {
+                    **graph,
+                    "caller_symbol": str(target["name"]),
+                    "callers": caller_result.get("callers", []),
+                    "callers_coverage": caller_result.get("coverage", {}),
+                    "callers_success": bool(caller_result.get("success")),
+                }
             result["code_index"] = {k: graph.get(k) for k in ("symbols", "references", "edges", "confidence") if k in graph}
+            if intent == "callers" and "callers" in graph:
+                result["code_index"].update({
+                    key: graph[key]
+                    for key in ("caller_symbol", "callers", "callers_coverage", "callers_success")
+                })
 
         kind_map = {
             "routes": ["route"], "tests": ["test_file"], "syntax": ["syntax_error"], "config": ["env", "config", "config_key"],
@@ -2700,6 +2723,9 @@ class DeterministicEngine:
                     lines.append(f"- {x.get('path')}")
         elif intent in {"symbols", "callers", "references"}:
             graph = result.get("code_index", {}) if isinstance(result.get("code_index"), dict) else {}
+            if intent == "callers":
+                for x in graph.get("callers", [])[:max_items]:
+                    lines.append(f"- {x.get('caller')} calls {x.get('callee')} — {x.get('path')}:{x.get('line')}")
             for x in graph.get("symbols", [])[:max_items]:
                 lines.append(f"- definition {x.get('name')} — {x.get('path')}:{x.get('line')}")
             group = graph.get("references", []) if intent != "symbols" else []
@@ -4219,6 +4245,7 @@ def test_{sym}_regression_edge_cases():
             }
 
         test_paths_set: set[str] = set()
+        graph_complete = False
         for t_linked in self.get_test_source_links(str(resolved_root), norm_changed):
             test_paths_set.add(t_linked)
         for p in norm_changed:
@@ -4256,10 +4283,17 @@ def test_{sym}_regression_edge_cases():
         if code_index is not None:
             try:
                 imp = code_index.impact(str(resolved_root), norm_changed)
-                for st in imp.get("suggested_tests", []):
+                if not isinstance(imp, dict) or not isinstance(imp.get("suggested_tests", []), list):
+                    raise ValueError("code index returned malformed impact data")
+                suggested_tests = imp.get("suggested_tests", [])
+                if any(not isinstance(st, dict) or not isinstance(st.get("path"), str) for st in suggested_tests):
+                    raise ValueError("code index returned malformed test paths")
+                # Preserve conservative completeness until dependency coverage is verified.
+                graph_complete = imp.get("success") is True and imp.get("graph_complete") is True
+                for st in suggested_tests:
                     test_paths_set.add(st["path"].replace("\\", "/"))
             except Exception:
-                pass
+                graph_complete = False
 
         matched_tests = sorted(test_paths_set)
         cmd = ""
@@ -4285,6 +4319,7 @@ def test_{sym}_regression_edge_cases():
             "test_files": matched_tests,
             "suggested_command": cmd,
             "confidence": 0.95 if matched_tests else 0.5,
+            "selection_complete": graph_complete,
         }
 
     def repo_topology(self, root: str) -> dict[str, Any]:
@@ -4789,28 +4824,96 @@ def test_{sym}_regression_edge_cases():
         }
 
     def code_invariants(self, root: str, path: str | None = None) -> dict[str, Any]:
-        """Check source invariants; explicit ``path`` can still target test fixtures."""
+        """Check Python source invariants; report unsupported files and syntax errors."""
         resolved_root = Path(self._root(root))
         target_paths: list[Path] = []
+        unsupported_files: list[dict[str, str]] = []
+        parse_errors: list[dict[str, Any]] = []
+        scan_errors: list[dict[str, Any]] = []
+        read_errors: list[dict[str, Any]] = []
+        if not resolved_root.is_dir():
+            return {
+                "success": False,
+                "complete": False,
+                "error": "root_not_directory",
+                "root": str(resolved_root),
+                "files_checked": 0,
+                "supported_languages": ["python"],
+                "parse_errors": [],
+                "scan_errors": [],
+                "read_errors": [],
+                "unsupported_files": [],
+                "truncated": False,
+                "violation_count": 0,
+                "violations": [],
+            }
         if path:
             candidate = (resolved_root / path).resolve(strict=False)
             if candidate.is_file():
-                target_paths.append(candidate)
+                if not candidate.is_relative_to(resolved_root):
+                    return {
+                        "success": False,
+                        "complete": False,
+                        "error": "path_outside_root",
+                        "root": str(resolved_root),
+                        "files_checked": 0,
+                        "supported_languages": ["python"],
+                        "parse_errors": [],
+                        "scan_errors": [],
+                        "read_errors": [],
+                        "unsupported_files": [],
+                        "truncated": False,
+                        "violation_count": 0,
+                        "violations": [],
+                    }
+                if candidate.suffix.lower() == ".py":
+                    target_paths.append(candidate)
+                else:
+                    unsupported_files.append({
+                        "path": str(candidate.relative_to(resolved_root)).replace("\\", "/"),
+                        "language": candidate.suffix.lower().lstrip(".") or "unknown",
+                        "reason": "unsupported_language",
+                    })
             else:
-                return {"success": False, "error": f"path not found: {path}"}
+                return {
+                    "success": False,
+                    "complete": False,
+                    "error": f"path not found: {path}",
+                    "root": str(resolved_root),
+                    "files_checked": 0,
+                    "supported_languages": ["python"],
+                    "parse_errors": [],
+                    "scan_errors": [],
+                    "read_errors": [],
+                    "unsupported_files": [],
+                    "truncated": False,
+                    "violation_count": 0,
+                    "violations": [],
+                }
         else:
-            for dirpath, dirnames, filenames in os.walk(resolved_root):
+            truncated = False
+            def record_scan_error(exc: OSError) -> None:
+                scan_errors.append({
+                    "path": str(exc.filename or resolved_root),
+                    "reason": type(exc).__name__,
+                    "message": exc.strerror or str(exc),
+                })
+
+            for dirpath, dirnames, filenames in os.walk(resolved_root, onerror=record_scan_error):
                 # Repository-wide audits should cover shipped runtime code, not
                 # test setup commands or managed dependency environments. An
                 # explicit path remains available for fixture-level checks.
                 dirnames[:] = [d for d in dirnames if d not in {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", "tests", "tool-envs"}]
                 for f in filenames:
                     if f.endswith(".py"):
-                        target_paths.append(Path(dirpath) / f)
                         if len(target_paths) >= 150:
+                            truncated = True
                             break
-                if len(target_paths) >= 150:
+                        target_paths.append(Path(dirpath) / f)
+                if truncated:
                     break
+        if path:
+            truncated = False
 
         violations: list[dict[str, Any]] = []
 
@@ -4861,19 +4964,41 @@ def test_{sym}_regression_edge_cases():
                 self.generic_visit(node)
 
         for p in target_paths:
+            rel = str(p.relative_to(resolved_root)).replace("\\", "/")
             try:
-                rel = str(p.relative_to(resolved_root)).replace("\\", "/")
                 code = p.read_text(encoding="utf-8", errors="replace")
                 tree = ast.parse(code, filename=rel)
-                visitor = InvariantVisitor(rel)
-                visitor.visit(tree)
-            except Exception:
+            except OSError as exc:
+                read_errors.append({
+                    "path": rel,
+                    "reason": type(exc).__name__,
+                    "message": str(exc),
+                })
                 continue
+            except SyntaxError as exc:
+                parse_errors.append({
+                    "path": rel,
+                    "reason": "syntax_error",
+                    "line": exc.lineno,
+                    "column": exc.offset,
+                    "message": exc.msg,
+                })
+                continue
+            visitor = InvariantVisitor(rel)
+            visitor.visit(tree)
 
+        complete = not parse_errors and not scan_errors and not read_errors and not unsupported_files and not truncated
         return {
-            "success": True,
+            "success": complete,
+            "complete": complete,
             "root": str(resolved_root),
             "files_checked": len(target_paths),
+            "supported_languages": ["python"],
+            "parse_errors": parse_errors,
+            "scan_errors": scan_errors,
+            "read_errors": read_errors,
+            "unsupported_files": unsupported_files,
+            "truncated": truncated,
             "violation_count": len(violations),
             "violations": violations[:100],
         }
@@ -4995,14 +5120,30 @@ def test_{sym}_regression_edge_cases():
             data = json.loads(raw)
             if isinstance(data, dict) and "traceEvents" in data:
                 events = data.get("traceEvents", [])
+                if not isinstance(events, list):
+                    return {
+                        "success": False,
+                        "error": "failed to parse profile: traceEvents must be a JSON array",
+                    }
                 durations: dict[str, float] = {}
                 counts: dict[str, int] = {}
                 for ev in events:
+                    if not isinstance(ev, dict):
+                        continue
                     name = ev.get("name", "")
-                    dur = float(ev.get("dur", 0))
-                    if name and dur > 0:
-                        durations[name] = durations.get(name, 0.0) + dur
-                        counts[name] = counts.get(name, 0) + 1
+                    raw_duration = ev.get("dur", 0)
+                    if not isinstance(name, str) or not name.strip():
+                        continue
+                    if isinstance(raw_duration, bool) or not isinstance(raw_duration, (int, float)):
+                        continue
+                    duration = float(raw_duration)
+                    if not math.isfinite(duration) or duration <= 0:
+                        continue
+                    total_duration = durations.get(name, 0.0) + duration
+                    if not math.isfinite(total_duration):
+                        continue
+                    durations[name] = total_duration
+                    counts[name] = counts.get(name, 0) + 1
                 sorted_events = sorted(durations.items(), key=lambda kv: kv[1], reverse=True)
                 for name, total_dur in sorted_events[:limit]:
                     entries.append({
@@ -5974,16 +6115,20 @@ def test_{sym}_regression_edge_cases():
                                 "line": node.lineno,
                             })
 
-        express_pat = re.compile(r"\b(?:app|router)\.(get|post|put|patch|delete|options|head)\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
+        express_call_pat = re.compile(r"\b(?:app|router)\.(get|post|put|patch|delete|options|head)\s*\(", re.I)
         next_route_pat = re.compile(r"^\s*export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*\(", re.M)
         for p in list(p_root.rglob("*.js")) + list(p_root.rglob("*.ts")) + list(p_root.rglob("*.mjs")):
             if any(part in skip_dirs for part in p.parts):
                 continue
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
-                for m in express_pat.finditer(text):
+                scan_source = _mask_non_code(text, "typescript" if p.suffix.lower() == ".ts" else "javascript")
+                for m in express_call_pat.finditer(scan_source):
+                    route_match = re.match(r"\s*(['\"])([^'\"\r\n]+)\1", text[m.end():])
+                    if not route_match:
+                        continue
                     method = m.group(1).upper()
-                    r_path = m.group(2)
+                    r_path = route_match.group(2)
                     endpoints.append({
                         "method": method,
                         "path": r_path,
@@ -5994,7 +6139,7 @@ def test_{sym}_regression_edge_cases():
                         "line": text[:m.start()].count("\n") + 1,
                     })
                 if p.stem.lower() == "route":
-                    for m in next_route_pat.finditer(text):
+                    for m in next_route_pat.finditer(scan_source):
                         method = m.group(1).upper()
                         rel_p = p.relative_to(p_root) if p.is_relative_to(p_root) else p
                         r_path = "/" + "/".join(part for part in rel_p.parts[:-1] if part not in {"app", "src", "api"})
@@ -6023,7 +6168,17 @@ def test_{sym}_regression_edge_cases():
                 continue
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
+                php_scan_source = _mask_non_code(text, "php")
+
+                def is_php_code_match(match: re.Match[str]) -> bool:
+                    return bool(re.match(
+                        r"(?:Route::|#\[(?:Route|Get|Post|Put|Patch|Delete)\b|\$(?:builder|routes)->)",
+                        php_scan_source[match.start():], re.I,
+                    ))
+
                 for m in php_route_pat.finditer(text):
+                    if not is_php_code_match(m):
+                        continue
                     method = m.group(1).upper()
                     r_path = m.group(2)
                     endpoints.append({
@@ -6036,6 +6191,8 @@ def test_{sym}_regression_edge_cases():
                         "line": text[:m.start()].count("\n") + 1,
                     })
                 for m in php_resource_pat.finditer(text):
+                    if not is_php_code_match(m):
+                        continue
                     res_path = "/" + m.group(1).lstrip("/")
                     endpoints.append({
                         "method": "RESOURCE",
@@ -6047,6 +6204,8 @@ def test_{sym}_regression_edge_cases():
                         "line": text[:m.start()].count("\n") + 1,
                     })
                 for m in php_attr_route_pat.finditer(text):
+                    if not is_php_code_match(m):
+                        continue
                     r_path = m.group(1) or "/"
                     methods_str = m.group(2) or "GET"
                     for method_raw in methods_str.replace("'", "").replace('"', "").split(","):
@@ -6061,6 +6220,8 @@ def test_{sym}_regression_edge_cases():
                             "line": text[:m.start()].count("\n") + 1,
                         })
                 for m in cake_route_pat.finditer(text):
+                    if not is_php_code_match(m):
+                        continue
                     r_path = m.group(1)
                     endpoints.append({
                         "method": "ANY",
@@ -6072,6 +6233,8 @@ def test_{sym}_regression_edge_cases():
                         "line": text[:m.start()].count("\n") + 1,
                     })
                 for m in cake_resource_pat.finditer(text):
+                    if not is_php_code_match(m):
+                        continue
                     r_path = "/" + m.group(1).lstrip("/")
                     endpoints.append({
                         "method": "RESOURCE",
@@ -6091,7 +6254,12 @@ def test_{sym}_regression_edge_cases():
                 continue
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
-                for m in form_pat.finditer(text):
+                html_scan_source = re.sub(
+                    r"<!--[\s\S]*?-->",
+                    lambda match: "".join("\n" if char == "\n" else " " for char in match.group(0)),
+                    text,
+                )
+                for m in form_pat.finditer(html_scan_source):
                     r_path = m.group(1)
                     method = (m.group(2) or "GET").upper()
                     endpoints.append({

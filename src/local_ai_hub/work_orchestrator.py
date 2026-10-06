@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import subprocess
 import tempfile
 import threading
@@ -23,8 +24,13 @@ from .process_utils import hidden_run_kwargs, is_rooted_path
 from .response_protocol import project_response
 from .sqlite_support import connect_sqlite, retry_busy
 from .work_fencing import (
-    FencingLease, FencingLeaseStore, LeaseLostError, LeaseUnavailableError, WorkAttemptFence,
-    canonical_resource, normalize_paths,
+    FencingLease,
+    FencingLeaseStore,
+    LeaseLostError,
+    LeaseUnavailableError,
+    WorkAttemptFence,
+    canonical_resource,
+    normalize_paths,
 )
 
 
@@ -292,6 +298,28 @@ class _JournalEntry:
     fencing_token: int = 0
     attempt_id: str = ""
     attempt_token: int = 0
+
+
+def _safe_work_target(root: Path, relative: str) -> Path:
+    root = root.resolve()
+    rel = Path(relative)
+    if rel.is_absolute() or any(part in {"..", ""} for part in rel.parts):
+        raise ValueError("unsafe work journal path")
+    target = root
+    for part in rel.parts:
+        target = target / part
+        try:
+            metadata = target.lstat()
+        except FileNotFoundError:
+            continue
+        reparse = bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
+        if stat.S_ISLNK(metadata.st_mode) or reparse:
+            raise ValueError(f"refusing symlink or reparse path: {relative}")
+    try:
+        target.resolve(strict=False).relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"work journal path escapes repository: {relative}") from exc
+    return target
 
 
 class WorkOrchestrator:
@@ -1263,15 +1291,7 @@ class WorkOrchestrator:
         root = root.resolve()
         entries=[]
         for rel in paths:
-            raw_path = root / rel
-            cursor = root
-            for part in Path(rel).parts:
-                cursor = cursor / part
-                if cursor.is_symlink():
-                    raise ValueError(f"refusing to edit symlink path: {rel}")
-            p=raw_path.resolve(strict=False)
-            try: p.relative_to(root)
-            except ValueError: raise ValueError("patch path escapes repository")
+            p = _safe_work_target(root, rel)
             if p.exists() and p.is_dir(): raise ValueError(f"refusing to patch directory: {rel}")
             data=p.read_bytes() if p.exists() else b""
             if b"\x00" in data[:8192]: raise ValueError(f"refusing to edit binary file: {rel}")
@@ -1349,9 +1369,14 @@ class WorkOrchestrator:
             cursor = root
             for index, part in enumerate(parts):
                 cursor = cursor / part
-                is_junction = getattr(cursor, "is_junction", None)
-                if cursor.is_symlink() or (is_junction is not None and is_junction()):
-                    raise ValueError("refusing to restore through a symlink or junction")
+                try:
+                    metadata = cursor.lstat()
+                except FileNotFoundError:
+                    continue
+                attributes = int(getattr(metadata, "st_file_attributes", 0))
+                reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+                if stat.S_ISLNK(metadata.st_mode) or attributes & reparse_flag:
+                    raise ValueError("refusing to restore through a symlink or reparse point")
                 if index < len(parts) - 1 and cursor.exists() and not cursor.is_dir():
                     raise RuntimeError(f"rollback refused non-directory ancestor: {entry.path}")
             if path.exists() and path.is_dir():

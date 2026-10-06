@@ -14,18 +14,43 @@ import pytest
 from local_ai_hub import commands as commands_module
 from local_ai_hub.agent_policy import PolicyEngine
 from local_ai_hub.commands import CommandBroker
+from local_ai_hub.process_utils import hidden_run_kwargs
+from local_ai_hub.services import LocalAIServices
 
 
 class _FakeTaskStore:
     def __init__(self, worktree_path: str) -> None:
-        self.worktree_path = worktree_path
+        path = Path(worktree_path).resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        probe = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=False, **hidden_run_kwargs()
+        )
+        if probe.returncode != 0:
+            subprocess.run(
+                ["git", "init"], cwd=str(path), capture_output=True, check=True,
+                **hidden_run_kwargs()
+            )
+        self.worktree = {
+            "success": True,
+            "worktree_path": str(path),
+            "repo_root": subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, check=True, **hidden_run_kwargs()
+            ).stdout.strip(),
+            "branch": subprocess.run(
+                ["git", "-C", str(path), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                capture_output=True, text=True, check=True, **hidden_run_kwargs()
+            ).stdout.strip(),
+        }
 
     def get(self, task_id: str):
         if task_id != "daemon-test":
             return None
         return SimpleNamespace(
+            task_id=task_id,
             checkpoint=SimpleNamespace(
-                state_data={"worktree": {"success": True, "worktree_path": self.worktree_path}}
+                state_data={"worktree": self.worktree}
             )
         )
 
@@ -206,6 +231,31 @@ def test_recovery_rejects_pid_reuse_even_when_group_is_alive(
     assert "dmn_" + "a" * 32 not in broker._daemons
 
 
+def test_windows_recovery_rejects_reused_pid_outside_named_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+    row = _registry_row(broker)
+    row["job_name"] = commands_module._daemon_job_name(str(row["daemon_id"]))
+    _write_registry_row(broker, row, version=4)
+    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        commands_module, "process_identity",
+        lambda pid: {"pid": pid, "creation_identity": 9999},
+    )
+    monkeypatch.setattr(commands_module, "_open_named_daemon_job", lambda _name: 77)
+    close_job = mock.Mock(return_value=True)
+    monkeypatch.setattr(commands_module, "close_job_object", close_job)
+    membership = mock.Mock(side_effect=AssertionError("reused PID must not be trusted"))
+    monkeypatch.setattr(commands_module, "_windows_job_contains_process", membership)
+
+    broker._load_daemon_registry()
+
+    assert str(row["daemon_id"]) not in broker._daemons
+    close_job.assert_called_once_with(77)
+    membership.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("failure", "expected"),
     [(None, True), (ProcessLookupError, False), (PermissionError, None), (OSError, None)],
@@ -236,6 +286,21 @@ def test_recovered_daemon_stop_fails_closed_without_process_tree_handle(
     with pytest.raises(OSError, match="no stable process-tree ownership handle"):
         process.kill()
     assert commands_module._stop_daemon_tree(info) is False
+
+
+def _patch_daemon_popen(monkeypatch: pytest.MonkeyPatch, launch):
+    original_popen = subprocess.Popen
+
+    def dispatch(args, *positional, **kwargs):
+        argv = list(args) if isinstance(args, (list, tuple)) else str(args).split()
+        executable = str(argv[0]).replace("\\", "/").rsplit("/", 1)[-1].casefold() if argv else ""
+        if executable in {"git", "git.exe"} and any(
+            value in argv for value in ("rev-parse", "symbolic-ref", "worktree")
+        ):
+            return original_popen(args, *positional, **kwargs)
+        return launch(args, *positional, **kwargs)
+
+    monkeypatch.setattr(commands_module.subprocess, "Popen", dispatch)
 
 
 def test_daemon_environment_filters_inherited_secrets_but_keeps_explicit_values(
@@ -317,6 +382,37 @@ def test_spawn_daemon_requires_auxiliary_policy_before_process_launch(
     assert result["success"] is False
     assert result["policy"]["allowed"] is False
     assert not launches
+
+
+def test_spawn_daemon_policy_enforces_task_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    broker = _broker(tmp_path)
+    exhausted_budget = SimpleNamespace(
+        is_exhausted=lambda: True,
+        used_tokens=12,
+        max_tokens=12,
+        used_compute_seconds=5.0,
+        max_compute_seconds=5.0,
+    )
+    monkeypatch.setattr(broker.policy_engine, "get_budget", lambda task_id: exhausted_budget)
+
+    result = broker.authorize_auxiliary_action(
+        "spawn_daemon", endpoint="commands.spawn_daemon", task_id="daemon-test"
+    )
+
+    assert result["allowed"] is False
+    assert "task budget exhausted (daemon-test)" in result["reason"]
+
+
+def test_spawn_daemon_policy_fails_closed_for_missing_task(tmp_path: Path) -> None:
+    broker = _broker(tmp_path)
+
+    result = broker.authorize_auxiliary_action(
+        "spawn_daemon", endpoint="commands.spawn_daemon", task_id="missing-task"
+    )
+
+    assert result["allowed"] is False
+    assert result["terminal"] is True
+    assert "task" in result["reason"].lower()
 
 
 def test_spawn_daemon_reauthorizes_immediately_before_launch(
@@ -460,6 +556,118 @@ def test_spawn_daemon_revalidates_task_worktree_before_resume(
     assert broker._daemons == {}
 
 
+@pytest.mark.skipif(os.name != "nt", reason="suspended-process authorization is Windows-specific")
+def test_spawn_daemon_reauthorizes_after_suspended_process_creation_before_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+    authorization_calls = 0
+    resume_calls: list[int] = []
+    original_authorize = broker.authorize_auxiliary_action
+
+    def revoke_after_create(action: str, **kwargs: object) -> dict[str, object]:
+        nonlocal authorization_calls
+        authorization_calls += 1
+        if authorization_calls == 3:
+            return {"allowed": False, "reason": "grant revoked before resume"}
+        return original_authorize(action, **kwargs)
+
+    class SuspendedProcess:
+        pid = 43210
+        _local_ai_job_handle = None
+
+        def __init__(self) -> None:
+            self.alive = True
+
+        def poll(self) -> int | None:
+            return None if self.alive else 1
+
+        def kill(self) -> None:
+            self.alive = False
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.alive = False
+            return 1
+
+    process = SuspendedProcess()
+    monkeypatch.setattr(broker, "authorize_auxiliary_action", revoke_after_create)
+    monkeypatch.setattr(commands_module, "_create_named_daemon_job", lambda _daemon_id: 77)
+    monkeypatch.setattr(commands_module, "assign_process_to_job", lambda *_args: True)
+    monkeypatch.setattr(commands_module, "_duplicate_job_handle_into_process", lambda *_args: True)
+    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: "fake-identity")
+
+    def stop_suspended_tree(info: dict[str, object]) -> bool:
+        setattr(info["process"], "_local_ai_job_handle", None)
+        return True
+
+    monkeypatch.setattr(
+        commands_module,
+        "_stop_daemon_tree",
+        stop_suspended_tree,
+    )
+    _patch_daemon_popen(monkeypatch, lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        commands_module,
+        "_resume_suspended_process",
+        lambda child: resume_calls.append(child.pid) or True,
+    )
+
+    original_start = commands_module.threading.Thread.start
+
+    def fail_log_reader(thread: object) -> None:
+        if str(getattr(thread, "name", "")).startswith("local-ai-daemon-log-"):
+            raise RuntimeError("simulated reader startup failure")
+        original_start(thread)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(commands_module.threading.Thread, "start", fail_log_reader)
+    result = broker.spawn_daemon(
+        [sys.executable, "-c", "pass"], str(tmp_path), task_id="daemon-test"
+    )
+
+    assert authorization_calls == 3
+    assert result["success"] is False
+    assert result.get("policy_blocked") is True, result
+    assert result.get("policy", {}).get("reason") == "grant revoked before resume", result
+    assert resume_calls == []
+    assert process.alive is False
+    assert broker._daemons == {}
+
+
+def test_spawn_daemon_rejects_foreign_worktree_registration_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+    foreign_worktree = tmp_path.parent / f"{tmp_path.name}-foreign"
+    foreign_worktree.mkdir()
+    original_require = broker._require_task_worktree
+    checks = 0
+    launches: list[object] = []
+
+    def replace_registration_after_preflight(task_id, cwd, command=None):
+        nonlocal checks
+        checks += 1
+        result = original_require(task_id, cwd, command)
+        if checks == 1:
+            broker.task_store.worktree["worktree_path"] = str(foreign_worktree)
+        return result
+
+    def fail_if_launched(*args: object, **_kwargs: object) -> None:
+        launches.append(args)
+        raise AssertionError("daemon reached process launch after worktree replacement")
+
+    monkeypatch.setattr(broker, "_require_task_worktree", replace_registration_after_preflight)
+    _patch_daemon_popen(monkeypatch, fail_if_launched)
+
+    result = broker.spawn_daemon(
+        [sys.executable, "-c", "pass"], str(tmp_path), task_id="daemon-test"
+    )
+
+    assert checks == 2
+    assert result["success"] is False
+    assert "worktree" in result["error"].lower()
+    assert not launches
+
+
 def test_spawn_daemon_applies_command_policy_before_process_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -579,7 +787,6 @@ def test_daemon_log_retains_bounded_recent_output(tmp_path: Path) -> None:
         task_id="daemon-test",
     )
     assert daemon["success"] is True
-
     deadline = time.monotonic() + 5
     status = broker.daemon_status(daemon["daemon_id"])
     while status.get("running") and time.monotonic() < deadline:
@@ -628,8 +835,145 @@ def test_stop_daemon_does_not_report_success_while_process_is_alive(tmp_path: Pa
     assert result["error"] == "daemon did not stop within the bounded termination window"
 
 
-def test_daemon_status_redacts_sensitive_command_arguments(tmp_path: Path) -> None:
+def test_stop_daemon_requires_policy_before_tree_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     broker = _broker(tmp_path)
+    broker._daemons["other-owner-daemon"] = {
+        "process": SimpleNamespace(pid=54321, poll=lambda: None),
+        "pid": 54321,
+        "process_tree_stopped": False,
+    }
+    monkeypatch.setattr(
+        broker,
+        "authorize_auxiliary_action",
+        lambda *_args, **_kwargs: {"allowed": False, "reason": "stop grant required"},
+    )
+    cleanup_calls: list[int] = []
+    monkeypatch.setattr(
+        commands_module,
+        "_stop_daemon_tree",
+        lambda info: cleanup_calls.append(int(info["pid"])) or True,
+    )
+
+    result = broker.stop_daemon("other-owner-daemon")
+
+    assert result["success"] is False
+    assert result["policy_blocked"] is True
+    assert result["policy"]["reason"] == "stop grant required"
+    assert cleanup_calls == []
+
+
+def test_stop_daemon_rejects_a_different_task_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+    daemon = broker.spawn_daemon(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        str(tmp_path),
+        task_id="daemon-test",
+    )
+    assert daemon["success"] is True
+    monkeypatch.setattr(
+        broker,
+        "authorize_auxiliary_action",
+        lambda *_args, **_kwargs: {"allowed": True},
+    )
+    cleanup_calls: list[str] = []
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            commands_module,
+            "_stop_daemon_tree",
+            lambda info: cleanup_calls.append(str(info["daemon_id"])) or True,
+        )
+        result = broker.stop_daemon(daemon["daemon_id"], task_id="other-task")
+        missing_owner = broker.stop_daemon(daemon["daemon_id"])
+
+    assert result["policy_blocked"] is True
+    assert result["error"] == "daemon belongs to a different or unknown task"
+    assert missing_owner["policy_blocked"] is True
+    assert missing_owner["error"] == "daemon belongs to a different or unknown task"
+    assert cleanup_calls == []
+    assert broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")["success"] is True
+
+
+def test_daemon_stop_task_id_flows_through_service_and_http(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from local_ai_hub import http_server
+    from local_ai_hub.services import LocalAIServices
+
+    calls: list[tuple[str, str]] = []
+
+    class BrokerStub:
+        def authorize_auxiliary_action(
+            self, action: str, *, endpoint: str = "", task_id: str = ""
+        ) -> dict[str, Any]:
+            return {"allowed": action == "stop_daemon" and task_id == "daemon-test"}
+
+        def stop_daemon(self, daemon_id: str, *, task_id: str = "") -> dict[str, Any]:
+            calls.append((daemon_id, task_id))
+            return {"success": True}
+
+    service = object.__new__(LocalAIServices)
+    service.commands = BrokerStub()
+
+    daemon_id = "dmn_" + "a" * 32
+    task_id = "daemon-test"
+    result = service.command(
+        {"action": "stop_daemon", "daemon_id": daemon_id, "task_id": task_id},
+        tenant="agent",
+    )
+    assert result["success"] is True
+    assert calls == [(daemon_id, task_id)]
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/daemon"
+    handler.headers = {"Content-Type": "application/json"}
+    handler._begin_trace = lambda _path: None
+    handler._require_authorized = lambda: True
+    handler._read_json = lambda: {"action": "stop", "daemon_id": daemon_id, "task_id": task_id}
+    handler._validate_payload = lambda _path, _payload: None
+    handler._tenant = lambda: "agent"
+    handler._agent = lambda: "test-agent"
+    handler._trace_request_id = "daemon-stop-route-test"
+    responses: list[tuple[int, dict[str, Any]]] = []
+    handler._send = lambda status, body: responses.append((status, body))
+    monkeypatch.setattr(
+        http_server,
+        "load_operational_mode",
+        lambda _state_dir: SimpleNamespace(degraded=False, mode="active"),
+        raising=False,
+    )
+    recovery = SimpleNamespace(
+        begin=lambda *_args, **_kwargs: {"claimed": True, "state": "new", "payload_fingerprint": "test"}
+    )
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(
+            config={"server": {"state_dir": str(tmp_path)}},
+            services=service,
+            recovery=recovery,
+        ),
+    )
+
+    handler.do_POST()
+
+    assert responses == [(200, {"success": True})]
+    assert calls == [(daemon_id, task_id), (daemon_id, task_id)]
+
+
+def test_daemon_status_is_observational_and_redacts_sensitive_command_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+    cleanup_calls: list[str] = []
+    monkeypatch.setattr(
+        commands_module,
+        "_stop_daemon_tree",
+        lambda info: cleanup_calls.append(str(info["daemon_id"])) or True,
+    )
     process = subprocess.Popen([sys.executable, "-c", "pass"])
     process.wait(timeout=2)
     broker._daemons["redact"] = {
@@ -649,6 +993,8 @@ def test_daemon_status_redacts_sensitive_command_arguments(tmp_path: Path) -> No
 
     assert result["success"] is True
     assert "super-secret" not in result["command"]
+    assert result["status"] == "cleanup_unconfirmed"
+    assert cleanup_calls == []
 
 
 def test_daemon_accepts_structured_argv_without_shell(tmp_path: Path) -> None:
@@ -690,6 +1036,277 @@ def test_stop_daemon_does_not_claim_tree_stopped_when_cleanup_is_unconfirmed(
 
     monkeypatch.setattr(commands_module, "_stop_daemon_tree", lambda *_args, **_kwargs: True)
     assert broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")["success"] is True
+
+
+def test_live_posix_daemon_tree_preserves_process_group_termination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LiveProcess:
+        pid = 4321
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="posix"))
+    terminate = mock.Mock(return_value=True)
+    monkeypatch.setattr(commands_module, "terminate_tree", terminate)
+
+    result = commands_module._stop_daemon_tree(
+        {"process": LiveProcess(), "pid": 4321, "identity": {"pid": 4321}, "process_group_id": 4321}
+    )
+
+    assert result is True
+    terminate.assert_called_once_with(4321, grace_seconds=1.5)
+
+
+def test_daemon_status_requires_policy_and_scopes_result_to_task() -> None:
+    class _ScopedBroker:
+        status_calls: list[tuple[str | None, str | None]] = []
+
+        def authorize_auxiliary_action(self, action: str, *, endpoint: str, task_id: str):
+            return {"allowed": action == "daemon_status" and task_id == "task-a"}
+
+        def daemon_status(self, daemon_id: str | None = None, *, task_id: str | None = None):
+            self.status_calls.append((daemon_id, task_id))
+            return {"success": True, "daemon_id": daemon_id, "task_id": task_id}
+
+    broker = _ScopedBroker()
+    services = object.__new__(LocalAIServices)
+    services.commands = broker
+
+    denied = services.daemon_status("daemon-a")
+    assert denied["policy_blocked"] is True
+    assert broker.status_calls == []
+
+    scoped = services.daemon_status("daemon-a", task_id="task-a")
+    assert scoped == {"success": True, "daemon_id": "daemon-a", "task_id": "task-a"}
+    assert broker.status_calls == [("daemon-a", "task-a")]
+
+
+def test_spawn_daemon_retains_tracking_when_reader_start_cleanup_is_unconfirmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+
+    class UnstoppableProcess:
+        pid = 43211
+
+        def __init__(self) -> None:
+            self.alive = True
+            self.wait_calls = 0
+
+        def poll(self) -> int | None:
+            return None if self.alive else 1
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_calls += 1
+            raise subprocess.TimeoutExpired(["daemon"], timeout)
+
+        def kill(self) -> None:
+            self.alive = False
+
+    process = UnstoppableProcess()
+    _patch_daemon_popen(monkeypatch, lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(commands_module, "process_identity", lambda pid: {"pid": pid, "creation_identity": 1})
+    monkeypatch.setattr(commands_module, "_create_named_daemon_job", lambda _daemon_id: 77)
+    monkeypatch.setattr(commands_module, "assign_process_to_job", lambda *_args: True)
+    monkeypatch.setattr(commands_module, "_duplicate_job_handle_into_process", lambda *_args: True)
+    monkeypatch.setattr(commands_module, "_resume_suspended_process", lambda _child: True)
+    monkeypatch.setattr(commands_module, "close_job_object", lambda _handle: True)
+    monkeypatch.setattr(commands_module, "_stop_daemon_tree", lambda _info: False)
+    expiry_calls: list[str] = []
+    monkeypatch.setattr(
+        broker,
+        "_schedule_daemon_expiry",
+        lambda info: expiry_calls.append(str(info["daemon_id"])),
+    )
+    original_start = commands_module.threading.Thread.start
+
+    def fail_log_reader(thread: object) -> None:
+        if str(getattr(thread, "name", "")).startswith("local-ai-daemon-log-"):
+            raise RuntimeError("simulated reader startup failure")
+        original_start(thread)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(commands_module.threading.Thread, "start", fail_log_reader)
+    result = broker.spawn_daemon(
+        [sys.executable, "-c", "pass"], str(tmp_path), task_id="daemon-test"
+    )
+
+    assert result["success"] is False
+    assert result.get("outcome_unknown") is True, result
+    assert result.get("cleanup_unconfirmed") is True, result
+    daemon_id = str(result["daemon_id"])
+    info = broker._daemons[daemon_id]
+    assert process.alive is True
+    assert process.wait_calls == 0
+    assert info["_slot_released"] is False
+    assert expiry_calls == [daemon_id]
+
+    process.alive = False
+    broker._close_daemon_log(info)
+    broker._release_daemon_slot(info)
+    broker._daemons.pop(daemon_id, None)
+
+
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="suspended-process worktree revalidation is Windows-specific",
+)
+def test_spawn_daemon_rejects_foreign_worktree_registration_before_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+    foreign_worktree = tmp_path.parent / f"{tmp_path.name}-foreign"
+    foreign_worktree.mkdir()
+    resume_calls: list[int] = []
+
+    class SuspendedProcess:
+        pid = 43211
+        _local_ai_job_handle = None
+
+        def __init__(self) -> None:
+            self.alive = True
+
+        def poll(self) -> int | None:
+            return None if self.alive else 1
+
+        def kill(self) -> None:
+            self.alive = False
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.alive = False
+            return 1
+
+    process = SuspendedProcess()
+
+    def replace_worktree_after_job_anchor(_handle: object, _child: object) -> bool:
+        broker.task_store.worktree["worktree_path"] = str(foreign_worktree)
+        return True
+
+    def terminate_suspended_job(_handle: object) -> bool:
+        process.alive = False
+        return True
+
+    monkeypatch.setattr(
+        commands_module, "_create_named_daemon_job", lambda _daemon_id: 77
+    )
+    monkeypatch.setattr(commands_module, "assign_process_to_job", lambda *_args: True)
+    monkeypatch.setattr(
+        commands_module,
+        "_duplicate_job_handle_into_process",
+        replace_worktree_after_job_anchor,
+    )
+    monkeypatch.setattr(
+        commands_module,
+        "_resume_suspended_process",
+        lambda child: resume_calls.append(child.pid) or True,
+    )
+    monkeypatch.setattr(
+        commands_module,
+        "process_identity",
+        lambda pid: {"pid": pid, "start_time": "spawned"},
+    )
+    monkeypatch.setattr(
+        commands_module, "terminate_job_object", terminate_suspended_job
+    )
+    monkeypatch.setattr(commands_module, "close_job_object", lambda _handle: True)
+    _patch_daemon_popen(monkeypatch, lambda *_args, **_kwargs: process)
+
+    result = broker.spawn_daemon(
+        [sys.executable, "-c", "pass"], str(tmp_path), task_id="daemon-test"
+    )
+
+    assert result["success"] is False
+    assert "worktree" in result["error"].lower()
+    assert "before daemon resume" in result["error"].lower()
+    assert not resume_calls
+    assert not process.alive
+    assert broker._daemons == {}
+
+
+def test_recovered_daemon_fails_closed_without_live_kernel_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = {"pid": 4321, "start_time": "stable-looking-but-not-a-handle"}
+    recovered = commands_module._RecoveredDaemonProcess(4321, identity)
+    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="posix"))
+    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: identity)
+    terminate = mock.Mock(side_effect=AssertionError("recovered PID must not be signaled"))
+    monkeypatch.setattr(commands_module, "terminate_tree", terminate)
+
+    assert recovered.poll() is None
+    assert commands_module._stop_daemon_tree(
+        {"process": recovered, "pid": 4321, "identity": identity, "process_group_id": 4321}
+    ) is False
+    with pytest.raises(OSError, match="no stable process-tree ownership handle"):
+        recovered.kill()
+    terminate.assert_not_called()
+
+
+def test_recovered_daemon_fails_closed_on_windows_without_job_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = {"pid": 4321, "creation_identity": 1234}
+    recovered = commands_module._RecoveredDaemonProcess(4321, identity)
+    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: identity)
+    terminate = mock.Mock(side_effect=AssertionError("recovered PID must not be signaled"))
+    monkeypatch.setattr(commands_module, "terminate_tree", terminate)
+
+    assert commands_module._stop_daemon_tree(
+        {"process": recovered, "pid": 4321, "identity": identity}
+    ) is False
+    with pytest.raises(OSError, match="no stable process-tree ownership handle"):
+        recovered.kill()
+    terminate.assert_not_called()
+
+
+def test_live_windows_daemon_uses_stable_job_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LiveProcess:
+        _local_ai_job_handle = 77
+
+    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="nt"))
+    terminate = mock.Mock()
+    close = mock.Mock(return_value=True)
+    monkeypatch.setattr(commands_module, "terminate_job_object", terminate)
+    monkeypatch.setattr(commands_module, "_wait_windows_job_empty", lambda *_args: True)
+    monkeypatch.setattr(commands_module, "close_job_object", close)
+
+    assert commands_module._stop_daemon_tree({"process": LiveProcess(), "pid": 4321}) is True
+    terminate.assert_called_once_with(77)
+    close.assert_called_once_with(77)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Popen cleanup fallback")
+def test_stop_daemon_does_not_kill_only_leader_when_tree_stop_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+    daemon = broker.spawn_daemon(
+        f'"{sys.executable}" -c "import time; time.sleep(60)"',
+        str(tmp_path), name="tree-stop-failure-test", task_id="daemon-test",
+    )
+    assert daemon["success"] is True
+    process = broker._daemons[daemon["daemon_id"]]["process"]
+    kill = mock.Mock()
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(commands_module, "_stop_daemon_tree", lambda *_args: False)
+            patch.setattr(process, "kill", kill)
+            patch.setattr(
+                process, "wait",
+                mock.Mock(side_effect=subprocess.TimeoutExpired("daemon", 2.0)),
+            )
+            result = broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
+
+        assert result["success"] is False
+        assert result["status"] == "running"
+        kill.assert_not_called()
+    finally:
+        if process.poll() is None:
+            assert broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")["success"] is True
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object process-tree integration")
@@ -862,6 +1479,201 @@ def test_daemon_ttl_stops_process_and_records_owner(tmp_path: Path) -> None:
             broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="named Job Object persistence is Windows-only")
+def test_named_daemon_job_survives_restart_and_stops_descendants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = tmp_path / "daemon_parent.py"
+    child_pid_path = tmp_path / "daemon-child.pid"
+    launcher.write_text(
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(12)'])\n"
+        "with open(sys.argv[1], 'w', encoding='ascii') as stream: stream.write(str(child.pid))\n"
+        "time.sleep(12)\n",
+        encoding="utf-8",
+    )
+    first = _broker(tmp_path)
+    sequence: list[str] = []
+    persist = first._persist_daemon_registry
+    duplicate = commands_module._duplicate_job_handle_into_process
+    resume = commands_module._resume_suspended_process
+
+    def persist_in_order() -> bool:
+        result = persist()
+        if result:
+            sequence.append("registry")
+        return result
+
+    def duplicate_in_order(job: int, process: subprocess.Popen[bytes]) -> bool:
+        sequence.append("duplicate")
+        return duplicate(job, process)
+
+    def resume_in_order(process: subprocess.Popen[bytes]) -> bool:
+        sequence.append("resume")
+        return resume(process)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(first, "_persist_daemon_registry", persist_in_order)
+        patch.setattr(commands_module, "_duplicate_job_handle_into_process", duplicate_in_order)
+        patch.setattr(commands_module, "_resume_suspended_process", resume_in_order)
+        daemon = first.spawn_daemon(
+            [sys.executable, str(launcher), str(child_pid_path)],
+            str(tmp_path),
+            name="named-job-restart-test",
+            task_id="daemon-test",
+        )
+        assert daemon["success"] is True
+        assert sequence[:3] == ["registry", "duplicate", "resume"]
+    assert daemon["success"] is True
+    assert daemon["tree_control_capability"] == "named_job_object"
+    deadline = time.monotonic() + 5.0
+    while not child_pid_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.025)
+    assert child_pid_path.exists()
+    child_pid = int(child_pid_path.read_text(encoding="ascii"))
+    assert commands_module.process_identity(child_pid) is not None
+
+    first_process = first._daemons[daemon["daemon_id"]]["process"]
+    old_job_handle = getattr(first_process, "_local_ai_job_handle", None)
+    assert isinstance(old_job_handle, int) and not isinstance(old_job_handle, bool)
+    assert commands_module.close_job_object(old_job_handle) is True
+    first_process._local_ai_job_handle = None
+
+    second = _broker(tmp_path)
+    try:
+        status = second.daemon_status(daemon["daemon_id"])
+        assert status["success"] is True
+        assert status["running"] is True
+        assert status["tree_control_capability"] == "named_job_object"
+        assert status["pid"] == daemon["pid"]
+        assert commands_module.process_identity(child_pid) is not None
+
+        stopped = second.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
+        assert stopped["success"] is True
+        deadline = time.monotonic() + 5.0
+        while commands_module.process_identity(child_pid) is not None and time.monotonic() < deadline:
+            time.sleep(0.025)
+        assert commands_module.process_identity(child_pid) is None
+    finally:
+        if second.daemon_status(daemon["daemon_id"]).get("running"):
+            second.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
+        elif first.daemon_status(daemon["daemon_id"]).get("running"):
+            first.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
+
+    # A dead leader closes its keeper handle; the broker's remaining handle
+    # keeps the named Job reopenable so a new broker can stop surviving children.
+    exit_launcher = tmp_path / "daemon_parent_exits.py"
+    exit_child_path = tmp_path / "daemon-exit-child.pid"
+    exit_launcher.write_text(
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(12)'])\n"
+        "with open(sys.argv[1], 'w', encoding='ascii') as stream: stream.write(str(child.pid))\n",
+        encoding="utf-8",
+    )
+    exited = first.spawn_daemon(
+        [sys.executable, str(exit_launcher), str(exit_child_path)],
+        str(tmp_path), name="named-job-dead-leader", task_id="daemon-test",
+    )
+    assert exited["success"] is True
+    deadline = time.monotonic() + 5.0
+    while not exit_child_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.025)
+    assert exit_child_path.exists()
+    exit_child_pid = int(exit_child_path.read_text(encoding="ascii"))
+    deadline = time.monotonic() + 5.0
+    while commands_module.process_identity(exited["pid"]) is not None and time.monotonic() < deadline:
+        time.sleep(0.025)
+    assert commands_module.process_identity(exited["pid"]) is None
+    assert commands_module.process_identity(exit_child_pid) is not None
+    third = _broker(tmp_path)
+    recovered = third.daemon_status(exited["daemon_id"])
+    assert recovered["success"] is True
+    assert recovered["running"] is True
+    assert third.stop_daemon(exited["daemon_id"], task_id="daemon-test")["success"] is True
+    deadline = time.monotonic() + 5.0
+    while commands_module.process_identity(exit_child_pid) is not None and time.monotonic() < deadline:
+        time.sleep(0.025)
+    assert commands_module.process_identity(exit_child_pid) is None
+    owner_process = first._daemons[exited["daemon_id"]]["process"]
+    owner_handle = getattr(owner_process, "_local_ai_job_handle", None)
+    if isinstance(owner_handle, int) and not isinstance(owner_handle, bool):
+        assert commands_module.close_job_object(owner_handle) is True
+        owner_process._local_ai_job_handle = None
+
+    # If the dead daemon's duplicate and the broker's final handle close, the
+    # kill-on-close limit must terminate any descendants still in that Job.
+    last_launcher = tmp_path / "daemon_last_handle.py"
+    last_child_path = tmp_path / "daemon-last-child.pid"
+    last_launcher.write_text(
+        "import subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(12)'])\n"
+        "with open(sys.argv[1], 'w', encoding='ascii') as stream: stream.write(str(child.pid))\n",
+        encoding="utf-8",
+    )
+    last = first.spawn_daemon(
+        [sys.executable, str(last_launcher), str(last_child_path)],
+        str(tmp_path), name="named-job-last-handle", task_id="daemon-test",
+    )
+    assert last["success"] is True
+    deadline = time.monotonic() + 5.0
+    while not last_child_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.025)
+    assert last_child_path.exists()
+    last_child_pid = int(last_child_path.read_text(encoding="ascii"))
+    deadline = time.monotonic() + 5.0
+    while commands_module.process_identity(last["pid"]) is not None and time.monotonic() < deadline:
+        time.sleep(0.025)
+    assert commands_module.process_identity(last["pid"]) is None
+    last_process = first._daemons[last["daemon_id"]]["process"]
+    last_handle = getattr(last_process, "_local_ai_job_handle", None)
+    assert isinstance(last_handle, int) and not isinstance(last_handle, bool)
+    assert commands_module.close_job_object(last_handle) is True
+    last_process._local_ai_job_handle = None
+    deadline = time.monotonic() + 5.0
+    while commands_module.process_identity(last_child_pid) is not None and time.monotonic() < deadline:
+        time.sleep(0.025)
+    assert commands_module.process_identity(last_child_pid) is None
+
+    # Registration and keeper duplication failures are fail-closed: a
+    # suspended process is never resumed and dies with its Job handle.
+    real_subprocess = commands_module.subprocess
+
+    def assert_start_failure(failure: str) -> None:
+        failed_broker = _broker(tmp_path)
+        captured: list[subprocess.Popen[bytes]] = []
+        resumed: list[bool] = []
+
+        def capture_popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+            child = real_subprocess.Popen(*args, **kwargs)
+            if int(kwargs.get("creationflags", 0)) & 0x00000004:
+                captured.append(child)
+            return child
+
+        class _SubprocessProxy:
+            def __getattr__(self, name: str) -> object:
+                return capture_popen if name == "Popen" else getattr(real_subprocess, name)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(commands_module, "subprocess", _SubprocessProxy())
+            patch.setattr(commands_module, "_resume_suspended_process", lambda _proc: resumed.append(True) or True)
+            if failure == "registry":
+                patch.setattr(failed_broker, "_persist_daemon_registry", lambda: False)
+            else:
+                patch.setattr(commands_module, "_duplicate_job_handle_into_process", lambda *_args: False)
+            result = failed_broker.spawn_daemon(
+                [sys.executable, "-c", "import time; time.sleep(12)"],
+                str(tmp_path), name=f"named-job-{failure}-failure", task_id="daemon-test",
+            )
+        assert result["success"] is False
+        assert resumed == []
+        assert len(captured) == 1
+        captured[0].wait(timeout=5.0)
+        assert captured[0].poll() is not None
+
+    assert_start_failure("registry")
+    assert_start_failure("duplicate")
+
+
 
 def test_stop_daemon_rejects_a_different_task_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -945,6 +1757,53 @@ def test_restart_reconciliation_rejects_pid_reuse(tmp_path: Path) -> None:
         assert first.daemon_status(daemon["daemon_id"])["running"] is True
     finally:
         first.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux /proc ownership proof required")
+def test_restart_recovers_and_stops_owned_group_after_leader_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(CommandBroker, "_watch_daemon_exit", lambda *_args: None)
+    first = _broker(tmp_path)
+    child_pid_file = tmp_path / "daemon-child.pid"
+    parent_code = (
+        "import pathlib, subprocess, sys; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii')"
+    )
+    daemon = first.spawn_daemon(
+        [sys.executable, "-c", parent_code, str(child_pid_file)],
+        str(tmp_path),
+        name="leaderless-group-recovery",
+        task_id="daemon-test",
+    )
+    assert daemon["success"] is True
+
+    recovered: CommandBroker | None = None
+    try:
+        deadline = time.monotonic() + 5
+        while (not child_pid_file.exists() or not child_pid_file.stat().st_size) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert child_pid_file.exists() and child_pid_file.stat().st_size
+        child_pid = int(child_pid_file.read_text(encoding="ascii"))
+        first._daemons[daemon["daemon_id"]]["process"].wait(timeout=5)
+        assert commands_module.process_identity(daemon["pid"]) is None
+
+        recovered = _broker(tmp_path)
+        status = recovered.daemon_status(daemon["daemon_id"])
+        assert status["success"] is True
+        assert status["running"] is True
+        assert status["pid"] == daemon["pid"]
+
+        stopped = recovered.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
+        assert stopped["success"] is True
+        assert stopped["process_tree_stopped"] is True
+        assert commands_module.process_identity(child_pid) is None
+    finally:
+        if recovered is not None and daemon["daemon_id"] in recovered._daemons:
+            recovered.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
+        if daemon["daemon_id"] in first._daemons:
+            first.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
 
 
 def test_daemon_stop_task_id_flows_through_service_and_http(

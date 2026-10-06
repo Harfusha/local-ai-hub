@@ -1,0 +1,73 @@
+{
+  "schema": "t05.end_to_end_acceptance_receipt.v1",
+  "date": "2026-10-03",
+  "status": "PASS_SCOPED_MEMORY_IDENTITY_CACHE_ACCEPTANCE",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub",
+    "head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+    "repository_revision": "c1d5975b2f8058f6918d363f708a4336d9e2ec05d83ae3dcd0b5ab6426295d1c",
+    "sha256": {
+      "src/local_ai_hub/agent_events.py": "84EDB06DFD22FA900DB09474EFCF0689393E1A9FB76C0E0D636BFD5826B63AC2",
+      "src/local_ai_hub/agent_memory.py": "57149DE7945C0E1E1987FDDF112736AD3B87250E9773DA99AF1D8F063C4ED683",
+      "src/local_ai_hub/http_server.py": "74AC8E91F2FB29626BABB077BEB75DAE410D71790A576958EFE7449682BED220",
+      "tests/test_agent_memory.py": "CC45B9D86709FF6C181676154B121BA6784083D614D22F0F9BABB37A68928172",
+      "tests/test_agent_memory_http_identity.py": "C94C2A2E2458CEDCDA3D45E3217290FC9BEF22957DD6DCEEAEA822A78DBB59CE",
+      "tests/test_t05_cache_state_isolation.py": "A1EC1BB593B9BA1E5D1372C4B8A7CFEFA4996EB138C85F9BC3889EBF110CE051",
+      "tests/test_t05_memory_adoption_context.py": "2043AB8F97168441B2D6B12DE80A2780F990B961A8CF55A705729206FB7A439C"
+    }
+  },
+  "root_provider": {
+    "root": "C:\\Users\\Adam\\.local-ai-hub",
+    "head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+    "src/local_ai_hub/agent_events.py_sha256": "1B8E63A5FF329090801CD7F19E7DF7A95E42AC0034465AC5FA06D566B279CCF4",
+    "usage": "Injected in-memory as local_ai_hub.agent_events for T05 validation; root files were not edited. This provider supplies append_in_transaction and ordered_event_publication required by the T05 candidate call sites."
+  },
+  "validation": {
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short -W always::ResourceWarning",
+    "pytest_paths": [
+      "tests/test_agent_memory.py",
+      "tests/test_agent_memory_http_identity.py",
+      "tests/test_t05_cache_state_isolation.py",
+      "tests/test_t05_cache_clear_durable_state.py",
+      "tests/test_t05_memory_delete_artifacts.py",
+      "tests/test_t05_agent_state_migrations.py",
+      "tests/test_t05_memory_fts_atomicity.py",
+      "tests/test_t05_memory_adoption_context.py",
+      "tests/test_agent_memory_context_tenant_isolation.py"
+    ],
+    "runner": "local_ai_command",
+    "result": "92 passed in 60.38s",
+    "exit_code": 0,
+    "execution_id": "c00d9f47361849309ffb21e30cf58690",
+    "request_id": "req_281b879a4dae",
+    "diff_check": {
+      "command": "git diff --check -- src/local_ai_hub/agent_memory.py src/local_ai_hub/http_server.py tests/test_agent_memory.py tests/test_agent_memory_http_identity.py",
+      "result": "passed",
+      "exit_code": 0,
+      "execution_id": "62b490eeb4724d10a03d939d6989aeb1"
+    }
+  },
+  "changed_paths_this_continuation": [
+    "src/local_ai_hub/agent_memory.py",
+    "src/local_ai_hub/http_server.py",
+    "tests/test_agent_memory.py",
+    "tests/test_agent_memory_http_identity.py"
+  ],
+  "acceptance_notes": [
+    "promote and quarantine now require the caller's memory identity when reading scoped records; HTTP derives tenant from transport auth and repository identity from server project resolution.",
+    "HTTP quarantine returns the updated record on success and rejects foreign-tenant records.",
+    "Existing memory tests now assert scoped reads with root and tenant; identityless reads stay fail-closed.",
+    "Cache-loss separation, durable migration, delete artifacts, FTS atomicity, tenant isolation, and worktree memory selectors all passed in the same final batch.",
+    "Candidate agent_events.py remains unchanged and lacks the T08 ordered-publication API; validation used the current root provider in-memory. Candidate standalone event-provider integration remains pending T08 source synchronization."
+  ],
+  "security_audit": {
+    "action": "local_ai_repo(action=security_audit)",
+    "request_id": "req_596ee2e84563",
+    "success": true,
+    "is_clean": true,
+    "findings_count": 17,
+    "untriaged_high_severity_count": 0,
+    "scope_limit": "Repository scan included existing artifact overlays and unrelated fixtures; no finding pointed to the changed memory identity paths."
+  },
+  "root_writes_this_continuation": 0
+}

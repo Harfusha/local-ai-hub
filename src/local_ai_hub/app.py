@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 import zipfile
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
@@ -44,6 +45,7 @@ from .learning import UsageLearner
 from .autotune import RuntimeTuner
 from .deterministic import DeterministicEngine
 from .logging_setup import configure_logging, shutdown_logging
+from .sqlite_support import migrate_agent_state_database
 from .external_tools import ExternalCodeIntelligence
 from .async_jobs import AsyncJobManager
 from .speculative_lint import SpeculativeLintQueue
@@ -263,6 +265,7 @@ class LocalAIApp:
     def __init__(self, config_path: str | None = None):
         self.config = load_config(config_path)
         state_dir = Path(self.config["server"]["state_dir"])
+        migrate_agent_state_database(state_dir)
         saving = self.config.get("token_saving", {})
         self.started_at = time.time()
         self._shutdown = threading.Event()
@@ -324,7 +327,7 @@ class LocalAIApp:
         self.memory = WorkspaceMemoryStore(state_dir)
         agent_state_cfg = self.config.get("agent_state", {})
         self.agent_state = AgentStateStore(
-            state_dir / "agent_state.sqlite3",
+            state_dir / "agent_state.sqlite",
             enabled=bool(agent_state_cfg.get("enabled", False)),
             max_payload_bytes=int(agent_state_cfg.get("max_payload_bytes", 65536)),
         )
@@ -339,7 +342,7 @@ class LocalAIApp:
         )
         self.agent_policy = PolicyEngine(self.agent_state)
         self.agent_tasks.set_policy_engine(self.agent_policy)
-        self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite3")
+        self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite", state_store=self.agent_state)
         self.agent_context = ContextCompiler(
             self.agent_state,
             task_store=self.agent_tasks,
@@ -397,7 +400,7 @@ class LocalAIApp:
             verification_store=self.agent_verification,
         )
         self.services.set_consistency_guard(self.consistency_guard)
-        self.swarm = SwarmCoordinator(state_dir / "agent_state.sqlite3", leases=self.leases, blackboard=self.agent_blackboard, verifications=self.agent_verification)
+        self.swarm = SwarmCoordinator(state_dir / "agent_state.sqlite", leases=self.leases, blackboard=self.agent_blackboard, verifications=self.agent_verification)
         self.services.set_swarm(self.swarm)
         self.rag = RAGStore(self.config, self.services, self.reranker)
         self.services.set_rag(self.rag)
@@ -420,6 +423,7 @@ class LocalAIApp:
             runtime=self.runtime,
             vram_balancer=self.vram_balancer,
             config=self.config,
+            scheduler=self.scheduler,
         )
         self.recovery = RecoveryJournal(state_dir, stale_seconds=int(self.config.get("resilience", {}).get("journal_stale_seconds", 900)))
         self._start_resilience_watchdog()
@@ -497,14 +501,12 @@ class LocalAIApp:
                         from .sqlite_support import optimize_db
                         state_dir = Path(self.config["server"]["state_dir"])
                         for db_name in (
-                            "agent_state.sqlite3",
+                            "agent_state.sqlite",
                             "async_jobs.sqlite3",
                             "code-index.sqlite3",
-                            "cache.sqlite3",
+                            "cache.sqlite",
                             "rag.sqlite3",
                             "preprocess.sqlite3",
-                            "agent_blackboard.sqlite3",
-                            "leases.sqlite3",
                             "artifacts.sqlite3",
                         ):
                             db_file = state_dir / db_name
@@ -691,14 +693,60 @@ class LocalAIApp:
             scope = "process"
         now = time.monotonic()
         cache_key = f"{'light' if light else 'full'}:{scope}"
-        cache_ttl = 0.5 if light else 1.5
-        with self._live_status_lock:
+        cache_ttl = 5.0 if light else 1.5
+
+        def cached_snapshot(cached: tuple[float, dict[str, Any]], now: float, *, stale: bool = False) -> dict[str, Any]:
+            result = deepcopy(cached[1])
+            result["snapshot_cached"] = True
+            result["status_age_ms"] = max(0, int((now - cached[0]) * 1000))
+            if stale:
+                result["snapshot_stale"] = True
+                result["success"] = False
+                result["degraded"] = True
+            return result
+
+        cached = self._live_status_cache.get(cache_key)
+        if cached and now - cached[0] < cache_ttl:
+            return cached_snapshot(cached, now)
+        cache_lock = ExitStack()
+        if cached:
+            if not self._live_status_lock.acquire(blocking=False):
+                return cached_snapshot(cached, now, stale=True)
+            cache_lock.callback(self._live_status_lock.release)
+        else:
+            if not self._live_status_lock.acquire(blocking=False):
+                return self._snapshot_warming(scope)
+            cache_lock.callback(self._live_status_lock.release)
+
+        with cache_lock:
+            now = time.monotonic()
             cached = self._live_status_cache.get(cache_key)
             if cached and now - cached[0] < cache_ttl:
-                result = dict(cached[1])
-                result["agent_state"] = self._agent_state_summary()
-                return result
-            headless = self._headless_status()
+                return cached_snapshot(cached, now)
+            dependency_status: dict[str, dict[str, Any]] = {}
+            deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+
+            def read(key, callback, fallback):
+                remaining = max(0.0, deadline - time.monotonic())
+                timeout = min(max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS)), remaining)
+                value, healthy = _status_dependency(
+                    callback,
+                    fallback,
+                    key=key,
+                    lock=self._status_dependency_lock,
+                    inflight=self._status_dependency_inflight,
+                    slots=self._status_dependency_slots,
+                    executor=self._status_dependency_executor,
+                    deadline=deadline,
+                )
+                dependency_status[key] = {
+                    "deadline_ms": max(0, int(timeout * 1000)),
+                    "degraded": not healthy,
+                    "status": "ok" if healthy else "degraded",
+                }
+                return value
+
+            headless = read("headless", self._headless_status, {"enabled": False, "supervisor": False})
             ollama = headless.get("ollama_online") if headless.get("supervisor") else None
             deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
             runtime_healthy = True
@@ -784,6 +832,7 @@ class LocalAIApp:
             }
             result = {
                 "success": runtime_healthy and profile_healthy and accelerator_healthy, "hub_online": True, "version": __version__,
+                "degraded": not (runtime_healthy and profile_healthy and accelerator_healthy),
                 "dependency_status": dependency_status,
                 "uptime_seconds": max(0, int(time.time() - self.started_at)),
                 "features": {
@@ -868,15 +917,35 @@ class LocalAIApp:
                 diagnostic=diagnostic,
             )
 
-        with self._status_full_cache_lock:
+        def cached_snapshot(cached: dict[str, Any], now: float, *, stale: bool = False) -> dict[str, Any]:
+            result = deepcopy(cached["data"])
+            result["snapshot_cached"] = True
+            result["status_age_ms"] = max(0, int((now - cached["time"]) * 1000))
+            if stale:
+                result["snapshot_stale"] = True
+                result["success"] = False
+                result["degraded"] = True
+            return result
+
+        now = time.monotonic()
+        cached = self._status_full_cache.get(scope)
+        if cached and now - cached["time"] < 2.0:
+            return cached_snapshot(cached, now)
+        cache_lock = ExitStack()
+        if cached:
+            if not self._status_full_cache_lock.acquire(blocking=False):
+                return cached_snapshot(cached, now, stale=True)
+            cache_lock.callback(self._status_full_cache_lock.release)
+        else:
+            if not self._status_full_cache_lock.acquire(blocking=False):
+                return self._snapshot_warming(scope)
+            cache_lock.callback(self._status_full_cache_lock.release)
+
+        with cache_lock:
             now = time.monotonic()
             cached = self._status_full_cache.get(scope)
             if cached and now - cached["time"] < 2.0:
-                result = deepcopy(cached["data"])
-                agent_state, healthy = dependency("agent_state", self._agent_state_summary, {"enabled": False})
-                result["success"] = bool(result.get("success", True) and healthy)
-                result["agent_state"] = agent_state
-                return result
+                return cached_snapshot(cached, now)
             degraded = False
             dependency_status: dict[str, dict[str, Any]] = {}
             pending_dependencies: dict[str, tuple[dict[str, Any], Any, dict[str, Any]]] = {}
@@ -993,6 +1062,7 @@ class LocalAIApp:
             agent_state = read("agent_state", self._agent_state_summary, {"enabled": False})
             res = {
                 "success": not degraded, "hub_pid": os.getpid(), "hub_online": True, "version": __version__,
+                "degraded": degraded,
                 "dependency_status": dependency_status,
                 "ollama_online": online, "online": online, "ollama_version": version,
                 "installed_models": installed, "loaded_models": loaded, "loaded_model_details": loaded_details, "models": dict(self.config["models"]),
@@ -1015,6 +1085,23 @@ class LocalAIApp:
             res["agent_state"] = agent_state
             self._status_full_cache[scope] = {"time": time.monotonic(), "data": deepcopy(res)}
             return deepcopy(res)
+
+    def _snapshot_warming(self, scope: str) -> dict[str, Any]:
+        return {
+            "success": False,
+            "degraded": True,
+            "snapshot_warming": True,
+            "snapshot_cached": False,
+            "status_age_ms": 0,
+            "retry_after_ms": 100,
+            "scope": scope,
+            "hub_online": True,
+            "version": __version__,
+            "uptime_seconds": max(0, int(time.time() - self.started_at)),
+            "dependency_status": {
+                "snapshot": {"deadline_ms": 0, "degraded": True, "status": "warming"}
+            },
+        }
 
 
     def _headless_status(self) -> dict[str, Any]:

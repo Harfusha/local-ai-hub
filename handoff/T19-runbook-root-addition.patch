@@ -1,0 +1,119 @@
+diff --git a/docs/T19_RELEASE_VALIDATION_RUNBOOK.md b/docs/T19_RELEASE_VALIDATION_RUNBOOK.md
+new file mode 100644
+--- /dev/null
++++ b/docs/T19_RELEASE_VALIDATION_RUNBOOK.md
+@@ -0,0 +1,114 @@
++# T19 Release Validation Runbook
++
++Status: **procedure only; no clean-host result recorded**. This runbook describes future validation of the existing v7 artifacts. T19 made prompt/generator source edits after v7 was built; those edits are not inside v7. Keep the recorded v7 hashes unchanged and build a new candidate only after integration freeze.
++
++## Candidate identity
++
++Use the exact artifacts under `dist/t19-release-20260930-integrated-candidate-v7/`:
++
++| Artifact | SHA-256 |
++| --- | --- |
++| `local_ai_hub-4.0.0.tar.gz` | `9ae54e1f86e5c8e810ba32be7f9df19277485d834a38f664aac68336a1e18efb` |
++| `local_ai_hub-4.0.0-py3-none-any.whl` | `e2bc477680cebc36b9300651250d217214ca80ef9bfebb943c89397eff4c7f76` |
++
++Do not rebuild or replace either file during this validation. Verify both hashes before installation. Use disposable, clean Windows 10/11 and Linux hosts with Python 3.11–3.14. Record OS release, architecture, Python and pip versions, date, and artifact hashes. Start with no installed Hub, no `PYTHONPATH`, and no system-site-packages in the virtual environments. Keep the host offline from any Hub service; these checks cover package installation and local doctor output only.
++
++## Windows
++
++Run in PowerShell. Set `$Root` to the directory containing the candidate artifacts, then execute:
++
++```powershell
++$Sdist = Join-Path $Root 'local_ai_hub-4.0.0.tar.gz'
++$Wheel = Join-Path $Root 'local_ai_hub-4.0.0-py3-none-any.whl'
++Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber
++[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
++py -3.13 --version
++Get-FileHash -Algorithm SHA256 $Sdist
++Get-FileHash -Algorithm SHA256 $Wheel
++
++py -3.13 -m venv "$env:TEMP\t19-v7-sdist"
++& "$env:TEMP\t19-v7-sdist\Scripts\Activate.ps1"
++python --version
++python -m pip --version
++python -m pip install --no-cache-dir "${Sdist}[dev,intel-accelerators,local-nlp,performance,profiling,token-economy]"
++python -m pip check
++local-ai-hub --help
++New-Item -ItemType Directory -Force "$env:TEMP\t19-v7-sdist-source" | Out-Null
++tar -xzf $Sdist -C "$env:TEMP\t19-v7-sdist-source"
++python "$env:TEMP\t19-v7-sdist-source\local_ai_hub-4.0.0\tools\doctor.py" --json
++deactivate
++
++py -3.13 -m venv "$env:TEMP\t19-v7-wheel"
++& "$env:TEMP\t19-v7-wheel\Scripts\Activate.ps1"
++python --version
++python -m pip --version
++python -m pip install --no-cache-dir $Wheel
++python -m pip check
++local-ai-hub --help
++deactivate
++```
++
++Repeat on each supported Python version required by the release matrix. Keep the sdist and wheel environments separate. Do not run pytest until T19 owns the shared test slot.
++
++## Linux
++
++Run in a clean shell. Set `ROOT` to the directory containing the candidate artifacts:
++
++```sh
++SDIST="$ROOT/local_ai_hub-4.0.0.tar.gz"
++WHEEL="$ROOT/local_ai_hub-4.0.0-py3-none-any.whl"
++cat /etc/os-release
++uname -m
++python3.13 --version
++sha256sum "$SDIST" "$WHEEL"
++
++python3.13 -m venv /tmp/t19-v7-sdist
++. /tmp/t19-v7-sdist/bin/activate
++python --version
++python -m pip --version
++python -m pip install --no-cache-dir "${SDIST}[dev,intel-accelerators,local-nlp,performance,profiling,token-economy]"
++python -m pip check
++local-ai-hub --help
++mkdir -p /tmp/t19-v7-sdist-source
++tar -xzf "$SDIST" -C /tmp/t19-v7-sdist-source
++python /tmp/t19-v7-sdist-source/local_ai_hub-4.0.0/tools/doctor.py --json
++deactivate
++
++python3.13 -m venv /tmp/t19-v7-wheel
++. /tmp/t19-v7-wheel/bin/activate
++python --version
++python -m pip --version
++python -m pip install --no-cache-dir "$WHEEL"
++python -m pip check
++local-ai-hub --help
++deactivate
++```
++
++Repeat on each supported Python version required by the release matrix. Keep the sdist and wheel environments separate. Do not run pytest until T19 owns the shared test slot.
++
++## Receipt fields
++
++Start from `dist/t19-release-20260930-integrated-candidate-v7/clean-host-validation-receipt-template.json`. Save one populated receipt per host and artifact. Include the exact command, exit code, stdout/stderr artifact paths, OS release, architecture, Python and pip versions, artifact hash, venv path, `pip check` result, CLI help result, and doctor JSON. Record optional components as reported, including unavailable Hub or device services. Do not treat an unavailable live service as an install failure, and do not convert a package install result into model, HTTP, MCP, or release acceptance.
++
++**Current gate status (2026-10-01):** The receipt template remains `pending_run`. Candidate records show successful package installs, `pip check`, and CLI help for the exact v7 sdist and wheel in fresh Windows virtual environments, plus an sdist install with all six extras. These results do not establish clean-host acceptance. No populated clean-host Windows or Linux receipt is present; do not report this gate complete.
++
++For replay evidence, attach `dist/t19-release-20260930-integrated-candidate-v7/sdk-replay-owner-receipts.json`. Its historical owner results have different source scopes and do not establish replay acceptance for the v7 package.
++
++## Rollback and recovery
++
++Follow [OPERATIONS.md](OPERATIONS.md#rollback-and-durable-state-recovery) on a disposable host. Stop the service and create a matched `code`/`config`/`state` snapshot with `--covers code config state --service-stopped`. Keep the entire state directory together, including SQLite `-wal` and `-shm` files. Keep the snapshot outside the selected source roots. Do not start the upgraded service unless snapshot creation and digest verification succeed.
++
++For the T08 incompatible-database case, use an isolated copy of a documented prior-version state fixture. Record state-file hashes before the upgrade attempt. Confirm the new release fails closed on the unsupported schema, preserve its post-attempt DB/WAL/SHM files, then restore the matching old code/config/state snapshot with the same root labels. Verify doctor output and durable task/evidence lookups after restore. Never run older code against state written by newer code. Do not perform this scenario against a user's active state directory.
++
++Start from `dist/t19-release-20260930-integrated-candidate-v7/rollback-recovery-receipt-template.json`. The T08 receipt must bind fixture provenance, old/new source or artifact hashes, snapshot manifest hash, exact commands and exit codes, schema failure evidence, pre/post DB/WAL/SHM hashes, restore result, doctor output, and task/evidence lookup results. Current T19 source tests do not replace this owner-run recovery receipt.
++
++**Current gate status (2026-10-01):** T08 has not issued a root rollback-recovery receipt. T08 reports that root acceptance first requires owner-approved `append_in_transaction` and ordered event-publication APIs, a receipt-projection helper, and cursor-backed event-page and retention behavior. Shared seams also require T05 approval for minimal cursor DDL inside existing migration and backup guards, plus T05-owned `agent_memory` writer call sites routed through the T08 append API. Keep T09 task-description and receipt changes separate. After these changes land, T08 must run the focused root selectors for crash-after-commit-before-publish recovery, atomic receipt-write recovery and rollback, ordered publication across writers, event-page snapshot and retention cursor, idempotency/CAS, and scope/cache behavior. Preserve command and log hashes, root HEAD, and changed-file list in the receipt. Candidate-only T08 passes do not satisfy this gate.
++
++## Open owners and release gates
++
++- **T03 transport/schema:** provide a revision-bound contract receipt and integrate it with the candidate.
++- **T07 replay/idempotency:** resolve failing replay contracts and provide an exact-candidate receipt. The separate-worktree pass does not transfer to v7.
++- **T08 recovery:** complete the listed root prerequisites, then provide restart and incompatible-database recovery evidence. The T19 rollback-recovery template remains `pending_run` until T08 issues its receipt.
++- **T20 release acceptance:** combine owner receipts on one integrated revision; include clean-host Windows/Linux results and final review.
++
++Keep v7 candidate-only until those owners close their gates on one frozen revision.

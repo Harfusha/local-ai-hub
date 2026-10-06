@@ -1,0 +1,60 @@
+{
+  "kind": "immutable_acceptance_followup",
+  "date": "2026-10-06",
+  "parent_handoff": {
+    "path": "handoff/t11-acceptance-update-20261006.json",
+    "sha256": "22624F1A2FAE8C5AE82917882D29FFD783CE7C4EE11FDB3720721E3E63CEA5C5"
+  },
+  "task": {
+    "thread_id": "01a0ca2a-3dd2-7590-b2b5-1e47ba06d57c",
+    "scope": "T11 RAG embeddings/reranker acceptance",
+    "t14_context_pack_touched": false,
+    "t20_release_acceptance": "pending; do not gate release before dependency integration"
+  },
+  "owned_candidate": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t11-master-b947\\.local-ai-hub",
+    "codex_artifact_id": "01a10f9c-b1c1-72b3-a7dd-112fed20ac38",
+    "head": "b947d76fdfb7ed592b72e55587d5c83cfa352c35",
+    "head_receipt": "req_6996181b0fae",
+    "status_receipt": "req_388b44a5ec4e",
+    "inherited_dirty_paths": [
+      "src/local_ai_hub/embeddings.py",
+      "src/local_ai_hub/rag.py",
+      "tests/test_rag_fragment_cache.py",
+      "tests/test_rag_hybrid.py",
+      "tests/test_rag_quality_contract.py",
+      "tests/test_rag_read_bounds.py",
+      "tests/test_t11_project_policy_consumers.py",
+      "tests/test_t11_rag_ingestion_contract.py"
+    ],
+    "patch_sha256": "931BB305760DBEF30CCD23C435990B04421327DB1001747C48109CC667A8200A",
+    "patched_candidate_postimage_sha256s": "recorded in parent handoff"
+  },
+  "new_targeted_test": {
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t11_embedding_space_reindex.py",
+    "cwd": "C:\\Users\\Adam\\.codex\\worktrees\\t11-master-b947\\.local-ai-hub",
+    "hub_class": "validation",
+    "allowed": true,
+    "request_id": "req_5b160b9fd263",
+    "execution_id": "25428ec3b613494ba638559797888512",
+    "exit_code": 2,
+    "result": "collection error; zero tests ran",
+    "exact_error": "ModuleNotFoundError: No module named 'local_ai_hub.project_policy_adapter'",
+    "test_scope": "T11 embedding-space reindex; independent selector attempted once"
+  },
+  "dependency_boundary": {
+    "module": "src/local_ai_hub/project_policy_adapter.py",
+    "required_by": "src/local_ai_hub/rag.py",
+    "present_in_clean_b947": false,
+    "present_untracked_in_t21_project_config_checkout": true,
+    "transferred_or_fallback_added": false,
+    "owner_provenance": "T21; not T11-owned"
+  },
+  "acceptance_state": {
+    "patched_candidate_six_file_selector": "not executed; Hub task-owned-worktree mutation gate prevents applying patch in t11-rag-acceptance",
+    "known_patched_candidate_independent_receipt": "tests/test_reranker_cache_identity.py: 6 passed in 0.38s; request req_be069b36c55d",
+    "canonical_base_six_file_receipt": "132 passed, 2 skipped; not patched-candidate evidence",
+    "next_safe_step": "Integrate T21-owned project_policy_adapter.py with provenance into an owned task checkout, then rerun focused T11 selectors; keep T20 release gate pending until patched-candidate acceptance passes.",
+    "source_or_dependency_changes_in_this_followup": false
+  }
+}

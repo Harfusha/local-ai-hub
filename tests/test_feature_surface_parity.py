@@ -164,7 +164,7 @@ def test_generated_repo_schema_declares_guarded_context_and_compact_controls():
     assert properties["changed_paths"] == {"type": "array", "items": {"type": "string"}}
     assert properties["approval"]["type"] == ["boolean", "string"]
     assert properties["response_profile"]["default"] == "compact"
-    assert "" not in properties["response_profile"]["enum"]
+    assert properties["response_profile"]["enum"] == ["minimal", "compact", "standard", "debug", "delta"]
 
     guidance = schema["description"].lower()
     for phrase in (

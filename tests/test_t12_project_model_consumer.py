@@ -99,6 +99,34 @@ def test_project_prompt_prefix_is_attached_to_chat_system_message_only(
     assert "Project context." not in payload["messages"][1]["content"]
 
 
+def test_prompt_only_project_settings_preserve_host_model_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = OllamaRuntime(
+        {
+            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+            "ollama": {"enabled": True},
+            "hardware": {"profile": "high"},
+            "_hardware": {"profile": "high", "ram": {"total_gb": 64}, "gpus": []},
+            "models": {"general": "qwen3.5:9b"},
+        }
+    )
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(runtime, "request", lambda endpoint, payload=None, **_kw: calls.append((endpoint, payload)) or {"ok": True})
+
+    runtime.generate(
+        "qwen3.5:9b",
+        "task",
+        system="Base system policy.",
+        role="general",
+        project_settings=SimpleNamespace(system_prompt_prefix="Repository context."),
+    )
+
+    assert calls[0][1]["model"] == "qwen3.5:9b"
+    assert "Repository context." in calls[0][1]["system"]
+
+
 class _FakeTaskRuntime:
     def __init__(self) -> None:
         self.payloads: list[dict] = []
@@ -316,14 +344,15 @@ def test_local_task_project_profiles_and_prefixes_are_isolated_concurrently(tmp_
     payloads: list[dict] = []
     payload_lock = threading.Lock()
 
-    def request(endpoint, payload, **_kwargs):
+    def request_stream(endpoint, payload, on_chunk, **_kwargs):
         assert endpoint == "/api/generate"
         barrier.wait(timeout=3)
         with payload_lock:
             payloads.append(dict(payload))
+        on_chunk("answer")
         return {"response": "answer", "done": True}
 
-    service.runtime.request = request
+    service.runtime.request_stream = request_stream
 
     def invoke(root: Path, tenant: str) -> dict:
         return service.delegate(

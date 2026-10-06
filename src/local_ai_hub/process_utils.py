@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any, Sequence
 
 
@@ -52,6 +53,15 @@ class ProcessCleanupUnverifiedError(subprocess.SubprocessError):
         self.tree_termination_confirmed = bool(tree_termination_confirmed)
         self.output = output
         self.stderr = stderr
+
+
+@dataclass(frozen=True)
+class _CleanupOutcome:
+    stdout: Any
+    stderr: Any
+    cleanup_confirmed: bool
+    process: subprocess.Popen[Any]
+    process_group: int | None
 
 
 class _FILETIME(ctypes.Structure):
@@ -342,41 +352,10 @@ def terminate_tree(
             return cp.returncode in {0, 128}
         except Exception:
             return not pid_alive(pid)
-    group_id = pid if process_group in (None, 0) else int(process_group)
-
-    def group_alive() -> bool:
-        try:
-            os.killpg(group_id, 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except OSError:
-            return pid_alive(pid)
-
-    try:
-        # Runtime children are started in their own sessions. Prefer the group, then
-        # fall back to the process itself for older/recovered installations.
-        try:
-            os.killpg(group_id, signal.SIGTERM)
-        except OSError:
-            os.kill(pid, signal.SIGTERM)
-        deadline = time.monotonic() + max(0.1, grace_seconds)
-        while time.monotonic() < deadline:
-            if not group_alive():
-                return True
-            time.sleep(0.05)
-        try:
-            os.killpg(group_id, signal.SIGKILL)
-        except OSError:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-        return not group_alive()
-    except OSError:
-        return True
+    # POSIX process groups have no stable signal handle here. A numeric PGID (or
+    # PID fallback) can be reused after an ownership check and before killpg/kill.
+    # Fail closed until cleanup is passed a continuously held owner capability.
+    return False
 
 
 def _resume_suspended_process(process: subprocess.Popen[Any]) -> bool:
@@ -535,13 +514,15 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
                             process_group = process.pid if int(requested_group) == 0 else int(requested_group)
                         elif opts.get("start_new_session"):
                             process_group = process.pid
-                    stdout, stderr = _terminate_and_drain(
+                    cleanup = _terminate_and_drain(
                         process,
                         process_group=process_group,
                         grace_seconds=cancel_grace_seconds,
                         require_tree_termination=True,
                     )
-                    raise ProcessCancelledError(command, stdout, stderr)
+                    error = ProcessCancelledError(command, cleanup.stdout, cleanup.stderr)
+                    _attach_cleanup_outcome(error, cleanup)
+                    raise error
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:
                     raise subprocess.TimeoutExpired(command, timeout)
@@ -567,22 +548,27 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
                 process_group = process.pid if int(requested_group) == 0 else int(requested_group)
             elif opts.get("start_new_session"):
                 process_group = process.pid
-        stdout, stderr = _terminate_and_drain(process, process_group=process_group)
-        raise subprocess.TimeoutExpired(
+        cleanup = _terminate_and_drain(process, process_group=process_group)
+        error = subprocess.TimeoutExpired(
             command,
             timeout,
-            output=stdout if stdout is not None else timeout_error.output,
-            stderr=stderr if stderr is not None else timeout_error.stderr,
-        ) from None
-    except BaseException:
-        _terminate_and_drain(process)
+            output=cleanup.stdout if cleanup.stdout is not None else timeout_error.output,
+            stderr=cleanup.stderr if cleanup.stderr is not None else timeout_error.stderr,
+        )
+        _attach_cleanup_outcome(error, cleanup)
+        raise error from None
+    except BaseException as error:
+        cleanup = _terminate_and_drain(process)
+        _attach_cleanup_outcome(error, cleanup)
         raise
 
     returncode = process.wait()
     if job_handle and not _release_process_job(process):
-        _terminate_and_drain(process)
+        cleanup = _terminate_and_drain(process)
         if getattr(process, "_local_ai_job_handle", None):
-            raise OSError("Unable to close Windows Job Object after process completion")
+            error = OSError("Unable to close Windows Job Object after process completion")
+            _attach_cleanup_outcome(error, cleanup)
+            raise error
     completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
     if check and returncode:
         raise subprocess.CalledProcessError(returncode, command, stdout, stderr)
@@ -590,79 +576,123 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
 
 
 def _terminate_and_drain(
-    process: subprocess.Popen[Any],
-    *,
-    process_group: int | None = None,
+    process: subprocess.Popen[Any], *, process_group: int | None = None,
     grace_seconds: float | None = None,
     require_tree_termination: bool = False,
-) -> tuple[Any, Any]:
-    cleanup_kwargs = {"grace_seconds": grace_seconds} if grace_seconds is not None else {}
-    if process_group is not None:
-        cleanup_kwargs["process_group"] = process_group
-    job_handle = getattr(process, "_local_ai_job_handle", None)
-    tree_termination_confirmed = False
-    if job_handle:
-        tree_termination_confirmed = _release_process_job(process)
-        if not tree_termination_confirmed:
+) -> _CleanupOutcome:
+    def outcome(stdout: Any, stderr: Any) -> _CleanupOutcome:
+        result = _CleanupOutcome(stdout, stderr, cleanup_confirmed, process, process_group)
+        if require_tree_termination:
             try:
-                tree_termination_confirmed = bool(terminate_tree(process.pid, **cleanup_kwargs))
+                leader_exited = process.poll() is not None
             except Exception:
-                pass
+                leader_exited = False
+            if not cleanup_confirmed or not leader_exited:
+                error = ProcessCleanupUnverifiedError(
+                    getattr(process, "args", ()),
+                    process=process,
+                    tree_termination_confirmed=cleanup_confirmed,
+                    output=stdout,
+                    stderr=stderr,
+                )
+                _attach_cleanup_outcome(error, result)
+                raise error
+        return result
+
+    cleanup_kwargs = {"process_group": process_group} if process_group is not None else {}
+    if grace_seconds is not None:
+        cleanup_kwargs["grace_seconds"] = grace_seconds
+    job_handle = getattr(process, "_local_ai_job_handle", None)
+    cleanup_confirmed = False
+    if job_handle:
+        cleanup_confirmed = _release_process_job(process)
+        if not cleanup_confirmed:
+            cleanup_confirmed = _request_tree_cleanup(process, cleanup_kwargs)
     else:
+        cleanup_confirmed = _request_tree_cleanup(process, cleanup_kwargs)
+
+    # Popen.kill uses a stable process HANDLE on Windows. On POSIX it signals the
+    # numeric PID after a liveness check, so never use it when tree ownership was
+    # not continuously held by a safe signal target.
+    if os.name == "nt" and not cleanup_confirmed:
         try:
-            tree_termination_confirmed = bool(terminate_tree(process.pid, **cleanup_kwargs))
-        except Exception:
+            if process.poll() is None:
+                process.kill()
+        except OSError:
             pass
-    try:
-        if process.poll() is None:
-            process.kill()
-    except OSError:
-        pass
 
     try:
-        output = process.communicate(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+        stdout, stderr = process.communicate(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+        return outcome(stdout, stderr)
     except subprocess.TimeoutExpired as drain_error:
-        for stream in (process.stdout, process.stderr):
-            if stream is not None:
+        retry_confirmed = _request_tree_cleanup(process, cleanup_kwargs)
+        cleanup_confirmed = cleanup_confirmed or retry_confirmed
+        final_output = drain_error.output
+        final_stderr = drain_error.stderr
+        try:
+            stdout, stderr = process.communicate(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+            return outcome(stdout, stderr)
+        except subprocess.TimeoutExpired as final_drain_error:
+            if final_drain_error.output is not None:
+                final_output = final_drain_error.output
+            if final_drain_error.stderr is not None:
+                final_stderr = final_drain_error.stderr
+        except Exception:
+            pass
+        if cleanup_confirmed:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+            if os.name == "nt":
                 try:
-                    stream.close()
+                    process.kill()
                 except OSError:
                     pass
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        output = (drain_error.output, drain_error.stderr)
+            try:
+                process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        return outcome(final_output, final_stderr)
+    except ProcessCleanupUnverifiedError:
+        raise
     except Exception:
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        output = (None, None)
+        if cleanup_confirmed:
+            if os.name == "nt":
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+            try:
+                process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        return outcome(None, None)
 
-    if require_tree_termination:
-        try:
-            leader_exited = process.poll() is not None
-        except Exception:
-            leader_exited = False
-        if not tree_termination_confirmed or not leader_exited:
-            stdout, stderr = output if isinstance(output, tuple) and len(output) == 2 else (None, None)
-            raise ProcessCleanupUnverifiedError(
-                getattr(process, "args", ()),
-                process=process,
-                tree_termination_confirmed=tree_termination_confirmed,
-                output=stdout,
-                stderr=stderr,
-            )
-    return output
+
+def _request_tree_cleanup(
+    process: subprocess.Popen[Any], cleanup_kwargs: dict[str, Any]
+) -> bool:
+    if os.name == "nt":
+        # Keep cleanup on the continuously owned Job Object. Closing it never
+        # authorizes a later taskkill against a potentially recycled numeric PID.
+        if getattr(process, "_local_ai_job_handle", None):
+            return _release_process_job(process)
+        return False
+    try:
+        return bool(terminate_tree(process.pid, **cleanup_kwargs))
+    except Exception:
+        return False
+
+
+def _attach_cleanup_outcome(error: BaseException, outcome: _CleanupOutcome) -> None:
+    error.cleanup_confirmed = outcome.cleanup_confirmed
+    error.cleanup_unconfirmed = not outcome.cleanup_confirmed
+    if not outcome.cleanup_confirmed:
+        error.cleanup_process = outcome.process
+        error.cleanup_process_group = outcome.process_group
 
 
 def _find_listening_pid_win32(port: int) -> int | None:
@@ -933,6 +963,57 @@ def create_sandboxed_job_object(
 
 
 
+def _git_worktree_admin_dir(repo: Path, target: Path) -> Path | None:
+    common_proc = run_hidden(
+        ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        **hidden_run_kwargs(),
+    )
+    admin_proc = run_hidden(
+        ["git", "-C", str(target), "rev-parse", "--git-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        **hidden_run_kwargs(),
+    )
+    if common_proc.returncode != 0 or admin_proc.returncode != 0:
+        return None
+    common = Path(common_proc.stdout.strip())
+    admin = Path(admin_proc.stdout.strip())
+    if not common.is_absolute():
+        common = repo / common
+    if not admin.is_absolute():
+        admin = target / admin
+    common = common.resolve(strict=False)
+    admin = admin.resolve(strict=False)
+    try:
+        admin.relative_to(common / "worktrees")
+    except ValueError:
+        return None
+    return admin
+
+
+def get_git_worktree_ownership(repo_root: str | Path, worktree_path: str | Path) -> dict[str, Any] | None:
+    """Read ownership metadata stored outside a linked worktree's working files."""
+    repo = Path(repo_root).expanduser().resolve(strict=False)
+    target = Path(worktree_path).expanduser().resolve(strict=False)
+    admin = _git_worktree_admin_dir(repo, target)
+    if admin is None:
+        return None
+    marker = admin / "local_ai_hub_worktree.json"
+    try:
+        import json
+
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def create_git_worktree(
     repo_root: str | Path,
     branch_name: str | None = None,
@@ -989,7 +1070,7 @@ def create_git_worktree(
     cmd = ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(target_dir), base_commit]
     created_checkout = False
     try:
-        completed = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
+        completed = run_hidden(cmd, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
         if completed.returncode != 0:
             return {
                 "success": False,
@@ -1079,7 +1160,10 @@ def remove_git_worktree(
 ) -> dict[str, Any]:
     """Remove only clean worktree whose persisted owner metadata matches caller."""
     repo = Path(repo_root).expanduser().resolve(strict=False)
-    target = Path(worktree_path).resolve(strict=False)
+    raw_target = Path(worktree_path).expanduser()
+    if raw_target.is_symlink():
+        return {"success": False, "error": "worktree path must not be a symlink"}
+    target = raw_target.resolve(strict=False)
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
     if not worktree_id.strip():
@@ -1193,7 +1277,7 @@ def remove_git_worktree(
             branch_deleted = (proc_b.returncode == 0)
         return {
             "success": True,
-            "worktree_removed": True,
+            "worktree_removed": not target.exists(),
             "branch_deleted": branch_deleted,
             "repo_root": str(repo),
             "worktree_path": str(target),
@@ -1208,7 +1292,7 @@ def list_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
     try:
-        proc = subprocess.run(
+        proc = run_hidden(
             ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
             capture_output=True, text=True, check=False, timeout=15, **hidden_run_kwargs()
         )
@@ -1251,7 +1335,7 @@ def prune_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
     try:
-        proc = subprocess.run(
+        proc = run_hidden(
             ["git", "-C", str(repo), "worktree", "prune", "-v"],
             capture_output=True, text=True, check=False, timeout=15, **hidden_run_kwargs()
         )

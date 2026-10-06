@@ -1,0 +1,65 @@
+{
+  "version": 9,
+  "owner": "T05",
+  "date": "2026-10-01",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_apply_checks": {
+    "t05-root-current-scoped-tenant-delete.patch": {
+      "status": "pass",
+      "detail": ""
+    },
+    "t05-root-current-scoped-delete-t08-test-fix.patch": {
+      "status": "pass",
+      "detail": ""
+    },
+    "t05-root-current-migration-fault-tests.patch": {
+      "status": "pass",
+      "detail": ""
+    },
+    "t05-root-current-http-memory-identity-test.patch": {
+      "status": "pass",
+      "detail": ""
+    },
+    "t05-root-current-cache-worker-root-import.patch": {
+      "status": "pass",
+      "detail": ""
+    }
+  },
+  "superseded_patch_reverse_checks": {
+    "t05-root-memory-persisted-privacy-assertions.patch": {
+      "status": "already_applied",
+      "detail": ""
+    },
+    "t05-root-memory-identity-minimal.patch": {
+      "status": "already_applied",
+      "detail": ""
+    },
+    "t05-root-memory-context-sensitive-filter.patch": {
+      "status": "already_applied",
+      "detail": ""
+    }
+  },
+  "delete_artifact_source_hunk_reverse_check": {
+    "status": "already_applied",
+    "detail": ""
+  },
+  "root_sha256": {
+    "src/local_ai_hub/agent_memory.py": "b3736d39b44722c9030cd9f47f58b58a5f86c1197921375310604ef31f79d8e7",
+    "src/local_ai_hub/agent_events.py": "02a25102b888b23fe99b8c508f59aedd846ba24fd38a268bcc6893b0877e0a38",
+    "tests/test_agent_memory.py": "f4f12e52c105d23e88a6f0f69a6d5ac2c23580bf9515e5dd1ea5c1ec6206e29c",
+    "tests/test_t05_memory_delete_artifacts.py": "4f79e0c19498706ab351e8ec4f9ca617e95592ea9b351269dc87710b4ff22940",
+    "tests/test_t05_cache_clear_durable_state.py": "7178ba62817a5abc21e5173f109e1bcd6645ff7362c47eacf488d116a71880db",
+    "tests/test_t05_memory_fts_atomicity.py": "178a783f64d5e3c305987e7b76e857ab8e939c923287f136aa719589ff08b8e9"
+  },
+  "candidate_sha256": {
+    "src/local_ai_hub/agent_memory.py": "fae4e3dc6e0b34cb2dd80e7d4a3b32ed4356b045d68c78bcbcba3cf186ef00fc",
+    "src/local_ai_hub/agent_events.py": "84edb06dfd22fa900db09474efcf0689393e1a9fb76c0e0d636bfd5826b63ac2",
+    "tests/test_t05_memory_delete_artifacts.py": "5f82540b7e6e19cb4c66da5f38c34c321d7d17be5a6bcb96814536ccd6ca7637",
+    "tests/test_t05_cache_clear_durable_state.py": "3369badeb7025424a0fec07bfd38050fdbb9c6b551affa15a3d28c410115c485",
+    "tests/test_t05_memory_fts_atomicity.py": "e2c07e0caae7c8d493ca7dbe240cbce4571fea1f27f2243d23dc13bc572be189"
+  },
+  "candidate_only_static_integration_check": true,
+  "tests_run": false,
+  "limitation": "Patch compatibility/reverse checks only; no fresh root runtime selectors. The root delete-artifact test file exists with a different SHA than the candidate test file.",
+  "root_worktree_edited_by_this_check": false
+}

@@ -72,7 +72,7 @@ _CONTEXT_PROTECTED_KEYS = (
     "success", "complete", "partial", "task_context", "context_id", "etag",
     "evidence_ids", "repo_revision", "stale", "warnings", "omitted_sections",
     "next_action", "evidence_id", "error", "status_code", "terminal", "retryable",
-    "context_truncated", "context_chars",
+    "context_truncated", "context_chars", "context_pack", "adaptive_context_pack",
 )
 _RESPONSE_PROTECTED_KEYS = (
     "success", "status", "error", "status_code", "terminal", "retryable", "evidence_id", "evidence_ids",
@@ -306,6 +306,59 @@ def _with_budget_meta(
     )
 
 
+def _bounded_context_pack(value: Any, *, budget_chars: int) -> Any:
+    """Keep context identity and one exact citation in a bounded response."""
+    if not isinstance(value, dict):
+        return _bounded_pointer_item(value, budget_chars=budget_chars)
+    result: dict[str, Any] = {}
+    for key in ("context_id", "repo_revision"):
+        item = value.get(key)
+        if isinstance(item, str) and item:
+            result[key] = _bounded_string(item, min(160, budget_chars))
+    # Master decision fields remain authoritative when a T14 citation is reduced.
+    for key in (
+        "success", "status", "status_code", "terminal", "retryable", "error",
+        "degraded", "stale", "fallback_used", "requires_override", "requires_approval",
+        "decision_recorded", "decision_persisted", "task_status", "waiting", "stop_code",
+    ):
+        if key in value:
+            result[key] = _bounded_pointer_item(value[key], budget_chars=budget_chars)
+    evidence = value.get("evidence")
+    if isinstance(evidence, list):
+        citations: list[dict[str, Any]] = []
+        for item in evidence[:24]:
+            if not isinstance(item, dict):
+                continue
+            citation: dict[str, Any] = {}
+            for key in ("evidence_id", "path", "start_line", "end_line", "source"):
+                field = item.get(key)
+                if isinstance(field, str):
+                    citation[key] = _bounded_string(field, min(160, budget_chars))
+                elif isinstance(field, int) and not isinstance(field, bool):
+                    citation[key] = field
+            if citation.get("evidence_id") and citation.get("path"):
+                citations.append(citation)
+                break
+        if citations:
+            result["evidence"] = citations
+    evidence_ids = value.get("evidence_ids")
+    if isinstance(evidence_ids, (list, tuple)) and evidence_ids:
+        result["evidence_ids"] = [_bounded_string(str(evidence_ids[0]), min(160, budget_chars))]
+    return result
+
+
+def _retain_bounded_context_citation(
+    candidate: Any, source: Any, *, protected_keys: tuple[str, ...], budget_chars: int,
+) -> Any:
+    """Keep one complete citation when compacting an oversized context pack."""
+    if not isinstance(candidate, dict) or not isinstance(source, dict):
+        return candidate
+    for key in ("adaptive_context_pack", "context_pack"):
+        if key in protected_keys and isinstance(source.get(key), dict):
+            candidate[key] = _bounded_context_pack(source[key], budget_chars=budget_chars)
+    return candidate
+
+
 def _budget_rejection(
     *, requested: int, original: int, source: Any = None, protected_keys: tuple[str, ...] = ()
 ) -> dict[str, Any]:
@@ -341,7 +394,9 @@ def _budget_rejection(
                     if key not in preserved or key in base_keys:
                         continue
                     item = preserved[key]
-                    if key == "evidence_ids" and isinstance(item, (list, tuple)):
+                    if key in {"adaptive_context_pack", "context_pack"}:
+                        value[key] = _bounded_context_pack(item, budget_chars=error_chars)
+                    elif key == "evidence_ids" and isinstance(item, (list, tuple)):
                         # Preserve whole IDs and bound only the number emitted.
                         value[key] = [str(item[index])[:160] for index in range(min(evidence_count, len(item)))]
                     elif key == "evidence_id":
@@ -377,7 +432,9 @@ def _budget_rejection(
         if key in base_keys or key not in preserved:
             continue
         item = preserved[key]
-        if key == "evidence_ids" and isinstance(item, (list, tuple)):
+        if key in {"adaptive_context_pack", "context_pack"}:
+            minimal[key] = _bounded_context_pack(item, budget_chars=160)
+        elif key == "evidence_ids" and isinstance(item, (list, tuple)):
             minimal[key] = [str(part)[:160] for part in item[:1]]
         elif key == "evidence_id":
             minimal[key] = str(item)[:160]
@@ -646,6 +703,9 @@ def budget_response(
     ]
     for candidate in candidates:
         _restore_protected_fields(candidate, value, protected)
+        _retain_bounded_context_citation(
+            candidate, value, protected_keys=protected, budget_chars=text_chars,
+        )
         if json_tokens(candidate) <= requested:
             if isinstance(candidate, dict):
                 result = _with_budget_meta(
@@ -672,6 +732,9 @@ def budget_response(
         protected_keys=protected,
     )
     _restore_protected_fields(envelope, value, protected)
+    _retain_bounded_context_citation(
+        envelope, value, protected_keys=protected, budget_chars=text_chars,
+    )
     result = _with_budget_meta(
         envelope,
         requested=requested,

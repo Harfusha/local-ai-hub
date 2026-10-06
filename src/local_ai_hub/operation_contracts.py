@@ -7,6 +7,54 @@ import math
 from copy import deepcopy
 from typing import Any
 
+REPO_PHASES = ("", "plan", "edit", "review", "test", "handoff")
+MAX_REPO_PIPELINE_PARALLEL_STEPS = 4
+MAX_EVENT_SEQUENCE = (1 << 63) - 1
+REPO_PIPELINE_MUTATING_ACTIONS = frozenset({
+    "batch_replace", "ast_refactor", "preprocess", "preprocess_refresh",
+    "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister",
+})
+
+
+def normalize_transport_error(status_code: int, payload: Any) -> dict[str, Any]:
+    """Normalize errors without replacing explicit delivery/retry state."""
+    result = dict(payload) if isinstance(payload, dict) else {"error": str(payload)}
+    result["success"] = False
+    result["status_code"] = int(status_code)
+    retryable = status_code in {408, 425, 429, 500, 502, 503, 504}
+    if "retryable" not in result and "terminal" not in result:
+        result.update(retryable=retryable, terminal=not retryable)
+    elif "retryable" not in result:
+        result["retryable"] = not bool(result["terminal"])
+    elif "terminal" not in result:
+        result["terminal"] = not bool(result["retryable"])
+    if isinstance(result.get("error"), str):
+        result["error"] = result["error"][:500]
+    return result
+
+
+def contract_error(message: str, *, status_code: int = 400) -> dict[str, Any]:
+    return normalize_transport_error(status_code, {"error": message[:500]})
+
+
+def repo_pipeline_step_schema(repo_properties: dict[str, Any], repo_actions: Any) -> dict[str, Any]:
+    """Preserve registry types and bounds in closed pipeline step inputs."""
+    properties = deepcopy({key: value for key, value in repo_properties.items() if key not in {"steps", "action"}})
+    properties["id"] = {"type": "string", "maxLength": 128}
+    properties["action"] = {"type": "string", "enum": [action for action in repo_actions if action != "pipeline"]}
+    return {"type": "object", "required": ["action"], "properties": properties, "additionalProperties": False}
+
+
+def validate_repo_pipeline_step(step: Any, *, index: int, step_schema: dict[str, Any], features: Any = None) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(step, dict):
+        return None, f"steps[{index}] must be an object"
+    error = _validate_nested_schema(step, step_schema, f"steps[{index}]", "pipeline")
+    if error:
+        return None, error
+    arguments = {key: value for key, value in step.items() if key != "id"}
+    error = validate_operation_arguments("local_ai_repo", step.get("action"), arguments, features=features)
+    return (None, error) if error else (dict(step), None)
+
 
 def _action_contracts(
     actions: tuple[str, ...],
@@ -86,6 +134,10 @@ _COORD_ACTIONS = (
 )
 _WORK_ACTIONS = ("submit", "status", "wait", "get", "cancel", "continue")
 _ARTIFACT_ACTIONS = ("get", "slice", "list")
+_ADOPTION_TOOL_NAMES = (
+    "local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_rag",
+    "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_work",
+)
 
 _RESPONSE_BUDGET_PROPERTIES = {
     "max_response_tokens": {"type": "integer", "minimum": 0, "default": 0},
@@ -207,8 +259,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "detail": {"type": "string", "default": "brief"},
             "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
             "adoption_signal": {"type": "string", "enum": ["", "bypassed"], "default": ""},
-            "target_tool": {"type": "string", "default": ""},
-            "target_action": {"type": "string", "default": ""},
+            "target_tool": {"type": "string", "enum": list(_ADOPTION_TOOL_NAMES)},
+            "target_action": {"type": "string", "minLength": 1, "maxLength": 80,
+                               "pattern": "^[a-z][a-z0-9_]{0,79}$"},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
     ),
@@ -307,6 +360,12 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                     },
                 }],
             },
+            "session_id": {"type": "string", "default": ""},
+            "clone_id": {"type": "string", "default": ""},
+            "worktree_id": {"type": "string", "default": ""},
+            "branch": {"type": "string", "default": ""},
+            "repository_id": {"type": "string", "default": ""},
+            "repository_revision": {"type": "string", "default": ""},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
         conditional_properties={
@@ -446,6 +505,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "tool_outcome": {"type": "object"},
             "focus": {"type": "array", "items": {"type": "string"}},
             "include_diagnostics": {"type": "boolean", "default": False},
+            "base": {"type": "string", "default": "HEAD"},
+            "after_seq": {"type": "integer", "minimum": 0, "maximum": MAX_EVENT_SEQUENCE, "default": 0},
+            "topic": {"type": "string", "default": ""},
             "include_stale": {"type": "boolean", "default": False},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
@@ -497,6 +559,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "timeout_seconds": {"type": "number", "default": 90},
             "answer": {"type": "string", "default": ""},
             "return_fields": {"type": "array", "items": {"type": "string"}},
+            "response_profile": {"type": "string", "default": "compact"},
+            "extra_fields": {"type": "array", "items": {"type": "string"}},
             "max_output_tokens": {"type": "integer", "default": 0},
             "keep_failed_workspace": {"type": "boolean", "default": False},
         },
@@ -1045,6 +1109,16 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
         if _requirements_met(features, (str(requirements),)):
             properties.update(deepcopy(conditional_properties))
 
+    if tool == "local_ai_repo":
+        properties["phase"] = {"type": "string", "enum": list(REPO_PHASES), "default": ""}
+        for field in ("max_tokens", "token_budget"):
+            properties[field].update(minimum=0, maximum=100000)
+        properties["steps"] = {
+            "type": "array", "items": repo_pipeline_step_schema(properties, available_actions),
+        }
+    if tool == "local_ai_coord":
+        properties["max_tokens"].update(minimum=0, maximum=100000)
+
     parameters: dict[str, Any] = {"type": "object", "properties": properties}
     if contract.get("selector_required", True):
         parameters["required"] = [selector_field]
@@ -1147,7 +1221,11 @@ def _matches_json_type(value: Any, expected: Any) -> bool:
         if expected_type == "integer" and type(value) is int:
             return True
         if expected_type == "number" and isinstance(value, (int, float)) and not isinstance(value, bool):
-            return True
+            try:
+                if math.isfinite(value):
+                    return True
+            except OverflowError:
+                pass
         if expected_type == "boolean" and type(value) is bool:
             return True
         if expected_type == "object" and isinstance(value, dict):
@@ -1157,6 +1235,19 @@ def _matches_json_type(value: Any, expected: Any) -> bool:
         if expected_type == "null" and value is None:
             return True
     return not recognized
+
+
+def _non_finite_number_path(value: Any, path: str) -> str | None:
+    pending = [(value, path)]
+    while pending:
+        current, current_path = pending.pop()
+        if isinstance(current, float) and not math.isfinite(current):
+            return current_path
+        if isinstance(current, dict):
+            pending.extend((item, f"{current_path}.{key}") for key, item in current.items())
+        elif isinstance(current, list):
+            pending.extend((item, f"{current_path}[{index}]") for index, item in enumerate(current))
+    return None
 
 
 def _validate_nested_schema(value: Any, schema: dict[str, Any], path: str, action: str) -> str | None:
@@ -1256,6 +1347,9 @@ def validate_operation_arguments(
             return f"{field} is required for action='{action}'"
 
     for field, value in arguments.items():
+        non_finite_path = _non_finite_number_path(value, field)
+        if non_finite_path is not None:
+            return f"{non_finite_path} must be finite for action='{action}'"
         schema = properties.get(field) if isinstance(properties, dict) else None
         if not isinstance(schema, dict):
             continue
@@ -1296,6 +1390,17 @@ def validate_operation_arguments(
         )
         if error:
             return error
+    if tool == "local_ai_status":
+        adoption_signal = arguments.get("adoption_signal", "")
+        target_tool = arguments.get("target_tool", "")
+        target_action = arguments.get("target_action", "")
+        if adoption_signal == "bypassed":
+            if not target_tool or not target_action:
+                return "bypass report requires supported target_tool and safe target_action"
+            if target_action not in operation_actions(target_tool):
+                return f"target_action is not supported for target_tool='{target_tool}'"
+        elif target_tool or target_action:
+            return "target_tool requires adoption_signal='bypassed'"
     if tool == "local_ai_repo" and action == "verify_receipt":
         receipt = arguments.get("receipt")
         if not isinstance(receipt, dict):

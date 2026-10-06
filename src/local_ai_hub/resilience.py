@@ -176,7 +176,7 @@ class RecoveryJournal:
                 f"incompatible recovery journal schema; missing required columns: {names}"
             )
 
-    def _create_schema(self) -> None:
+    def _create_schema(self) -> bool:
         # Inspect existing durable journal read-only before WAL setup or any DDL.
         self._verify_existing_schema()
         with closing(self._connect()) as con:
@@ -189,12 +189,20 @@ class RecoveryJournal:
             )""")
             con.execute("CREATE INDEX IF NOT EXISTS idx_recovery_state ON requests(state, updated_at)")
             con.commit()
+        return True
 
     def _init_db(self) -> None:
         if self._journal_unavailable:
             return
         try:
-            self._create_schema()
+            if not self._create_schema():
+                # Never reinterpret or rewrite outcomes from an unsupported journal schema.
+                self._journal_unavailable = True
+                try:
+                    self._journal_unavailable_marker.touch(exist_ok=True)
+                except OSError:
+                    pass
+                return
             with closing(self._connect()) as con:
                 if not quick_sanity_check(con):
                     raise sqlite3.DatabaseError("recovery sanity check failed")
@@ -396,7 +404,11 @@ class RecoveryJournal:
                 if current is None or current.get("state") != "running":
                     if current is None:
                         return None
-                    return {key: current[key] for key in ("state", "status_code", "response", "outcome_unknown") if key in current}
+                    return {
+                        key: current[key]
+                        for key in ("state", "status_code", "response", "outcome_unknown", "error")
+                        if key in current
+                    }
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return {key: current[key] for key in ("state", "status_code", "response", "outcome_unknown") if key in current}
