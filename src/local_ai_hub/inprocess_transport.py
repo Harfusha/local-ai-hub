@@ -3,9 +3,11 @@ from __future__ import annotations
 import io
 import socket
 import threading
+import time
 from email.message import Message
 from http import HTTPStatus
 from typing import Any, Mapping
+from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError
 
 from .config import load_config
@@ -17,9 +19,12 @@ _APP_LOCK = threading.RLock()
 
 
 class InProcessTransportFailure(OSError):
-    """In-process setup failed before the request reached a route handler."""
+    """In-process transport failure with write/cancellation outcome evidence."""
 
-    request_not_sent = True
+    def __init__(self, message: str, *, request_not_sent: bool = True, cancelled: bool = False) -> None:
+        super().__init__(message)
+        self.request_not_sent = request_not_sent
+        self.cancelled = cancelled
 
 
 class _MemoryConnection:
@@ -204,6 +209,18 @@ class InProcessTransport:
             if cancel_before_dispatch.is_set():
                 raise InProcessTransportFailure("in-process request timed out before dispatch")
             dispatched.set()
+        parsed_path = urlparse(path)
+        if (
+            method == "GET"
+            and not requires_heavy_work
+            and parsed_path.path == "/api/repo/topology"
+        ):
+            if not handler._require_authorized():
+                return handler._memory_status, handler.wfile.getvalue(), handler._memory_headers
+            query = parse_qs(parsed_path.query)
+            root = (query.get("root") or [""])[0]
+            handler._send(200, app.services.repo_topology(root))
+            return handler._memory_status, handler.wfile.getvalue(), handler._memory_headers
         if method == "GET":
             handler.do_GET()
         else:
@@ -219,6 +236,7 @@ class InProcessTransport:
         timeout: float,
         operational_action: str | None = None,
         requires_heavy_work: bool = True,
+        cancel_event: threading.Event | None = None,
     ) -> bytes:
         method = str(method).upper()
         path = str(path)
@@ -277,14 +295,28 @@ class InProcessTransport:
                 raise InProcessTransportFailure("in-process transport is closed")
             self._active.add(worker)
         worker.start()
-        if not completed.wait(request_timeout):
-            with dispatch_lock:
-                was_dispatched = dispatched.is_set()
-                if not was_dispatched:
-                    cancel_before_dispatch.set()
-            if was_dispatched:
-                raise socket.timeout("in-process request timed out after dispatch")
-            raise InProcessTransportFailure("in-process request timed out before dispatch")
+        deadline = time.monotonic() + request_timeout
+        while not completed.is_set():
+            if cancel_event is not None and cancel_event.is_set():
+                with dispatch_lock:
+                    was_dispatched = dispatched.is_set()
+                    if not was_dispatched:
+                        cancel_before_dispatch.set()
+                raise InProcessTransportFailure(
+                    "in-process request cancelled",
+                    request_not_sent=not was_dispatched,
+                    cancelled=True,
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                with dispatch_lock:
+                    was_dispatched = dispatched.is_set()
+                    if not was_dispatched:
+                        cancel_before_dispatch.set()
+                if was_dispatched:
+                    raise socket.timeout("in-process request timed out after dispatch")
+                raise InProcessTransportFailure("in-process request timed out before dispatch")
+            completed.wait(min(0.05, remaining))
         if "error" in result:
             raise result["error"]
         status, response_body, response_headers = result["response"]
