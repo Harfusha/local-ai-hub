@@ -289,6 +289,79 @@ class AgentStateStore:
                 return AppendResult(seq=0, duplicate=False, retryable=True, error=str(exc))
             raise
 
+    def append_in_transaction(
+        self,
+        con: Any,
+        event: AgentEvent,
+        *,
+        strict_idempotency: bool = False,
+    ) -> AppendResult:
+        """Append in a caller-owned transaction; initialize schema before opening it."""
+        if not self.enabled:
+            return AppendResult(seq=0, duplicate=False, error="agent_state is disabled")
+        payload_bytes = json_dumps(event.payload, separators=(",", ":")).encode("utf-8")
+        if len(payload_bytes) > self.max_payload_bytes:
+            raise ValueError(
+                f"payload exceeds maximum allowed {self.max_payload_bytes} bytes (got {len(payload_bytes)})"
+            )
+        if not con.in_transaction:
+            raise ValueError("append_in_transaction requires an active caller-owned transaction")
+        if not self._initialized:
+            raise ValueError("AgentStateStore schema must be initialized before opening the transaction")
+        try:
+            existing = con.execute(
+                """
+                SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
+                       correlation_id, actor, created_at
+                FROM agent_events
+                WHERE stream_id = ? AND idempotency_key = ?
+                """,
+                (event.stream_id, event.idempotency_key),
+            ).fetchone()
+            if existing:
+                existing_event = AgentEvent.from_row(existing)
+                if strict_idempotency and (
+                    existing_event.kind != event.kind
+                    or json_dumps(existing_event.payload, separators=(",", ":"))
+                    != payload_bytes.decode("utf-8")
+                    or existing_event.correlation_id != event.correlation_id
+                    or existing_event.actor != event.actor
+                ):
+                    raise ValueError("idempotency key already exists with different event content")
+                return AppendResult(seq=existing_event.seq or 0, duplicate=True, event=existing_event)
+
+            row = con.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
+                (event.stream_id,),
+            ).fetchone()
+            new_seq = int(row[0]) if row else 1
+            con.execute(
+                """
+                INSERT INTO agent_events (
+                    stream_id, seq, event_id, kind, payload, idempotency_key,
+                    correlation_id, actor, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.stream_id,
+                    new_seq,
+                    event.event_id,
+                    event.kind,
+                    payload_bytes.decode("utf-8"),
+                    event.idempotency_key,
+                    event.correlation_id,
+                    event.actor,
+                    event.created_at,
+                ),
+            )
+            return AppendResult(seq=new_seq, duplicate=False, event=event.with_seq(new_seq))
+        except ValueError:
+            raise
+        except Exception as exc:
+            if is_busy_error(exc):
+                return AppendResult(seq=0, duplicate=False, retryable=True, error=str(exc))
+            return AppendResult(seq=0, duplicate=False, error=str(exc))
+
     def subscribe(self, maxsize: int = 100) -> queue.Queue[AgentEvent]:
         q: queue.Queue[AgentEvent] = queue.Queue(maxsize=maxsize)
         with self._subscribers_lock:
@@ -347,7 +420,7 @@ class AgentStateStore:
         finally:
             con.close()
 
-    def event_page(self, stream_id: str, after_seq: int = 0, limit: int = 50) -> dict[str, Any]:
+    def event_page(self, stream_id: str, *, after_seq: int, limit: int) -> dict[str, Any]:
         if not self.enabled:
             return {"success": False, "error": "agent_state is disabled"}
         try:
@@ -366,9 +439,11 @@ class AgentStateStore:
                 "after_seq": cursor,
                 "next_seq": cursor,
                 "last_seq": 0,
-                "first_retained_seq": 0,
+                "first_retained_seq": None,
                 "has_gap": False,
                 "has_more": False,
+                "gap_ranges": [],
+                "cursor_reset": False,
             }
         self._ensure_schema()
         con = connect_sqlite(self.db_path)
@@ -377,17 +452,59 @@ class AgentStateStore:
                 "SELECT MIN(seq),MAX(seq) FROM agent_events WHERE stream_id=?",
                 (str(stream_id),),
             ).fetchone()
-            first_retained_seq = int(bounds[0] or 0)
-            last_seq = int(bounds[1] or 0)
+            first_retained_seq = int(bounds[0]) if bounds[0] is not None else None
+            event_last_seq = int(bounds[1] or 0)
+            snapshot_row = con.execute(
+                "SELECT MAX(seq) FROM agent_snapshots WHERE stream_id=?",
+                (str(stream_id),),
+            ).fetchone()
+            cursor_table = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_event_cursors'"
+            ).fetchone()
+            cursor_row = (
+                con.execute(
+                    "SELECT last_seq FROM agent_event_cursors WHERE stream_id=?",
+                    (str(stream_id),),
+                ).fetchone()
+                if cursor_table
+                else None
+            )
+            durable_last_seq = int(cursor_row[0] or 0) if cursor_row else 0
+            last_seq = max(event_last_seq, int(snapshot_row[0] or 0), durable_last_seq)
+            cursor_reset = cursor > last_seq
+            effective_cursor = cursor
+            if cursor_reset:
+                effective_cursor = (
+                    max(0, first_retained_seq - 1)
+                    if first_retained_seq is not None
+                    else last_seq
+                )
             rows = con.execute(
                 """SELECT stream_id,seq,event_id,kind,payload,idempotency_key,correlation_id,actor,created_at
                    FROM agent_events WHERE stream_id=? AND seq>? ORDER BY seq ASC LIMIT ?""",
-                (str(stream_id), cursor, page_limit + 1),
+                (str(stream_id), effective_cursor, page_limit + 1),
             ).fetchall()
             events = [AgentEvent.from_row(row) for row in rows[:page_limit]]
-            has_gap = first_retained_seq > 0 and cursor < first_retained_seq - 1
             has_more = len(rows) > page_limit
-            next_seq = int(events[-1].seq or cursor) if events else (last_seq if has_gap else cursor)
+            visible_seqs = [int(event.seq or 0) for event in events]
+            gap_ranges: list[dict[str, int]] = []
+
+            def add_gap(from_seq: int, to_seq: int) -> None:
+                if from_seq <= to_seq:
+                    gap_ranges.append({"from_seq": from_seq, "to_seq": to_seq})
+
+            expected_seq = effective_cursor + 1
+            for seq in visible_seqs:
+                add_gap(expected_seq, seq - 1)
+                expected_seq = seq + 1
+            if not has_more:
+                trailing_gap_start = expected_seq
+                add_gap(trailing_gap_start, last_seq)
+
+            has_gap = bool(gap_ranges)
+            next_seq = visible_seqs[-1] if visible_seqs else (last_seq if has_gap else effective_cursor)
+            if not has_more and expected_seq <= last_seq:
+                next_seq = last_seq
             return {
                 "success": True,
                 "stream_id": str(stream_id),
@@ -398,6 +515,8 @@ class AgentStateStore:
                 "first_retained_seq": first_retained_seq,
                 "has_gap": has_gap,
                 "has_more": has_more,
+                "gap_ranges": gap_ranges,
+                "cursor_reset": cursor_reset,
             }
         finally:
             con.close()

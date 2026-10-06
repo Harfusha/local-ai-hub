@@ -505,6 +505,7 @@ class IncidentStore:
         timeout_seconds = max(0.01, min(10.0, float(timeout_seconds)))
         deadline = time.monotonic() + timeout_seconds
         self._init_table()
+        self.state_store._ensure_schema()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("incident resolution time budget exceeded")
@@ -531,10 +532,10 @@ class IncidentStore:
                                 stream_id="incident:all",
                                 kind="incident.all_resolved",
                                 payload={"verified_fix": verified_fix, "resolved_count": count},
-                                idempotency_key=f"inc_res_all_{int(now)}",
+                                idempotency_key=f"inc_res_all_{uuid.uuid4().hex}",
                                 actor="operator",
                             )
-                            appended = self.state_store._append_event_in_transaction(con, event)
+                            appended = self.state_store.append_in_transaction(con, event)
                             if appended.retryable:
                                 raise TimeoutError("incident resolution event append timed out")
                             if appended.error:
@@ -550,10 +551,12 @@ class IncidentStore:
             if isinstance(exc, TimeoutError) or time.monotonic() >= deadline or "interrupt" in message or "locked" in message or "busy" in message:
                 raise TimeoutError("incident resolution time budget exceeded") from exc
             raise
+        # The durable commit is final; publish wakes live streams and cannot change its outcome.
         if event_to_publish is not None:
-            self.state_store._publish(event_to_publish)
-        if time.monotonic() >= deadline:
-            raise TimeoutError("incident resolution time budget exceeded")
+            try:
+                self.state_store._publish(event_to_publish)
+            except Exception:
+                pass
         return count
 
     def set_ignored(self, incident_id: str, ignored: bool = True) -> IncidentRecord:

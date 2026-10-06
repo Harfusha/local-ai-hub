@@ -833,6 +833,9 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     schemas: dict[str, dict[str, Any]] = {}
 
     if fs.status:
+        status_action_aliases = [
+            "", "brief", "cache", "telemetry", "full", "agent_state", "status", "health", "check", "info",
+        ]
         status_description = "Health, queue, and token-saving status. detail: brief, cache, telemetry, full, agent_state."
         if fs.agent_os:
             status_description += " `agent_state` summarizes durable Agent OS task state."
@@ -843,7 +846,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["brief", "cache", "telemetry", "full", "agent_state"], "default": ""},
+                    "action": {"type": "string", "enum": status_action_aliases, "default": ""},
                     "detail": {"type": "string", "enum": ["brief", "cache", "telemetry", "full", "agent_state"], "default": "brief"},
                     "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
                     "extra_fields": {"type": "array", "items": {"type": "string"}},
