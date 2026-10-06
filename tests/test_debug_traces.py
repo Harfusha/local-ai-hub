@@ -89,6 +89,111 @@ def test_trace_detail_since_seq_and_list_filters_are_bounded(tmp_path):
     assert listed["items"][0]["trace_id"] == second
 
 
+@pytest.mark.parametrize("offset", [2**63 - 1, 2**63, 2**100])
+def test_trace_list_accepts_offsets_beyond_sqlite_integer_range(tmp_path, offset):
+    store = DebugTraceStore(_config(tmp_path))
+    store.start(kind="async_job", tenant="tenant", action="reason")
+
+    listed = store.list(offset=offset)
+
+    assert listed["success"] is True
+    assert listed["total"] == 1
+    assert listed["offset"] == offset
+    assert listed["items"] == []
+
+
+def test_debug_trace_list_route_handles_sqlite_oversized_offset(tmp_path, monkeypatch):
+    offset = 2**100
+    store = DebugTraceStore(_config(tmp_path))
+    store.start(kind="async_job", tenant="tenant", action="reason")
+    app = type("App", (), {"debug_traces": store})()
+    monkeypatch.setattr(http_server, "APP", app)
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = f"/api/debug-traces?offset={offset}"
+    handler.command = "GET"
+    handler._begin_trace = lambda path: None
+    handler._require_authorized = lambda: True
+    handler._authorization_succeeded = True
+    handler._authorize_admin_action = lambda action: action == "debug_traces.list"
+    handler._reconcile_debug_trace = lambda item: None
+    responses = []
+    handler._send = lambda status, data: responses.append((status, data))
+
+    handler.do_GET()
+
+    assert responses == [(
+        200,
+        {"success": True, "items": [], "total": 1, "limit": 50, "offset": offset},
+    )]
+
+
+@pytest.mark.parametrize("since_seq", [2**63 - 1, 2**63, 2**100])
+def test_trace_detail_clamps_forward_cursor_to_sqlite_integer_range(tmp_path, since_seq):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    store.event(trace_id, "progress", {"index": 1})
+
+    detail = store.detail(trace_id, since_seq=since_seq)
+
+    assert detail["success"] is True
+    assert detail["events"] == []
+
+
+def test_trace_detail_supports_bounded_backward_event_pages(tmp_path):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    for index in range(5):
+        store.event(trace_id, "progress", {"index": index})
+
+    newest_older_page = store.detail(trace_id, before_seq=6, limit=2)
+    oldest_page = store.detail(trace_id, before_seq=newest_older_page["events_before_seq"], limit=2)
+    first_page = store.detail(trace_id, before_seq=oldest_page["events_before_seq"], limit=2)
+
+    assert [event["seq"] for event in newest_older_page["events"]] == [4, 5]
+    assert newest_older_page["events_has_more"] is True
+    assert newest_older_page["events_before_seq"] == 4
+    assert [event["seq"] for event in oldest_page["events"]] == [2, 3]
+    assert oldest_page["events_has_more"] is True
+    assert [event["seq"] for event in first_page["events"]] == [1]
+    assert first_page["events_has_more"] is False
+
+
+def test_backward_page_size_trimming_does_not_claim_older_events(tmp_path):
+    store = DebugTraceStore(
+        _config(
+            tmp_path,
+            max_detail_response_bytes=4096,
+            max_event_bytes=16 * 1024,
+            max_session_text_bytes=16 * 1024,
+        )
+    )
+    trace_id = store.start(kind="async_job", tenant="tenant")
+    store.event(trace_id, "progress", {"payload": "x" * 5000})
+    encode = store._encode
+    store._encode = lambda value: encode(value) + (" " * 6000 if isinstance(value, dict) and value.get("events") else "")
+
+    detail = store.detail(trace_id, before_seq=2, limit=1, full_payload=True)
+
+    assert detail["events"] == []
+    assert detail["events_has_more"] is False
+
+
+def test_forward_page_size_trimming_preserves_cursor_for_omitted_events(tmp_path):
+    store = DebugTraceStore(_config(tmp_path, max_detail_response_bytes=4096))
+    trace_id = store.start(kind="async_job", tenant="tenant")
+    store.event(trace_id, "progress", {"index": 1})
+    store.event(trace_id, "progress", {"index": 2})
+    encode = store._encode
+    store._encode = lambda value: encode(value) + (" " * 6000 if isinstance(value, dict) and len(value.get("events", [])) > 1 else "")
+
+    detail = store.detail(trace_id, since_seq=0, limit=2)
+
+    assert [event["seq"] for event in detail["events"]] == [1]
+    assert detail["events_has_more"] is True
+    assert detail["next_seq"] == 1
+
+
 def test_trace_link_and_event_payload_limits_keep_trace_bounded(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_event_bytes=100, max_session_text_bytes=120))
     trace_id = store.start(kind="api_request", tenant="tenant")
@@ -137,9 +242,14 @@ def test_recover_incomplete_traces_marks_previous_processes_interrupted(tmp_path
 
 def test_dashboard_and_favicon_are_monitor_paths():
     from local_ai_hub.http_server import MONITOR_PATHS
+    from local_ai_hub.dashboard import DASHBOARD_HTML
 
     assert "/dashboard" in MONITOR_PATHS
     assert "/favicon.ico" in MONITOR_PATHS
+    assert "When enabled, trace capture stores prompts, model output, request bodies, and responses" in DASHBOARD_HTML
+    assert "stored records and the authenticated admin API may contain raw values" in DASHBOARD_HTML
+    assert "Reveal loads retained content in bounded chunks" in DASHBOARD_HTML
+    assert "Content removed by storage limits at capture cannot be recovered" in DASHBOARD_HTML
 
 
 def test_event_count_and_session_text_caps_are_hard_limits(tmp_path):
@@ -216,13 +326,193 @@ def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
     assert responses == [(404, {"success": False, "error": "trace not found"})]
 
 
-@pytest.mark.parametrize("since_seq", [2**63 - 1, 2**63, 2**100])
-def test_trace_detail_clamps_forward_cursor_to_sqlite_integer_range(tmp_path, since_seq):
-    store = DebugTraceStore(_config(tmp_path))
+
+
+
+def test_full_payload_detail_marks_content_beyond_bounded_preview(tmp_path):
+    store = DebugTraceStore(_config(tmp_path, max_session_text_bytes=2 * 1024 * 1024))
     trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
-    store.event(trace_id, "progress", {"index": 1})
+    output = "x" * 600_000
+    store.update(trace_id, output=output)
 
-    detail = store.detail(trace_id, since_seq=since_seq)
+    detail = store.detail(trace_id, full_payload=True)
 
-    assert detail["success"] is True
-    assert detail["events"] == []
+    assert detail["full_payload_requested"] is True
+    assert detail["payload_truncated"] is True
+    assert detail["session"]["output"]["truncated"] is True
+    assert len(detail["session"]["output"]["preview"]) < len(output)
+
+
+def test_full_payload_content_pages_reconstruct_retained_session_and_event_data(tmp_path):
+    store = DebugTraceStore(_config(
+        tmp_path,
+        max_session_text_bytes=2 * 1024 * 1024,
+        max_event_bytes=4096,
+        max_detail_response_bytes=4096,
+    ))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    output = "start-秘密-😀-" + "x" * 5000 + "-end"
+    response = {"message": "結果-" + "y" * 1500}
+    event_payload = {"prompt": "入力-" + "z" * 1000}
+    store.event(trace_id, "model_request", event_payload)
+    store.update(trace_id, output=output)
+    store.finish(trace_id, state="done", response=response)
+
+    def collect(field):
+        parts = []
+        offset = 0
+        while True:
+            detail = store.detail(
+                trace_id,
+                full_payload=True,
+                content_field=field,
+                content_offset=offset,
+            )
+            assert detail["success"] is True
+            page = detail["content_page"]
+            assert len(json.dumps(detail, ensure_ascii=False).encode("utf-8")) <= store.max_detail_response_bytes
+            assert page["offset"] == offset
+            parts.append(page["text"])
+            if not page["has_more"]:
+                break
+            assert page["next_offset"] > offset
+            offset = page["next_offset"]
+        return "".join(parts)
+
+    assert collect("output") == output
+    assert json.loads(collect("response")) == response
+    assert json.loads(collect("event:1")) == event_payload
+    last_page = store.detail(trace_id, full_payload=True, content_field="output", content_offset=2**63 - 1)
+    assert last_page["success"] is True
+    assert last_page["content_page"]["offset"] == len(output)
+
+
+def test_large_unicode_content_pages_use_indexed_chunks_at_late_offsets(tmp_path):
+    store = DebugTraceStore(_config(
+        tmp_path,
+        max_session_text_bytes=8 * 1024 * 1024,
+        max_event_bytes=4 * 1024 * 1024,
+        max_detail_response_bytes=4096,
+    ))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    output = "秘密😀" * 100_000
+    response = {"answer": "結果🛰️" * 30_000}
+    event_payload = {"prompt": "入力🪷" * 25_000}
+    store.update(trace_id, output=output, response=response)
+    store.event(trace_id, "model_request", event_payload)
+
+    offset = len(output) - 700
+    output_page = store.detail(
+        trace_id, full_payload=True, content_field="output", content_offset=offset
+    )
+    response_text = store._encode(response)
+    response_offset = len(response_text) - 350
+    response_page = store.detail(
+        trace_id, full_payload=True, content_field="response", content_offset=response_offset
+    )
+    event_text = store._encode(event_payload)
+    event_offset = len(event_text) - 450
+    event_page = store.detail(
+        trace_id, full_payload=True, content_field="event:1", content_offset=event_offset
+    )
+
+    assert output_page["success"] is True
+    assert output_page["content_page"]["text"] == output[offset:offset + 256]
+    assert output_page["content_page"]["total_chars"] == len(output)
+    assert response_page["success"] is True
+    assert response_page["content_page"]["text"] == response_text[response_offset:response_offset + 256]
+    assert response_page["content_page"]["total_chars"] == len(response_text)
+    assert event_page["success"] is True
+    assert event_page["content_page"]["text"] == event_text[event_offset:event_offset + 256]
+    assert event_page["content_page"]["total_chars"] == len(event_text)
+
+    with closing(store._connect()) as con:
+        max_chunk_chars = con.execute(
+            "SELECT MAX(length(chunk_text)) FROM trace_content_chunks WHERE trace_id=?",
+            (trace_id,),
+        ).fetchone()[0]
+        preview_chars = con.execute(
+            "SELECT length(output_text) FROM traces WHERE trace_id=?", (trace_id,)
+        ).fetchone()[0]
+        event_preview_chars = con.execute(
+            "SELECT length(payload_json) FROM trace_events WHERE trace_id=? AND seq=1",
+            (trace_id,),
+        ).fetchone()[0]
+        plan = con.execute(
+            "EXPLAIN QUERY PLAN SELECT chunk_index,chunk_text FROM trace_content_chunks "
+            "WHERE trace_id=? AND content_field=? AND event_seq=? AND chunk_index>=? "
+            "AND chunk_index<? ORDER BY chunk_index LIMIT ?",
+            (trace_id, "output", 0, 10, 11, 2),
+        ).fetchall()
+
+    assert max_chunk_chars <= store.CONTENT_CHUNK_CHARS
+    assert preview_chars <= store.CONTENT_PREVIEW_CHARS
+    assert event_preview_chars <= store.CONTENT_PREVIEW_CHARS
+    assert any("SEARCH" in str(row[3]) and "trace_content_chunks" in str(row[3]) for row in plan)
+
+
+def test_detail_flags_event_payload_truncated_before_response_serialization(tmp_path):
+    store = DebugTraceStore(_config(tmp_path, max_event_bytes=256, max_session_text_bytes=1024))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    store.event(trace_id, "model_request", {"prompt": "p" * 2000})
+
+    detail = store.detail(trace_id, full_payload=True)
+
+    assert detail["payload_truncated"] is True
+    assert any(event["payload"].get("truncated") is True for event in detail["events"])
+
+
+def test_detail_flags_session_fields_truncated_before_response_serialization(tmp_path):
+    store = DebugTraceStore(_config(tmp_path, max_session_text_bytes=1024))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    store.update(trace_id, output="o" * 6000, request={"body": "r" * 6000})
+
+    detail = store.detail(trace_id, full_payload=True)
+
+    assert detail["payload_truncated"] is True
+    assert detail["session"]["request"]["truncated"] is True
+    assert "[trace output truncated]" in detail["session"]["output"]
+
+
+def test_http_trace_request_capture_redacts_nested_sensitive_fields():
+    from local_ai_hub.http_server import Handler
+
+    captured = Handler._safe_debug_trace_request({
+        "prompt": "keep this trace content",
+        "headers": {"authorization": "Bearer secret", "nested": {"api_key": "secret-key"}},
+    })
+
+    assert captured["prompt"] == "keep this trace content"
+    assert captured["headers"]["authorization"] == "[redacted]"
+    assert captured["headers"]["nested"]["api_key"] == "[redacted]"
+
+
+def test_debug_trace_route_forwards_bounded_content_page_cursor(monkeypatch):
+    class DebugTraces:
+        TERMINAL_STATES = set()
+        captured = None
+
+        def detail(self, trace_id, **kwargs):
+            self.captured = (trace_id, kwargs)
+            return {"success": True, "content_page": {"field": "output", "offset": 128}}
+
+    class App:
+        debug_traces = DebugTraces()
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/debug-traces/trace-1?full=1&content_field=output&content_offset=128"
+    handler.command = "GET"
+    handler._begin_trace = lambda path: None
+    handler._require_authorized = lambda: True
+    handler._authorization_succeeded = True
+    responses = []
+    handler._send = lambda status, data: responses.append((status, data))
+    monkeypatch.setattr(http_server, "APP", App())
+
+    handler.do_GET()
+
+    assert App.debug_traces.captured == (
+        "trace-1",
+        {"since_seq": 0, "limit": 100, "full_payload": True, "content_field": "output", "content_offset": 128, "before_seq": 0},
+    )
+    assert responses == [(200, {"success": True, "content_page": {"field": "output", "offset": 128}})]
