@@ -1230,16 +1230,13 @@ class LocalAIServices:
     ) -> dict[str, Any]:
         if estimate_tokens(prompt) + estimate_tokens(system) > self._conversation_prompt_limit():
             return self._conversation_error("", "conversation prompt limit exceeded")
-        conversation = self.conversations.start(tenant, {
+        conversation = self.conversations.start_reserved(tenant, {
             "model": route["model"], "system": system, "max_tokens": max_tokens,
             "temperature": temperature, "source": source, "priority": priority,
             "route": dict(route),
         })
         if conversation is None:
             return self._conversation_error("", "conversation capacity reached")
-        reserved, error = self.conversations.reserve(conversation.conversation_id, tenant)
-        if reserved is None:
-            return self._conversation_error(conversation.conversation_id, error or "conversation not found")
         try:
             result = self._generate(
                 route["model"], prompt, system, max_tokens, temperature, tenant, source, priority,

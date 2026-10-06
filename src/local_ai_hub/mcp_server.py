@@ -1348,6 +1348,12 @@ def local_ai_task(
     local model. Skip when: local-model tasks are disabled or Codex-owned
     subagent orchestration is the right owner; Local AI Hub does not route or manage native Codex agents."""
     action = _resolve_action("task", action)
+    if action in {"submit", "status", "wait", "result", "cancel"} and not getattr(FEATURES, "async_jobs", False):
+        return {
+            "success": False,
+            "unsupported": True,
+            "error": "Async job lifecycle is disabled (async_jobs.enabled=false)",
+        }
     # The static contract requires summary, evidence, analysis, limitations
     # and next step. Requests below this floor routinely truncate after a
     # generic preamble, especially on 7b/9b models. Clamp instead of rejecting

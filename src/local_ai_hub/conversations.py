@@ -39,11 +39,19 @@ class ConversationStore:
         self._lock = threading.Lock()
 
     def start(self, tenant: str, settings: dict[str, Any]) -> Conversation | None:
+        return self._start(tenant, settings, active=False)
+
+    def start_reserved(self, tenant: str, settings: dict[str, Any]) -> Conversation | None:
+        """Create and reserve a conversation atomically before it becomes visible."""
+        return self._start(tenant, settings, active=True)
+
+    def _start(self, tenant: str, settings: dict[str, Any], *, active: bool) -> Conversation | None:
         now = self._clock()
         conversation = Conversation(
             conversation_id=uuid.uuid4().hex,
             tenant=str(tenant),
             settings=dict(settings),
+            active=active,
             updated_at=now,
         )
         with self._lock:
