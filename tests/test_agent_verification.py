@@ -216,20 +216,11 @@ def test_passed_verification_receipt_requires_evidence_id():
         VerificationReceipt.create("task-proof", "tests", evidence_id=" ")
 
 
-def test_verification_receipt_parser_requires_explicit_boolean_passed():
-    base = {"receipt_id": "receipt-1", "task_id": "task-1", "criterion": "tests"}
-    payloads = (
-        base,
-        {**base, "passed": "false"},
-        {**base, "passed": "true"},
-        {**base, "passed": 1},
-        {**base, "passed": None},
-    )
-
-    assert all(
-        VerificationReceipt.from_dict(payload).passed is False
-        for payload in payloads
-    )
+@pytest.mark.parametrize("passed_fields", [{}, {"passed": "false"}, {"passed": "true"}, {"passed": 1}, {"passed": None}])
+def test_verification_receipt_parser_requires_explicit_boolean_passed(passed_fields):
+    payload = {"receipt_id": "receipt-1", "task_id": "task-1", "criterion": "tests", **passed_fields}
+    with pytest.raises(ValueError, match="passed"):
+        VerificationReceipt.from_dict(payload)
 
 
 def test_verifier_exception_cannot_become_a_passing_receipt(
