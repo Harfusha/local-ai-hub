@@ -3,8 +3,10 @@ from __future__ import annotations
 import ast
 import json
 import queue
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +16,7 @@ from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.agent_blackboard import BlackboardStore
 from local_ai_hub.benchmark import HardwareBenchmarkRunner
 from local_ai_hub.commands import CommandBroker
+from local_ai_hub.process_utils import hidden_run_kwargs
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.leases import ScopeLeaseStore
 from local_ai_hub.swarm import SwarmCoordinator, SwarmState
@@ -154,9 +157,32 @@ def test_command_streaming_and_sse_events(tmp_path: Path):
         state_store.append(ev)
 
     cmd_broker = CommandBroker({}, artifacts=None, repo_state=None)
+    task_id = "streaming-test-task"
+    worktree_path = tmp_path.resolve()
+    subprocess.run(["git", "init"], cwd=str(worktree_path), capture_output=True, check=True, **hidden_run_kwargs())
+    task = SimpleNamespace(
+        task_id=task_id,
+        checkpoint=SimpleNamespace(
+            state_data={"worktree": {
+                "worktree_path": str(worktree_path), "success": True,
+                "repo_root": str(worktree_path),
+                "branch": subprocess.run(
+                    ["git", "-C", str(worktree_path), "symbolic-ref", "--quiet", "--short", "HEAD"],
+                    capture_output=True, text=True, check=True, **hidden_run_kwargs()
+                ).stdout.strip(),
+            }}
+        ),
+    )
+
+    class TaskStore:
+        def get(self, requested_task_id: str) -> object | None:
+            return task if requested_task_id == task_id else None
+
+    cmd_broker.set_task_store(TaskStore())
     res = cmd_broker.run(
         f'"{sys.executable}" -c "print(\'live stream line 1\'); print(\'live stream line 2\')"',
         cwd=str(tmp_path),
+        task_id=task_id,
         force=True,
         log_callback=log_cb,
     )

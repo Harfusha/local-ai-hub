@@ -275,9 +275,10 @@ def test_blackboard_store_retry(tmp_path: Path):
     assert "plan" in all_secs["sections"]
 
 
-def test_repair_loop_drive_letter_casing(tmp_path: Path):
+def test_repair_loop_drive_letter_casing(tmp_path: Path, monkeypatch):
     """Verify repair_loop handles path normalization without raising relative_to ValueError."""
     broker = CommandBroker(config={"server": {"state_dir": str(tmp_path / "broker_state")}, "commands": {"enabled": True}})
+    monkeypatch.setattr(broker, "_require_task_worktree", lambda *_args, **_kwargs: None)
 
     project_dir = tmp_path / "project"
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -297,6 +298,8 @@ def test_repair_loop_drive_letter_casing(tmp_path: Path):
         tenant="test",
         fix_generator=mock_generator,
         max_attempts=1,
+        task_id="task-1",
+        paths=["target.py"],
     )
     assert res["success"] is True
     assert res["repaired"] is True

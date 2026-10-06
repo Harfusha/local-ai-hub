@@ -649,6 +649,130 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
     assert changed == {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
 
 
+def test_http_retry_from_two_live_clients_dispatches_once(tmp_path, monkeypatch) -> None:
+    from http.client import HTTPConnection
+    import logging
+
+    journal = RecoveryJournal(tmp_path)
+    payload = {"action": "submit", "root": str(tmp_path), "task": "live HTTP idempotence"}
+    publish_started = threading.Event()
+    release_publish = threading.Event()
+    duplicate_waiting = threading.Event()
+    handler_started = threading.Event()
+    journal_begin_started = threading.Event()
+    journal_begin_finished = threading.Event()
+    journal_begin_result: dict[str, Any] = {}
+    submissions: list[dict[str, Any]] = []
+
+    def submit(_tenant: str, value: dict[str, Any]) -> dict[str, Any]:
+        submissions.append(dict(value))
+        publish_started.set()
+        if not release_publish.wait(10.0):
+            raise TimeoutError("test did not release first publication")
+        return {"success": True, "work_id": "live-work-one"}
+
+    telemetry = SimpleNamespace(record_live=lambda **_kwargs: None, record_http=lambda **_kwargs: None)
+    app = SimpleNamespace(
+        # Keep replay wait above the 5s synchronization barrier for loaded CI.
+        config={"resilience": {"singleflight_wait_timeout_seconds": 10.0}, "observability": {}},
+        recovery=journal,
+        telemetry=telemetry,
+        logger=logging.getLogger("test.http-idempotence"),
+        work_orchestrator=SimpleNamespace(enabled=True, submit=submit),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+
+    original_do_post = http_server.Handler.do_POST
+
+    def observed_do_post(self) -> None:
+        handler_started.set()
+        original_do_post(self)
+
+    monkeypatch.setattr(http_server.Handler, "do_POST", observed_do_post)
+
+    original_begin = journal.begin
+
+    def observed_begin(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        journal_begin_started.set()
+        try:
+            result = original_begin(*args, **kwargs)
+            journal_begin_result.update({"claimed": result.get("claimed"), "state": result.get("state")})
+            return result
+        except Exception as exc:
+            journal_begin_result["error"] = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            journal_begin_finished.set()
+
+    monkeypatch.setattr(journal, "begin", observed_begin)
+
+    wait_for = journal.wait_for
+
+    def observed_wait(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        duplicate_waiting.set()
+        return wait_for(*args, **kwargs)
+
+    monkeypatch.setattr(journal, "wait_for", observed_wait)
+
+    server = http_server.ThreadingHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    host, port = server.server_address
+
+    def send_request() -> tuple[int, dict[str, Any]]:
+        connection = HTTPConnection(host, port, timeout=10.0)
+        try:
+            connection.request(
+                "POST",
+                "/api/work-orders",
+                body=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-LocalAI-Request-ID": "req-live-two-clients",
+                },
+            )
+            response = connection.getresponse()
+            return response.status, json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_client = pool.submit(send_request)
+            if not publish_started.wait(10.0):
+                first_result: Any = "pending"
+                if first_client.done():
+                    try:
+                        first_result = first_client.result()
+                    except Exception as exc:
+                        first_result = f"{type(exc).__name__}: {exc}"
+                raise AssertionError(
+                    "live HTTP request did not reach submit callback; "
+                    f"handler_started={handler_started.is_set()}, "
+                    f"journal_begin_started={journal_begin_started.is_set()}, "
+                    f"journal_begin_finished={journal_begin_finished.is_set()}, "
+                    f"journal_begin_result={journal_begin_result!r}, "
+                    f"first_client={first_result!r}"
+                )
+            second_client = pool.submit(send_request)
+            try:
+                assert duplicate_waiting.wait(5.0)
+            finally:
+                release_publish.set()
+            first_response = first_client.result(timeout=10.0)
+            second_response = second_client.result(timeout=10.0)
+    finally:
+        release_publish.set()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5.0)
+
+    expected = (200, {"success": True, "work_id": "live-work-one"})
+    assert submissions == [payload]
+    assert first_response == second_response == expected
+    assert not server_thread.is_alive()
+
 def test_http_retry_after_response_loss_publishes_one_durable_event(tmp_path, monkeypatch) -> None:
     journal = RecoveryJournal(tmp_path / "recovery")
     state_store = AgentStateStore(tmp_path / "agent-state.sqlite3")

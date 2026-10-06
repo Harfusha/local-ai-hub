@@ -3091,15 +3091,30 @@ class LocalAIServices:
             return {"success": False, "error": "command broker unavailable"}
         return self.commands.spawn_daemon(command, cwd, name=name, env=env, task_id=task_id)
 
-    def daemon_status(self, daemon_id: str | None = None) -> dict[str, Any]:
+    def daemon_status(
+        self, daemon_id: str | None = None, *, task_id: str = ""
+    ) -> dict[str, Any]:
         if not self.commands:
             return {"success": False, "error": "command broker unavailable"}
-        return self.commands.daemon_status(daemon_id)
+        if not task_id:
+            return {
+                "success": False,
+                "error": "daemon status requires a registered task id",
+                "policy_blocked": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        denied = self._authorize_command_action(
+            "daemon_status", endpoint="services.daemon_status", task_id=task_id
+        )
+        if denied is not None:
+            return denied
+        return self.commands.daemon_status(daemon_id, task_id=task_id)
 
-    def stop_daemon(self, daemon_id: str) -> dict[str, Any]:
+    def stop_daemon(self, daemon_id: str, *, task_id: str = "") -> dict[str, Any]:
         if not self.commands:
             return {"success": False, "error": "command broker unavailable"}
-        return self.commands.stop_daemon(daemon_id)
+        return self.commands.stop_daemon(daemon_id, task_id=task_id)
 
     def lint_fix(self, root: str, command: str | None = None, paths: list[str] | None = None, tenant: str = "agent", timeout: int | None = None) -> dict[str, Any]:
         if not self.commands:
@@ -5207,6 +5222,43 @@ class LocalAIServices:
             return self.preprocessor.lookup(root, str(args.get("query", "")), int(args.get("limit", 5)))
         return {"success": False, "error": f"unknown preprocess action: {action}"}
 
+    def _authorize_command_action(
+        self, action: str, *, endpoint: str, task_id: str = ""
+    ) -> dict[str, Any] | None:
+        broker = self.commands
+        authorize = getattr(broker, "authorize_auxiliary_action", None) if broker is not None else None
+        if not callable(authorize):
+            policy = {
+                "success": False,
+                "allowed": False,
+                "requires_approval": True,
+                "reason": "auxiliary action policy boundary unavailable",
+                "owner": "agent_policy",
+                "side_effect_class": "unknown",
+                "terminal": True,
+                "retryable": False,
+            }
+        else:
+            aliases = {
+                "auto_fix": "repair_loop",
+                "repair": "repair_loop",
+                "mock_server": "mock_server_start",
+                "test_flaky_detect": "flaky_detect",
+            }
+            policy = authorize(
+                aliases.get(action, action), endpoint=endpoint, task_id=task_id
+            )
+        if policy.get("allowed", False):
+            return None
+        return {
+            "success": False,
+            "error": policy.get("reason", "command action denied by policy"),
+            "policy": policy,
+            "policy_blocked": True,
+            "terminal": True,
+            "retryable": False,
+        }
+
     def command(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         if self.commands is None:
             return {"success": False, "error": "command broker unavailable"}
@@ -5219,6 +5271,13 @@ class LocalAIServices:
                 "terminal": True,
                 "retryable": False,
             }
+        denied = self._authorize_command_action(
+            action,
+            endpoint="services.command",
+            task_id=str(args.get("task_id", "")),
+        )
+        if denied is not None:
+            return denied
 
         stream_id = str(args.get("stream_id") or (f"cmd:{args.get('task_id')}" if args.get("task_id") else "") or (f"cmd:{tenant}" if args.get("stream") else ""))
         log_callback = None
@@ -5335,9 +5394,22 @@ class LocalAIServices:
                 task_id=str(args.get("task_id", "")),
             )
         if action == "daemon_status":
-            return self.daemon_status(args.get("daemon_id", args.get("task_id", args.get("command"))))
+            task_id = str(args.get("task_id", ""))
+            if not task_id:
+                return {
+                    "success": False,
+                    "error": "daemon status requires a registered task id",
+                    "policy_blocked": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+            daemon_id = args.get("daemon_id", args.get("command"))
+            return self.commands.daemon_status(daemon_id, task_id=task_id)
         if action == "stop_daemon":
-            return self.stop_daemon(str(args.get("daemon_id", args.get("task_id", args.get("command", "")))))
+            return self.stop_daemon(
+                str(args.get("daemon_id", args.get("task_id", args.get("command", "")))),
+                task_id=str(args.get("task_id", "")),
+            )
         if action == "http_probe":
             exp_status = int(args.get("expected_status", 200)) if str(args.get("expected_status", "")).isdigit() else (int(args.get("task_id", 200)) if str(args.get("task_id", "")).isdigit() else 200)
             return self.http_probe(str(args.get("url", args.get("command", ""))), expected_status=exp_status, json_path=args.get("json_path", args.get("criterion")), timeout=float(args.get("timeout", 5.0) or 5.0), headers=args.get("headers"))
