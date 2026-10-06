@@ -729,8 +729,10 @@ not proof of successful DB initialization or row preservation. V13-H005 is
 master-improved: all 53 original accepted object hashes remain among the
 current 61. T18's read-only review found `_reserve_backup_destination`
 swallows Windows account/ACL subprocess exceptions; this is a separate
-fail-closed confidentiality issue for the exception-handling queue. No
-runtime, import, model, DB, or source changes/tests were run in this review.
+fail-closed confidentiality issue. Sartre now owns the bounded fix in that
+method plus unit tests: existing T18 worktree, root master `e13142e3`, no
+schema/DB changes, and no edits to concurrently dirty root HTTP/async files.
+The review itself ran no runtime, import, model, DB, or tests.
 Five additional event hunks have manual counterparts, now dispositioned in follow-up commit
 `088f9b3300b36f46ba131652082040b1d46339a6` (parent
 `b7757a77d57374d8ef04971d417f81ac42d1d57a`), merged into master. The report
