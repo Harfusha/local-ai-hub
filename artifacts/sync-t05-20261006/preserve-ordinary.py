@@ -117,14 +117,19 @@ else:
     receipt['final_head_branch_ref'] = 'refs/heads/codex/sync-t05-20261006'
     receipt['final_head_status_blob_ref'] = 'refs/codex/receipts/t05-complete-preservation-final'
     receipt['all_original_raw_backup_verified_count'] = len(baseline_entries)+len(remaining)
+    receipt['supplemental_raw_archive_verified_count'] = len(manifest['committed_ordinary_paths_and_raw_hashes'])
+    receipt['all_archived_file_bytes_verified_count'] = len(baseline_entries)+len(manifest['committed_ordinary_paths_and_raw_hashes'])
     receipt['all_original_raw_backup_errors'] = baseline_errors+archive_errors
     receipt['all_original_untracked_committed_count'] = len(original['untracked'])
     receipt['remaining_original_untracked_status'] = []
     receipt['remaining_tracked_source_dirty'] = []
+    receipt['final_expected_git_status_porcelain'] = ''
+    receipt['final_head_status_receipt_method'] = 'Exact final head/status stored after audit commit in final_head_status_blob_ref; prevents self-referential commit hash.'
     receipt['excluded_original_inventory_paths'] = []
     receipt['excluded_untracked_or_ignored_state_paths'] = excluded
     receipt['supplemental_committed_paths_and_raw_hashes'] = manifest['committed_ordinary_paths_and_raw_hashes']
-    receipt['original_path_final_hashes'] = [dict(e, tracked_now=e['path'] in tracked,
+    receipt['original_path_final_hashes'] = [dict(path=e['path'], original_sha256=e['sha256'],
+                                               size=e['size'], tracked_now=e['path'] in tracked,
                                                current_sha256=digest((ROOT/e['path']).read_bytes()))
                                            for e in original['tracked_dirty']+original['untracked']]
     (AUDIT/'preservation-receipt.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
