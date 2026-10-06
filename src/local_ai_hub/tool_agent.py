@@ -213,18 +213,17 @@ class ToolAwareLocalAgent:
         if name == "repo_search":
             query = str(args.get("query", ""))
             top_k = max(1, min(int(args.get("top_k") or 6), 10))
-            try:
-                paths = self.preprocessor.candidate_paths(root, query, limit=max(16, top_k * 4))
-            except Exception:
-                paths = []
-            if paths:
-                targeted = self.services.repo_tools.search_paths(root, query, paths, top_k)
-                if targeted.get("results"):
-                    result = targeted
-                else:
-                    result = self.services.repo_search(root, query, top_k)
-            else:
-                result = self.services.repo_search(root, query, top_k)
+            raw_hints = args.get("path_hints")
+            path_hints = raw_hints if isinstance(raw_hints, (list, tuple)) else None
+            raw_scope = args.get("scope", "repository_search")
+            search_scope = raw_scope if isinstance(raw_scope, str) else "repository_search"
+            result = self.services.repo_search(
+                root,
+                query,
+                top_k,
+                path_hints=path_hints,
+                scope=search_scope,
+            )
             # Progressive disclosure: return coordinates/evidence ids first, raw text only on evidence_get.
             if self.evidence is not None and isinstance(result.get("results"), list):
                 enriched = self.evidence.put_many(str(result.get("root", root)), result["results"])

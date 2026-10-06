@@ -1,0 +1,94 @@
+{
+  "root": "C:/Users/Adam/.codex/worktrees/4816/.local-ai-hub",
+  "preserved_nested_configuration": ".handoff/scratch-root-a411/config.toml.bak-20260913-integrated",
+  "phase": "after targeted checks, before final merge",
+  "preserved_nested_metadata": ".handoff/scratch-root-a411/.git/",
+  "nested_source_archive": ".handoff/T12-scratch-source-preserved-20261006.tar",
+  "excluded_runtime_groups": [
+    {
+      "files": 110,
+      "path": ".handoff/T12-model-free-root-overlay-20261001/src/local_ai_hub/__pycache__/"
+    },
+    {
+      "files": 110,
+      "path": ".handoff/T12-model-free-root-overlay-v2-20261001/src/local_ai_hub/__pycache__/"
+    },
+    {
+      "files": 110,
+      "path": ".handoff/T12-model-free-root-overlay-v3-20261001/src/local_ai_hub/__pycache__/"
+    },
+    {
+      "files": 110,
+      "path": ".handoff/T12-root-current-overlay-20261001/src/local_ai_hub/__pycache__/"
+    },
+    {
+      "files": 5,
+      "path": ".pytest_cache/"
+    },
+    {
+      "files": 5,
+      "path": ".serena/"
+    },
+    {
+      "files": 110,
+      "path": "handoff/.t12-r10-candidate-joined-overlay/src/local_ai_hub/__pycache__/"
+    },
+    {
+      "files": 89,
+      "path": "handoff/.t12-r11-t13-rootvision/src/local_ai_hub/__pycache__/"
+    },
+    {
+      "files": 110,
+      "path": "handoff/.t12-r12-contract-overlay/src/local_ai_hub/__pycache__/"
+    },
+    {
+      "files": 2,
+      "path": "handoff/.t12-r5-rebuild-20261001/overlay/src/local_ai_hub/__pycache__/"
+    },
+    {
+      "files": 1,
+      "path": "handoff/.t12-r5-rebuild-20261001/overlay/tests/__pycache__/"
+    },
+    {
+      "files": 36,
+      "path": "handoff/.t12-r7-generation-boundary/overlay/src/local_ai_hub/__pycache__/"
+    },
+    {
+      "files": 1,
+      "path": "handoff/.t12-r7-generation-boundary/overlay/tests/__pycache__/"
+    },
+    {
+      "files": 89,
+      "path": "handoff/.t12-r8-joined-overlay/src/local_ai_hub/__pycache__/"
+    },
+    {
+      "files": 1,
+      "path": "handoff/.t12-r8-joined-overlay/tests/__pycache__/"
+    },
+    {
+      "files": 110,
+      "path": "handoff/.t12-r9-rootjoined-overlay/src/local_ai_hub/__pycache__/"
+    },
+    {
+      "files": 12,
+      "path": "handoff/.t12-root-current-stage/*.tmp"
+    },
+    {
+      "files": 100,
+      "path": "src/local_ai_hub/__pycache__/"
+    },
+    {
+      "files": 128,
+      "path": "state/t12-sync-20261006/"
+    },
+    {
+      "files": 236,
+      "path": "tests/__pycache__/"
+    },
+    {
+      "files": 7,
+      "path": "tools/__pycache__/"
+    }
+  ],
+  "exclusions_not_deleted": true
+}

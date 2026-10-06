@@ -1,0 +1,76 @@
+{
+  "receipt_version": 2,
+  "date": "2026-10-03",
+  "scope": "T05 durable Agent DB/cache split and memory scope/privacy/CRUD acceptance",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub",
+    "head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+    "root_current_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+    "source_sha256": {
+      "src/local_ai_hub/agent_events.py": "84EDB06DFD22FA900DB09474EFCF0689393E1A9FB76C0E0D636BFD5826B63AC2",
+      "src/local_ai_hub/agent_memory.py": "FBB379CF1119ED2C2AE956D01C3238976496B2554F763544FB0E15FD13445DBF",
+      "src/local_ai_hub/memory.py": "58211A3A02EA090591C1CAC67EFB61C8111F5D40A06A17BE5A2AFC618652E517",
+      "src/local_ai_hub/http_server.py": "C9FB37BCFF9D7CD5BBCAF09295250E46B3B02E20326902BE3DD6B82BEEEA2D9E",
+      "tests/test_t05_cache_state_isolation.py": "A1EC1BB593B9BA1E5D1372C4B8A7CFEFA4996EB138C85F9BC3889EBF110CE051",
+      "tests/test_t05_memory_adoption_context.py": "2043AB8F97168441B2D6B12DE80A2780F990B961A8CF55A705729206FB7A439C"
+    }
+  },
+  "t08_provider_pin": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+    "head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+    "agent_events_sha256": "2102BCB71BB5521034355B3BAD6D88D08003CC7509E7E39CE6C1580CA1055056",
+    "fresh_test_receipt": "artifacts/t08-root-current-test-schema-reconciliation-20261003.json",
+    "fresh_test_receipt_sha256": "43734BB3FBEC3F828371163C89AF09E748BFC96D8BC7C97889137548848479D8",
+    "fresh_tests": "24 passed in 5.32s",
+    "api_contract": [
+      "AgentStateStore.append_in_transaction(con, event, *, strict_idempotency=False) requires caller-owned open transaction and advances durable cursor in it.",
+      "ordered_event_publication(con) must be entered before BEGIN; publish only after COMMIT; rollback publishes nothing."
+    ]
+  },
+  "candidate_test_runs": [
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short -W always::ResourceWarning tests/test_t05_cache_state_isolation.py tests/test_t05_cache_clear_durable_state.py tests/test_t05_memory_delete_artifacts.py tests/test_t05_agent_state_migrations.py tests/test_t05_memory_fts_atomicity.py",
+      "result": "38 passed, 1 failed in 28.66s",
+      "execution_id": "ab32527e68fa44499322f6c60166a5b2",
+      "request_id": "req_0295e6ee273b",
+      "failure": "test_record_update_fts_write_failure_rolls_back_durable_record_and_preserves_events fails before assertion: AgentStateStore has no ordered_event_publication."
+    },
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t05_memory_adoption_context.py tests/test_agent_memory_context_tenant_isolation.py",
+      "result": "8 passed in 5.54s",
+      "execution_id": "357f94e15a5c4d2cb776cc1796307fbd",
+      "request_id": "req_45898041cdf7"
+    },
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t05_cache_state_isolation.py::test_scoped_memory_delete_preserves_all_relations_until_authorized",
+      "result": "1 passed in 0.34s",
+      "execution_id": "631c23a07db84ead9eeab908863656c6",
+      "request_id": "req_6d2b510738b7"
+    },
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_memory.py::test_memory_write_redacts_private_fields_and_blocks_sensitive_records tests/test_agent_memory.py::test_memory_correction_lineage_and_delete_survive_reopen tests/test_agent_memory.py::test_find_filters_global_and_repository_rows_by_tenant_and_root tests/test_agent_memory.py::test_scoped_memory_delete_requires_matching_tenant tests/test_agent_memory.py::test_global_memory_delete_ignores_transport_tenant_but_keeps_scope tests/test_agent_memory.py::test_get_requires_identity_scope_for_non_global_records tests/test_agent_memory.py::test_memory_record_from_dict_rejects_scalar_evidence_ids",
+      "result": "3 passed, 4 failed",
+      "execution_id": "71958b8f2b6541bba02d8c50616b60b7",
+      "request_id": "req_5b2c2173dc9e",
+      "failure": "Four selectors fail before assertions on the same missing ordered_event_publication API. Three tenant/root, identity-required read, and parser selectors pass."
+    },
+    {
+      "command": "git diff --check -- tests/test_t05_cache_state_isolation.py",
+      "result": "success, exit code 0",
+      "execution_id": "e5fd6b49a7ac4cdea4d81db86d6b64d2"
+    }
+  ],
+  "root_current_patch": {
+    "path": "artifacts/handoff/t05-root-current-scoped-delete-tenant-test-v1.patch",
+    "sha256": "43354DA67B94F86B11C78EB08F7C447C5E00937CA689EF5452370389DC5EBEEA",
+    "git_apply_check": "pass against root HEAD 7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf; not applied"
+  },
+  "blocker": "T05 agent_memory.py calls ordered_event_publication and append_in_transaction, but the T05 agent_events.py provider lacks both. The provider is T08-owned; no shim or non-atomic append fallback was introduced. T08 receipt's 24 tests are fresh for its pinned source, but do not validate T05 integration.",
+  "scope_notes": [
+    "No root source/test files modified.",
+    "No edits to T08-owned agent_events.py or agent_tasks.py.",
+    "Do not treat historical T08 143-pass receipt as valid for current agent_events.py hash.",
+    "Earlier cache/migration receipts and root compatibility checks are historical; root source patch remains divergent/conflicting."
+  ],
+  "acceptance": "PARTIAL: scoped tests and test-only root patch are recorded; full integration acceptance awaits T08 provider API on the shared base and fresh root-current receipts."
+}

@@ -1,0 +1,720 @@
+from __future__ import annotations
+
+import inspect
+import importlib
+import sys
+from pathlib import Path
+from typing import Literal, get_args, get_origin, get_type_hints
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from local_ai_hub import mcp_server as local_ai_mcp  # noqa: E402
+from local_ai_hub.features import FeatureSet  # noqa: E402
+from local_ai_hub.routing import semantic_handoff_hint  # noqa: E402
+from local_ai_hub.adoption_metrics import AdoptionMetricsStore  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def isolated_profile_catalog(monkeypatch):
+    # Routing tests must not inherit a developer's disabled installed profiles or backend.
+    monkeypatch.setattr(local_ai_mcp, 'PROFILE_CATALOG', local_ai_mcp.OllamaSubagentCatalog({}))
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+
+
+def test_vision_feature_toggle_removes_vision_action_and_hint() -> None:
+    features = FeatureSet({
+        "features": {"vision": False},
+        "server": {"auto_start_ollama": True},
+        "models": {"fast_code": "fast"},
+    })
+
+    assert features.vision is False
+    assert "vision" not in features.supported_task_actions()
+    assert not any("vision" in line.lower() for line in features.specialized_trigger_lines())
+
+
+def test_public_action_parameters_are_explicit_literals() -> None:
+    expected = {
+        "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold"},
+        "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
+        "local_ai_coord": {"claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find", "memory_promote", "memory_reap", "context_compile", "verify_receipt", "verify_completion", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "relation_record", "relation_find", "relation_traverse", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree"},
+        "local_ai_command": {"run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight", "speculative_lint"},
+    }
+    for name, values in expected.items():
+        annotation = get_type_hints(getattr(local_ai_mcp, name))["action"]
+        assert get_origin(annotation) is Literal, name
+        assert set(get_args(annotation)) == values, name
+    repo_action = get_type_hints(local_ai_mcp.local_ai_repo)["action"]
+    assert get_origin(repo_action) is Literal
+    assert ("batch_replace" in get_args(repo_action)) is local_ai_mcp.FEATURES.batch_replacement
+
+
+def test_live_mcp_catalog_uses_feature_specific_batch_schema(tmp_path: Path, monkeypatch) -> None:
+    disabled_config = tmp_path / "disabled.toml"
+    disabled_config.write_text("[features]\nbatch_replacement = false\n", encoding="utf-8")
+    enabled_config = tmp_path / "enabled.toml"
+    enabled_config.write_text("[features]\nbatch_replacement = true\n", encoding="utf-8")
+    try:
+        monkeypatch.setenv("LOCAL_AI_CONFIG", str(disabled_config))
+        importlib.reload(local_ai_mcp)
+        disabled_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_repo"].parameters["properties"]
+        assert "batch_replace" not in disabled_schema["action"].get("enum", [])
+        assert "edits" not in disabled_schema
+        assert "dry_run" not in disabled_schema
+        assert "edits" not in inspect.signature(local_ai_mcp.local_ai_repo).parameters
+        assert "dry_run" not in inspect.signature(local_ai_mcp.local_ai_repo).parameters
+        disabled_action = get_type_hints(local_ai_mcp.local_ai_repo)["action"]
+        assert get_origin(disabled_action) is Literal
+        assert "batch_replace" not in get_args(disabled_action)
+
+        monkeypatch.setenv("LOCAL_AI_CONFIG", str(enabled_config))
+        importlib.reload(local_ai_mcp)
+        enabled_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_repo"].parameters["properties"]
+        assert "batch_replace" in enabled_schema["action"]["enum"]
+        assert "edits" in enabled_schema
+        assert "dry_run" in enabled_schema
+        assert "edits" in inspect.signature(local_ai_mcp.local_ai_repo).parameters
+        assert "dry_run" in inspect.signature(local_ai_mcp.local_ai_repo).parameters
+        enabled_action = get_type_hints(local_ai_mcp.local_ai_repo)["action"]
+        assert get_origin(enabled_action) is Literal
+        assert "batch_replace" in get_args(enabled_action)
+    finally:
+        monkeypatch.delenv("LOCAL_AI_CONFIG", raising=False)
+        importlib.reload(local_ai_mcp)
+
+
+def test_mcp_descriptions_explain_agent_tier_boundaries() -> None:
+    descriptions = "\n".join(
+        inspect.getdoc(getattr(local_ai_mcp, name)) or ""
+        for name in ["local_ai_task", "local_ai_repo", "local_ai_rag", "local_ai_command", "local_ai_coord", "local_ai_artifact"]
+    )
+    assert "main agent" in descriptions
+    assert "AGY" not in descriptions
+    assert "bounded" in descriptions
+    assert "Codex" in descriptions
+    assert "does not route or manage" in descriptions
+    assert "review_diff" in descriptions
+    assert "security_audit" in descriptions
+
+
+def test_repo_review_diff_returns_foreground_result_by_default(monkeypatch, tmp_path: Path) -> None:
+    calls = {}
+
+    class _Client:
+        def post(self, endpoint, payload, **kwargs):
+            calls.update(endpoint=endpoint, payload=payload, kwargs=kwargs)
+            return {"success": True, "job_id": "job-review"}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", _Client())
+
+    result = local_ai_mcp.local_ai_repo(action="review_diff", root=str(tmp_path))
+
+    assert result["success"] is True
+    assert calls["endpoint"] == "/api/review/diff"
+    assert calls["payload"]["delivery"] == "sync"
+
+
+def test_coord_verify_receipt_rejects_missing_identity_before_network(monkeypatch):
+    class _Client:
+        def post(self, *args, **kwargs):
+            raise AssertionError("invalid receipt must not reach the Hub")
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", _Client())
+    result = local_ai_mcp.local_ai_coord(action="verify_receipt", task_id="", key="")
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert "task_id and criterion" in result["error"]
+
+
+def test_coord_forwards_explicit_receipt_criterion_and_blackboard_identity(monkeypatch):
+    calls = []
+
+    class _Client:
+        def post(self, endpoint, payload, **kwargs):
+            calls.append((endpoint, payload))
+            return {"success": True, "echo": payload}
+
+        def coord(self, **kwargs):
+            calls.append(("coord", kwargs))
+            return {"success": True, "echo": kwargs}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", _Client())
+    receipt = local_ai_mcp.local_ai_coord(
+        action="verify_receipt", task_id="task-1", criterion="criterion-1"
+    )
+    board = local_ai_mcp.local_ai_coord(
+        action="blackboard_update", board_id="board-1", section="review", value="finding"
+    )
+    assert receipt["success"] is True
+    assert board["success"] is True
+    assert calls[0][1]["receipt"]["criterion"] == "criterion-1"
+    assert calls[1][1]["board_id"] == "board-1"
+    assert calls[1][1]["section"] == "review"
+
+
+def test_empty_semantic_success_is_structured_retryable_failure():
+    result = local_ai_mcp._quality_check_semantic_result(
+        {"success": True, "model": "qwen2.5-coder:3b"}, task="review", context=""
+    )
+    assert result["success"] is False
+    assert result["error_code"] == "empty_semantic_result"
+    assert result["retryable"] is True
+
+
+def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
+    descriptions = {
+        "task": local_ai_mcp._desc_task(),
+        "repo": local_ai_mcp._desc_repo(),
+        "command": local_ai_mcp._desc_command(),
+        "coord": local_ai_mcp._desc_coord(),
+        "work": local_ai_mcp._desc_work(),
+        "artifact": local_ai_mcp._desc_artifact(),
+    }
+
+    assert "repository navigation, symbols, and impact" in descriptions["repo"]
+    assert "exact source or log slice" in descriptions["artifact"]
+    assert "test, lint, typecheck, or build" in descriptions["command"]
+    assert "ownership, checkpoints, and verification receipts" in descriptions["coord"]
+    assert "semantic generation" in descriptions["task"]
+    assert "independent second opinions" in descriptions["task"]
+    assert "semantic generation" in descriptions["repo"]
+    assert "exact facts, symbols, diff and tests" in descriptions["repo"]
+    assert "closed, low-risk work" in descriptions["work"]
+    assert "terminal=true and retryable=false" in descriptions["repo"]
+    assert "terminal=true and retryable=false" in descriptions["command"]
+    assert "Mutations never cache or single-flight" in descriptions["command"]
+
+
+def test_repo_surface_does_not_advertise_or_route_codegraph() -> None:
+    assert "CodeGraphContext" not in local_ai_mcp._desc_repo()
+    from local_ai_hub.operation_contracts import operation_actions
+
+    assert "graph" not in operation_actions("local_ai_repo")
+
+
+def test_mcp_descriptions_support_on_demand_semantic_delegation() -> None:
+    descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
+    normalized = descriptions.lower()
+
+    assert "semantic delegation is on-demand" in normalized
+    assert "never blocked by mandatory local handoffs" in normalized
+    assert "local_ai_task" in descriptions
+
+
+def test_disabled_local_task_description_does_not_claim_mandatory_local_execution(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", False)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: False)
+
+    description = local_ai_mcp._desc_task()
+
+    assert "must call `local_ai_task` before cloud reasoning" not in description
+    assert "mandatory local handoffs" not in description
+    assert "mandatory local execution" not in description
+
+
+@pytest.mark.parametrize("lean", [True, False])
+@pytest.mark.parametrize("tasks,has_model", [(False, True), (True, False)])
+def test_disabled_descriptions_omit_local_routing_without_models(monkeypatch, lean, tasks, has_model) -> None:
+    monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", lean)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", tasks)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: has_model)
+
+    descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
+
+    assert "local_ai_task" not in descriptions
+    assert "semantic delegation is on-demand" not in descriptions.lower()
+    assert "deterministic/indexed" in descriptions
+
+
+@pytest.mark.parametrize("lean", [True, False])
+def test_enabled_descriptions_preserve_local_routing_contract(monkeypatch, lean) -> None:
+    monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", lean)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+
+    descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
+    normalized = descriptions.lower()
+
+    assert "local_ai_task" in descriptions
+    assert "semantic delegation is on-demand" in normalized
+    assert "never blocked by mandatory local handoffs" in normalized
+
+
+@pytest.mark.parametrize("lean", [True, False])
+def test_status_disabled_descriptions_omit_unavailable_bypass_tool(monkeypatch, lean) -> None:
+    monkeypatch.setattr(local_ai_mcp, "LEAN_SCHEMAS", lean)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", False)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+
+    descriptions = local_ai_mcp._desc_task() + local_ai_mcp._desc_repo()
+    normalized = descriptions.lower()
+
+    assert "semantic delegation is on-demand" in normalized
+    assert "never blocked by mandatory local handoffs" in normalized
+    assert "local_ai_status" not in descriptions
+
+
+def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "matches": []})
+
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    assert result["routing"]["semantic_handoff"] == semantic_handoff_hint("local_ai_repo", "search", True)
+
+
+def test_status_disabled_repo_evidence_omits_status_bypass_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "status", False)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
+
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    assert "local_ai_status" not in repr(result)
+    assert result["routing"]["semantic_handoff"] == semantic_handoff_hint(
+        "local_ai_repo", "search", True, status_enabled=False
+    )
+
+
+@pytest.mark.parametrize("existing_routing", ["legacy", ["legacy", "value"]])
+def test_non_dict_routing_is_preserved_with_semantic_handoff(
+    monkeypatch, tmp_path: Path, existing_routing
+) -> None:
+    store = AdoptionMetricsStore(tmp_path)
+    monkeypatch.setattr(local_ai_mcp, "ADOPTION_METRICS", store)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(
+        local_ai_mcp.CLIENT,
+        "post",
+        lambda *_args, **_kwargs: {"success": True, "routing": existing_routing},
+    )
+
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    assert result["routing"]["value"] == existing_routing
+    assert result["routing"]["semantic_handoff"] == semantic_handoff_hint(
+        "local_ai_repo", "search", True
+    )
+    assert store.report(days=1)["totals"]["recommended"] == 1
+
+
+def test_repo_evidence_recommendation_preserves_used_adoption(monkeypatch, tmp_path: Path) -> None:
+    store = AdoptionMetricsStore(tmp_path)
+    monkeypatch.setattr(local_ai_mcp, "ADOPTION_METRICS", store)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
+
+    local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    totals = store.report(days=1)["totals"]
+    assert totals["used"] == 1
+    assert totals["recommended"] == 1
+
+
+def test_prepopulated_handoff_is_not_counted_as_new_recommendation(monkeypatch, tmp_path: Path) -> None:
+    store = AdoptionMetricsStore(tmp_path)
+    monkeypatch.setattr(local_ai_mcp, "ADOPTION_METRICS", store)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    existing_hint = {"required": False, "tool": "external", "actions": [], "bypass_tool": "", "bypass_action": ""}
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "routing": {"semantic_handoff": existing_hint}})
+
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+
+    assert result["routing"]["semantic_handoff"]
+    assert store.report(days=1)["totals"]["recommended"] == 0
+
+
+def test_artifact_and_command_success_do_not_expose_semantic_handoff(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
+
+    artifact = local_ai_mcp.local_ai_artifact("artifact-1")
+    command = local_ai_mcp.local_ai_command(action="run", command="true")
+
+    assert "routing" not in artifact
+    assert "routing" not in command
+
+
+def test_durable_routing_requires_checkpointed_contracts_and_closed_handoffs() -> None:
+    descriptions = {
+        "task": local_ai_mcp._desc_task(),
+        "coord": local_ai_mcp._desc_coord(),
+        "work": local_ai_mcp._desc_work(),
+    }
+
+    assert "deterministic/indexed tools" in descriptions["task"]
+    assert "task contracts" in descriptions["coord"]
+    assert "checkpoints" in descriptions["coord"]
+    assert "verified handoff" in descriptions["work"]
+    assert "micro-edits" in descriptions["work"]
+    assert "live discussion" in descriptions["work"]
+
+
+def test_local_task_description_matches_actions_and_semantic_boundary() -> None:
+    description = local_ai_mcp._desc_task()
+    supported = local_ai_mcp.FEATURES.supported_task_actions()
+
+    assert all(action in description for action in supported)
+    assert "reason" in description
+    assert "delegate" in description
+    assert "second_opinion" in description
+    assert "compress" in description
+    assert "generation" in description
+    assert "deterministic" in description
+    assert "facts" in description
+    assert "diff" in description
+    assert "tests" in description
+    assert "`ask`" not in description
+    assert "`generate`" not in description
+    assert "`eval`" not in description
+
+
+def test_invalid_repo_action_lists_next_bounded_actions() -> None:
+    result = local_ai_mcp.local_ai_repo(action="not_a_real_action")
+    assert result["success"] is False
+    assert "Valid actions:" in result["error"]
+    assert "review_diff" in result["error"]
+    assert "security_audit" in result["error"]
+
+
+def test_local_ai_repo_forwards_explicit_batch_replace_dry_run(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", FeatureSet({"features": {"repo": True, "batch_replacement": True}}))
+    captured = {}
+    edits = [{"path": "example.py", "old": "before", "new": "after"}]
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "applied": False, "dry_run": True}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_repo(
+        action="batch_replace",
+        root=str(ROOT),
+        edits=edits,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/code/batch_replace"
+    assert captured["edits"] == edits
+    assert captured["dry_run"] is True
+    assert "staged" not in captured
+
+
+def test_local_ai_repo_batch_replace_does_not_use_staged_as_dry_run(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", FeatureSet({"features": {"repo": True, "batch_replacement": True}}))
+    captured = {}
+    edits = [{"path": "example.py", "old": "before", "new": "after"}]
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "applied": True, "dry_run": False}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_repo(
+        action="batch_replace",
+        root=str(ROOT),
+        edits=edits,
+        staged=True,
+    )
+
+    assert result["success"] is True
+    assert captured["dry_run"] is False
+    assert "staged" not in captured
+
+
+def test_local_ai_repo_batch_replacements_require_explicit_edits(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", FeatureSet({"features": {"repo": True, "batch_replacement": True}}))
+    def unexpected_post(*_args, **_kwargs):
+        pytest.fail("batch replacement must not reuse generic evidence payloads")
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", unexpected_post)
+    result = local_ai_mcp.local_ai_repo(
+        action="batch_replace",
+        root=str(ROOT),
+        evidence=[{"path": "example.py", "old": "before", "new": "after"}],
+    )
+
+    assert result["success"] is False
+    assert "edits" in result["error"]
+
+
+def test_local_ai_repo_enriches_search_when_source_requested(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", FeatureSet({"features": {"repo": True, "enriched_search": True}}))
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "results": []}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_repo(
+        action="search",
+        root=str(ROOT),
+        query="target symbol",
+        include_code=True,
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/search"
+    assert captured["query"] == "target symbol"
+    assert captured["enrich"] is True
+
+
+@pytest.mark.parametrize("include_code", [False, True])
+def test_local_ai_repo_investigate_preserves_include_code(monkeypatch, include_code: bool) -> None:
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", FeatureSet({"features": {"repo": True}}))
+    captured = {}
+
+    def fake_post(endpoint, payload, **kwargs):
+        captured.update({"endpoint": endpoint, "payload": dict(payload)})
+        return {"success": True}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_repo(
+        action="investigate",
+        root=str(ROOT),
+        query="target symbol",
+        include_code=include_code,
+    )
+
+    assert result["success"] is True
+    assert captured["endpoint"] == "/api/repo/investigate"
+    assert captured["payload"]["include_code"] is include_code
+
+
+def test_invalid_task_action_excludes_orchestration() -> None:
+    result = local_ai_mcp.local_ai_task(action="not_a_real_action")
+    assert result["success"] is False
+    assert "bounded local-model" in result["error"]
+    assert "peer subagents" in result["error"]
+
+
+def test_eval_suite_forwards_bounded_cases_and_model(monkeypatch) -> None:
+    calls = {}
+
+    def fake_post(endpoint, payload, **kwargs):
+        calls.update(endpoint=endpoint, payload=payload)
+        return {"success": True, "summary": {"total": 1, "passed": 1, "failed": 0}}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+
+    result = local_ai_mcp.local_ai_task(
+        action="eval_suite",
+        task="synthetic_quality",
+        model="test-model",
+        cases=[{"id": "grounded", "input": "facts", "expected": "facts"}],
+    )
+
+    assert result["success"] is True
+    assert calls["endpoint"] == "/api/task/eval_suite"
+    assert calls["payload"]["suite_name"] == "synthetic_quality"
+    assert calls["payload"]["model"] == "test-model"
+    assert calls["payload"]["cases"] == [{"id": "grounded", "input": "facts", "expected": "facts"}]
+
+
+def test_local_ai_task_exposes_named_profile_fields() -> None:
+    parameters = inspect.signature(local_ai_mcp.local_ai_task).parameters
+
+    assert "profile" in parameters
+    assert "root" in parameters
+    assert "workspace" in parameters
+
+
+def test_local_ai_task_vision_forwards_frontend_review_context(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "review": {"findings": []}}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_task(
+        action="vision",
+        task="Review CTA",
+        candidate="legacy-image",
+        model="qwen3-vl:4b",
+        bundle_artifact_id="bundle-1",
+        image_artifact_id="image-1",
+        network_artifact_id="network-1",
+        source="current_tab",
+        root=str(ROOT),
+        cloud_fallback=False,
+        json_schema={"type": "object"},
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/task/vision"
+    assert captured["image"] == "legacy-image"
+    assert captured["bundle_artifact_id"] == "bundle-1"
+    assert captured["image_artifact_id"] == "image-1"
+    assert captured["network_artifact_id"] == "network-1"
+    assert captured["source"] == "current_tab"
+    assert captured["root"] == str(ROOT)
+    assert captured["cloud_fallback"] is False
+    assert captured["json_schema"] == {"type": "object"}
+
+
+def test_local_ai_task_forwards_continue_with_opaque_conversation_id(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "conversation_id": payload["conversation_id"], "text": "doplnění"}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_task(
+        action="continue",
+        conversation_id="opaque-id",
+        task="Doplň detaily.",
+    )
+
+    assert result["success"] is True
+    assert captured == {
+        "path": "/api/conversations/continue",
+        "conversation_id": "opaque-id",
+        "task": "Doplň detaily.",
+        "context": "",
+    }
+
+
+def test_local_ai_task_explore_uses_semantic_delegate_endpoint(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "text": "exploration"}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_task(
+        action="explore",
+        task="Prozkoumej možné příčiny problému.",
+        context="bounded context",
+        max_tokens=320,
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/delegate"
+    assert captured["task"] == "Prozkoumej možné příčiny problému."
+    assert captured["context"] == "bounded context"
+    assert captured["max_tokens"] == 320
+
+
+def test_second_opinion_keeps_its_projection_kind(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {"success": True, "text": "lokální názor"}
+
+    def fake_compact(value, task_kind="general", extra_fields=None):
+        captured["task_kind"] = task_kind
+        return value
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    monkeypatch.setattr(local_ai_mcp, "_compact", fake_compact)
+
+    result = local_ai_mcp.local_ai_task(
+        action="second_opinion",
+        task="Je tento návrh bezpečný?",
+        candidate="návrh řešení",
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/second-opinion"
+    assert captured["task_kind"] == "second_opinion"
+
+
+def test_invalid_ollama_profile_returns_structured_error() -> None:
+    result = local_ai_mcp.local_ai_task(action="delegate", profile="writer", task="x")
+
+    assert result["success"] is False
+    assert result["unsupported"] is True
+    assert "qwen-explorer" in result["error"]
+
+
+def test_named_profile_forwards_repo_root_to_existing_delegate_endpoint(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, **payload})
+        return {"success": True, "text": "návrh", "profile": payload.get("profile")}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_task(
+        action="delegate",
+        profile="qwen-explorer",
+        root="C:\\repo",
+        task="Najdi vstupní body",
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/delegate/repo"
+    assert captured["profile"] == "qwen-explorer"
+    assert captured["root"] == "C:\\repo"
+
+
+def test_named_profile_requires_absolute_repository_root() -> None:
+    result = local_ai_mcp.local_ai_task(
+        action="delegate",
+        profile="qwen-explorer",
+        task="Najdi vstupní body",
+    )
+
+    assert result["success"] is False
+    assert result["unsupported"] is True
+    assert "absolute" in result["error"]
+
+
+def test_named_profile_rejects_relative_repository_root() -> None:
+    result = local_ai_mcp.local_ai_task(
+        action="delegate",
+        profile="qwen-explorer",
+        root="repo",
+        task="Najdi vstupní body",
+    )
+
+    assert result["success"] is False
+    assert result["unsupported"] is True
+    assert "absolute" in result["error"]
+
+@pytest.mark.parametrize(
+    ("language", "expected_language"),
+    [("cs", "cs"), (" AUTO ", None)],
+)
+def test_local_ai_task_transcribe_forwards_only_explicit_language_hint(
+    monkeypatch, language: str, expected_language: str | None
+) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, "payload": payload, "kwargs": kwargs})
+        return {"success": True, "text": "recognized"}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+
+    result = local_ai_mcp.local_ai_task(
+        action="transcribe",
+        task="transcribe this recording",
+        candidate="recording.wav",
+        model="base",
+        language=language,
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/task/transcribe"
+    assert captured["payload"]["audio_path"] == "recording.wav"
+    assert captured["payload"]["model"] == "base"
+    if expected_language is None:
+        assert "language" not in captured["payload"]
+    else:
+        assert captured["payload"]["language"] == expected_language

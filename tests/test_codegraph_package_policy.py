@@ -27,7 +27,7 @@ def test_generated_mcp_config_ignores_stale_codegraph_flag(tmp_path):
     assert "codegraph" not in generated["mcpServers"]
 
 
-def test_codegraph_removed_from_configs_and_backends():
+def test_codegraph_removed_from_configs_and_features():
     for path in (ROOT / "defaults.toml", ROOT / "src" / "local_ai_hub" / "defaults.toml"):
         with path.open("rb") as config_file:
             cfg = tomllib.load(config_file)
@@ -38,7 +38,7 @@ def test_codegraph_removed_from_configs_and_backends():
     assert not hasattr(feat, "codegraph")
 
     ext = ExternalCodeIntelligence({"code_intelligence": {"enabled": True}})
-    assert ext.codegraph_enabled is False
-    assert ext.backend_available("codegraph") is False
-    res = ext.query_codegraph(".", "test")
-    assert res.get("skipped") is True
+    try:
+        assert ext.backend_available("codegraph") is False
+    finally:
+        ext.close()

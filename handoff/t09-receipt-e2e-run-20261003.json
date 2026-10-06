@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "task": "T09 verification receipt and structured-description retrieval E2E",
+  "date": "2026-10-03",
+  "root_current": {
+    "path": "C:\\Users\\Adam\\.local-ai-hub",
+    "head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf"
+  },
+  "worktree": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t09-root-current\\.local-ai-hub",
+    "head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf"
+  },
+  "patch": {
+    "path": "handoff/t09-receipt-e2e-root-current.patch",
+    "sha256": "98F14BFE1D51F616892FDA3088E1250D6B40B383A4323D321A1625939A0D71F5",
+    "root_preimage": {
+      "path": "tests/test_agent_receipt_completion_t09.py",
+      "sha256": "A6B7684359D2126F9366EBCE97CA9DDE918AE383F491428947A850C4BB6409D9"
+    },
+    "apply_check": "PASS (git apply --check --verbose --whitespace=error)",
+    "paths": [
+      "tests/test_agent_receipt_completion_t09.py"
+    ]
+  },
+  "source_pins": {
+    "src/local_ai_hub/agent_tasks.py": "73A5BDBB25205B1F789A6E452D3B28AC24A278D781D071AC6FABE347992BDCBB",
+    "src/local_ai_hub/agent_verification.py": "FB477438FF110AB80FE6F2D486FFA5D87AAB1A855735FCD94592F8080EAF0017",
+    "src/local_ai_hub/agent_events.py": "1B8E63A5FF329090801CD7F19E7DF7A95E42AC0034465AC5FA06D566B279CCF4",
+    "src/local_ai_hub/project_config.py": "00E80B1342E5E70A66FA8955D95553127E913F56EC693CF527B6AC96053BDBDE",
+    "src/local_ai_hub/verification_rules.py": "2811AA0146938FAEDE80537E84D3216C0702BC43C6EAF16A73C0BFF46083896E"
+  },
+  "test_module_sha256": "85729BD3F3ACBA962CD14FA2D0A1526086BA7782C4CE3010AE3CF2AB37BF30E4",
+  "test_run": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_agent_receipt_completion_t09.py",
+    "selectors": [
+      "tests/test_agent_receipt_completion_t09.py::test_description_round_trip_and_description_terms_are_indexed",
+      "tests/test_agent_receipt_completion_t09.py::test_keyword_query_matches_across_indexed_task_fields",
+      "tests/test_agent_receipt_completion_t09.py::test_passing_test_receipt_requires_command_id",
+      "tests/test_agent_receipt_completion_t09.py::test_recorded_receipt_retrieves_after_verifier_restart",
+      "tests/test_agent_receipt_completion_t09.py::test_foreign_task_receipt_cannot_complete_target",
+      "tests/test_agent_receipt_completion_t09.py::test_foreign_tenant_receipt_cannot_complete_task",
+      "tests/test_agent_receipt_completion_t09.py::test_stale_revision_receipt_cannot_complete_task",
+      "tests/test_agent_receipt_completion_t09.py::test_valid_durable_receipt_completes_task"
+    ],
+    "exit_code": 0,
+    "result": "8 passed in 1.95s"
+  },
+  "scope": {
+    "root_modified_by_this_run": false,
+    "t08_test_files_modified": false,
+    "expectations_weakened": false,
+    "broad_suite_run": false
+  }
+}

@@ -1,0 +1,101 @@
+diff --git a/src/local_ai_hub/operational_mode.py b/src/local_ai_hub/operational_mode.py
+--- a/src/local_ai_hub/operational_mode.py
++++ b/src/local_ai_hub/operational_mode.py
+@@ -76,7 +76,10 @@
+         try:
+             os.replace(source, destination)
+             return
+-        except PermissionError:
++        except OSError as exc:
++            windows_lock_conflict = getattr(exc, "winerror", None) in {32, 33}
++            if not isinstance(exc, PermissionError) and not windows_lock_conflict:
++                raise
+             if time.monotonic() >= deadline:
+                 raise
+             time.sleep(0.02)
+diff --git a/tests/test_operational_mode.py b/tests/test_operational_mode.py
+--- a/tests/test_operational_mode.py
++++ b/tests/test_operational_mode.py
+@@ -13,6 +13,11 @@
+     started.set()
+     set_operational_mode(state_dir, "maintenance")
+     completed.set()
++
++
++def _set_modes_repeatedly(state_dir, count, mode):
++    for _ in range(count):
++        set_operational_mode(state_dir, mode)
+ 
+ 
+ def test_missing_mode_file_defaults_to_active(tmp_path):
+@@ -54,6 +59,70 @@
+     assert child.exitcode == 0
+     assert completed.is_set()
+     assert load_operational_mode(tmp_path).revision == 1
++
++
++def test_mode_updates_from_multiple_processes_do_not_lose_revisions(tmp_path):
++    context = multiprocessing.get_context("spawn")
++    workers = [
++        context.Process(target=_set_modes_repeatedly, args=(str(tmp_path), 4, mode))
++        for mode in ("gaming", "maintenance", "active")
++    ]
++    for worker in workers:
++        worker.start()
++    for worker in workers:
++        worker.join(10)
++        assert worker.exitcode == 0
++
++    assert load_operational_mode(tmp_path).revision == 12
++
++
++def test_mode_replace_retries_windows_sharing_violation(monkeypatch, tmp_path):
++    real_replace = operational_mode.os.replace
++    calls = 0
++
++    def replace_with_sharing_violation(source, target):
++        nonlocal calls
++        calls += 1
++        if calls == 1:
++            error = OSError("sharing violation")
++            error.winerror = 32
++            raise error
++        real_replace(source, target)
++
++    monkeypatch.setattr(operational_mode.os, "replace", replace_with_sharing_violation)
++    monkeypatch.setattr(operational_mode.time, "sleep", lambda _delay: None)
++
++    result = set_operational_mode(tmp_path, "gaming")
++
++    assert result.mode == "gaming"
++    assert calls == 2
++
++
++def test_mode_replace_sharing_violation_retry_is_bounded(monkeypatch, tmp_path):
++    calls = 0
++    clock = iter((0.0, 0.0, 0.0, 2.0))
++
++    def always_sharing_locked(_source, _target):
++        nonlocal calls
++        calls += 1
++        error = OSError("sharing violation")
++        error.winerror = 32
++        raise error
++
++    class _Clock:
++        def monotonic(self):
++            return next(clock)
++
++        def sleep(self, _delay):
++            pass
++
++    monkeypatch.setattr(operational_mode.os, "replace", always_sharing_locked)
++    monkeypatch.setattr(operational_mode, "time", _Clock())
++
++    with pytest.raises(OSError, match="sharing violation"):
++        set_operational_mode(tmp_path, "maintenance")
++
++    assert calls == 2
+ 
+ 
+ def test_mode_update_retries_transient_replace_permission_error(tmp_path, monkeypatch):

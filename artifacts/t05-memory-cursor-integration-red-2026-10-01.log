@@ -1,0 +1,23 @@
+
+=================================== ERRORS ====================================
+________________________ ERROR collecting test session ________________________
+ImportError while importing test module 'C:\Users\Adam\.codex\worktrees\t05-identity-recovery\.local-ai-hub\tests\test_agent_memory.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+C:\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_agent_memory.py:10: in <module>
+    from local_ai_hub.agent_events import AgentEvent, AgentStateStore
+..\..\..\..\AppData\Local\Temp\t05-t08-event-red-w4pnqrge\src\local_ai_hub\agent_events.py:20: in <module>
+    from .sqlite_support import (
+E   ImportError: cannot import name 'DurableSchemaMismatchError' from 'local_ai_hub.sqlite_support' (C:\Users\Adam\AppData\Local\Temp\t05-t08-event-red-w4pnqrge\src\local_ai_hub\sqlite_support.py)
+=========================== short test summary info ===========================
+ERROR ..\..\..\..\AppData\Local\Temp\t05-t08-event-red-w4pnqrge
+1 error in 0.39s
+ERROR: found no collectors for C:\Users\Adam\.codex\worktrees\t05-identity-recovery\.local-ai-hub\tests\test_agent_memory.py::test_memory_record_updates_event_cursor_and_replay_keeps_sequence
+
+ERROR: found no collectors for C:\Users\Adam\.codex\worktrees\t05-identity-recovery\.local-ai-hub\tests\test_agent_memory.py::test_memory_record_append_failure_rolls_back_record_event_and_cursor
+
+ERROR: found no collectors for C:\Users\Adam\.codex\worktrees\t05-identity-recovery\.local-ai-hub\tests\test_agent_memory.py::test_mark_stale_appends_memory_event_and_advances_cursor
+

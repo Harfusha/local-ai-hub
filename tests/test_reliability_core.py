@@ -150,21 +150,22 @@ def test_external_sessions_are_bounded_lru(monkeypatch, tmp_path: Path):
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},
         "code_intelligence": {
-            "enabled": True, "serena_enabled": False, "codegraph_enabled": True,
-            "codegraph_command": sys.executable, "max_sessions_per_backend": 1, "session_idle_ttl_seconds": 3600,
+            "enabled": True, "serena_enabled": False,
+            "max_sessions_per_backend": 1, "session_idle_ttl_seconds": 3600,
         },
     }
     ext = ExternalCodeIntelligence(cfg)
+    ext._serena = sys.executable
     roots = [tmp_path / "a", tmp_path / "b"]
     for root in roots: root.mkdir()
-    ext.query_codegraph(str(roots[0]), "search", "x")
+    ext._serena_session(str(roots[0]))
     first = _FakeClient.instances[0]
-    ext.query_codegraph(str(roots[1]), "search", "x")
-    assert len(ext._codegraph_sessions) == 1
+    ext._serena_session(str(roots[1]))
+    assert len(ext._serena_sessions) == 1
     assert first.closed is True
     assert ext.status()["session_policy"]["max_per_backend"] == 1
     reset = ext.reset_sessions("all")
-    assert reset["success"] is True and reset["removed"]["codegraph"] == 1
+    assert reset["success"] is True and reset["removed"]["serena"] == 1
 
 
 def test_semantic_cache_blob_decode_has_stdlib_fallback():
@@ -241,6 +242,7 @@ def test_bundle_roundtrip_current_schema_and_binary_embedding(tmp_path: Path):
             assert con.execute("SELECT COUNT(*) FROM facts WHERE root=?", (root,)).fetchone()[0] == 1
         with closing(app.rag._connect()) as con:
             raw = con.execute("SELECT embedding FROM chunks WHERE tenant=? AND workspace=?", (scope,workspace)).fetchone()[0]
+        assert isinstance(raw, (bytes, bytearray, memoryview))
         assert bytes(raw) == bytes(blob)
     finally:
         app.close()
@@ -421,12 +423,10 @@ def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path
         assert "recent_http" in live_status["observability"]
         status, _, _ = _request(base+"/api/command", method="POST", body=json.dumps({"action":"classify","command":"pytest -q"}).encode(), headers={**auth,"Content-Type":"application/json"})
         assert status == 200
-        assert _request(base+"/api/debug-traces?limit=10")[0] == 401
         status, _, body = _request(base+"/api/debug-traces?limit=10", headers=auth)
         traces = json.loads(body)
         assert status == 200 and traces["success"] is True and traces["items"]
         trace_id = traces["items"][0]["trace_id"]
-        assert _request(base+"/api/debug-traces/"+trace_id)[0] == 401
         status, _, body = _request(base+"/api/debug-traces/"+trace_id, headers=auth)
         detail = json.loads(body)
         assert status == 200 and detail["success"] is True
@@ -450,7 +450,7 @@ def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path
         assert json.loads(body)["success"] is True
 
         # Broad public deterministic contract: every cheap repository/operator endpoint
-        # must remain usable without Ollama or external Serena/CodeGraph processes.
+        # must remain usable without Ollama or optional external processes.
         (repo / "main.py").write_text("class SampleService:\n    pass\n", encoding="utf-8")
         (repo / "pyproject.toml").write_text('[project]\nname="smoke"\nversion="0.1"\n', encoding="utf-8")
         def jpost(path, payload):

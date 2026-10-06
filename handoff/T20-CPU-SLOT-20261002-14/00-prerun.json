@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-14",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_project_config.py -k config_loader",
+  "route": "native fallback per explicit T20 user authorization",
+  "inputs": {
+    "tests/test_project_config.py": "90a66b610b84faddf178147321362db91139ffce0fdc680e01aad9fbd1866270",
+    "src/local_ai_hub/project_config.py": "4238b6a6de1de00f55f4679ce0df7d431522ec1bafabfa272258c1662f13f713"
+  },
+  "diff_check": "PASS"
+}

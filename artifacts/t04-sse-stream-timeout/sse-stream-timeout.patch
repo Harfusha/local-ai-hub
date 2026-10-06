@@ -1,0 +1,26 @@
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -879,9 +879,10 @@
+         """Yield parsed SSE events (event_type, data_dict) from /api/agent-state/events/stream."""
+         import urllib.parse
+         requested_timeout = max(0.0, float(timeout))
+-        stream_timeout = min(self.max_request_timeout, requested_timeout)
++        max_request_timeout = float(getattr(self, "max_request_timeout", 1800.0))
++        stream_timeout = min(max_request_timeout, requested_timeout)
+         transport_timeout = min(
+-            self.max_request_timeout,
++            max_request_timeout,
+             max(0.2, stream_timeout + 5.0 if stream_timeout > 0 else 60.0),
+         )
+         params = []
+--- a/tests/test_sse_events_stream.py
++++ b/tests/test_sse_events_stream.py
+@@ -151,6 +151,8 @@
+     client = HubClient.__new__(HubClient)
+     client.base_url = "http://127.0.0.1:11435"
+     client.api_token = "tok"
++    client.tenant = "test-tenant"
++    client.agent = "test-agent"
+ 
+     sse_payload = (
+         b": keep-alive\n\n"

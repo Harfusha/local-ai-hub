@@ -1,0 +1,58 @@
+--- a/tests/test_agent_tasks.py
++++ b/tests/test_agent_tasks.py
+@@ -1,12 +1,14 @@
+ from __future__ import annotations
+ 
+ import json
++import threading
+ from pathlib import Path
+ import sys
+ from types import ModuleType, SimpleNamespace
+ import pytest
+ 
+-from local_ai_hub.agent_events import AgentStateStore
++from local_ai_hub import agent_tasks as agent_tasks_module
++from local_ai_hub.agent_events import AgentEvent, AgentStateStore
+ from local_ai_hub.artifacts import ArtifactStore
+ from local_ai_hub.agent_identity import AgentScope, ScopeContext
+ from local_ai_hub.agent_tasks import (
+--- a/tests/test_agent_state_e2e.py
++++ b/tests/test_agent_state_e2e.py
+@@ -217,6 +217,7 @@
+     app = app_with_agent_state(tmp_path)
+     root = tmp_path / "repo"
+     root.mkdir()
++    assert app.agent_tasks.state_store is app.agent_memory.state_store
+ 
+     def record_memory(key: str, idempotency_key: str) -> MemoryRecord:
+         record = MemoryRecord.create(
+@@ -279,6 +280,29 @@
+         assert {
+             item["id"] for item in stored.checkpoint.state_data["memory_context"]["items"]
+         } == resumed_ids
++
++        completed = app.agent_tasks.complete(
++            task.task_id,
++            reason="task completed before confirming its learning",
++            actor="test",
++            idempotency_key="app-memory-complete",
++        )
++        assert completed.status is TaskStatus.COMPLETED
++
++        learned = record_memory(
++            "confirmed post-task learning sentinel",
++            "app-memory-post-task-learning",
++        )
++        assert learned.status is MemoryStatus.CONFIRMED
++        follow_up = app.agent_tasks.create(
++            GoalContract(goal="confirmed post-task learning sentinel"),
++            ScopeContext(repository_id=str(root), branch="main", task_id="app-memory-follow-up"),
++            task_id="app-memory-follow-up",
++        )
++        follow_up_ids = {
++            item["id"] for item in follow_up.checkpoint.state_data["memory_context"]["items"]
++        }
++        assert follow_up_ids == {first.record_id, later.record_id, learned.record_id}
+     finally:
+         trace_context.reset_context(token)
+         app.close()
