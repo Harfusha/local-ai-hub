@@ -9,9 +9,12 @@ from pathlib import Path
 import pytest
 
 from tools.benchmark_surfaces import (
+    _cleanup_benchmark_scratch,
     _plan_grade_reasons,
+    _summarize_t12_metric,
     _t12_hardware_identity,
     _run_t12_matrix,
+    _t12_scenario_report,
     compare_records,
     main,
     run_benchmark,
@@ -160,6 +163,20 @@ def test_summarize_samples_reports_percentiles_and_throughput() -> None:
     assert summary["throughput_per_second"] == 40.0
 
 
+def test_t12_metric_summary_preserves_measurement_units() -> None:
+    latency = _summarize_t12_metric("ttft_ms", [10.0, 20.0, 30.0, 40.0])
+    memory = _summarize_t12_metric("peak_vram_bytes", [100.0, 200.0, 300.0, 400.0])
+    throughput = _summarize_t12_metric("tokens_per_second", [10.0, 20.0, 30.0, 40.0])
+
+    assert latency["unit"] == "ms"
+    assert latency["p50"] == 25.0
+    assert memory["unit"] == "bytes"
+    assert memory["p50"] == 250.0
+    assert "p50_ms" not in memory
+    assert throughput["unit"] == "tokens/second"
+    assert throughput["p50"] == 25.0
+
+
 def test_plan_grade_gate_rejects_malformed_metadata_without_crashing() -> None:
     reasons = _plan_grade_reasons({
         "stage_repetitions": {"light": "1000", "paired": None},
@@ -212,6 +229,50 @@ def test_plan_grade_inference_requires_valid_model_digest() -> None:
 
     metadata["inference_model_digest"] = "sha256:" + "a" * 64
     assert "inference_model_digest_missing_or_invalid" not in _plan_grade_reasons(metadata)
+
+
+def test_benchmark_cleanup_preserves_scratch_while_worker_is_alive(tmp_path: Path) -> None:
+    scratch = tmp_path / "benchmark-owned"
+    scratch.mkdir()
+    sentinel = scratch / "async-jobs.sqlite3"
+    sentinel.write_text("worker-owned state", encoding="utf-8")
+    release_worker = threading.Event()
+    worker = threading.Thread(target=release_worker.wait, name="benchmark-cleanup-probe")
+    worker.start()
+
+    try:
+        cleanup = _cleanup_benchmark_scratch(
+            scratch,
+            server_thread=None,
+            workers=[worker],
+            dispatchers=[],
+            errors=[],
+            grace_seconds=0.01,
+        )
+
+        assert cleanup["status"] == "preserved_incomplete"
+        assert cleanup["live_workers"] == 1
+        assert sentinel.read_text(encoding="utf-8") == "worker-owned state"
+    finally:
+        release_worker.set()
+        worker.join(timeout=1)
+
+
+def test_benchmark_cleanup_removes_scratch_after_threads_stop(tmp_path: Path) -> None:
+    scratch = tmp_path / "benchmark-owned"
+    scratch.mkdir()
+    (scratch / "fixture.txt").write_text("owned scratch", encoding="utf-8")
+
+    cleanup = _cleanup_benchmark_scratch(
+        scratch,
+        server_thread=None,
+        workers=[],
+        dispatchers=[],
+        errors=[],
+    )
+
+    assert cleanup["status"] == "cleaned"
+    assert not scratch.exists()
 
 
 def test_run_benchmark_is_isolated_and_preserves_existing_scratch_data(
@@ -568,6 +629,7 @@ def test_t12_matrix_reports_profile_corpus_metrics_and_scenario_receipts() -> No
             self.calls.append({"profile": profile, "prompt": prompt, "num_tokens": num_tokens})
             return {
                 "success": True,
+                "model": model,
                 "routed_profile": profile,
                 "model_digest": ("a" if profile == "reason" else "b") * 64,
                 "quality_score_pct": 90.0,
@@ -589,12 +651,22 @@ def test_t12_matrix_reports_profile_corpus_metrics_and_scenario_receipts() -> No
                 "deadline_ms": 500.0,
                 "deadline_stage": "generation",
                 "deadline_exceeded": False,
+                "deadline_queue_ms": 4.0,
+                "deadline_model_load_ms": 12.0,
+                "deadline_generation_ms": 20.0,
                 "deadline_stages_ms": {"queue": 4.0, "model_load": 12.0, "generation": 20.0},
                 "peak_vram_bytes": 256 * 1024 * 1024,
+                "switch_event_id": 7 if repetition == 0 else None,
+                "model_switch_ms": 8.0 if repetition == 0 else None,
+                "model_switch_success": True if repetition == 0 else None,
+                "evicted_models": ["old-model"] if repetition == 0 else None,
+                "eviction_count": 1 if repetition == 0 else None,
+                "vram_before_bytes": 256 * 1024 * 1024 if repetition == 0 else None,
+                "vram_after_bytes": 192 * 1024 * 1024 if repetition == 0 else None,
             }
 
         def run_benchmark_scenario(self, *, name: str, contract: dict[str, object]) -> dict[str, object]:
-            del contract
+            inputs = contract["scenario_inputs"]
             scenarios: dict[str, dict[str, object]] = {
                 "scheduler": {
                     "queue_age_ms": 25.0, "fairness_wait_ms": 10.0, "batch_size": 4,
@@ -611,14 +683,17 @@ def test_t12_matrix_reports_profile_corpus_metrics_and_scenario_receipts() -> No
                     "input_item_ids": ["a", "b", "c"], "result_item_ids": ["a", "b", "c"],
                     "item_statuses": ["success", "failed", "success"], "partial_failure_count": 1,
                     "max_concurrency": 2, "concurrency_limit": 2,
+                    "failure_probe_item_id": "c", "failure_probe_observed": True,
                 },
                 "deadline": {
                     "deadline_ms": 100.0, "stages": ["queue", "model_load", "generation"],
                     "stage_timings_ms": {"queue": 5.0, "model_load": 20.0, "generation": 40.0},
                     "deadline_stage": "generation", "completed_within_deadline": True,
+                    "request_succeeded": True,
                 },
                 "overload": {
                     "overloaded": True, "queue_depth": 4, "queue_admission": "rejected",
+                    "queued_count": 1, "rejected_count": 1, "resource_rejected_count": 0,
                 },
                 "cancel": {
                     "cancel_requested": True, "cancelled": True, "cleanup_complete": True,
@@ -626,17 +701,50 @@ def test_t12_matrix_reports_profile_corpus_metrics_and_scenario_receipts() -> No
                 },
                 "fallback": {
                     "fallback_used": True, "fallback_visible": True, "source_profile": "reason",
-                    "fallback_profile": "review", "quality_floor_pct": 80.0,
+                    "fallback_profile": inputs["fallback_profile"], "quality_floor_pct": 80.0,
+                    "source_model": inputs["model"], "fallback_model": inputs["fallback_model"],
+                    "source_backend": "ollama", "fallback_backend": "ollama",
+                    "source_quality_pct": 0.0, "source_quality_status": "scored",
                     "fallback_quality_pct": 85.0,
+                    "source_max_tokens": inputs["source_max_tokens"],
+                    "fallback_max_tokens": inputs["fallback_max_tokens"],
+                    "quality_floor_met": True,
                 },
             }
-            return {**scenarios[name], "receipt_id": f"receipt-{name}"}
+            measurements = dict(scenarios[name])
+            if name == "batch":
+                item_ids = [item["id"] for item in inputs["items"]]
+                probe_id = inputs["failure_probe_item_id"]
+                statuses = ["success"] * len(item_ids)
+                statuses[item_ids.index(probe_id)] = "failed"
+                measurements.update({
+                    "input_item_ids": item_ids,
+                    "result_item_ids": list(item_ids),
+                    "item_statuses": statuses,
+                    "partial_failure_count": 1,
+                    "max_concurrency": 2,
+                    "concurrency_limit": inputs["max_concurrency"],
+                    "failure_probe_item_id": probe_id,
+                    "failure_probe_observed": True,
+                })
+            return {**measurements, "receipt_id": f"receipt-{name}"}
 
     runner = FakeRunner()
     report = _run_t12_matrix(runner, repetitions=2, concurrency_limit=4, quality_floor_pct=80.0)
 
     assert report["accepted"] is False
-    assert report["contract_passed"] is True
+    assert report["contract_passed"] is True, {
+        "task_roles": {
+            name: role.get("missing_acceptance")
+            for name, role in report["task_roles"].items()
+            if role.get("contract_passed") is not True
+        },
+        "scenarios": {
+            name: (scenario.get("contract_passed"), scenario.get("missing_fields"))
+            for name, scenario in report["scenarios"].items()
+            if scenario.get("contract_passed") is not True
+        },
+    }
     assert report["live_hardware"] is False
     assert report["run_id"].startswith("t12-")
     assert "receipt_id" not in report
@@ -653,11 +761,21 @@ def test_t12_matrix_reports_profile_corpus_metrics_and_scenario_receipts() -> No
     assert len(reason["identity"]["hardware_fingerprint"]) == 64
     assert reason["quality"]["score_pct"] == 90.0
     assert reason["quality"]["evaluator_id"] == "t12-rubric-v1"
-    assert reason["metrics"]["ttft_ms"]["p50_ms"] == 4.0
+    assert all(sample["model"] == "reason-model" for sample in reason["samples"])
+    assert reason["metrics"]["ttft_ms"]["p50"] == 4.0
     assert reason["metrics"]["end_to_end_latency_ms"]["count"] == 2
-    assert reason["metrics"]["peak_vram_bytes"]["p50_ms"] == 256 * 1024 * 1024
+    assert reason["metrics"]["peak_vram_bytes"]["unit"] == "bytes"
+    assert reason["metrics"]["peak_vram_bytes"]["p50"] == 256 * 1024 * 1024
     assert reason["events"]["model_load_count"] == 1
     assert reason["events"]["model_reuse_count"] == 1
+    assert reason["events"]["model_switch_count"] == 1
+    assert reason["events"]["model_switch_success_count"] == 1
+    assert reason["events"]["eviction_count_total"] == 1
+    assert reason["lifecycle_metrics"]["model_switch_ms"]["p50"] == 8.0
+    assert reason["lifecycle_metrics"]["switch_vram_delta_bytes"]["p50"] == -64 * 1024 * 1024
+    assert reason["samples"][0]["evicted_models"] == ["old-model"]
+    assert reason["samples"][0]["vram_before_bytes"] == 256 * 1024 * 1024
+    assert reason["samples"][0]["vram_after_bytes"] == 192 * 1024 * 1024
     assert reason["deadline_stage_counts"] == {"generation": 2}
     assert all(scenario["contract_passed"] is True for scenario in report["scenarios"].values())
     assert report["scenarios"]["fallback"]["runner_receipt_id"] == "receipt-fallback"
@@ -673,6 +791,74 @@ def test_t12_matrix_reports_profile_corpus_metrics_and_scenario_receipts() -> No
     assert live_spoof_attempt["accepted"] is False
     assert live_spoof_attempt["task_roles"]["reason"]["quality"]["sample_count"] == 0
     assert "trusted_structured_evaluator_required" in live_spoof_attempt["task_roles"]["reason"]["missing_acceptance"]
+
+
+def test_t12_matrix_preserves_sanitized_vram_admission_on_failed_samples() -> None:
+    class AdmissionFailureRunner:
+        config = {
+            "models": {
+                "reasoning": "reason-model", "review": "review-model",
+                "compress": "compress-model", "complete": "complete-model",
+                "scaffold": "scaffold-model",
+            },
+        }
+
+        def run_t12_case(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "success": False,
+                "failure_code": "resource_exhausted",
+                "vram_admitted": "rejected",
+                "vram_budget_bytes": 8_000_000_000,
+                "vram_available_bytes": 1_000_000_000,
+                "vram_admission_budget_bytes": 6_500_000_000,
+                "vram_incremental_required_bytes": 6_800_000_000,
+                "vram_estimate_source": "measured",
+                "prompt": "PRIVATE PROMPT",
+                "response": "PRIVATE OUTPUT",
+            }
+
+    report = _run_t12_matrix(AdmissionFailureRunner(), repetitions=1, concurrency_limit=1)
+    sample = report["task_roles"]["reason"]["samples"][0]
+
+    assert sample["error_type"] == "resource_exhausted"
+    assert report["task_roles"]["reason"]["events"]["vram_admission_counts"] == {
+        "admitted": 0, "rejected": 1, "unknown": 0,
+    }
+    assert sample["diagnostics"] == {
+        "vram_admitted": "rejected",
+        "vram_budget_bytes": 8_000_000_000,
+        "vram_available_bytes": 1_000_000_000,
+        "vram_admission_budget_bytes": 6_500_000_000,
+        "vram_incremental_required_bytes": 6_800_000_000,
+        "vram_estimate_source": "measured",
+    }
+    serialized = json.dumps(report)
+    assert "PRIVATE PROMPT" not in serialized
+    assert "PRIVATE OUTPUT" not in serialized
+
+
+def test_t12_scenario_does_not_accept_resource_rejections_as_queue_overload() -> None:
+    class ResourceRejectedRunner:
+        config = {"models": {"reasoning": "reason-model"}}
+
+        def run_benchmark_scenario(self, *, name: str, contract: dict[str, object]) -> dict[str, object]:
+            del name, contract
+            return {
+                "overloaded": False, "queue_depth": 0,
+                "queue_admission": "resource_rejected", "queued_count": 0,
+                "rejected_count": 0, "resource_rejected_count": 8,
+                "receipt_id": "receipt-resource-rejection",
+            }
+
+    report = _t12_scenario_report(
+        ResourceRejectedRunner(), "overload", concurrency_limit=4,
+        quality_floor_pct=80.0, live_hardware=True,
+    )
+
+    assert report["status"] == "measured"
+    assert report["contract_passed"] is False
+    assert report["accepted"] is False
+    assert report["measurements"]["resource_rejected_count"] == 8
 
 
 def test_t12_matrix_keeps_missing_live_quality_and_scenarios_incomplete() -> None:

@@ -27,14 +27,95 @@ def _runtime(base_url: str = "http://ollama", *, attempts: int = 1) -> OllamaRun
     return runtime
 
 
-class _RecordingHTTPError(HTTPError):
+def test_prepare_model_checks_admission_after_unload_before_target_load() -> None:
+    runtime = _runtime()
+    runtime.config["llama_cpp"] = {"fallback_to_ollama": True}
+    runtime.config["ollama"]["keep_alive"] = "24h"
+    events: list[str] = []
+
+    class LlamaCpp:
+        def supports_model(self, _model: str) -> bool:
+            return False
+
+        def ensure_model(self, _model: str, **_kwargs: object) -> bool:
+            return False
+
+    class Policy:
+        def profile(self, _model: str) -> object:
+            return type("Profile", (), {"num_ctx": 4096})()
+
+    runtime.llama_cpp = LlamaCpp()
+    runtime.model_policy = Policy()
+    runtime.ensure_running = lambda: True
+    runtime.loaded_model_details = lambda **_kwargs: [{"name": "resident-model", "context_length": 4096}]
+    runtime.unload_model = lambda model, **_kwargs: events.append(f"unload:{model}") or True
+    runtime._is_embedding_model = lambda _model: False
+    runtime.request = lambda endpoint, _payload, **_kwargs: events.append(f"load:{endpoint}") or {"done": True}
+    runtime._meta_cache = {}
+    runtime._meta_cache_at = {}
+
+    result = runtime.prepare_model(
+        "target-model",
+        unload_others=True,
+        post_unload_admission=lambda: events.append("admit") or {"state": "admitted"},
+    )
+
+    assert result == ["resident-model"]
+    assert events == ["unload:resident-model", "admit", "load:/api/generate"]
+
+
+def test_prepare_model_stops_before_load_when_post_unload_admission_rejects() -> None:
+    runtime = _runtime()
+    runtime.config["llama_cpp"] = {"fallback_to_ollama": True}
+    runtime.config["ollama"]["keep_alive"] = "24h"
+    events: list[str] = []
+
+    class LlamaCpp:
+        def supports_model(self, _model: str) -> bool:
+            return False
+
+        def ensure_model(self, _model: str, **_kwargs: object) -> bool:
+            return False
+
+    class Policy:
+        def profile(self, _model: str) -> object:
+            return type("Profile", (), {"num_ctx": 4096})()
+
+    runtime.llama_cpp = LlamaCpp()
+    runtime.model_policy = Policy()
+    runtime.ensure_running = lambda: True
+    runtime.loaded_model_details = lambda **_kwargs: [{"name": "resident-model", "context_length": 4096}]
+    runtime.unload_model = lambda model, **_kwargs: events.append(f"unload:{model}") or True
+    runtime._is_embedding_model = lambda _model: False
+    runtime.request = lambda *_args, **_kwargs: events.append("load") or {"done": True}
+    runtime._meta_cache = {}
+    runtime._meta_cache_at = {}
+
+    def reject() -> dict[str, object]:
+        events.append("admit")
+        return {"state": "rejected", "reason": "post_unload_vram_budget"}
+
+    with pytest.raises(RuntimeError, match="post_unload_vram_budget"):
+        runtime.prepare_model("target-model", unload_others=True, post_unload_admission=reject)
+
+    assert events == ["unload:resident-model", "admit"]
+
+
+class _RecordingBody(BytesIO):
     def __init__(self, body: bytes):
-        super().__init__("http://ollama/error", 500, "failure", {}, BytesIO(body))
+        super().__init__(body)
         self.read_sizes: list[int] = []
 
     def read(self, amt: int = -1) -> bytes:
         self.read_sizes.append(amt)
         return super().read(amt)
+
+
+class _RecordingHTTPError(HTTPError):
+    def __init__(self, body: bytes):
+        self.body = _RecordingBody(body)
+        super().__init__("http://ollama/error", 500, "failure", {}, self.body)
+        self.read_sizes = self.body.read_sizes
 
 
 def _raise_http_error(error: HTTPError):

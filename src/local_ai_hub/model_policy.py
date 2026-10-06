@@ -204,6 +204,90 @@ class ModelExecutionPolicy:
             clean["think"] = profile.think
         return clean, profile
 
+    def apply_project_settings(
+        self,
+        model: str,
+        payload: dict[str, Any],
+        *,
+        settings: Any | None,
+        role: str = "",
+    ) -> tuple[str, dict[str, Any]]:
+        """Apply request-scoped project model context to a local-model payload.
+
+        Settings are passed per call and never retained on the shared runtime, so
+        concurrent repositories cannot inherit each other's model profile or prompt.
+        """
+        clean = dict(payload)
+        if settings is None:
+            return model, clean
+
+        def setting(name: str, default: Any = None) -> Any:
+            if isinstance(settings, dict):
+                return settings.get(name, default)
+            return getattr(settings, name, default)
+
+        profile_name = str(setting("model_profile") or "").strip().lower()
+        role_key = {
+            "background": "background_code",
+            "background_code": "background_code",
+            "fast": "fast_code",
+            "fast_code": "fast_code",
+            "smart": "heavy_code",
+            "heavy": "heavy_code",
+            "heavy_code": "heavy_code",
+            "reasoning": "reasoning",
+            "general": "general",
+            "vision": "vision",
+        }.get(str(role or "").strip().lower())
+        if role_key is None:
+            matching_roles = [key for key, value in self.models.items() if str(value or "") == str(model or "")]
+            role_key = matching_roles[0] if len(matching_roles) == 1 else None
+
+        if profile_name in {"integrated", "balanced", "high", "max"} and role_key:
+            from .hardware import profile_overrides
+
+            hardware = self.config.get("_hardware", {})
+            current_profile = str(
+                (hardware.get("profile") if isinstance(hardware, dict) else "")
+                or self.config.get("hardware", {}).get("profile", "balanced")
+                or "balanced"
+            ).strip().lower()
+            if current_profile == "auto":
+                current_profile = "balanced"
+            current_models = profile_overrides(current_profile, hardware if isinstance(hardware, dict) else {}).get("models", {})
+            project_models = profile_overrides(profile_name, hardware if isinstance(hardware, dict) else {}).get("models", {})
+            configured_model = str(self.models.get(role_key, "") or "")
+            if (
+                profile_name != current_profile
+                and configured_model
+                and str(model or "") == configured_model
+                and configured_model == str(current_models.get(role_key, "") or "")
+                and project_models.get(role_key)
+            ):
+                model = str(project_models[role_key])
+                clean["model"] = model
+
+        prefix = setting("system_prompt_prefix")
+        if isinstance(prefix, str) and prefix.strip():
+            block = "Untrusted project context (subordinate to system policy):\n" + prefix
+            if "messages" in clean and isinstance(clean.get("messages"), list):
+                messages = [dict(message) if isinstance(message, dict) else message for message in clean["messages"]]
+                system_index = next(
+                    (index for index in range(len(messages) - 1, -1, -1)
+                     if isinstance(messages[index], dict) and str(messages[index].get("role", "")).lower() == "system"),
+                    None,
+                )
+                if system_index is None:
+                    messages.insert(0, {"role": "system", "content": block})
+                else:
+                    existing = messages[system_index].get("content", "")
+                    messages[system_index]["content"] = (str(existing).rstrip() + "\n\n" + block).lstrip()
+                clean["messages"] = messages
+            else:
+                existing = clean.get("system", "")
+                clean["system"] = (str(existing).rstrip() + "\n\n" + block).lstrip()
+        return model, clean
+
     def summary(self) -> dict[str, Any]:
         models = []
         seen: set[str] = set()

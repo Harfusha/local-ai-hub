@@ -350,8 +350,10 @@ def generation_cache_key(
     memory_revision: str = "",
     focus: Any = None,
     preload_profile: str = "",
+    project_config_digest: str = "",
+    project_namespace: str = "",
 ) -> str:
-    return stable_hash({
+    key_data = {
         "model": model,
         "prompt": normalize_generation_cache_prompt(prompt),
         "system": normalize_generation_cache_prompt(system),
@@ -365,7 +367,11 @@ def generation_cache_key(
         "focus": focus,
         "preload_profile": preload_profile,
         "app_version": __version__,
-    })
+    }
+    if project_config_digest or project_namespace:
+        key_data["project_config_digest"] = project_config_digest
+        key_data["project_namespace"] = project_namespace
+    return stable_hash(key_data)
 
 
 def normalize_context_for_hash(context: str) -> str:
@@ -832,7 +838,22 @@ class LocalAIServices:
         internal: bool = False,
         use_cache: bool = True,
         format: Any = None,
+        project_settings: Any | None = None,
+        project_role: str = "",
+        project_config_digest: str = "",
+        project_namespace: str = "",
+        repository_revision: str = "",
+        trace_system_override: str | None = None,
     ) -> dict[str, Any]:
+        trace_system = system if trace_system_override is None else str(trace_system_override)
+        if project_settings is not None:
+            model, project_payload = self.model_policy.apply_project_settings(
+                model,
+                {"model": model, "system": system},
+                settings=project_settings,
+                role=project_role,
+            )
+            system = str(project_payload.get("system", system))
         saving = self.config.get("token_saving", {})
         resilience = self.config.get("resilience", {})
         default_request_timeout = float(self.config.get("server", {}).get("request_timeout_seconds", 300)) + 30.0
@@ -885,11 +906,21 @@ class LocalAIServices:
             think=base_payload.get("think"),
             execution=execution_scope,
             format=base_payload.get("format"),
+            repository_revision=repository_revision,
+            project_config_digest=project_config_digest,
+            project_namespace=project_namespace,
         )
-        semantic_scope = stable_hash({
+        semantic_scope_data = {
             "model": model, "system": system, "options": options, "think": base_payload.get("think"), "execution": execution_scope,
             "context": norm_context_fp, "source": source.split(":", 1)[0], "app_version": __version__,
-        })
+        }
+        if project_config_digest or project_namespace:
+            semantic_scope_data.update({
+                "repository_revision": repository_revision,
+                "project_config_digest": project_config_digest,
+                "project_namespace": project_namespace,
+            })
+        semantic_scope = stable_hash(semantic_scope_data)
         started = time.perf_counter()
         cache_layer = "miss"
         semantic_score = 0.0
@@ -976,7 +1007,10 @@ class LocalAIServices:
                     )
                     trace_observer = observer()
                     if trace_observer is not None:
-                        trace_observer.model_request(payload)
+                        trace_payload = dict(payload)
+                        if project_settings is not None or trace_system_override is not None:
+                            trace_payload["system"] = trace_system
+                        trace_observer.model_request(trace_payload)
                     response = self.runtime.request_stream(
                         "/api/generate", payload,
                         trace_observer.output_delta if trace_observer is not None else (lambda _chunk: None),
@@ -1293,19 +1327,20 @@ class LocalAIServices:
         temperature: float,
         source: str,
         priority: int,
+        trace_system: str | None = None,
     ) -> dict[str, Any]:
         if estimate_tokens(prompt) + estimate_tokens(system) > self._conversation_prompt_limit():
             return self._conversation_error("", "conversation prompt limit exceeded")
         conversation = self.conversations.start(tenant, {
             "model": route["model"], "system": system, "max_tokens": max_tokens,
             "temperature": temperature, "source": source, "priority": priority,
-            "route": dict(route),
+            "route": dict(route), "trace_system": system if trace_system is None else trace_system,
         })
         self.conversations.reserve(conversation.conversation_id, tenant)
         try:
             result = self._generate(
                 route["model"], prompt, system, max_tokens, temperature, tenant, source, priority,
-                internal=True, use_cache=False,
+                internal=True, use_cache=False, trace_system_override=trace_system,
             )
         except Exception:
             self.conversations.discard(conversation.conversation_id, tenant)
@@ -1340,6 +1375,7 @@ class LocalAIServices:
                 str(settings["model"]), prompt, str(settings["system"]), int(settings["max_tokens"]),
                 float(settings["temperature"]), tenant, str(settings["source"]), int(settings["priority"]),
                 internal=True, use_cache=False,
+                trace_system_override=str(settings.get("trace_system", settings["system"])),
             )
         except Exception:
             self.conversations.abort(conversation_id, tenant)
@@ -1352,6 +1388,30 @@ class LocalAIServices:
         result["route"] = dict(settings["route"])
         return result
 
+    def _resolve_local_task_project(self, root: Any) -> tuple[Any | None, str, str, str]:
+        root_value = str(root or "").strip()
+        if not root_value:
+            return None, "", "", ""
+        try:
+            from .project_config import resolve_project_context
+            from .state_paths import configured_state_dir
+
+            project = resolve_project_context(
+                root_value,
+                configured_state_dir(getattr(self, "config", {}), create=False),
+            )
+        except Exception:
+            return None, "", "", ""
+
+        snapshot = None
+        try:
+            snapshot = self.repo_tools.git_snapshot(root_value)
+        except Exception:
+            pass
+        revision = str(getattr(snapshot, "repository_revision", "") or "")[:200]
+        namespace = str(project.coordination_id or "")
+        return project, project.config_digest, namespace, revision
+
     def delegate(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         if bool(args.get("conversation", False)):
             if str(args.get("profile", "")).strip():
@@ -1360,6 +1420,30 @@ class LocalAIServices:
                 return self._conversation_error("", "conversations require delivery=sync")
         if str(args.get("profile", "")).strip():
             return self.delegate_profile(args, tenant)
+        project_context, project_config_digest, project_namespace, project_revision = self._resolve_local_task_project(
+            args.get("root") or args.get("cwd", "")
+        )
+        project_settings = project_context.settings if project_context is not None else None
+        project_error_codes = getattr(getattr(project_context, "resolution", None), "error_codes", ())
+        if not isinstance(project_error_codes, (list, tuple)):
+            project_error_codes = ()
+        project_warning = ""
+        if project_error_codes:
+            safe_codes = [
+                code[:80] for code in (str(value) for value in project_error_codes[:8])
+                if re.fullmatch(r"[A-Za-z0-9_.-]+", code)
+            ]
+            code_summary = ", ".join(safe_codes)
+            project_warning = "Project settings invalid; defaults used" + (f" (codes: {code_summary})" if code_summary else ".")
+
+        def attach_project_warning(result: dict[str, Any]) -> dict[str, Any]:
+            if project_warning:
+                warnings = result.get("warnings", [])
+                warnings = list(warnings) if isinstance(warnings, (list, tuple)) else []
+                warnings.append(project_warning)
+                result["warnings"] = warnings
+            return result
+
         task = str(args.get("task") or args.get("prompt") or "")
         context = str(args.get("context", ""))
         task_type_override = str(args.get("task_type", "auto"))
@@ -1371,6 +1455,17 @@ class LocalAIServices:
         except ValueError as exc:
             return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
         task_type = route["task_type"]
+        if task_type in {"code", "review"}:
+            project_role = "heavy_code" if route.get("complexity") == "heavy" else "fast_code"
+        elif task_type == "reasoning":
+            project_role = "reasoning" if route.get("complexity") == "heavy" else "heavy_code"
+        else:
+            project_role = "general"
+        if project_settings is not None:
+            route["model"], _project_payload = self.model_policy.apply_project_settings(
+                route["model"], {"model": route["model"]},
+                settings=project_settings, role=project_role,
+            )
         operation = str(args.get("operation") or task_type).strip().lower()
         package = build_prompt(
             operation=operation,
@@ -1395,20 +1490,34 @@ class LocalAIServices:
         source = f"delegate:{task_type}"
         priority = int(args.get("priority", 5))
         if bool(args.get("conversation", False)):
-            return self._start_conversation(
+            trace_system = system
+            if project_settings is not None:
+                _conversation_model, project_payload = self.model_policy.apply_project_settings(
+                    route["model"], {"model": route["model"], "system": system},
+                    settings=project_settings, role=project_role,
+                )
+                system = str(project_payload.get("system", system))
+            result = self._start_conversation(
                 tenant=tenant, prompt=prompt, route=route, system=system, max_tokens=max_tokens,
-                temperature=temperature, source=source, priority=priority,
+                temperature=temperature, source=source, priority=priority, trace_system=trace_system,
             )
+            return attach_project_warning(result)
         format_val = args.get("format") or args.get("json_schema")
         result = self._generate(
             route["model"], prompt, system,
             max_tokens, temperature, tenant, source, priority,
             semantic_query=task, semantic_context_fingerprint=stable_hash(context),
             format=format_val,
+            project_settings=project_settings,
+            project_role=project_role,
+            project_config_digest=project_config_digest,
+            project_namespace=project_namespace,
+            repository_revision=project_revision or str(args.get("repository_revision", "")),
+            use_cache=project_context is None or bool(project_namespace),
         )
         result = self._apply_semantic_quality(result, task=task, evidence_paths=args.get("changed_paths") or ())
         result["route"] = route
-        return result
+        return attach_project_warning(result)
 
     @staticmethod
     def _apply_semantic_quality(result: dict[str, Any], *, task: str, evidence_paths: Any) -> dict[str, Any]:
@@ -5619,9 +5728,12 @@ class LocalAIServices:
         prepared.sort(key=lambda item: (0 if item[1] == active else 1, item[1], item[0]))
         results: dict[int, dict[str, Any]] = {}
         default_priority = int(args.get("priority", 5))
+        inherited_root = args.get("root") or args.get("cwd")
         for i, _model, item in prepared:
             item = dict(item)
             item.setdefault("priority", default_priority)
+            if inherited_root and not item.get("root") and not item.get("cwd"):
+                item["root"] = inherited_root
             try:
                 results[i] = self.delegate(item, tenant)
             except Exception as exc:

@@ -13,6 +13,7 @@ from . import model_quality
 
 
 _T12_EVALUATOR_ID = "model_quality.evaluate_case:t12.v1"
+_T12_MODEL_LOAD_EVENT_MIN_NS = 100_000_000
 _T12_TASK_MODEL_KEYS = {
     "reason": "reasoning",
     "review": "heavy_code",
@@ -139,6 +140,14 @@ class HardwareBenchmarkRunner:
                 and prefill_count >= 0
             ):
                 backend_metrics["prefill_tokens"] = int(prefill_count)
+            prefill_duration = chunk.get("prompt_eval_duration")
+            if (
+                not isinstance(prefill_duration, bool)
+                and isinstance(prefill_duration, (int, float))
+                and math.isfinite(prefill_duration)
+                and prefill_duration > 0
+            ):
+                backend_metrics["prefill_duration_ns"] = int(prefill_duration)
             eval_count = chunk.get("eval_count")
             if (
                 not isinstance(eval_count, bool)
@@ -265,6 +274,9 @@ class HardwareBenchmarkRunner:
                 submit_error = "scheduler_invalid_result"
         except Exception as exc:
             submit_error = type(exc).__name__
+            admission = getattr(exc, "admission", None)
+            if isinstance(admission, Mapping):
+                scheduler_result = {"success": False, "admission": admission}
         call_finished_at = time.perf_counter()
 
         measurements: dict[str, Any] = {}
@@ -279,6 +291,53 @@ class HardwareBenchmarkRunner:
             and queue_wait_ms >= 0
         ):
             measurements["queue_wait_ms"] = round(float(queue_wait_ms), 2)
+        fairness_wait_ms = scheduler_result.get("_lah_scheduler_fairness_wait_ms")
+        if (
+            isinstance(fairness_wait_ms, bool)
+            or not isinstance(fairness_wait_ms, (int, float))
+            or not math.isfinite(fairness_wait_ms)
+            or fairness_wait_ms < 0
+        ):
+            admission_metrics = scheduler_result.get("admission")
+            fairness_wait_ms = admission_metrics.get("fairness_wait_ms") if isinstance(admission_metrics, Mapping) else None
+        if (
+            not isinstance(fairness_wait_ms, bool)
+            and isinstance(fairness_wait_ms, (int, float))
+            and math.isfinite(fairness_wait_ms)
+            and fairness_wait_ms >= 0
+        ):
+            measurements["fairness_wait_ms"] = round(float(fairness_wait_ms), 2)
+        switch_receipt = scheduler_result.get("_lah_scheduler_model_switch")
+        if isinstance(switch_receipt, Mapping):
+            event_id = switch_receipt.get("switch_event_id")
+            if isinstance(event_id, int) and not isinstance(event_id, bool) and event_id >= 0:
+                measurements["switch_event_id"] = event_id
+            for source_key in ("model_prepare_ms", "model_switch_ms"):
+                value = switch_receipt.get(source_key)
+                if (
+                    not isinstance(value, bool)
+                    and isinstance(value, (int, float))
+                    and math.isfinite(value)
+                    and value >= 0
+                ):
+                    measurements[source_key] = round(float(value), 2)
+            evicted_models = switch_receipt.get("evicted_models")
+            if isinstance(evicted_models, list) and all(
+                isinstance(model_name, str) for model_name in evicted_models
+            ):
+                measurements["evicted_models"] = list(evicted_models)
+            eviction_count = switch_receipt.get("eviction_count")
+            if isinstance(eviction_count, int) and not isinstance(eviction_count, bool) and eviction_count >= 0:
+                measurements["eviction_count"] = eviction_count
+            for source_key in ("vram_before_bytes", "vram_after_bytes"):
+                value = switch_receipt.get(source_key)
+                if value is None:
+                    if source_key in switch_receipt:
+                        measurements[source_key] = None
+                elif isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    measurements[source_key] = value
+            if isinstance(switch_receipt.get("success"), bool):
+                measurements["model_switch_success"] = switch_receipt["success"]
         admission = scheduler_result.get("admission")
         queue_age_ms = admission.get("queue_age_ms") if isinstance(admission, Mapping) else None
         if (
@@ -302,11 +361,29 @@ class HardwareBenchmarkRunner:
         if load_duration_ns is not None:
             measurements["load_duration_ms"] = round(load_duration_ns / 1_000_000, 2)
             measurements["deadline_model_load_ms"] = measurements["load_duration_ms"]
-            measurements["model_load_event"] = load_duration_ns > 0
-            measurements["model_reuse_event"] = load_duration_ns == 0
+            scheduler_loaded_model = (
+                isinstance(switch_receipt, Mapping)
+                and switch_receipt.get("success") is True
+                and str(switch_receipt.get("model", "")).strip().casefold() == target_model.casefold()
+            )
+            # Ollama can report a few milliseconds of load_duration on warm calls.
+            # Use explicit scheduler switches or a material backend load to count a load.
+            model_load_event = scheduler_loaded_model or load_duration_ns >= _T12_MODEL_LOAD_EVENT_MIN_NS
+            measurements["model_load_event"] = model_load_event
+            measurements["model_reuse_event"] = not model_load_event
         eval_duration_ns = backend_metrics.get("eval_duration_ns")
+        prefill_duration_ns = backend_metrics.get("prefill_duration_ns")
+        if prefill_duration_ns is not None:
+            measurements["prefill_ms"] = round(prefill_duration_ns / 1_000_000, 2)
         if eval_duration_ns is not None:
-            measurements["deadline_generation_ms"] = round(eval_duration_ns / 1_000_000, 2)
+            measurements["generation_ms"] = round(eval_duration_ns / 1_000_000, 2)
+            measurements["deadline_generation_ms"] = measurements["generation_ms"]
+        inference_parts = [
+            measurements[key] for key in ("prefill_ms", "generation_ms") if key in measurements
+        ]
+        if inference_parts:
+            measurements["inference_ms"] = round(sum(inference_parts), 2)
+        if eval_duration_ns is not None:
             eval_count = backend_metrics.get("eval_count")
             if eval_count is not None and eval_count > 0:
                 measurements["tokens_per_second"] = round(
@@ -318,6 +395,8 @@ class HardwareBenchmarkRunner:
         for source_key, result_key in (
             ("vram_budget_bytes", "vram_budget_bytes"),
             ("vram_available_bytes", "vram_available_bytes"),
+            ("vram_admission_budget_bytes", "vram_admission_budget_bytes"),
+            ("vram_incremental_required_bytes", "vram_incremental_required_bytes"),
         ):
             value = admission.get(source_key)
             if (
@@ -330,6 +409,9 @@ class HardwareBenchmarkRunner:
         vram_admission = admission.get("vram_admission")
         if isinstance(vram_admission, str) and vram_admission in {"admitted", "rejected"}:
             measurements["vram_admitted"] = vram_admission
+        estimate_source = admission.get("vram_estimate_source")
+        if isinstance(estimate_source, str) and estimate_source in {"measured", "configured", "resident", "mixed", "unknown"}:
+            measurements["vram_estimate_source"] = estimate_source
 
         loaded_model_details = getattr(self.runtime, "loaded_model_details", None)
         if callable(loaded_model_details):
@@ -419,7 +501,17 @@ class HardwareBenchmarkRunner:
             failure_code = None
         else:
             error_detail = str(scheduler_result.get("error") or submit_error or "").casefold()
-            if any(term in error_detail for term in ("timeout", "timed out", "deadline")):
+            admission = scheduler_result.get("admission")
+            admission_reason = admission.get("reason") if isinstance(admission, Mapping) else None
+            admission_rejected_vram = (
+                admission_reason == "vram_budget"
+                or isinstance(admission, Mapping) and admission.get("vram_admission") == "rejected"
+            )
+            if admission_rejected_vram:
+                failure_code = "resource_exhausted"
+            elif admission_reason == "queue_limit":
+                failure_code = "queue_rejected"
+            elif any(term in error_detail for term in ("timeout", "timed out", "deadline")):
                 failure_code = "request_timeout"
             elif any(term in error_detail for term in ("out of memory", "not enough memory", "failed to allocate", "vram")):
                 failure_code = "resource_exhausted"

@@ -106,6 +106,67 @@ class LlamaCppRoutingTests(unittest.TestCase):
             },
         }
 
+    def test_openai_payload_maps_raw_schema_and_preserves_valid_response_formats(self):
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "summary": {"type": "string"},
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "source": {"type": "string"},
+                            "element_id": {"type": "string"},
+                            "observation_facts": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "field": {"type": "string"},
+                                        "value": {"type": "string"},
+                                    },
+                                    "required": ["field", "value"],
+                                },
+                            },
+                        },
+                        "required": ["source", "element_id", "observation_facts"],
+                    },
+                },
+                "recommended_checks": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["summary", "findings", "recommended_checks"],
+        }
+        openai_schema = {
+            "type": "json_schema",
+            "json_schema": {"name": "vision-result", "strict": True, "schema": schema},
+        }
+        llama_schema = {"type": "json_schema", "schema": schema}
+        json_object_schema = {"type": "json_object", "schema": schema}
+        cases = (
+            (schema, llama_schema),
+            ("json", {"type": "json_object"}),
+            (llama_schema, llama_schema),
+            (openai_schema, openai_schema),
+            (json_object_schema, json_object_schema),
+        )
+
+        for endpoint in ("/api/generate", "/api/chat"):
+            for format_value, expected in cases:
+                with self.subTest(endpoint=endpoint, format=format_value):
+                    payload = {
+                        "model": "qwen2.5-coder:3b",
+                        "prompt": "Return a summary",
+                        "format": format_value,
+                    }
+                    request = LlamaCppRouter._openai_payload(
+                        endpoint, payload, {"served_model": "hub-qwen-3"}
+                    )
+                    self.assertEqual(request["response_format"], expected)
+
     def test_auto_uses_only_configured_external_loopback_endpoint_on_any_hardware(self):
         self.assertTrue(LlamaCppRouter(self._config("intel"))._hardware_allows())
         self.assertTrue(LlamaCppRouter(self._config("amd"))._hardware_allows())
@@ -181,6 +242,26 @@ class LlamaCppRoutingTests(unittest.TestCase):
 
     def test_router_mode_stream_translates_generate_and_chat(self):
         router = LlamaCppRouter(self._config())
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "summary": {"type": "string"},
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "source": {"type": "string"},
+                            "element_id": {"type": "string"},
+                        },
+                        "required": ["source", "element_id"],
+                    },
+                },
+            },
+            "required": ["summary", "findings"],
+        }
         lines = [
             b'data: {"choices":[{"delta":{"content":"PASS-27"},"finish_reason":null}]}\n',
             b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":1}}\n',
@@ -197,6 +278,9 @@ class LlamaCppRoutingTests(unittest.TestCase):
                 body = json.loads(req.data.decode("utf-8"))
                 self.assertEqual(body["model"], "hub-qwen-3")
                 self.assertEqual(body["messages"][-1]["content"], "reply only PASS-27")
+                self.assertEqual(
+                    body["response_format"], {"type": "json_schema", "schema": schema}
+                )
                 return _Response(lines=lines)
             self.fail(f"unexpected URL: {req.full_url}")
 
@@ -204,7 +288,13 @@ class LlamaCppRoutingTests(unittest.TestCase):
         with patch("local_ai_hub.llama_cpp._open_interruptible_response", side_effect=lambda req, deadline, stop: fake_urlopen(req, deadline - time.monotonic())):
             result = router.request_stream(
                 "/api/generate",
-                {"model": "qwen2.5-coder:3b", "system": "be exact", "prompt": "reply only PASS-27", "options": {"num_predict": 8, "temperature": 0}},
+                {
+                    "model": "qwen2.5-coder:3b",
+                    "system": "be exact",
+                    "prompt": "reply only PASS-27",
+                    "options": {"num_predict": 8, "temperature": 0},
+                    "format": schema,
+                },
                 chunks.append,
                 timeout=2,
             )

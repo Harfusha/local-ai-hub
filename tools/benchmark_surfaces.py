@@ -18,6 +18,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -68,6 +69,49 @@ def _resolve_outside_repo(path: Path, name: str) -> Path:
     if resolved == _REPO_ROOT or _REPO_ROOT in resolved.parents:
         raise ValueError(f"{name} must be outside the repository")
     return resolved
+
+
+def _cleanup_benchmark_scratch(
+    scratch_path: Path,
+    *,
+    server_thread: threading.Thread | None,
+    workers: list[threading.Thread],
+    dispatchers: list[threading.Thread],
+    errors: list[str],
+    grace_seconds: float = 0.5,
+) -> dict[str, Any]:
+    """Remove invocation-owned scratch only after all threads using it stop."""
+    deadline = time.monotonic() + max(0.0, grace_seconds)
+    threads = workers + dispatchers
+    for worker in threads:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if worker.is_alive():
+            worker.join(timeout=remaining)
+
+    alive_workers = sum(worker.is_alive() for worker in workers)
+    alive_dispatchers = sum(worker.is_alive() for worker in dispatchers)
+    server_alive = bool(server_thread and server_thread.is_alive())
+    if not errors and not server_alive and not alive_workers and not alive_dispatchers:
+        try:
+            shutil.rmtree(scratch_path)
+            return {
+                "status": "cleaned",
+                "live_workers": 0,
+                "live_dispatchers": 0,
+                "server_thread_alive": False,
+            }
+        except OSError as exc:
+            errors.append(f"scratch_cleanup:{type(exc).__name__}")
+
+    return {
+        "status": "preserved_incomplete",
+        "live_workers": alive_workers,
+        "live_dispatchers": alive_dispatchers,
+        "server_thread_alive": server_alive,
+        "errors": errors,
+    }
 
 
 def _percentile(sorted_values: list[float], percentile: float) -> float | None:
@@ -675,7 +719,7 @@ def _vram_usage_bytes(snapshot: Any) -> int | None:
 _T12_PROFILE_CORPUS: dict[str, tuple[dict[str, Any], ...]] = {
     "reason": ({
         "case_id": "reason-latency-triage-01",
-        "prompt": "Use only these measurements: queue_wait_ms=250 and generation_duration_ms=80. Return one JSON object with dominant_stage, total_measured_ms, and evidence_paths. Use dominant_stage=queue_wait, total_measured_ms=330, and evidence_paths=[\"benchmarks/t12/reason-latency.json\"].",
+        "prompt": "Given only these measurements: queue_wait_ms=250 and generation_duration_ms=80, determine the dominant stage and total measured time. Return one JSON object with keys dominant_stage, total_measured_ms, and evidence_paths. Available evidence: benchmarks/t12/reason-latency.json.",
         "num_tokens": 96,
         "evidence_paths": ["benchmarks/t12/reason-latency.json"],
         "expected": {
@@ -686,7 +730,7 @@ _T12_PROFILE_CORPUS: dict[str, tuple[dict[str, Any], ...]] = {
     },),
     "review": ({
         "case_id": "review-edge-case-01",
-        "prompt": "Review `def first_item(items): return items[0]` for its empty-list edge case. Return one JSON object with edge_case, minimal_fix, and evidence_paths. Use edge_case=empty_list, minimal_fix=check empty input before indexing, and evidence_paths=[\"benchmarks/t12/review.py\"].",
+        "prompt": "Review `def first_item(items): return items[0]` for an edge case. Identify the edge case and propose a minimal fix. Return one JSON object with keys edge_case, minimal_fix, and evidence_paths. Available evidence: benchmarks/t12/review.py.",
         "num_tokens": 128,
         "evidence_paths": ["benchmarks/t12/review.py"],
         "expected": {
@@ -697,7 +741,7 @@ _T12_PROFILE_CORPUS: dict[str, tuple[dict[str, Any], ...]] = {
     },),
     "compress": ({
         "case_id": "compress-incident-notes-01",
-        "prompt": "Compress these incident notes without losing evidence or uncertainty: queue age rose to 400 ms; generation stayed near 90 ms; peak VRAM was not sampled during generation. Return one JSON object with facts, evidence_paths, and unknowns. Use facts=[\"queue age rose to 400 ms\",\"generation stayed near 90 ms\"], evidence_paths=[\"benchmarks/t12/incident.json\"], and unknowns=[\"peak VRAM was not sampled during generation\"].",
+        "prompt": "Compress these incident notes while preserving all evidence and uncertainty: queue age rose to 400 ms; generation stayed near 90 ms; peak VRAM was not sampled during generation. Return one JSON object with keys facts, evidence_paths, and unknowns. Available evidence: benchmarks/t12/incident.json.",
         "num_tokens": 96,
         "evidence_paths": ["benchmarks/t12/incident.json"],
         "expected": {
@@ -708,14 +752,14 @@ _T12_PROFILE_CORPUS: dict[str, tuple[dict[str, Any], ...]] = {
     },),
     "complete": ({
         "case_id": "complete-empty-mean-01",
-        "prompt": "Complete the behavior of mean(values): return None for empty input and the arithmetic mean otherwise. For [] and [2,4], return one JSON object with empty_result=null, mean_2_4=3, and evidence_paths=[].",
+        "prompt": "Complete the behavior of mean(values): return None for empty input and the arithmetic mean otherwise. Evaluate [] and [2,4]. Return one JSON object with keys empty_result, mean_2_4, and evidence_paths; no source file is provided.",
         "num_tokens": 96,
         "evidence_paths": [],
         "expected": {"empty_result": None, "mean_2_4": 3, "evidence_paths": []},
     },),
     "scaffold": ({
         "case_id": "scaffold-parser-tests-01",
-        "prompt": "Write a minimal unittest scaffold plan for parse_record(text), covering a valid record and malformed input. Do not invent parser behavior. Return one JSON object with test_cases, implementation_invented, and evidence_paths. Use test_cases=[\"valid record\",\"malformed input\"], implementation_invented=false, and evidence_paths=[].",
+        "prompt": "Write a minimal unittest scaffold plan for parse_record(text), covering a valid record and malformed input. Do not invent parser behavior. Return one JSON object with keys test_cases, implementation_invented, and evidence_paths; no source evidence is provided.",
         "num_tokens": 128,
         "evidence_paths": [],
         "expected": {
@@ -726,6 +770,12 @@ _T12_PROFILE_CORPUS: dict[str, tuple[dict[str, Any], ...]] = {
     },),
 }
 _T12_QUALITY_EVALUATOR_ID = "model_quality.evaluate_case:t12.v1"
+_T12_QUALITY_DIAGNOSTIC_FIELDS = (
+    "structured_json_valid",
+    "quality_schema_pass",
+    "quality_expected_match",
+    "quality_paths_grounded",
+)
 _T12_PROFILE_MODEL_KEYS = {
     "reason": "reasoning",
     "review": "heavy_code",
@@ -747,11 +797,16 @@ _T12_SCENARIO_FIELDS: dict[str, tuple[str, ...]] = {
         "deadline_ms", "stages", "stage_timings_ms", "deadline_stage", "completed_within_deadline",
         "request_succeeded",
     ),
-    "overload": ("overloaded", "queue_depth", "queue_admission", "queued_count", "rejected_count"),
+    "overload": (
+        "overloaded", "queue_depth", "queue_admission", "queued_count", "rejected_count",
+        "resource_rejected_count",
+    ),
     "cancel": ("cancel_requested", "cancelled", "cleanup_complete", "cancel_to_stop_ms"),
     "fallback": (
         "fallback_used", "fallback_visible", "source_profile", "fallback_profile",
-        "quality_floor_pct", "fallback_quality_pct",
+        "source_model", "fallback_model", "source_backend", "fallback_backend",
+        "source_quality_pct", "source_quality_status", "quality_floor_pct",
+        "fallback_quality_pct", "source_max_tokens", "fallback_max_tokens", "quality_floor_met",
     ),
 }
 _T12_PROFILE_METRICS = (
@@ -760,6 +815,43 @@ _T12_PROFILE_METRICS = (
     "vram_budget_bytes", "vram_required_bytes", "deadline_queue_ms", "deadline_model_load_ms",
     "deadline_generation_ms", "peak_vram_bytes",
 )
+
+
+def _summarize_t12_metric(name: str, samples: list[float]) -> dict[str, Any]:
+    """Summarize T12 measurements without mislabeling non-time units as milliseconds."""
+    unit = (
+        "ms" if name.endswith("_ms")
+        else "bytes" if name.endswith("_bytes")
+        else "tokens/second" if name == "tokens_per_second"
+        else "tokens" if name.endswith("_tokens")
+        else "count"
+    )
+    summary = summarize_samples(samples)
+    return {
+        "count": summary["count"],
+        "unit": unit,
+        "p50": summary["p50_ms"],
+        "p95": summary["p95_ms"],
+        "p99": summary["p99_ms"],
+        "min": summary["min_ms"],
+        "max": summary["max_ms"],
+        "mean": summary["mean_ms"],
+    }
+
+
+def _summarize_t12_signed_metric(name: str, samples: list[float]) -> dict[str, Any]:
+    """Summarize signed deltas such as memory reclaimed during a model switch."""
+    values = sorted(float(value) for value in samples if math.isfinite(value))
+    return {
+        "count": len(values),
+        "unit": "bytes" if name.endswith("_bytes") else "count",
+        "p50": _percentile(values, 50),
+        "p95": _percentile(values, 95),
+        "p99": _percentile(values, 99),
+        "min": round(values[0], 3) if values else None,
+        "max": round(values[-1], 3) if values else None,
+        "mean": round(sum(values) / len(values), 3) if values else None,
+    }
 
 
 def _t12_fingerprint(value: Any) -> str:
@@ -830,9 +922,18 @@ def _t12_scenario_report(
     if not isinstance(model, str) or not model.strip():
         report["reason"] = "scenario_model_not_configured"
         return report
+    hardware = runner_config.get("_hardware", {})
+    scenario_profile = hardware.get("profile") if isinstance(hardware, dict) else None
+    if not isinstance(scenario_profile, str) or not scenario_profile.strip():
+        scenario_profile = "reasoning"
     fallback_model = None
     fallback_profile = None
-    for candidate_profile in ("fast_code", "heavy_code", "general"):
+    candidate_profiles = (
+        ("heavy_code", "fast_code", "general")
+        if scenario_profile == "integrated"
+        else ("fast_code", "heavy_code", "general")
+    )
+    for candidate_profile in candidate_profiles:
         candidate_model = configured_models.get(candidate_profile)
         if (
             isinstance(candidate_model, str)
@@ -842,10 +943,6 @@ def _t12_scenario_report(
             fallback_model = candidate_model
             fallback_profile = candidate_profile
             break
-    hardware = runner_config.get("_hardware", {})
-    scenario_profile = hardware.get("profile") if isinstance(hardware, dict) else None
-    if not isinstance(scenario_profile, str) or not scenario_profile.strip():
-        scenario_profile = "reasoning"
     bounded_concurrency = concurrency_limit if isinstance(concurrency_limit, int) and not isinstance(concurrency_limit, bool) else 1
     bounded_concurrency = max(1, min(8, bounded_concurrency))
     item_count = max(2, min(8, bounded_concurrency * 2))
@@ -868,10 +965,15 @@ def _t12_scenario_report(
         "fallback_profile": fallback_profile,
         "expected": {"answer": "READY"},
         "quality_floor_pct": quality_floor_pct,
+        "source_max_tokens": 2,
+        "fallback_max_tokens": 32,
         "overload_count": item_count,
     }
     if name == "batch":
         scenario_inputs["failure_probe_item_id"] = f"t12-{name}-{item_count}"
+    if name == "fallback":
+        scenario_inputs["max_tokens"] = 64
+        scenario_inputs["fallback_max_tokens"] = 64
 
     contract = {
         "scenario": name,
@@ -972,11 +1074,13 @@ def _t12_scenario_report(
     elif not missing and name == "overload":
         queued = _t12_number(measurements["queued_count"])
         rejected = _t12_number(measurements["rejected_count"])
+        resource_rejected = _t12_number(measurements["resource_rejected_count"])
         passed = (
             measurements["overloaded"] is True
             and _t12_number(measurements["queue_depth"]) is not None
             and queued is not None and queued >= 0
             and rejected is not None and rejected >= 0
+            and resource_rejected is not None and resource_rejected >= 0
             and queued + rejected > 0
             and measurements["queue_admission"] in {"queued", "rejected"}
         )
@@ -989,13 +1093,35 @@ def _t12_scenario_report(
         )
     elif not missing and name == "fallback":
         floor = _t12_number(measurements["quality_floor_pct"])
+        source_quality = _t12_number(measurements["source_quality_pct"])
         fallback_quality = _t12_number(measurements["fallback_quality_pct"])
+        source_tokens = _t12_number(measurements["source_max_tokens"])
+        fallback_tokens = _t12_number(measurements["fallback_max_tokens"])
+        source_model = measurements["source_model"]
+        fallback_model = measurements["fallback_model"]
+        source_backend = measurements["source_backend"]
+        fallback_backend = measurements["fallback_backend"]
         passed = (
             measurements["fallback_used"] is True
             and measurements["fallback_visible"] is True
             and bool(measurements["source_profile"])
             and bool(measurements["fallback_profile"])
+            and source_model == scenario_inputs.get("model")
+            and fallback_model == scenario_inputs.get("fallback_model")
+            and isinstance(source_model, str) and bool(source_model.strip())
+            and isinstance(fallback_model, str) and bool(fallback_model.strip())
+            and source_model != fallback_model
+            and isinstance(source_backend, str) and bool(source_backend.strip())
+            and isinstance(fallback_backend, str) and bool(fallback_backend.strip())
+            and measurements["quality_floor_met"] is True
+            and measurements["source_quality_status"] in {"scored", "no_valid_response"}
             and floor is not None and fallback_quality is not None
+            and source_quality is not None and source_quality < floor
+            and source_tokens == _t12_number(scenario_inputs.get("source_max_tokens"))
+            and fallback_tokens == _t12_number(scenario_inputs.get("fallback_max_tokens"))
+            and source_tokens is not None and source_tokens > 0
+            and fallback_tokens is not None and source_tokens < fallback_tokens
+            and fallback_tokens <= _t12_number(scenario_inputs.get("max_tokens"))
             and floor >= quality_floor_pct
             and fallback_quality >= floor
         )
@@ -1057,7 +1183,7 @@ def _run_t12_matrix(
                     "config_fingerprint": None, "hardware_fingerprint": hardware_fingerprint,
                 },
                 "quality": {"status": "not_measured", "score_pct": None, "sample_count": 0},
-                "metrics": {name: summarize_samples([]) for name in _T12_PROFILE_METRICS},
+                "metrics": {name: _summarize_t12_metric(name, []) for name in _T12_PROFILE_METRICS},
                 "missing_acceptance": ["profile_model_not_configured"],
                 "samples": [],
             }
@@ -1074,12 +1200,21 @@ def _run_t12_matrix(
         reuse_event_count = 0
         event_observations = 0
         quality_evaluator_ids: list[str] = []
+        quality_diagnostic_samples = 0
         routed_profiles: list[str] = []
+        reported_models: list[str] = []
         model_digests: list[str] = []
         deadline_stage_counts: dict[str, int] = {}
         admission_counts = {"admitted": 0, "rejected": 0, "unknown": 0}
         boundary_peak_samples = 0
         peak_scope_counts: dict[str, int] = {}
+        switch_event_count = 0
+        switch_success_count = 0
+        eviction_count_total = 0
+        switch_vram_delta_samples: list[float] = []
+        switch_duration_samples: list[float] = []
+        switch_vram_before_samples: list[float] = []
+        switch_vram_after_samples: list[float] = []
         failed_runs = 0
 
         for case in cases:
@@ -1102,10 +1237,48 @@ def _run_t12_matrix(
                         failure_code = result.get("failure_code") if isinstance(result, dict) else None
                         if not isinstance(failure_code, str) or not failure_code.isidentifier():
                             failure_code = "runner_reported_failure"
-                        samples.append({
+                        failure_sample: dict[str, Any] = {
                             "case_id": case["case_id"], "repetition": repetition,
                             "status": "failed", "error_type": failure_code,
-                        })
+                        }
+                        diagnostics: dict[str, Any] = {}
+                        if isinstance(result, dict):
+                            load_event = result.get("model_load_event")
+                            reuse_event = result.get("model_reuse_event")
+                            if isinstance(load_event, bool) and isinstance(reuse_event, bool):
+                                event_observations += 1
+                                load_event_count += int(load_event)
+                                reuse_event_count += int(reuse_event)
+                            admission = result.get("vram_admitted")
+                            if admission is True or admission == "admitted":
+                                admission_counts["admitted"] += 1
+                            elif admission is False or admission == "rejected":
+                                admission_counts["rejected"] += 1
+                            else:
+                                admission_counts["unknown"] += 1
+                            diagnostic_fields = (
+                                *_T12_PROFILE_METRICS,
+                                "vram_available_bytes", "vram_admission_budget_bytes",
+                                "vram_incremental_required_bytes",
+                            )
+                            for field in diagnostic_fields:
+                                value = result.get(field)
+                                if _t12_number(value) is not None:
+                                    diagnostics[field] = value
+                            vram_admitted = result.get("vram_admitted")
+                            if isinstance(vram_admitted, bool) or (
+                                isinstance(vram_admitted, str)
+                                and vram_admitted in {"admitted", "rejected"}
+                            ):
+                                diagnostics["vram_admitted"] = vram_admitted
+                            estimate_source = result.get("vram_estimate_source")
+                            if isinstance(estimate_source, str) and estimate_source in {
+                                "measured", "configured", "resident", "mixed", "unknown",
+                            }:
+                                diagnostics["vram_estimate_source"] = estimate_source
+                        if diagnostics:
+                            failure_sample["diagnostics"] = diagnostics
+                        samples.append(failure_sample)
                         continue
                 except Exception as exc:
                     failed_runs += 1
@@ -1121,6 +1294,14 @@ def _run_t12_matrix(
                 routed_profile = result.get("routed_profile", result.get("profile"))
                 if isinstance(routed_profile, str):
                     routed_profiles.append(routed_profile)
+                reported_model = result.get("model")
+                normalized_reported_model = (
+                    reported_model.strip()
+                    if isinstance(reported_model, str) and reported_model.strip()
+                    else None
+                )
+                if normalized_reported_model is not None:
+                    reported_models.append(normalized_reported_model)
                 model_digest = _normalize_model_digest(result.get("model_digest"))
                 if model_digest is not None:
                     model_digests.append(model_digest)
@@ -1135,10 +1316,13 @@ def _run_t12_matrix(
                     score = None
                 if isinstance(evaluator_id, str) and evaluator_id.strip():
                     quality_evaluator_ids.append(evaluator_id.strip())
+                if all(isinstance(result.get(name), bool) for name in _T12_QUALITY_DIAGNOSTIC_FIELDS):
+                    quality_diagnostic_samples += 1
 
                 row: dict[str, Any] = {
                     "case_id": case["case_id"], "repetition": repetition, "status": "measured",
                     "task_role": profile, "routed_profile": routed_profile,
+                    "model": normalized_reported_model,
                     "model_digest": model_digest,
                     "quality_score_pct": score,
                     "structured_json_valid": result.get("structured_json_valid") if isinstance(result.get("structured_json_valid"), bool) else None,
@@ -1212,6 +1396,65 @@ def _run_t12_matrix(
                 row["deadline_ms"] = _t12_number(result.get("deadline_ms"))
                 row["deadline_stage"] = deadline_stage if isinstance(deadline_stage, str) else None
                 row["deadline_exceeded"] = result.get("deadline_exceeded") if isinstance(result.get("deadline_exceeded"), bool) else None
+                switch_event_id = result.get("switch_event_id")
+                row["switch_event_id"] = (
+                    switch_event_id
+                    if (
+                        isinstance(switch_event_id, int)
+                        and not isinstance(switch_event_id, bool)
+                        and switch_event_id >= 0
+                    )
+                    else None
+                )
+                if row["switch_event_id"] is not None:
+                    switch_event_count += 1
+                switch_success = result.get("model_switch_success")
+                row["model_switch_success"] = switch_success if isinstance(switch_success, bool) else None
+                if switch_success is True:
+                    switch_success_count += 1
+                switch_duration = _t12_number(result.get("model_switch_ms"))
+                row["model_switch_ms"] = switch_duration
+                if switch_duration is not None:
+                    switch_duration_samples.append(switch_duration)
+                evicted_models = result.get("evicted_models")
+                if isinstance(evicted_models, list) and all(isinstance(name, str) for name in evicted_models):
+                    row["evicted_models"] = list(evicted_models)
+                else:
+                    row["evicted_models"] = None
+                eviction_count = result.get("eviction_count")
+                if isinstance(eviction_count, int) and not isinstance(eviction_count, bool) and eviction_count >= 0:
+                    row["eviction_count"] = eviction_count
+                    eviction_count_total += eviction_count
+                else:
+                    row["eviction_count"] = None
+                switch_vram_before = result.get("vram_before_bytes")
+                switch_vram_after = result.get("vram_after_bytes")
+                valid_vram_before = (
+                    switch_vram_before
+                    if (
+                        isinstance(switch_vram_before, int)
+                        and not isinstance(switch_vram_before, bool)
+                        and switch_vram_before >= 0
+                    )
+                    else None
+                )
+                valid_vram_after = (
+                    switch_vram_after
+                    if (
+                        isinstance(switch_vram_after, int)
+                        and not isinstance(switch_vram_after, bool)
+                        and switch_vram_after >= 0
+                    )
+                    else None
+                )
+                row["vram_before_bytes"] = valid_vram_before
+                row["vram_after_bytes"] = valid_vram_after
+                if valid_vram_before is not None:
+                    switch_vram_before_samples.append(float(valid_vram_before))
+                if valid_vram_after is not None:
+                    switch_vram_after_samples.append(float(valid_vram_after))
+                if valid_vram_before is not None and valid_vram_after is not None:
+                    switch_vram_delta_samples.append(float(valid_vram_after - valid_vram_before))
                 samples.append(row)
 
         expected_count = sum(len(cases) for cases in (_T12_PROFILE_CORPUS[profile],)) * repetitions
@@ -1224,6 +1467,8 @@ def _run_t12_matrix(
             missing.append("live_quality_scores_missing")
         if len(quality_evaluator_ids) != expected_count or len(set(quality_evaluator_ids)) != 1:
             missing.append("quality_evaluator_identity_missing_or_inconsistent")
+        if live_hardware and quality_diagnostic_samples != expected_count:
+            missing.append("quality_diagnostics_missing")
         if live_hardware and (
             not callable(getattr(inference_runner, "run_t12_case", None))
             or set(quality_evaluator_ids) != {_T12_QUALITY_EVALUATOR_ID}
@@ -1235,6 +1480,10 @@ def _run_t12_matrix(
             missing.append("model_digest_missing_or_inconsistent")
         if len(routed_profiles) != expected_count or any(route != model_key for route in routed_profiles):
             missing.append("profile_route_missing_or_mismatched")
+        if len(reported_models) != expected_count or any(
+            actual.casefold() != model.casefold() for actual in reported_models
+        ):
+            missing.append("actual_model_missing_or_mismatched")
         if event_observations != expected_count:
             missing.append("load_reuse_events_missing")
         if boundary_peak_samples:
@@ -1272,12 +1521,23 @@ def _run_t12_matrix(
                 "passed_count": sum(score >= quality_floor_pct for score in quality_scores),
                 "evaluator_id": quality_evaluator_ids[0] if len(quality_evaluator_ids) == expected_count and len(set(quality_evaluator_ids)) == 1 else None,
             },
-            "metrics": {name: summarize_samples(values) for name, values in metric_samples.items()},
+            "metrics": {name: _summarize_t12_metric(name, values) for name, values in metric_samples.items()},
             "events": {
                 "model_load_count": load_event_count,
                 "model_reuse_count": reuse_event_count,
                 "observed_run_count": event_observations,
                 "vram_admission_counts": admission_counts,
+                "model_switch_count": switch_event_count,
+                "model_switch_success_count": switch_success_count,
+                "eviction_count_total": eviction_count_total,
+            },
+            "lifecycle_metrics": {
+                "model_switch_ms": _summarize_t12_metric("model_switch_ms", switch_duration_samples),
+                "switch_vram_before_bytes": _summarize_t12_metric("switch_vram_before_bytes", switch_vram_before_samples),
+                "switch_vram_after_bytes": _summarize_t12_metric("switch_vram_after_bytes", switch_vram_after_samples),
+                "switch_vram_delta_bytes": _summarize_t12_signed_metric(
+                    "switch_vram_delta_bytes", switch_vram_delta_samples,
+                ),
             },
             "deadline_stage_counts": deadline_stage_counts,
             "peak_vram_scope": (
@@ -1363,12 +1623,12 @@ def run_benchmark(
     output_dir = _resolve_outside_repo(Path(state_dir), "state_dir")
     output_dir.mkdir(parents=True, exist_ok=True)
     if scratch_dir is None:
-        owned_scratch = tempfile.TemporaryDirectory(prefix="local-ai-hub-benchmark-")
+        scratch_path = Path(tempfile.mkdtemp(prefix="local-ai-hub-benchmark-")).resolve()
     else:
         scratch_parent = _resolve_outside_repo(Path(scratch_dir), "scratch_dir")
         scratch_parent.mkdir(parents=True, exist_ok=True)
-        owned_scratch = tempfile.TemporaryDirectory(prefix="local-ai-hub-benchmark-", dir=scratch_parent)
-    scratch = Path(owned_scratch.name)
+        scratch_path = Path(tempfile.mkdtemp(prefix="local-ai-hub-benchmark-", dir=scratch_parent)).resolve()
+    scratch = scratch_path
     started = time.perf_counter()
     stages: dict[str, Any] = {}
     inference_vram_samples: list[int] = []
@@ -1377,6 +1637,9 @@ def run_benchmark(
     server_thread: threading.Thread | None = None
     http_server_module: Any = None
     previous_http_app: Any = None
+    record: dict[str, Any] | None = None
+    record_path: Path | None = None
+    cleanup_status: dict[str, Any] = {"status": "not_started"}
     try:
         synthetic: dict[str, Any] = {}
 
@@ -1812,37 +2075,71 @@ def run_benchmark(
         }
         if t12_acceptance is not None:
             record["t12_acceptance"] = t12_acceptance
-        if baseline_record is not None:
-            record["comparison"] = compare_records(baseline_record, record)
-        record_name = f"surface-benchmark-{time.time_ns()}.json"
-        record_path = output_dir / record_name
-        temporary_path = output_dir / f".{record_name}.tmp"
-        try:
-            temporary_path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            os.replace(temporary_path, record_path)
-        finally:
-            temporary_path.unlink(missing_ok=True)
-        return {**record, "record_path": str(record_path)}
     finally:
+        cleanup_errors: list[str] = []
         try:
             if server is not None:
                 try:
                     if server_thread is not None and server_thread.is_alive():
                         server.shutdown()
+                except Exception as exc:
+                    cleanup_errors.append(f"server_shutdown:{type(exc).__name__}")
                 finally:
-                    server.server_close()
+                    try:
+                        server.server_close()
+                    except Exception as exc:
+                        cleanup_errors.append(f"server_close:{type(exc).__name__}")
                     if server_thread is not None and server_thread.is_alive():
                         server_thread.join(timeout=2)
         finally:
             try:
                 if app is not None:
-                    app.close()
+                    try:
+                        app.close()
+                    except Exception as exc:
+                        cleanup_errors.append(f"app_close:{type(exc).__name__}")
             finally:
                 try:
                     if http_server_module is not None:
                         http_server_module.APP = previous_http_app
                 finally:
-                    owned_scratch.cleanup()
+                    manager = getattr(app, "async_jobs", None) if app is not None else None
+                    if manager is not None:
+                        with manager._lock:
+                            workers = list(manager._workers)
+                            dispatchers = list(manager._dispatchers)
+                    else:
+                        workers = []
+                        dispatchers = []
+                    cleanup_status = _cleanup_benchmark_scratch(
+                        scratch_path,
+                        server_thread=server_thread,
+                        workers=workers,
+                        dispatchers=dispatchers,
+                        errors=cleanup_errors,
+                    )
+                    if record is not None:
+                        record["cleanup"] = cleanup_status
+                        if cleanup_status["status"] != "cleaned":
+                            record["success"] = False
+                            record["failed_stages"].append("cleanup")
+                        record["total_duration_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+                        if baseline_record is not None:
+                            record["comparison"] = compare_records(baseline_record, record)
+                        record_name = f"surface-benchmark-{time.time_ns()}.json"
+                        record_path = output_dir / record_name
+                        temporary_path = output_dir / f".{record_name}.tmp"
+                        try:
+                            temporary_path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                            os.replace(temporary_path, record_path)
+                        finally:
+                            temporary_path.unlink(missing_ok=True)
+
+    assert record is not None and record_path is not None
+    result = {**record, "record_path": str(record_path)}
+    if cleanup_status["status"] != "cleaned":
+        result["scratch_recovery_path"] = str(scratch_path)
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:

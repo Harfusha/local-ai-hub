@@ -298,6 +298,7 @@ class LocalAIApp:
         self.work_orchestrator = WorkOrchestrator(self.config, state_dir, self.services, self.commands, self.leases, self.artifacts, telemetry=self.telemetry)
         self.projector = AgentProjector(self.config)
         self.vram_balancer = VRAMBalancer(self.config)
+        self.runtime.vram_balancer = self.vram_balancer
         self.services.set_vram_balancer(self.vram_balancer)
         self.benchmark_runner = HardwareBenchmarkRunner(
             state_dir / "benchmarks.json",

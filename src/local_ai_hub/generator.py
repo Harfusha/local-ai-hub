@@ -577,6 +577,8 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         model_default = (
             f"\nLocal model policy: `{fs.background_model}` is preprocessing-only, `{fs.fast_model}` handles quick/simple tasks,"
             f" `{fs.general_model}` handles ordinary tasks, `{fs.smart_model}` handles more involved work, and {reasoning_tier} handles the hardest or highest-risk reasoning."
+            " Treat profile/default model names as routing targets only. Check installed-model inventory before live inference;"
+            " do not infer runtime availability, output quality, or performance from a configured mapping."
             " Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`."
         )
 
