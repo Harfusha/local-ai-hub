@@ -1480,6 +1480,35 @@ def _rename_exchange_at(parent_handle: int, left: str, right: str) -> None:
         raise OSError(error_code, os.strerror(error_code), f"{left} <-> {right}")
 
 
+def _rename_noreplace_at(parent_handle: int, source: str, destination: str) -> None:
+    """Atomically move one entry without replacing a concurrent destination."""
+    import ctypes
+    import errno
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        rename_entry = getattr(libc, "renameatx_np", None)
+        flags = 0x00000004  # RENAME_EXCL
+    else:
+        rename_entry = getattr(libc, "renameat2", None)
+        flags = 0x00000001  # RENAME_NOREPLACE
+    if rename_entry is None:
+        unsupported = getattr(errno, "ENOTSUP", errno.EOPNOTSUPP)
+        raise OSError(unsupported, "atomic rollback quarantine is unavailable", source)
+    rename_entry.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename_entry.restype = ctypes.c_int
+    result = rename_entry(
+        parent_handle,
+        os.fsencode(source),
+        parent_handle,
+        os.fsencode(destination),
+        flags,
+    )
+    if result != 0:
+        error_code = ctypes.get_errno()
+        raise OSError(error_code, os.strerror(error_code), f"{source} -> {destination}")
+
+
 def _restore_existing_rollback_leaf(
     parent_handle: int,
     temporary_name: str,
@@ -1610,7 +1639,30 @@ def _restore_rollback_scope(
                         if not postimage_still_matches():
                             incomplete.append(relative)
                             continue
-                        os.unlink(leaf, dir_fd=parent_handle)
+                        quarantine_name = f".local-ai-rollback-postimage-{uuid.uuid4().hex}"
+                        _rename_noreplace_at(parent_handle, leaf, quarantine_name)
+                        quarantined = _rollback_postimage_at(parent_handle, quarantine_name)
+                        if (
+                            expected_postimage.safe
+                            and quarantined.safe
+                            and expected_postimage.fingerprint == quarantined.fingerprint
+                        ):
+                            os.unlink(quarantine_name, dir_fd=parent_handle)
+                            try:
+                                os.stat(leaf, dir_fd=parent_handle, follow_symlinks=False)
+                            except FileNotFoundError:
+                                pass
+                            else:
+                                incomplete.append(relative)
+                        else:
+                            try:
+                                _rename_noreplace_at(parent_handle, quarantine_name, leaf)
+                            except OSError as exc:
+                                raise _RollbackPostimageChanged(
+                                    f"changed rollback postimage preserved at {quarantine_name}: {exc}",
+                                    preserve_temporary=True,
+                                ) from exc
+                            incomplete.append(relative)
                     continue
                 temp_name = f".local-ai-rollback-{uuid.uuid4().hex}"
                 fd = os.open(
@@ -2872,19 +2924,26 @@ class CommandBroker:
         task_id: str,
         repository_root: str,
     ) -> dict[str, Any] | None:
-        """Return broker provenance only when tenant, task, and canonical root match."""
-        payload = self._get_server_command_execution_record(command_id)
-        if payload is None:
+        """Return durable broker provenance only for matching trusted scope."""
+        if not isinstance(tenant, str) or not tenant or not isinstance(task_id, str) or not task_id:
             return None
-        expected_root = str(Path(repository_root).expanduser().resolve(strict=False))
+        if not isinstance(repository_root, str) or not repository_root:
+            return None
+        record = self._get_server_command_execution_record(command_id)
+        if record is None:
+            return None
+        try:
+            canonical_root = str(Path(repository_root).expanduser().resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            return None
         if (
-            payload.get("tenant_identity") != self._tenant_identity(tenant)
-            or payload.get("task_id") != task_id
-            or payload.get("repository_root") != expected_root
-            or payload.get("repository_root_sha256") != hashlib.sha256(expected_root.encode("utf-8")).hexdigest()
+            record.get("tenant_identity") != self._tenant_identity(tenant)
+            or record.get("task_id") != task_id
+            or record.get("repository_root") != canonical_root
+            or record.get("repository_root_sha256") != hashlib.sha256(canonical_root.encode("utf-8")).hexdigest()
         ):
             return None
-        return payload
+        return dict(record)
 
     def _record_command_verification(
         self,
@@ -2998,6 +3057,7 @@ class CommandBroker:
             exit_code = result.get("exit_code")
             if type(exit_code) is not int or exit_code != 0 or not verified_owner:
                 return
+
 
             proof = {
                 "kind": "work_command_verification",
@@ -4191,6 +4251,7 @@ class CommandBroker:
                 result["incident_recorded"] = True
         except Exception:
             pass
+
 
     def _unavailable_executable(self, command: str, cwd: str) -> str | None:
         if self._needs_shell(command):
@@ -6424,7 +6485,15 @@ class CommandBroker:
                     "retryable": False,
                     "target_missing": True,
                 })
-            if rollback_state is not None and rollback_on_failure and not result.get("success"):
+            if result.get("cleanup_unconfirmed"):
+                self._mark_rollback_outcome_unknown(
+                    result,
+                    command_key=key,
+                    attempt_key=attempt_key,
+                    error=RuntimeError(str(result.get("error") or "process-tree cleanup unconfirmed")),
+                    rollback_paths=scope_paths,
+                )
+            elif rollback_state is not None and rollback_on_failure and not result.get("success"):
                 try:
                     _capture_rollback_postimages(rollback_state)
                     _restore_rollback_scope(cwd, rollback_state)
@@ -6450,6 +6519,7 @@ class CommandBroker:
                 not result.get("success")
                 and (not result.get("cancelled") or result.get("outcome_unknown"))
                 and self.incident_store is not None
+                and not result.get("incident_recorded")
             ):
                 try:
                     from .agent_incidents import ToolOutcome
@@ -6556,11 +6626,13 @@ class CommandBroker:
             timeout_result = {"success": False, "error": "command timed out", "timed_out": True, "classification": classification, "cache_hit": False}
             if rollback_state is not None:
                 try:
+                    _capture_rollback_postimages(rollback_state)
                     _restore_rollback_scope(cwd, rollback_state)
                     timeout_result["rolled_back"] = True
                 except Exception as rb_exc:
                     self._mark_rollback_outcome_unknown(
                         timeout_result, command_key=key, attempt_key=attempt_key, error=rb_exc,
+                        rollback_paths=scope_paths,
                     )
                     self._capture_rollback_unknown_incident(
                         timeout_result, command=command,
@@ -6602,9 +6674,12 @@ class CommandBroker:
                 command, cwd, tenant,
                 max_attempts=max_repair_attempts,
                 task_id=task_id, criterion=criterion,
+                paths=declared_paths,
                 timeout=timeout,
                 fix_generator=fix_generator,
                 initial_result=compacted,
+                docker_image=docker_image,
+                _work_attempt_fence=_work_attempt_fence,
             )
             repaired["execution_id"] = execution_id
             return repaired
@@ -6675,6 +6750,7 @@ class CommandBroker:
                     record_verification=record_verification, timeout=timeout,
                     auto_rollback=auto_rollback, log_callback=log_callback,
                     docker_image=docker_image, _transaction_context=transaction_id,
+                    _work_attempt_fence=_work_attempt_fence,
                 ),
             )
 
@@ -6887,6 +6963,7 @@ class CommandBroker:
             log_callback=log_callback,
             docker_image=docker_image,
             _transaction_context=_transaction_context,
+            _work_attempt_fence=_work_attempt_fence,
         )
 
         run_outcome_unknown = bool(
@@ -7059,6 +7136,10 @@ class CommandBroker:
         fix_generator: Any | None = None,
         initial_result: dict[str, Any] | None = None,
         log_callback: Any | None = None,
+        paths: list[str] | None = None,
+        docker_image: str = "python:3.11-slim",
+        _transaction_context: str = "",
+        _work_attempt_fence: Any = None,
     ) -> dict[str, Any]:
         """Execute autonomous self-healing test loop on command failure.
 
@@ -7066,10 +7147,61 @@ class CommandBroker:
         re-tests, and if successful, mints a VerificationReceipt and keeps the fix.
         If all attempts fail, cleanly rolls back all modified files to pristine state.
         """
-        cwd_path = Path(canonical_root(cwd))
+        cwd_path = Path(cwd).resolve(strict=True) if _transaction_context else Path(canonical_root(cwd))
+        if _transaction_context:
+            transaction_root = self._transaction_root_for_context(_transaction_context).resolve(strict=True)
+            if cwd_path != transaction_root:
+                return {"success": False, "error": "private transaction cwd does not match transaction context", "terminal": True, "retryable": False}
+        else:
+            worktree_error = self._require_task_worktree(task_id, cwd_path, command)
+            if worktree_error:
+                return {
+                    "success": False,
+                    "error": worktree_error,
+                    "mutation_worktree_required": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+        scope_snapshot, scope_error = _snapshot_rollback_scope(str(cwd_path), paths)
+        if scope_error:
+            return {
+                "success": False,
+                "error": scope_error,
+                "mutation_write_set_required": paths is None or not paths,
+                "mutation_write_set_invalid": bool(paths),
+                "terminal": True,
+                "retryable": False,
+            }
+        assert scope_snapshot is not None
+        declared_write_paths = set(scope_snapshot.files)
+        _close_rollback_root(scope_snapshot.root_guard)
+        if not _transaction_context:
+            return self._run_private_transaction(
+                command=command,
+                source_root=cwd_path,
+                tenant=tenant,
+                task_id=task_id,
+                paths=list(paths or []),
+                timeout=int(timeout or self.timeout),
+                docker_image=docker_image,
+                work_attempt_fence=_work_attempt_fence,
+                log_callback=log_callback,
+                operation=lambda transaction_root, transaction_id: self.repair_loop(
+                    command, transaction_root, tenant,
+                    max_attempts=max_attempts, task_id=task_id, criterion=criterion,
+                    timeout=timeout, fix_generator=fix_generator,
+                    initial_result=initial_result, log_callback=log_callback,
+                    paths=paths, docker_image=docker_image,
+                    _transaction_context=transaction_id,
+                    _work_attempt_fence=_work_attempt_fence,
+                ),
+            )
         initial = initial_result or self.run(
             command, str(cwd_path), tenant, timeout=timeout, force=True,
-            task_id=task_id, criterion=criterion, auto_fix=False, log_callback=log_callback,
+            task_id=task_id, criterion=criterion, auto_fix=False,
+            paths=paths, log_callback=log_callback,
+            docker_image=docker_image, _transaction_context=_transaction_context,
+            _work_attempt_fence=_work_attempt_fence,
         )
         if initial.get("success"):
             return {
@@ -7078,6 +7210,43 @@ class CommandBroker:
                 "attempts": 0,
                 "result": initial,
                 "message": "command passed without repair",
+            }
+        classification = self.classify(command)
+        replay_safe = bool(classification.get("replay_safe", False))
+        if classification.get("class") == "mutating":
+            outcome_unknown = bool(
+                initial.get("outcome_unknown")
+                or initial.get("timed_out")
+                or initial.get("cancelled")
+            )
+            return {
+                "success": False,
+                "repaired": False,
+                "repair_skipped": True,
+                "outcome_unknown": outcome_unknown,
+                "retryable": False,
+                "terminal": True,
+                "attempts": 0,
+                "result": initial,
+                "error": "repair loop skipped after failed mutating command; private transaction will be discarded",
+            }
+        outcome_unknown = bool(
+            initial.get("outcome_unknown")
+            or initial.get("timed_out")
+            or initial.get("cancelled")
+            or not replay_safe
+        )
+        if outcome_unknown:
+            uncertain = dict(initial)
+            uncertain["outcome_unknown"] = True
+            return {
+                "success": False,
+                "repaired": False,
+                "repair_skipped": True,
+                "outcome_unknown": True,
+                "attempts": 0,
+                "result": uncertain,
+                "message": "repair skipped because command outcome or side effects are not safe to replay",
             }
 
         classification = self.classify(command)
@@ -7130,33 +7299,57 @@ class CommandBroker:
                     attempt_history.append({"attempt": attempt, "error": "no candidate patches synthesized"})
                     continue
 
-                applied_paths: list[Path] = []
+                patch_targets: list[tuple[str, Path, str]] = []
+                invalid_patch_path = False
                 for rel_path, new_content in patches.items():
-                    target = (cwd_path / rel_path).resolve()
+                    if not isinstance(rel_path, str) or not rel_path or "\x00" in rel_path:
+                        invalid_patch_path = True
+                        break
+                    portable = rel_path.replace("\\", "/")
+                    drive, _tail = ntpath.splitdrive(rel_path)
+                    parts = portable.split("/")
+                    if (
+                        drive or ntpath.isabs(rel_path) or portable.startswith("/")
+                        or any(part in {"", ".", ".."} for part in parts)
+                    ):
+                        invalid_patch_path = True
+                        break
+                    relative = Path(*parts).as_posix()
+                    if relative not in declared_write_paths:
+                        invalid_patch_path = True
+                        break
+                    target = cwd_path.joinpath(*parts).resolve()
                     try:
                         target.relative_to(cwd_path)
                     except ValueError:
-                        try:
-                            target_canon = Path(canonical_root(target))
-                            target_canon.relative_to(cwd_path)
-                            target = target_canon
-                        except ValueError:
-                            continue
+                        invalid_patch_path = True
+                        break
+                    patch_targets.append((relative, target, new_content))
+                if invalid_patch_path:
+                    return {
+                        "success": False,
+                        "error": "repair patch contains a path outside the declared write set",
+                        "mutation_write_set_violation": True,
+                        "terminal": True,
+                        "retryable": False,
+                        "attempts": len(attempt_history),
+                    }
+
+                applied_paths: list[Path] = []
+                for rel_path, target, new_content in patch_targets:
                     if target not in original_files:
                         original_files[target] = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else None
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(new_content, encoding="utf-8")
-                    if target.suffix.lower() in {".py", ".pyw"}:
-                        pycache = target.parent / "__pycache__"
-                        if pycache.is_dir():
-                            for pyc in pycache.glob(f"{target.stem}*.pyc"):
-                                try:
-                                    pyc.unlink(missing_ok=True)
-                                except Exception:
-                                    pass
                     applied_paths.append(target)
 
-                re_result = self.run(command, str(cwd_path), tenant, timeout=timeout, force=True, auto_fix=False, log_callback=log_callback)
+                re_result = self.run(
+                    command, str(cwd_path), tenant, timeout=timeout, force=True,
+                    task_id=task_id, criterion=criterion, auto_fix=False,
+                    paths=paths, log_callback=log_callback,
+                    docker_image=docker_image, _transaction_context=_transaction_context,
+                    _work_attempt_fence=_work_attempt_fence,
+                )
                 last_result = re_result
                 attempt_history.append({
                     "attempt": attempt,
@@ -7242,14 +7435,6 @@ class CommandBroker:
                             target.unlink(missing_ok=True)
                         else:
                             target.write_text(orig_content, encoding="utf-8")
-                        if target.suffix.lower() in {".py", ".pyw"}:
-                            pycache = target.parent / "__pycache__"
-                            if pycache.is_dir():
-                                for pyc in pycache.glob(f"{target.stem}*.pyc"):
-                                    try:
-                                        pyc.unlink(missing_ok=True)
-                                    except Exception:
-                                        pass
                     original_files.clear()
 
         finally:
@@ -7277,11 +7462,22 @@ class CommandBroker:
         paths: list[str] | None = None,
         tenant: str = "agent",
         timeout: int | None = None,
+        *,
+        task_id: str = "",
+        _work_attempt_fence: Any = None,
     ) -> dict[str, Any]:
         """Automatically detect local code formatters and format paths or repository."""
         resolved_root = Path(canonical_root(root))
         if not resolved_root.is_dir():
             return {"success": False, "error": f"Directory not found: {root}"}
+        if not paths:
+            return {
+                "success": False,
+                "error": "format requires explicit target paths",
+                "mutation_write_set_required": True,
+                "terminal": True,
+                "retryable": False,
+            }
 
         target_str = " ".join(f'"{p}"' for p in paths) if paths else "."
         cmd = None
@@ -7322,7 +7518,18 @@ class CommandBroker:
         if not cmd:
             return {"success": False, "error": "No supported code formatter found in PATH (tried ruff, black, prettier, cargo, gofmt, dotnet)"}
 
-        res = self.run(cmd, str(resolved_root), tenant=tenant, timeout=timeout or 60, force=True)
+        res = self.run(
+            cmd,
+            str(resolved_root),
+            tenant=tenant,
+            timeout=timeout or 60,
+            force=True,
+            task_id=task_id,
+            paths=paths,
+            rollback_on_failure=True,
+            rollback_paths=paths,
+            _work_attempt_fence=_work_attempt_fence,
+        )
         res["formatter"] = formatter_name
         return res
 
@@ -7333,11 +7540,22 @@ class CommandBroker:
         paths: list[str] | None = None,
         tenant: str = "agent",
         timeout: int | None = None,
+        *,
+        task_id: str = "",
+        _work_attempt_fence: Any = None,
     ) -> dict[str, Any]:
         """Automatically run project linters in auto-fix mode to resolve style/lint issues."""
         resolved_root = Path(root).expanduser().resolve(strict=False)
         if not resolved_root.is_dir():
             return {"success": False, "error": f"root directory does not exist: {root}"}
+        if not paths:
+            return {
+                "success": False,
+                "error": "lint_fix requires explicit target paths",
+                "mutation_write_set_required": True,
+                "terminal": True,
+                "retryable": False,
+            }
 
         target_str = " ".join(f'"{p}"' for p in paths) if paths else "."
         cmd = command
@@ -7378,7 +7596,18 @@ class CommandBroker:
         if not cmd:
             return {"success": False, "error": "No supported linter with auto-fix found in PATH (tried ruff, eslint, cargo, golangci-lint)"}
 
-        res = self.run(cmd, str(resolved_root), tenant=tenant, timeout=timeout or 120, force=True)
+        res = self.run(
+            cmd,
+            str(resolved_root),
+            tenant=tenant,
+            timeout=timeout or 120,
+            force=True,
+            task_id=task_id,
+            paths=paths,
+            rollback_on_failure=True,
+            rollback_paths=paths,
+            _work_attempt_fence=_work_attempt_fence,
+        )
         res["linter"] = linter_name
         return res
 
@@ -7750,22 +7979,21 @@ class CommandBroker:
             "ttl_seconds": self.daemon_ttl_seconds,
             "tree_control_capability": info.get("tree_control_capability", "unsupported"),
         }
-    def daemon_status(self, daemon_id: str | None = None) -> dict[str, Any]:
+
+    def daemon_status(
+        self, daemon_id: str | None = None, *, task_id: str | None = None
+    ) -> dict[str, Any]:
         """Check status of one or all background daemons."""
         now = time.time()
         with self._daemons_lock:
             if daemon_id:
                 info = self._daemons.get(daemon_id)
-                if not info:
+                if not info or (task_id is not None and info.get("task_id") != task_id):
                     return {"success": False, "error": f"daemon not found: {daemon_id}"}
                 proc = info["process"]
                 alive = proc.poll() is None
-                newly_stopped = not alive and "stopped_at" not in info
                 if not alive:
                     tree_stopped = info.get("process_tree_stopped") is True
-                    if not tree_stopped:
-                        tree_stopped = _stop_daemon_tree(info)
-                        info["process_tree_stopped"] = tree_stopped
                     reader = info.get("reader_thread")
                     if reader is not None:
                         reader.join(timeout=0.2)
@@ -7776,9 +8004,6 @@ class CommandBroker:
                         if timer is not None:
                             timer.cancel()
                         self._release_daemon_slot(info)
-                        info.setdefault("stopped_at", now)
-                        if newly_stopped:
-                            self._persist_daemon_registry()
                 self._flush_daemon_log(info)
                 with info.get("log_lock", threading.Lock()):
                     log_tail = bytes(info.get("log_buffer", b""))[-8192:].decode("utf-8", errors="replace")
@@ -7789,6 +8014,7 @@ class CommandBroker:
                     "alive": alive,
                     "running": alive,
                     "pid": info["pid"],
+                    "tree_control_capability": info.get("tree_control_capability", "unsupported"),
                     "status": "running" if alive else ("stopped" if info.get("process_tree_stopped") is True else "cleanup_unconfirmed"),
                     "process_tree_stopped": info.get("process_tree_stopped") is True,
                     "exit_code": proc.poll(),
@@ -7800,32 +8026,29 @@ class CommandBroker:
                     "log_tail": log_tail,
                 }
             items = []
-            registry_changed = False
             for d_id, info in self._daemons.items():
+                if task_id is not None and info.get("task_id") != task_id:
+                    continue
                 proc = info["process"]
                 alive = proc.poll() is None
                 if not alive:
                     tree_stopped = info.get("process_tree_stopped") is True
-                    if not tree_stopped:
-                        tree_stopped = _stop_daemon_tree(info)
-                        info["process_tree_stopped"] = tree_stopped
                     reader = info.get("reader_thread")
                     if reader is not None:
                         reader.join(timeout=0.2)
                     if reader is None or not reader.is_alive():
                         self._close_daemon_log(info)
                     if tree_stopped:
-                        registry_changed = registry_changed or "stopped_at" not in info
                         timer = info.get("ttl_timer")
                         if timer is not None:
                             timer.cancel()
                         self._release_daemon_slot(info)
-                        info.setdefault("stopped_at", now)
                 items.append({
                     "daemon_id": d_id,
                     "alive": alive,
                     "running": alive,
                     "pid": info["pid"],
+                    "tree_control_capability": info.get("tree_control_capability", "unsupported"),
                     "status": "running" if alive else ("stopped" if info.get("process_tree_stopped") is True else "cleanup_unconfirmed"),
                     "process_tree_stopped": info.get("process_tree_stopped") is True,
                     "exit_code": proc.poll(),
@@ -7835,8 +8058,6 @@ class CommandBroker:
                     "name": info["name"],
                     "command": self._safe_label(info["command"]),
                 })
-            if registry_changed:
-                self._persist_daemon_registry()
             return {"success": True, "daemons": items, "count": len(items)}
 
     def stop_daemon(self, daemon_id: str, *, task_id: str = "") -> dict[str, Any]:
@@ -7887,11 +8108,8 @@ class CommandBroker:
                 try:
                     proc.wait(timeout=2.0)
                 except Exception:
-                    try:
-                        proc.kill()
-                        proc.wait(timeout=1.0)
-                    except Exception:
-                        pass
+                    # Retry tree cleanup below; killing only the leader can orphan descendants.
+                    pass
             if not tree_stopped:
                 try:
                     tree_stopped = _stop_daemon_tree(info)
@@ -7906,7 +8124,12 @@ class CommandBroker:
                     "alive": True,
                     "process_tree_stopped": False,
                     "pid": info["pid"],
-                    "error": "daemon did not stop within the bounded termination window",
+                    "tree_control_capability": info.get("tree_control_capability", "unsupported"),
+                    "error": (
+                        "stable daemon tree control is unsupported on this platform"
+                        if info.get("tree_control_capability") == "unsupported"
+                        else "daemon did not stop within the bounded termination window"
+                    ),
                 }
             if not tree_stopped:
                 return {
@@ -7917,7 +8140,12 @@ class CommandBroker:
                     "alive": False,
                     "process_tree_stopped": False,
                     "pid": info["pid"],
-                    "error": "daemon leader stopped but process-tree cleanup could not be confirmed",
+                    "tree_control_capability": info.get("tree_control_capability", "unsupported"),
+                    "error": (
+                        "stable daemon tree control is unsupported on this platform"
+                        if info.get("tree_control_capability") == "unsupported"
+                        else "daemon leader stopped but process-tree cleanup could not be confirmed"
+                    ),
                 }
             info["process_tree_stopped"] = True
             timer = info.get("ttl_timer")

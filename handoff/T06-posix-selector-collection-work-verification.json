@@ -1,0 +1,53 @@
+{
+  "schema": "T09 work_command_verification + work_source_review shape",
+  "receipt_status": "local_handoff_only_platform_limited",
+  "work_command_verification": {
+    "cached": false,
+    "hub_persisted": false,
+    "command_sha256": "ee7b1f7e57f62b8de4838c46aff65e99bc128236d60322057f634feb99c8d14b",
+    "passed": true,
+    "owner": "C:\\Users\\Adam\\.codex\\worktrees\\t06-safe-commands\\.local-ai-hub",
+    "criterion": "POSIX rollback race selector collection on Windows",
+    "task_id": "T06",
+    "kind": "work_command_verification",
+    "repository_revision": "94337de7309b66c63ff427cce8cd3a49e6414d73",
+    "command_id": null,
+    "command_classification": "test",
+    "result": {
+      "failed": 0,
+      "exit_code": 0,
+      "behavior_verified": false,
+      "passed": 0,
+      "skipped": 1,
+      "success": true,
+      "skip_reason": "POSIX atomic no-replace rollback quarantine"
+    },
+    "exit_code": 0,
+    "mutation_generation": null,
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_command_rollback.py::test_rollback_preserves_concurrent_replacement_when_removing_created_path",
+    "evidence_source": "single native run in T06-owned worktree",
+    "duration_ms": 340
+  },
+  "work_source_review": {
+    "mutation_generation": null,
+    "kind": "work_source_review",
+    "owner": "C:\\Users\\Adam\\.codex\\worktrees\\t06-safe-commands\\.local-ai-hub",
+    "repository_revision": "94337de7309b66c63ff427cce8cd3a49e6414d73",
+    "passed": true,
+    "diff": {
+      "root_test_patch_path": "handoff/T06-posix-rollback-replacement-test-root-current.patch",
+      "root_apply_check": "passed read-only; not applied",
+      "files": [
+        "tests/test_command_rollback.py"
+      ],
+      "root_preimage_sha256": "3A0A5F02692B9A3036558A438E2F03DC096C11BF4CA8BF37BFB56A1DBA434606",
+      "root_test_patch_sha256": "8D4846E4AAD3448CF7F9FBA35755DE678D6DADEC7DA3A9FEB5D87DE0EE377E1E",
+      "candidate_test_sha256": "45AD6A547E4ACC423AB81DC2445EA4C2B83ACEB2F18DE0550F71694D7AB2CB17"
+    },
+    "task_id": "T06",
+    "criteria": [
+      "accurate POSIX race regression and root-current test hunk"
+    ],
+    "verification": "Test now performs an actual path/inode replacement after the final pre-quarantine check, preserves displaced transaction output, matches the source final error text, and asserts the three POSIX postimage reads. Windows correctly skips POSIX behavior."
+  }
+}

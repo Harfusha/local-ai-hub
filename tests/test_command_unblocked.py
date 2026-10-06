@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import subprocess
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from local_ai_hub.commands import CommandBroker
+from local_ai_hub.process_utils import hidden_run_kwargs
 from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 
 

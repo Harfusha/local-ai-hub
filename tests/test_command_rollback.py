@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import multiprocessing
 import os
 import sqlite3
 import subprocess
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from local_ai_hub import commands as commands_module
 from local_ai_hub.commands import CommandBroker, _get_windows_dacl, _windows_dacl_bytes
+from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 from local_ai_hub.process_utils import hidden_run_kwargs
 from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 
@@ -57,6 +59,82 @@ class _FakeTaskStore:
                 }}
             )
         )
+
+
+def _commit_task_worktree(root: Path, *paths: str) -> None:
+    subprocess.run(["git", "init"], cwd=root, capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "add", *paths], cwd=root, capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=root, capture_output=True, check=True, **hidden_run_kwargs())
+
+
+def test_untrusted_python_scripts_require_mutation_policy(tmp_path: Path) -> None:
+    broker = CommandBroker({
+        "server": {"state_dir": str(tmp_path / "state")},
+        "commands": {"allow_read": True, "allow_validation": True, "allow_mutating": False},
+    }, artifacts=None, repo_state=None)
+
+    for command in (
+        "python tools/custom_side_effect.py",
+        "python tools/custom_report.py",
+    ):
+        result = broker.classify(command)
+
+        assert result["class"] == "mutating"
+        assert result["allowed"] is False
+        assert result["cacheable"] is False
+
+
+class _FakeTaskStore:
+    def __init__(
+        self,
+        worktree_path: str,
+        *,
+        repo_root: str | None = None,
+        branch: str | None = None,
+    ) -> None:
+        self.worktree_path = worktree_path
+        path = Path(worktree_path).resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        probe = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=False, **hidden_run_kwargs()
+        )
+        if probe.returncode != 0:
+            subprocess.run(
+                ["git", "init"], cwd=str(path), capture_output=True, check=True,
+                **hidden_run_kwargs()
+            )
+        top = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True, **hidden_run_kwargs()
+        ).stdout.strip()
+        current_branch = subprocess.run(
+            ["git", "-C", str(path), "symbolic-ref", "--quiet", "--short", "HEAD"],
+            capture_output=True, text=True, check=True, **hidden_run_kwargs()
+        ).stdout.strip()
+        self.worktree_identity = {
+            "repo_root": repo_root or top,
+            "branch": branch or current_branch,
+        }
+
+    def get(self, task_id: str):
+        if task_id != "task-owned":
+            return None
+        return SimpleNamespace(
+            checkpoint=SimpleNamespace(
+                state_data={"worktree": {
+                    "success": True, "worktree_path": self.worktree_path,
+                    **self.worktree_identity,
+                }}
+            )
+        )
+
+
+def _write_concurrent_rollback_edit(path: str, complete) -> None:
+    Path(path).write_text("concurrent edit", encoding="utf-8")
+    complete.set()
 
 
 def _commit_task_worktree(root: Path, *paths: str) -> None:
@@ -2728,3 +2806,192 @@ def test_windows_mutation_succeeds_with_explicit_durability_warning(
     assert result["directory_fsync_supported"] is False
     assert "crash durability is not guaranteed" in result["durability_warning"]
     assert owned.read_text(encoding="utf-8") == "committed"
+
+
+def test_post_import_verification_error_invalidates_caches_and_requires_incident(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    owned = repo / "owned.txt"
+    owned.write_text("before", encoding="utf-8")
+    unrelated = repo / "unrelated.txt"
+    unrelated.write_text("keep", encoding="utf-8")
+    subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "owned.txt", "unrelated.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=repo, check=True)
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path / "state")}, "commands": {"allow_mutating": True}},
+        artifacts=None,
+        repo_state=None,
+    )
+    broker.set_task_store(_FakeTaskStore(str(repo)))
+    install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
+    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+
+    class _IncidentStore:
+        outcome = None
+
+        def capture(self, outcome):
+            self.outcome = outcome
+            return None
+
+    incidents = _IncidentStore()
+    broker.set_incident_store(incidents)
+    deleted: dict[str, list[str]] = {"success": [], "failure": [], "suppression": []}
+    for name in deleted:
+        cache = getattr(broker, f"{name}_cache")
+        original_delete = cache.delete
+
+        def record_delete(key, *, _name=name, _delete=original_delete):
+            deleted[_name].append(key)
+            return _delete(key)
+
+        monkeypatch.setattr(cache, "delete", record_delete)
+
+    def succeed_in_private_tree(_argv: object, cwd: str, *_args: object, **_kwargs: object):
+        Path(cwd, "owned.txt").write_text("transaction output", encoding="utf-8")
+        return {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
+
+    def fail_post_import_verification(*_args: object) -> bool:
+        raise OSError("simulated post-import verification failure")
+
+    monkeypatch.setattr(broker, "_execute", succeed_in_private_tree)
+    monkeypatch.setattr(broker, "_transaction_file_matches", fail_post_import_verification)
+    result = broker.run(
+        "git add owned.txt",
+        str(repo),
+        force=True,
+        task_id="task-owned",
+        paths=["owned.txt"],
+    )
+
+    assert result["success"] is False
+    assert result["transaction_status"] == "recovery_required"
+    assert result["outcome_unknown"] is True
+    assert result["fail_closed"] is True
+    assert result["incident_required"] is True
+    assert result["cache_hit"] is False
+    assert incidents.outcome is not None
+    assert incidents.outcome.metadata["outcome_unknown"] is True
+    assert deleted["success"] and deleted["failure"] and deleted["suppression"]
+    assert owned.read_text(encoding="utf-8") == "transaction output"
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+
+
+def test_transaction_journal_removal_follows_durable_source_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    owned = repo / "owned.txt"
+    owned.write_text("before", encoding="utf-8")
+    _commit_task_worktree(repo, "owned.txt")
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path / "state")}, "commands": {"allow_mutating": True}},
+        artifacts=None,
+        repo_state=None,
+    )
+    broker.set_task_store(_FakeTaskStore(str(repo)))
+    install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
+    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        broker, "_fsync_transaction_directory", lambda _path: events.append("journal-dir-fsync")
+    )
+    monkeypatch.setattr(
+        broker, "_fsync_rollback_directories", lambda _root, _paths: events.append("source-dir-fsync")
+    )
+    original_restore = commands_module._restore_rollback_scope
+
+    def track_source_import(root: str, snapshot: object) -> None:
+        if Path(root) == repo:
+            events.append("source-import")
+        original_restore(root, snapshot)
+
+    monkeypatch.setattr(commands_module, "_restore_rollback_scope", track_source_import)
+    original_unlink = Path.unlink
+
+    def track_journal_unlink(path: Path, *args: object, **kwargs: object) -> None:
+        if path.name.endswith(".journal.json"):
+            events.append("journal-unlink")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", track_journal_unlink)
+
+    def succeed_in_private_tree(_argv: object, cwd: str, *_args: object, **_kwargs: object):
+        Path(cwd, "owned.txt").write_text("committed", encoding="utf-8")
+        return {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(broker, "_execute", succeed_in_private_tree)
+    result = broker.run(
+        "git add owned.txt",
+        str(repo),
+        force=True,
+        task_id="task-owned",
+        paths=["owned.txt"],
+    )
+
+    assert result["success"] is True
+    assert result["transaction_status"] == "committed"
+    assert events.index("journal-dir-fsync") < events.index("source-import")
+    assert events.index("source-import") < events.index("source-dir-fsync")
+    assert events.index("source-dir-fsync") < events.index("journal-unlink")
+    assert owned.read_text(encoding="utf-8") == "committed"
+
+
+def test_posix_rollback_exchange_preserves_concurrent_process_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "owned.txt"
+    staged = tmp_path / ".local-ai-rollback-process-test"
+    target.write_text("transaction postimage", encoding="utf-8")
+    staged.write_text("rollback preimage", encoding="utf-8")
+    expected = SimpleNamespace(safe=True, fingerprint=target.read_bytes())
+
+    def postimage_at(parent: Path, leaf: str):
+        path = parent / leaf
+        if not path.exists():
+            return SimpleNamespace(safe=True, fingerprint=None)
+        return SimpleNamespace(safe=True, fingerprint=path.read_bytes())
+
+    context = multiprocessing.get_context("spawn")
+    complete = context.Event()
+    writer = context.Process(
+        target=_write_concurrent_rollback_edit,
+        args=(str(target), complete),
+    )
+    exchanges = 0
+
+    def exchange(parent: Path, left: str, right: str) -> None:
+        nonlocal exchanges
+        left_path, right_path = parent / left, parent / right
+        scratch = parent / f".process-exchange-{exchanges}"
+        if exchanges == 0:
+            writer.start()
+            assert complete.wait(15), "concurrent writer did not complete"
+            writer.join(15)
+            assert writer.exitcode == 0
+        left_path.rename(scratch)
+        right_path.rename(left_path)
+        scratch.rename(right_path)
+        exchanges += 1
+
+    monkeypatch.setattr(commands_module, "_rollback_postimage_at", postimage_at)
+    monkeypatch.setattr(commands_module, "_rename_exchange_at", exchange)
+
+    try:
+        with pytest.raises(OSError, match="changed during atomic exchange"):
+            commands_module._restore_existing_rollback_leaf(
+                tmp_path, staged.name, target.name, expected
+            )
+        assert target.read_text(encoding="utf-8") == "concurrent edit"
+        assert staged.read_text(encoding="utf-8") == "rollback preimage"
+        assert exchanges == 2
+    finally:
+        if writer.is_alive():
+            writer.terminate()
+            writer.join(5)

@@ -2088,7 +2088,11 @@ class TaskStore:
                 delete_branch=delete_branch,
                 branch_name=branch,
                 worktree_id=worktree_id,
-                expected_metadata=wt,
+                expected_task_id=task_id,
+                expected_owner=str(wt.get("owner", "")),
+                expected_created_at=created_at,
+                expected_ttl_seconds=ttl_seconds,
+                expected_expires_at=expires_at,
             )
             if not rm_res.get("success"):
                 return {"success": False, "had_worktree": True, "cleanup": rm_res, "error": rm_res.get("error", "cleanup failed")}

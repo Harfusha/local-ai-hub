@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import inspect
 import ipaddress
@@ -5559,11 +5560,13 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/api/command/daemon", "/api/daemon"}:
                 act = str(payload.get("action", "status")).lower()
                 if act == "spawn":
-                    self._send(200, APP.services.spawn_daemon(str(payload.get("command", "")), str(payload.get("cwd", ".")), name=str(payload.get("name", "")), env=payload.get("env"))); return
+                    self._send(200, APP.services.spawn_daemon(str(payload.get("command", "")), str(payload.get("cwd", ".")), name=str(payload.get("name", "")), env=payload.get("env"), task_id=str(payload.get("task_id", "")))); return
                 elif act == "stop":
                     self._send(200, APP.services.stop_daemon(str(payload.get("daemon_id", "")), task_id=str(payload.get("task_id", "")))); return
                 else:
-                    self._send(200, APP.services.daemon_status(payload.get("daemon_id"))); return
+                    self._send(200, APP.services.daemon_status(
+                        payload.get("daemon_id"), task_id=str(payload.get("task_id", ""))
+                    )); return
             if path in {"/api/command/lint_fix", "/api/lint_fix"}:
                 self._send(200, APP.services.lint_fix(str(payload.get("root", ".")), command=payload.get("command"), paths=payload.get("paths"), tenant=tenant, timeout=payload.get("timeout"))); return
             if path in {"/api/command/http_probe", "/api/http_probe"}:
