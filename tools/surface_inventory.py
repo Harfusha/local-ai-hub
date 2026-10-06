@@ -385,7 +385,9 @@ def _extract_mcp(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], dic
     return sorted(tools, key=lambda item: item["name"]), action_aliases, conditional_actions
 
 
-def _generated_mcp_schemas(root: Path) -> tuple[dict[str, dict[str, Any]], dict[str, str], list[str]]:
+def _generated_mcp_schemas(
+    root: Path,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str], list[str], set[str]]:
     schema_dir = root / "generated" / "schemas"
     schemas: dict[str, dict[str, Any]] = {}
     evidence: dict[str, str] = {}
@@ -430,23 +432,34 @@ def _generated_mcp_schemas(root: Path) -> tuple[dict[str, dict[str, Any]], dict[
                 sys.dont_write_bytecode = previous_dont_write_bytecode
         if not schemas and not errors:
             errors.append("generated MCP schema directory contains no tool schemas")
-        return schemas, evidence, errors
+        return schemas, evidence, errors, set()
 
     source_path = str((root / "src").resolve())
     added_path = source_path not in sys.path
     previous_dont_write_bytecode = sys.dont_write_bytecode
+    disabled_tools: set[str] = set()
     sys.dont_write_bytecode = True
     if added_path:
         sys.path.insert(0, source_path)
     try:
         from local_ai_hub.config import load_config
+        from local_ai_hub.features import FeatureSet
         from local_ai_hub.generator import generate_mcp_tool_schemas
 
         # This --check fallback must stay read-only: load_config reads files and
         # generate_mcp_tool_schemas returns an in-memory mapping. Never call
         # write_all_generated here; that separate generator persists artifacts.
         config_path = root / "config.toml"
-        cfg = load_config(str(config_path)) if config_path.is_file() else load_config()
+        if config_path.is_file():
+            cfg = load_config(str(config_path))
+        else:
+            # Inventory generation must not inherit a developer's home config
+            # or LOCAL_AI_CONFIG when this checkout has no project config.
+            defaults_path = root / "defaults.toml"
+            if not defaults_path.is_file():
+                raise FileNotFoundError("project config.toml or defaults.toml is required")
+            cfg = load_config(str(defaults_path))
+        disabled_tools = set(FeatureSet.from_config(cfg).disabled_tools)
         generated = generate_mcp_tool_schemas(cfg)
         schemas = {name: json.loads(json.dumps(schema)) for name, schema in generated.items()}
         evidence = {name: "src/local_ai_hub/generator.py:generate_mcp_tool_schemas" for name in schemas}
@@ -459,7 +472,7 @@ def _generated_mcp_schemas(root: Path) -> tuple[dict[str, dict[str, Any]], dict[
                 sys.path.remove(source_path)
             except ValueError:
                 pass
-    return schemas, evidence, errors
+    return schemas, evidence, errors, disabled_tools
 
 
 def _route_literals(condition: ast.AST) -> tuple[set[str], bool]:
@@ -497,7 +510,8 @@ def _route_availability_gates(nodes: list[ast.AST]) -> list[str]:
         if not isinstance(node, ast.If) or _route_literals(node.test)[0]:
             continue
         descendants = list(ast.walk(node.test))
-        if not any(isinstance(item, ast.Name) and item.id == "APP" for item in descendants):
+        has_app = any(isinstance(item, ast.Name) and item.id == "APP" for item in descendants)
+        if not has_app:
             continue
         has_optional_lookup = any(
             isinstance(item, ast.Call)
@@ -757,6 +771,14 @@ def _merge_dynamic_routes(routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             for key, route in list(merged.items()):
                 if key[0] == entry["method"] and route["path"] == prefix and route.get("match") == "prefix":
                     source_route = merged.pop(key)
+        contract = {
+            "method": entry["method"],
+            "path_pattern": entry["path"],
+            "match": entry["match"],
+            "action": (source_route or {}).get("action", []),
+        }
+        if owner_gate := entry.get("owner_gate"):
+            contract["owner_gate"] = owner_gate
         merged[(entry["method"], entry["path"])] = {
             "method": entry["method"],
             "path": entry["path"],
@@ -766,12 +788,7 @@ def _merge_dynamic_routes(routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "owner_task": entry.get("owner_task"),
             "handler": (source_route or {}).get("handler", "dynamic registry handler not inspected"),
             "action": (source_route or {}).get("action", []),
-            "contract": {
-                "method": entry["method"],
-                "path_pattern": entry["path"],
-                "match": entry["match"],
-                "action": (source_route or {}).get("action", []),
-            },
+            "contract": contract,
             "evidence": "tools/surface_inventory.py:DYNAMIC_ROUTE_REGISTRY",
         }
     return sorted(merged.values(), key=lambda item: (item["method"], item["path"]))
@@ -1853,24 +1870,22 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
                 if call.func.value.id not in receivers:
                     continue
                 add(f"HubClient method::{method}", selector)
-                for target in inventory["client_targets"]:
+                method_targets = [
+                    target for target in inventory["client_targets"]
+                    if target["client_method"] == method
+                ]
+                for target in method_targets:
                     target_path = target["path"].split("?", 1)[0]
-                    method_targets = [
-                        target for target in inventory["client_targets"]
-                        if target["client_method"] == method
+                    same_method_target = [
+                        candidate for candidate in method_targets
+                        if candidate["method"] == target["method"]
+                        and candidate["path"] == target["path"]
                     ]
-                    for target in method_targets:
-                        target_path = target["path"].split("?", 1)[0]
-                        same_method_target = [
-                            candidate for candidate in method_targets
-                            if candidate["method"] == target["method"]
-                            and candidate["path"] == target["path"]
-                        ]
-                        if len(same_method_target) == 1 and (
-                            target_path in literals or len(method_targets) == 1
-                        ):
-                            target_name = f"{target['method']} {target['path']}"
-                            add(f"HubClient target::{target_name}::{method}", selector)
+                    if len(same_method_target) == 1 and (
+                        target_path in literals or len(method_targets) == 1
+                    ):
+                        target_name = f"{target['method']} {target['path']}"
+                        add(f"HubClient target::{target_name}::{method}", selector)
 
             http_receivers = http_client_receivers(body_nodes, function)
             http_request_helpers: dict[str, tuple[str, int]] = {}
@@ -2051,7 +2066,7 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
         modules["mcp"][1], SOURCE_FILES["mcp"]
     )
     source_tools_by_name = {item["name"]: item for item in source_mcp_tools}
-    mcp_schemas, mcp_schema_evidence, schema_errors = _generated_mcp_schemas(root)
+    mcp_schemas, mcp_schema_evidence, schema_errors, disabled_mcp_tools = _generated_mcp_schemas(root)
     mcp_tools = []
     mcp_contracts: dict[str, dict[str, Any]] = {}
     mcp_actions: dict[str, list[str]] = {}
@@ -2150,6 +2165,8 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
         if name in mcp_schemas:
             continue
         conditional = source_tool.get("registration_condition")
+        if name in disabled_mcp_tools:
+            conditional = conditional or "disabled by active feature configuration"
         if not conditional:
             drift.append(f"source MCP tool {name} has no generated schema")
         mcp_tools.append({
@@ -2203,13 +2220,13 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
         "generated_manifests": sorted(manifest_paths),
         "behavioral_test_links": _behavioral_test_links(root, {
             "mcp_tools": mcp_tools,
-            "mcp_actions": mcp_actions,
-            "conditional_mcp_actions": conditional_mcp_actions,
             "mcp_action_aliases": mcp_action_aliases,
-            "mcp_variants": mcp_variants,
             "client_methods": client_methods,
             "client_targets": client_targets,
             "http_routes": http_routes,
+            "mcp_actions": mcp_actions,
+            "conditional_mcp_actions": conditional_mcp_actions,
+            "mcp_variants": mcp_variants,
             "cli_operations": cli_contract["operations"],
         }),
         "drift": sorted(drift),
@@ -2360,37 +2377,6 @@ def _http_operation_owner_task(path: str) -> str:
     return "T04"
 
 
-def _mcp_action_owner_task(tool_name: str, action: str) -> str:
-    canonical = re.sub(r"\s+\(alias for .+\)$", "", action).lower()
-    if tool_name == "local_ai_status":
-        return "T08" if canonical == "agent_state" else "T18"
-    if tool_name == "local_ai_repo":
-        if canonical == "search":
-            return "T21"
-        if canonical in {"context_budget", "artifact", "artifacts", "cache"}:
-            return "T14"
-        if canonical in {"project_config", "path_hints"}:
-            return "T21"
-        return "T10"
-    if tool_name == "local_ai_task":
-        if any(word in canonical for word in ("conversation", "async", "wait", "continue", "cancel", "resume")):
-            return "T13"
-        if any(word in canonical for word in ("vision", "transcribe", "audio", "image")):
-            return "T17"
-        if any(word in canonical for word in ("benchmark", "evaluation", "candidate")):
-            return "T02"
-        return "T12"
-    if tool_name == "local_ai_command":
-        if canonical in {"run", "repair", "auto_fix", "format", "stage", "stash", "daemon", "network", "bundle"}:
-            return "T06"
-        if canonical in {"cancel", "retry", "replay"}:
-            return "T07"
-        return "T15"
-    if tool_name == "local_ai_coord":
-        if any(word in canonical for word in ("verify", "receipt", "evidence", "worktree", "completion")):
-            return "T09"
-        return "T08"
-    return _MCP_TOOL_OWNER_TASK.get(tool_name, "T03")
 
 
 def _operation_owner_task(finding: dict[str, Any]) -> str | None:
@@ -2532,6 +2518,43 @@ def _access_classification(surface: str) -> str:
     return "source surface recorded; access behavior requires an operation-specific gate"
 
 
+
+
+def _mcp_action_owner_task(tool_name: str, action: str) -> str:
+    canonical = re.sub(r"\s+\(alias for .+\)$", "", action).lower()
+    if tool_name == "local_ai_status":
+        return "T08" if canonical == "agent_state" else "T18"
+    if tool_name == "local_ai_repo":
+        if canonical == "search":
+            return "T21"
+        if canonical in {"context_budget", "artifact", "artifacts", "cache"}:
+            return "T14"
+        if canonical in {"project_config", "path_hints"}:
+            return "T21"
+        return "T10"
+    if tool_name == "local_ai_task":
+        if any(word in canonical for word in ("conversation", "async", "wait", "continue", "cancel", "resume")):
+            return "T13"
+        if any(word in canonical for word in ("vision", "transcribe", "audio", "image")):
+            return "T17"
+        if any(word in canonical for word in ("benchmark", "evaluation", "candidate")):
+            return "T02"
+        return "T12"
+    if tool_name == "local_ai_command":
+        if canonical in {"run", "repair", "auto_fix", "format", "stage", "stash", "daemon", "network", "bundle"}:
+            return "T06"
+        if canonical in {"cancel", "retry", "replay"}:
+            return "T07"
+        return "T15"
+    if tool_name == "local_ai_coord":
+        if any(word in canonical for word in ("verify", "receipt", "evidence", "worktree", "completion")):
+            return "T09"
+        return "T08"
+    return _MCP_TOOL_OWNER_TASK.get(tool_name, "T03")
+
+
+
+
 def coverage_rows(findings: list[dict[str, Any]], task_id: str | None = None) -> list[dict[str, Any]]:
     rows = []
     reproduction = "python tools/surface_inventory.py --check"
@@ -2633,11 +2656,14 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     for route in inventory["http_routes"]:
+        conditional_gates = route.get("conditional_gates", [])
+        condition = "; ".join(conditional_gates) or route.get("classification")
         findings.append(
             {
                 "surface": f"HTTP {route['method']}",
                 "name": route["path"],
-                "condition": route.get("classification"),
+                "condition": condition,
+                "evidence_status": route.get("evidence_status") or ("conditional" if condition else "confirmed"),
                 "owner": SOURCE_FILES["http"] if route.get("classification") is None else "tools/surface_inventory.py",
                 "owner_task": route.get("owner_task"),
                 "handler": route.get("handler"),
@@ -3047,7 +3073,11 @@ def _coverage_task_id(text: str) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--check", action="store_true", help="exit nonzero when cross-surface drift exists")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="check coverage drift without modifying docs/API_COVERAGE.md",
+    )
     parser.add_argument("--write-doc", action="store_true", help="write docs/API_COVERAGE.md from current AST evidence")
     parser.add_argument("--task-id", help="record task identifier when one was assigned")
     args = parser.parse_args(argv)
