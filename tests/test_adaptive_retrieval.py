@@ -14,7 +14,6 @@ def test_fusion_prefers_agreement_and_keeps_file_diversity() -> None:
     groups = {
         "deterministic": ["src/authority.py", "tests/test_authority.py"],
         "serena": ["src/authority.py", "src/routes.py"],
-        "codegraph": ["src/authority.py", "src/routes.py"],
         "lexical": ["docs/old_notes.md", "src/routes.py"],
     }
 
@@ -164,12 +163,12 @@ def test_external_context_backend_timeout_isolated_and_reported(tmp_path: Path) 
     assert states == {"serena": "degraded"}
 
 
-def test_concurrent_context_requests_bound_workers_per_external_backend(tmp_path: Path) -> None:
+def test_concurrent_context_requests_bound_serena_workers(tmp_path: Path) -> None:
     release = threading.Event()
     gate = threading.Barrier(3)
     lock = threading.Lock()
-    active = {"serena": 0, "codegraph": 0}
-    maximum = {"serena": 0, "codegraph": 0}
+    active = {"serena": 0}
+    maximum = {"serena": 0}
 
     class FakeRepoTools:
         @staticmethod

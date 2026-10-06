@@ -1,5 +1,7 @@
 # Adaptive Retrieval Orchestrator Implementation Plan
 
+> **Superseded by T19 (2026-09-30):** This plan is historical, not current Hub behavior. CodeGraphContext and KuzuDB are optional standalone tools outside Local AI Hub; neither is a Hub backend, dependency, or preprocessing path. References below that call CodeGraphContext a retrieval backend are superseded design text. Historical live-probe results in rollout records do not establish current support or health. See [current installation guidance](../../INSTALLATION.md) and [architecture](../../ARCHITECTURE.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task with verification checkpoints.
 
 **Goal:** Make context retrieval combine all available repository intelligence and return the highest-quality bounded context before native discovery.

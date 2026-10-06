@@ -3811,7 +3811,7 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/api/command/diff_hunk_stage", "/api/diff_hunk_stage"}:
                 self._send(200, APP.services.diff_hunk_stage(str(payload.get("root", payload.get("cwd", "."))), str(payload.get("patch", "")))); return
             if path in {"/api/command/flaky_detect", "/api/flaky_detect"}:
-                self._send(200, APP.services.test_flaky_detect(str(payload.get("root", payload.get("cwd", "."))), str(payload.get("command", "")), runs=int(payload.get("runs", 5)), timeout=int(payload.get("timeout", 30)))); return
+                self._send(200, APP.services.test_flaky_detect(str(payload.get("root", payload.get("cwd", "."))), str(payload.get("command", "")), runs=int(payload.get("runs", 5)), timeout_per_run=int(payload.get("timeout", 30)))); return
             if path in {"/api/command/webhook_replay", "/api/webhook_replay"}:
                 self._send(200, APP.services.webhook_replay(str(payload.get("url", "")), payload.get("payload", {}), secret=str(payload.get("secret", "")), signature_header=str(payload.get("signature_header", "X-Hub-Signature-256")), timeout=float(payload.get("timeout", 10.0)))); return
 
