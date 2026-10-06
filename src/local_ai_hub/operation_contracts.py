@@ -86,6 +86,10 @@ _COORD_ACTIONS = (
 )
 _WORK_ACTIONS = ("submit", "status", "wait", "get", "cancel", "continue")
 _ARTIFACT_ACTIONS = ("get", "slice", "list")
+_ADOPTION_TOOL_NAMES = (
+    "local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_rag",
+    "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_work",
+)
 
 _RESPONSE_BUDGET_PROPERTIES = {
     "max_response_tokens": {"type": "integer", "minimum": 0, "default": 0},
@@ -207,8 +211,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "detail": {"type": "string", "default": "brief"},
             "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
             "adoption_signal": {"type": "string", "enum": ["", "bypassed"], "default": ""},
-            "target_tool": {"type": "string", "default": ""},
-            "target_action": {"type": "string", "default": ""},
+            "target_tool": {"type": "string", "enum": list(_ADOPTION_TOOL_NAMES)},
+            "target_action": {"type": "string", "minLength": 1, "maxLength": 80,
+                               "pattern": "^[a-z][a-z0-9_]{0,79}$"},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
     ),
@@ -307,6 +312,12 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                     },
                 }],
             },
+            "session_id": {"type": "string", "default": ""},
+            "clone_id": {"type": "string", "default": ""},
+            "worktree_id": {"type": "string", "default": ""},
+            "branch": {"type": "string", "default": ""},
+            "repository_id": {"type": "string", "default": ""},
+            "repository_revision": {"type": "string", "default": ""},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
         conditional_properties={
@@ -446,6 +457,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "tool_outcome": {"type": "object"},
             "focus": {"type": "array", "items": {"type": "string"}},
             "include_diagnostics": {"type": "boolean", "default": False},
+            "base": {"type": "string", "default": "HEAD"},
+            "after_seq": {"type": "integer", "minimum": 0, "default": 0},
+            "topic": {"type": "string", "default": ""},
             "include_stale": {"type": "boolean", "default": False},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
@@ -497,6 +511,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "timeout_seconds": {"type": "number", "default": 90},
             "answer": {"type": "string", "default": ""},
             "return_fields": {"type": "array", "items": {"type": "string"}},
+            "response_profile": {"type": "string", "default": "compact"},
+            "extra_fields": {"type": "array", "items": {"type": "string"}},
             "max_output_tokens": {"type": "integer", "default": 0},
             "keep_failed_workspace": {"type": "boolean", "default": False},
         },
@@ -526,15 +542,19 @@ def operation_metadata(tool: str) -> dict[str, Any]:
     contract = operation_contract(tool)
     if contract is None:
         return {}
-    return {
+    raw = {
         "schema_key": contract["schema_key"],
         "feature_gate": contract["feature_gate"],
-        "feature_requirements": deepcopy(contract["feature_requirements"]),
+        "feature_requirements": contract["feature_requirements"],
         "selector_field": contract["selector_field"],
         "timeout": contract["timeout"],
         "projection": contract["projection"],
-        "actions": deepcopy(contract["actions"]),
+        "actions": contract["actions"],
     }
+    # Preserve the registry's exact Python contract shape (including tuples).
+    # Tuples remain JSON-serializable as arrays, while the JSON round-trip here
+    # made generated metadata compare differently from the authoritative registry.
+    return deepcopy(raw)
 
 
 def operation_input_schema(tool: str, action: str) -> dict[str, Any]:
@@ -655,6 +675,28 @@ def operation_output_schema(tool: str, action: str) -> dict[str, Any]:
         status_variants = _status_output_variants(action)
         if status_variants:
             schema["anyOf"] = status_variants
+    elif tool == "local_ai_rag" and action == "search":
+        schema["properties"].update({
+            "workspace": {"type": "string"},
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "chunk_no": {"type": "integer"},
+                        "text": {"type": "string"},
+                        "content_hash": {"type": "string"},
+                        "score": {"type": "number"},
+                    },
+                    "additionalProperties": True,
+                },
+            },
+            "fallback": {"type": "string"},
+            "retrieval_mode": {"type": "string"},
+            "lexical_backend": {"type": "string"},
+            "reason": {"type": "string"},
+        })
     return schema
 
 
@@ -901,12 +943,30 @@ _OUTPUT_ENVELOPE_PROPERTIES: dict[str, dict[str, Any]] = {
 }
 
 
+def _output_payload_delta(schema: dict[str, Any]) -> dict[str, Any]:
+    properties = schema.get("properties", {})
+    delta = {
+        name: value for name, value in properties.items()
+        if name not in _OUTPUT_ENVELOPE_PROPERTIES
+    }
+    if "anyOf" in schema:
+        delta["anyOf"] = schema["anyOf"]
+    return delta
+
+
 def operation_tool_output_schema(tool: str, features: Any = None) -> dict[str, Any]:
-    """Return the shared open MCP response envelope; action schemas remain available internally."""
+    """Publish the common envelope and compact action-specific output contracts."""
+    enabled_actions = operation_actions(tool, features) if operation_enabled(features, tool) else ()
+    action_schemas = {
+        action: delta
+        for action in enabled_actions
+        if (delta := _output_payload_delta(operation_output_schema(tool, action)))
+    }
     return {
         "type": "object",
         "properties": json.loads(json.dumps(_OUTPUT_ENVELOPE_PROPERTIES)),
         "additionalProperties": True,
+        "x-action-output-contracts": action_schemas,
     }
 
 
@@ -1103,7 +1163,11 @@ def _matches_json_type(value: Any, expected: Any) -> bool:
         if expected_type == "integer" and type(value) is int:
             return True
         if expected_type == "number" and isinstance(value, (int, float)) and not isinstance(value, bool):
-            return True
+            try:
+                if math.isfinite(value):
+                    return True
+            except OverflowError:
+                pass
         if expected_type == "boolean" and type(value) is bool:
             return True
         if expected_type == "object" and isinstance(value, dict):
@@ -1113,6 +1177,19 @@ def _matches_json_type(value: Any, expected: Any) -> bool:
         if expected_type == "null" and value is None:
             return True
     return not recognized
+
+
+def _non_finite_number_path(value: Any, path: str) -> str | None:
+    pending = [(value, path)]
+    while pending:
+        current, current_path = pending.pop()
+        if isinstance(current, float) and not math.isfinite(current):
+            return current_path
+        if isinstance(current, dict):
+            pending.extend((item, f"{current_path}.{key}") for key, item in current.items())
+        elif isinstance(current, list):
+            pending.extend((item, f"{current_path}[{index}]") for index, item in enumerate(current))
+    return None
 
 
 def _validate_nested_schema(value: Any, schema: dict[str, Any], path: str, action: str) -> str | None:
@@ -1212,6 +1289,9 @@ def validate_operation_arguments(
             return f"{field} is required for action='{action}'"
 
     for field, value in arguments.items():
+        non_finite_path = _non_finite_number_path(value, field)
+        if non_finite_path is not None:
+            return f"{non_finite_path} must be finite for action='{action}'"
         schema = properties.get(field) if isinstance(properties, dict) else None
         if not isinstance(schema, dict):
             continue
@@ -1252,6 +1332,17 @@ def validate_operation_arguments(
         )
         if error:
             return error
+    if tool == "local_ai_status":
+        adoption_signal = arguments.get("adoption_signal", "")
+        target_tool = arguments.get("target_tool", "")
+        target_action = arguments.get("target_action", "")
+        if adoption_signal == "bypassed":
+            if not target_tool or not target_action:
+                return "bypass report requires supported target_tool and safe target_action"
+            if target_action not in operation_actions(target_tool):
+                return f"target_action is not supported for target_tool='{target_tool}'"
+        elif target_tool or target_action:
+            return "target_tool requires adoption_signal='bypassed'"
     if tool == "local_ai_repo" and action == "verify_receipt":
         receipt = arguments.get("receipt")
         if not isinstance(receipt, dict):

@@ -41,7 +41,7 @@ class ReviewDiffRoutingTests(unittest.TestCase):
         self.assertEqual(overridden["original_model"], "qwen2.5-coder:1.5b")
         with self.assertRaisesRegex(ValueError, "configured model tier"):
             router.apply_model_override(route, "qwen2.5-coder:9b")
-        with self.assertRaisesRegex(ValueError, "configured model tier"):
+        with self.assertRaisesRegex(ValueError, "quality floor"):
             router.apply_model_override(route, "qwen2.5-coder:0.5b")
 
     def test_delegate_applies_only_configured_foreground_model_overrides(self):

@@ -11,6 +11,14 @@ POST_ROUTE_HANDLER_BOUNDARIES = MappingProxyType({
     "post_telemetry_timeline_1": "_handle_post_telemetry_timeline",
 })
 
+GET_ROUTE_HANDLER_BOUNDARIES = MappingProxyType({
+    "/api/live": "_handle_get_live",
+    "/api/live/status": "_handle_get_live_status",
+})
+
+def select_get_handler(path: str) -> str | None:
+    return GET_ROUTE_HANDLER_BOUNDARIES.get(str(path))
+
 
 def select_http_routes(method: str, path: str) -> tuple[str, ...]:
     if str(method).upper() != "POST":

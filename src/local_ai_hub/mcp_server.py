@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import atexit
+import asyncio
+import copy
 import contextvars
 import functools
 import hashlib
 import inspect
+import json
 import ntpath
 import os
 import queue
@@ -28,6 +31,7 @@ except ModuleNotFoundError as exc:
 from local_ai_hub.compact import compact_result
 from local_ai_hub.response_budget import (
     _CONTEXT_PROTECTED_KEYS,
+    _budget_rejection,
     budget_response,
     delta_response,
     result_id,
@@ -39,7 +43,7 @@ from local_ai_hub.config import load_config
 from local_ai_hub.features import FeatureSet
 from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
 from local_ai_hub.process_utils import canonical_root, is_rooted_path
-from local_ai_hub.token_accounting import account_projection, attach_accounting, context_digest, finalize_tool_accounting, json_tokens, pop_accounting
+from local_ai_hub.token_accounting import account_projection, attach_accounting, context_digest, finalize_tool_accounting, json_tokens, pop_accounting, tool_request_tokens
 from local_ai_hub.trace_context import efficiency_metadata, reset_metadata, set_metadata
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
 from local_ai_hub.routing import semantic_handoff_hint
@@ -135,6 +139,13 @@ class _MCPHubClientAdapter:
             action, requires_heavy_work = _CURRENT_OPERATIONAL_CONTEXT.get()
             kwargs.setdefault("operational_action", action or None)
             kwargs.setdefault("requires_heavy_work", requires_heavy_work)
+        try:
+            parameters = inspect.signature(self._client.get).parameters
+            has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+            if not has_var_keyword:
+                kwargs = {k: v for k, v in kwargs.items() if k in parameters}
+        except (AttributeError, TypeError, ValueError):
+            pass
         return self._client.get(path, **kwargs)
 
     def status(self, detail: str = "brief", scope: str = "process") -> Any:
@@ -149,6 +160,14 @@ class _MCPHubClientAdapter:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in {"_client", "_supports_operational_metadata"}:
+            super().__setattr__(name, value)
+        elif hasattr(self, "_client") and self._client is not None:
+            setattr(self._client, name, value)
+        else:
+            super().__setattr__(name, value)
 
 
 def _build_mcp_client(tenant: str, config_path: str | None) -> _MCPHubClientAdapter:
@@ -173,6 +192,7 @@ def _classify_mcp_operation(tool_name: str, arguments: dict[str, Any]) -> tuple[
 
 
 try:
+    # CLIENT = HubClient(tenant=TENANT)
     CLIENT = _build_mcp_client(TENANT, CONFIG_PATH)
     CFG = load_config(CONFIG_PATH)
     atexit.register(CLIENT.close)
@@ -318,6 +338,55 @@ def _resolve_action(tool_kind: str, action: str) -> str:
     return tool_aliases.get(cleaned, cleaned)
 
 
+def _action_kind_for_tool(tool_name: str) -> str:
+    return {
+        "local_ai_coord": "coord",
+        "local_ai_command": "command",
+        "local_ai_repo": "repo",
+        "local_ai_task": "task",
+    }.get(tool_name, "")
+
+
+def _action_values_with_aliases(tool_name: str, features: Any = None) -> tuple[str, ...]:
+    tool_kind = _action_kind_for_tool(tool_name)
+    actions = operation_actions(tool_name, features)
+    aliases = _ACTION_ALIASES.get(tool_kind, {})
+    return tuple(dict.fromkeys((
+        *actions,
+        *(alias for alias, canonical in aliases.items() if canonical in actions),
+    )))
+
+
+def _input_schema_with_action_aliases(tool_name: str, schema: dict[str, Any]) -> dict[str, Any]:
+    """Publish short actions with the same conditional schema as their canonical action."""
+    tool_kind = _action_kind_for_tool(tool_name)
+    aliases = _ACTION_ALIASES.get(tool_kind, {})
+    if not aliases:
+        return schema
+
+    result = copy.deepcopy(schema)
+    actions = set(operation_actions(tool_name, FEATURES))
+    selector_schema = result.get("properties", {}).get("action")
+    if not isinstance(selector_schema, dict):
+        return result
+    selector_schema["enum"] = list(_action_values_with_aliases(tool_name, FEATURES))
+
+    conditions = result.setdefault("allOf", [])
+    by_action = {
+        row.get("if", {}).get("properties", {}).get("action", {}).get("const"): row
+        for row in conditions
+        if isinstance(row, dict)
+    }
+    for alias, canonical in aliases.items():
+        canonical_rule = by_action.get(canonical)
+        if canonical not in actions or canonical_rule is None:
+            continue
+        alias_rule = copy.deepcopy(canonical_rule)
+        alias_rule["if"]["properties"]["action"]["const"] = alias
+        conditions.append(alias_rule)
+    return result
+
+
 def _normalize_deterministic(val: Any) -> Any:
     """Sort dictionary keys and normalize microsecond timestamps to maintain stable prompt caches."""
     if isinstance(val, dict):
@@ -351,7 +420,11 @@ def _specialized_note(tool_name: str) -> str:
 
 def _desc_status() -> str:
     if LEAN_SCHEMAS:
-        return "Health, cache, telemetry, and agent_state inspector. Aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: brief, cache, telemetry, full, agent_state."
+        return (
+            "Health, cache, telemetry, and agent_state inspector. Aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: brief, cache, telemetry, full, agent_state."
+            " Use when: make one bounded health, cache, or telemetry check."
+            " Skip when: repository evidence or task work is needed."
+        )
     ollama_note = " ollama_online," if FEATURES.ollama else ""
     agent_state_note = " With Agent OS enabled, `detail=agent_state` summarizes durable task state." if FEATURES.agent_os else ""
     return (
@@ -386,6 +459,8 @@ def _desc_task() -> str:
             " Returns unsupported=true for local-model actions."
             " Semantic generation, exploration, reasoning, review, independent second opinions, and semantic compression are unavailable until a local model backend is enabled."
             " Use deterministic/indexed evidence only."
+            " Use when: a bounded semantic task requires a local model backend."
+            " Skip when: the task is trivial, pure evidence lookup, security/privacy constrained, or local-model tasks are disabled."
         )
     if LEAN_SCHEMAS:
         return (
@@ -394,6 +469,8 @@ def _desc_task() -> str:
             f"{_semantic_handoff_contract(local_enabled, FEATURES.status)}"
             "Command failure diagnosis remains disabled by default; never pass raw logs or open-ended coding. "
             "Local AI Hub does not route or manage native Codex agents. "
+            "Use when: bounded local generation, compression, review, routing, second opinion, or named advisory subagent work is needed. "
+            "Skip when: task is trivial, pure evidence lookup, security/privacy constrained, no useful independent scope, or Codex-owned subagent orchestration is the right owner. "
             f"{_actions_note(FEATURES.supported_task_actions())}"
         )
     profile_note = ""
@@ -436,9 +513,15 @@ def _desc_repo() -> str:
             " Semantic generation, reasoning, review, independent second opinions, and compression are unavailable until a local model backend is enabled."
             " Use deterministic/indexed evidence only for exact facts, symbols, diff, tests, and verification."
             " Native fallback requires terminal=true and retryable=false."
+            " Use when: indexed repository evidence is needed."
+            " Skip when: the task is not repository-scoped or fresh evidence already answers it."
         )
     if LEAN_SCHEMAS:
-        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+        return (
+            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+            " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
+            " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
+        )
     _ = ""
     if FEATURES.has_semantic():
         _ = f" -> {FEATURES.semantic_hint()} for relationships"
@@ -480,7 +563,11 @@ def _desc_repo() -> str:
 
 def _desc_rag() -> str:
     if LEAN_SCHEMAS:
-        return "Semantic RAG & documentation search with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: search, index, docset_search, ingest_document."
+        return (
+            "Semantic RAG and documentation search with aggregate-bounded responses; response controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Actions: search, index, list, docset_index, docset_search, ingest_document, ingest_diagram."
+            " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
+            " Skip when: deterministic/indexed evidence is sufficient or RAG is disabled."
+        )
     if not FEATURES.rag:
         return (
             "Semantic retrieval — RAG backend is disabled on this installation (`features.rag=false`)."
@@ -493,6 +580,7 @@ def _desc_rag() -> str:
         " Keep queries bounded and use it only for bounded semantic retrieval, not open-ended agent orchestration."
         f"{_actions_note(FEATURES.supported_rag_actions())}"
         f"{_specialized_note('local_ai_rag')}"
+        " Response controls: max_response_tokens; response_profile minimal|compact|delta; reuse_key; extra_fields selects additional safe response fields retained by the compact projector."
         " Index is file-incremental and query-cached."
         " Do not trigger index repeatedly for a fresh stable workspace."
         " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
@@ -502,7 +590,11 @@ def _desc_rag() -> str:
 
 def _desc_command() -> str:
     if LEAN_SCHEMAS:
-        return "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Speculative lint is opt-in, read-only, debounced, changed-path scoped, and cancellable. Actions: run, auto_fix, format, patch_and_verify, repair_loop, speculative_lint."
+        return (
+            "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Speculative lint is opt-in, read-only, debounced, changed-path scoped, and cancellable. Actions: run, auto_fix, format, patch_and_verify, repair_loop, speculative_lint."
+            " Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed."
+            " Skip when: no command is needed or a fresh cached result already answers it."
+        )
     agent_os_note = " Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts." if FEATURES.agent_os else ""
     return (
         "Bounded broker for test, lint, typecheck, or build commands; also repeatable analysis/read-only commands."
@@ -522,7 +614,11 @@ def _desc_command() -> str:
 
 def _desc_coord() -> str:
     if LEAN_SCHEMAS:
-        return "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
+        return (
+            "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
+            " Use when: any non-trivial task benefits from durable state/verification, or Hub workers share edit paths or reusable findings."
+            " Skip when: task is a trivial one-step lookup with no shared state to preserve."
+        )
     if FEATURES.agent_os:
         agent_os_note = (
             " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task contract first;"
@@ -552,11 +648,11 @@ def _desc_coord() -> str:
 
 def _desc_work() -> str:
     if LEAN_SCHEMAS:
-        return "Delegate closed, low-risk work with a verified handoff and aggregate-bounded response; optional max_response_tokens, response_profile, reuse_key. Skip micro-edits and live discussion. Actions: submit, status, wait, get, cancel."
+        return "Delegate closed, low-risk work with a verified handoff and aggregate-bounded response. Common controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Work projection controls: return_fields selects top-level fields; max_output_tokens bounds handoff text; work profiles are minimal, compact, standard, debug. Skip micro-edits and live discussion. Actions: submit, status, wait, get, cancel, continue."
     return (
         "Delegate one closed, low-risk work item with a verified handoff to Local AI Hub: plan a bounded dependency DAG, execute the smallest independently verifiable steps, "
         "apply transactional leased edits, run safe validation, verify the integrated result against the original request, and return a compact handoff. "
-        "Actions: submit, status, wait, get, cancel, continue. response_profile=minimal|compact|standard|debug; return_fields selects only needed top-level fields; "
+        "Actions: submit, status, wait, get, cancel, continue. Common response controls: max_response_tokens, response_profile=minimal|compact|delta, reuse_key, extra_fields; work projection profile=minimal|compact|standard|debug; return_fields selects only needed top-level fields; "
         "max_output_tokens bounds the handoff while full details remain artifact-backed. Use when: the task can be delegated as a self-contained repository outcome. "
         "Skip when: the agent must make an unresolved product decision, credentials/network are required, only one tiny lookup is needed, or work is micro-edits/live discussion."
     )
@@ -565,7 +661,11 @@ def _desc_work() -> str:
 def _desc_artifact() -> str:
     if LEAN_SCHEMAS:
         actions = ", ".join(operation_actions("local_ai_artifact"))
-        return f"Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: {actions}."
+        return (
+            f"Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: {actions}."
+            " Use when: exact source or evidence text is required after indexed discovery."
+            " Skip when: no source slice is needed or the existing compact result is sufficient."
+        )
     return (
         "Fetch one exact source or log slice or bounded binary artifact metadata. Binary payloads are never inlined in MCP responses. Evidence IDs start with E."
         " Use when: exact source or evidence text is required after indexed discovery."
@@ -573,17 +673,40 @@ def _desc_artifact() -> str:
     )
 
 
-TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task"))
+TaskAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_task", FEATURES))
+
+
+_REPO_ACTIONS = (
+    "profile", "search", "map", "code_index", "semantic", "intelligence",
+    "deterministic", "context", "route", "delegate", "solve", "review_diff", "impact",
+    "refactor_impact", "resolve_imports", "generate_tests", "validate_patch",
+    "audit_dependencies", "ast_outline", "test_matrix", "security_audit", "git_status", "repo_state",
+    "synthesize_commit", "verify", "preprocess", "preprocess_status", "preprocess_refresh",
+    "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister",
+    "context_compile", "verify_receipt", "verify_completion",
+    "cross_project_graph", "cross_project_symbols", "cross_project_impact",
+    "cross_repo_graph", "cross_repo_symbols", "cross_repo_impact",
+    "call_graph_diff", "semantic_diff",
+    "affected_tests", "topology", "ast_refactor",
+    "generate_mocks", "split_changes", "synthesize_rules",
+    "code_invariants", "generate_dataset", "profile_digest",
+    "callers", "dead_code", "secret_scan", "schema_inspect", "explain_query", "env_compat",
+    "circular_dependencies", "generate_types", "complexity", "api_spec", "dependency_slice", "migration_drift", "package_audit",
+    "structural_search", "context_budget",
+    "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
+    "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize", "investigate",
+    "diagnose", "briefing", "pipeline",
+)
 
 
 def _repo_action_type(features: Any) -> Any:
-    return Literal.__getitem__(operation_actions("local_ai_repo", features))
+    return Literal.__getitem__(_action_values_with_aliases("local_ai_repo", features))
 
 
 RepoAction: TypeAlias = _repo_action_type(FEATURES)
 RagAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_rag"))
-CommandAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_command"))
-CoordAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_coord"))
+CommandAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_command", FEATURES))
+CoordAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_coord", FEATURES))
 StatusDetail: TypeAlias = Literal.__getitem__(operation_actions("local_ai_status"))
 _STATUS_ACTION_ALIASES = ("status", "health", "check", "info")
 StatusAction: TypeAlias = Literal.__getitem__(
@@ -627,6 +750,7 @@ def _release_root_family_on_exit(fn: Any) -> Any:
 
 _CURRENT_EXTRA_FIELDS: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar("_CURRENT_EXTRA_FIELDS", default=None)
 _CURRENT_RESPONSE_OPTIONS: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("_CURRENT_RESPONSE_OPTIONS", default={})
+_PENDING_MCP_ACCOUNTING: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar("_PENDING_MCP_ACCOUNTING", default=None)
 _CURRENT_ROOT_FAMILY_RESERVATION: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "_CURRENT_ROOT_FAMILY_RESERVATION", default=None
 )
@@ -639,10 +763,11 @@ _STATUS_PROTECTED_KEYS = (
     "expires_at", "wait_timeout_seconds", "outcome_unknown", "coalesced", "idempotent_replay",
     "admission_state", "terminal", "retryable", "in_progress",
     "worktree_id", "worktree_path", "lease_id", "branch",
+    "enabled", "active_tasks", "tasks_count", "incidents_count", "candidates_count", "status",
 )
 _RELIABILITY_PROTECTED_KEYS = (
     "success", "terminal", "retryable", "degraded", "stale",
-    "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
+    "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
 )
 _REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
 _REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()
@@ -1142,6 +1267,31 @@ def _tool_catalog_schema_tokens() -> int:
         return 0
 
 
+def _record_tool_accounting(
+    *, tool_name: str, arguments: dict[str, Any], response: Any,
+    measured: dict[str, Any], metadata: dict[str, Any], result_id_value: str = "",
+) -> None:
+    try:
+        event = finalize_tool_accounting(
+            tool_name=tool_name, arguments=arguments, response=response, measured=measured,
+            schema_tokens_est=_tool_catalog_schema_tokens(), metadata=metadata,
+        )
+        event.update({"tenant": TENANT, "agent": AGENT_NAME, "created_at": time.time()})
+        CONTEXT_LEDGER.record(
+            tool=tool_name,
+            operation=str(arguments.get("action") or "default"),
+            request_tokens=event["agent_tool_request_tokens_est"],
+            response_tokens=event["agent_tool_response_tokens_est"],
+            saved_tokens=event["projected_response_saved_tokens_est"],
+            cache_outcome=event["cache_outcome"],
+            result_id=result_id_value,
+            session_id=TENANT,
+        )
+        _ACCOUNTING_REPORTER.record(event)
+    except Exception:
+        pass
+
+
 def _instrumented_tool():
     def decorator(fn: Any) -> Any:
         signature = inspect.signature(fn)
@@ -1241,26 +1391,18 @@ def _instrumented_tool():
                         clean = candidate
                         handoff_added = True
             _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000, recommended=handoff_added)
-            try:
-                event = finalize_tool_accounting(
-                    tool_name=fn.__name__, arguments=arguments, response=clean, measured=measured,
-                    schema_tokens_est=_tool_catalog_schema_tokens(),
-                    metadata=metadata,
+            pending = _PENDING_MCP_ACCOUNTING.get()
+            if pending is None:
+                _record_tool_accounting(
+                    tool_name=fn.__name__, arguments=arguments, response=clean,
+                    measured=measured, metadata=metadata,
+                    result_id_value=clean["result_id"] if isinstance(clean, dict) and "result_id" in clean else "",
                 )
-                event.update({"tenant": TENANT, "agent": AGENT_NAME, "created_at": time.time()})
-                CONTEXT_LEDGER.record(
-                    tool=fn.__name__,
-                    operation=str(arguments.get("action") or "default"),
-                    request_tokens=event.get("agent_tool_request_tokens_est", 0),
-                    response_tokens=event.get("agent_tool_response_tokens_est", 0),
-                    saved_tokens=event.get("projected_response_saved_tokens_est", 0),
-                    cache_outcome=event.get("cache_outcome", ""),
-                    result_id=clean.get("result_id", "") if isinstance(clean, dict) else "",
-                    session_id=TENANT,
-                )
-                _ACCOUNTING_REPORTER.record(event)
-            except Exception:
-                pass
+            else:
+                pending.append({
+                    "tool_name": fn.__name__, "arguments": arguments, "response": clean,
+                    "measured": measured, "metadata": metadata,
+                })
             return clean
 
         return wrapped
@@ -1446,6 +1588,7 @@ def local_ai_task(
     latency_budget_ms: float = 0.0,
     job_action: str = "reason",
     job_id: str = "",
+    request_id: str = "",
     timeout_seconds: float = 90,
     evaluation_task_id: str = "",
     evaluation_cohort: str = "",
@@ -1511,6 +1654,12 @@ def local_ai_task(
     )
     if mode_rejection is not None:
         return mode_rejection
+    if action in {"submit", "status", "wait", "result", "cancel"} and not getattr(FEATURES, "async_jobs", False):
+        return {
+            "success": False,
+            "unsupported": True,
+            "error": "Async job lifecycle is disabled (async_jobs.enabled=false)",
+        }
     # The static contract requires summary, evidence, analysis, limitations
     # and next step. Requests below this floor routinely truncate after a
     # generic preamble, especially on 7b/9b models. Clamp instead of rejecting
@@ -1566,7 +1715,7 @@ def local_ai_task(
             "action": action, "job_action": job_action, "job_id": job_id, "timeout_seconds": timeout_seconds,
             "task": task, "context": context, "candidate": candidate, "complexity": complexity,
             "max_tokens": max_tokens, "tasks": tasks or [], "profile": profile, "root": root, "workspace": workspace,
-        }, timeout=_timeout("quick")), "status")
+        }, timeout=_timeout("quick"), request_id=request_id or None), "status")
     budgeted_actions = {"continue", "delegate", "explore", "reason", "review", "second_opinion", "compress"}
     if task_id.strip() and action in budgeted_actions and ROOT_FAMILY_BUDGET.default_limit:
         family_key = hashlib.sha1(_client_root(root).encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
@@ -1881,7 +2030,10 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
             authoritative[key] = safe_value[key]
     evidence = pack.get("evidence")
     if isinstance(evidence, list):
-        ids = [item.get("evidence_id") for item in evidence if isinstance(item, dict) and item.get("evidence_id")]
+        ids = list(dict.fromkeys(
+            item.get("evidence_id") for item in evidence
+            if isinstance(item, dict) and item.get("evidence_id")
+        ))
         authoritative["evidence_ids"] = ids[:24]
     if "evidence_ids" not in authoritative:
         if "evidence_ids" in pack:
@@ -1944,6 +2096,16 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
         extra_fields=extra_fields,
     )
     if isinstance(final, dict) and ("adaptive_context_pack" in safe_value or "context_pack" in safe_value or safe_value.get("guarded")):
+        pack_key = "adaptive_context_pack" if "adaptive_context_pack" in final else "context_pack"
+        context_pack = final.get(pack_key)
+        if isinstance(context_pack, dict) and isinstance(context_pack.get("evidence"), list):
+            context_pack = dict(context_pack)
+            context_pack["evidence"] = [
+                {key: item[key] for key in ("evidence_id", "path", "start_line", "end_line", "source") if key in item}
+                for item in context_pack["evidence"][:24]
+                if isinstance(item, dict)
+            ]
+            final[pack_key] = context_pack
         final["provenance"] = evidence_meta(
             "repo.context",
             str(authoritative.get("repo_revision", safe_value.get("repo_revision", ""))),
@@ -1954,14 +2116,53 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     options = _CURRENT_RESPONSE_OPTIONS.get()
     requested, profile, reuse_key, enabled = _response_budget("context", options)
     if enabled:
+        protected_context_keys = (
+            "success", "context_id", "repo_revision", "evidence_ids",
+            "adaptive_context_pack" if "adaptive_context_pack" in final else "context_pack",
+        )
+        protected_context_keys += tuple(
+            key for key in (
+                "complete", "partial", "task_context", "etag", "omitted_sections",
+                "stop_code", "degraded_reason", "context_truncated", "context_chars",
+                "requires_override", "requires_approval", "decision_recorded",
+                "decision_persisted", "task_status", "waiting", "unchanged", "reuse_pointer",
+            ) if key in final
+        )
+        if requested >= 256:
+            protected_context_keys += tuple(
+                key for key in (
+                    "changed_paths", "stale", "delta_from", "since_hash", "warnings", "degraded",
+                    "fallback_used",
+                ) if key in final
+            )
+        elif requested <= 160:
+            protected_context_keys += tuple(
+                key for key in ("stale", "warnings", "delta_from", "since_hash") if key in final
+            )
+        if requested >= 512:
+            protected_context_keys += tuple(
+                key for key in ("contract", "provenance") if key in final
+            )
+        protected_context_keys = tuple(
+            key for key in protected_context_keys if key in final
+        )
+        # Match the token count to the exact key order returned to the MCP
+        # serializer. Sorting after budgeting can change tokenization.
+        final = _normalize_deterministic(final)
         final = budget_response(
             final,
             max_tokens=requested,
             profile=profile,
             reuse_key=reuse_key,
-            protected_keys=tuple(authoritative),
+            protected_keys=protected_context_keys,
             token_metadata=efficiency_metadata(),
         )
+        budget_meta = final.get("response_budget") if isinstance(final, dict) else None
+        if isinstance(budget_meta, dict) and "returned_tokens" in budget_meta:
+            budget_meta["returned_tokens"] = json_tokens(final)
+            if json_tokens(final) > requested:
+                return _context_input_error("response budget metadata exceeds max_response_tokens")
+        return final
     return _normalize_deterministic(final)
 
 
@@ -2084,9 +2285,15 @@ def _local_ai_repo_impl(
             "scope": "repo_search",
         }] if path else [])
         search_path_hints.extend((path_hints or [])[:64])
+        normalized_hints, hint_error = _normalize_repo_search_path_hints(root, search_path_hints)
+        if hint_error is not None:
+            return {
+                "success": False, "error": hint_error, "status_code": 400,
+                "terminal": True, "retryable": False,
+            }
         return _compact(CLIENT.post("/api/search", {
             "root": root, "query": query or task, "top_k": 12, "enrich": enrich,
-        }, timeout=min(120, _timeout("quick")), path_hints=search_path_hints or None), "search", extra_fields=extra if extra else None)
+        }, timeout=min(120, _timeout("quick")), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
@@ -2805,6 +3012,7 @@ def local_ai_coord(
     focus: list[str] | None = None,
     preload_profile: str = "",
     since_hash: str = "",
+    expected_version: int | None = None,
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_delete, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete, swarm_dispatch, swarm_step, swarm_status, swarm_list, swarm_cancel. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
@@ -2945,9 +3153,12 @@ def local_ai_coord(
     if action == "leases":
         return _compact(CLIENT.get(f"/api/leases?root={quote(root)}"))
     if action == "memo_put":
-        return _compact(CLIENT.post("/api/memory/put", {
+        payload = {
             "root": root, "key": key, "value": value, "ttl_seconds": ttl_seconds or 604800,
-        }))
+        }
+        if expected_version is not None:
+            payload["expected_version"] = expected_version
+        return _compact(CLIENT.post("/api/memory/put", payload))
     if action == "memo_get":
         return _compact(CLIENT.post("/api/memory/get", {"root": root, "key": key}))
     if action == "memo_search":
@@ -3111,6 +3322,21 @@ _all_desc_map = {
     "local_ai_work": _desc_work,
 }
 if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
+    def _async_mcp_adapter(sync_fn: Any) -> Any:
+        @functools.wraps(sync_fn)
+        async def _call(*args: Any, **kwargs: Any) -> Any:
+            return await asyncio.to_thread(sync_fn, *args, **kwargs)
+
+        return _call
+
+    # FastMCP invokes sync callables on its event loop. Keep direct Python
+    # functions synchronous, but offload registered MCP callables so one
+    # blocking tool cannot stall other requests on the same server.
+    for _registered_tool in mcp._tool_manager._tools.values():
+        if not _registered_tool.is_async:
+            _registered_tool.fn = _async_mcp_adapter(_registered_tool.fn)
+            _registered_tool.is_async = True
+
     for _tool_name, _desc_fn in _all_desc_map.items():
         if _tool_name in mcp._tool_manager._tools:
             mcp._tool_manager._tools[_tool_name].description = _desc_fn()
@@ -3127,66 +3353,366 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         if _registered_tool is None or not _actions:
             continue
         if hasattr(_registered_tool, "parameters"):
-            _registered_tool.parameters = operation_tool_input_schema(_tool_name, FEATURES)
+            _registered_tool.parameters = _input_schema_with_action_aliases(
+                _tool_name, operation_tool_input_schema(_tool_name, FEATURES)
+            )
         _output_schema = operation_tool_output_schema(_tool_name, FEATURES)
         _fn_metadata = getattr(_registered_tool, "fn_metadata", None)
         if hasattr(_fn_metadata, "output_schema"):
             _fn_metadata.output_schema = _output_schema
             getattr(_registered_tool, "__dict__", {}).pop("output_schema", None)
 
-    async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
-        validation = validate_operation_call(name, arguments, features=FEATURES)
-        if validation is not None:
-            status_code, error = validation
-            payload = {
-                "success": False,
-                "status_code": status_code,
-                "terminal": True,
-                "retryable": False,
-                "error": error,
-            }
-            return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)
+    def _mcp_wire_view(value: Any, *, structured: bool) -> dict[str, Any]:
+        wire: dict[str, Any] = {"content": [{"type": "text", "text": json_dumps(value)}]}
+        if structured:
+            wire["structuredContent"] = value
+            wire["isError"] = False
+        return wire
+
+    def _mcp_bounded_error(value: dict[str, Any], requested: int) -> Any:
+        original = json_tokens(_mcp_wire_view(value, structured=True))
+        error = str(value.get("error") or "tool failed")
+        metadata_variants = (
+            {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens"},
+            {"requested_tokens": requested, "returned_tokens": 0},
+        )
+        field_drops = ((), ("status_code",), ("status_code", "terminal", "retryable"))
+        for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
+            for dropped in field_drops:
+                candidate = {
+                    "success": False,
+                    "error": error[:error_chars],
+                    **{
+                        key: value[key]
+                        for key in ("status", "status_code", "terminal", "retryable")
+                        if key in value and key not in dropped
+                    },
+                }
+                for key in (*_CONTEXT_PROTECTED_KEYS, "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
+                    if key != "error" and key in value and key not in dropped:
+                        candidate[key] = value[key]
+                for metadata in metadata_variants:
+                    trial = dict(candidate)
+                    trial["response_budget"] = dict(metadata)
+                    for _ in range(16):
+                        returned = json_tokens(_mcp_wire_view(trial, structured=True))
+                        trial["response_budget"]["returned_tokens"] = returned
+                        if json_tokens(_mcp_wire_view(trial, structured=True)) == returned:
+                            break
+                    if json_tokens(_mcp_wire_view(trial, structured=True)) <= requested:
+                        content = [mcp_types.TextContent(type="text", text=json_dumps(trial))]
+                        return content, trial
+        return None
+
+    def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any:
+        options = {
+            "max_response_tokens": arguments.get("max_response_tokens", 0),
+            "response_profile": arguments.get("response_profile", ""),
+            "reuse_key": arguments.get("reuse_key", ""),
+            "tool": name,
+        }
         try:
-            raw = await mcp._tool_manager.call_tool(name, arguments, convert_result=False)
-        except Exception as exc:
-            # FastMCP/Pydantic validation errors otherwise escape as a raw
-            # traceback. Keep the public MCP boundary machine-readable and
-            # bounded; callers can correct the advertised enum/schema.
-            text = str(exc).strip().splitlines()[0][:500]
-            payload = {
-                "success": False,
-                "status_code": 400 if type(exc).__name__ == "ValidationError" else 500,
-                "terminal": True,
-                "retryable": False,
-                "error": f"MCP input validation failed: {text}" if type(exc).__name__ == "ValidationError" else f"MCP tool failed: {text}",
-            }
-            return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)
-        selector = "detail" if name == "local_ai_status" else "action"
-        action = arguments.get(selector)
-        if name == "local_ai_status":
-            alias = arguments.get("action")
-            if isinstance(alias, str) and alias in {"status", "health", "check", "info"}:
-                action = "brief"
-            elif isinstance(alias, str) and alias in operation_actions(name, FEATURES):
-                action = alias
-        if not isinstance(action, str) or action not in operation_actions(name, FEATURES):
-            available_actions = operation_actions(name, FEATURES)
-            action = available_actions[0] if available_actions else ""
-        output_error = validate_operation_output(name, action, raw)
-        if output_error is not None:
-            payload = {
-                "success": False,
-                "status_code": 500,
-                "terminal": True,
-                "retryable": False,
-                "error": f"MCP output contract failed: {output_error}",
-            }
-            return ([mcp_types.TextContent(type="text", text=json_dumps(payload))], payload)
-        if isinstance(raw, (dict, list)):
-            return ([mcp_types.TextContent(type="text", text=json_dumps(raw))], raw)
-        if isinstance(raw, str):
-            return [mcp_types.TextContent(type="text", text=raw)]
-        return await mcp._tool_manager.call_tool(name, arguments, convert_result=True)
+            explicit_limit = int(options["max_response_tokens"] or 0)
+        except (TypeError, ValueError, OverflowError):
+            explicit_limit = 0
+        rejection = _subminimum_budget_rejection(options)
+        if rejection is not None:
+            requested, profile, reuse_key, enabled = explicit_limit, "minimal", str(options.get("reuse_key") or ""), RESPONSE_BUDGET_ENABLED
+            value = rejection
+        else:
+            requested, profile, reuse_key, enabled = _response_budget(
+                str(arguments.get("action") or name), options
+            )
+            if explicit_limit > 0:
+                requested = explicit_limit
+        if not enabled:
+            return ([mcp_types.TextContent(type="text", text=json_dumps(value))], value)
+
+        if (
+            isinstance(value, dict)
+            and value.get("success") is False
+            and "error" in value
+            and json_tokens(_mcp_wire_view(value, structured=True)) > requested
+        ):
+            bounded_error = _mcp_bounded_error(value, requested)
+            if bounded_error is not None:
+                return bounded_error
+
+        action = str(arguments.get("action") or "").lower()
+        protected = (
+            _CONTEXT_PROTECTED_KEYS if action in {"context", "context_compile"}
+            else _STATUS_PROTECTED_KEYS if name == "local_ai_status"
+            else ()
+        )
+        original_tokens = json_tokens(_mcp_wire_view(value, structured=True))
+        raw_efficiency = value.get("token_efficiency") if isinstance(value, dict) else None
+        token_metadata = raw_efficiency if isinstance(raw_efficiency, dict) else None
+
+        if action in {"context", "context_compile"} and requested <= 128 and isinstance(value, dict):
+            pack = value.get("adaptive_context_pack")
+            evidence = pack.get("evidence") if isinstance(pack, dict) else None
+            file_line_items = [
+                item for item in evidence
+                if isinstance(item, dict) and any(key in item for key in ("path", "start_line", "end_line"))
+            ] if isinstance(evidence, list) else []
+            if file_line_items:
+                compact_pack = {
+                    key: pack[key] for key in ("context_id", "repo_revision", "stale") if key in pack
+                }
+                compact_pack["evidence"] = [
+                    {key: item[key] for key in ("evidence_id", "path", "start_line", "end_line", "source") if key in item}
+                    for item in file_line_items[:1]
+                ]
+                compact_value = {
+                    key: value[key] for key in ("success",) if key in value
+                }
+                compact_value["adaptive_context_pack"] = compact_pack
+                compact_value["response_budget"] = {
+                    "requested_tokens": requested, "original_tokens": original_tokens,
+                    "returned_tokens": 0, "truncated": True, "unit": "estimated_tokens",
+                }
+                for structured in (True, False):
+                    for _ in range(16):
+                        returned = json_tokens(_mcp_wire_view(compact_value, structured=structured))
+                        compact_value["response_budget"]["returned_tokens"] = returned
+                        finalized = json_tokens(_mcp_wire_view(compact_value, structured=structured))
+                        if finalized == returned and finalized <= requested:
+                            content = [mcp_types.TextContent(type="text", text=json_dumps(compact_value))]
+                            return content, compact_value if structured else None
+
+        inner_limits = list(dict.fromkeys((requested, max(64, requested - 32), max(64, requested // 2), 64)))
+        for inner_limit in inner_limits:
+            candidate = budget_response(
+                copy.deepcopy(value),
+                max_tokens=inner_limit,
+                profile=profile,
+                reuse_key=reuse_key,
+                protected_keys=protected,
+                token_metadata=token_metadata,
+                evidence_store=None,
+            )
+            if isinstance(candidate, dict):
+                previous_meta = candidate.get("response_budget")
+                previous_meta = previous_meta if isinstance(previous_meta, dict) else {}
+                candidate["response_budget"] = {
+                    "requested_tokens": requested,
+                    "original_tokens": original_tokens,
+                    "returned_tokens": 0,
+                    "truncated": original_tokens > requested,
+                    "reused": bool(previous_meta.get("reused")),
+                    "unit": "estimated_tokens",
+                    **({"rejected": True} if previous_meta.get("rejected") else {}),
+                }
+            for _ in range(16):
+                returned_tokens = json_tokens(_mcp_wire_view(candidate, structured=True))
+                if isinstance(candidate, dict):
+                    accounting = candidate.get("token_efficiency")
+                    if isinstance(accounting, dict):
+                        accounting["protocol_tokens_est"] = tool_request_tokens(name, arguments) + returned_tokens
+                        baseline = accounting.get("baseline_tokens_est")
+                        if isinstance(baseline, int) and not isinstance(baseline, bool):
+                            signed_delta = baseline - returned_tokens
+                            accounting["token_savings_delta_est"] = signed_delta
+                            accounting["avoided_payload_tokens_est"] = max(0, signed_delta)
+                    candidate["response_budget"]["returned_tokens"] = returned_tokens
+                    candidate["response_budget"]["truncated"] = returned_tokens < original_tokens
+                finalized = json_tokens(_mcp_wire_view(candidate, structured=True))
+                if finalized == returned_tokens and finalized <= requested:
+                    content = [mcp_types.TextContent(type="text", text=json_dumps(candidate))]
+                    return content, candidate
+                budget_meta = candidate.get("response_budget") if isinstance(candidate, dict) else None
+                if (
+                    finalized > requested
+                    and isinstance(budget_meta, dict)
+                    and budget_meta.get("reused") is False
+                ):
+                    budget_meta.pop("reused", None)
+
+        # The normal compactor has a 64-token floor. At the smallest transport
+        # budgets, build a tighter protected rejection so MCP's required
+        # structured result still fits its actual CallToolResult envelope.
+        for inner_limit in dict.fromkeys((max(32, requested // 3), max(24, requested // 4), 16, 8)):
+            rejection_value = _budget_rejection(
+                requested=inner_limit,
+                original=original_tokens,
+                source=value,
+                protected_keys=tuple(dict.fromkeys(("error", "evidence_id", "evidence_ids", *_CONTEXT_PROTECTED_KEYS, *protected))),
+            )
+            metadata_variants = (
+                {
+                    "requested_tokens": requested, "original_tokens": original_tokens,
+                    "returned_tokens": 0, "truncated": True, "rejected": True,
+                    "unit": "estimated_tokens",
+                },
+                {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens", "rejected": True},
+                {"requested_tokens": requested, "returned_tokens": 0},
+                {"returned_tokens": 0, "unit": "est"},
+                {"returned_tokens": 0},
+                {},
+            )
+            for metadata in metadata_variants:
+                candidate = copy.deepcopy(rejection_value)
+                if metadata:
+                    candidate["response_budget"] = dict(metadata)
+                else:
+                    candidate.pop("response_budget", None)
+                for _ in range(16):
+                    wire = _mcp_wire_view(candidate, structured=True)
+                    returned_tokens = json_tokens(wire)
+                    if isinstance(candidate.get("response_budget"), dict):
+                        candidate["response_budget"]["returned_tokens"] = returned_tokens
+                    finalized = json_tokens(_mcp_wire_view(candidate, structured=True))
+                    if finalized == returned_tokens and finalized <= requested:
+                        content = [mcp_types.TextContent(type="text", text=json_dumps(candidate))]
+                        return content, candidate
+
+        # A tiny deterministic error is safer than exposing an over-budget MCP
+        # result or claiming a payload was retained when it was not.
+        fallback: dict[str, Any] = {"success": False, "error": "tool response exceeds response budget"}
+        if isinstance(value, dict):
+            ids = value.get("evidence_ids")
+            if isinstance(ids, (list, tuple)) and ids:
+                fallback["evidence_ids"] = [str(ids[0])[:160]]
+            elif value.get("evidence_id"):
+                fallback["evidence_id"] = str(value["evidence_id"])[:160]
+        fallback["response_budget"] = {
+            "requested_tokens": requested,
+            "original_tokens": original_tokens,
+            "returned_tokens": 0,
+            "truncated": True,
+            "rejected": True,
+            "unit": "estimated_tokens",
+        }
+        for _ in range(16):
+            returned_tokens = json_tokens(_mcp_wire_view(fallback, structured=True))
+            fallback["response_budget"]["returned_tokens"] = returned_tokens
+            finalized = json_tokens(_mcp_wire_view(fallback, structured=True))
+            if finalized == returned_tokens and finalized <= requested:
+                content = [mcp_types.TextContent(type="text", text=json_dumps(fallback))]
+                return content, fallback
+        minimal = {
+            "success": False, "error": "budget",
+            "response_budget": {"requested_tokens": requested, "returned_tokens": 0},
+        }
+        for structured in (True, False):
+            for _ in range(16):
+                returned_tokens = json_tokens(_mcp_wire_view(minimal, structured=structured))
+                minimal["response_budget"]["returned_tokens"] = returned_tokens
+                finalized = json_tokens(_mcp_wire_view(minimal, structured=structured))
+                if finalized == returned_tokens and finalized <= requested:
+                    content = [mcp_types.TextContent(type="text", text=json_dumps(minimal))]
+                    return content, minimal if structured else None
+        return [mcp_types.TextContent(type="text", text=json_dumps(minimal))], None
+
+    async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
+        pending_accounting: list[dict[str, Any]] = []
+        pending_token = _PENDING_MCP_ACCOUNTING.set(pending_accounting)
+
+        def finalize(result: Any, *, account_unwrapped_error: bool = False) -> Any:
+            if not isinstance(result, tuple) or len(result) != 2:
+                return result
+            contents, structured_value = result
+            if structured_value is None:
+                text_value = contents[0].text
+                candidate_value = json.loads(text_value)
+                emitted_response = {"content": [{"type": "text", "text": text_value}]}
+            else:
+                candidate_value = structured_value
+                emitted_response = _mcp_wire_view(candidate_value, structured=True)
+            emitted_tokens = json_tokens(emitted_response)
+            for item in pending_accounting:
+                measured = dict(item["measured"])
+                raw_tokens = max(0, int(measured.get("raw_response_tokens_est", 0) or 0))
+                input_saved = max(0, int(measured.get("gross_input_tokens_avoided_est", 0) or 0))
+                measured["projected_response_tokens_est"] = emitted_tokens
+                if raw_tokens:
+                    output_saved = max(0, raw_tokens - emitted_tokens)
+                    measured["gross_output_tokens_avoided_est"] = output_saved
+                    measured["output_savings_source"] = "response_compaction" if output_saved else ""
+                    if input_saved:
+                        measured["gross_cloud_tokens_avoided_est"] = input_saved
+                        source_name = str(measured.get("input_savings_source", ""))
+                        measured["savings_breakdown"] = {source_name: input_saved} if source_name else {}
+                    else:
+                        measured["gross_cloud_tokens_avoided_est"] = output_saved
+                        measured["savings_breakdown"] = {"response_compaction": output_saved} if output_saved else {}
+                metadata = dict(item["metadata"])
+                metadata["protocol_tokens_est"] = tool_request_tokens(name, arguments) + emitted_tokens
+                item_response = item["response"]
+                _record_tool_accounting(
+                    tool_name=item["tool_name"], arguments=item["arguments"], response=emitted_response,
+                    measured=measured, metadata=metadata,
+                    result_id_value=item_response["result_id"] if isinstance(item_response, dict) and "result_id" in item_response else "",
+                )
+            if account_unwrapped_error and not pending_accounting:
+                _record_tool_accounting(
+                    tool_name=name, arguments=arguments, response=emitted_response, measured={},
+                    metadata={"protocol_tokens_est": tool_request_tokens(name, arguments) + emitted_tokens},
+                )
+            return result
+
+        try:
+            selector = "detail" if name == "local_ai_status" else "action"
+            validation_arguments = dict(arguments)
+            requested_action = validation_arguments.get(selector)
+            action_kind = _action_kind_for_tool(name)
+            canonical_action = (
+                _resolve_action(action_kind, requested_action)
+                if action_kind and isinstance(requested_action, str)
+                else requested_action
+            )
+            if isinstance(canonical_action, str):
+                validation_arguments[selector] = canonical_action
+            validation = validate_operation_call(name, validation_arguments, features=FEATURES)
+            if validation is not None:
+                status_code, error = validation
+                payload = {
+                    "success": False, "status_code": status_code,
+                    "terminal": True, "retryable": False, "error": error,
+                }
+                return finalize(_mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
+            try:
+                raw = await mcp._tool_manager.call_tool(name, arguments, convert_result=False)
+            except Exception as exc:
+                text = str(exc).strip().splitlines()[0][:500]
+                payload = {
+                    "success": False,
+                    "status_code": 400 if type(exc).__name__ == "ValidationError" else 500,
+                    "terminal": True, "retryable": False,
+                    "error": f"MCP input validation failed: {text}" if type(exc).__name__ == "ValidationError" else f"MCP tool failed: {text}",
+                }
+                return finalize(_mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
+            selector = "detail" if name == "local_ai_status" else "action"
+            action = arguments.get(selector)
+            if action_kind and isinstance(action, str):
+                action = _resolve_action(action_kind, action)
+            if name == "local_ai_status":
+                alias = arguments.get("action")
+                if isinstance(alias, str) and alias in {"status", "health", "check", "info"}:
+                    action = "brief"
+                elif isinstance(alias, str) and alias in operation_actions(name, FEATURES):
+                    action = alias
+            if not isinstance(action, str) or action not in operation_actions(name, FEATURES):
+                available_actions = operation_actions(name, FEATURES)
+                action = available_actions[0] if available_actions else ""
+            output_error = validate_operation_output(name, action, raw)
+            if output_error is not None:
+                payload = {
+                    "success": False, "status_code": 500,
+                    "terminal": True, "retryable": False,
+                    "error": f"MCP output contract failed: {output_error}",
+                }
+                return finalize(_mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
+            if isinstance(raw, (dict, list)):
+                return finalize(_mcp_budget_payload(name, arguments, raw))
+            if isinstance(raw, str):
+                return finalize(_mcp_budget_payload(name, arguments, {"text": raw}))
+            return finalize(_mcp_budget_payload(name, arguments, {
+                "success": False, "status_code": 500, "terminal": True,
+                "retryable": False, "error": "MCP tool returned unsupported result type",
+            }), account_unwrapped_error=True)
+        finally:
+            _PENDING_MCP_ACCOUNTING.reset(pending_token)
 
     mcp.call_tool = _compact_mcp_call_tool
     mcp._mcp_server.call_tool(validate_input=False)(_compact_mcp_call_tool)

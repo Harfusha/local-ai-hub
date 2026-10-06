@@ -1,0 +1,50 @@
+--- a/tests/test_agent_t08_durable_contract.py
++++ b/tests/test_agent_t08_durable_contract.py
+@@ -107,7 +107,16 @@
+         con.close()
+ 
+     persisted = store.event_page(stream_id)
+-    assert persisted["events"] == [committed.event]
++    page_events = [
++        event.to_dict() if isinstance(event, AgentEvent) else event
++        for event in persisted["events"]
++    ]
++    committed_event = (
++        committed.event.to_dict()
++        if isinstance(committed.event, AgentEvent)
++        else committed.event
++    )
++    assert page_events == [committed_event]
+     assert persisted["last_seq"] == committed.seq == 1
+     store.unsubscribe(subscriber)
+ @pytest.mark.parametrize(
+@@ -343,7 +352,8 @@
+     )
+     verifications = VerificationStore(state_store, task_store=tasks)
+     receipt = VerificationReceipt.create(
+-        "task-append-error", "tests", passed=True, evidence_id="evidence-tests"
++        "task-append-error", "tests", passed=True, evidence_id="evidence-tests",
++        command_id="cmd-append-error",
+     )
+     monkeypatch.setattr(
+         state_store,
+@@ -372,7 +382,8 @@
+         task_id="task-atomic-receipt",
+     )
+     receipt = VerificationReceipt.create(
+-        "task-atomic-receipt", "tests", passed=True, evidence_id="evidence-tests"
++        "task-atomic-receipt", "tests", passed=True, evidence_id="evidence-tests",
++        command_id="cmd-atomic-receipt",
+     )
+     with closing(sqlite3.connect(db_path)) as con, con:
+         con.execute(
+@@ -416,7 +427,8 @@
+     tasks = TaskStore(state_store)
+     verifications = VerificationStore(state_store, task_store=tasks)
+     receipt = VerificationReceipt.create(
+-        "missing-task", "tests", passed=True, evidence_id="evidence-tests"
++        "missing-task", "tests", passed=True, evidence_id="evidence-tests",
++        command_id="cmd-unknown-task",
+     )
+ 
+     assert verifications.record(receipt) is receipt

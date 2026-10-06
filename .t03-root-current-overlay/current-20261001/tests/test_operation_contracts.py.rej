@@ -1,0 +1,54 @@
+diff a/tests/test_operation_contracts.py b/tests/test_operation_contracts.py	(rejected hunks)
+@@ -1168,3 +1168,52 @@
+         "local_ai_status", "telemetry", malformed
+     ) == "result does not match a declared output variant for action='telemetry'"
+ 
++
++def test_status_full_and_agent_state_outputs_have_typed_success_and_failure_shapes():
++    full = {
++        "success": True,
++        "hub_online": True,
++        "version": "1.0",
++        "uptime_seconds": 10,
++        "features": {"status": True},
++        "runtime_stats": {},
++        "capabilities": {},
++    }
++    agent_state = {
++        "success": True,
++        "enabled": False,
++        "active_tasks": [],
++        "tasks_count": 0,
++        "incidents_count": 0,
++        "candidates_count": 0,
++        "status": "healthy",
++    }
++    failure = {"success": False, "error": "status unavailable"}
++
++    for action, payload, typed_fields in (
++        ("full", full, {"hub_online": "boolean", "uptime_seconds": "integer"}),
++        (
++            "agent_state",
++            agent_state,
++            {"enabled": "boolean", "active_tasks": "array", "tasks_count": "integer"},
++        ),
++    ):
++        schema = operation_output_schema("local_ai_status", action)
++        success = next(branch for branch in schema["anyOf"] if branch.get("required"))
++        failure_schema = next(
++            branch for branch in schema["anyOf"]
++            if branch.get("properties", {}).get("success", {}).get("const") is False
++        )
++        assert set(success["required"]) <= payload.keys()
++        assert failure_schema["properties"]["error"] == {"type": "string"}
++        for field, expected_type in typed_fields.items():
++            assert success["properties"][field]["type"] == expected_type
++        assert validate_operation_output("local_ai_status", action, payload) is None
++        assert validate_operation_output("local_ai_status", action, failure) is None
++
++    assert validate_operation_output(
++        "local_ai_status", "full", {**full, "uptime_seconds": "10"}
++    ) == "result does not match a declared output variant for action='full'"
++    assert validate_operation_output(
++        "local_ai_status", "agent_state", {**agent_state, "active_tasks": "none"}
++    ) == "result does not match a declared output variant for action='agent_state'"

@@ -9,9 +9,10 @@ import sqlite3
 import threading
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from . import __version__
 from .artifacts import ArtifactStore
@@ -43,6 +44,7 @@ from .learning import UsageLearner
 from .autotune import RuntimeTuner
 from .deterministic import DeterministicEngine
 from .logging_setup import configure_logging, shutdown_logging
+from .sqlite_support import migrate_agent_state_database
 from .external_tools import ExternalCodeIntelligence
 from .async_jobs import AsyncJobManager
 from .speculative_lint import SpeculativeLintQueue
@@ -66,16 +68,72 @@ from .work_orchestrator import WorkOrchestrator
 
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
-_STATUS_MAX_INFLIGHT_DEPENDENCIES = 8
+_STATUS_MAX_WORKERS = 8
+_STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
 
 
-def _status_dependency(callback, fallback, *, key, lock, inflight, slots):
-    """Reuse active status work and cap workers that remain stuck past their deadline."""
-    with lock:
+def _new_status_dependency_executor() -> ThreadPoolExecutor:
+    executor = ThreadPoolExecutor(
+        max_workers=_STATUS_MAX_WORKERS,
+        thread_name_prefix="local-ai-status",
+    )
+    ready = threading.Barrier(_STATUS_MAX_WORKERS)
+    try:
+        warmers = [executor.submit(ready.wait, timeout=2.0) for _ in range(_STATUS_MAX_WORKERS)]
+        for warmer in warmers:
+            warmer.result(timeout=2.5)
+    except Exception:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    return executor
+
+
+def _accelerator_status_fallback(config: dict[str, Any]) -> dict[str, Any]:
+    models = config.get("models", {}) if isinstance(config, dict) else {}
+    if not isinstance(models, dict):
+        models = {}
+    return {
+        "openvino": {
+            "installed": None,
+            "available": None,
+            "devices": [],
+            "error": "status probe unavailable within request deadline",
+        },
+        "embedding": {
+            "backend": models.get("embedding_backend", "sentence-transformers"),
+            "requested_device": models.get("embedding_device", "cpu"),
+            "candidates": [],
+        },
+        "reranker": {
+            "backend": models.get("reranker_backend", "torch"),
+            "requested_device": models.get("reranker_device", "cpu"),
+            "candidates": [],
+        },
+    }
+
+
+def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline, diagnostic=None):
+    """Start or reuse bounded status work without waiting for its result."""
+    def mark_degraded(reason, error=None):
+        if diagnostic is None:
+            return
+        diagnostic["reason"] = reason
+        if error is not None:
+            diagnostic["error_type"] = type(error).__name__
+
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        mark_degraded("deadline_exhausted")
+        return {"fallback": fallback, "healthy": False}
+    if not lock.acquire(timeout=remaining):
+        mark_degraded("lock_timeout")
+        return {"fallback": fallback, "healthy": False}
+    try:
         entry = inflight.get(key)
         if entry is None:
             if not slots.acquire(blocking=False):
-                return fallback, False
+                mark_degraded("worker_capacity_exhausted")
+                return {"fallback": fallback, "healthy": False}
             entry = {"completed": threading.Event(), "outcome": {}}
             inflight[key] = entry
 
@@ -94,17 +152,53 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots):
                         entry["completed"].set()
 
             try:
-                threading.Thread(target=run, daemon=True).start()
-            except Exception:
+                executor.submit(run)
+            except Exception as exc:
                 del inflight[key]
                 slots.release()
-                return fallback, False
-    if not entry["completed"].wait(max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))):
-        return fallback, False
+                mark_degraded("executor_submit_error", exc)
+                return {"fallback": fallback, "healthy": False}
+    finally:
+        lock.release()
+    return {"entry": entry, "fallback": fallback}
+
+
+def _resolve_status_dependency(handle, *, deadline, diagnostic=None):
+    fallback = handle["fallback"]
+    if "healthy" in handle:
+        return fallback, handle["healthy"]
+    entry = handle["entry"]
+    if not entry["completed"].is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not entry["completed"].wait(remaining):
+            if diagnostic is not None:
+                diagnostic["reason"] = "probe_timeout"
+            return fallback, False
     outcome = entry["outcome"]
     if "error" in outcome:
+        if diagnostic is not None:
+            diagnostic["reason"] = "probe_error"
+            diagnostic["error_type"] = type(outcome["error"]).__name__
         return fallback, False
     return outcome.get("value", fallback), True
+
+
+def _status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline=None, diagnostic=None):
+    """Reuse active status work and cap workers that remain stuck past their deadline."""
+    if deadline is None:
+        deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+    handle = _schedule_status_dependency(
+        callback,
+        fallback,
+        key=key,
+        lock=lock,
+        inflight=inflight,
+        slots=slots,
+        executor=executor,
+        deadline=deadline,
+        diagnostic=diagnostic,
+    )
+    return _resolve_status_dependency(handle, deadline=deadline, diagnostic=diagnostic)
 
 
 def _runtime_is_available(runtime: Any) -> bool:
@@ -170,6 +264,7 @@ class LocalAIApp:
     def __init__(self, config_path: str | None = None):
         self.config = load_config(config_path)
         state_dir = Path(self.config["server"]["state_dir"])
+        migrate_agent_state_database(state_dir)
         saving = self.config.get("token_saving", {})
         self.started_at = time.time()
         self._shutdown = threading.Event()
@@ -184,6 +279,7 @@ class LocalAIApp:
         self._status_dependency_lock = threading.Lock()
         self._status_dependency_inflight: dict[str, dict[str, Any]] = {}
         self._status_dependency_slots = threading.BoundedSemaphore(_STATUS_MAX_INFLIGHT_DEPENDENCIES)
+        self._status_dependency_executor = _new_status_dependency_executor()
 
         self.logger = configure_logging(state_dir, self.config)
         fast_runtime = OllamaRuntime(self.config)
@@ -230,7 +326,7 @@ class LocalAIApp:
         self.memory = WorkspaceMemoryStore(state_dir)
         agent_state_cfg = self.config.get("agent_state", {})
         self.agent_state = AgentStateStore(
-            state_dir / "agent_state.sqlite3",
+            state_dir / "agent_state.sqlite",
             enabled=bool(agent_state_cfg.get("enabled", False)),
             max_payload_bytes=int(agent_state_cfg.get("max_payload_bytes", 65536)),
         )
@@ -241,10 +337,11 @@ class LocalAIApp:
             self.agent_state,
             task_store=self.agent_tasks,
             artifact_store=self.artifacts,
+            evidence_store=self.evidence,
         )
         self.agent_policy = PolicyEngine(self.agent_state)
         self.agent_tasks.set_policy_engine(self.agent_policy)
-        self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite3")
+        self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite", state_store=self.agent_state)
         self.agent_context = ContextCompiler(
             self.agent_state,
             task_store=self.agent_tasks,
@@ -253,6 +350,16 @@ class LocalAIApp:
             incident_store=self.agent_incidents,
             lease_store=self.leases,
             blackboard=self.agent_blackboard,
+        )
+        self.agent_task_memory_context = ContextCompiler(
+            self.agent_state,
+            task_store=self.agent_tasks,
+            memory_store=self.agent_memory,
+        )
+        self.agent_tasks.set_memory_adoption(
+            memory_store=self.agent_memory,
+            context_compiler=self.agent_task_memory_context,
+            incident_store=self.agent_incidents,
         )
         self.agent_routing = RoutingEngine(cfg=self.config, state_store=self.agent_state)
         self.agent_learning = LearningStore(self.agent_state)
@@ -268,10 +375,14 @@ class LocalAIApp:
             verification_store=self.agent_verification,
             telemetry=self.telemetry,
         )
+        self.services.inference_admission = self.async_jobs.inference_admission
         self.speculative_lint = SpeculativeLintQueue(self.async_jobs, self.config)
         self.commands = CommandBroker(self.config, self.artifacts, self.repo_state)
         self.commands.set_incident_store(self.agent_incidents)
         self.commands.set_verification_store(self.agent_verification)
+        self.agent_verification.set_command_execution_record_lookup(
+            getattr(self.commands, "get_command_execution_record", None)
+        )
         self.commands.set_policy_engine(self.agent_policy)
         self.commands.set_task_store(self.agent_tasks)
         self.commands.set_error_distiller(self.services.distill_command_error)
@@ -288,7 +399,7 @@ class LocalAIApp:
             verification_store=self.agent_verification,
         )
         self.services.set_consistency_guard(self.consistency_guard)
-        self.swarm = SwarmCoordinator(state_dir / "agent_state.sqlite3", leases=self.leases, blackboard=self.agent_blackboard, verifications=self.agent_verification)
+        self.swarm = SwarmCoordinator(state_dir / "agent_state.sqlite", leases=self.leases, blackboard=self.agent_blackboard, verifications=self.agent_verification)
         self.services.set_swarm(self.swarm)
         self.rag = RAGStore(self.config, self.services, self.reranker)
         self.services.set_rag(self.rag)
@@ -304,12 +415,14 @@ class LocalAIApp:
         self.work_orchestrator = WorkOrchestrator(self.config, state_dir, self.services, self.commands, self.leases, self.artifacts, telemetry=self.telemetry)
         self.projector = AgentProjector(self.config)
         self.vram_balancer = VRAMBalancer(self.config)
+        self.runtime.vram_balancer = self.vram_balancer
         self.services.set_vram_balancer(self.vram_balancer)
         self.benchmark_runner = HardwareBenchmarkRunner(
             state_dir / "benchmarks.json",
             runtime=self.runtime,
             vram_balancer=self.vram_balancer,
             config=self.config,
+            scheduler=self.scheduler,
         )
         self.recovery = RecoveryJournal(state_dir, stale_seconds=int(self.config.get("resilience", {}).get("journal_stale_seconds", 900)))
         self._start_resilience_watchdog()
@@ -387,14 +500,12 @@ class LocalAIApp:
                         from .sqlite_support import optimize_db
                         state_dir = Path(self.config["server"]["state_dir"])
                         for db_name in (
-                            "agent_state.sqlite3",
+                            "agent_state.sqlite",
                             "async_jobs.sqlite3",
                             "code-index.sqlite3",
-                            "cache.sqlite3",
+                            "cache.sqlite",
                             "rag.sqlite3",
                             "preprocess.sqlite3",
-                            "agent_blackboard.sqlite3",
-                            "leases.sqlite3",
                             "artifacts.sqlite3",
                         ):
                             db_file = state_dir / db_name
@@ -428,26 +539,62 @@ class LocalAIApp:
         self._watchdog_thread.start()
 
     def _execute_async_task(self, action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
+        with self.async_jobs.inference_admission(action) as rejection:
+            if rejection is not None:
+                return rejection
+            return self._execute_async_task_admitted(action, payload, tenant)
+
+    def _execute_async_task_admitted(self, action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
         async_payload = dict(payload)
         async_payload["priority"] = 1
+        for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
+            async_payload.pop(untrusted_context, None)
         if action == "delegate":
             return self.services.delegate(async_payload, tenant)
         if action == "reason":
-            return self.services.reason({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1}, tenant)
+            reason_payload = dict(async_payload)
+            reason_payload.update({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1})
+            return self.services.reason(reason_payload, tenant)
         if action == "review":
-            return self.services.review({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1}, tenant)
+            review_payload = dict(async_payload)
+            review_payload.update({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1})
+            return self.services.review(review_payload, tenant)
         if action == "review_diff":
             review_payload = dict(async_payload)
             review_payload["_async_job"] = True
             return self.services.review_diff(review_payload, tenant)
         if action == "second_opinion":
-            return self.services.second_opinion({"question": async_payload.get("task", ""), "candidate": async_payload.get("candidate", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1100), "priority": 1}, tenant)
+            opinion_payload = dict(async_payload)
+            opinion_payload.update({"question": async_payload.get("task", ""), "candidate": async_payload.get("candidate", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1100), "priority": 1})
+            return self.services.second_opinion(opinion_payload, tenant)
         if action == "compress":
-            return self.services.compress({"text": async_payload.get("context", ""), "instruction": async_payload.get("task", "Compress while preserving facts."), "target_tokens": async_payload.get("max_tokens", 650), "priority": 1}, tenant)
+            compress_payload = dict(async_payload)
+            compress_payload.update({"text": async_payload.get("context", ""), "instruction": async_payload.get("task", "Compress while preserving facts."), "target_tokens": async_payload.get("max_tokens", 650), "priority": 1})
+            return self.services.compress(compress_payload, tenant)
         if action == "route":
-            return self.services.route_context({"text": async_payload.get("context", ""), "query": async_payload.get("task", "")}, tenant)
+            route_payload = dict(async_payload)
+            route_payload.update({"text": async_payload.get("context", ""), "query": async_payload.get("task", "")})
+            return self.services.route_context(route_payload, tenant)
         if action == "batch":
-            return self.services.batch_delegate({"tasks": async_payload.get("tasks", []), "priority": 1}, tenant)
+            raw_tasks = async_payload.get("tasks")
+            if not isinstance(raw_tasks, list) or not raw_tasks:
+                return {"success": False, "error": "tasks must be a non-empty array", "terminal": True, "retryable": False}
+            inherited_context = {key: async_payload[key] for key in ("root", "cwd") if key in async_payload}
+            tasks = []
+            for raw_task in raw_tasks:
+                task_payload = dict(raw_task) if isinstance(raw_task, dict) else {"task": str(raw_task)}
+                for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
+                    task_payload.pop(untrusted_context, None)
+                child_has_workspace = any(
+                    str(task_payload.get(key) or "").strip()
+                    for key in ("root", "cwd")
+                )
+                if not child_has_workspace:
+                    for key, value in inherited_context.items():
+                        if str(value or "").strip():
+                            task_payload[key] = value
+                tasks.append(task_payload)
+            return self.services.batch_delegate({"tasks": tasks, "priority": 1}, tenant)
         if action == "speculative_lint":
             return self.services.speculative_lint(async_payload, tenant)
         return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}
@@ -554,19 +701,56 @@ class LocalAIApp:
                 return result
             headless = self._headless_status()
             ollama = headless.get("ollama_online") if headless.get("supervisor") else None
+            deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+            runtime_healthy = True
+            profile_healthy = True
+            dependency_status: dict[str, dict[str, Any]] = {}
             # The supervisor status file is asynchronous and can lag behind a
             # live endpoint during restart/recovery. Prefer the runtime probe
             # for the public live/doctor status so stale supervisor state does
             # not report a healthy Ollama process as offline.
             runtime = getattr(self, "runtime", None)
             if runtime is not None:
-                try:
-                    ollama = bool(runtime.is_online())
-                    if isinstance(headless, dict) and headless.get("supervisor"):
-                        headless = dict(headless)
-                        headless["ollama_online"] = ollama
-                except Exception:
-                    pass
+                runtime_diagnostic: dict[str, Any] = {}
+                ollama, runtime_healthy = _status_dependency(
+                    runtime.is_online,
+                    False,
+                    key="runtime.online",
+                    lock=self._status_dependency_lock,
+                    inflight=self._status_dependency_inflight,
+                    slots=self._status_dependency_slots,
+                    executor=self._status_dependency_executor,
+                    deadline=deadline,
+                    diagnostic=runtime_diagnostic,
+                )
+                dependency_status["runtime.online"] = {
+                    "degraded": not runtime_healthy,
+                    "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                    **runtime_diagnostic,
+                }
+                ollama = bool(ollama)
+                if isinstance(headless, dict) and headless.get("supervisor"):
+                    headless = dict(headless)
+                    headless["ollama_online"] = ollama
+                profile_diagnostic: dict[str, Any] = {}
+                ollama_profile, profile_healthy = _status_dependency(
+                    runtime.managed_profile_status,
+                    {},
+                    key="ollama_profile",
+                    lock=self._status_dependency_lock,
+                    inflight=self._status_dependency_inflight,
+                    slots=self._status_dependency_slots,
+                    executor=self._status_dependency_executor,
+                    deadline=deadline,
+                    diagnostic=profile_diagnostic,
+                )
+                dependency_status["ollama_profile"] = {
+                    "degraded": not profile_healthy,
+                    "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                    **profile_diagnostic,
+                }
+            else:
+                ollama_profile = {}
             scheduler = self.scheduler.status()
             prep_stats = self.preprocessor.stats()
             try:
@@ -582,8 +766,26 @@ class LocalAIApp:
             from .features import FeatureSet
             fs = FeatureSet.from_config(self.config)
             observability = self.telemetry.realtime_summary(scope=scope)
+            accelerator_diagnostic: dict[str, Any] = {}
+            accelerators, accelerator_healthy = _status_dependency(
+                lambda: accelerator_status(self.config),
+                _accelerator_status_fallback(self.config),
+                key="accelerators",
+                lock=self._status_dependency_lock,
+                inflight=self._status_dependency_inflight,
+                slots=self._status_dependency_slots,
+                executor=self._status_dependency_executor,
+                deadline=deadline,
+                diagnostic=accelerator_diagnostic,
+            )
+            dependency_status["accelerators"] = {
+                "degraded": not accelerator_healthy,
+                "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                **accelerator_diagnostic,
+            }
             result = {
-                "success": True, "hub_online": True, "version": __version__,
+                "success": runtime_healthy and profile_healthy and accelerator_healthy, "hub_online": True, "version": __version__,
+                "dependency_status": dependency_status,
                 "uptime_seconds": max(0, int(time.time() - self.started_at)),
                 "features": {
                     "status": fs.status,
@@ -602,7 +804,7 @@ class LocalAIApp:
                 },
                 "models": dict(self.config.get("models", {})),
                 "hardware": dict(self.config.get("_hardware", {})),
-                "accelerators": accelerator_status(self.config),
+                "accelerators": accelerators,
                 "code_intelligence": self.external_tools.status(),
                 "runtime_profile": {
                     "tiered_models": self.config.get("models", {}).get("heavy_code") != self.config.get("models", {}).get("fast_code"),
@@ -615,7 +817,7 @@ class LocalAIApp:
                 "ollama_online": ollama, "scheduler": scheduler,
                 "headless": headless,
                 "background_gpu": self.background_gpu.status(),
-                "ollama_profile": self.runtime.managed_profile_status() if getattr(self, "runtime", None) else {},
+                "ollama_profile": ollama_profile,
                 "model_execution": self.services.model_policy.summary() if getattr(self, "services", None) and getattr(self.services, "model_policy", None) else {},
                 "vram_balancer": self.vram_balancer.status() if getattr(self, "vram_balancer", None) else {},
                 "benchmark": self.benchmark_runner.get_latest_summary() if getattr(self, "benchmark_runner", None) else {"available": False},
@@ -648,12 +850,13 @@ class LocalAIApp:
             return dict(result)
 
     def status(self, *, scope: str = "process") -> dict[str, Any]:
+        deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
         scope = str(scope).strip().lower()
         if scope not in {"process", "window"}:
             scope = "process"
         import os
 
-        def dependency(key, callback, fallback):
+        def dependency(key, callback, fallback, diagnostic=None):
             return _status_dependency(
                 callback,
                 fallback,
@@ -661,6 +864,9 @@ class LocalAIApp:
                 lock=self._status_dependency_lock,
                 inflight=self._status_dependency_inflight,
                 slots=self._status_dependency_slots,
+                executor=self._status_dependency_executor,
+                deadline=deadline,
+                diagnostic=diagnostic,
             )
 
         with self._status_full_cache_lock:
@@ -673,23 +879,98 @@ class LocalAIApp:
                 result["agent_state"] = agent_state
                 return result
             degraded = False
+            dependency_status: dict[str, dict[str, Any]] = {}
+            pending_dependencies: dict[str, tuple[dict[str, Any], Any, dict[str, Any]]] = {}
 
             def read(key, callback, fallback):
                 nonlocal degraded
-                value, healthy = dependency(key, callback, fallback)
+                probe_started = time.monotonic()
+                pending = pending_dependencies.pop(key, None)
+                if pending is None:
+                    diagnostic: dict[str, Any] = {}
+                    value, healthy = dependency(key, callback, fallback, diagnostic)
+                else:
+                    handle, fallback, diagnostic = pending
+                    value, healthy = _resolve_status_dependency(handle, deadline=deadline, diagnostic=diagnostic)
                 degraded = degraded or not healthy
+                dependency_status[key] = {
+                    "degraded": not healthy,
+                    "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                    "duration_ms": max(0, int((time.monotonic() - probe_started) * 1000)),
+                    **diagnostic,
+                }
                 return value
 
-            online = read("runtime.online", self.runtime.is_online, False)
+            runtime_diagnostic: dict[str, Any] = {}
+            runtime_probe_started = time.monotonic()
+            online, runtime_healthy = dependency("runtime.online", self.runtime.is_online, False, runtime_diagnostic)
+            degraded = degraded or not runtime_healthy
+            dependency_status["runtime.online"] = {
+                "degraded": not runtime_healthy,
+                "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                "duration_ms": max(0, int((time.monotonic() - runtime_probe_started) * 1000)),
+                **runtime_diagnostic,
+            }
             version = read("runtime.version", self.runtime.version, None) if online else None
             installed: list[str] = read("runtime.installed_models", self.runtime.installed_models, []) if online else []
             loaded_details: list[dict[str, Any]] = read("runtime.loaded_model_details", self.runtime.loaded_model_details, []) if online else []
             loaded = [str(row.get("name", "")) for row in loaded_details if row.get("name")]
+            # Runtime availability is a separate probe phase. A slow runtime must
+            # not consume the status snapshot's budget for independent Hub state.
+            deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+            status_probes = {
+                "scheduler": (self.scheduler.status, {}),
+                "accelerators": (lambda: accelerator_status(self.config), _accelerator_status_fallback(self.config)),
+                "telemetry.summary": (lambda: self.telemetry.summary(scope=scope, _flush=False), {}),
+                "model_execution": (self.services.model_policy.summary, {}),
+                "ollama_profile": (self.runtime.managed_profile_status, {}),
+                "background_gpu": (self.background_gpu.status, {}),
+                "generation_cache": (self.services.generation_cache.stats, {}),
+                "semantic_cache": (self.services.semantic_cache.stats, {}),
+                "repo_cache": (self.services.repo_cache.stats, {}),
+                "commands": (self.commands.stats, {}),
+                "repo_snapshots": (self.repo_tools.snapshot_stats, {}),
+                "lossless_router": (self.token_router.stats, {}),
+                "pipeline": (self.pipeline.stats, {}),
+                "preprocessing": (self.preprocessor.stats, {}),
+                "tool_agent": (self.tool_agent.stats, {}),
+                "code_index": (self.code_index.status, {}),
+                "deterministic": (self.deterministic.status, {}),
+                "evidence_store": (self.evidence.stats, {}),
+                "learning": (self.learner.stats, {}),
+                "autotune": (self.tuner.stats, {}),
+                "circuit_breakers": (self.services.breakers.status, {}),
+                "recovery": (lambda: self.recovery.status(limit=8), {}),
+                "embeddings": (self.embeddings.status, {}),
+                "reranker": (self.reranker.status, {}),
+                "code_intelligence": (self.external_tools.status, {}),
+                "debug_traces": (self.debug_traces.stats, {}),
+                "agent_state": (self._agent_state_summary, {"enabled": False}),
+            }
+            for key, (callback, fallback) in status_probes.items():
+                diagnostic: dict[str, Any] = {}
+                handle = _schedule_status_dependency(
+                    callback,
+                    fallback,
+                    key=key,
+                    lock=self._status_dependency_lock,
+                    inflight=self._status_dependency_inflight,
+                    slots=self._status_dependency_slots,
+                    executor=self._status_dependency_executor,
+                    deadline=deadline,
+                    diagnostic=diagnostic,
+                )
+                pending_dependencies[key] = (handle, fallback, diagnostic)
+            scheduler = read("scheduler", self.scheduler.status, {})
+            accelerators = read(
+                "accelerators",
+                lambda: accelerator_status(self.config),
+                _accelerator_status_fallback(self.config),
+            )
             telemetry_summary = read("telemetry.summary", lambda: self.telemetry.summary(scope=scope, _flush=False), {})
             model_execution = read("model_execution", self.services.model_policy.summary, {})
             ollama_profile = read("ollama_profile", self.runtime.managed_profile_status, {})
             background_gpu = read("background_gpu", self.background_gpu.status, {})
-            scheduler = read("scheduler", self.scheduler.status, {})
             generation_cache = read("generation_cache", self.services.generation_cache.stats, {})
             semantic_cache = read("semantic_cache", self.services.semantic_cache.stats, {})
             repo_cache = read("repo_cache", self.services.repo_cache.stats, {})
@@ -713,6 +994,7 @@ class LocalAIApp:
             agent_state = read("agent_state", self._agent_state_summary, {"enabled": False})
             res = {
                 "success": not degraded, "hub_pid": os.getpid(), "hub_online": True, "version": __version__,
+                "dependency_status": dependency_status,
                 "ollama_online": online, "online": online, "ollama_version": version,
                 "installed_models": installed, "loaded_models": loaded, "loaded_model_details": loaded_details, "models": dict(self.config["models"]),
                 "model_execution": model_execution, "ollama_profile": ollama_profile,
@@ -727,7 +1009,7 @@ class LocalAIApp:
                 "circuit_breakers": circuit_breakers, "recovery": recovery,
                 "fallback_count": self.services.fallback_count, "embeddings": embeddings,
                 "reranker": reranker, "features": dict(self.config.get("features", {})),
-                "hardware": dict(self.config.get("_hardware", {})), "accelerators": accelerator_status(self.config),
+                "hardware": dict(self.config.get("_hardware", {})), "accelerators": accelerators,
                 "code_intelligence": code_intelligence,
                 "observability": telemetry_summary, "token_saving": telemetry_summary, "debug_traces": debug_traces,
             }
@@ -919,7 +1201,14 @@ class LocalAIApp:
         if cleanup_pending:
             self._bundle_import_recovery["cleanup_pending"] = True
 
-    def export_bundle(self, root: str = "", *, agent_state_record_ids: list[str] | None = None) -> bytes:
+    def export_bundle(
+        self,
+        root: str = "",
+        *,
+        tenant: str | None = None,
+        agent_state_record_ids: list[str] | None = None,
+        agent_state_contexts: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> bytes:
         """Export portable precomputed project state into a bounded ZIP bundle."""
         import hashlib
         from contextlib import closing
@@ -931,7 +1220,31 @@ class LocalAIApp:
             for rid in agent_state_record_ids:
                 rec = None
                 if getattr(self, "agent_memory", None):
-                    rec = self.agent_memory.get(rid)
+                    supplied_context = (agent_state_contexts or {}).get(rid, {})
+                    lookup_context = {
+                        key: supplied_context[key]
+                        for key in (
+                            "scope", "scope_id", "root", "repository_id", "tenant",
+                            "task_id", "session_id", "clone_id", "worktree_id", "branch",
+                        )
+                        if key in supplied_context
+                    }
+                    lookup_context.setdefault("root", root or None)
+                    lookup_context.setdefault("tenant", tenant)
+                    scope_value = getattr(lookup_context.get("scope"), "value", lookup_context.get("scope"))
+                    if scope_value in ("repo", "repository") and not str(lookup_context.get("root") or "").strip():
+                        raise BundleValidationError("repository memory requires provenance root")
+                    if rid in (agent_state_contexts or {}):
+                        rec = self.agent_memory.get(rid, **lookup_context)
+                    else:
+                        rec = self.agent_memory.get(
+                            rid, scope=AgentScope.GLOBAL, tenant=tenant,
+                        )
+                        if rec is None and root and tenant:
+                            rec = self.agent_memory.get(
+                                rid, scope=AgentScope.REPOSITORY,
+                                root=root, tenant=tenant,
+                            )
                 if rec is not None:
                     scope_val = getattr(rec.scope, "value", rec.scope)
                     status_val = getattr(rec.status, "value", rec.status)
@@ -1171,11 +1484,11 @@ class LocalAIApp:
                 "completed_phases": [],
                 "updated_at": time.time(),
             }
-            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
             atomic_write(payload_path, raw_bundle)
             manifest["status"] = "incomplete"
             manifest["updated_at"] = time.time()
-            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
             return manifest
 
         def staging_failure(root_path: str | None, exc: Exception) -> dict[str, Any]:
@@ -1210,7 +1523,7 @@ class LocalAIApp:
             manifest["status"] = "incomplete"
             manifest["updated_at"] = time.time()
             journal_path = Path(self.config["server"]["state_dir"]) / "bundle-imports" / f"{manifest['import_id']}.json"
-            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
         def finish_import_intent(manifest: dict[str, Any]) -> bool:
             manifest["status"] = "complete"
@@ -1218,7 +1531,7 @@ class LocalAIApp:
             journal_dir = Path(self.config["server"]["state_dir"]) / "bundle-imports"
             journal_path = journal_dir / f"{manifest['import_id']}.json"
             payload_path = journal_dir / f"{manifest['import_id']}.bundle"
-            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
             try:
                 payload_path.unlink(missing_ok=True)
                 journal_path.unlink(missing_ok=True)
@@ -1440,7 +1753,9 @@ class LocalAIApp:
             if not isinstance(tbl_rows, list) or len(tbl_rows) > max_rows or any(not isinstance(row, dict) for row in tbl_rows):
                 return {"success": False, "error": f"invalid or oversized bundle table: {name}"}
         if any(
-            "embedding" in row and row["embedding"] is not None and not isinstance(row["embedding"], str)
+            "embedding" in row
+            and row["embedding"] is not None
+            and not isinstance(row["embedding"], (str, bytes, bytearray, memoryview))
             for row in tables.get("rag_chunks", [])
         ):
             return {"success": False, "error": "invalid RAG chunk embedding"}
@@ -1623,6 +1938,10 @@ class LocalAIApp:
                 return
             self._closed = True
         self._shutdown.set()
+        try:
+            self._status_dependency_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
         # Stop helper loops before tearing down the services they periodically touch.
         # They are daemon threads as a final safety net, but bounded joins make normal
         # restart/shutdown deterministic and avoid late telemetry/preprocessor calls.

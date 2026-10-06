@@ -1,0 +1,251 @@
+{
+  "task": "T12",
+  "date": "2026-09-29",
+  "head": "933c0129079fcc0c894a71fe842cbbb5e6ad7285",
+  "baseline": {
+    "t02_artifact": null,
+    "comparison": "skipped",
+    "optimization_claim": false,
+    "reason": "No T02 artifact available; user directed skipping comparison and making no optimization claim."
+  },
+  "status": "partial",
+  "acceptance": {
+    "hardware_profile_measured": [
+      "balanced"
+    ],
+    "all_profiles_verified": false,
+    "post_admission_patch_matrix": {
+      "artifact": ".handoff/t12-live-matrix-balanced-post-admission-fix-20260929.json",
+      "status": "excluded_from_acceptance",
+      "reason": "passed only with configured upper-bound VRAM incorrectly counted as guaranteed reclaimable memory"
+    },
+    "latest_recheck": {
+      "run_id": "t12-ebfd417387844388be2a8f55050092b7",
+      "artifact": ".handoff/t12-verified-cli-output-20260929.json",
+      "record_path": "C:\\Users\\Adam\\.local-ai-hub\\state\\t12-verified-20260929\\surface-benchmark-1790712737315151100.json",
+      "status": "incomplete",
+      "accepted": false,
+      "profile": "balanced",
+      "roles": {
+        "reason": {
+          "failures": "resource_exhausted:3",
+          "accepted": false
+        },
+        "review": {
+          "failures": "resource_exhausted:3",
+          "accepted": false
+        },
+        "compress": {
+          "failures": "resource_exhausted:3",
+          "accepted": false
+        },
+        "complete": {
+          "failures": "resource_exhausted:3",
+          "accepted": false
+        },
+        "scaffold": {
+          "failures": "resource_exhausted:3",
+          "accepted": false
+        }
+      },
+      "scenarios": {
+        "scheduler": {
+          "error": "scenario_measurement_missing",
+          "status": "failed",
+          "receipt": null,
+          "accepted": false
+        },
+        "batch": {
+          "error": null,
+          "status": "measured",
+          "receipt": null,
+          "accepted": false
+        },
+        "deadline": {
+          "error": "scenario_measurement_missing",
+          "status": "failed",
+          "receipt": null,
+          "accepted": false
+        },
+        "overload": {
+          "error": null,
+          "status": "measured",
+          "receipt": "t12:607279f8a0c4f228c54dca580d335508e7af841ef9e2caa7ad1c15042bec534c",
+          "accepted": false
+        },
+        "cancel": {
+          "error": "scenario_measurement_missing",
+          "status": "failed",
+          "receipt": null,
+          "accepted": false
+        },
+        "fallback": {
+          "error": "scenario_measurement_missing",
+          "status": "failed",
+          "receipt": null,
+          "accepted": false
+        }
+      },
+      "command_exit_code": 1,
+      "baseline_readiness": "per_case",
+      "no_t02_comparison": true,
+      "optimization_claim": false,
+      "note": "Correct worktree import. All role attempts were resource_exhausted; report predates failure-diagnostic aggregation and overload-classifier changes. Not T12 acceptance evidence.",
+      "overload_audit": {
+        "report_accepted": true,
+        "valid_acceptance_after_audit": false,
+        "queue_depth": 0,
+        "queued_count": 0,
+        "generic_rejected_count": 8,
+        "reason": "Report recorded queue_depth=0, queued_count=0, generic rejected_count=8; rejection reason absent. New code separates queue_limit from resource rejection, so the report cannot prove queue-overload acceptance and its earlier accepted flag is invalid."
+      },
+      "changes_after_live_record": [
+        "startup VRAM samples seed all resident model sizes",
+        "failed inference samples preserve allowlisted VRAM diagnostics and admission counts",
+        "overload acceptance counts queue_limit only and reports resource rejection separately"
+      ]
+    },
+    "hardware_host_availability": {
+      "available_hosts": 1,
+      "user_confirmed_device": "NVIDIA GeForce RTX 4060",
+      "available_profile": "balanced",
+      "other_profile_live_runs_possible": false,
+      "simulated_profiles_count_as_evidence": false
+    },
+    "pre_revision_live_matrix": {
+      "artifact": ".handoff/t12-live-matrix-ollama-isolated-20260929.json",
+      "status": "pre_prompt_and_scheduler_revision_only",
+      "roles": "reason/compress/complete/scaffold accepted and review failed under the old answer-leaking corpus; not current quality evidence",
+      "runtime_scenarios": "6 of 6 accepted",
+      "review_failure": "empty_response during conservative 9B-to-7B model-switch admission",
+      "note": "Scenario receipts also predate the post-unload admission and interruptible-header-read fixes."
+    },
+    "current_safe_live_matrix": {
+      "status": "not_measured_for_current_code_and_prompt_revision",
+      "post_revision_role_samples": 0,
+      "reason": "The host is under high VRAM pressure; no current-revision live matrix was run."
+    },
+    "quality_corpus_revision": {
+      "roles": [
+        "reason",
+        "review",
+        "compress",
+        "complete",
+        "scaffold"
+      ],
+      "cases_per_role": 1,
+      "answer_assignments_removed_from_prompts": true,
+      "regression_test": "tests/test_t12_benchmark_contract.py::test_t12_quality_prompts_do_not_assign_expected_oracle_values",
+      "multi_case_expansion": "not performed; earlier user choice remains unanswered",
+      "quality_claim": "single-case structured scores only; no corpus robustness claim"
+    },
+    "hardware_profile_current_revision": []
+  },
+  "safety_decision": {
+    "configured_active_model_estimate_is_reclaimable": false,
+    "admission_credit": "measured resident VRAM only; zero when no measurement exists",
+    "reason": "configured sizes are upper bounds, not guaranteed bytes freed by unload",
+    "post_unload_measure_then_admit": "implemented for runtimes advertising the hook; fail closed on missing telemetry or target-size estimate",
+    "startup_vram_measurements_seeded": true,
+    "failed_sample_vram_diagnostics_preserved": true,
+    "services_py_modified": false,
+    "overload_acceptance_requires_queue_limit_evidence": true,
+    "post_unload_admission_tested": true,
+    "interruptible_response_reads": "poll cancellation/deadline while waiting for headers and body"
+  },
+  "validation": {
+    "command": "PYTHONPATH=src python -m pytest -q tests/test_ollama_gaming_mode.py tests/test_t12_gaming_pause_loaded_rows.py tests/test_t12_benchmark_contract.py tests/test_t12_runtime_scenarios.py tests/test_t12_scheduler_scenarios.py",
+    "result": "55 passed in 6.20s",
+    "git_diff_check": "no whitespace errors; Git reported existing LF-to-CRLF warning for src/local_ai_hub/ollama.py",
+    "latest_focused_tests": {
+      "command": "python -m pytest -q --tb=short tests/test_t12_benchmark_contract.py tests/test_surface_benchmarks.py::test_t12_matrix_reports_profile_corpus_metrics_and_scenario_receipts",
+      "result": "20 passed in 0.47s",
+      "scope": "includes the no-answer-assignment corpus regression and T12 matrix contracts"
+    },
+    "latest_gpu_snapshot": {
+      "device": "NVIDIA GeForce RTX 4060",
+      "total_mib": 8188,
+      "used_mib": 6853,
+      "free_mib": 1335,
+      "pressure_level": "high",
+      "context_budget_factor": 0.5,
+      "throttle_background": true,
+      "ollama_ps": "no resident models",
+      "isolated_port_51894_listening": false,
+      "timing": "after focused validation"
+    },
+    "final_workspace_checks": {
+      "services_py_unchanged": true,
+      "isolated_port_51894_listening": false,
+      "git_diff_check": "clean; one LF-to-CRLF warning for ollama.py",
+      "commit_created": false
+    },
+    "broader_suite_issue": {
+      "test": "tests/test_surface_benchmarks.py::test_cli_persists_and_reports_baseline_comparison",
+      "observed": "expected inconclusive, received incomparable",
+      "included_in_latest_focused_t12_run": false,
+      "diagnosis": "not established; no pre-existing or task-related attribution claimed"
+    },
+    "previous_focused_tests": {
+      "command": "python -m pytest -q --tb=short tests/test_t12_scheduler_scenarios.py tests/test_t12_benchmark_contract.py tests/test_t12_runtime_scenarios.py tests/test_surface_benchmarks.py -k 'not cli_persists_and_reports_baseline_comparison and (t12 or metric_summary or summarize_samples)'",
+      "result": "59 passed, 15 deselected in 7.27s",
+      "diff_check": "no whitespace errors; LF-to-CRLF warning remains for ollama.py"
+    },
+    "post_unload_vram_admission": {
+      "tests": "5 passed in 0.26s",
+      "coverage": [
+        "cross-model admission defers when supported",
+        "post-unload check sees fresh free VRAM and is attached to switch receipt",
+        "insufficient post-unload VRAM rejects without model cooldown",
+        "Ollama checks before target allocation",
+        "Ollama skips target allocation after rejection"
+      ]
+    },
+    "interruptible_header_cancellation": {
+      "test": "tests/test_ollama_transport.py::test_request_interruptible_cancels_while_waiting_for_headers",
+      "result": "1 passed in 0.70s",
+      "root_cause": "On Windows, closing the socket from the watcher did not release HTTPConnection.getresponse while it waited for headers; response reads now poll cancellation and deadline."
+    },
+    "affected_file_suite": {
+      "result": "126 passed, 3 failed in 41.32s",
+      "failures": [
+        "tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data",
+        "tests/test_surface_benchmarks.py::test_cli_persists_and_reports_baseline_comparison",
+        "tests/test_surface_benchmarks.py::test_optional_inference_uses_runtime_load_metric_without_real_model"
+      ],
+      "observations": [
+        "The optional-inference artifact records failed_stages=[hub_queue_admission].",
+        "The CLI comparison test received incomparable instead of inconclusive.",
+        "The current VRAMBalancer snapshot is high pressure with background throttling enabled; exact cause was not retained for every failure."
+      ],
+      "attribution": "No claim that these failures are pre-existing or caused by T12 changes."
+    }
+  },
+  "sha256": {
+    ".handoff/t12-live-matrix-balanced-post-admission-fix-20260929.json": "9406D89EC30893E9D135FE769A36FE391302DAAE80F48508348C15F9CC4D9E1C",
+    ".handoff/t12-live-matrix-ollama-isolated-20260929.json": "1D8FF1448ABFB1F77B08319325E4612315C4C18C454B96C7E8FBCB303F0E8B82",
+    ".handoff/t12-verified-cli-output-20260929.json": "47D8C5E535AD9298703E5830AEF5E5D0803B7174848B1CD776CB632FE7871925",
+    "src/local_ai_hub/benchmark.py": "DBF83A1E489EFACAEEB11DA8CA13ADCF014BD4BB67A37D8C3EF65DE80B53AEF7",
+    "src/local_ai_hub/ollama.py": "B247F20F9CB4BFBDE20AB308AA1BDB891CDA50F6B0939F4D996B88DCA4EFF321",
+    "src/local_ai_hub/scheduler.py": "0D9614C7382799D00D9A57015C75E1EDA03D127FBD1357E607C6CC6B1A9F88C1",
+    "tools/benchmark_surfaces.py": "D94F31F2AACC02FE75CF98B8C493CE6AB5229A283FA94CA101D319C995D41E56",
+    "tests/test_t12_benchmark_contract.py": "39A48EA373E291F03BC4F660A4EF892C5526A6FC3DD822F5722D4586953E583B",
+    "tests/test_t12_runtime_scenarios.py": "45061A427698F1583BDBA8DF5C18D95FF4423509F5BDB8D87FB8187E522AED32",
+    "tests/test_t12_scheduler_scenarios.py": "974656C3D0E444756721FCAE793E2D4E5D2AAE9ACDFCAE4992493567EE0983E8",
+    "tests/test_surface_benchmarks.py": "E7AC698C9BAF4371DE141FBEC8B231FF0DD9C06942C6AEC2FD79A4B0A6150117",
+    "src/local_ai_hub/llama_cpp.py": "9292F1A750B28472F5078706E9A60D6F4C4ACD4D6A8152BA4CE3223BE4A651F8",
+    "src/local_ai_hub/tiered_ollama.py": "E9E12D3319BE1CB71D463E1DAD46ADE5C673087189CA40C1D7C39F872F72DC11",
+    "tests/test_ollama_transport.py": "F6E24B344B6F48FBEA2E0B2E67AC7136B2FD1054E0620FDC4EA8177F7A639B65"
+  },
+  "side_effects": {
+    "isolated_ollama_pid": 20432,
+    "isolated_ollama_stopped": true,
+    "default_desktop_ollama_touched": false,
+    "models_pulled": false,
+    "commit_created": false
+  },
+  "workspace": {
+    "inherited_dirty_state_preserved": true,
+    "unrelated_handoff_scratch_preserved": true
+  }
+}

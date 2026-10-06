@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-37",
+  "status": "NOT_RUN",
+  "result": null,
+  "reason": "T06 manifest root preimages for commands.py and test_command_rollback.py drift from current root; selector canceled before dispatch.",
+  "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_command_rollback.py::test_private_transaction_source_conflict_marks_outcome_unknown_and_invalidates_caches"
+}

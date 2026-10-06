@@ -1,0 +1,20 @@
+{
+  "patch": "t08-async-admission-root-current-17E5CEABBEA17711749104894A7E5E24708E2D260A4298CDDD7895BAEC69A41E.patch",
+  "sha256": "17E5CEABBEA17711749104894A7E5E24708E2D260A4298CDDD7895BAEC69A41E",
+  "root_target": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "root_preimage_sha256": "A524078F716D4915F6ABFFB27347C4625FDBB9C34A1373F5F8442D7102AEF935",
+  "paths": [
+    "src/local_ai_hub/async_jobs.py",
+    "tests/test_t08_async_admission_lifecycle.py",
+    "tests/test_t08_t13_t12_consumer_overlay.py"
+  ],
+  "scope": "T08 AsyncJobManager admission/drain and resource-release producer API; T13 operational-mode response; preserve string root/cwd through async payload; actual T13/T12 consumer tests",
+  "candidate_receipt": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t08_http_memory_context_immutable.py tests/test_agent_task_memory_adoption.py tests/test_agent_tasks.py tests/test_t08_t13_t12_consumer_overlay.py tests/test_t08_async_admission_lifecycle.py -> 40 passed in 18.56s; T08_ASYNC_JOBS_SOURCE points to t08-root-current-async_jobs.py; T08_T13_WORKTREE=t13-operational-mode; T08_T12_WORKTREE=4816.",
+  "root_modified": false,
+  "apply_check": "git apply --check --whitespace=error against current root passed; patch unapplied.",
+  "targeted_receipt": "tests/test_t08_async_admission_lifecycle.py tests/test_t08_t13_t12_consumer_overlay.py against exact patched root async_jobs source -> 3 passed in 1.16s.",
+  "root_async_jobs_preimage_sha256": "A524078F716D4915F6ABFFB27347C4625FDBB9C34A1373F5F8442D7102AEF935"
+}

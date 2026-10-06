@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 
@@ -580,10 +580,20 @@ def build_coder_packet(
         return _coder_error("dom must be an object")
     if runtime_context is not None and not isinstance(runtime_context, dict):
         return _coder_error("runtime_context must be an object")
+    bounded_findings = []
+    for finding in findings:
+        normalized = asdict(finding) if isinstance(finding, VisionFinding) else finding
+        if isinstance(normalized, dict):
+            normalized = {
+                key: list(value) if isinstance(value, tuple) else value
+                for key, value in normalized.items()
+            }
+        bounded_findings.append(normalized)
     try:
         validate_bounded_context(
             {
                 "prompt": packet_prompt,
+                "findings": bounded_findings,
                 "dom": dom,
                 "runtime": runtime_context or {},
                 "repo": repo_context or {},

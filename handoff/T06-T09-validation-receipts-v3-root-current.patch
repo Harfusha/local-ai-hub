@@ -1,0 +1,78 @@
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -2431,6 +2431,8 @@
+         repository_revision: str,
+         duration_ms: float,
+         cached: bool = False,
++        project_alias: str = "",
++        project_config_digest: str = "",
+     ) -> None:
+         if not result.get("success") or not task_id or self.verification_store is None:
+             return
+@@ -2440,7 +2442,11 @@
+             from .agent_verification import VerificationReceipt, classify_verification_command
+ 
+             evidence_type = classify_verification_command(command)
+-            if evidence_type not in {"test", "benchmark"}:
++            if evidence_type not in {"test", "benchmark", "source_review"}:
++                return
++            if evidence_type == "source_review" and (
++                project_alias != criterion or not project_config_digest
++            ):
+                 return
+             task_store = self.task_store or getattr(self.verification_store, "task_store", None)
+             task = task_store.get(task_id) if task_store is not None else None
+@@ -2457,6 +2463,10 @@
+                 "owner": verified_owner,
+                 "criterion": criterion,
+                 "command_id": command_id,
++                "command_classification": evidence_type,
++                "command": command,
++                "project_alias": project_alias,
++                "project_config_digest": project_config_digest,
+                 "command_sha256": command_digest,
+                 "exit_code": exit_code,
+                 "repository_revision": repository_revision,
+@@ -5057,6 +5067,7 @@
+             rollback_paths=rollback_paths,
+             _environment_overrides=resolved.environment,
+             _cache_context=resolved.cache_context,
++            _project_command_context=resolved,
+         )
+ 
+     @_stable_rollback_status
+@@ -5086,7 +5097,16 @@
+         _cache_context: str = "",
+         _transaction_context: str = "",
+         _work_attempt_fence: WorkAttemptFence | None = None,
++        _project_command_context: _ResolvedProjectCommand | None = None,
+     ) -> dict[str, Any]:
++        project_alias = ""
++        project_config_digest = ""
++        if (
++            isinstance(_project_command_context, _ResolvedProjectCommand)
++            and _project_command_context.command == command
++        ):
++            project_alias = _project_command_context.alias
++            project_config_digest = _project_command_context.config_digest
+         if not self.enabled:
+             return {"success": False, "error": "command broker disabled"}
+         argv_override: list[str] | None = None
+@@ -5353,6 +5373,8 @@
+                     repository_revision=str(state.get("fingerprint", "")),
+                     duration_ms=float(result.get("duration_ms", 0) or 0),
+                     cached=True,
++                    project_alias=project_alias,
++                    project_config_digest=project_config_digest,
+                 )
+                 return self._compact(result, tenant, command)
+ 
+@@ -5636,6 +5658,8 @@
+                     command_digest=hashlib.sha256(command.encode("utf-8")).hexdigest(),
+                     repository_revision=str(state.get("fingerprint", "")),
+                     duration_ms=float(result.get("duration_ms", 0) or 0),
++                    project_alias=project_alias,
++                    project_config_digest=project_config_digest,
+                 )
+             if not force and not bypass_cache and not is_mutating and not uncertain_outcome and self._non_retryable_failure(raw):
+                 raw.update({"terminal": True, "retryable": False})

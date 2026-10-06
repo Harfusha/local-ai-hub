@@ -1,0 +1,229 @@
+diff --git a/tests/test_t05_memory_delete_artifacts.py b/tests/test_t05_memory_delete_artifacts.py
+--- a/tests/test_t05_memory_delete_artifacts.py
++++ b/tests/test_t05_memory_delete_artifacts.py
+@@ -4,7 +4,7 @@
+ 
+ import pytest
+ 
+-from local_ai_hub.agent_events import AgentStateStore
++from local_ai_hub.agent_events import AgentEvent, AgentStateStore
+ from local_ai_hub.agent_identity import AgentScope
+ from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
+ from local_ai_hub.sqlite_support import connect_sqlite
+@@ -14,19 +14,16 @@
+     root = tmp_path / "repo"
+     root.mkdir()
+     store = MemoryStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
+-    record = store.record(
+-        MemoryRecord.create(
+-            kind=MemoryKind.FACT,
+-            scope=AgentScope.REPOSITORY,
+-            scope_id=str(root),
+-            key="delete-search-artifacts",
+-            value="sensitive searchable memory",
+-            source="user",
+-            provenance={"root": str(root), "tenant": "tenant-a"},
+-        ),
+-        actor="user",
+-        idempotency_key="delete-search-artifacts",
++    record = MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.REPOSITORY,
++        scope_id=str(root),
++        key="delete-search-artifacts",
++        value="sensitive searchable memory",
++        source="user",
++        provenance={"root": str(root), "tenant": "tenant-a"},
+     )
++    store._save_record(record)
+     assert store.set_embedding(record.record_id, [0.25, 0.75])
+     with closing(connect_sqlite(store.state_store.db_path)) as con:
+         fts_exists = con.execute(
+@@ -49,6 +46,15 @@
+         root=str(root),
+         tenant="tenant-a",
+     )
++    reopened = MemoryStore(AgentStateStore(store.state_store.db_path))
++    assert reopened.get(
++        record.record_id,
++        scope=AgentScope.REPOSITORY,
++        scope_id=str(root),
++        root=str(root),
++        tenant="tenant-a",
++        include_expired=True,
++    ) is None
+     with closing(connect_sqlite(store.state_store.db_path)) as con:
+         assert con.execute(
+             "SELECT COUNT(*) FROM agent_memory_embeddings WHERE record_id = ?",
+@@ -61,64 +67,67 @@
+             ).fetchone()[0] == 0
+ 
+ 
+-def test_delete_fts_failure_rolls_back_record_and_embeddings(tmp_path, monkeypatch):
++@pytest.mark.parametrize(
++    "fault_table",
++    ["agent_entity_relations", "agent_memory_embeddings", "agent_memory_fts"],
++)
++def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, monkeypatch, fault_table):
+     root = tmp_path / "repo"
+     root.mkdir()
+     db_path = tmp_path / "agent_state.sqlite3"
+     store = MemoryStore(AgentStateStore(db_path))
+-    record = store.record(
+-        MemoryRecord.create(
+-            kind=MemoryKind.FACT,
+-            scope=AgentScope.REPOSITORY,
+-            scope_id=str(root),
+-            key="rollback-delete-primary",
+-            value="retain after failed deletion",
+-            source="user",
+-            provenance={"root": str(root), "tenant": "tenant-a"},
+-        ),
+-        actor="user",
++    record = MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.REPOSITORY,
++        scope_id=str(root),
++        key="rollback-delete-primary",
++        value="retain after failed deletion",
++        source="user",
++        provenance={"root": str(root), "tenant": "tenant-a"},
+     )
+-    related = store.record(
+-        MemoryRecord.create(
+-            kind=MemoryKind.FACT,
+-            scope=AgentScope.REPOSITORY,
+-            scope_id=str(root),
+-            key="rollback-delete-related",
+-            value="retain relation",
+-            source="user",
+-            provenance={"root": str(root), "tenant": "tenant-a"},
+-        ),
+-        actor="user",
++    related = MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.REPOSITORY,
++        scope_id=str(root),
++        key="rollback-delete-related",
++        value="retain relation",
++        source="user",
++        provenance={"root": str(root), "tenant": "tenant-a"},
+     )
++    store._save_record(record)
++    store._save_record(related)
+     store.record_relation(record.record_id, "related_to", related.record_id)
+     assert store.set_embedding(record.record_id, [0.5, 0.5])
+     with closing(connect_sqlite(db_path)) as con:
+         fts_exists = con.execute(
+             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_memory_fts'"
+         ).fetchone() is not None
+-    if not fts_exists:
++    if fault_table == "agent_memory_fts" and not fts_exists:
+         pytest.skip("FTS5 unavailable")
+     stream_id = "memory:" + "".join(
+         f"{len(part)}:{part}" for part in (record.scope.value, record.scope_id or "", record.key or record.record_id)
+     )
++    seeded_event = AgentEvent.create(stream_id, "test.marker", {"safe": True}, "delete-fault-before")
++    assert store.state_store.append(seeded_event).event == seeded_event.with_seq(1)
+     events_before = store.state_store.events(stream_id)
+ 
+     real_connect = sqlite3.connect
+ 
+-    class FailingFtsConnection(sqlite3.Connection):
++    class FailingDeleteConnection(sqlite3.Connection):
+         def execute(self, sql, parameters=()):
+-            if " ".join(str(sql).split()).casefold().startswith("delete from agent_memory_fts"):
+-                raise sqlite3.OperationalError("injected FTS delete failure")
++            normalized_sql = " ".join(str(sql).split()).casefold()
++            if normalized_sql.startswith(f"delete from {fault_table}"):
++                raise sqlite3.OperationalError(f"injected {fault_table} delete failure")
+             return super().execute(sql, parameters)
+ 
+-    def connect_with_fts_failure(database, *args, **kwargs):
++    def connect_with_delete_failure(database, *args, **kwargs):
+         if Path(database).resolve(strict=False) == db_path.resolve():
+-            kwargs["factory"] = FailingFtsConnection
++            kwargs["factory"] = FailingDeleteConnection
+         return real_connect(database, *args, **kwargs)
+ 
+     with monkeypatch.context() as patch:
+-        patch.setattr(sqlite3, "connect", connect_with_fts_failure)
+-        with pytest.raises(sqlite3.OperationalError, match="injected FTS delete failure"):
++        patch.setattr(sqlite3, "connect", connect_with_delete_failure)
++        with pytest.raises(sqlite3.OperationalError, match=f"injected {fault_table} delete failure"):
+             store.delete(
+                 record.record_id,
+                 scope=AgentScope.REPOSITORY,
+@@ -141,3 +150,8 @@
+             "SELECT COUNT(*) FROM agent_memory_embeddings WHERE record_id = ?",
+             (record.record_id,),
+         ).fetchone()[0] == 1
++        if fts_exists:
++            assert con.execute(
++                "SELECT COUNT(*) FROM agent_memory_fts WHERE record_id = ?",
++                (record.record_id,),
++            ).fetchone()[0] == 1
+diff --git a/tests/test_t05_memory_fts_atomicity.py b/tests/test_t05_memory_fts_atomicity.py
+--- a/tests/test_t05_memory_fts_atomicity.py
++++ b/tests/test_t05_memory_fts_atomicity.py
+@@ -3,6 +3,7 @@
+ import sqlite3
+ from dataclasses import replace
+ import json
++from contextlib import closing
+ 
+ import pytest
+ 
+@@ -13,7 +14,7 @@
+ from local_ai_hub.sqlite_support import connect_sqlite
+ 
+ 
+-def test_record_update_fts_write_failure_rolls_back_durable_record_and_event(tmp_path, monkeypatch):
++def test_record_update_fts_write_failure_rolls_back_durable_record_and_preserves_events(tmp_path, monkeypatch):
+     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+     store = MemoryStore(state_store)
+     original = store.record(
+@@ -27,6 +28,12 @@
+         actor="user",
+         idempotency_key="before-update",
+     )
++    with closing(connect_sqlite(state_store.db_path)) as con:
++        stream_id = con.execute(
++            "SELECT stream_id FROM agent_events WHERE idempotency_key = ?",
++            ("before-update",),
++        ).fetchone()[0]
++    events_before = state_store.events(stream_id)
+     updated = replace(original, value="after")
+     real_connect = agent_memory_module.connect_sqlite
+ 
+@@ -44,7 +51,6 @@
+     monkeypatch.setattr(agent_memory_module, "connect_sqlite", connect_with_fts_write_fault)
+     with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+         store.record(updated, actor="user", idempotency_key="failed-update")
+-
+     con = connect_sqlite(state_store.db_path)
+     try:
+         row = con.execute(
+@@ -59,21 +65,13 @@
+             "SELECT COUNT(*) FROM agent_events WHERE idempotency_key = ?",
+             ("failed-update",),
+         ).fetchone()[0]
+-        stream_id = con.execute(
+-            "SELECT stream_id FROM agent_events WHERE idempotency_key = ?",
+-            ("before-update",),
+-        ).fetchone()[0]
+-        cursor = con.execute(
+-            "SELECT last_seq FROM agent_event_cursors WHERE stream_id = ?",
+-            (stream_id,),
+-        ).fetchone()
+     finally:
+         con.close()
+ 
+     assert json.loads(row[0]) == "before"
+     assert fts == ("before",)
+     assert failed_event == 0
+-    assert cursor == (1,)
++    assert state_store.events(stream_id) == events_before
+ 
+ 
+ def test_record_write_succeeds_when_optional_fts_table_is_absent(tmp_path):

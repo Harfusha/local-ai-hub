@@ -162,6 +162,58 @@ class RepoStateTracker:
                 changed.add(rel_b.decode("utf-8", errors="surrogateescape"))
         return sorted(changed)
 
+    @staticmethod
+    def _parse_porcelain_v2(status_raw: bytes) -> tuple[str, bytes, list[str]]:
+        records = status_raw.split(b"\0")
+        head = ""
+        status_records: list[bytes] = []
+        changed: set[str] = set()
+
+        def add_path(path: bytes) -> None:
+            if path:
+                changed.add(path.decode("utf-8", errors="surrogateescape"))
+
+        index = 0
+        while index < len(records):
+            record = records[index]
+            index += 1
+            if not record:
+                continue
+            if record.startswith(b"# branch.oid "):
+                value = record[len(b"# branch.oid "):]
+                head = "" if value == b"(initial)" else value.decode("ascii", errors="replace")
+                continue
+            if record.startswith(b"# "):
+                continue
+
+            status_records.append(record)
+            kind = record[:1]
+            if kind == b"1":
+                fields = record.split(b" ", 8)
+                if len(fields) == 9:
+                    add_path(fields[8])
+            elif kind == b"2":
+                fields = record.split(b" ", 9)
+                if len(fields) == 10:
+                    add_path(fields[9])
+                    if index < len(records):
+                        original = records[index]
+                        index += 1
+                        if original:
+                            status_records.append(original)
+                            add_path(original)
+            elif kind == b"u":
+                fields = record.split(b" ", 10)
+                if len(fields) == 11:
+                    add_path(fields[10])
+            elif kind == b"?":
+                add_path(record[2:])
+
+        normalized_status = b"\0".join(status_records)
+        if status_records and status_raw.endswith(b"\0"):
+            normalized_status += b"\0"
+        return head, normalized_status, sorted(changed)
+
     def _filesystem_result(self, root_path: Path, *, limit: int, degraded_reason: str = "") -> dict[str, Any]:
         entries: list[tuple[str, int, int, int, int]] = []
         truncated = False
@@ -240,59 +292,53 @@ class RepoStateTracker:
                     self._bump("cache_hits")
                     return dict(cached)
             try:
-                probe = self._run_git(root_path, "rev-parse", "--is-inside-work-tree", timeout=self.git_probe_timeout)
+                status_proc = self._run_git(
+                    root_path, "status", "--porcelain=v2", "-z", "--untracked-files=normal", "--branch",
+                    timeout=self.git_status_timeout,
+                )
             except subprocess.TimeoutExpired:
                 self._bump("git_timeouts")
-                return self._degraded_result(root_path, cache_key, "git repository probe timed out")
-            except OSError:
-                probe = None
+                return self._degraded_result(root_path, cache_key, "git status timed out")
+            except OSError as exc:
+                return self._degraded_result(root_path, cache_key, f"git unavailable: {type(exc).__name__}")
 
-            if probe is not None and probe.returncode == 0 and probe.stdout.strip() == b"true":
+            if status_proc.returncode != 0:
                 try:
-                    head_proc = self._run_git(root_path, "rev-parse", "HEAD", timeout=self.git_probe_timeout)
-                    head = head_proc.stdout.decode("utf-8", errors="replace").strip() if head_proc.returncode == 0 else ""
-                    # ``normal`` collapses untracked directories, avoiding Git's very
-                    # expensive all-files enumeration. Those directories are signed by
-                    # bounded filesystem metadata below, preserving invalidation.
-                    status_proc = self._run_git(
-                        root_path, "status", "--porcelain=v1", "-z", "--untracked-files=normal",
-                        timeout=self.git_status_timeout,
-                    )
-                    if status_proc.returncode != 0:
-                        return self._degraded_result(root_path, cache_key, f"git status exited {status_proc.returncode}")
-                    status_raw = status_proc.stdout
+                    probe = self._run_git(root_path, "rev-parse", "--is-inside-work-tree", timeout=self.git_probe_timeout)
                 except subprocess.TimeoutExpired:
                     self._bump("git_timeouts")
-                    return self._degraded_result(root_path, cache_key, "git status timed out")
-                except OSError as exc:
-                    return self._degraded_result(root_path, cache_key, f"git unavailable: {type(exc).__name__}")
+                    return self._degraded_result(root_path, cache_key, "git repository probe timed out")
+                except OSError:
+                    probe = None
+                if probe is None or probe.returncode != 0 or probe.stdout.strip() != b"true":
+                    result = self._filesystem_result(root_path, limit=self.non_git_max_files)
+                    self._last_good[cache_key] = dict(result)
+                    self._bump("filesystem")
+                    self.cache.set(cache_key, result)
+                    return dict(result)
+                return self._degraded_result(root_path, cache_key, f"git status exited {status_proc.returncode}")
 
-                changed_names = self._parse_porcelain_v1(status_raw)
-                signatures = [(rel, self._path_signature(root_path, rel)) for rel in changed_names[: self.max_changed_paths]]
-                changed_truncated = len(changed_names) > self.max_changed_paths
-                digest = stable_hash({
-                    "head": head,
-                    "status": status_raw.hex(),
-                    "changed": signatures,
-                    "changed_truncated": changed_truncated,
-                    # If we deliberately cap per-path stat work, expire the aggregate
-                    # identity every TTL so an edited file beyond the cap cannot remain
-                    # indefinitely hidden behind an unchanged porcelain path list.
-                    "volatile_bucket": int(time.time() / max(1.0, self.ttl)) if changed_truncated else None,
-                })
-                result = {
-                    "success": True, "root": str(root_path), "kind": "git", "head": head,
-                    "dirty": bool(status_raw), "changed_files": len(changed_names),
-                    "changed_paths": changed_names[: self.max_changed_paths], "fingerprint": digest,
-                    "created_at": time.time(), "degraded": False, "stale": False,
-                }
-                self._last_good[cache_key] = dict(result)
-                self._slow_until.pop(cache_key, None)
-                self._bump("git")
-            else:
-                result = self._filesystem_result(root_path, limit=self.non_git_max_files)
-                self._last_good[cache_key] = dict(result)
-                self._bump("filesystem")
+            head, status_raw, changed_names = self._parse_porcelain_v2(status_proc.stdout)
+            if not head and b"# branch.oid (initial)\0" not in status_proc.stdout:
+                return self._degraded_result(root_path, cache_key, "git status omitted branch identity")
+            signatures = [(rel, self._path_signature(root_path, rel)) for rel in changed_names[: self.max_changed_paths]]
+            changed_truncated = len(changed_names) > self.max_changed_paths
+            digest = stable_hash({
+                "head": head,
+                "status": status_raw.hex(),
+                "changed": signatures,
+                "changed_truncated": changed_truncated,
+                "volatile_bucket": int(time.time() / max(1.0, self.ttl)) if changed_truncated else None,
+            })
+            result = {
+                "success": True, "root": str(root_path), "kind": "git", "head": head,
+                "dirty": bool(status_raw), "changed_files": len(changed_names),
+                "changed_paths": changed_names[: self.max_changed_paths], "fingerprint": digest,
+                "created_at": time.time(), "degraded": False, "stale": False,
+            }
+            self._last_good[cache_key] = dict(result)
+            self._slow_until.pop(cache_key, None)
+            self._bump("git")
 
             self.cache.set(cache_key, result)
             return dict(result)
