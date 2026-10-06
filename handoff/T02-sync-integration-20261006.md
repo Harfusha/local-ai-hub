@@ -9,7 +9,7 @@
 - Checkpoint commit: b276cd0295a0856c25d13ed443206c9547f5f689.
 - Initial master pin: 614a6a50ac2a3e4106270136cb8e584e770c3752.
 - Latest requested pin: fbc965f568105e1a8d3dc03ae4c9da5531a9617e; resolved read-only from fbc965f5 and merged once.
-- Later orchestrator-observed master drift: f161b91fe08ef5211cb09d499571b0ae5b6d2278. Not incorporated: user directed no further master chasing after the one latest-pin merge.
+- Later orchestrator-observed master drift: f161b91fe08ef5211cb09d499571b0ae5b6d2278. Not incorporated: the one requested latest-master merge had already incorporated fbc965f5 before this subsequent drift was observed.
 - Initial resolved merge: 21bbd39f; latest merge: 30fda4f5a99e83410adff8e583b9b77ed7fa9b1b.
 - Original exact status, paths, byte counts, SHA-256: handoff/T02-sync-original-manifest-20261006.json.
 - All seven original untracked docs/handoff files were committed as raw Git blobs with --no-filters before merging. Final verification hashed checkpoint blob bytes directly: 7/7 matched original SHA-256.
