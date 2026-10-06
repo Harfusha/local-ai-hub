@@ -1,0 +1,26 @@
+diff --git a/src/local_ai_hub/telemetry.py b/src/local_ai_hub/telemetry.py
+--- a/src/local_ai_hub/telemetry.py
++++ b/src/local_ai_hub/telemetry.py
+@@ -95,7 +95,21 @@
+                 page = report.get("error_fingerprints_page")
+                 if isinstance(page, dict):
+                     next_offset = int(page.get("offset", 0)) + len(values)
+-                    page["next_offset"] = next_offset if next_offset < int(page.get("total", 0)) else None
++                    page["next_offset"] = (
++                        next_offset if "cursor" not in page and next_offset < int(page.get("total", 0)) else None
++                    )
++                    if "next_cursor" in page:
++                        if values:
++                            last = values[-1]
++                            page["next_cursor"] = _encode_error_page_cursor(
++                                int(page.get("snapshot_id", 0)), float(page.get("snapshot_cutoff", 0)), (
++                                last.get("fingerprint", ""), last.get("error_type", ""),
++                                last.get("component", ""), last.get("operation", ""),
++                            ))
++                            page["has_more"] = True
++                        else:
++                            page["next_cursor"] = page.get("cursor") or None
++                            page["has_more"] = page["next_cursor"] is not None
+             encoded = json_dumps(report).encode("utf-8")
+     if len(encoded) > _MAX_TELEMETRY_REPORT_BYTES:
+         return {

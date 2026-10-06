@@ -1,0 +1,25 @@
+--- a/tests/test_http_get_live_t18.py
++++ b/tests/test_http_get_live_t18.py
+@@ -67,10 +67,7 @@
+     ]
+     order = {"_require_authorized": "auth", "_http_mode_gate_error": "mode", "_begin_trace": "trace", "parse_qs": "parse"}
+     observed_order = tuple(name for _, name in sorted((line, order[name]) for line, name in prelude_calls if name in order))
+-    assert observed_order in {
+-        ("auth", "mode", "trace", "parse"),
+-        ("trace", "auth", "mode", "parse"),
+-    }
++    assert observed_order == ("auth", "mode", "trace", "parse")
+     assert max(line for line, name in prelude_calls if name in order) < dispatch
+     assert "/api/live" not in http_server.HTTP_MODE_OPERATOR_GET_PATHS
+     assert "/api/live" not in http_server.HTTP_MODE_GAMING_READ_GET_PATHS
+--- a/tests/test_http_get_live_status_t18.py
++++ b/tests/test_http_get_live_status_t18.py
+@@ -57,7 +57,7 @@
+     trace = next(line for line, name in ordered_calls if name == "_begin_trace")
+     parse = next(line for line, name in ordered_calls if name == "parse_qs")
+     dispatch = next(line for line, name in ordered_calls if name == "select_get_handler")
+-    assert trace < auth < mode < parse < dispatch
++    assert auth < mode < trace < parse < dispatch
+     assert "/api/live/status" in http_server.HTTP_MODE_OPERATOR_GET_PATHS
+     assert not any(name in {"_claim_recovery", "begin"} for _, name in calls)
+     dispatch_try = next(

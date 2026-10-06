@@ -69,7 +69,7 @@ from .work_orchestrator import WorkOrchestrator
 
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
-_STATUS_MAX_WORKERS = 8
+_STATUS_MAX_WORKERS = 32
 _STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
 
 
@@ -111,6 +111,12 @@ def _accelerator_status_fallback(config: dict[str, Any]) -> dict[str, Any]:
             "candidates": [],
         },
     }
+
+
+def _online_probe_status(value: Any, healthy: bool) -> str:
+    if not healthy or value is None:
+        return "unknown"
+    return "online" if bool(value) else "offline"
 
 
 def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline, diagnostic=None):
@@ -723,12 +729,11 @@ class LocalAIApp:
             cached = self._live_status_cache.get(cache_key)
             if cached and now - cached[0] < cache_ttl:
                 return cached_snapshot(cached, now)
-            dependency_status: dict[str, dict[str, Any]] = {}
             deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+            dependency_status: dict[str, dict[str, Any]] = {}
 
-            def read(key, callback, fallback):
-                remaining = max(0.0, deadline - time.monotonic())
-                timeout = min(max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS)), remaining)
+            def read(key: str, callback, fallback):
+                diagnostic: dict[str, Any] = {}
                 value, healthy = _status_dependency(
                     callback,
                     fallback,
@@ -738,72 +743,37 @@ class LocalAIApp:
                     slots=self._status_dependency_slots,
                     executor=self._status_dependency_executor,
                     deadline=deadline,
+                    diagnostic=diagnostic,
                 )
                 dependency_status[key] = {
-                    "deadline_ms": max(0, int(timeout * 1000)),
                     "degraded": not healthy,
-                    "status": "ok" if healthy else "degraded",
+                    "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                    **diagnostic,
                 }
-                return value
+                return value, healthy
 
-            headless = read("headless", self._headless_status, {"enabled": False, "supervisor": False})
+            headless, headless_healthy = read("headless", self._headless_status, {})
             ollama = headless.get("ollama_online") if headless.get("supervisor") else None
-            deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
             runtime_healthy = True
             profile_healthy = True
-            dependency_status: dict[str, dict[str, Any]] = {}
             # The supervisor status file is asynchronous and can lag behind a
             # live endpoint during restart/recovery. Prefer the runtime probe
             # for the public live/doctor status so stale supervisor state does
             # not report a healthy Ollama process as offline.
             runtime = getattr(self, "runtime", None)
             if runtime is not None:
-                runtime_diagnostic: dict[str, Any] = {}
-                ollama, runtime_healthy = _status_dependency(
-                    runtime.is_online,
-                    False,
-                    key="runtime.online",
-                    lock=self._status_dependency_lock,
-                    inflight=self._status_dependency_inflight,
-                    slots=self._status_dependency_slots,
-                    executor=self._status_dependency_executor,
-                    deadline=deadline,
-                    diagnostic=runtime_diagnostic,
-                )
-                dependency_status["runtime.online"] = {
-                    "degraded": not runtime_healthy,
-                    "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
-                    **runtime_diagnostic,
-                }
-                ollama = bool(ollama)
+                ollama, runtime_healthy = read("runtime.online", runtime.is_online, None)
+                ollama = bool(ollama) if runtime_healthy else None
                 if isinstance(headless, dict) and headless.get("supervisor"):
                     headless = dict(headless)
                     headless["ollama_online"] = ollama
-                profile_diagnostic: dict[str, Any] = {}
-                ollama_profile, profile_healthy = _status_dependency(
-                    runtime.managed_profile_status,
-                    {},
-                    key="ollama_profile",
-                    lock=self._status_dependency_lock,
-                    inflight=self._status_dependency_inflight,
-                    slots=self._status_dependency_slots,
-                    executor=self._status_dependency_executor,
-                    deadline=deadline,
-                    diagnostic=profile_diagnostic,
-                )
-                dependency_status["ollama_profile"] = {
-                    "degraded": not profile_healthy,
-                    "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
-                    **profile_diagnostic,
-                }
+                ollama_profile, profile_healthy = read("ollama_profile", runtime.managed_profile_status, {})
             else:
                 ollama_profile = {}
-            scheduler = self.scheduler.status()
-            prep_stats = self.preprocessor.stats()
-            try:
-                prep_status = self.preprocessor.status()
-            except Exception:
-                prep_status = {"success": False, "projects": []}
+            ollama_status = _online_probe_status(ollama, runtime_healthy)
+            scheduler, scheduler_healthy = read("scheduler", self.scheduler.status, {})
+            prep_stats, prep_stats_healthy = read("preprocessing.stats", self.preprocessor.stats, {})
+            prep_status, prep_status_healthy = read("preprocessing.status", self.preprocessor.status, {"success": False, "projects": []})
             projects = []
             for item in prep_status.get("projects", []) if isinstance(prep_status, dict) else []:
                 row = dict(item)
@@ -812,27 +782,38 @@ class LocalAIApp:
                 projects.append(row)
             from .features import FeatureSet
             fs = FeatureSet.from_config(self.config)
-            observability = self.telemetry.realtime_summary(scope=scope)
-            accelerator_diagnostic: dict[str, Any] = {}
-            accelerators, accelerator_healthy = _status_dependency(
-                lambda: accelerator_status(self.config),
-                _accelerator_status_fallback(self.config),
-                key="accelerators",
-                lock=self._status_dependency_lock,
-                inflight=self._status_dependency_inflight,
-                slots=self._status_dependency_slots,
-                executor=self._status_dependency_executor,
-                deadline=deadline,
-                diagnostic=accelerator_diagnostic,
-            )
-            dependency_status["accelerators"] = {
-                "degraded": not accelerator_healthy,
-                "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
-                **accelerator_diagnostic,
-            }
+            observability, telemetry_healthy = read("telemetry.summary", lambda: self.telemetry.realtime_summary(scope=scope), {})
+            accelerators, accelerator_healthy = read("accelerators", lambda: accelerator_status(self.config), _accelerator_status_fallback(self.config))
+            background_gpu, background_gpu_healthy = read("background_gpu", self.background_gpu.status, {})
+            model_policy = getattr(getattr(self, "services", None), "model_policy", None)
+            model_execution, model_execution_healthy = read("model_execution", model_policy.summary if model_policy else lambda: {}, {})
+            vram_balancer_obj = getattr(self, "vram_balancer", None)
+            vram_balancer, vram_balancer_healthy = read("vram_balancer", vram_balancer_obj.status if vram_balancer_obj else lambda: {}, {})
+            benchmark_obj = getattr(self, "benchmark_runner", None)
+            benchmark, benchmark_healthy = read("benchmark", benchmark_obj.get_latest_summary if benchmark_obj else lambda: {"available": False}, {"available": False})
+            debug_traces, traces_healthy = read("debug_traces", self.debug_traces.stats, {})
+            external_tools = getattr(self, "external_tools", None)
+            code_intelligence, _ = read("code_intelligence", external_tools.status if external_tools else lambda: {}, {})
+            agent_state, _ = read("agent_state", self._agent_state_summary, {"enabled": False})
+            runtime_stats = {}
+            for key, callback in (
+                ("generation_cache", self.services.generation_cache.stats),
+                ("semantic_cache", self.services.semantic_cache.stats),
+                ("repo_cache", self.services.repo_cache.stats),
+                ("repo_state", self.repo_state.stats),
+                ("repo_snapshots", self.repo_tools.snapshot_stats),
+                ("commands", self.commands.stats),
+                ("pipeline", self.pipeline.stats),
+                ("tool_agent", self.tool_agent.stats),
+            ):
+                runtime_stats[key], _ = read(f"runtime_stats.{key}", callback, {})
+            if not light and self.deterministic is not None:
+                runtime_stats["deterministic"], _ = read("runtime_stats.deterministic", self.deterministic.status, {})
+            if not light and self.code_index is not None:
+                runtime_stats["code_index"], _ = read("runtime_stats.code_index", self.code_index.status, {})
             result = {
-                "success": runtime_healthy and profile_healthy and accelerator_healthy, "hub_online": True, "version": __version__,
-                "degraded": not (runtime_healthy and profile_healthy and accelerator_healthy),
+                "success": not any(item["degraded"] for item in dependency_status.values()), "hub_online": True, "version": __version__,
+                "snapshot_cached": False, "degraded": any(item["degraded"] for item in dependency_status.values()),
                 "dependency_status": dependency_status,
                 "uptime_seconds": max(0, int(time.time() - self.started_at)),
                 "features": {
@@ -853,23 +834,23 @@ class LocalAIApp:
                 "models": dict(self.config.get("models", {})),
                 "hardware": dict(self.config.get("_hardware", {})),
                 "accelerators": accelerators,
-                "code_intelligence": self.external_tools.status(),
+                "code_intelligence": code_intelligence,
                 "runtime_profile": {
                     "tiered_models": self.config.get("models", {}).get("heavy_code") != self.config.get("models", {}).get("fast_code"),
                     "max_loaded_models": int(self.config.get("scheduler", {}).get("max_loaded_models", 1)),
                     "max_parallel": int(self.config.get("scheduler", {}).get("max_parallel", 1)),
-                    "execution": self.services.model_policy.summary(),
+                    "execution": model_execution,
                     "flash_attention": bool(self.config.get("ollama", {}).get("flash_attention", True)),
                     "kv_cache_type": str(self.config.get("ollama", {}).get("kv_cache_type", "q8_0")),
                 },
-                "ollama_online": ollama, "scheduler": scheduler,
+                "ollama_online": ollama, "ollama_status": ollama_status, "scheduler": scheduler,
                 "headless": headless,
-                "background_gpu": self.background_gpu.status(),
+                "background_gpu": background_gpu,
                 "ollama_profile": ollama_profile,
-                "model_execution": self.services.model_policy.summary() if getattr(self, "services", None) and getattr(self.services, "model_policy", None) else {},
-                "vram_balancer": self.vram_balancer.status() if getattr(self, "vram_balancer", None) else {},
-                "benchmark": self.benchmark_runner.get_latest_summary() if getattr(self, "benchmark_runner", None) else {"available": False},
-                "debug_traces": self.debug_traces.stats(),
+                "model_execution": model_execution,
+                "vram_balancer": vram_balancer,
+                "benchmark": benchmark,
+                "debug_traces": debug_traces,
                 "observability": observability,
                 "preprocessing": {
                     **(prep_status if isinstance(prep_status, dict) else {}),
@@ -880,20 +861,12 @@ class LocalAIApp:
                     "scheduler_background_allowed": prep_status.get("scheduler_background_allowed", True) if isinstance(prep_status, dict) else True,
                     "query_hit_rate": observability.get("preprocessed_query_hit_rate", 0.0),
                 },
-                "runtime_stats": {
-                    "generation_cache": self.services.generation_cache.stats(),
-                    "semantic_cache": self.services.semantic_cache.stats(),
-                    "repo_cache": self.services.repo_cache.stats(),
-                    "repo_state": self.repo_state.stats(),
-                    "repo_snapshots": self.repo_tools.snapshot_stats(),
-                    "commands": self.commands.stats(),
-                    "pipeline": self.pipeline.stats(),
-                    "tool_agent": self.tool_agent.stats(),
-                    "deterministic": self.deterministic.status() if not light and self.deterministic is not None else {},
-                    "code_index": self.code_index.status() if not light and self.code_index is not None else {},
-                },
+                "runtime_stats": runtime_stats,
             }
-            result["agent_state"] = self._agent_state_summary()
+            result["agent_state"] = agent_state
+            for key, healthy in (("headless", headless_healthy), ("runtime.online", runtime_healthy), ("ollama_profile", profile_healthy), ("scheduler", scheduler_healthy), ("preprocessing.stats", prep_stats_healthy), ("preprocessing.status", prep_status_healthy), ("telemetry.summary", telemetry_healthy), ("accelerators", accelerator_healthy), ("background_gpu", background_gpu_healthy), ("model_execution", model_execution_healthy), ("vram_balancer", vram_balancer_healthy), ("benchmark", benchmark_healthy), ("debug_traces", traces_healthy)):
+                if not healthy:
+                    result["success"] = False
             self._live_status_cache[cache_key] = (now, result)
             return dict(result)
 
@@ -979,6 +952,7 @@ class LocalAIApp:
                 "duration_ms": max(0, int((time.monotonic() - runtime_probe_started) * 1000)),
                 **runtime_diagnostic,
             }
+            ollama_status = _online_probe_status(online, runtime_healthy)
             version = read("runtime.version", self.runtime.version, None) if online else None
             installed: list[str] = read("runtime.installed_models", self.runtime.installed_models, []) if online else []
             loaded_details: list[dict[str, Any]] = read("runtime.loaded_model_details", self.runtime.loaded_model_details, []) if online else []
@@ -1061,10 +1035,9 @@ class LocalAIApp:
             debug_traces = read("debug_traces", self.debug_traces.stats, {})
             agent_state = read("agent_state", self._agent_state_summary, {"enabled": False})
             res = {
-                "success": not degraded, "hub_pid": os.getpid(), "hub_online": True, "version": __version__,
-                "degraded": degraded,
-                "dependency_status": dependency_status,
-                "ollama_online": online, "online": online, "ollama_version": version,
+                "success": not degraded, "snapshot_cached": False, "degraded": degraded, "dependency_status": dependency_status,
+                "hub_pid": os.getpid(), "hub_online": True, "version": __version__,
+                "ollama_online": online, "ollama_status": ollama_status, "online": online, "ollama_version": version,
                 "installed_models": installed, "loaded_models": loaded, "loaded_model_details": loaded_details, "models": dict(self.config["models"]),
                 "model_execution": model_execution, "ollama_profile": ollama_profile,
                 "background_gpu": background_gpu,

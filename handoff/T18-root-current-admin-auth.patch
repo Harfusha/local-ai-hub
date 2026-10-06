@@ -1,0 +1,237 @@
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -85,1 +85,49 @@
+ HTTP_MODE_OPERATOR_POST_PATHS = frozenset({"/api/admin/mode", "/api/control"})
++
++def _http_admin_action(method: str, path: str) -> str | None:
++    method = str(method).upper()
++    path = urlparse(str(path)).path
++    if method == "GET":
++        if path == "/api/debug-traces" or path.startswith("/api/debug-traces/"):
++            return "trace.read"
++        return {
++            "/api/adoption": "telemetry.read",
++            "/api/audit/tail": "audit.read",
++            "/api/capabilities": "status.read",
++            "/api/config": "config.read",
++            "/api/control": "control.read",
++            "/api/db/query": "db.query",
++            "/api/hardware/gpu": "hardware.read",
++            "/api/hardware/system": "hardware.read",
++            "/api/live": "telemetry.read",
++            "/api/live/status": "status.read",
++            "/api/logs/tail": "logs.read",
++            "/api/metrics": "telemetry.read",
++            "/api/models/manage": "model.manage",
++            "/api/mode": "status.read",
++            "/api/status": "status.read",
++            "/api/telemetry/report": "telemetry.read",
++            "/api/telemetry/timeline": "telemetry.read",
++        }.get(path)
++    if method == "POST":
++        if path.startswith("/api/maintenance/"):
++            return "maintenance"
++        return {
++            "/api/admin/mode": "mode.control",
++            "/api/bundle/import": "bundle.import",
++            "/api/config": "config.write",
++            "/api/config/update": "config.write",
++            "/api/control": "control",
++            "/api/db/query": "db.query",
++            "/api/models/manage": "model.manage",
++        }.get(path)
++    return None
++
++
++def _token_matches(supplied: str, expected: str) -> bool:
++    if not expected:
++        return False
++    try:
++        return hmac.compare_digest(str(supplied), expected)
++    except (TypeError, ValueError):
++        return False
+@@ -954,11 +1001,27 @@
+-    def _authorized(self) -> bool:
++    def _authorized(self, action: str | None = None) -> bool:
+-        if APP is None:
+-            return True
++        if APP is None:
++            return _is_loopback_client_address(getattr(self, "client_address", None))
+-        expected = str(APP.config.get("security", {}).get("api_token", ""))
+-        if not expected:
+-            return True
++        security = APP.config.get("security", {})
++        if not isinstance(security, dict):
++            return False
++        expected = str(security.get("api_token", "") or "")
++        action_tokens = security.get("action_tokens", {})
++        if not isinstance(action_tokens, dict):
++            return False
++        if action is None:
++            action = _http_admin_action(
++                str(getattr(self, "command", "")),
++                urlparse(str(getattr(self, "path", ""))).path,
++            )
+         supplied = self.headers.get("X-LocalAI-Token", "")
+         auth = self.headers.get("Authorization", "")
+         if auth.lower().startswith("bearer "):
+             supplied = auth[7:].strip()
+-        return hmac.compare_digest(supplied, expected)
++        if _token_matches(supplied, expected):
++            return True
++        scoped = action_tokens.get(action) if action else None
++        if isinstance(scoped, str) and len(scoped) >= 16 and _token_matches(supplied, scoped):
++            return True
++        if expected or action_tokens:
++            return False
++        return _is_loopback_client_address(getattr(self, "client_address", None))
+diff --git a/tests/test_http_admin_action_auth_t18.py b/tests/test_http_admin_action_auth_t18.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_http_admin_action_auth_t18.py
+@@ -0,0 +1,139 @@
++from contextlib import contextmanager
++from pathlib import Path
++from types import SimpleNamespace
++
++from local_ai_hub import http_server
++
++
++class AuditTelemetry:
++    def __init__(self):
++        self.events = []
++
++    def record_system(self, action, **event):
++        self.events.append({"action": action, **event})
++
++
++def _handler(path, command="POST", token="", client_address=("127.0.0.1", 1234)):
++    handler = http_server.Handler.__new__(http_server.Handler)
++    handler.path = path
++    handler.command = command
++    handler.client_address = client_address
++    handler.headers = {
++        "X-LocalAI-Token": token,
++        "X-LocalAI-Agent": "administrator",
++        "Host": "localhost",
++        "Origin": "http://localhost",
++    }
++    handler.server = None
++    handler.responses = []
++    handler._validate_host_and_origin = lambda: True
++    handler._tenant_binding_allowed = lambda: True
++    handler._send = lambda status, payload: handler.responses.append((status, payload))
++    return handler
++
++
++def test_empty_token_authorizes_only_actual_loopback_client(monkeypatch):
++    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {"api_token": ""}}))
++    local = _handler("/api/admin/mode", client_address=("127.0.0.1", 1234))
++    remote_with_spoofed_identity_headers = _handler(
++        "/api/admin/mode", client_address=("203.0.113.7", 1234)
++    )
++
++    assert local._require_authorized() is True
++    assert remote_with_spoofed_identity_headers._require_authorized() is False
++    assert remote_with_spoofed_identity_headers.responses == [
++        (401, {"success": False, "error": "unauthorized"})
++    ]
++
++
++def test_public_loopback_get_mode_remains_available_without_token(monkeypatch):
++    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {"api_token": ""}}))
++    local_read = _handler("/api/mode", command="GET", client_address=("::1", 1234))
++
++    assert local_read._require_authorized() is True
++
++
++def test_global_and_action_tokens_are_checked_and_action_scoped(monkeypatch):
++    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
++        "security": {
++            "api_token": "global-admin-token-123456",
++            "action_tokens": {"mode.control": "mode-control-token-123456"},
++        }
++    }))
++    action = _handler("/api/admin/mode", token="mode-control-token-123456")
++    wrong_scope = _handler("/api/config/update", token="mode-control-token-123456")
++    global_admin = _handler("/api/config/update", token="global-admin-token-123456")
++    mode_read = _handler(
++        "/api/mode", command="GET", token="mode-control-token-123456",
++        client_address=("203.0.113.7", 1234),
++    )
++
++    assert http_server._http_admin_action("POST", "/api/admin/mode") == "mode.control"
++    assert action._authorized() is True
++    assert wrong_scope._authorized() is False
++    assert global_admin._authorized() is True
++    assert mode_read._authorized() is False
++
++
++def test_configured_global_token_denies_tokenless_loopback_admin(monkeypatch):
++    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
++        "security": {"api_token": "global-admin-token-123456"}
++    }))
++    local_writer = _handler("/api/admin/mode")
++
++    assert local_writer._require_authorized() is False
++    assert local_writer.responses == [
++        (401, {"success": False, "error": "unauthorized"})
++    ]
++
++
++def test_mode_control_action_token_runs_remote_mode_post(monkeypatch):
++    telemetry = AuditTelemetry()
++    mode_writes = []
++
++    @contextmanager
++    def transition_guard():
++        yield
++
++    jobs = SimpleNamespace(
++        path=Path("state/jobs.sqlite3"),
++        operational_mode_change_guard=transition_guard,
++        on_operational_mode_changed=lambda _snapshot: {"inference_active": True},
++    )
++    snapshot = SimpleNamespace(mode="active", revision=9, degraded=False)
++    app = SimpleNamespace(
++        config={
++            "security": {
++                "api_token": "",
++                "action_tokens": {"mode.control": "mode-control-token-123456"},
++            }
++        },
++        telemetry=telemetry,
++        async_jobs=jobs,
++        scheduler=SimpleNamespace(foreground_busy=lambda: False),
++    )
++    monkeypatch.setattr(http_server, "APP", app)
++    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
++    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
++        set_operational_mode=lambda mode, state_dir: mode_writes.append((mode, state_dir)) or snapshot,
++    ))
++    handler = _handler("/api/admin/mode", "mode-control-token-123456")
++    handler.client_address = ("203.0.113.7", 23456)
++    handler._begin_trace = lambda _path: None
++    handler._read_json = lambda: {"mode": "active"}
++    handler._validate_payload = lambda _path, _payload: None
++
++    handler.do_POST()
++
++    assert http_server._http_admin_action("POST", "/api/admin/mode") == "mode.control"
++    assert mode_writes == [("active", jobs.path.parent)]
++    assert handler.responses == [(200, {
++        "success": True,
++        "mode": "active",
++        "revision": 9,
++        "degraded": False,
++        "runtime_unload": None,
++    })]
++    assert telemetry.events == [{
++        "action": "admin.authorization",
++        "success": True,
++        "component": "http_admin",
++        "operation": "mode.control",
++        "path": "/api/admin/mode",
++        "actor": "action_token",
++    }]

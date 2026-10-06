@@ -1,0 +1,44 @@
+--- a/tests/test_sse_events_stream.py
++++ b/tests/test_sse_events_stream.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import sqlite3
+ import io
+ import json
+ import threading
+@@ -131,6 +132,34 @@
+     assert '"step":2' in output
+ 
+ 
++def test_sse_stream_replays_all_bounded_pages(tmp_path: Path, monkeypatch):
++    store = AgentStateStore(tmp_path / "agent_state.sqlite3")
++    store._ensure_schema()
++    connection = sqlite3.connect(store.db_path)
++    try:
++        connection.executemany(
++            """INSERT INTO agent_events
++               (stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at)
++               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
++            (("task-1", index, f"evt-{index}", "task.updated", "{}", f"key-{index}", "", "agent", 1.0)
++             for index in range(1, 1002)),
++        )
++        connection.commit()
++    finally:
++        connection.close()
++
++    class DummyApp:
++        agent_state = store
++
++    monkeypatch.setattr(http_server, "APP", DummyApp())
++    handler = DummyHandler(DummyApp())
++    handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.05)
++
++    output = handler.wfile.getvalue().decode("utf-8")
++    assert output.count("event: task.updated") == 1001
++    assert output.count("event: replay_page") == 11
++    assert "id: 1001\n" in output
++
+ def test_sse_stream_timeout_bounds_queue_wait(tmp_path: Path, monkeypatch):
+     store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+ 
