@@ -11,6 +11,35 @@ import pytest
 from local_ai_hub.dashboard import DASHBOARD_HTML
 
 
+def _run_dashboard_health_javascript(scenario: str) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required to exercise dashboard health rendering")
+    marker = "function dashboardHealthBadge("
+    if marker not in DASHBOARD_HTML:
+        pytest.fail("dashboard health badge helper is not implemented")
+    start = DASHBOARD_HTML.index(marker)
+    end = DASHBOARD_HTML.index("\nfunction dashboardHealth(", start)
+    health_source = DASHBOARD_HTML[start:end]
+    runnable_source = (
+        health_source
+        + "\n(async () => {\n"
+        + scenario
+        + "\n})().catch(error => { console.error(error); process.exitCode = 1; });\n"
+    )
+    script = (
+        "const vm = require('node:vm');\n"
+        f"vm.runInNewContext({json.dumps(runnable_source)}, {{require, process, console}});\n"
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        script_path = Path(directory) / "dashboard_health.cjs"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run(
+            [node, str(script_path)], capture_output=True, text=True, timeout=5
+        )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def _run_polling_javascript(scenario: str, *, include_status: bool = False) -> None:
     node = shutil.which("node")
     if not node:
@@ -52,6 +81,32 @@ def _run_polling_javascript(scenario: str, *, include_status: bool = False) -> N
             [node, str(script_path)], capture_output=True, text=True, timeout=5
         )
     assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_dashboard_health_badge_surfaces_degraded_checks() -> None:
+    _run_dashboard_health_javascript(
+        """
+        const assert = require('node:assert/strict');
+        assert.deepEqual(
+          dashboardHealthBadge({hub_online: true, ollama_online: true, success: true, dependency_status: {runtime: {degraded: false}}}),
+          {className: 'ok', degradedCount: 0, degradedLabel: ''},
+        );
+        assert.deepEqual(
+          dashboardHealthBadge({hub_online: true, ollama_online: true, success: false, dependency_status: {
+            runtime: {degraded: true}, cache: {degraded: true}, scheduler: {degraded: false},
+          }}),
+          {className: 'warn-t', degradedCount: 2, degradedLabel: ' / 2 degraded checks'},
+        );
+        assert.deepEqual(
+          dashboardHealthBadge({hub_online: true, ollama_online: true, success: false}),
+          {className: 'warn-t', degradedCount: 0, degradedLabel: ' / status degraded'},
+        );
+        assert.deepEqual(
+          dashboardHealthBadge({hub_online: false, ollama_online: false, success: false, dependency_status: {runtime: {degraded: true}}}),
+          {className: 'bad-t', degradedCount: 1, degradedLabel: ' / 1 degraded check'},
+        );
+        """
+    )
 
 
 def test_hidden_dashboard_stops_poll_timer_and_resume_starts_one_poll() -> None:
@@ -106,7 +161,7 @@ def test_repeated_status_payload_does_not_trigger_redundant_render_work() -> Non
         apiFetch = async function(path) {
           fetches.push(path);
           return path.startsWith('/api/live/status')
-            ? {json: async () => first}
+            ? {ok: true, status: 200, json: async () => first}
             : {ok: true, json: async () => ({cpu_count: 1, ram: {}, gpu: {}})};
         }
         await pollStatus(() => true);
@@ -124,7 +179,7 @@ def test_hidden_status_response_cannot_commit_after_visibility_changes() -> None
         const assert = require('node:assert/strict');
         let resolveStatus;
         apiFetch = async function() {
-          return new Promise(resolve => { resolveStatus = () => resolve({json: async () => ({success: true})}); });
+          return new Promise(resolve => { resolveStatus = () => resolve({ok: true, status: 200, json: async () => ({success: true})}); });
         }
         const pending = pollStatus(() => true);
         document.visibilityState = 'hidden';
@@ -145,7 +200,7 @@ def test_failed_hardware_poll_retries_for_unchanged_status_until_success() -> No
         const status = {success: true, status: {active: 2}};
         let hardwareAttempts = 0;
         apiFetch = async function(path) {
-          if (path.startsWith('/api/live/status')) return {json: async () => status};
+          if (path.startsWith('/api/live/status')) return {ok: true, status: 200, json: async () => status};
           hardwareAttempts++;
           if (hardwareAttempts === 1) throw Error('temporary hardware failure');
           return {

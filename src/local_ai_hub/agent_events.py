@@ -301,31 +301,93 @@ class AgentStateStore:
                 self._subscribers.remove(q)
 
     def _publish(self, event: AgentEvent) -> None:
-        with self._subscribers_lock:
-            subscribers = list(self._subscribers)
         dead_queues: list[queue.Queue[AgentEvent]] = []
-        for q in subscribers:
-            try:
-                q.put_nowait(event)
-            except queue.Full:
-                try:
-                    q.get_nowait()
-                except Exception:
-                    pass
-                else:
-                    with self._drop_count_lock:
-                        self._dropped_event_count += 1
+        with self._subscribers_lock:
+            for q in list(self._subscribers):
                 try:
                     q.put_nowait(event)
+                except queue.Full:
+                    try:
+                        evicted = q.get_nowait()
+                    except queue.Empty:
+                        try:
+                            q.put_nowait(event)
+                        except queue.Full:
+                            dead_queues.append(q)
+                        continue
+
+                    ranges_by_stream: dict[str, list[tuple[int, int]]] = {}
+                    unknown_streams: list[str] = []
+                    max_gap_ranges = 128
+                    gap_ranges_truncated = False
+
+                    def add_range(stream_id: Any, start: Any, end: Any) -> None:
+                        name = str(stream_id or "uncategorized")[:160]
+                        if type(start) is int and type(end) is int and start <= end:
+                            ranges_by_stream.setdefault(name, []).append((start, end))
+                        elif name not in unknown_streams:
+                            unknown_streams.append(name)
+
+                    def include_lost_event(lost: AgentEvent) -> None:
+                        nonlocal gap_ranges_truncated
+                        if lost.kind == "agent_state.gap" and lost.stream_id == "agent_state":
+                            prior_ranges = lost.payload.get("streams", ())
+                            if isinstance(prior_ranges, (list, tuple)):
+                                gap_ranges_truncated = gap_ranges_truncated or bool(
+                                    lost.payload.get("streams_truncated")
+                                )
+                                if len(prior_ranges) > max_gap_ranges:
+                                    gap_ranges_truncated = True
+                                for item in prior_ranges[:max_gap_ranges]:
+                                    if isinstance(item, Mapping):
+                                        add_range(item.get("stream_id"), item.get("from_seq"), item.get("to_seq"))
+                            return
+                        add_range(lost.stream_id, lost.seq, lost.seq)
+
+                    include_lost_event(evicted)
+                    include_lost_event(event)
+                    gap_ranges: list[dict[str, Any]] = []
+                    for stream_id, intervals in ranges_by_stream.items():
+                        merged: list[list[int]] = []
+                        for start, end in sorted(intervals):
+                            if merged and start <= merged[-1][1] + 1:
+                                merged[-1][1] = max(merged[-1][1], end)
+                            else:
+                                merged.append([start, end])
+                        gap_ranges.extend(
+                            {"stream_id": stream_id, "from_seq": start, "to_seq": end}
+                            for start, end in merged
+                        )
+                    gap_ranges.extend(
+                        {"stream_id": stream_id, "from_seq": None, "to_seq": None}
+                        for stream_id in unknown_streams
+                    )
+                    if len(gap_ranges) > max_gap_ranges:
+                        gap_ranges = gap_ranges[:max_gap_ranges]
+                        gap_ranges_truncated = True
+                    gap_event = AgentEvent.create(
+                        "agent_state",
+                        "agent_state.gap",
+                        {"streams": gap_ranges, "streams_truncated": gap_ranges_truncated},
+                        actor="system",
+                    )
+                    dropped = sum(
+                        1
+                        for lost in (evicted, event)
+                        if not (lost.kind == "agent_state.gap" and lost.stream_id == "agent_state")
+                    )
+                    if dropped:
+                        with self._drop_count_lock:
+                            self._dropped_event_count += dropped
+                    try:
+                        q.put_nowait(gap_event)
+                    except queue.Full:
+                        dead_queues.append(q)
                 except Exception:
                     dead_queues.append(q)
-            except Exception:
-                dead_queues.append(q)
-        if dead_queues:
-            with self._subscribers_lock:
-                for q in dead_queues:
-                    if q in self._subscribers:
-                        self._subscribers.remove(q)
+            for q in dead_queues:
+                if q in self._subscribers:
+                    self._subscribers.remove(q)
 
     def events(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> list[AgentEvent]:
         if not self.enabled or not self.db_path.exists():
@@ -346,6 +408,97 @@ class AgentStateStore:
             return [AgentEvent.from_row(row) for row in cur.fetchall()]
         finally:
             con.close()
+
+    def event_page(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> dict[str, Any]:
+        try:
+            cursor = 0 if isinstance(after_seq, bool) else max(0, int(after_seq))
+        except (TypeError, ValueError, OverflowError):
+            cursor = 0
+        try:
+            page_limit = 1000 if isinstance(limit, bool) else max(1, min(int(limit), 10_000))
+        except (TypeError, ValueError, OverflowError):
+            page_limit = 1000
+
+        def page_error(code: str, message: str) -> dict[str, Any]:
+            return {
+                "success": False,
+                "events": [],
+                "next_seq": cursor,
+                "first_retained_seq": 0,
+                "last_seq": 0,
+                "has_more": False,
+                "gap_ranges": [],
+                "cursor_reset": False,
+                "error": {"code": code, "message": message},
+            }
+
+        if not self.enabled:
+            return page_error("agent_state_disabled", "agent state is disabled")
+        if not self.db_path.exists():
+            reset = cursor > 0
+            return {
+                "success": True,
+                "events": [],
+                "next_seq": 0 if reset else cursor,
+                "first_retained_seq": 0,
+                "last_seq": 0,
+                "has_more": False,
+                "gap_ranges": [],
+                "cursor_reset": reset,
+            }
+
+        try:
+            self._ensure_schema()
+            con = connect_sqlite(self.db_path)
+            try:
+                con.execute("BEGIN")
+                retained = con.execute(
+                    "SELECT MIN(seq), MAX(seq) FROM agent_events WHERE stream_id = ?",
+                    (str(stream_id or ""),),
+                ).fetchone()
+                first_retained_seq = int(retained[0]) if retained and retained[0] is not None else 0
+                last_seq = int(retained[1]) if retained and retained[1] is not None else 0
+                cursor_reset = cursor > last_seq
+                effective_cursor = max(0, first_retained_seq - 1) if cursor_reset else cursor
+                gap_ranges: list[dict[str, int]] = []
+                if first_retained_seq and effective_cursor < first_retained_seq - 1:
+                    gap_ranges.append({
+                        "from_seq": max(1, effective_cursor + 1),
+                        "to_seq": first_retained_seq - 1,
+                    })
+                    effective_cursor = first_retained_seq - 1
+                rows = con.execute(
+                    """
+                    SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
+                    FROM agent_events WHERE stream_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?
+                    """,
+                    (str(stream_id or ""), effective_cursor, page_limit + 1),
+                ).fetchall()
+                con.execute("COMMIT")
+            finally:
+                con.close()
+
+            has_more = len(rows) > page_limit
+            events = [AgentEvent.from_row(row).to_dict() for row in rows[:page_limit]]
+            expected_seq = effective_cursor + 1
+            for event in events:
+                seq = int(event["seq"] or 0)
+                if seq > expected_seq:
+                    gap_ranges.append({"from_seq": expected_seq, "to_seq": seq - 1})
+                expected_seq = seq + 1
+            next_seq = int(events[-1]["seq"] or 0) if events else effective_cursor
+            return {
+                "success": True,
+                "events": events,
+                "next_seq": next_seq,
+                "first_retained_seq": first_retained_seq,
+                "last_seq": last_seq,
+                "has_more": has_more,
+                "gap_ranges": gap_ranges,
+                "cursor_reset": cursor_reset,
+            }
+        except Exception:
+            return page_error("event_page_unavailable", "event page is unavailable")
 
     def snapshot(self, stream_id: str, state: Mapping[str, Any], seq: int | None = None) -> int:
         if not self.enabled:

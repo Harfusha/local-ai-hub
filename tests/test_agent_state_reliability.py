@@ -189,14 +189,21 @@ def test_event_store_schema_and_publish_overflow(tmp_path: Path) -> None:
     for i in range(5):
         store.append(AgentEvent.create(stream_id="s1", kind="test.evt", payload={"idx": i}))
 
-    # Queue should contain newest items without blocking or overflowing
+    # Queue should stay bounded and mark every evicted or dropped sequence.
     items = []
     while not q.empty():
         items.append(q.get_nowait())
     assert len(items) <= 2
-    # The last appended item should be in the queue
-    last_payload = items[-1].payload
-    assert last_payload["idx"] == 4
+    gap_ranges = [
+        item_range
+        for item in items if item.kind == "agent_state.gap"
+        for item_range in item.payload.get("streams", [])
+    ]
+    assert gap_ranges
+    assert all(
+        any(item_range["stream_id"] == "s1" and item_range["from_seq"] <= seq <= item_range["to_seq"] for item_range in gap_ranges)
+        for seq in range(1, 6)
+    )
 
 
 def test_store_concurrency_locks(tmp_path: Path) -> None:

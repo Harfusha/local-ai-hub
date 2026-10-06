@@ -3,11 +3,13 @@
 Authenticated dashboard-only debug endpoints expose bounded execution history:
 
 * `GET /api/debug-traces?kind=&state=&agent=&model=&limit=&offset=` lists trace summaries. `limit` is capped by `debug_traces.max_list_limit`.
-* `GET /api/debug-traces/{trace_id}?since_seq=0` returns session detail and ordered events after the supplied sequence number, allowing incremental realtime polling.
+* `GET /api/debug-traces/{trace_id}?since_seq=0&limit=100&max_bytes=8388608` returns session detail and one ordered event page. `since_seq` is exclusive; `next_seq` is the continuation cursor; `has_more` reports remaining events. `limit` is clamped to 1–1000. HTTP `max_bytes` is clamped to 1 KiB–8 MiB; the default and hard ceiling are 8 MiB. Each JSON response stays within the reported `max_bytes`. A page that cannot fit returns HTTP 413 with `error_code=trace_detail_oversize`, unchanged `next_seq`, `oversize_seq` and `required_bytes`; the dashboard shows the limit error without retrying above 8 MiB. A cursor beyond the latest event resets to retained history and sets `cursor_reset`; pruned prefixes appear in `gap_ranges`.
 
-Trace detail may include the original API request, effective model prompt/payload, streamed model output, tool calls/results and final response. It is stored separately from metadata-only telemetry in `server.state_dir/debug_traces.sqlite3`; retention is bounded by the `[debug_traces]` TTL, byte, session, event and text limits. Cleanup deletes only terminal traces in small batches and never deletes queued/running sessions.
+Trace detail may include the original API request, effective model prompt/payload, streamed model output, tool calls/results and final response. Page-by-page retrieval preserves full event payloads; events that do not fit the requested page budget are never silently dropped. It is stored separately from metadata-only telemetry in `server.state_dir/debug_traces.sqlite3`; retention is bounded by the `[debug_traces]` TTL, byte, session, event and text limits. Cleanup deletes only terminal traces in small batches and never deletes queued/running sessions.
 
 The service defaults to `127.0.0.1:11435`. `/health` is a lightweight liveness endpoint. Runtime/status endpoints include `/api/status`, `/api/capabilities`, `/api/live/status`, metrics/telemetry, hardware status, models, leases and preprocessing.
+
+`GET /api/telemetry/report?error_limit=25&error_cursor=` starts a stable error-group snapshot; continue with returned `report.error_fingerprints_page.next_cursor`. Cursor pages order by fingerprint, type, component and operation; cursor carries an event-ID watermark and fixed cutoff, so later writes or rolling-window expiry do not move groups mid-walk. Normal telemetry retention cleanup can still remove expired rows. `error_offset` remains for legacy callers; do not combine it with a cursor. Malformed or mixed cursors return HTTP 400.
 
 Repository endpoints cover profile/map/code-index/deterministic/search/context, code symbols/diagnostics/AST, import resolution, dependency/security/test/refactor/dead-code/callgraph analysis and git status. Code-intelligence queries use `/api/code-intelligence/query`; session management uses `/api/code-intelligence/control`.
 
@@ -42,6 +44,7 @@ Model-backed endpoints `/api/delegate`, `/api/reason`, `/api/review`, `/api/seco
 
 Agent Operating System endpoints project durable task, memory, incident, verification and context state:
 
+* `GET /api/agent-state/events?stream_id=&after_seq=0&through_seq=&limit=100` returns ordered event pages. HTTP `limit` is clamped to 1–100 and each UTF-8 JSON response is capped at 1 MiB. The first page's `last_seq` is its snapshot boundary; pass it unchanged as inclusive `through_seq` on later pages to exclude subsequently appended events. `next_seq` is the last returned event; use it as the next exclusive `after_seq`. Tail rows are trimmed when needed, with `has_more=true`; if the first event cannot fit, HTTP 413 returns the unchanged cursor.
 * `GET /api/agent-state/tasks?task_id=&status=&limit=` lists or inspects tasks.
 * `POST /api/agent-state/tasks` supports actions: `create` (goal, acceptance criteria, scope, risk profile), `get` (task_id), `transition` (status: planned, active, waiting, blocked, verifying, completed, failed, abandoned), `complete` (auto-advances through verification gates if criteria met), `fail` (records failure reason), `checkpoint` (phase, next_action, affected_paths, evidence_ids), `resume`, and `list`.
 * `GET /api/agent-state/memory?record_id=&scope=&key=&query=&status=&limit=` searches or fetches memory records.

@@ -34,7 +34,7 @@ def test_error_telemetry_persists_classification_without_exception_text(tmp_path
         "provider",
         "generate",
         "RuntimeError",
-        "Error details omitted",
+        "RuntimeError: operation failed",
         1,
         1,
     )

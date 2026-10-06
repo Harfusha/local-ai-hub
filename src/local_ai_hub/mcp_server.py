@@ -38,6 +38,7 @@ from local_ai_hub.routing import semantic_handoff_hint
 from local_ai_hub.state_paths import configured_state_dir
 from local_ai_hub.semantic_quality import assess_semantic_result
 from local_ai_hub.evidence_contract import evidence_meta
+from local_ai_hub.telemetry import _safe_error_metadata
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -678,6 +679,84 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
     return _normalize_deterministic(account_projection(raw_value, compacted))
 
 
+_TELEMETRY_DETAIL_LABELS = {
+    "status": frozenset({"complete", "incomplete"}),
+    "omitted_sections": frozenset({"decision_grade_lists", "pending_events", "writer_failures"}),
+}
+_TELEMETRY_HOTSPOT_LABELS = {
+    "type": frozenset({"reliability", "latency", "efficiency", "quality", "observability"}),
+    "signal": frozenset({
+        "inference_failure_rate", "queue_wait", "low_cache_hit_rate",
+        "frequent_model_fallbacks", "frequent_ollama_retries", "telemetry_queue_drops",
+    }),
+}
+_TELEMETRY_SENSITIVE_TEXT_FIELD_RE = re.compile(
+    r"(?i)(error|message|exception|reason|prompt|source|body|payload|content|token|secret|password|authorization|note|raw)"
+)
+
+
+def _sanitize_telemetry_payload(value: Any, *, field: str = "", context: str = "") -> Any:
+    """Preserve metrics and known labels while removing untrusted diagnostic text."""
+    if field in {"detail", "queue", "hotspots", "decision_grade"}:
+        context = field
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitize_telemetry_payload(item, field=str(key), context=context)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_telemetry_payload(item, field=field, context=context) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    if _TELEMETRY_SENSITIVE_TEXT_FIELD_RE.search(field):
+        return "Error details omitted"
+    if context == "detail":
+        if field == "omitted_sections":
+            return value if value in _TELEMETRY_DETAIL_LABELS["omitted_sections"] else "Error details omitted"
+        return value if value in _TELEMETRY_DETAIL_LABELS.get(field, frozenset()) else "Error details omitted"
+    if context == "queue":
+        return "Error details omitted"
+    if context == "hotspots":
+        return value if value in _TELEMETRY_HOTSPOT_LABELS.get(field, frozenset()) else "Error details omitted"
+    if context == "decision_grade":
+        if field in {"action", "component", "error_type", "operation", "route", "signal", "type"}:
+            return _safe_error_metadata(value)
+        return "Error details omitted"
+    if context == "error_fingerprints" and field in {"component", "error_type", "operation"}:
+        return _safe_error_metadata(value)
+    if context == "by_operation" and field in {"action", "event_type"}:
+        return _safe_error_metadata(value)
+    if context == "window" and field == "scope":
+        return value if value in {"window", "process"} else "Error details omitted"
+    return _safe_error_metadata(value)
+
+
+def _telemetry_failure(value: Any) -> dict[str, Any]:
+    if isinstance(value, BaseException):
+        retryable = isinstance(value, (TimeoutError, ConnectionError, OSError))
+        status_code = 503 if retryable else 500
+        terminal = not retryable
+    else:
+        status = value if isinstance(value, dict) else {}
+        supplied_status = status.get("status_code")
+        status_code = supplied_status if type(supplied_status) is int and 100 <= supplied_status <= 599 else 500
+        retryable = status.get("retryable") if type(status.get("retryable")) is bool else status_code >= 500
+        terminal = status.get("terminal") if type(status.get("terminal")) is bool else not retryable
+    result: dict[str, Any] = {
+        "success": False,
+        "status_code": status_code,
+        "terminal": terminal,
+        "retryable": retryable,
+        "error": "Telemetry report failed; details omitted",
+    }
+    if isinstance(value, dict):
+        for key in ("degraded", "stale"):
+            if type(value.get(key)) is bool:
+                result[key] = value[key]
+    return result
+
+
 def _telemetry_status_projection(value: Any) -> dict[str, Any]:
     """Keep status telemetry decision-grade instead of returning the full report."""
     if not isinstance(value, dict):
@@ -692,17 +771,17 @@ def _telemetry_status_projection(value: Any) -> dict[str, Any]:
     )
     projected: dict[str, Any] = {
         "success": envelope_success and bool(report.get("success", True)),
-        "window": report.get("window") if isinstance(report.get("window"), dict) else {},
-        "summary": {key: summary[key] for key in keep_summary if key in summary},
-        "queue": report.get("queue") if isinstance(report.get("queue"), dict) else summary.get("queue", {}),
-        "hotspots": list(report.get("hotspots") or [])[:12],
-        "by_operation": list(report.get("by_operation") or [])[:20],
-        "error_fingerprints": list(report.get("error_fingerprints") or [])[:12],
-        "detail": report.get("detail") if isinstance(report.get("detail"), dict) else {},
-        "decision_grade": report.get("decision_grade") if isinstance(report.get("decision_grade"), dict) else {},
+        "window": _sanitize_telemetry_payload(report.get("window") if isinstance(report.get("window"), dict) else {}, field="window"),
+        "summary": _sanitize_telemetry_payload({key: summary[key] for key in keep_summary if key in summary}, field="summary"),
+        "queue": _sanitize_telemetry_payload(report.get("queue") if isinstance(report.get("queue"), dict) else summary.get("queue", {}), field="queue"),
+        "hotspots": _sanitize_telemetry_payload(list(report.get("hotspots") or [])[:12], field="hotspots"),
+        "by_operation": _sanitize_telemetry_payload(list(report.get("by_operation") or [])[:20], field="by_operation"),
+        "error_fingerprints": _sanitize_telemetry_payload(list(report.get("error_fingerprints") or [])[:12], field="error_fingerprints"),
+        "detail": _sanitize_telemetry_payload(report.get("detail") if isinstance(report.get("detail"), dict) else {}, field="detail"),
+        "decision_grade": _sanitize_telemetry_payload(report.get("decision_grade") if isinstance(report.get("decision_grade"), dict) else {}, field="decision_grade"),
     }
     if value.get("error") or report.get("error"):
-        projected["error"] = value.get("error") or report.get("error")
+        projected.update(_telemetry_failure(value if value.get("error") else report))
     return projected
 
 
@@ -1161,15 +1240,24 @@ def local_ai_status(action: str = "", detail: StatusDetail = "brief", scope: str
         return {"success": False, "error": "scope must be process or window"}
     # Status stays on the foreground agent path; live/light keeps this read
     # local, bounded, and independent of a slow user-managed runtime.
-    status = CLIENT.get(f"/api/live/status?light=1&scope={scope}")
+    try:
+        status = CLIENT.get(f"/api/live/status?light=1&scope={scope}")
+    except Exception as exc:
+        if detail == "telemetry":
+            return _compact(_telemetry_failure(exc), "status")
+        raise
     runtime_stats = status.get("runtime_stats") if isinstance(status, dict) else {}
     if not isinstance(runtime_stats, dict):
         runtime_stats = {}
     if detail == "full":
+        status["success"] = bool(status.get("hub_online", False))
         status["capabilities"] = CLIENT.get("/api/capabilities")
         return _compact(status, "status")
     if detail == "telemetry":
-        report = CLIENT.get(f"/api/telemetry/report?days=30&scope={scope}")
+        try:
+            report = CLIENT.get(f"/api/telemetry/report?days=30&scope={scope}")
+        except Exception as exc:
+            return _compact(_telemetry_failure(exc), "status")
         return _compact(_telemetry_status_projection(report), "status")
     if detail == "agent_state":
         return _compact(CLIENT.status(detail="agent_state"), "status")

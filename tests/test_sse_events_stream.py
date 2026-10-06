@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -93,7 +94,7 @@ def test_sse_stream_replays_and_receives_live_events(tmp_path: Path):
         t.start()
 
         # Stream with sufficient timeout headroom (disconnects immediately on live event)
-        handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=3.0)
+        handler._stream_agent_events(stream_id="task-1", after_seq=99, timeout=3.0)
         t.join()
 
         output = handler.wfile.getvalue().decode("utf-8")
@@ -101,6 +102,27 @@ def test_sse_stream_replays_and_receives_live_events(tmp_path: Path):
         assert "event: task.updated" in output
         assert '"step":1' in output
         assert '"step":2' in output
+        payloads = []
+        replay_pages = []
+        current_event = ""
+        for line in output.splitlines():
+            if line.startswith("event: "):
+                current_event = line[7:]
+            elif line.startswith("data: "):
+                payload = json.loads(line[6:])
+                (replay_pages if current_event == "replay_page" else payloads).append(payload)
+        assert len(replay_pages) == 1
+        assert set(replay_pages[0]) == {
+            "success", "events", "next_seq", "first_retained_seq", "last_seq",
+            "has_more", "gap_ranges", "cursor_reset",
+        }
+        assert replay_pages[0]["cursor_reset"] is True
+        assert replay_pages[0]["events"][0]["seq"] == 1
+        assert [payload["seq"] for payload in payloads] == [1, 2]
+        assert all({
+            "event_id", "stream_id", "kind", "payload", "idempotency_key",
+            "correlation_id", "actor", "created_at", "seq",
+        } == set(payload) for payload in payloads)
     finally:
         http_server.APP = orig_app
 
@@ -108,14 +130,14 @@ def test_sse_stream_replays_and_receives_live_events(tmp_path: Path):
 def test_sse_stream_does_not_lose_event_between_replay_and_subscribe(tmp_path: Path, monkeypatch):
     store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     store.append(AgentEvent.create("task-1", "task.created", {"step": 1}, "k1"))
-    original_events = store.events
+    original_event_page = store.event_page
 
-    def events_then_publish(*args, **kwargs):
-        replay = original_events(*args, **kwargs)
+    def event_page_then_publish(*args, **kwargs):
+        replay = original_event_page(*args, **kwargs)
         store.append(AgentEvent.create("task-1", "task.updated", {"step": 2}, "k2"))
         return replay
 
-    monkeypatch.setattr(store, "events", events_then_publish)
+    monkeypatch.setattr(store, "event_page", event_page_then_publish)
 
     class DummyApp:
         agent_state = store
@@ -127,6 +149,35 @@ def test_sse_stream_does_not_lose_event_between_replay_and_subscribe(tmp_path: P
     output = handler.wfile.getvalue().decode("utf-8")
     assert "event: task.updated" in output
     assert '"step":2' in output
+
+
+def test_sse_stream_replays_all_bounded_pages(tmp_path: Path, monkeypatch):
+    store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    store._ensure_schema()
+    connection = sqlite3.connect(store.db_path)
+    try:
+        connection.executemany(
+            """INSERT INTO agent_events
+               (stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (("task-1", index, f"evt-{index}", "task.updated", "{}", f"key-{index}", "", "agent", 1.0)
+             for index in range(1, 1002)),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    class DummyApp:
+        agent_state = store
+
+    monkeypatch.setattr(http_server, "APP", DummyApp())
+    handler = DummyHandler(DummyApp())
+    handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.05)
+
+    output = handler.wfile.getvalue().decode("utf-8")
+    assert output.count("event: task.updated") == 1001
+    assert output.count("event: replay_page") == 11
+    assert "id: 1001\n" in output
 
 
 def test_sse_stream_timeout_bounds_queue_wait(tmp_path: Path, monkeypatch):
@@ -141,7 +192,9 @@ def test_sse_stream_timeout_bounds_queue_wait(tmp_path: Path, monkeypatch):
     handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.05)
 
     assert time.monotonic() - started < 0.5
-    assert "event: stream_timeout" in handler.wfile.getvalue().decode("utf-8")
+    output = handler.wfile.getvalue().decode("utf-8")
+    assert "event: stream_timeout" in output
+    assert '"next_seq":0' in output
 
 
 def test_client_stream_events_parsing(monkeypatch):
@@ -151,15 +204,21 @@ def test_client_stream_events_parsing(monkeypatch):
     client = HubClient.__new__(HubClient)
     client.base_url = "http://127.0.0.1:11435"
     client.api_token = "tok"
+    client.tenant = "test-tenant"
+    client.agent = "test-agent"
+    client.max_request_timeout = 30.0
 
     sse_payload = (
         b": keep-alive\n\n"
         b"id: 1\n"
+        b"event: replay_page\n"
+        b"data: {\"success\":true,\"events\":[],\"next_seq\":1,\"first_retained_seq\":1,\"last_seq\":2,\"has_more\":true,\"gap_ranges\":[],\"cursor_reset\":false}\n\n"
+        b"id: 1\n"
         b"event: task.created\n"
-        b"data: {\"title\": \"build\", \"step\": 1}\n\n"
+        b"data: {\"event_id\":\"evt-1\",\"stream_id\":\"stream-1\",\"kind\":\"task.created\",\"payload\":{\"step\":1},\"idempotency_key\":\"key-1\",\"correlation_id\":\"corr-1\",\"actor\":\"agent\",\"created_at\":1.0,\"seq\":1}\n\n"
         b"id: 2\n"
         b"event: task.completed\n"
-        b"data: {\"title\": \"build\", \"ok\": true}\n\n"
+        b"data: {\"event_id\":\"evt-2\",\"stream_id\":\"stream-1\",\"kind\":\"task.completed\",\"payload\":{\"ok\":true},\"idempotency_key\":\"key-2\",\"correlation_id\":\"corr-2\",\"actor\":\"agent\",\"created_at\":2.0,\"seq\":2}\n\n"
     )
 
     mock_resp = io.BytesIO(sse_payload)
@@ -169,8 +228,12 @@ def test_client_stream_events_parsing(monkeypatch):
     monkeypatch.setattr("local_ai_hub.client.urlopen", lambda req, timeout=60.0: mock_resp)
 
     events = list(client.stream_events(stream_id="stream-1", timeout=5.0))
-    assert len(events) == 2
-    assert events[0][0] == "task.created"
-    assert events[0][1]["step"] == 1
-    assert events[1][0] == "task.completed"
-    assert events[1][1]["ok"] is True
+    assert len(events) == 3
+    assert events[0][0] == "replay_page"
+    assert events[0][1]["next_seq"] == 1
+    assert events[1][0] == "task.created"
+    assert events[1][1]["payload"]["step"] == 1
+    assert events[1][1]["seq"] == 1
+    assert events[2][0] == "task.completed"
+    assert events[2][1]["payload"]["ok"] is True
+    assert events[2][1]["seq"] == 2

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .dashboard_status_poller import DASHBOARD_STATUS_POLLER_SCRIPT
+
 DASHBOARD_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Local AI Hub — realtime</title>
@@ -264,6 +266,7 @@ tbody tr.click:hover{background:#162338}
       <span class="brand">Local AI Hub</span>
     </div>
     <span id="conn" class="pill warn-t"><span class="pulse-dot"></span>connecting</span>
+    <span id="activityModeBadge" class="pill warn-t" data-mode="unknown">Mode: Unknown</span>
     <span id="updated" class="tiny"></span>
     <label class="tiny">SLO <select id="sloScope"><option value="process" selected>Since restart</option><option value="window">Last 30 days</option></select></label>
     <span class="tiny spacer">Agent debug traces · bounded prompt/output retention</span>
@@ -278,6 +281,11 @@ tbody tr.click:hover{background:#162338}
         <button class="btn" id="doctorBtn">Run diagnostics</button>
         <button class="btn" id="pauseEvents">Pause live events</button>
         <div class="tiny muted">Runtime control</div>
+        <div class="tiny muted">Set activity mode</div>
+        <button class="btn" id="activityModeActive" data-activity-mode="active" aria-pressed="false">Active</button>
+        <button class="btn" id="activityModeGaming" data-activity-mode="gaming" aria-pressed="false">Gaming</button>
+        <button class="btn" id="activityModeMaintenance" data-activity-mode="maintenance" aria-pressed="false">Maintenance</button>
+        <span id="activityModeStatus" class="tiny muted" role="status" aria-live="polite">Checking mode…</span>
         <button class="btn warn" id="prepToggle">Pause preprocessing</button>
         <button class="btn" id="restartHub" data-control-action="restart_hub">Restart hub service</button>
         <div class="tiny muted">Destructive maintenance</div>
@@ -421,6 +429,7 @@ tbody tr.click:hover{background:#162338}
       </div>
       <div id="trajDetailPanel" style="padding:12px;border-top:1px solid var(--line);display:none">
         <h3 id="trajDetailTitle" style="font-size:13px;margin:0 0 8px"></h3>
+        <div id="trajEventPager" class="tiny muted" style="margin-bottom:8px"></div>
         <div id="trajStepsList" class="trace-timeline"></div>
       </div>
     </section>
@@ -517,7 +526,7 @@ tbody tr.click:hover{background:#162338}
 <div id="reliability" class="page">
   <section class="section" id="reliabilitySummary"><h2>Operational severity <span class="tiny">Aggregates current failures, restart history, and request health.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Failure trend unavailable until telemetry arrives.</div><div style="display:flex;gap:8px;align-items:center"><button class="btn ok" id="resolveErrorsBtn" style="display:none;padding:4px 10px">Resolve all errors</button><button class="btn" id="reliabilityAction">Open affected requests</button></div></div></section>
   <div class="split">
-    <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
+    <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Diagnostic</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
     <section class="section"><h2>Runtime / scheduler counters</h2><div id="runtimeCounters" class="kv"></div></section>
   </div>
   <section class="section">
@@ -582,12 +591,22 @@ document.head.insertAdjacentHTML('beforeend','<style>.vision-review-modal{width:
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
 
+function dashboardHealthBadge(status={}){
+  const dependencies=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.values(status.dependency_status):[];
+  const degradedCount=dependencies.filter(item=>item&&item.degraded===true).length;
+  const degraded=status.success===false||degradedCount>0;
+  const ollamaState=status.ollama_status||((status.ollama_online==null)?'unknown':status.ollama_online?'online':'offline');
+  const className=status.hub_online?(degraded||ollamaState!=='online'?'warn-t':'ok'):'bad-t';
+  const degradedLabel=degradedCount?` / ${String(degradedCount)} degraded check${degradedCount===1?'':'s'}`:degraded?' / status degraded':'';
+  return {className,degradedCount,degradedLabel};
+}
+
 function dashboardHealth(snapshot={}){
   const current=snapshot.current||snapshot.live||snapshot.headless||snapshot;
   const observability=snapshot.observability||{},cohorts=observability.cohorts||{},agentHttp=cohorts.agent_http||{},policy=cohorts.policy_rejection||{},inference=cohorts.inference||{};
   const status=String(current.health||current.status||current.service_status||'').toLowerCase();
   const count=value=>Math.max(0,Number(value)||0);
-  const openIssues=count(current.open_incidents??current.active_errors??current.blocked_requests??0),agentFailures=count(agentHttp.failures),policyRejections=count(policy.events),degradedCount=count(inference.degraded_count),retryCount=count(inference.retry_count),restarts=count(current.restarts??snapshot.headless?.restarts),hubOnline=snapshot.hub_online??current.hub_online,ollamaOnline=snapshot.ollama_online??current.ollama_online,heartbeatStale=current.heartbeat_stale===true||snapshot.heartbeat_stale===true;
+  const openIssues=count(current.open_incidents??current.active_errors??current.blocked_requests??0),agentFailures=count(agentHttp.failures),policyRejections=count(policy.events),degradedCount=count(inference.degraded_count),retryCount=count(inference.retry_count),restarts=count(current.restarts??snapshot.headless?.restarts),hubOnline=snapshot.hub_online??current.hub_online,ollamaOnline=snapshot.ollama_online??current.ollama_online,ollamaStatus=snapshot.ollama_status??current.ollama_status??(ollamaOnline==null?'unknown':ollamaOnline?'online':'offline'),heartbeatStale=current.heartbeat_stale===true||snapshot.heartbeat_stale===true;
   const signals=[];
   if(agentFailures)signals.push(`${agentFailures} agent HTTP failure${agentFailures===1?'':'s'}`);
   if(policyRejections)signals.push(`${policyRejections} policy rejection${policyRejections===1?'':'s'}`);
@@ -600,7 +619,8 @@ function dashboardHealth(snapshot={}){
     const reason=hubOnline===false?'Hub is offline.':heartbeatStale||status==='stale'?'Runtime heartbeat is stale.':signals.length?`Current runtime is degraded: ${signals.join(', ')}.`:'Current runtime reports an unavailable service.';
     return {level:'degraded',label:'Degraded',reason,actionTab,actionLabel};
   }
-  if(ollamaOnline===false)signals.push('Ollama is offline');
+  if(ollamaStatus==='unknown')signals.push('Ollama status is unknown');
+  else if(ollamaStatus==='offline')signals.push('Ollama is offline');
   if(['attention','warning','warn','partial'].includes(status)||openIssues||signals.length){
     const reason=openIssues?`Current runtime has ${openIssues} open issue${openIssues===1?'':'s'}${signals.length?`; ${signals.join(', ')}`:''}.`:signals.length?`Current runtime needs attention: ${signals.join(', ')}.`:'Current runtime reports a warning state.';
     return {level:'attention',label:'Needs attention',reason,actionTab,actionLabel};
@@ -768,49 +788,10 @@ if($('traceSidebarList')&&!$('traceHistorySearch')){$('traceSidebarList').insert
 
 let statusPollInFlight=false,hasLiveStatus=false;
 let sloScope=$('sloScope')?$('sloScope').value:'1h';
-if($('sloScope')) $('sloScope').onchange=()=>{sloScope=$('sloScope').value;pollStatus()};
-if($('saveToken')) $('saveToken').onclick=()=>{if($('apiToken'))saveToken($('apiToken').value);pollStatus()};
+if($('sloScope')) $('sloScope').onchange=()=>{sloScope=$('sloScope').value;statusPoller.refresh()};
+if($('saveToken')) $('saveToken').onclick=()=>{if($('apiToken'))saveToken($('apiToken').value);statusPoller.refresh()};
 
-function createDashboardStatusPoller(poll,options={}){
-  const baseDelay=Math.max(1,Number(options.baseDelay)||5000);
-  const maxDelay=Math.max(baseDelay,Number(options.maxDelay)||60000);
-  const maxFailures=Math.max(1,Math.ceil(Math.log2(maxDelay/baseDelay))+1);
-  const isVisible=options.isVisible||(()=>document.visibilityState!=='hidden');
-  const setTimer=options.setTimer||((fn,delay)=>setTimeout(fn,delay));
-  const clearTimer=options.clearTimer||((id)=>clearTimeout(id));
-  const random=options.random||Math.random;
-  let timer=null,started=false,running=false,pending=false,visible=true,generation=0,failures=0;
-  const current=token=>started&&visible&&isVisible()&&generation===token;
-  function clear(){if(timer!==null){clearTimer(timer);timer=null}}
-  function schedule(delay){clear();if(started&&visible&&isVisible())timer=setTimer(()=>{timer=null;void run()},delay)}
-  async function run(){
-    if(!started||!visible||!isVisible())return;
-    if(running){pending=true;return}
-    running=true;
-    const token=generation;
-    let succeeded=false;
-    try{succeeded=await poll(()=>current(token))!==false}catch{}
-    finally{
-      running=false;
-      if(current(token)){
-        pending=false;
-        failures=succeeded?0:Math.min(failures+1,maxFailures);
-        const backoff=Math.min(maxDelay,baseDelay*2**Math.max(0,failures-1));
-        const sample=Math.min(0.999999,Math.max(0,Number(random())||0));
-        schedule(Math.min(maxDelay,Math.round(backoff*(0.8+sample*0.4))));
-      }else if(pending&&started&&visible&&isVisible()){
-        pending=false;
-        schedule(0);
-      }
-    }
-  }
-  return{
-    start(){if(started)return;started=true;visible=isVisible();generation++;schedule(0)},
-    setVisible(next){visible=Boolean(next)&&isVisible();generation++;if(visible)schedule(0);else{pending=false;clear()}},
-    stop(){started=false;visible=false;pending=false;generation++;clear()}
-  };
-}
-
+""" + DASHBOARD_STATUS_POLLER_SCRIPT + r"""
 let lastDashboardStatusSnapshot=null;
 let hardwareRefreshPending=false;
 function shouldRefreshDashboardStatus(status){
@@ -1241,7 +1222,7 @@ if($('cmdRun'))$('cmdRun').onclick=async()=>{
     renderCmdResult(res);
   } finally {
     if(btn)btn.disabled=false;
-    pollStatus();
+    statusPoller.refresh();
   }
 };
 
@@ -1347,8 +1328,8 @@ async function openGitDiffModal(defaultRoot,defaultPath,defaultStaged){
 
 if($('cmdGitDiffBtn'))$('cmdGitDiffBtn').onclick=()=>openGitDiffModal($('cmdRoot')?.value?.trim());
 
-if($('intelRediscover'))$('intelRediscover').onclick=async()=>{if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'rediscover'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'rediscovery complete':'error: '+(r.error||'failed');pollStatus()};
-if($('intelReset'))$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena MCP sessions?'))return;if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');pollStatus()};
+if($('intelRediscover'))$('intelRediscover').onclick=async()=>{if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'rediscover'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'rediscovery complete':'error: '+(r.error||'failed');statusPoller.refresh()};
+if($('intelReset'))$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena MCP sessions?'))return;if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');statusPoller.refresh()};
 
 async function loadArchGraph(){
   try{
@@ -2694,11 +2675,13 @@ async function openTrace(id){
     if(!activeTraceId||pollTraceId!==activeTraceId||pollGeneration!==tracePollGeneration||pollInFlight||tracePollInFlight===pollGeneration)return;
     pollInFlight=true;tracePollInFlight=pollGeneration;
     try{
-      const sinceSeq=traceSeq,r=await apiFetch('/api/debug-traces/'+encodeURIComponent(pollTraceId)+'?since_seq='+sinceSeq,{cache:'no-store'}),d=await r.json();
+      const sinceSeq=traceSeq,traceUrl='/api/debug-traces/'+encodeURIComponent(pollTraceId),requestOptions={cache:'no-store'};
+      let r=await apiFetch(`${traceUrl}?since_seq=${sinceSeq}&limit=100&max_bytes=8388608`,requestOptions),d=await r.json();
       if(pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return;
       if(d.success){
+        if(d.cursor_reset){traceSeq=0;traceEvents=[];traceEventTotal=0;}
         traceSeq=traceFiniteSequence(d.next_seq,traceSeq);traceEventTotal=Math.max(traceEventTotal,traceSeq,Number(d.events_total||d.eventsTotal||0));const next=traceAppendEvents(traceEvents,d.events,traceEventTotal);traceEvents=next.events;traceEventTotal=next.eventsTotal;renderTraceDetail({...d,events:traceEvents,events_total:traceEventTotal});
-        if(d.terminal&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){clearInterval(traceTimer);traceTimer=null}
+        if(d.terminal&&!d.has_more&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){clearInterval(traceTimer);traceTimer=null}
       }else if(d.retryable){const lEl=$('tracePageLive');if(lEl){lEl.textContent='● live · retrying…';lEl.className='tiny trace-running';}return;
       }else{openModal(d,'Trace error');clearInterval(traceTimer);traceTimer=null}
     }catch(e){if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){const lEl=$('tracePageLive');if(lEl)lEl.textContent='refresh failed: '+e.message;}
@@ -3686,7 +3669,7 @@ async function submitRegisterProject(e){
     const r=await post('/api/preprocess',{root,action:force?'refresh':'register'});
     if(r.success){
       $('modalClose')?.click();
-      await pollStatus();
+      statusPoller.refresh();
     }else{
       if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(r.error||'Failed')}</span>`;
     }
@@ -3747,7 +3730,7 @@ async function confirmDeleteProject(root){
       return;
     }
     $('modalClose')?.click();
-    await pollStatus();
+    statusPoller.refresh();
   }catch(e){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(e.message||e)}</span>`;
   }
@@ -3781,7 +3764,7 @@ async function confirmCleanMissing(){
   try{
     const r=await post('/api/preprocess',{action:'cleanup_deleted'});
     $('modalClose')?.click();
-    await pollStatus();
+    statusPoller.refresh();
   }catch(e){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(e.message||e)}</span>`;
   }
@@ -3939,6 +3922,7 @@ function renderErrorFingerprintModal(err){
           <div class="kv" style="padding:0">
             <div>Component</div><div><b>${esc(err.component||'—')}</b></div>
             <div>Operation</div><div><b>${esc(err.operation||'—')}</b></div>
+            <div>Diagnostic</div><div>${esc(String(err.safe_message||'Diagnostic unavailable').slice(0,96))}</div>
             <div>Total Occurrences</div><div class="bad-t"><b>${n(err.count||0)}</b></div>
             <div>Recovered Count</div><div class="ok"><b>${n(err.recovered_count||0)}</b></div>
             <div>Last Seen</div><div>${err.last_seen?new Date(err.last_seen*1000).toLocaleString():'—'}</div>
@@ -4512,6 +4496,83 @@ window.addEventListener('hashchange',()=>switchTab(location.hash.replace('#','')
 $('pauseEvents').onclick=e=>{paused=!paused;e.target.textContent=paused?'Resume live events':'Pause live events'};
 async function post(path,payload){const r=await apiFetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});return await r.json()}
 
+const ACTIVITY_MODES=['active','gaming','maintenance'];
+let activityModeStatusPolls=0;
+let activityModeTransitionNotice=null;
+const activityModeLabels={active:'Active',gaming:'GAMING / PAUSED',maintenance:'Maintenance'};
+function renderActivityMode(mode){
+  const badge=$('activityModeBadge');if(!badge)return;
+  const valid=ACTIVITY_MODES.includes(String(mode||''));
+  const value=valid?String(mode):'unknown';
+  badge.dataset.mode=value;badge.className=`pill ${value==='active'?'ok':value==='unknown'?'warn-t':''}`;
+  badge.textContent=`Mode: ${valid?activityModeLabels[value]:'Unknown'}`;
+  document.querySelectorAll('[data-activity-mode]').forEach(button=>button.setAttribute('aria-pressed',String(valid&&button.dataset.activityMode===value)));
+}
+function activityModeFailure(response,data){
+  if(response?.status===401)return 'Unauthorized (HTTP 401); check the API token.';
+  if(response?.status===400)return `Invalid mode: ${data?.error||'server rejected request'}`;
+  if(response&&!response.ok)return `Mode request failed (HTTP ${response.status}).`;
+  return data?.error||'Mode request failed.';
+}
+function projectActivityModeTransition(confirmed,data){
+  const failures=[];
+  if(confirmed==='gaming'){
+    const unload=data.runtime_unload;
+    if(!unload||unload.state!=='pending'&&unload.success!==true)failures.push('VRAM unload incomplete');
+    const acceleratorRelease=data.accelerator_release;
+    if(!acceleratorRelease||acceleratorRelease.success!==true)failures.push('accelerator release incomplete');
+    if(unload?.state==='pending')failures.push('VRAM unload pending');
+  }
+  if(data.job_cancellation&&data.job_cancellation.success!==true)failures.push('job cancellation incomplete');
+  const persisted=`Mode persisted as ${activityModeLabels[confirmed]}.`;
+  return {
+    modePersisted:true,
+    partial:failures.length>0,
+    failures,
+    status:failures.length?`${persisted} Mode transition incomplete: ${failures.join('; ')}.`:`Mode set to ${activityModeLabels[confirmed]}.`,
+  };
+}
+async function refreshActivityMode(){
+  const status=$('activityModeStatus');
+  try{
+    const response=await apiFetch('/api/mode',{cache:'no-store',timeoutMs:5000});
+    const data=await response.json().catch(()=>null);
+    if(!response.ok||!data||data.success!==true){renderActivityMode('unknown');if(status)status.textContent=`Mode unavailable: ${activityModeFailure(response,data)}`;return false;}
+    if(!ACTIVITY_MODES.includes(data.mode)){renderActivityMode('unknown');if(status)status.textContent='Mode unavailable: invalid mode returned by server.';return false;}
+    renderActivityMode(data.mode);
+    if(activityModeTransitionNotice&&activityModeTransitionNotice.mode!==data.mode)activityModeTransitionNotice=null;
+    const notice=activityModeTransitionNotice?.mode===data.mode?activityModeTransitionNotice:null;
+    if(notice&&data.mode==='gaming'&&data.runtime_unload?.state!=='pending'){
+      const unloadState=data.runtime_unload?.success===true?'complete':'incomplete';
+      notice.text=notice.text.replace(/VRAM unload (?:pending|incomplete)/,`VRAM unload ${unloadState}`);
+    }
+    if(status){const unload=data.runtime_unload;status.textContent=notice?.text??(data.mode==='gaming'&&unload?(unload.success===true?'Gaming mode active. VRAM unload complete.':unload.state==='pending'?'Gaming mode active. VRAM unload in progress.':'Gaming mode active. VRAM unload incomplete.'):'Mode loaded.');}
+    if(data.mode==='gaming'&&data.runtime_unload?.state==='pending'&&activityModeStatusPolls<8){activityModeStatusPolls++;setTimeout(refreshActivityMode,1500);}else if(data.runtime_unload?.state!=='pending'){activityModeStatusPolls=0;}
+    return true;
+  }catch(_){renderActivityMode('unknown');if(status)status.textContent='Mode unavailable: Hub offline or unreachable.';return false;}
+}
+async function applyActivityMode(mode){
+  const buttons=Array.from(document.querySelectorAll('[data-activity-mode]')),status=$('activityModeStatus');
+  mode=String(mode||'');
+  if(!ACTIVITY_MODES.includes(mode)){if(status)status.textContent='Invalid mode selected.';return false;}
+  activityModeTransitionNotice=null;
+  buttons.forEach(button=>button.disabled=true);if(status)status.textContent='Updating mode…';
+  try{
+    const response=await apiFetch('/api/admin/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode}),timeoutMs:5000});
+    const data=await response.json().catch(()=>null);
+    if(!response.ok||!data||data.success!==true){if(status)status.textContent=activityModeFailure(response,data);return false;}
+    const confirmed=data.mode;
+    if(!ACTIVITY_MODES.includes(confirmed)||confirmed!==mode){if(status)status.textContent='Mode update rejected: invalid mode returned by server.';return false;}
+    renderActivityMode(confirmed);
+    const transition=projectActivityModeTransition(confirmed,data);
+    if(transition.partial)activityModeTransitionNotice={mode:confirmed,text:transition.status};
+    if(status)status.textContent=transition.status;
+    if(confirmed==='gaming'&&data.runtime_unload?.state==='pending'){activityModeStatusPolls=0;setTimeout(refreshActivityMode,800);}
+    return true;
+  }catch(_){if(status)status.textContent='Mode update failed: Hub offline or unreachable.';return false;}
+  finally{buttons.forEach(button=>button.disabled=false);}
+}
+
 async function loadConfigView(){
   try{
     const r=await apiFetch('/api/config',{cache:'no-store'}),d=await r.json();
@@ -4603,13 +4664,17 @@ async function setPreprocessing(action){
   try{
     const result=await post('/api/preprocess',{action});
     if(result?.success){last={...last,preprocessing:result};render(last)}
-    await pollStatus();
-  }catch(e){alert('Preprocessing action failed: '+(e.message||e));await pollStatus()}
+    statusPoller.refresh();
+  }catch(e){alert('Preprocessing action failed: '+(e.message||e));statusPoller.refresh()}
   finally{buttons.forEach(b=>b.disabled=false);preprocessActionInFlight=false}
 }
 function togglePreprocessing(){return setPreprocessing(last?.preprocessing?.paused?'resume':'pause')}
 $('prepToggle').onclick=togglePreprocessing;
 $('prepAllToggle').onclick=togglePreprocessing;
+document.querySelectorAll('[data-activity-mode]').forEach(button=>button.onclick=()=>applyActivityMode(button.dataset.activityMode));
+refreshActivityMode();
+setInterval(()=>{if(document.visibilityState!=='hidden')refreshActivityMode()},30000);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='hidden')refreshActivityMode()});
 
 function refreshProjectList(){renderProjects(last?.preprocessing?.projects||[])}
 $('projectSearch').oninput=e=>{projectQuery=e.target.value;refreshProjectList()};
@@ -4705,7 +4770,7 @@ function renderProjects(items){
   },5);
 }
 async function projectAction(root, action) {
-  try { await post('/api/preprocess', { root, action }); await pollStatus(); } catch(e) { alert('Action error: ' + e); }
+  try { await post('/api/preprocess', { root, action }); statusPoller.refresh(); } catch(e) { alert('Action error: ' + e); }
 }
 $('regProjectBtn').onclick = openRegisterProjectModal;
 $('cleanMissingBtn').onclick = openCleanMissingModal;
@@ -4730,7 +4795,7 @@ function openControlConfirmation(action){
 $('restartHub').onclick=()=>openControlConfirmation('restart_hub');
 $('stopService').onclick=()=>openControlConfirmation('stop_service');
 $('optDbBtn').onclick=async()=>{try{const r=await post('/api/maintenance/optimize_db',{});openModal(r,'Database Optimization & WAL Checkpoint Results','db_opt')}catch(e){openModal({error:String(e)},'Error')}};
-if($('resolveAllErrorsBtn'))$('resolveAllErrorsBtn').onclick=async()=>{try{const r=await post('/api/maintenance/resolve_errors',{});openModal(r,'Operational Errors Resolved','resolve_errors');await pollStatus();}catch(e){openModal({error:String(e)},'Resolution Error')}};
+if($('resolveAllErrorsBtn'))$('resolveAllErrorsBtn').onclick=async()=>{try{const r=await post('/api/maintenance/resolve_errors',{});openModal(r,'Operational Errors Resolved','resolve_errors');statusPoller.refresh();}catch(e){openModal({error:String(e)},'Resolution Error')}};
 $('purgeCacheBtn').onclick=()=>openControlConfirmation('purge_cache');
 $('doctorBtn').onclick=openDoctorModal;
 
@@ -4902,7 +4967,10 @@ function render(s){
   const worktreeRoot=$('worktreeRoot');
   if(firstProject&&worktreeRoot&&!worktreeRoot.value)worktreeRoot.value=firstProject.root;
 
-  $('health').innerHTML=`<span class="${s.hub_online&&s.ollama_online?'ok':s.hub_online?'warn-t':'bad-t'}">${s.hub_online?'hub ✓':'hub ✗'} / ${s.ollama_online?'ollama ✓':'ollama ✗'} / ${esc(h.state||'n/a')}</span>`;
+  const ollamaState=s.ollama_status||((s.ollama_online==null)?'unknown':s.ollama_online?'online':'offline');
+  const statusBadge=dashboardHealthBadge(s);
+  const ollamaLabel=ollamaState==='unknown'?'ollama ?':ollamaState==='online'?'ollama ✓':'ollama ✗';
+  $('health').innerHTML=`<span class="${statusBadge.className}">${s.hub_online?'hub ✓':'hub ✗'} / ${ollamaLabel} / ${esc(h.state||'n/a')}${statusBadge.degradedLabel}</span>`;
   $('uptime').textContent='uptime '+durSec(s.uptime_seconds)+' · supervisor restarts '+n(h.restarts);
 
   const ep=(rp.execution||{}).models||[];
@@ -5001,7 +5069,7 @@ function render(s){
     }else if(hasErr){
       const errProjs=projs.filter(x=>x.status==='error'||x.last_error).map(x=>x.project||x.root).join(', ');
       diagBar.className='diag-banner bad';
-      diagBar.innerHTML=`<span style="flex:1">⚠️ <b>Errors detected in project preprocessing:</b> ${esc(errProjs)}. Check status column below for error details.</span><button class="btn" onclick="pollStatus()" style="padding:3px 8px;font-size:11px">Refresh status</button>`;
+      diagBar.innerHTML=`<span style="flex:1">⚠️ <b>Errors detected in project preprocessing:</b> ${esc(errProjs)}. Check status column below for error details.</span><button class="btn" onclick="statusPoller.refresh()" style="padding:3px 8px;font-size:11px">Refresh status</button>`;
     }else if(allDone){
       diagBar.className='diag-banner ok';
       diagBar.innerHTML=`<span>✅ <b>All ${projs.length} registered project(s) are 100% indexed and synchronized</b>. Real-time file change watcher (FS watcher) is active.</span>`;
@@ -5033,7 +5101,7 @@ function render(s){
   rows('blockedReasons',Object.entries(cmd.blocked_by_reason||{}),x=>clickableRow({reason:x[0],count:x[1]},`<td>${esc(x[0])}</td><td>${n(x[1])}</td>`,'blocked_reason'),2);
 
   renderReliabilitySummary(s);
-  rows('errors',o.recent_errors||[],x=>clickableRow(x,`<td>${esc(x.component)}</td><td>${esc(x.operation)}</td><td>${n(x.count)}</td><td>${n(x.recovered_count)}</td><td>${x.last_seen?new Date(x.last_seen*1000).toLocaleTimeString():'—'}</td>`,'error'),5);
+  rows('errors',o.recent_errors||[],x=>clickableRow(x,`<td>${esc(x.component)}</td><td>${esc(x.operation)}</td><td>${esc(String(x.safe_message||'Diagnostic unavailable').slice(0,96))}</td><td>${n(x.count)}</td><td>${n(x.recovered_count)}</td><td>${x.last_seen?new Date(x.last_seen*1000).toLocaleTimeString():'—'}</td>`,'error'),6);
   $('runtimeCounters').innerHTML=`<div>Scheduler submitted</div><div>${n(ss.submitted)}</div><div>Completed / failed</div><div>${n(ss.completed)} / ${n(ss.failed)}</div><div>Model switches</div><div>${n(ss.model_switches)}</div><div>Queue rejections</div><div>${n(ss.queue_rejections)}</div><div>Caller timeouts</div><div>${n(ss.caller_timeouts)}</div><div>Background yields</div><div>${n(ss.background_yields)}</div><div>Supervisor restarts</div><div>${n(h.restarts)}</div>`;
 
   if($('hubHealthCard'))$('hubHealthCard').onclick=()=>switchTab('reliability');
@@ -5065,7 +5133,7 @@ function renderReliabilitySummary(snapshot){
           const r=await post('/api/maintenance/resolve_errors',{});
           resolveBtn.textContent='Resolved!';
           openModal(r,'Operational Errors Resolved','resolve_errors');
-          await pollStatus();
+          statusPoller.refresh();
         }catch(e){
           resolveBtn.textContent='Error';
           openModal({error:String(e)},'Resolution Error');
@@ -5119,11 +5187,14 @@ async function pollStatus(isCurrent=()=>document.visibilityState!=='hidden'){
     const opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
     const r=await apiFetch('/api/live/status?light=1&scope='+sloScope,opts);
     if(!current())return false;
+    if(!r.ok)throw new Error(`status request failed (HTTP ${r.status})`);
     const s=await r.json();
     if(!current())return false;
     const changed=shouldRefreshDashboardStatus(s);
     if(changed)render(s);
-    hasLiveStatus=true;$('conn').textContent='live';$('conn').className='pill ok';if(changed)$('updated').textContent='updated '+new Date().toLocaleTimeString();
+    hasLiveStatus=true;
+    if(s.success===false){$('conn').textContent='degraded';$('conn').className='pill warn-t';if(changed)$('updated').textContent='updated '+new Date().toLocaleTimeString();return false;}
+    $('conn').textContent='live';$('conn').className='pill ok';if(changed)$('updated').textContent='updated '+new Date().toLocaleTimeString();
     if(changed||hardwareRefreshPending)try{
       const hardwareOpts={cache:'no-store'};if(controller)hardwareOpts.signal=controller.signal;
       const gr=await apiFetch('/api/hardware/system',hardwareOpts);
@@ -5184,14 +5255,13 @@ $('eventSeverity')?.addEventListener('change',()=>renderEvents([]));
 $('eventSource')?.addEventListener('input',()=>renderEvents([]));
 async function pollEvents(){if(eventsPollInFlight)return;eventsPollInFlight=true;try{const r=await apiFetch('/api/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}finally{eventsPollInFlight=false}}
 
-probeHealth();pollStatus();pollEvents();pollTraces();
+probeHealth();pollEvents();pollTraces();
 let isVisible=!document.hidden;
 document.addEventListener('visibilitychange',()=>{
   isVisible=!document.hidden;
-  if(isVisible){probeHealth();pollStatus();pollEvents();pollTraces();}
+  if(isVisible){probeHealth();pollEvents();pollTraces();}
 });
 setInterval(()=>{if(isVisible)probeHealth();},5000);
-setInterval(()=>{if(isVisible)pollStatus();},1000);
 setInterval(()=>{if(isVisible)pollEvents();},1000);
 setInterval(()=>{if(isVisible)pollTraces();},2000);
 
@@ -5522,48 +5592,85 @@ function renderTrajectories(){
 $('trajSearch')?.addEventListener('input',renderTrajectories);
 $('trajRefreshBtn')?.addEventListener('click',loadTrajectories);
 
+let trajectoryGeneration=0,trajectoryTaskId='',trajectoryAfterSeq=0,trajectorySnapshotSeq=null,trajectoryHasMore=false,trajectoryLoading=false,trajectoryEvents=[],trajectoryGaps=[],trajectoryCursorReset=false,trajectoryPageError='';
+
+function renderTrajectoryEvents(task){
+  const list=$('trajStepsList'),pager=$('trajEventPager');
+  if(!list||!pager)return;
+  const reset=trajectoryCursorReset?'<div class="trace-event tiny muted">Requested cursor was beyond retained history; view reset to available events.</div>':'';
+  if(!trajectoryEvents.length){
+    const cp=task?.checkpoint||{},receipts=Object.entries(task?.verification_receipts||{});
+    const gaps=trajectoryGaps.map(g=>`<div class="trace-event tiny muted">Missing retained events #${Number(g.from_seq)}–#${Number(g.to_seq)}</div>`).join('');
+    list.innerHTML=reset+gaps+`<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px">
+      <div style="font-weight:600;font-size:12px;margin-bottom:4px">Phase: ${esc(cp.phase||'init')} ➔ Next: ${esc(cp.next_action||'—')}</div>
+      <div class="tiny muted">Affected Paths: ${esc((cp.affected_paths||[]).join(', ')||'none')}</div>
+      <div class="tiny muted">Evidence IDs: ${esc((cp.evidence_ids||[]).join(', ')||'none')}</div>
+      ${receipts.length?`<div style="margin-top:6px;font-size:11px"><b>Receipts:</b> ${receipts.map(([k])=>`<span class="chip ok">${esc(k)}</span>`).join(' ')}</div>`:''}
+    </div>`;
+  }else{
+    const items=[
+      ...trajectoryGaps.map(g=>({type:'gap',from:Number(g.from_seq),to:Number(g.to_seq)})),
+      ...trajectoryEvents.map(ev=>({type:'event',seq:Number(ev.seq||0),event:ev}))
+    ].sort((a,b)=>(a.type==='gap'?a.from:a.seq)-(b.type==='gap'?b.from:b.seq));
+    list.innerHTML=reset+items.map(item=>{
+      if(item.type==='gap')return `<div class="trace-event tiny muted">Missing retained events #${item.from}–#${item.to}</div>`;
+      const ev=item.event;
+      const kind=esc(ev.event_type||ev.kind||'event');
+      const time=ev.timestamp?new Date(ev.timestamp*1000).toLocaleTimeString():'';
+      const payload=traceOutputValueMarkup(ev.payload,null,5000);
+      return `<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px;background:#0d1219;border-radius:4px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="chip"><b>${kind}</b></span><span class="tiny muted">#${ev.seq||0} · ${time}</span></div>
+        <div style="margin:0;font-size:11px;color:#d7e2ef;max-height:220px;overflow:auto">${payload}</div>
+      </div>`;
+    }).join('');
+  }
+  if(trajectoryPageError)list.insertAdjacentHTML('afterbegin',`<div class="bad-t">${esc(trajectoryPageError)}</div>`);
+  const canLoad=trajectoryHasMore||Boolean(trajectoryPageError);
+  pager.innerHTML=`${canLoad?`<button class="btn btn-small" data-load-traj-more="1">${trajectoryPageError?'Retry page':'Load next events'} after #${trajectoryAfterSeq}</button>`:''}${trajectoryLoading?'<span> Loading…</span>':''}`;
+}
+
+async function loadTrajectoryEventPage(taskId,generation){
+  if(trajectoryLoading||generation!==trajectoryGeneration||taskId!==trajectoryTaskId)return;
+  const task=cachedTrajTasks.find(t=>t.task_id===taskId);
+  trajectoryLoading=true;trajectoryPageError='';renderTrajectoryEvents(task);
+  try{
+    const query=new URLSearchParams({stream_id:taskId,after_seq:String(trajectoryAfterSeq),limit:'100'});
+    if(trajectorySnapshotSeq!==null)query.set('through_seq',String(trajectorySnapshotSeq));
+    const r=await apiFetch('/api/agent-state/events?'+query.toString(),{cache:'no-store'});
+    const d=await r.json();
+    if(generation!==trajectoryGeneration||taskId!==trajectoryTaskId)return;
+    if((r.ok||r.status===413)&&trajectorySnapshotSeq===null&&Number.isFinite(Number(d.last_seq)))trajectorySnapshotSeq=Math.max(0,Number(d.last_seq||0));
+    if(!r.ok){throw new Error(d?.error?.message||d?.error||`HTTP ${r.status}`)}
+    if(d.cursor_reset){trajectoryEvents=[];trajectoryGaps=[];trajectoryAfterSeq=0;trajectoryCursorReset=true;}
+    const evs=Array.isArray(d.events)?d.events:[];
+    trajectoryEvents.push(...evs.filter(ev=>Number(ev.seq||0)<=trajectorySnapshotSeq));
+    if(Array.isArray(d.gap_ranges))trajectoryGaps.push(...d.gap_ranges);
+    trajectoryAfterSeq=Number(d.next_seq||trajectoryAfterSeq);
+    trajectoryHasMore=Boolean(d.has_more)&&Number(trajectoryAfterSeq)<trajectorySnapshotSeq;
+    trajectoryPageError='';
+    renderTrajectoryEvents(task);
+  }catch(err){
+    if(generation===trajectoryGeneration){trajectoryPageError=`Failed to load trajectory events: ${err.message||err}`}
+  }finally{
+    if(generation===trajectoryGeneration){trajectoryLoading=false;renderTrajectoryEvents(task)}
+  }
+}
+
 async function viewTrajectory(taskId){
   if(!taskId)return;
-  const task=cachedTrajTasks.find(t=>t.task_id===taskId);
-  const panel=$('trajDetailPanel');
-  const title=$('trajDetailTitle');
-  const list=$('trajStepsList');
+  const task=cachedTrajTasks.find(t=>t.task_id===taskId),panel=$('trajDetailPanel'),title=$('trajDetailTitle'),list=$('trajStepsList');
   if(!panel||!list||!title)return;
+  trajectoryGeneration++;trajectoryTaskId=taskId;trajectoryAfterSeq=0;trajectorySnapshotSeq=null;trajectoryHasMore=false;trajectoryLoading=false;trajectoryEvents=[];trajectoryGaps=[];trajectoryCursorReset=false;trajectoryPageError='';
+  const generation=trajectoryGeneration;
   panel.style.display='block';
   title.innerHTML=`Trajectory Inspection: <code>${esc(taskId)}</code> — <span class="muted">${esc(task?.contract?.goal||'')}</span>`;
   list.innerHTML='<div class="tiny muted">Loading event stream & trajectory steps…</div>';
-
-  try{
-    const r=await apiFetch('/api/agent-state/events?stream_id='+encodeURIComponent(taskId),{cache:'no-store'});
-    const d=await r.json();
-    const evs=d.events||[];
-    if(!evs.length){
-      const cp=task?.checkpoint||{};
-      const receipts=Object.entries(task?.verification_receipts||{});
-      list.innerHTML=`<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px">
-        <div style="font-weight:600;font-size:12px;margin-bottom:4px">Phase: ${esc(cp.phase||'init')} ➔ Next: ${esc(cp.next_action||'—')}</div>
-        <div class="tiny muted">Affected Paths: ${esc((cp.affected_paths||[]).join(', ')||'none')}</div>
-        <div class="tiny muted">Evidence IDs: ${esc((cp.evidence_ids||[]).join(', ')||'none')}</div>
-        ${receipts.length?`<div style="margin-top:6px;font-size:11px"><b>Receipts:</b> ${receipts.map(([k,v])=>`<span class="chip ok">${esc(k)}</span>`).join(' ')}</div>`:''}
-      </div>`;
-      return;
-    }
-    list.innerHTML=evs.map(ev=>{
-      const kind=esc(ev.event_type||ev.kind||'event');
-      const time=ev.timestamp?new Date(ev.timestamp*1000).toLocaleTimeString():'';
-       const payload=traceOutputValueMarkup(ev.payload, null, 5000);
-      return `<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px;background:#0d1219;border-radius:4px">
-        <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-          <span class="chip"><b>${kind}</b></span>
-          <span class="tiny muted">#${ev.seq||0} · ${time}</span>
-        </div>
-         <div style="margin:0;font-size:11px;color:#d7e2ef;max-height:220px;overflow:auto">${payload}</div>
-      </div>`;
-    }).join('');
-  }catch(err){
-    list.innerHTML=`<div class="bad-t">Failed to load trajectory events: ${esc(err.message||err)}</div>`;
-  }
+  await loadTrajectoryEventPage(taskId,generation);
 }
+
+document.addEventListener('click',e=>{
+  if(e.target.closest?.('[data-load-traj-more]'))loadTrajectoryEventPage(trajectoryTaskId,trajectoryGeneration);
+});
 
 document.addEventListener('click',e=>{
   const el=e.target.closest?.('[data-view-traj]');
