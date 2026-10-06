@@ -61,17 +61,8 @@ def test_prompt_role_matrix_matches_hardware_profiles() -> None:
 
 def test_agents_profile_routes_match_hardware() -> None:
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    routing = next(line for line in agents.splitlines() if "Model routing is profile-aware" in line)
-    high_models = profile_overrides("high")["models"]
-    max_models = profile_overrides("max")["models"]
+    routing = next(line for line in agents.splitlines() if line.startswith("Local model policy:"))
 
-    assert (
-        f"high uses {high_models['background_code']} preprocessing, {high_models['fast_code']} quick, "
-        f"{high_models['heavy_code']} involved, {high_models['general']} ordinary and hardest reasoning, "
-        f"and {high_models['vision']} vision"
-    ) in routing
-    assert (
-        f"max uses {max_models['background_code']} preprocessing, {max_models['fast_code']} quick, "
-        f"and {max_models['heavy_code']} for involved, ordinary and hardest reasoning, "
-        f"and {max_models['vision']} vision"
-    ) in routing
+    assert "Model routing follows the active hardware profile and user overrides" in routing
+    assert "consult `docs/MODEL_CAPABILITIES.md` for foreground role targets" in routing
+    assert "Routing targets do not prove installed-model availability" in routing
