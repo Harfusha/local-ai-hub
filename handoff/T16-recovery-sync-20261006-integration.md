@@ -8,6 +8,23 @@ Merge target pinned once: 1fa8c6f1655e58c79bc002f11778ef07a919488f.
 No root checkout or master ref writes; no push, stash, reset, clean, new worktree or chat.
 T14 /api/context/pack ownership preserved: no endpoint redesign.
 
+## Committed merge receipt
+
+Merge commit: 847afd3f6b0fd74f71dd6a18990c218cdb144c30.
+Parents: 49ced58f (all original work preserved), 1fa8c6f1 (pinned master).
+git merge-base --is-ancestor refs/checkpoints/t16-recovery-sync-20261006-master HEAD:
+exit 0. git ls-files -u: zero entries. git status --porcelain=v1
+--untracked-files=all: empty after merge. Integration delta whitespace check passed.
+Delta versus pinned master: 84 paths, 29503 insertions / 3 deletions at merge commit.
+
+Concurrent master drift: shared master was 1fa8c6f1 at initial pin, but observed
+fcbb1d6fa7347e9b918d030f4f99d058d9846a6c after merge commit. Moving master ancestry
+check returned exit 1. No command in this task wrote master. User explicitly
+specified pin 1fa8c6f1 once: no retargeting or merge of concurrent changes.
+Synchronization is complete against requested pinned target; it is not claimed
+against the subsequently advanced shared master. Final handoff commit updates only
+this note. Its actual HEAD is reported in the chat; no self-referential commit hash.
+
 ## Preservation
 
 - Observed initial HEAD: c6c38c5efe69a1f79cad9ddfbdb86d091f275ae3.
