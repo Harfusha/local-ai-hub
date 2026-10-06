@@ -517,6 +517,19 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
         assert malformed["terminal"] is True
         assert malformed["retryable"] is False
 
+        for invalid_budget in (512.0, "512", True):
+            status, invalid = post({"root": str(tmp_path), "query": "x", "max_tokens": invalid_budget})
+            assert status == 400
+            assert invalid["terminal"] is True
+            assert invalid["retryable"] is False
+            assert "max_tokens must be an integer" in invalid["error"]
+
+        status, negative = post({"root": str(tmp_path), "query": "x", "max_tokens": -1})
+        assert status == 400
+        assert negative["terminal"] is True
+        assert negative["retryable"] is False
+        assert "max_tokens must be non-negative" in negative["error"]
+
         status, invalid_mode = post({"root": str(tmp_path), "query": "x", "mode": "unsafe"})
         assert status == 400
         assert "context mode" in invalid_mode["error"]
@@ -962,6 +975,111 @@ def test_generation_cache_key_changes_for_adaptive_context_inputs():
 
     assert first != second
 
+
+class _PathRankingIndex:
+    def __init__(self, paths):
+        self.paths = paths
+
+    def related_paths(self, root, query, limit):
+        return self.paths[:limit]
+
+
+class _PathScanRepoTools:
+    def __init__(self):
+        self.path_calls = []
+        self.full_scan_calls = 0
+        self.iterated = []
+
+    def context_pack_paths(self, root, query, paths, max_tokens, top_k):
+        self.path_calls.append(list(paths))
+        return {
+            "success": True, "root": root, "query": query, "context": "",
+            "evidence": [], "estimated_tokens": 0, "scanned_files": len(paths),
+        }
+
+    def context_pack(self, *args, **kwargs):
+        self.full_scan_calls += 1
+        raise AssertionError("path-scoped retrieval must not launch a full recall scan")
+
+    def iter_files(self, root):
+        for path in self.iterated:
+            yield path
+
+
+def _path_scan_services(tmp_path, paths, *, indexed=True):
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"search": {"context_top_k": 8}, "preprocessing": {}}
+    services.repo_tools = _PathScanRepoTools()
+    services.repo_tools.iterated = [tmp_path / path for path in paths]
+    services.code_index = _PathRankingIndex(paths) if indexed else None
+    services.deterministic = None
+    services.preprocessor = None
+    services.rag = None
+    services.learner = None
+    services.evidence_store = None
+    return services
+
+
+def test_path_scoped_context_uses_bounded_candidates_with_exclude_force_precedence(tmp_path):
+    paths = ("src/app.py", "src/private.py", "vendor/lib.py")
+    for path in paths:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("needle", encoding="utf-8")
+    services = _path_scan_services(tmp_path, paths)
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), "needle", "tenant", None, 1000,
+        path_hints=("src/app.py", "../outside.py"),
+        exclude_paths=("src/**",),
+        force_include_paths=("src/private.py",),
+    )
+
+    assert result["success"] is True
+    assert services.repo_tools.path_calls == [["src/private.py", "vendor/lib.py"]]
+    assert services.repo_tools.full_scan_calls == 0
+
+
+def test_context_focus_and_changed_paths_change_candidate_ranking(tmp_path):
+    paths = ("src/app.py", "docs/guide.md", "tests/test_app.py")
+    for path in paths:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("needle", encoding="utf-8")
+    services = _path_scan_services(tmp_path, paths)
+
+    services._hybrid_context_uncached(
+        str(tmp_path), "needle", "tenant", None, 1000, focus=("docs",),
+    )
+    focus_order = services.repo_tools.path_calls[-1]
+    services._hybrid_context_uncached(
+        str(tmp_path), "needle", "tenant", None, 1000,
+        changed_paths=("tests/test_app.py",),
+    )
+    changed_order = services.repo_tools.path_calls[-1]
+
+    assert focus_order[0] == "docs/guide.md"
+    assert changed_order[0] == "tests/test_app.py"
+    assert focus_order != changed_order
+
+
+def test_path_scoped_context_uses_bounded_degraded_fallback_without_index(tmp_path):
+    paths = ("src/a.py", "src/b.py", "src/c.py")
+    for path in paths:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("needle", encoding="utf-8")
+    services = _path_scan_services(tmp_path, paths, indexed=False)
+    services.config["search"]["context_fallback_scan_limit"] = 2
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), "needle", "tenant", None, 1000, path_hints=("src",),
+    )
+
+    assert services.repo_tools.path_calls == [["src/a.py", "src/b.py"]]
+    assert services.repo_tools.full_scan_calls == 0
+    assert result["degraded"] is True
+    assert result["degraded_reason"] == "bounded_path_candidate_fallback"
 
 def test_adaptive_context_identity_covers_guard_inputs_and_session():
     services = _guarded_services(_Guard())
