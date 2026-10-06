@@ -63,13 +63,13 @@ def test_current_scoped_path_controls(name: str) -> None:
     for contract in (
         "`.local-ai.toml`", "`.local-ai.worktree.toml`", "`info/local-ai.toml`",
         "Cross-worktree Agent OS memory sharing remains HOLD",
-        "`HubClient.post` forwards typed hints to `/api/search` only and strips them from `/api/command`",
-        "HTTP `/api/context/pack` accepts `path_hints`, `directory_hints`, `exclude_paths`, and `force_include_paths` only in `adaptive` mode",
+        "`HubClient.post` accepts optional `request_id`, `path_hints`, `tenant`, and `cancel_event`. It bounds typed hints and forwards them to `/api/search` and `/api/command`; an explicit `path` removes those hints.",
+        "HTTP `/api/context/pack` accepts `path_hints`, `directory_hints`, `exclude_paths`, and `force_include_paths` in `adaptive` mode and validates lists. T14 owns that contract.",
         "request hints remain subordinate to root containment and hard exclusions",
     ):
         assert contract in prompt, f"{name}: missing current path contract: {contract}"
     assert "`/api/context/pack` does not accept or use hints" not in prompt
-    assert "forwards typed hints to `/api/search` and `/api/command`" not in prompt
+    assert "forwards them to `/api/search` and `/api/command`" in prompt
 
 
 @pytest.mark.parametrize("name", PROMPTS)
