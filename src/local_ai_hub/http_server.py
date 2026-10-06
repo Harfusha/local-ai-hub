@@ -3259,6 +3259,9 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
+                    query_repo_id = (query.get("repository_id") or [None])[0]
+                    if not repository_id_val and query_repo_id:
+                        repository_id_val = str(query_repo_id).strip()
                     query_tenant = (query.get("tenant") or [None])[0]
                     explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                     tenant_val = str(query_tenant).strip() if query_tenant else (str(explicit_tenant).strip() if explicit_tenant else None)
@@ -3324,6 +3327,9 @@ class Handler(BaseHTTPRequestHandler):
                 if requested_root and project_identity is None:
                     self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                 root_val, repository_id_val = project_identity or (None, None)
+                query_repo_id = (query.get("repository_id") or [None])[0]
+                if not repository_id_val and query_repo_id:
+                    repository_id_val = str(query_repo_id).strip()
                 query_tenant = (query.get("tenant") or [None])[0]
                 explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                 tenant_val = str(query_tenant).strip() if query_tenant else (str(explicit_tenant).strip() if explicit_tenant else None)
@@ -4848,6 +4854,8 @@ class Handler(BaseHTTPRequestHandler):
                         if requested_root and project_identity is None:
                             self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                         root_val, repository_id_val = project_identity or (None, None)
+                        if not repository_id_val and (payload.get("repository_id") or rec_data.get("repository_id")):
+                            repository_id_val = str(payload.get("repository_id") or rec_data.get("repository_id")).strip()
                         tenant_val = self._tenant()
                         scope_val, resolved_scope_id, ambiguous_scope = _resolve_memory_scope(
                             requested_scope,
@@ -4943,6 +4951,8 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
+                    if not repository_id_val and payload.get("repository_id"):
+                        repository_id_val = str(payload.get("repository_id")).strip()
                     explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                     raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
                     tenant_val = str(raw_tenant).strip() if raw_tenant else None
@@ -4999,6 +5009,8 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
+                    if not repository_id_val and payload.get("repository_id"):
+                        repository_id_val = str(payload.get("repository_id")).strip()
                     requested_scope = _parse_memory_scope(payload.get("scope"))
                     explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                     raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
@@ -5053,6 +5065,8 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
+                    if not repository_id_val and payload.get("repository_id"):
+                        repository_id_val = str(payload.get("repository_id")).strip()
                     explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                     raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
                     tenant_val = str(raw_tenant).strip() if raw_tenant else None
@@ -5127,6 +5141,8 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         return None, "memory project identity could not be resolved"
                     root_val, repository_id_val = project_identity or (None, None)
+                    if not repository_id_val and payload.get("repository_id"):
+                        repository_id_val = str(payload.get("repository_id")).strip()
                     explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                     raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
                     tenant_val = str(raw_tenant).strip() if raw_tenant else None
