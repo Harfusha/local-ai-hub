@@ -423,6 +423,7 @@ class TaskStore:
                 token_budget=512,
                 root=root,
                 tenant=tenant,
+                session_id=context.session_id,
                 clone_id=context.clone_id,
                 worktree_id=context.worktree_id,
                 branch=context.branch,
@@ -453,6 +454,7 @@ class TaskStore:
                         id_limit=0,
                         root=root or None,
                         tenant=tenant or None,
+                        session_id=context.session_id or None,
                         clone_id=context.clone_id or None,
                         worktree_id=context.worktree_id or None,
                         branch=context.branch or None,
@@ -530,6 +532,7 @@ class TaskStore:
                             root=root,
                             task_id=task_id,
                             tenant=tenant,
+                            session_id=context.session_id,
                             clone_id=context.clone_id,
                             worktree_id=context.worktree_id,
                             branch=context.branch,
@@ -764,6 +767,9 @@ class TaskStore:
                     f"Cannot transition to COMPLETED: volatile memory '{record_id}' lacks current-source check"
                 )
 
+    def set_verification_store(self, verification_store: Any) -> None:
+        self.verification_store = verification_store
+
     def set_policy_engine(self, policy_engine: Any) -> None:
         self.policy_engine = policy_engine
 
@@ -783,6 +789,26 @@ class TaskStore:
             return bool(path.name)
         except (RecursionError, OSError, ValueError, TypeError):
             return False
+
+    def _run_ordered_task_write(
+        self,
+        write: Any,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Any:
+        connection_options: dict[str, Any] = {"isolation_level": None}
+        if timeout_seconds is not None:
+            connection_options["timeout_seconds"] = timeout_seconds
+        con = connect_sqlite(self.state_store.db_path, **connection_options)
+        try:
+            with self.state_store.ordered_event_publication(con) as publish_committed:
+                result, events = retry_busy(
+                    lambda: write(con), retries=5, base_delay_seconds=0.02
+                )
+                publish_committed(events)
+                return result
+        finally:
+            con.close()
 
     def _init_projection_table(self) -> None:
         if self._initialized or not self._db_path_available():
@@ -843,6 +869,7 @@ class TaskStore:
         idempotency_key: str = "",
         auto_worktree: bool = False,
         repo_root: str = "",
+        repository_revision: str = "",
     ) -> TaskState:
         t_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
         now = time.time()
@@ -856,6 +883,8 @@ class TaskStore:
             authenticated_tenant = ""
         if canonical_root:
             initial_sd["repo_root"] = canonical_root
+        if repository_revision:
+            initial_sd["repository_revision"] = str(repository_revision).strip()
 
         if auto_worktree:
             try:
@@ -1167,36 +1196,24 @@ class TaskStore:
         if not self._db_path_available():
             raise RuntimeError("agent task storage is unavailable")
         self._init_projection_table()
-        published: list[AgentEvent] = []
-        result: list[TaskState | None] = []
-
-        def _write() -> None:
-            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        def _write(con: sqlite3.Connection) -> tuple[TaskState | None, list[AgentEvent]]:
             try:
                 con.execute("BEGIN IMMEDIATE")
                 state, event = self.add_verification_receipt_in_transaction(
                     con, task_id, criterion, receipt_id
                 )
                 con.execute("COMMIT")
-                result.append(state)
-                if event is not None:
-                    published.append(event)
+                return state, [event] if event is not None else []
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-            finally:
-                con.close()
-
-        with self.state_store._append_publish_lock:
-            retry_busy(_write, retries=5, base_delay_seconds=0.02)
-            for event in published:
-                self.state_store._publish(event)
-        if not result or result[0] is None:
+        state = self._run_ordered_task_write(_write)
+        if state is None:
             raise KeyError(f"Task {task_id} not found")
-        return result[0]
+        return state
 
     def add_verification_receipt_in_transaction(
         self,
@@ -1278,6 +1295,14 @@ class TaskStore:
             verification_receipts=updated_receipts,
         )
         return updated, appended.event if not appended.duplicate else None
+
+    def validate_completion(self, task_id: str) -> TaskState:
+        """Validate persisted completion gates without changing task state."""
+        task = self.get(task_id)
+        if task is None:
+            raise KeyError(f"Task {task_id} not found")
+        self._verify_completion(task)
+        return task
 
     def _verify_completion(self, task: TaskState, *, current_revision: str = "") -> None:
         memory_audit_validator = getattr(self, "_validate_memory_audit", None)
@@ -2063,7 +2088,11 @@ class TaskStore:
                 delete_branch=delete_branch,
                 branch_name=branch,
                 worktree_id=worktree_id,
-                expected_metadata=wt,
+                expected_task_id=task_id,
+                expected_owner=str(wt.get("owner", "")),
+                expected_created_at=created_at,
+                expected_ttl_seconds=ttl_seconds,
+                expected_expires_at=expires_at,
             )
             if not rm_res.get("success"):
                 return {"success": False, "had_worktree": True, "cleanup": rm_res, "error": rm_res.get("error", "cleanup failed")}
@@ -2258,8 +2287,8 @@ class TaskStore:
         })
         published: list[AgentEvent] = []
 
-        def _do_commit() -> TaskState:
-            con = connect_sqlite(self.state_store.db_path, isolation_level=None, timeout_seconds=0.25)
+        def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
+            published.clear()
             try:
                 con.execute("BEGIN IMMEDIATE")
                 existing = con.execute(
@@ -2280,7 +2309,7 @@ class TaskStore:
                     ).fetchone()
                     if current:
                         con.execute("COMMIT")
-                        return self._row_to_state(current)
+                        return self._row_to_state(current), []
                     if str(existing_event.payload.get("task_id", "")) != state.task_id:
                         raise RuntimeError("task create event conflicts with requested task identity")
 
@@ -2317,21 +2346,16 @@ class TaskStore:
                     if appended.event:
                         published.append(appended.event)
                 con.execute("COMMIT")
-                return state
+                return state, published
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-            finally:
-                con.close()
-
-        with self.state_store._append_publish_lock:
-            saved = retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
-            for persisted in published:
-                self.state_store._publish(persisted)
-        return saved
+        return self._run_ordered_task_write(
+            _do_commit, timeout_seconds=0.25
+        )
 
     def _commit_update(
         self,
@@ -2391,10 +2415,9 @@ class TaskStore:
             current.updated_at,
         )
         published: list[AgentEvent] = []
-        committed: list[TaskState] = []
 
-        def _do_commit() -> None:
-            con = connect_sqlite(self.state_store.db_path, isolation_level=None, timeout_seconds=0.25)
+        def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
+            published.clear()
             try:
                 con.execute("BEGIN IMMEDIATE")
                 if event.idempotency_key:
@@ -2422,9 +2445,9 @@ class TaskStore:
                         ).fetchone()
                         if not current_row:
                             raise RuntimeError("task event exists without its durable projection")
-                        committed.append(self._row_to_state(current_row))
+                        replayed = self._row_to_state(current_row)
                         con.execute("COMMIT")
-                        return
+                        return replayed, []
 
                 con.execute(
                     """
@@ -2452,21 +2475,16 @@ class TaskStore:
                 if appended.event:
                     published.append(appended.event)
                 con.execute("COMMIT")
-                committed.append(updated)
+                return updated, published
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-            finally:
-                con.close()
-
-        with self.state_store._append_publish_lock:
-            retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
-            for persisted in published:
-                self.state_store._publish(persisted)
-        return committed[0] if committed else updated
+        return self._run_ordered_task_write(
+            _do_commit, timeout_seconds=0.25
+        )
 
     def _row_to_state(self, row: tuple[Any, ...]) -> TaskState:
         (

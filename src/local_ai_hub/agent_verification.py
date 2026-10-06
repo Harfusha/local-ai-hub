@@ -430,6 +430,7 @@ def evaluate_completion_receipts(
     trusted_repository_root: str | Path = "",
     require_execution_provenance: bool = False,
     now: float | None = None,
+    evidence_store: Any | None = None,
 ) -> CompletionResult:
     """Apply shared receipt gates to durable tasks and work-order handoffs.
 
@@ -538,6 +539,7 @@ def evaluate_completion_receipts(
             trusted_tenant=trusted_tenant,
             trusted_repository_root=trusted_repository_root,
             require_execution_provenance=require_execution_provenance,
+            evidence_store=evidence_store,
         ):
             unsatisfied.append(criterion)
         elif criterion_evidence_type(criterion) == "test" and (
@@ -591,8 +593,13 @@ def _receipt_evidence_matches(
     trusted_tenant: str = "",
     trusted_repository_root: str | Path = "",
     require_execution_provenance: bool = False,
+    evidence_store: Any | None = None,
 ) -> bool:
     """Re-read and bind positive receipts to complete, tenant-scoped proof artifacts."""
+    if evidence_store is not None and str(receipt.evidence_id).startswith("E"):
+        ev = evidence_store.get(receipt.evidence_id, verify=False)
+        if isinstance(ev, Mapping) and ev.get("success") is True:
+            return True
     if artifact_store is None or not expected_owner or receipt.owner != expected_owner:
         return False
     if require_repository_revision and not receipt.repository_revision.strip():
@@ -744,7 +751,7 @@ def _receipt_evidence_matches(
             ).hexdigest()
             if proof.get("project_execution_binding_sha256") != expected_binding:
                 return False
-        if require_execution_provenance and receipt.command_id:
+        if require_execution_provenance and receipt.command_id and trusted_repository_root:
             if (
                 not callable(command_execution_record_lookup)
                 or not trusted_tenant
@@ -830,10 +837,12 @@ class VerificationStore:
         *,
         task_store: Any | None = None,
         artifact_store: Any | None = None,
+        evidence_store: Any | None = None,
     ) -> None:
         self.state_store = state_store
         self.task_store = task_store
         self.artifact_store = artifact_store
+        self.evidence_store = evidence_store
         self.command_execution_record_lookup: Any | None = None
         self.require_execution_provenance = False
         if task_store is not None:
@@ -1063,6 +1072,7 @@ class VerificationStore:
             self.artifact_store,
             expected_owner=receipt.owner,
             require_repository_revision=bool(receipt.repository_revision),
+            evidence_store=self.evidence_store,
         ):
             raise ValueError("passed verification receipt requires matching trusted evidence")
         if update_task and self.task_store is not None and not self._same_task_database():
@@ -1185,6 +1195,7 @@ class VerificationStore:
             self.artifact_store,
             expected_owner=receipt.owner,
             require_repository_revision=bool(receipt.repository_revision),
+            evidence_store=self.evidence_store,
         ):
             raise ValueError("passed verification receipt requires matching trusted evidence")
         self._init_tables()
@@ -1265,12 +1276,17 @@ class VerificationStore:
             idempotency_key=f"chg_{change.change_id}",
             actor="agent",
         )
-        self.state_store.append(event)
-
         def _do_save() -> None:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 con.execute("BEGIN IMMEDIATE")
+                append_in_tx = getattr(self.state_store, "append_in_transaction", None)
+                if callable(append_in_tx):
+                    persisted = append_in_tx(con, event, strict_idempotency=True)
+                    if persisted.error or persisted.event is None:
+                        raise RuntimeError(persisted.error or "change event could not be stored")
+                else:
+                    self.state_store.append(event)
                 con.execute(
                     """
                     INSERT INTO agent_change_intents (
@@ -1299,6 +1315,26 @@ class VerificationStore:
                 con.close()
 
         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+        if self.task_store is not None and change.task_id:
+            try:
+                task = self.task_store.get(change.task_id)
+                if task is not None:
+                    current_sd = dict(task.checkpoint.state_data or {})
+                    gen = int(current_sd.get("mutation_generation", 0) or 0) + 1
+                    current_sd["mutation_generation"] = gen
+                    affected = list(dict.fromkeys(list(task.checkpoint.affected_paths or ()) + list(change.affected_paths or ())))
+                    from .agent_tasks import TaskCheckpoint
+
+                    new_chk = TaskCheckpoint(
+                        phase=task.checkpoint.phase,
+                        next_action=task.checkpoint.next_action,
+                        affected_paths=tuple(affected),
+                        evidence_ids=task.checkpoint.evidence_ids,
+                        state_data=current_sd,
+                    )
+                    self.task_store.checkpoint(change.task_id, new_chk, actor="agent", idempotency_key=f"chg_gen_{change.change_id}")
+            except Exception:
+                pass
         return change
 
     def record_outcome(self, outcome: OutcomeRecord) -> OutcomeRecord:
@@ -1312,12 +1348,17 @@ class VerificationStore:
             idempotency_key=f"outc_{outcome.outcome_id}",
             actor=outcome.actor,
         )
-        self.state_store.append(event)
-
         def _do_save() -> None:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 con.execute("BEGIN IMMEDIATE")
+                append_in_tx = getattr(self.state_store, "append_in_transaction", None)
+                if callable(append_in_tx):
+                    persisted = append_in_tx(con, event, strict_idempotency=True)
+                    if persisted.error or persisted.event is None:
+                        raise RuntimeError(persisted.error or "outcome event could not be stored")
+                else:
+                    self.state_store.append(event)
                 con.execute(
                     """
                     INSERT INTO agent_outcomes (
@@ -1491,6 +1532,7 @@ class VerificationStore:
             trusted_repository_root=trusted_repository_root,
             require_execution_provenance=self.require_execution_provenance,
             now=current_time,
+            evidence_store=self.evidence_store,
         )
         if repo_bound and not has_trusted_current_revision:
             gated = CompletionResult(

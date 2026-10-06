@@ -1,0 +1,2083 @@
+diff --git a/src/local_ai_hub/client.py b/src/local_ai_hub/client.py
+index 3efbfc3..0ea19f3 100644
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -3,26 +3,76 @@ from __future__ import annotations
+ from .json_utils import dumps as json_dumps
+ 
+ import copy
++import hashlib
++import hmac
+ import http.client
+ import io
+ import json
+ import os
++import socket
+ import threading
+ import uuid
+ import subprocess
+ import sys
+ import time
+ from pathlib import Path
+-from urllib.parse import quote, urlsplit
++from urllib.parse import parse_qs, quote, urlsplit
+ 
+-from .process_utils import find_listening_pid, pid_alive
+-from typing import Any
++from .process_utils import find_listening_pid, pid_alive, process_identity
++from typing import Any, Mapping, Protocol, Sequence
+ from urllib.error import HTTPError, URLError
+ from urllib.request import Request, urlopen
+ 
+ from .config import load_config
+ 
+ 
++class PathHint(Protocol):
++    """Typed request-scoped path hint, compatible with project_config.PathHint."""
++
++    path: str
++    purpose: str
++    scope: str
++    evidence_id: str | None
++    provenance: str | None
++    repository_revision: str | None
++    config_digest: str | None
++    expires_at: str | None
++
++
++class _InProcessTransport(Protocol):
++    def open(
++        self,
++        method: str,
++        path: str,
++        body: bytes | None,
++        headers: Mapping[str, str],
++        timeout: float,
++        operational_action: str | None = None,
++        requires_heavy_work: bool = True,
++    ) -> bytes: ...
++
++    def close(self) -> None: ...
++
++
++_PATH_HINT_FIELDS = frozenset(
++    {"path", "purpose", "scope", "evidence_id", "provenance", "repository_revision", "config_digest", "expires_at"}
++)
++_PATH_HINT_REQUIRED_FIELDS = ("path", "purpose", "scope")
++
++
++class _TransportFailure(OSError):
++    """Transport failed with explicit connect-refusal or uncertain outcome state."""
++
++    def __init__(self, cause: BaseException, *, request_not_sent: bool, cancelled: bool = False) -> None:
++        super().__init__(str(cause))
++        self.request_not_sent = request_not_sent
++        self.cancelled = cancelled
++
++
++class _SingleflightCancelled(TimeoutError):
++    """A coalesced caller stopped waiting while shared work may still run."""
++
++
+ _DETACHED_CHILDREN_LOCK = threading.Lock()
+ _DETACHED_CHILDREN: list[subprocess.Popen[Any]] = []
+ 
+@@ -34,19 +84,128 @@ def _retain_detached_child(process: subprocess.Popen[Any]) -> None:
+         _DETACHED_CHILDREN.append(process)
+ 
+ 
++def _stop_owned_child(process: subprocess.Popen[Any]) -> None:
++    """Stop and reap only the detached child created by this startup attempt."""
++    try:
++        if process.poll() is not None:
++            return
++        process.terminate()
++        try:
++            process.wait(timeout=0.25)
++        except subprocess.TimeoutExpired:
++            process.kill()
++            process.wait(timeout=0.25)
++    except Exception:
++        pass
++
++
+ def _live_start_lock(path: Path, stale_seconds: float) -> bool:
+     """Return whether a startup lock still belongs to a live, recent process."""
+     try:
+-        parts = path.read_text(encoding="utf-8").strip().split()
+-        pid = int(parts[0]) if parts else 0
+         age = max(0.0, time.time() - path.stat().st_mtime)
+-        return age <= max(1.0, stale_seconds) and pid_alive(pid)
+     except (OSError, ValueError):
+         return False
++    try:
++        parts = path.read_text(encoding="utf-8").strip().split()
++    except OSError:
++        # Windows may briefly deny a read while the owner publishes the PID.
++        return age <= 1.0
++    if not parts:
++        # Keep a newly-created lock during the short create-then-write window.
++        return age <= 1.0
++    try:
++        pid = int(parts[0])
++    except ValueError:
++        return age <= 1.0
++    if len(parts) >= 3:
++        pid_path = path.with_name(f"{path.name}.{parts[2]}.pid")
++        try:
++            sidecar = pid_path.read_text(encoding="ascii").strip().split()
++            pid = int(sidecar[0])
++        except (OSError, ValueError, IndexError):
++            # The sidecar may be briefly incomplete while it is published.
++            # Keep the lock until a later check can verify its owner.
++            try:
++                if pid_path.exists():
++                    return True
++            except OSError:
++                return age <= max(1.0, stale_seconds)
++        else:
++            if len(sidecar) >= 3:
++                # Include process creation identity so PID reuse cannot keep a
++                # dead daemon's lock alive indefinitely.
++                identity = process_identity(pid)
++                if identity is None:
++                    # Identity lookup can fail transiently for a live process.
++                    # Keep a recent lock only while its recorded PID is alive.
++                    return age <= max(1.0, stale_seconds) and pid_alive(pid)
++                return bool(
++                    identity.get("creation_identity_type") == sidecar[1]
++                    and str(identity.get("creation_identity")) == sidecar[2]
++                )
++            # A legacy PID-only marker is live only within the normal stale
++            # window; new markers carry a process creation identity.
++            return age <= max(1.0, stale_seconds) and pid_alive(pid)
++    if len(parts) >= 5:
++        owner_identity = process_identity(pid)
++        if (
++            owner_identity
++            and owner_identity.get("creation_identity_type") == parts[3]
++            and str(owner_identity.get("creation_identity")) == parts[4]
++        ):
++            # Before daemon metadata is published, the launcher owns the lock.
++            return True
++    return age <= max(1.0, stale_seconds) and pid_alive(pid)
++
++
++def _try_start_lock_guard(path: Path) -> int | None:
++    """Acquire the short cross-process guard for startup-lock transitions."""
++    try:
++        fd = os.open(str(path), os.O_CREAT | os.O_RDWR)
++    except OSError:
++        return None
++    try:
++        os.lseek(fd, 0, os.SEEK_SET)
++        if os.name == "nt":
++            import msvcrt
++
++            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
++        else:
++            import fcntl
++
++            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
++        return fd
++    except OSError:
++        os.close(fd)
++        return None
++
++
++def _release_start_lock_guard(fd: int) -> None:
++    try:
++        os.lseek(fd, 0, os.SEEK_SET)
++        if os.name == "nt":
++            import msvcrt
++
++            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
++        else:
++            import fcntl
++
++            fcntl.flock(fd, fcntl.LOCK_UN)
++    except OSError:
++        pass
++    finally:
++        os.close(fd)
+ 
+ 
+ class HubClient:
+-    def __init__(self, tenant: str | None = None, config_path: str | None = None, *, auto_start: bool = True):
++    def __init__(
++        self,
++        tenant: str | None = None,
++        config_path: str | None = None,
++        *,
++        auto_start: bool = True,
++        inprocess_transport: _InProcessTransport | None = None,
++    ):
+         self.config = load_config(config_path)
+         server = self.config["server"]
+         bind_host = str(server.get("bind", "127.0.0.1"))
+@@ -56,9 +215,11 @@ class HubClient:
+         self._http_host = str(endpoint.hostname or "127.0.0.1")
+         self._http_port = int(endpoint.port or 80)
+         self.api_token = str(self.config.get("security", {}).get("api_token", ""))
+-        self.tenant = tenant or os.environ.get("LOCAL_AI_TENANT") or f"agent-{os.getpid()}"
++        configured_tenant = tenant if tenant is not None else os.environ.get("LOCAL_AI_TENANT")
++        self.tenant = str(configured_tenant).strip() if configured_tenant is not None and str(configured_tenant).strip() else ""
+         self.agent = os.environ.get("LOCAL_AI_AGENT_PROFILE") or os.environ.get("LOCAL_AI_AGENT") or "generic"
+         self.auto_start = bool(auto_start)
++        self._inprocess_transport = inprocess_transport
+         client_cfg = self.config.get("client", {})
+         self.health_timeout = max(0.2, float(client_cfg.get("health_timeout_seconds", 0.75)))
+         self.startup_wait = max(1.0, float(client_cfg.get("startup_wait_seconds", 15.0)))
+@@ -92,6 +253,11 @@ class HubClient:
+         for conn in connections:
+             try: conn.close()
+             except Exception: pass
++        if self._inprocess_transport is not None:
++            try:
++                self._inprocess_transport.close()
++            except Exception:
++                pass
+ 
+     def __del__(self) -> None:
+         try: self.close()
+@@ -112,15 +278,81 @@ class HubClient:
+             conn.sock.settimeout(timeout)
+         return conn
+ 
+-    def _pooled_open(self, method: str, path: str, body: bytes | None, headers: dict[str, str], timeout: float) -> bytes:
++    def _pooled_open(
++        self,
++        method: str,
++        path: str,
++        body: bytes | None,
++        headers: dict[str, str],
++        timeout: float,
++        *,
++        cancel_event: threading.Event | None = None,
++    ) -> bytes:
++        if cancel_event is not None and cancel_event.is_set():
++            raise _TransportFailure(TimeoutError("request cancelled"), request_not_sent=True, cancelled=True)
++        conn: http.client.HTTPConnection | None = None
++        original_send: Any = None
++        request_send_started = False
++        deadline_expired = threading.Event()
++        request_cancelled = threading.Event()
++        watchdog_stopped = threading.Event()
+         try:
+             conn = self._connection(timeout)
++            original_send = getattr(conn, "send", None)
++
++            deadline = time.monotonic() + max(0.0, timeout)
++
++            def close_on_deadline_or_cancel() -> None:
++                while not watchdog_stopped.is_set():
++                    remaining = deadline - time.monotonic()
++                    if remaining <= 0:
++                        deadline_expired.set()
++                        try:
++                            conn.close()
++                        except Exception:
++                            pass
++                        return
++                    if cancel_event is not None and cancel_event.wait(min(0.05, remaining)):
++                        request_cancelled.set()
++                        try:
++                            conn.close()
++                        except Exception:
++                            pass
++                        return
++                    watchdog_stopped.wait(min(0.05, remaining))
++
++            watchdog = threading.Thread(target=close_on_deadline_or_cancel, daemon=True)
++            watchdog.start()
++
++            def tracked_send(data: Any) -> None:
++                nonlocal request_send_started
++                # Connect before marking the request as potentially written. Once sendall
++                # starts, an OSError may follow a partial write, so outcome is uncertain.
++                if conn.sock is None:
++                    conn.connect()
++                request_send_started = True
++                return original_send(data)
++
++            if original_send is not None:
++                conn.send = tracked_send  # type: ignore[method-assign]
+             conn.request(method, path, body=body, headers=headers)
+             response = conn.getresponse()
+             raw = response.read()
+-        except (OSError, http.client.HTTPException):
++            if request_cancelled.is_set():
++                raise TimeoutError("request cancelled")
++            if deadline_expired.is_set():
++                raise TimeoutError("request deadline exceeded")
++        except (OSError, http.client.HTTPException) as exc:
+             self._drop_connection()
+-            raise
++            raise _TransportFailure(
++                exc,
++                request_not_sent=not request_send_started,
++                cancelled=request_cancelled.is_set(),
++            ) from exc
++        finally:
++            watchdog_stopped.set()
++            if conn is not None and original_send is not None:
++                conn.send = original_send  # type: ignore[method-assign]
+         if bool(getattr(response, "will_close", False)):
+             self._drop_connection()
+         if int(response.status) >= 400:
+@@ -128,6 +360,35 @@ class HubClient:
+             raise HTTPError(f"{self.base_url}{path}", int(response.status), str(response.reason), response_headers, io.BytesIO(raw))
+         return raw
+ 
++    def _open(
++        self,
++        method: str,
++        path: str,
++        body: bytes | None,
++        headers: dict[str, str],
++        timeout: float,
++        *,
++        operational_action: str | None = None,
++        requires_heavy_work: bool = True,
++        cancel_event: threading.Event | None = None,
++    ) -> bytes:
++        transport = self._inprocess_transport
++        if transport is not None:
++            if cancel_event is not None and cancel_event.is_set():
++                raise _TransportFailure(TimeoutError("request cancelled"), request_not_sent=True, cancelled=True)
++            return transport.open(
++                method,
++                path,
++                body,
++                headers,
++                timeout,
++                operational_action=operational_action,
++                requires_heavy_work=requires_heavy_work,
++            )
++        if cancel_event is not None:
++            return self._pooled_open(method, path, body, headers, timeout, cancel_event=cancel_event)
++        return self._pooled_open(method, path, body, headers, timeout)
++
+     @staticmethod
+     def _error_response(exc: HTTPError, request_id: str) -> dict[str, Any]:
+         try:
+@@ -143,6 +404,20 @@ class HubClient:
+         except Exception:
+             return {"success": False, "error": f"HTTP {exc.code}: {exc.reason}", "status_code": exc.code, "request_id": request_id}
+ 
++    @staticmethod
++    def _invalid_json_response(request_id: str, *, outcome_unknown: bool = False) -> dict[str, Any]:
++        result = {
++            "success": False,
++            "error": "invalid JSON response",
++            "status_code": 502,
++            "request_id": request_id,
++        }
++        if outcome_unknown:
++            result.update({"outcome_unknown": True, "retryable": False, "terminal": True})
++        else:
++            result.update({"retryable": True, "terminal": False})
++        return result
++
+     @staticmethod
+     def _uncertain_response(request_id: str, *, retried: bool = False) -> dict[str, Any]:
+         result = {
+@@ -155,7 +430,54 @@ class HubClient:
+             result["retried"] = True
+         return result
+ 
+-    def _singleflight(self, key: str, timeout: float, execute: Any) -> dict[str, Any]:
++    @staticmethod
++    def _cancelled_response(request_id: str, *, request_not_sent: bool) -> dict[str, Any]:
++        result: dict[str, Any] = {
++            "success": False,
++            "error": "request cancelled",
++            "cancelled": True,
++            "terminal": True,
++            "retryable": False,
++            "request_id": request_id,
++        }
++        if request_not_sent:
++            result.update({"request_not_sent": True, "outcome_unknown": False})
++        else:
++            result["outcome_unknown"] = True
++        return result
++
++    @staticmethod
++    def _transport_failure_response(
++        request_id: str,
++        *failures: BaseException,
++        retried: bool = False,
++        prior_send_possible: bool = False,
++    ) -> dict[str, Any]:
++        if not prior_send_possible and failures and all(
++            (isinstance(exc, _TransportFailure) and exc.request_not_sent)
++            or bool(getattr(exc, "request_not_sent", False))
++            for exc in failures
++        ):
++            result = {
++                "success": False,
++                "error": "request was not sent because transport failed before write",
++                "request_not_sent": True,
++                "outcome_unknown": False,
++                "request_id": request_id,
++            }
++            if retried:
++                result["retried"] = True
++            return result
++        return HubClient._uncertain_response(request_id, retried=retried)
++
++    def _singleflight(
++        self,
++        key: str,
++        timeout: float,
++        execute: Any,
++        *,
++        cancel_event: threading.Event | None = None,
++    ) -> dict[str, Any]:
+         with self._flight_lock:
+             flight = self._flights.get(key)
+             if flight is None:
+@@ -176,8 +498,15 @@ class HubClient:
+             if flight["error"] is not None:
+                 raise flight["error"]
+             return flight["result"]
+-        if not flight["event"].wait(timeout):
+-            raise TimeoutError("coalesced hub request timed out")
++        deadline = time.monotonic() + timeout
++        while True:
++            if cancel_event is not None and cancel_event.is_set():
++                raise _SingleflightCancelled("coalesced hub request cancelled")
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                raise TimeoutError("coalesced hub request timed out")
++            if flight["event"].wait(min(0.05, remaining)):
++                break
+         if flight["error"] is not None:
+             raise flight["error"]
+         result = copy.deepcopy(flight["result"])
+@@ -206,80 +535,146 @@ class HubClient:
+         def remaining() -> float:
+             return max(0.0, deadline - time.monotonic())
+ 
++        def wait_until_ready() -> bool:
++            while remaining() > 0:
++                if self._online(remaining()):
++                    return True
++                time.sleep(min(self.startup_poll, remaining()))
++            return self._online(remaining())
++
+         if self._online(remaining()):
+             return True
+-        config_path = self.config["_config_path"]
+         state_dir = Path(self.config["server"]["state_dir"])
++        try:
++            from .operational_mode import load_operational_mode
++
++            operational_mode = load_operational_mode(state_dir)
++        except Exception:
++            return False
++        if getattr(operational_mode, "mode", None) != "active" or getattr(operational_mode, "degraded", True):
++            return False
++        config_path = self.config["_config_path"]
+         state_dir.mkdir(parents=True, exist_ok=True)
+         if bool(self.config.get("headless", {}).get("respect_disabled_marker", True)) and (state_dir / "service.disabled").exists():
+             return False
+-        # Once service.py has claimed this installation, only its supervisor may
+-        # create the hub. supervisor.pid is necessarily absent for a short window
+-        # during a managed restart; treating that window as an invitation for every
+-        # MCP client to spawn its own pythonw tree causes duplicate processes and an
+-        # unpredictable port owner.
+-        if (state_dir / "service.managed").exists():
++        def live_supervisor() -> bool:
++            for supervisor_marker in (state_dir / "supervisor.pid", state_dir / "supervisor.lock"):
++                try:
++                    supervisor_pid = int(supervisor_marker.read_text(encoding="utf-8").strip() or 0)
++                except (OSError, ValueError):
++                    continue
++                if pid_alive(supervisor_pid):
++                    return True
+             return False
+-        # Managed mode has one supervisor responsible for startup/recovery. During
+-        # its cold-start interval MCP clients must not bypass it with direct pythonw
+-        # spawns, otherwise every client can create a competing hub tree.
+-        try:
+-            supervisor_pid = int((state_dir / "supervisor.pid").read_text(encoding="utf-8").strip() or 0)
+-            if pid_alive(supervisor_pid):
+-                return False
+-        except (OSError, ValueError):
+-            pass
++
++        # A live supervisor owns startup, even during its short interval before
++        # publishing supervisor.pid. Check both supervisor markers before autostart.
++        if live_supervisor():
++            return wait_until_ready()
+         # A listener can be alive before its health endpoint is ready (cold model/
+         # index startup). Starting another hub in that gap creates duplicate pythonw
+         # trees and competing supervisors; let the caller retry its request instead.
+         port = int(self.config.get("server", {}).get("port", 11435))
+         if find_listening_pid(port):
+-            return False
++            return wait_until_ready()
+         lock_path = state_dir / "hub.start.lock"
++        lock_nonce = uuid.uuid4().hex
++        lock_token = f"{os.getpid()} {time.time()} {lock_nonce}"
++        owner_identity = process_identity(os.getpid())
++        if owner_identity is not None:
++            lock_token += (
++                f" {owner_identity['creation_identity_type']}"
++                f" {owner_identity['creation_identity']}"
++            )
++        lock_pid_path = lock_path.with_name(f"{lock_path.name}.{lock_nonce}.pid")
+         owner = False
++        keep_lock = False
+ 
+-        # Cross-process startup lock: several CLI agents often connect at once. Only
+-        # one should spawn the singleton; the others wait for its cheap /health.
+-        for _ in range(2):
+-            acquired_lock = False
+-            try:
+-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+-                acquired_lock = True
++        def publish_lock_pid(pid: int) -> None:
++            for _ in range(5):
+                 try:
+-                    os.write(fd, f"{os.getpid()} {time.time()}".encode("ascii", errors="ignore"))
+-                finally:
+-                    os.close(fd)
+-                owner = True
++                    # Nonce-scoped metadata cannot overwrite a replacement lock.
++                    if pid > 0:
++                        identity = process_identity(pid)
++                        if identity is not None:
++                            marker = (
++                                f"{pid} {identity['creation_identity_type']} "
++                                f"{identity['creation_identity']}"
++                            )
++                        else:
++                            marker = str(pid)
++                    else:
++                        marker = "0"
++                    lock_pid_path.write_text(marker, encoding="ascii")
++                    return
++                except OSError:
++                    # A contender may hold a short-lived read handle on Windows.
++                    time.sleep(0.01)
++
++        # Serialize lock creation, stale removal, and release across processes.
++        # The guard itself is an OS lock, so crashes release it automatically.
++        guard_path = state_dir / "hub.start.guard"
++        lock_wait_deadline: float | None = None
++        while remaining() > 0 and not owner:
++            guard_fd = None
++            while guard_fd is None and remaining() > 0:
++                guard_fd = _try_start_lock_guard(guard_path)
++                if guard_fd is None:
++                    if self._online(remaining()):
++                        return True
++                    time.sleep(min(self.startup_poll, remaining()))
++            if guard_fd is None:
+                 break
+-            except FileExistsError:
+-                # Dead/crashed startup owners should never consume the full wait budget.
+-                if not _live_start_lock(lock_path, self.start_lock_stale):
++
++            wait_for_owner = False
++            fatal_lock_error = False
++            try:
++                if self._online(remaining()):
++                    return True
++                try:
++                    fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                     try:
+-                        lock_path.unlink(missing_ok=True)
++                        os.write(fd, lock_token.encode("ascii"))
+                     except OSError:
+-                        pass
+-                    continue
+-                lock_deadline = min(deadline, time.monotonic() + self.startup_wait)
+-                while time.monotonic() < lock_deadline:
+-                    if self._online(remaining()):
+-                        return True
+-                    if not _live_start_lock(lock_path, self.start_lock_stale):
++                        fatal_lock_error = True
++                    finally:
++                        try:
++                            os.close(fd)
++                        except OSError:
++                            fatal_lock_error = True
++                    if fatal_lock_error:
+                         try:
+                             lock_path.unlink(missing_ok=True)
+                         except OSError:
+                             pass
+-                        break
+-                    time.sleep(min(self.startup_poll, max(0.0, lock_deadline - time.monotonic())))
+-                else:
+-                    return self._online(remaining())
+-                continue
+-            except OSError:
+-                if acquired_lock:
+-                    try:
+-                        lock_path.unlink(missing_ok=True)
+-                    except OSError:
+-                        pass
+-                continue
++                    owner = not fatal_lock_error
++                except FileExistsError:
++                    if _live_start_lock(lock_path, self.start_lock_stale):
++                        wait_for_owner = True
++                    else:
++                        try:
++                            lock_path.unlink(missing_ok=True)
++                        except OSError:
++                            wait_for_owner = True
++                except OSError:
++                    fatal_lock_error = True
++            finally:
++                _release_start_lock_guard(guard_fd)
++
++            if owner:
++                break
++            if fatal_lock_error:
++                return False
++            if wait_for_owner:
++                if lock_wait_deadline is None:
++                    lock_wait_deadline = min(deadline, time.monotonic() + self.startup_wait)
++                while remaining() > 0 and time.monotonic() < lock_wait_deadline:
++                    if self._online(remaining()):
++                        return True
++                    if not _live_start_lock(lock_path, self.start_lock_stale):
++                        return wait_until_ready()
++                    time.sleep(min(self.startup_poll, remaining(), lock_wait_deadline - time.monotonic()))
++                return self._online(remaining())
+ 
+         if not owner:
+             return self._online(remaining())
+@@ -287,33 +682,77 @@ class HubClient:
+             if self._online(remaining()):
+                 return True
+             if remaining() <= 0:
++                publish_lock_pid(0)
++                return False
++            if bool(self.config.get("headless", {}).get("respect_disabled_marker", True)) and (state_dir / "service.disabled").exists():
++                publish_lock_pid(0)
+                 return False
++            if live_supervisor() or find_listening_pid(port):
++                publish_lock_pid(0)
++                return wait_until_ready()
+             env = os.environ.copy()
+             env["LOCAL_AI_CONFIG"] = config_path
+             src_dir = str(Path(__file__).resolve().parents[1])
+             env["PYTHONPATH"] = src_dir + (os.pathsep + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
+-            py_exe = sys.executable
+-            if sys.platform == "win32":
+-                pyw_candidate = Path(sys.executable).parent / "pythonw.exe"
+-                if pyw_candidate.exists():
+-                    py_exe = str(pyw_candidate)
+-            cmd = [py_exe, "-m", "local_ai_hub", "--config", config_path]
++            service_script = Path(__file__).resolve().parents[2] / "tools" / "service.py"
++            if not service_script.is_file():
++                publish_lock_pid(0)
++                return False
+             try:
+                 from .process_utils import hidden_run_kwargs
+-                kwargs = hidden_run_kwargs(detached=True)
++
++                kwargs = hidden_run_kwargs()
+             except Exception:
+                 kwargs = {}
+-            if sys.platform != "win32":
+-                kwargs["start_new_session"] = True
+-            process = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+-            _retain_detached_child(process)
+-            while remaining() > 0:
+-                if self._online(remaining()):
+-                    return True
+-                time.sleep(min(self.startup_poll, remaining()))
+-            return self._online(remaining())
++            try:
++                completed = subprocess.run(
++                    [sys.executable, str(service_script), "start"],
++                    env=env,
++                    stdin=subprocess.DEVNULL,
++                    stdout=subprocess.DEVNULL,
++                    stderr=subprocess.DEVNULL,
++                    timeout=max(0.1, remaining()),
++                    **kwargs,
++                )
++            except (OSError, subprocess.TimeoutExpired):
++                publish_lock_pid(0)
++                return wait_until_ready()
++            if completed.returncode != 0:
++                publish_lock_pid(0)
++                return wait_until_ready()
++            return wait_until_ready()
+         finally:
+-            lock_path.unlink(missing_ok=True)
++            if not keep_lock:
++                lock_released = False
++                guard_fd = None
++                for _ in range(5):
++                    guard_fd = _try_start_lock_guard(guard_path)
++                    if guard_fd is not None:
++                        break
++                    time.sleep(0.01)
++                if guard_fd is not None:
++                    try:
++                        for _ in range(5):
++                            try:
++                                if lock_path.read_text(encoding="ascii") != lock_token:
++                                    lock_released = True
++                                    break
++                                lock_path.unlink(missing_ok=True)
++                                lock_released = True
++                                break
++                            except FileNotFoundError:
++                                lock_released = True
++                                break
++                            except OSError:
++                                # A concurrent contender can briefly hold the lock on Windows.
++                                time.sleep(0.01)
++                    finally:
++                        _release_start_lock_guard(guard_fd)
++                if lock_released:
++                    try:
++                        lock_pid_path.unlink(missing_ok=True)
++                    except OSError:
++                        pass
+ 
+     @staticmethod
+     def _terminal_preflight(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+@@ -334,28 +773,267 @@ class HubClient:
+                     pass
+         return None
+ 
+-    def request(self, path: str, payload: dict[str, Any] | None = None, *, timeout: float = 30.0, replay_safe: bool = False) -> dict[str, Any]:
+-        timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
++    @staticmethod
++    def _valid_request_id(request_id: Any) -> bool:
++        return (
++            isinstance(request_id, str)
++            and 1 <= len(request_id) <= 128
++            and request_id.isascii()
++            and all(0x21 <= ord(char) <= 0x7E for char in request_id)
++        )
++
++    @staticmethod
++    def _valid_tenant(tenant: Any) -> bool:
++        return (
++            isinstance(tenant, str)
++            and 1 <= len(tenant) <= 128
++            and tenant.isascii()
++            and all(0x21 <= ord(char) <= 0x7E for char in tenant)
++        )
++
++    @staticmethod
++    def _identity_preflight(error: str, error_code: str) -> dict[str, Any]:
++        return {
++            "success": False,
++            "error": error,
++            "error_code": error_code,
++            "terminal": True,
++            "retryable": False,
++            "preflight": True,
++        }
++
++    def _principal_tenant(self) -> str:
++        security = self.config.get("security", {})
++        configured = str(security.get("api_token_tenant", "") or "").strip()
++        if configured:
++            return configured
++        principal = str(security.get("api_token_principal", "") or "").strip()
++        return principal or "api-token-default"
++
++    @staticmethod
++    def _strict_root_path(raw_root: Any) -> Path:
++        if not isinstance(raw_root, str) or not raw_root.strip() or len(raw_root.strip()) > 4096:
++            raise ValueError("root is required")
++        candidate = Path(raw_root.strip()).expanduser()
++        if not candidate.is_absolute():
++            raise ValueError("root must be an absolute directory")
++        if any(path.is_symlink() for path in (candidate, *candidate.parents)):
++            raise ValueError("symlink roots are not allowed")
++        resolved = candidate.resolve(strict=True)
++        if not resolved.is_dir():
++            raise ValueError("root must resolve to an existing directory")
++        return resolved
++
++    def _root_scoped_tenant(self, roots: list[Any]) -> tuple[str | None, dict[str, Any] | None]:
++        security = self.config.get("security", {})
++        try:
++            if not roots:
++                raise ValueError("root is required")
++            canonical_roots = [self._strict_root_path(root) for root in roots]
++            canonical_root = canonical_roots[0]
++            if any(root != canonical_root for root in canonical_roots[1:]):
++                raise ValueError("root identity mismatch")
++            allowed_roots = security.get("allowed_roots", [])
++            if not isinstance(allowed_roots, list) or not allowed_roots:
++                raise ValueError("allowed roots are unavailable")
++            allowed = False
++            for raw_allowed in allowed_roots:
++                try:
++                    canonical_allowed = self._strict_root_path(raw_allowed)
++                    canonical_root.relative_to(canonical_allowed)
++                    allowed = True
++                    break
++                except (OSError, RuntimeError, TypeError, ValueError):
++                    continue
++            if not allowed:
++                raise ValueError("root is not allowed")
++            key = str(security.get("tenant_derivation_key") or security.get("api_token") or "")
++            if not key:
++                raise ValueError("tenant derivation key is unavailable")
++            principal = self._principal_tenant()
++            message = f"local-ai-root-tenant\0{principal}\0{canonical_root}".encode("utf-8")
++            digest = hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
++            return f"root-{digest}", None
++        except (OSError, RuntimeError, TypeError, ValueError):
++            return None, self._identity_preflight(
++                "root is missing, invalid, or not allowed",
++                "root_not_allowed",
++            )
++
++    def _request_tenant(
++        self,
++        path: str,
++        payload: dict[str, Any] | None,
++        tenant_hint: str | None,
++        *,
++        query: dict[str, list[str]] | None = None,
++    ) -> tuple[str | None, dict[str, Any] | None]:
++        if tenant_hint is not None and not self._valid_tenant(tenant_hint):
++            return None, self._identity_preflight(
++                "tenant must be 1-128 visible ASCII characters without whitespace",
++                "tenant_binding_mismatch",
++            )
++
++        route = urlsplit(path).path.lower()
++        task_route = route == "/api/agent-state/tasks"
++        memory_route = route == "/api/agent-state/memory"
++        if not task_route and not memory_route:
++            if tenant_hint is not None and tenant_hint != self.tenant:
++                return None, self._identity_preflight(
++                    "tenant override cannot select request scope",
++                    "tenant_binding_mismatch",
++                )
++            return self.tenant or None, None
++
++        request_payload = payload if isinstance(payload, dict) else {}
++        query_values = query or {}
++        tenant_hints: list[Any] = []
++        if tenant_hint is not None:
++            tenant_hints.append(tenant_hint)
++
++        if query is not None:
++            raw_roots = list(query_values.get("root", []))
++            roots = raw_roots if task_route else (
++                [raw_roots[0], *[root for root in raw_roots[1:] if root not in (None, "")]]
++                if raw_roots and raw_roots[0] not in (None, "")
++                else []
++            )
++            tenant_hints.extend(query_values.get("tenant", []))
++            scope = (query_values.get("scope") or [""])[0]
++            has_task_identity = any(
++                str((query_values.get(name) or [""])[0] or "").strip()
++                for name in ("task_id", "repository_id", "clone_id", "worktree_id", "branch")
++            )
++        elif task_route:
++            context = request_payload.get("context") if isinstance(request_payload.get("context"), dict) else {}
++            roots = [request_payload.get("root")]
++            if context.get("repository_id"):
++                roots.append(context["repository_id"])
++            if request_payload.get("repo_root"):
++                roots.append(request_payload["repo_root"])
++            tenant_hints.append(request_payload.get("tenant"))
++            scope = ""
++            has_task_identity = True
++        else:
++            record = request_payload.get("record") if isinstance(request_payload.get("record"), dict) else {}
++            payload_provenance = request_payload.get("provenance") if isinstance(request_payload.get("provenance"), dict) else {}
++            record_provenance = record.get("provenance") if isinstance(record.get("provenance"), dict) else {}
++            containers = (request_payload, record, payload_provenance, record_provenance)
++            roots = [item.get("root") for item in containers if item.get("root") not in (None, "")]
++            tenant_hints.extend(item.get("tenant") for item in containers if item.get("tenant") not in (None, ""))
++            scope = request_payload.get("scope") or record.get("scope") or ""
++            has_task_identity = any(
++                item.get(key)
++                for item in (request_payload, record)
++                for key in ("task_id", "repository_id", "clone_id", "worktree_id", "branch")
++            )
++
++        principal = self._principal_tenant()
++        effective_tenant = principal
++        if task_route:
++            effective_tenant, error = self._root_scoped_tenant(roots)
++            if error is not None:
++                return None, error
++        elif roots:
++            effective_tenant, error = self._root_scoped_tenant(roots)
++            if error is not None:
++                return None, error
++        else:
++            scoped_memory_scopes = {
++                "code", "task", "tasks", "repo", "repository", "project", "workspace",
++                "worktree", "worktrees", "clone", "branch", "branches",
++            }
++            if str(scope or "").strip().lower() in scoped_memory_scopes or has_task_identity:
++                return None, self._identity_preflight(
++                    "root is required for repository or task memory",
++                    "root_required",
++                )
++
++        for hint in tenant_hints:
++            if hint is not None and str(hint).strip() != effective_tenant:
++                error = "tenant does not match authenticated root scope" if roots or task_route else "tenant does not match authenticated principal"
++                return None, self._identity_preflight(error, "tenant_binding_mismatch")
++        return effective_tenant, None
++
++    def request(
++        self,
++        path: str,
++        payload: dict[str, Any] | None = None,
++        *,
++        timeout: float = 30.0,
++        replay_safe: bool = False,
++        request_id: str | None = None,
++        operational_action: str | None = None,
++        requires_heavy_work: bool = True,
++        tenant: str | None = None,
++        cancel_event: threading.Event | None = None,
++    ) -> dict[str, Any]:
++        explicit_request_id = request_id is not None
++        if request_id is not None and not self._valid_request_id(request_id):
++            return {
++                "success": False,
++                "error": "request_id must be 1-128 visible ASCII characters without whitespace",
++                "terminal": True,
++                "retryable": False,
++                "preflight": True,
++            }
+         clean_payload = payload or {}
++        request_tenant, identity_error = self._request_tenant(path, clean_payload, tenant)
++        if identity_error is not None:
++            return identity_error
++        timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
+         preflight = self._terminal_preflight(path, clean_payload)
+         if preflight is not None:
+             return preflight
+         body = json_dumps(clean_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
+-        request_id = f"req_{uuid.uuid4().hex[:12]}"
++        request_id = request_id if request_id is not None else f"req_{uuid.uuid4().hex[:12]}"
++        if cancel_event is not None and cancel_event.is_set():
++            return self._cancelled_response(request_id, request_not_sent=True)
+ 
+         def once(attempt_timeout: float) -> dict[str, Any]:
+             headers = {
+-                "Content-Type": "application/json", "X-LocalAI-Tenant": self.tenant,
++                "Content-Type": "application/json",
+                 "X-LocalAI-Agent": self.agent, "X-LocalAI-Request-ID": request_id,
+             }
++            if request_tenant:
++                headers["X-LocalAI-Tenant"] = request_tenant
+             if self.api_token:
+                 headers["X-LocalAI-Token"] = self.api_token
+-            return json.loads(self._pooled_open("POST", path, body, headers, attempt_timeout).decode("utf-8"))
++            try:
++                open_options = {
++                    "operational_action": operational_action,
++                    "requires_heavy_work": requires_heavy_work,
++                }
++                if cancel_event is not None:
++                    open_options["cancel_event"] = cancel_event
++                result = json.loads(
++                    self._open(
++                        "POST",
++                        path,
++                        body,
++                        headers,
++                        attempt_timeout,
++                        **open_options,
++                    ).decode("utf-8")
++                )
++            except (UnicodeDecodeError, json.JSONDecodeError):
++                return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
++            if not isinstance(result, dict):
++                return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
++            return result
+ 
+         def execute() -> dict[str, Any]:
+             duplicate_deadline = time.monotonic() + timeout
+-            try:
++            server_reported_in_progress = False
++
++            def request_until_terminal() -> dict[str, Any]:
++                nonlocal server_reported_in_progress
+                 while True:
++                    if cancel_event is not None and cancel_event.is_set():
++                        return self._cancelled_response(
++                            request_id,
++                            request_not_sent=not server_reported_in_progress,
++                        )
+                     remaining = duplicate_deadline - time.monotonic()
+                     if remaining <= 0:
+                         return {
+@@ -370,44 +1048,81 @@ class HubClient:
+                         return once(min(timeout, remaining))
+                     except HTTPError as exc:
+                         result = self._error_response(exc, request_id)
+-                        if not (result.get("in_progress") and result.get("retryable")):
++                        if not (
++                            replay_safe
++                            and result.get("in_progress")
++                            and result.get("retryable")
++                        ):
+                             return result
++                        server_reported_in_progress = True
+                         remaining = duplicate_deadline - time.monotonic()
+                         if remaining <= 0:
+                             result["retry_timeout"] = True
+                             return result
+                         retry_after = max(0.01, float(result.get("retry_after_seconds", 0.1) or 0.1))
+                         time.sleep(min(retry_after, remaining))
++
++            try:
++                return request_until_terminal()
+             except HTTPError as exc:
+                 return self._error_response(exc, request_id)
+             except (URLError, OSError, http.client.HTTPException) as exc:
+                 self._drop_connection()
+-                # Only callers that explicitly classify this POST as replay safe may retry.
++                if getattr(exc, "cancelled", False):
++                    return self._cancelled_response(
++                        request_id,
++                        request_not_sent=bool(getattr(exc, "request_not_sent", False))
++                        and not server_reported_in_progress,
++                    )
+                 if replay_safe:
+                     remaining = duplicate_deadline - time.monotonic()
+-                    server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
++                    if self._inprocess_transport is not None:
++                        server_ready = True
++                    elif self.auto_start and remaining > 0:
++                        try:
++                            server_ready = self.ensure_server(timeout=remaining)
++                        except Exception:
++                            server_ready = False
++                    else:
++                        server_ready = not self.auto_start
+                     if server_ready:
+                         remaining = duplicate_deadline - time.monotonic()
+                         if remaining <= 0:
+-                            return self._uncertain_response(request_id)
+-                        try: return once(remaining)
+-                        except HTTPError as retry_http: return self._error_response(retry_http, request_id)
+-                        except (URLError, OSError, http.client.HTTPException):
++                            return self._transport_failure_response(
++                                request_id, exc, prior_send_possible=server_reported_in_progress
++                            )
++                        try:
++                            return request_until_terminal()
++                        except (URLError, OSError, http.client.HTTPException) as retry_exc:
+                             self._drop_connection()
+-                            return self._uncertain_response(request_id, retried=True)
++                            return self._transport_failure_response(
++                                request_id,
++                                exc,
++                                retry_exc,
++                                retried=True,
++                                prior_send_possible=server_reported_in_progress,
++                            )
+                         except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
+-                return self._uncertain_response(request_id)
++                return self._transport_failure_response(
++                    request_id, exc, prior_send_possible=server_reported_in_progress
++                )
+             except (UnicodeDecodeError, json.JSONDecodeError):
+-                return self._uncertain_response(request_id)
++                return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
+             except Exception as exc:
+                 return {"success": False, "error": str(exc), "request_id": request_id}
+ 
+         if not replay_safe:
+             return execute()
+ 
+-        key = f"POST|{self.tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
++        key = f"POST|{request_tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
++        if explicit_request_id:
++            key += f"|explicit-request-id|{request_id}"
++        if cancel_event is not None:
++            key += f"|cancel-event|{id(cancel_event)}"
+         try:
+-            return self._singleflight(key, timeout, execute)
++            return self._singleflight(key, timeout, execute, cancel_event=cancel_event)
++        except _SingleflightCancelled:
++            return self._cancelled_response(request_id, request_not_sent=False)
+         except TimeoutError:
+             return {
+                 "success": False,
+@@ -417,20 +1132,54 @@ class HubClient:
+                 "request_id": request_id,
+             }
+ 
+-    def get(self, path: str, timeout: float = 15.0) -> dict[str, Any]:
++    def get(
++        self,
++        path: str,
++        timeout: float = 15.0,
++        *,
++        operational_action: str | None = None,
++        requires_heavy_work: bool = True,
++        tenant: str | None = None,
++        cancel_event: threading.Event | None = None,
++    ) -> dict[str, Any]:
++        query = parse_qs(urlsplit(path).query, keep_blank_values=True)
++        request_tenant, identity_error = self._request_tenant(path, None, tenant, query=query)
++        if identity_error is not None:
++            return identity_error
+         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
+         request_id = f"req_{uuid.uuid4().hex[:12]}"
++        if cancel_event is not None and cancel_event.is_set():
++            return self._cancelled_response(request_id, request_not_sent=True)
+         headers = {
+-            "X-LocalAI-Tenant": self.tenant,
+             "X-LocalAI-Agent": self.agent,
+             "X-LocalAI-Request-ID": request_id,
+         }
++        if request_tenant:
++            headers["X-LocalAI-Tenant"] = request_tenant
+         if self.api_token:
+             headers["X-LocalAI-Token"] = self.api_token
+ 
+         def once(attempt_timeout: float) -> dict[str, Any]:
+-            result = json.loads(self._pooled_open("GET", path, None, headers, attempt_timeout).decode("utf-8"))
+-            return result if isinstance(result, dict) else {"success": False, "error": "invalid JSON response"}
++            try:
++                open_options = {
++                    "operational_action": operational_action,
++                    "requires_heavy_work": requires_heavy_work,
++                }
++                if cancel_event is not None:
++                    open_options["cancel_event"] = cancel_event
++                result = json.loads(
++                    self._open(
++                        "GET",
++                        path,
++                        None,
++                        headers,
++                        attempt_timeout,
++                        **open_options,
++                    ).decode("utf-8")
++                )
++            except (UnicodeDecodeError, json.JSONDecodeError):
++                return self._invalid_json_response(request_id, outcome_unknown=False)
++            return result if isinstance(result, dict) else self._invalid_json_response(request_id, outcome_unknown=False)
+ 
+         def execute() -> dict[str, Any]:
+             deadline = time.monotonic() + timeout
+@@ -440,25 +1189,37 @@ class HubClient:
+                 return self._error_response(exc, request_id)
+             except (URLError, OSError, http.client.HTTPException) as exc:
+                 self._drop_connection()
++                if getattr(exc, "cancelled", False):
++                    return self._cancelled_response(
++                        request_id,
++                        request_not_sent=bool(getattr(exc, "request_not_sent", False)),
++                    )
+                 remaining = deadline - time.monotonic()
+-                server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
++                if self._inprocess_transport is not None:
++                    server_ready = remaining > 0
++                else:
++                    server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
+                 if server_ready:
+                     remaining = deadline - time.monotonic()
+                     if remaining <= 0:
+-                        return self._uncertain_response(request_id)
++                        return self._transport_failure_response(request_id, exc)
+                     try: return once(remaining)
+                     except HTTPError as retry_http: return self._error_response(retry_http, request_id)
+-                    except (URLError, OSError, http.client.HTTPException):
++                    except (URLError, OSError, http.client.HTTPException) as retry_exc:
+                         self._drop_connection()
+-                        return self._uncertain_response(request_id, retried=True)
++                        return self._transport_failure_response(request_id, exc, retry_exc, retried=True)
+                     except Exception as retry_exc: return {"success": False, "error": str(retry_exc), "request_id": request_id, "retried": True}
+-                return self._uncertain_response(request_id)
++                return self._transport_failure_response(request_id, exc)
+             except Exception as exc:
+                 return {"success": False, "error": str(exc), "request_id": request_id}
+ 
+-        key = f"GET|{self.tenant}|{self.agent}|{path}"
++        key = f"GET|{request_tenant}|{self.agent}|{path}"
++        if cancel_event is not None:
++            key += f"|cancel-event|{id(cancel_event)}"
+         try:
+-            return self._singleflight(key, timeout, execute)
++            return self._singleflight(key, timeout, execute, cancel_event=cancel_event)
++        except _SingleflightCancelled:
++            return self._cancelled_response(request_id, request_not_sent=False)
+         except TimeoutError:
+             return {
+                 "success": False,
+@@ -473,6 +1234,7 @@ class HubClient:
+         """Fail closed: only known read-only POST endpoints may be replayed."""
+         path = path.lower().split("?", 1)[0]
+         if path in {
++            "/api/search",
+             "/api/memory/get",
+             "/api/memory/search",
+             "/api/repo/circular_dependencies",
+@@ -501,9 +1263,59 @@ class HubClient:
+         }
+         return action in read_actions.get(path, set())
+ 
+-    def post(self, path: str, payload: dict[str, Any] | None = None, timeout: float = 360.0) -> dict[str, Any]:
+-        replay_safe = self._post_replay_safe(path, payload)
+-        return self.request(path, payload, timeout=timeout, replay_safe=replay_safe)
++    def post(
++        self,
++        path: str,
++        payload: dict[str, Any] | None = None,
++        timeout: float = 360.0,
++        *,
++        request_id: str | None = None,
++        path_hints: Sequence[PathHint | Mapping[str, str]] | None = None,
++        tenant: str | None = None,
++        cancel_event: threading.Event | None = None,
++    ) -> dict[str, Any]:
++        clean_payload = dict(payload or {})
++        route = path.lower().split("?", 1)[0]
++        if route == "/api/search":
++            explicit_path = isinstance(clean_payload.get("path"), str) and bool(clean_payload["path"].strip())
++            if explicit_path:
++                clean_payload.pop("path_hints", None)
++            elif path_hints:
++                records = []
++                for hint in path_hints[:64]:
++                    if isinstance(hint, Mapping):
++                        record = dict(hint)
++                    else:
++                        record = {
++                            key: getattr(hint, key)
++                            for key in _PATH_HINT_FIELDS
++                            if hasattr(hint, key) and getattr(hint, key) is not None
++                        }
++                    if any(not isinstance(record.get(key), str) for key in _PATH_HINT_REQUIRED_FIELDS):
++                        continue
++                    if any(key in record and not isinstance(record[key], str) for key in _PATH_HINT_FIELDS):
++                        continue
++                    records.append({key: value for key, value in record.items() if key in _PATH_HINT_FIELDS})
++                clean_payload["path_hints"] = records
++        replay_safe = self._post_replay_safe(path, clean_payload)
++        if request_id is None:
++            return self.request(
++                path,
++                clean_payload,
++                timeout=timeout,
++                replay_safe=replay_safe,
++                tenant=tenant,
++                cancel_event=cancel_event,
++            )
++        return self.request(
++            path,
++            clean_payload,
++            timeout=timeout,
++            replay_safe=replay_safe,
++            request_id=request_id,
++            tenant=tenant,
++            cancel_event=cancel_event,
++        )
+ 
+     def status(self, detail: str = "brief", scope: str = "process") -> dict[str, Any]:
+         if detail == "agent_state":
+@@ -673,7 +1485,15 @@ class HubClient:
+             "task_id": task_id,
+         })
+ 
+-    def create_task(self, goal: str, acceptance_criteria: list[str] | None = None, task_id: str = "", scope: str = "task", **kwargs: Any) -> dict[str, Any]:
++    def create_task(
++        self,
++        goal: str,
++        acceptance_criteria: list[str] | None = None,
++        task_id: str = "",
++        scope: str = "task",
++        root: str | None = None,
++        **kwargs: Any,
++    ) -> dict[str, Any]:
+         payload = {
+             "action": "create",
+             "goal": goal,
+@@ -682,31 +1502,53 @@ class HubClient:
+             "scope": scope,
+             **kwargs,
+         }
++        if root is not None:
++            payload["root"] = root
+         return self.post("/api/agent-state/tasks", payload)
+ 
+-    def get_task(self, task_id: str) -> dict[str, Any]:
+-        return self.post("/api/agent-state/tasks", {"action": "get", "task_id": task_id})
++    def get_task(self, task_id: str, root: str | None = None) -> dict[str, Any]:
++        payload = {"action": "get", "task_id": task_id}
++        if root is not None:
++            payload["root"] = root
++        return self.post("/api/agent-state/tasks", payload)
+ 
+     def list_tasks(
+         self,
+         status: str | None = None,
+         limit: int = 100,
+         query: str | None = None,
++        root: str | None = None,
+     ) -> dict[str, Any]:
+         payload: dict[str, Any] = {"action": "list", "limit": limit}
++        if root is not None:
++            payload["root"] = root
+         if status:
+             payload["status"] = status
+         if query is not None:
+             payload["query"] = query
+         return self.post("/api/agent-state/tasks", payload)
+ 
+-    def complete_task(self, task_id: str, reason: str = "completed by agent") -> dict[str, Any]:
+-        return self.post("/api/agent-state/tasks", {"action": "complete", "task_id": task_id, "reason": reason})
++    def complete_task(self, task_id: str, reason: str = "completed by agent", root: str | None = None) -> dict[str, Any]:
++        payload = {"action": "complete", "task_id": task_id, "reason": reason}
++        if root is not None:
++            payload["root"] = root
++        return self.post("/api/agent-state/tasks", payload)
+ 
+-    def fail_task(self, task_id: str, reason: str = "failed by agent") -> dict[str, Any]:
+-        return self.post("/api/agent-state/tasks", {"action": "fail", "task_id": task_id, "reason": reason})
++    def fail_task(self, task_id: str, reason: str = "failed by agent", root: str | None = None) -> dict[str, Any]:
++        payload = {"action": "fail", "task_id": task_id, "reason": reason}
++        if root is not None:
++            payload["root"] = root
++        return self.post("/api/agent-state/tasks", payload)
+ 
+-    def checkpoint_task(self, task_id: str, phase: str = "", next_action: str = "", affected_paths: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
++    def checkpoint_task(
++        self,
++        task_id: str,
++        phase: str = "",
++        next_action: str = "",
++        affected_paths: list[str] | None = None,
++        root: str | None = None,
++        **kwargs: Any,
++    ) -> dict[str, Any]:
+         payload = {
+             "action": "checkpoint",
+             "task_id": task_id,
+@@ -715,6 +1557,8 @@ class HubClient:
+             "affected_paths": affected_paths or [],
+             **kwargs,
+         }
++        if root is not None:
++            payload["root"] = root
+         return self.post("/api/agent-state/tasks", payload)
+ 
+     def record_memory(self, key: str, value: Any, scope: str = "task", kind: str = "fact", **kwargs: Any) -> dict[str, Any]:
+@@ -728,8 +1572,17 @@ class HubClient:
+         }
+         return self.post("/api/agent-state/memory", payload)
+ 
+-    def find_memory(self, scope: str | None = None, key: str | None = None, query: str | None = None, limit: int = 100) -> dict[str, Any]:
++    def find_memory(
++        self,
++        scope: str | None = None,
++        key: str | None = None,
++        query: str | None = None,
++        limit: int = 100,
++        root: str | None = None,
++    ) -> dict[str, Any]:
+         payload: dict[str, Any] = {"action": "find", "limit": limit}
++        if root is not None:
++            payload["root"] = root
+         if scope:
+             payload["scope"] = scope
+         if key:
+@@ -783,9 +1636,10 @@ class HubClient:
+         """Yield parsed SSE events (event_type, data_dict) from /api/agent-state/events/stream."""
+         import urllib.parse
+         requested_timeout = max(0.0, float(timeout))
+-        stream_timeout = min(self.max_request_timeout, requested_timeout)
++        max_request_timeout = float(getattr(self, "max_request_timeout", 1800.0))
++        stream_timeout = min(max_request_timeout, requested_timeout)
+         transport_timeout = min(
+-            self.max_request_timeout,
++            max_request_timeout,
+             max(0.2, stream_timeout + 5.0 if stream_timeout > 0 else 60.0),
+         )
+         params = []
+@@ -817,19 +1671,31 @@ class HubClient:
+                 return
+             response = urlopen(req, timeout=transport_timeout)
+             with response as resp:
++                def interrupt_response() -> None:
++                    fp = getattr(resp, "fp", None)
++                    raw = getattr(fp, "raw", None)
++                    stream_socket = getattr(raw, "_sock", None)
++                    connection = getattr(resp, "_connection", None)
++                    if stream_socket is not None:
++                        try: stream_socket.shutdown(socket.SHUT_RDWR)
++                        except OSError: pass
++                    try: resp.close()
++                    except Exception: pass
++                    if connection is not None:
++                        try: connection.close()
++                        except Exception: pass
++
+                 def close_on_interrupt() -> None:
+                     deadline = time.monotonic() + transport_timeout
+                     while not monitor_stopped.is_set():
+                         if cancel_event is not None and cancel_event.is_set():
+-                            try: resp.close()
+-                            except Exception: pass
++                            interrupt_response()
+                             return
+                         remaining = deadline - time.monotonic()
+                         if remaining <= 0:
+                             if not monitor_stopped.is_set():
+                                 deadline_expired.set()
+-                                try: resp.close()
+-                                except Exception: pass
++                                interrupt_response()
+                             return
+                         monitor_stopped.wait(min(0.05, remaining))
+ 
+@@ -860,7 +1726,9 @@ class HubClient:
+                         cur_data.append(line[len("data:"):].strip())
+         except HTTPError:
+             raise
+-        except (URLError, OSError, http.client.HTTPException):
++        except (URLError, OSError, http.client.HTTPException) as exc:
++            if isinstance(exc, TimeoutError):
++                deadline_expired.set()
+             if cancel_event is None or not cancel_event.is_set():
+                 result = self._uncertain_response(request_id)
+                 if deadline_expired.is_set():
+diff --git a/tests/test_client_tenant_override.py b/tests/test_client_tenant_override.py
+new file mode 100644
+index 0000000..e3e69e1
+--- /dev/null
++++ b/tests/test_client_tenant_override.py
+@@ -0,0 +1,617 @@
++from __future__ import annotations
++
++import json
++import hashlib
++import hmac
++import threading
++from concurrent.futures import ThreadPoolExecutor
++from pathlib import Path
++from urllib.parse import urlencode
++
++import pytest
++
++import local_ai_hub.client as client_module
++from local_ai_hub.client import HubClient
++
++
++def _client(
++    tmp_path: Path,
++    *,
++    tenant: str | None = "tenant-default",
++    auto_start: bool = False,
++    allowed_roots: list[Path] | None = None,
++    security_overrides: dict[str, object] | None = None,
++) -> HubClient:
++    state_dir = tmp_path / "state"
++    config_path = tmp_path / "hub.toml"
++    security: dict[str, object] = {
++        "api_token": "fallback-api-token",
++        "api_token_tenant": "fixed-principal",
++        "api_token_principal": "secondary-principal",
++        "tenant_derivation_key": "configured-tenant-derivation-key-0123456789",
++        "allowed_roots": allowed_roots or [tmp_path],
++    }
++    security.update(security_overrides or {})
++    security_lines = ["[security]"]
++    for key, value in security.items():
++        if value is None:
++            continue
++        encoded = (
++            "[" + ", ".join(json.dumps(item.as_posix()) for item in value) + "]"
++            if key == "allowed_roots"
++            else json.dumps(value)
++        )
++        security_lines.append(f"{key} = {encoded}")
++    config_path.write_text(
++        f'[server]\nbind = "127.0.0.1"\nport = 39131\nstate_dir = "{state_dir.as_posix()}"\n'
++        "[client]\nstartup_wait_seconds = 1\nstartup_poll_seconds = 0.01\n"
++        + "\n".join(security_lines)
++        + "\n",
++        encoding="utf-8",
++    )
++    return HubClient(tenant=tenant, config_path=str(config_path), auto_start=auto_start)
++
++
++def _expected_root_tenant(client: HubClient, root: Path) -> str:
++    security = client.config["security"]
++    configured = str(security.get("api_token_tenant", "") or "").strip()
++    principal = configured or str(security.get("api_token_principal", "") or "").strip() or "api-token-default"
++    key = str(security.get("tenant_derivation_key") or security.get("api_token") or "")
++    canonical_root = str(root.resolve(strict=True))
++    message = f"local-ai-root-tenant\0{principal}\0{canonical_root}".encode("utf-8")
++    digest = hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
++    return f"root-{digest}"
++
++
++def test_start_lock_sidecar_identity_lookup_failure_uses_live_pid_fallback(tmp_path, monkeypatch):
++    lock_path = tmp_path / "hub.start.lock"
++    lock_path.write_text("123 1 nonce test_start_id 7", encoding="ascii")
++    sidecar = lock_path.with_name(f"{lock_path.name}.nonce.pid")
++    sidecar.write_text("456 test_start_id 8", encoding="ascii")
++    monkeypatch.setattr(client_module, "process_identity", lambda _pid: None)
++    monkeypatch.setattr(client_module, "pid_alive", lambda pid: pid == 456)
++
++    assert client_module._live_start_lock(lock_path, stale_seconds=20) is True
++
++    monkeypatch.setattr(client_module, "pid_alive", lambda _pid: False)
++    assert client_module._live_start_lock(lock_path, stale_seconds=20) is False
++
++
++@pytest.mark.parametrize("cancelled", [False, True])
++def test_http_response_wait_is_bounded_and_cancellable(tmp_path, monkeypatch, cancelled):
++    client = _client(tmp_path)
++    connection_closed = threading.Event()
++    cancellation = threading.Event() if cancelled else None
++
++    class Response:
++        will_close = False
++
++        def read(self):
++            assert connection_closed.wait(timeout=1)
++            raise OSError("connection closed by client watchdog")
++
++    class Connection:
++        sock = object()
++        send = lambda _self, _data: None
++
++        def request(self, _method, _path, body=None, headers=None):
++            self.send(body or b"request")
++
++        def getresponse(self):
++            return Response()
++
++        def close(self):
++            connection_closed.set()
++
++    monkeypatch.setattr(client, "_connection", lambda _timeout: Connection())
++    if cancelled:
++        threading.Timer(0.02, cancellation.set).start()
++
++    with pytest.raises(client_module._TransportFailure) as failure:
++        client._pooled_open(
++            "POST",
++            "/api/search",
++            b"{}",
++            {},
++            0.05 if not cancelled else 1.0,
++            cancel_event=cancellation,
++        )
++
++    assert failure.value.cancelled is cancelled
++    assert failure.value.request_not_sent is False
++
++
++def test_cancelled_request_before_dispatch_is_marked_not_sent(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    cancellation = threading.Event()
++    cancellation.set()
++    calls = []
++    monkeypatch.setattr(client, "_pooled_open", lambda *_args, **_kwargs: calls.append(True))
++
++    result = client.post("/api/search", {"query": "needle"}, cancel_event=cancellation)
++
++    assert result["cancelled"] is True
++    assert result["request_not_sent"] is True
++    assert result["outcome_unknown"] is False
++    assert calls == []
++
++
++def test_concurrent_cold_requests_share_one_service_start_and_readiness(tmp_path, monkeypatch):
++    worker_count = 30
++    client_root = tmp_path / "clients"
++    client_root.mkdir()
++    clients = [
++        _client(client_root, tenant="", auto_start=True)
++        for _ in range(worker_count)
++    ]
++    start_gate = threading.Barrier(worker_count)
++    service_started = threading.Event()
++    service_calls = []
++    service_lock = threading.Lock()
++    per_thread_probes: dict[int, int] = {}
++    ready_probes: dict[int, int] = {}
++    service_owner: list[int] = []
++    probes_lock = threading.Lock()
++
++    def online(self, _timeout=None):
++        thread_id = threading.get_ident()
++        with probes_lock:
++            count = per_thread_probes.get(thread_id, 0) + 1
++            per_thread_probes[thread_id] = count
++            if service_started.is_set():
++                ready_probes[thread_id] = ready_probes.get(thread_id, 0) + 1
++        if count == 1:
++            start_gate.wait(timeout=5)
++            return False
++        return service_started.is_set()
++
++    def service_run(command, **kwargs):
++        with service_lock:
++            service_calls.append((command, kwargs))
++            service_owner.append(threading.get_ident())
++        service_started.set()
++        return type("Completed", (), {"returncode": 0})()
++
++    monkeypatch.setattr(HubClient, "_online", online)
++    monkeypatch.setattr(client_module.subprocess, "run", service_run)
++    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
++    monkeypatch.setattr(client_module, "process_identity", lambda pid: {
++        "pid": pid,
++        "creation_identity_type": "test_start_id",
++        "creation_identity": 1,
++    })
++    monkeypatch.setattr(client_module, "pid_alive", lambda _pid: True)
++    for client in clients:
++        client.startup_wait = 2.0
++        client.startup_poll = 0.01
++        monkeypatch.setattr(
++            client,
++            "_pooled_open",
++            lambda *_args, **_kwargs: (
++                b'{"success":true}' if service_started.is_set() else (_ for _ in ()).throw(ConnectionRefusedError())
++            ),
++        )
++
++    with ThreadPoolExecutor(max_workers=worker_count) as pool:
++        futures = [pool.submit(client.post, "/api/search", {"query": f"query-{index}"}) for index, client in enumerate(clients)]
++        results = [future.result(timeout=8) for future in futures]
++
++    assert all(result == {"success": True} for result in results)
++    assert len(service_calls) == 1
++    command, options = service_calls[0]
++    assert command[-1] == "start"
++    assert Path(command[-2]) == Path(__file__).resolve().parents[1] / "tools" / "service.py"
++    assert options["timeout"] <= 2.0
++    assert options["env"]["LOCAL_AI_CONFIG"] == clients[0].config["_config_path"]
++    assert all(probes >= 2 for probes in per_thread_probes.values())
++    assert ready_probes[service_owner[0]] == 1
++
++
++def test_concurrent_task_requests_derive_tenant_per_root_for_same_task_id(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    root_a = tmp_path / "worktree-a"
++    root_b = tmp_path / "worktree-b"
++    root_a.mkdir()
++    root_b.mkdir()
++    barrier = threading.Barrier(2)
++    observed = []
++    observed_lock = threading.Lock()
++
++    def pooled_open(_method, path, body, headers, _timeout):
++        barrier.wait(timeout=5)
++        with observed_lock:
++            observed.append((path, json.loads(body.decode("utf-8")), dict(headers)))
++        return b'{"success":true}'
++
++    monkeypatch.setattr(client, "_pooled_open", pooled_open)
++    requests = (
++        (
++            {"root": str(root_a), "action": "get", "task_id": "same-task"},
++            "same-request-id",
++        ),
++        (
++            {"root": str(root_b), "action": "get", "task_id": "same-task"},
++            "same-request-id",
++        ),
++    )
++
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        futures = [
++            pool.submit(
++                client.post,
++                "/api/agent-state/tasks",
++                payload,
++                request_id=request_id,
++            )
++            for payload, request_id in requests
++        ]
++        results = [future.result(timeout=6) for future in futures]
++
++    assert results == [{"success": True}, {"success": True}]
++    assert len(observed) == 2
++    by_root = {payload["root"]: (path, payload, headers) for path, payload, headers in observed}
++    assert set(by_root) == {str(root_a), str(root_b)}
++    assert by_root[str(root_a)][0] == by_root[str(root_b)][0] == "/api/agent-state/tasks"
++    assert by_root[str(root_a)][1] == requests[0][0]
++    assert by_root[str(root_b)][1] == requests[1][0]
++    assert by_root[str(root_a)][2]["X-LocalAI-Tenant"] == _expected_root_tenant(client, root_a)
++    assert by_root[str(root_b)][2]["X-LocalAI-Tenant"] == _expected_root_tenant(client, root_b)
++    assert by_root[str(root_a)][2]["X-LocalAI-Tenant"] != by_root[str(root_b)][2]["X-LocalAI-Tenant"]
++    assert by_root[str(root_a)][2]["X-LocalAI-Request-ID"] == "same-request-id"
++    assert by_root[str(root_b)][2]["X-LocalAI-Request-ID"] == "same-request-id"
++    assert client.tenant == "tenant-default"
++
++
++def test_root_scoped_post_accepts_only_matching_tenant_hints(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    root = tmp_path / "worktree"
++    root.mkdir()
++    observed = []
++
++    def pooled_open(_method, path, body, headers, _timeout):
++        observed.append((path, json.loads(body.decode("utf-8")), dict(headers)))
++        return b'{"success":true}'
++
++    monkeypatch.setattr(client, "_pooled_open", pooled_open)
++    expected = _expected_root_tenant(client, root)
++    payload = {"root": str(root), "action": "get", "task_id": "same-task", "tenant": expected}
++    accepted = client.post(
++        "/api/agent-state/tasks",
++        payload,
++        request_id="matching-hint",
++        tenant=expected,
++    )
++    mismatched_header = client.post(
++        "/api/agent-state/tasks",
++        {"root": str(root), "action": "get", "task_id": "same-task"},
++        request_id="mismatched-header",
++        tenant="root-not-derived-here",
++    )
++    mismatched_body = client.post(
++        "/api/agent-state/tasks",
++        {"root": str(root), "action": "get", "task_id": "same-task", "tenant": "root-not-derived-here"},
++        request_id="mismatched-body",
++    )
++
++    assert accepted == {"success": True}
++    assert observed[0][0] == "/api/agent-state/tasks"
++    assert observed[0][1] == payload
++    assert observed[0][2]["X-LocalAI-Tenant"] == expected
++    assert mismatched_header["error_code"] == "tenant_binding_mismatch"
++    assert mismatched_body["error_code"] == "tenant_binding_mismatch"
++    assert mismatched_header["terminal"] is mismatched_body["terminal"] is True
++    assert mismatched_header["retryable"] is mismatched_body["retryable"] is False
++    assert len(observed) == 1
++    assert client.tenant == "tenant-default"
++
++
++def test_post_without_tenant_override_keeps_client_default(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    observed = []
++
++    def pooled_open(_method, path, body, headers, _timeout):
++        observed.append((path, json.loads(body.decode("utf-8")), dict(headers)))
++        return b'{"success":true}'
++
++    monkeypatch.setattr(client, "_pooled_open", pooled_open)
++    payload = {"root": "C:/worktrees/default", "task": "task-default", "query": "needle"}
++
++    result = client.post("/api/search", payload, request_id="request-default")
++
++    assert result == {"success": True}
++    assert len(observed) == 1
++    assert observed[0][0] == "/api/search"
++    assert observed[0][1] == payload
++    assert observed[0][2]["X-LocalAI-Tenant"] == "tenant-default"
++    assert observed[0][2]["X-LocalAI-Request-ID"] == "request-default"
++    rejected = client.post(
++        "/api/search",
++        payload,
++        request_id="request-other-tenant",
++        tenant="arbitrary-tenant",
++    )
++    assert rejected["error_code"] == "tenant_binding_mismatch"
++    assert rejected["terminal"] is True
++    assert rejected["retryable"] is False
++    assert len(observed) == 1
++    assert client.tenant == "tenant-default"
++
++
++def test_empty_client_tenant_omits_tenant_header(tmp_path, monkeypatch):
++    client = _client(tmp_path, tenant="")
++    observed = []
++    monkeypatch.setattr(
++        client,
++        "_pooled_open",
++        lambda _method, _path, _body, headers, _timeout: observed.append(dict(headers)) or b'{"success":true}',
++    )
++
++    result = client.post("/api/search", {"query": "needle"})
++
++    assert result == {"success": True}
++    assert len(observed) == 1
++    assert "X-LocalAI-Tenant" not in observed[0]
++    assert not any(value.startswith("agent-") for value in observed[0].values())
++
++
++def test_root_scoped_tenant_uses_fallback_key_and_fixed_api_token_tenant(tmp_path, monkeypatch):
++    client = _client(
++        tmp_path,
++        security_overrides={
++            "api_token_tenant": "fixed-api-token-tenant",
++            "api_token_principal": "lower-priority-principal",
++            "tenant_derivation_key": None,
++        },
++    )
++    root = tmp_path / "worktree"
++    root.mkdir()
++    observed = []
++    monkeypatch.setattr(
++        client,
++        "_pooled_open",
++        lambda _method, path, body, headers, _timeout: observed.append(
++            (path, json.loads(body.decode("utf-8")), dict(headers))
++        ) or b'{"success":true}',
++    )
++
++    result = client.post(
++        "/api/agent-state/tasks",
++        {"root": str(root), "action": "get", "task_id": "task-a"},
++    )
++
++    assert result == {"success": True}
++    assert observed[0][2]["X-LocalAI-Tenant"] == _expected_root_tenant(client, root)
++    assert observed[0][2]["X-LocalAI-Tenant"] != client.tenant
++
++
++def test_rootless_memory_uses_principal_and_rejects_mismatched_hint(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    observed = []
++    monkeypatch.setattr(
++        client,
++        "_pooled_open",
++        lambda _method, path, body, headers, _timeout: observed.append(
++            (path, json.loads(body.decode("utf-8")), dict(headers))
++        ) or b'{"success":true}',
++    )
++
++    accepted = client.post(
++        "/api/agent-state/memory",
++        {"action": "find", "scope": "global"},
++    )
++    rejected = client.post(
++        "/api/agent-state/memory",
++        {"action": "find", "scope": "session"},
++        tenant="other-principal",
++    )
++
++    assert accepted == {"success": True}
++    assert observed[0][2]["X-LocalAI-Tenant"] == "fixed-principal"
++    assert rejected["error_code"] == "tenant_binding_mismatch"
++    assert rejected["terminal"] is True
++    assert rejected["retryable"] is False
++    assert len(observed) == 1
++    assert client.tenant == "tenant-default"
++
++
++@pytest.mark.parametrize(
++    ("security_overrides", "expected_principal"),
++    [
++        ({"api_token_tenant": None, "api_token_principal": "principal-fallback"}, "principal-fallback"),
++        ({"api_token_tenant": None, "api_token_principal": None}, "api-token-default"),
++    ],
++)
++def test_rootless_memory_uses_configured_principal_fallbacks(
++    tmp_path, monkeypatch, security_overrides, expected_principal
++):
++    client = _client(tmp_path, security_overrides=security_overrides)
++    observed = []
++    monkeypatch.setattr(
++        client,
++        "_pooled_open",
++        lambda _method, path, body, headers, _timeout: observed.append(
++            (path, dict(headers))
++        ) or b'{"success":true}',
++    )
++
++    result = client.post("/api/agent-state/memory", {"action": "find", "scope": "session"})
++
++    assert result == {"success": True}
++    assert observed[0][1]["X-LocalAI-Tenant"] == expected_principal
++    assert observed[0][1]["X-LocalAI-Tenant"] != client.tenant
++
++
++def test_get_derives_root_tenant_from_query_and_rejects_mismatch(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    root = tmp_path / "worktree"
++    root.mkdir()
++    query = urlencode({"root": str(root), "scope": "repository", "task_id": "same-task"})
++    path = f"/api/agent-state/memory?{query}"
++    observed = []
++    monkeypatch.setattr(
++        client,
++        "_pooled_open",
++        lambda _method, request_path, _body, headers, _timeout: observed.append(
++            (request_path, dict(headers))
++        ) or b'{"success":true}',
++    )
++    expected = _expected_root_tenant(client, root)
++
++    accepted = client.get(path, tenant=expected)
++    rejected = client.get(path, tenant="wrong-root-tenant")
++
++    assert accepted == {"success": True}
++    assert observed[0][0] == path
++    assert observed[0][1]["X-LocalAI-Tenant"] == expected
++    assert rejected["error_code"] == "tenant_binding_mismatch"
++    assert rejected["terminal"] is True
++    assert rejected["retryable"] is False
++    assert len(observed) == 1
++
++
++def test_get_task_derives_root_tenant_from_query(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    root = tmp_path / "worktree"
++    root.mkdir()
++    path = f"/api/agent-state/tasks?{urlencode({'root': str(root), 'task_id': 'same-task'})}"
++    observed = []
++    monkeypatch.setattr(
++        client,
++        "_pooled_open",
++        lambda _method, request_path, _body, headers, _timeout: observed.append(
++            (request_path, dict(headers))
++        ) or b'{"success":true}',
++    )
++
++    result = client.get(path)
++
++    assert result == {"success": True}
++    assert observed[0][0] == path
++    assert observed[0][1]["X-LocalAI-Tenant"] == _expected_root_tenant(client, root)
++
++
++def test_memory_payload_derives_tenant_from_nested_root(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    root = tmp_path / "worktree"
++    root.mkdir()
++    expected = _expected_root_tenant(client, root)
++    observed = []
++    payload = {
++        "action": "record",
++        "scope": "repository",
++        "record": {"root": str(root), "tenant": expected, "scope": "repository"},
++        "provenance": {"root": str(root), "tenant": expected},
++    }
++    monkeypatch.setattr(
++        client,
++        "_pooled_open",
++        lambda _method, path, body, headers, _timeout: observed.append(
++            (path, json.loads(body.decode("utf-8")), dict(headers))
++        ) or b'{"success":true}',
++    )
++
++    result = client.post("/api/agent-state/memory", payload)
++
++    assert result == {"success": True}
++    assert observed[0][1] == payload
++    assert observed[0][2]["X-LocalAI-Tenant"] == expected
++
++
++@pytest.mark.parametrize("root_case", ["missing", "outside", "symlink"])
++def test_root_scoped_task_rejects_invalid_roots_before_http(tmp_path, monkeypatch, root_case):
++    allowed = tmp_path / "allowed"
++    allowed.mkdir()
++    if root_case == "missing":
++        root = allowed / "missing"
++    elif root_case == "outside":
++        root = tmp_path / "outside"
++        root.mkdir()
++    else:
++        target = allowed / "target"
++        target.mkdir()
++        root = allowed / "linked"
++        try:
++            root.symlink_to(target, target_is_directory=True)
++        except OSError as exc:
++            pytest.skip(f"directory symlinks unavailable: {exc}")
++    client = _client(tmp_path, allowed_roots=[allowed])
++    attempts = []
++    monkeypatch.setattr(
++        client,
++        "_pooled_open",
++        lambda *_args, **_kwargs: attempts.append(True) or b'{"success":true}',
++    )
++
++    result = client.post(
++        "/api/agent-state/tasks",
++        {"root": str(root), "action": "get", "task_id": "task-a"},
++    )
++
++    assert result["error_code"] == "root_not_allowed"
++    assert result["terminal"] is True
++    assert result["retryable"] is False
++    assert result["preflight"] is True
++    assert attempts == []
++
++
++def test_scoped_task_and_memory_requests_require_root_before_http(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    attempts = []
++    monkeypatch.setattr(
++        client,
++        "_pooled_open",
++        lambda *_args, **_kwargs: attempts.append(True) or b'{"success":true}',
++    )
++
++    task_post = client.post("/api/agent-state/tasks", {"action": "get", "task_id": "task-a"})
++    task_get = client.get("/api/agent-state/tasks?task_id=task-a")
++    memory_task = client.post(
++        "/api/agent-state/memory",
++        {"action": "find", "scope": "task", "task_id": "task-a"},
++    )
++
++    assert task_post["error_code"] == "root_not_allowed"
++    assert task_get["error_code"] == "root_not_allowed"
++    assert memory_task["error_code"] == "root_required"
++    assert all(result["terminal"] is True and result["retryable"] is False for result in (task_post, task_get, memory_task))
++    assert attempts == []
++
++
++@pytest.mark.parametrize(
++    "tenant",
++    [
++        "",
++        "tenant with space",
++        "tenant\r\nX: injected",
++        "tenant\x00control",
++        "x" * 129,
++        "tenant\u007f",
++        "tenant-é",
++    ],
++)
++def test_invalid_tenant_override_is_terminal_preflight_without_http(tmp_path, monkeypatch, tenant):
++    client = _client(tmp_path)
++    attempts = []
++    monkeypatch.setattr(
++        client,
++        "_pooled_open",
++        lambda *_args, **_kwargs: attempts.append(True) or b'{"success":true}',
++    )
++
++    result = client.post(
++        "/api/search",
++        {"root": "C:/worktrees/a", "task": "task-a", "query": "needle"},
++        request_id="valid-request-id",
++        tenant=tenant,
++    )
++
++    assert result == {
++        "success": False,
++        "error": "tenant must be 1-128 visible ASCII characters without whitespace",
++        "error_code": "tenant_binding_mismatch",
++        "terminal": True,
++        "retryable": False,
++        "preflight": True,
++    }
++    assert attempts == []
++    assert client.tenant == "tenant-default"

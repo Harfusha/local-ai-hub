@@ -1,0 +1,30 @@
+{
+  "format": 1,
+  "source_root": "C:\\Users\\Adam\\.codex\\worktrees\\t04-integration\\.local-ai-hub",
+  "source_branch": "codex/t04-integration-2b33602",
+  "source_base_commit": "3658d5056354849ddf17883ed04f807f16cc44c1",
+  "integration_root": "C:\\Users\\Adam\\.local-ai-hub",
+  "integration_base_commit": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+  "scope": "complete HubClient.__new__ fixture for the SSE stream parsing test; no production source change required",
+  "finding": "The reported missing max_request_timeout was reproduced. After initializing that attribute, tenant and agent were also missing because the test bypassed HubClient.__init__. The fixture now sets all three constructor-owned fields.",
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t04-integration\\.local-ai-hub\\artifacts\\t04-sse-fixture\\sse-fixture.patch",
+  "patch_sha256": "01732e2261829fe6a5a0c11bb57cbf5bc1d03ed31de94cc360cc8c87940e98e5",
+  "validation": {
+    "red_command": "python -m pytest -q tests/test_sse_events_stream.py::test_client_stream_events_parsing",
+    "red_result": "1 failed at missing max_request_timeout; a temporary source fallback exposed missing tenant next; source fallback reverted",
+    "green_command": "python -m pytest -q tests/test_sse_events_stream.py tests/test_client_path_hints.py tests/test_client_transport.py tests/test_client_operational_mode_autostart.py",
+    "green_result": "37 passed in 12.30s",
+    "root_apply_check": "PASS against current root worktree; check only, no files applied"
+  },
+  "files": [
+    {
+      "path": "tests/test_sse_events_stream.py",
+      "base_blob": "e964d158f5075495bd0121a2e4de31890557f4f4",
+      "target_blob": "bf0dc0adb647c476709f69476cfa213a3691e70b",
+      "change": "initialize required HubClient constructor fields in the minimal unit-test fixture"
+    }
+  ],
+  "status": "superseded",
+  "superseded_by": "artifacts/t04-sse-stream-timeout/sse-stream-timeout.patch",
+  "note": "Do not apply: this prior test-only patch initialized max_request_timeout and did not exercise the stream_events fallback. Use the superseding root-overlay patch."
+}

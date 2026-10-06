@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import ast
 import json
+import math
 import os
 import re
 import sqlite3
@@ -4147,7 +4148,7 @@ def test_{sym}_regression_edge_cases():
             # Fallback to repo_tools iter_files which respects .gitignore and ignores Library/node_modules
             all_files = [str(p.relative_to(resolved_root)).replace("\\", "/") for p in self.repo_tools.iter_files(str(resolved_root))]
             for rel in all_files:
-                f_lower = rel.lower()
+                _ = rel.lower()
                 if is_test_source(rel):
                     db_test_paths.append(rel)
                     if len(db_test_paths) >= 50:
@@ -4995,14 +4996,30 @@ def test_{sym}_regression_edge_cases():
             data = json.loads(raw)
             if isinstance(data, dict) and "traceEvents" in data:
                 events = data.get("traceEvents", [])
+                if not isinstance(events, list):
+                    return {
+                        "success": False,
+                        "error": "failed to parse profile: traceEvents must be a JSON array",
+                    }
                 durations: dict[str, float] = {}
                 counts: dict[str, int] = {}
                 for ev in events:
+                    if not isinstance(ev, dict):
+                        continue
                     name = ev.get("name", "")
-                    dur = float(ev.get("dur", 0))
-                    if name and dur > 0:
-                        durations[name] = durations.get(name, 0.0) + dur
-                        counts[name] = counts.get(name, 0) + 1
+                    raw_duration = ev.get("dur", 0)
+                    if not isinstance(name, str) or not name.strip():
+                        continue
+                    if isinstance(raw_duration, bool) or not isinstance(raw_duration, (int, float)):
+                        continue
+                    duration = float(raw_duration)
+                    if not math.isfinite(duration) or duration <= 0:
+                        continue
+                    total_duration = durations.get(name, 0.0) + duration
+                    if not math.isfinite(total_duration):
+                        continue
+                    durations[name] = total_duration
+                    counts[name] = counts.get(name, 0) + 1
                 sorted_events = sorted(durations.items(), key=lambda kv: kv[1], reverse=True)
                 for name, total_dur in sorted_events[:limit]:
                     entries.append({
@@ -6452,12 +6469,22 @@ def test_{sym}_regression_edge_cases():
         if not target_pattern:
             return {"success": False, "error": "pattern is required"}
 
+        output_limit = max(0, int(max_results))
+        result_probe_limit = output_limit + 1
+        file_limit = 400
         results: list[dict[str, Any]] = []
+        read_errors = 0
+        parse_errors = 0
         ignore_dirs = {".git", "node_modules", "vendor", "__pycache__", ".venv", "venv", "dist", "build"}
 
         if path:
             candidate = root_path / path
-            files_to_scan = [candidate] if candidate.is_file() else []
+            try:
+                candidate.relative_to(root_path)
+            except ValueError:
+                files_to_scan = []
+            else:
+                files_to_scan = [candidate] if candidate.is_file() else []
         else:
             files_to_scan = []
             for cur_root, dirs, filenames in os.walk(root_path):
@@ -6465,32 +6492,43 @@ def test_{sym}_regression_edge_cases():
                 for f in filenames:
                     if f.endswith((".py", ".ts", ".js", ".go", ".rs", ".cs")):
                         files_to_scan.append(Path(cur_root) / f)
-                        if len(files_to_scan) >= 400:
+                        if len(files_to_scan) > file_limit:
                             break
-                if len(files_to_scan) >= 400:
+                if len(files_to_scan) > file_limit:
                     break
+            file_limit_reached = len(files_to_scan) > file_limit
+            files_to_scan = files_to_scan[:file_limit]
+        if path:
+            file_limit_reached = False
 
+        files_scanned = 0
         for fpath in files_to_scan:
-            if len(results) >= max_results:
+            if len(results) >= result_probe_limit:
                 break
+            files_scanned += 1
             try:
                 rel_p = str(fpath.relative_to(root_path)).replace("\\", "/")
                 content = fpath.read_text(encoding="utf-8", errors="replace")
-            except Exception:
+            except OSError:
+                read_errors += 1
                 continue
 
             lines = content.splitlines()
+            file_result_start = len(results)
+            parse_failed = False
 
             if fpath.suffix == ".py":
                 try:
                     tree = ast.parse(content, filename=rel_p)
                     for node in ast.walk(tree):
-                        if len(results) >= max_results:
+                        if len(results) >= result_probe_limit:
                             break
 
                         if target_pattern in {"bare_except", "unhandled_exception", "missing_error_handling"}:
                             if isinstance(node, ast.Try):
                                 for handler in node.handlers:
+                                    if len(results) >= result_probe_limit:
+                                        break
                                     if handler.type is None:
                                         snip = lines[handler.lineno - 1].strip() if handler.lineno <= len(lines) else ""
                                         results.append({
@@ -6598,12 +6636,13 @@ def test_{sym}_regression_edge_cases():
                                         "description": f"Call to '{call_id}'",
                                         "snippet": snip,
                                     })
-                except Exception:
-                    pass
+                except SyntaxError:
+                    parse_errors += 1
+                    parse_failed = True
 
-            if not results or fpath.suffix != ".py":
+            if parse_failed or len(results) == file_result_start or fpath.suffix != ".py":
                 for idx, line in enumerate(lines, 1):
-                    if len(results) >= max_results:
+                    if len(results) >= result_probe_limit:
                         break
                     raw_line = line.strip()
                     if not raw_line or raw_line.startswith(("//", "#", "/*", "*")):
@@ -6688,12 +6727,27 @@ def test_{sym}_regression_edge_cases():
                             "snippet": raw_line[:120],
                         })
 
+        returned_matches = results[:output_limit]
+        truncation_reasons: list[str] = []
+        if file_limit_reached:
+            truncation_reasons.append("file_limit")
+        if len(results) > output_limit:
+            truncation_reasons.append("result_limit")
+        if read_errors:
+            truncation_reasons.append("read_errors")
+        if parse_errors:
+            truncation_reasons.append("parse_errors")
         return {
             "success": True,
             "root": str(root_path),
             "pattern": pattern,
-            "count": len(results),
-            "matches": results,
+            "count": len(returned_matches),
+            "matches": returned_matches,
+            "files_scanned": files_scanned,
+            "truncated": bool(truncation_reasons),
+            "truncation_reasons": truncation_reasons,
+            "read_errors": read_errors,
+            "parse_errors": parse_errors,
         }
 
     def context_budget(

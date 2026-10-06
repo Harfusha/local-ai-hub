@@ -256,6 +256,9 @@ def complete_task_with_project_rules(
     task_root = _task_project_root(before, initial_state_data)
     if task_root is None:
         raise CompletionGateError("task project root is unavailable")
+    memory_audit_validator = getattr(task_store, "_validate_memory_audit", None)
+    if callable(memory_audit_validator):
+        memory_audit_validator(before)
     try:
         from .project_config import ProjectConfigError, resolve_project_context
     except ImportError as exc:
@@ -275,6 +278,32 @@ def complete_task_with_project_rules(
         raise CompletionGateError("project configuration could not be resolved") from exc
     if project.resolution.error_codes:
         raise CompletionGateError("project configuration is invalid")
+    if not before.contract.acceptance_criteria:
+        state_data = dict(before.checkpoint.state_data)
+        state_data["repo_root"] = str(project.root)
+        state_data["repository_revision"] = revision
+        if state_data != dict(before.checkpoint.state_data):
+            checkpoint = TaskCheckpoint(
+                phase=before.checkpoint.phase,
+                next_action=before.checkpoint.next_action,
+                affected_paths=before.checkpoint.affected_paths,
+                evidence_ids=before.checkpoint.evidence_ids,
+                blockers=before.checkpoint.blockers,
+                state_data=state_data,
+            )
+            suffix = "_project_completion_context"
+            task_store.checkpoint(
+                task_key,
+                checkpoint,
+                actor=actor,
+                idempotency_key=f"{idempotency_key}{suffix}" if idempotency_key else "",
+            )
+        return task_store.complete(
+            task_key,
+            reason=reason,
+            actor=actor,
+            idempotency_key=idempotency_key,
+        )
     before_generation = before.checkpoint.state_data.get("mutation_generation", 0)
     result = evaluate_project_completion(
         verification_store,

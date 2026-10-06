@@ -1,0 +1,377 @@
+diff --git a/src/local_ai_hub/commands.py b/src/local_ai_hub/commands.py
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -107,17 +107,61 @@
+ _DNS_RESOLVER_SLOTS = threading.BoundedSemaphore(4)
+ _MAX_CASSETTE_BYTES = 1_048_576
+ 
+ 
++def _process_group_liveness(process_group_id: int) -> bool | None:
++    """Return True/False only when POSIX can establish process-group liveness."""
++    if (
++        os.name != "posix"
++        or isinstance(process_group_id, bool)
++        or not isinstance(process_group_id, int)
++        or process_group_id <= 1
++    ):
++        return None
++    try:
++        os.killpg(process_group_id, 0)
++    except ProcessLookupError:
++        return False
++    except (PermissionError, OSError, ValueError):
++        return None
++    return True
++
++
++def _process_leader_exited(pid: int) -> bool:
++    """Prove leader absence; permission and platform uncertainty are not absence."""
++    if os.name != "posix" or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
++        return False
++    try:
++        os.kill(pid, 0)
++    except ProcessLookupError:
++        return True
++    except (PermissionError, OSError, ValueError):
++        return False
++    return False
++
++
+ class _RecoveredDaemonProcess:
+     """Minimal poll/wait/kill facade for a daemon verified after a Hub restart."""
+ 
+-    def __init__(self, pid: int, identity: dict[str, Any]):
++    def __init__(
++        self, pid: int, identity: dict[str, Any], process_group_id: int | None = None
++    ):
+         self.pid = pid
+         self.identity = identity
++        self.process_group_id = process_group_id
+ 
+     def poll(self) -> int | None:
+-        return None if process_identity(self.pid) == self.identity else 0
++        current_identity = process_identity(self.pid)
++        if current_identity == self.identity:
++            return None
++        if (
++            current_identity is None
++            and self.process_group_id == self.pid
++            and _process_leader_exited(self.pid)
++            and _process_group_liveness(self.process_group_id) is True
++        ):
++            return None
++        return 0
+ 
+     def wait(self, timeout: float | None = None) -> int:
+         deadline = None if timeout is None else time.monotonic() + timeout
+         while self.poll() is None:
+@@ -126,10 +170,9 @@
+             time.sleep(0.025)
+         return 0
+ 
+     def kill(self) -> None:
+-        if self.poll() is None:
+-            terminate_tree(self.pid, grace_seconds=0.1)
++        raise OSError("recovered daemon has no stable process-tree ownership handle")
+ 
+ _SECRET_PATTERNS = [
+     re.compile(r"(?i)(--?(?:password|token|secret|api[-_]?key)\s*[= ]\s*)([^\s]+)"),
+     re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/-]+"),
+@@ -969,8 +1012,10 @@
+ 
+ def _stop_daemon_tree(info: dict[str, Any]) -> bool:
+     """Stop the owned daemon tree without signaling a recycled Windows PID."""
+     process = info["process"]
++    if isinstance(process, _RecoveredDaemonProcess):
++        return False
+     job_handle = getattr(process, "_local_ai_job_handle", None)
+     if os.name == "nt" and isinstance(job_handle, int) and not isinstance(job_handle, bool):
+         try:
+             terminate_job_object(job_handle)
+@@ -3003,9 +3048,12 @@
+             with registry.open("r", encoding="utf-8") as stream:
+                 payload = json.load(stream)
+         except (OSError, ValueError, TypeError):
+             return
+-        if not isinstance(payload, dict) or payload.get("version") != 2:
++        if not isinstance(payload, dict):
++            return
++        registry_version = payload.get("version")
++        if type(registry_version) is not int or registry_version not in (2, 3):
+             return
+         rows = payload.get("daemons")
+         if not isinstance(rows, list):
+             return
+@@ -3015,24 +3063,38 @@
+                 continue
+             daemon_id = row.get("daemon_id")
+             pid = row.get("pid")
+             identity = row.get("identity")
++            process_group_id = row.get("process_group_id")
+             if (
+                 not isinstance(daemon_id, str)
+                 or not re.fullmatch(r"dmn_[0-9a-f]{32}", daemon_id)
+                 or isinstance(pid, bool)
+                 or not isinstance(pid, int)
+                 or not isinstance(identity, dict)
+                 or identity.get("pid") != pid
+                 or row.get("owner_id") != self._daemon_owner_id
+-                or process_identity(pid) != identity
+             ):
+                 continue
++            if registry_version == 2 and process_group_id is None:
++                process_group_id = pid
++            if (
++                isinstance(process_group_id, bool)
++                or not isinstance(process_group_id, int)
++                or process_group_id != pid
++            ):
++                continue
++            current_identity = process_identity(pid)
++            leader_matches = current_identity == identity
++            orphan_group_verified = (
++                registry_version == 3
++                and current_identity is None
++                and _process_leader_exited(pid)
++                and _process_group_liveness(process_group_id) is True
++            )
++            if not (leader_matches or orphan_group_verified):
++                continue
+             if not self._daemon_slots.acquire(blocking=False):
+-                try:
+-                    terminate_tree(pid, grace_seconds=self.terminate_grace_seconds)
+-                except Exception:
+-                    pass
+                 continue
+             log_path = self._daemon_state_dir / f"{daemon_id}.log"
+             try:
+                 if log_path.is_symlink() or log_path.resolve(strict=False).parent != expected_dir:
+@@ -3060,10 +3122,11 @@
+             name = row.get("name")
+             command = row.get("command")
+             info = {
+                 "daemon_id": daemon_id,
+-                "process": _RecoveredDaemonProcess(pid, identity),
++                "process": _RecoveredDaemonProcess(pid, identity, process_group_id),
+                 "pid": pid,
++                "process_group_id": process_group_id,
+                 "identity": identity,
+                 "owner_id": self._daemon_owner_id,
+                 "name": self._safe_label(name) if isinstance(name, str) else daemon_id,
+                 "command": self._safe_label(command) if isinstance(command, str) else "",
+@@ -3100,12 +3163,20 @@
+                     continue
+                 identity = info.get("identity")
+                 if not isinstance(identity, dict) or identity.get("pid") != int(info["pid"]):
+                     continue
++                process_group_id = info.get("process_group_id")
++                if (
++                    isinstance(process_group_id, bool)
++                    or not isinstance(process_group_id, int)
++                    or process_group_id != int(info["pid"])
++                ):
++                    continue
+                 rows.append(
+                     {
+                         "daemon_id": daemon_id,
+                         "pid": int(info["pid"]),
++                        "process_group_id": process_group_id,
+                         "identity": identity,
+                         "owner_id": info["owner_id"],
+                         "name": self._safe_label(str(info.get("name", daemon_id)))[:128],
+                         "command": self._safe_label(str(info.get("command", ""))),
+@@ -3114,9 +3185,9 @@
+                     }
+                 )
+                 if len(rows) >= 50:
+                     break
+-            payload = json.dumps({"version": 2, "daemons": rows}, ensure_ascii=True, separators=(",", ":"))
++            payload = json.dumps({"version": 3, "daemons": rows}, ensure_ascii=True, separators=(",", ":"))
+             temp_path = registry.with_name(f"registry.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+             fd = os.open(temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+             try:
+                 with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+@@ -7119,8 +7190,9 @@
+         info = {
+             "daemon_id": daemon_id,
+             "process": process,
+             "pid": process.pid,
++            "process_group_id": process.pid,
+             "identity": process_identity(process.pid),
+             "owner_id": self._daemon_owner_id,
+             "name": name or daemon_id,
+             "command": command_label,
+diff --git a/tests/test_daemon_lifecycle_hardening.py b/tests/test_daemon_lifecycle_hardening.py
+--- a/tests/test_daemon_lifecycle_hardening.py
++++ b/tests/test_daemon_lifecycle_hardening.py
+@@ -1,7 +1,8 @@
+ from __future__ import annotations
+ 
+ import os
++import json
+ import subprocess
+ import sys
+ import time
+ from pathlib import Path
+@@ -39,8 +40,161 @@
+     )
+     broker.set_task_store(_FakeTaskStore(str(tmp_path)))
+     broker.set_policy_engine(PolicyEngine())
+     return broker
++
++
++def _registry_row(broker: CommandBroker, *, process_group_id: int = 4321) -> dict[str, object]:
++    return {
++        "daemon_id": "dmn_" + "a" * 32,
++        "pid": 4321,
++        "process_group_id": process_group_id,
++        "identity": {"pid": 4321, "start_time": "leader-start"},
++        "owner_id": broker._daemon_owner_id,
++        "task_id": "daemon-test",
++        "name": "recovered-test",
++        "command": "worker",
++        "started_at": 1.0,
++        "expires_at": time.time() + 60.0,
++    }
++
++
++def _write_registry_row(
++    broker: CommandBroker, row: dict[str, object], *, version: int = 3
++) -> None:
++    broker._daemon_state_dir.mkdir(parents=True, exist_ok=True)
++    (broker._daemon_state_dir / f"{row['daemon_id']}.log").write_bytes(b"log\\n")
++    persisted_row = dict(row)
++    if version == 2:
++        persisted_row.pop("process_group_id", None)
++    broker._daemon_registry_path.write_text(
++        json.dumps({"version": version, "daemons": [persisted_row]}), encoding="utf-8"
++    )
++
++
++def test_daemon_registry_persists_process_group_id(tmp_path: Path) -> None:
++    broker = _broker(tmp_path)
++    daemon_id = "dmn_" + "b" * 32
++
++    class LiveProcess:
++        pid = 4321
++
++        @staticmethod
++        def poll() -> None:
++            return None
++
++    broker._daemons[daemon_id] = {
++        "daemon_id": daemon_id,
++        "process": LiveProcess(),
++        "pid": 4321,
++        "process_group_id": 4321,
++        "identity": {"pid": 4321, "start_time": "leader-start"},
++        "owner_id": broker._daemon_owner_id,
++        "task_id": "daemon-test",
++        "name": "persist-test",
++        "command": "worker",
++        "started_at": 1.0,
++        "expires_at": time.time() + 60.0,
++    }
++
++    assert broker._persist_daemon_registry() is True
++    registry = json.loads(broker._daemon_registry_path.read_text(encoding="utf-8"))
++    assert registry["version"] == 3
++    assert registry["daemons"][0]["process_group_id"] == 4321
++
++
++def test_recovery_accepts_exited_leader_only_when_group_is_verified_alive(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    broker = _broker(tmp_path)
++    _write_registry_row(broker, _registry_row(broker))
++    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
++    monkeypatch.setattr(commands_module, "_process_leader_exited", lambda _pid: True, raising=False)
++    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: True, raising=False)
++
++    broker._load_daemon_registry()
++
++    recovered = broker._daemons["dmn_" + "a" * 32]
++    assert recovered["process_group_id"] == 4321
++    assert recovered["process"].poll() is None
++
++
++def test_recovery_accepts_live_version_two_registry_row(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    broker = _broker(tmp_path)
++    _write_registry_row(broker, _registry_row(broker), version=2)
++    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: {"pid": 4321, "start_time": "leader-start"})
++
++    broker._load_daemon_registry()
++
++    recovered = broker._daemons["dmn_" + "a" * 32]
++    assert recovered["process_group_id"] == 4321
++    assert recovered["process"].poll() is None
++
++
++@pytest.mark.parametrize("group_state", [False, None])
++def test_recovery_rejects_exited_leader_when_group_is_gone_or_indeterminate(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, group_state: bool | None
++) -> None:
++    broker = _broker(tmp_path)
++    _write_registry_row(broker, _registry_row(broker))
++    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
++    monkeypatch.setattr(commands_module, "_process_leader_exited", lambda _pid: True, raising=False)
++    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: group_state, raising=False)
++
++    broker._load_daemon_registry()
++
++    assert "dmn_" + "a" * 32 not in broker._daemons
++
++
++def test_recovery_rejects_pid_reuse_even_when_group_is_alive(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    broker = _broker(tmp_path)
++    _write_registry_row(broker, _registry_row(broker))
++    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: {"pid": 4321, "start_time": "reused"})
++    monkeypatch.setattr(commands_module, "_process_group_liveness", lambda _pgid: True, raising=False)
++    monkeypatch.setattr(
++        commands_module, "_process_leader_exited",
++        lambda _pid: pytest.fail("reused PID must not enter orphan recovery"), raising=False,
++    )
++
++    broker._load_daemon_registry()
++
++    assert "dmn_" + "a" * 32 not in broker._daemons
++
++
++@pytest.mark.parametrize(
++    ("failure", "expected"),
++    [(None, True), (ProcessLookupError, False), (PermissionError, None), (OSError, None)],
++)
++def test_process_group_liveness_is_tristate(
++    monkeypatch: pytest.MonkeyPatch, failure: type[BaseException] | None, expected: bool | None
++) -> None:
++    def killpg(_pgid: int, _signal: int) -> None:
++        if failure is not None:
++            raise failure()
++
++    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="posix", killpg=killpg))
++
++    assert commands_module._process_group_liveness(4321) is expected
++
++
++def test_recovered_daemon_stop_fails_closed_without_process_tree_handle(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    identity = {"pid": 4321, "start_time": "leader-start"}
++    process = commands_module._RecoveredDaemonProcess(4321, identity, 4321)
++    info = {"process": process, "pid": 4321, "identity": identity}
++    monkeypatch.setattr(
++        commands_module, "terminate_tree",
++        lambda *_args, **_kwargs: pytest.fail("recovered daemon must not be signaled"),
++    )
++
++    with pytest.raises(OSError, match="no stable process-tree ownership handle"):
++        process.kill()
++    assert commands_module._stop_daemon_tree(info) is False
+ 
+ 
+ def test_daemon_environment_filters_inherited_secrets_but_keeps_explicit_values(
+     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
