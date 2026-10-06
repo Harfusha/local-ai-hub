@@ -475,8 +475,6 @@ def test_get_non_object_json_response_includes_request_id(tmp_path, monkeypatch)
         "retryable": True,
         "terminal": False,
     }
-
-
 def test_post_uses_explicit_request_id_across_safe_retry(tmp_path, monkeypatch):
     client = _client(tmp_path)
     request_ids = []
@@ -670,8 +668,6 @@ def test_ensure_server_mode_load_failure_blocks_autostart(tmp_path, monkeypatch)
     assert client.ensure_server(timeout=1) is False
     assert starts == []
     assert not client_module.Path(state_dir).exists()
-
-
 def test_post_malformed_response_returns_explicit_unknown_outcome(tmp_path, monkeypatch):
     client = _client(tmp_path)
     calls = []

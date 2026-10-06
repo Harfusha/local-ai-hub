@@ -2278,9 +2278,15 @@ def _local_ai_repo_impl(
             "scope": "repo_search",
         }] if path else [])
         search_path_hints.extend((path_hints or [])[:64])
+        normalized_hints, hint_error = _normalize_repo_search_path_hints(root, search_path_hints)
+        if hint_error is not None:
+            return {
+                "success": False, "error": hint_error, "status_code": 400,
+                "terminal": True, "retryable": False,
+            }
         return _compact(CLIENT.post("/api/search", {
             "root": root, "query": query or task, "top_k": 12, "enrich": enrich,
-        }, timeout=min(120, _timeout("quick")), path_hints=search_path_hints or None), "search", extra_fields=extra if extra else None)
+        }, timeout=min(120, _timeout("quick")), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
