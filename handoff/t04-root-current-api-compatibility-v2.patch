@@ -1,0 +1,108 @@
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -289,7 +289,11 @@
+         if (
+             not prior_send_possible
+             and failures
+-            and all(isinstance(exc, _TransportFailure) and exc.request_not_sent for exc in failures)
++            and all(
++                (isinstance(exc, _TransportFailure) and exc.request_not_sent)
++                or bool(getattr(exc, "request_not_sent", False))
++                for exc in failures
++            )
+         ):
+             result = {
+                 "success": False,
+@@ -593,7 +597,9 @@
+                 return self._error_response(exc, request_id)
+             except (URLError, OSError, http.client.HTTPException) as exc:
+                 self._drop_connection()
+-                pre_send_refusal = isinstance(exc, _TransportFailure) and exc.request_not_sent
++                pre_send_refusal = (
++                    isinstance(exc, _TransportFailure) and exc.request_not_sent
++                ) or bool(getattr(exc, "request_not_sent", False))
+                 if replay_safe or (self.auto_start and pre_send_refusal):
+                     remaining = duplicate_deadline - time.monotonic()
+                     try:
+--- a/src/local_ai_hub/inprocess_transport.py
++++ b/src/local_ai_hub/inprocess_transport.py
+@@ -108,11 +108,20 @@
+     def _mode_rejection(self, operational_action: str | None, requires_heavy_work: bool) -> dict[str, Any] | None:
+         state_dir = self.config.get("server", {}).get("state_dir")
+         snapshot = load_operational_mode(state_dir)
+-        return operational_mode_gate_error(
++        rejection = operational_mode_gate_error(
+             snapshot,
+             operational_action,
+             requires_heavy_work=requires_heavy_work,
+         )
++        if rejection is None:
++            return None
++        normalized = dict(rejection)
++        mode = normalized.get("operational_mode", normalized.get("mode", "maintenance"))
++        normalized.setdefault("error_code", "operational_mode_blocked")
++        normalized.setdefault("operational_mode", mode)
++        normalized.setdefault("mode", mode)
++        normalized.setdefault("action", operational_action or "inprocess_request")
++        return normalized
+ 
+     def _dispatch(
+         self,
+--- a/tests/test_inprocess_transport.py
++++ b/tests/test_inprocess_transport.py
+@@ -31,8 +31,9 @@
+     def lookup(self, request_id, tenant, action):
+         return None
+ 
+-    def begin(self, request_id, tenant, action):
++    def begin(self, request_id, tenant, action, **kwargs):
+         self.requests.append((request_id, tenant, action))
++        return {"claimed": True}
+ 
+     def finish(self, *_args, **_kwargs):
+         return None
+@@ -113,7 +114,7 @@
+         "rate_limit_window_seconds = 60.0\n",
+         encoding="utf-8",
+     )
+-    set_operational_mode(state_dir, "active")
++    set_operational_mode(mode="active", state_dir=state_dir)
+     app = _App(state_dir)
+     transport = InProcessTransport(config_path=str(config_path))
+     monkeypatch.setattr(transport, "_create_app", lambda: app)
+@@ -244,7 +245,7 @@
+     client, _transport, _app, _state_dir = inprocess_client
+     from local_ai_hub.operational_mode import set_operational_mode
+ 
+-    set_operational_mode(_state_dir, "gaming")
++    set_operational_mode(mode="gaming", state_dir=_state_dir)
+     client.api_token = "wrong-token"
+ 
+     unauthorized = client.get(
+@@ -254,7 +255,7 @@
+     assert unauthorized["status_code"] == 401
+     assert unauthorized["success"] is False
+ 
+-    set_operational_mode(_state_dir, "active")
++    set_operational_mode(mode="active", state_dir=_state_dir)
+     client.api_token = "test-secret"
+     invalid_action = client.request(
+         "/api/work-orders",
+@@ -270,7 +271,7 @@
+     client, _transport, app, state_dir = inprocess_client
+     from local_ai_hub.operational_mode import set_operational_mode
+ 
+-    set_operational_mode(state_dir, "gaming")
++    set_operational_mode(mode="gaming", state_dir=state_dir)
+ 
+     result = client.request(
+         "/api/delegate",
+@@ -289,7 +290,7 @@
+     client, _transport, app, state_dir = inprocess_client
+     from local_ai_hub.operational_mode import set_operational_mode
+ 
+-    set_operational_mode(state_dir, "gaming")
++    set_operational_mode(mode="gaming", state_dir=state_dir)
+     result = client.get(
+         "/api/repo/topology?root=fixture-root",
+         operational_action="repo_topology",

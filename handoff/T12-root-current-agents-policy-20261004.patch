@@ -1,0 +1,13 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 589c55b21557d1c56880ed67e8e5d113ff5e48e7..54f8c9f9f1cbc1d9c3387a5c57a8450757c4aacd
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -71,7 +71,7 @@
+ - Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
+ - Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
+ - Surgical edits: Prefer targeted block replacements over rewriting entire files.
+-- Local model delegation follows the active hardware profile and configured role tiers; do not assume a named model is installed. Use `local_ai_task` only for bounded semantic work after deterministic evidence.
++- Local model policy: `qwen2.5-coder:1.5b` is preprocessing-only; `qwen2.5-coder:3b` handles quick/simple tasks; `qwen2.5-coder:7b` handles ordinary and more-involved tasks; `qwen3.5:9b` handles hardest or highest-risk reasoning. For other work, select the configured model role for the active hardware profile and task; overrides must preserve the configured role and quality floor. Profile/default model names are routing targets only. Check installed-model inventory before live inference; do not infer runtime availability, output quality, or performance from a configured mapping. Keep deterministic/indexed Hub actions authoritative for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and semantic compression.
+ <!-- END TOKEN ECONOMY POLICY -->
+ 
+ ## Architecture rules

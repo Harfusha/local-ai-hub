@@ -1,0 +1,9 @@
+{
+  "selectors": [
+    "tests/test_agent_memory.py::test_memory_write_redacts_private_fields_and_blocks_sensitive_records",
+    "tests/test_agent_memory.py::test_memory_correction_lineage_and_delete_survive_reopen"
+  ],
+  "test_sha256": "98cd817eef6c875abdf835dfb69044255f73b3cbdff74a67ce2198f13be0b928",
+  "command": "python -B -u run_privacy_correction.py",
+  "prior_receipt_not_reused": "Source drift in agent_memory.py, embeddings.py, http_server.py and rag.py."
+}

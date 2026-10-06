@@ -1,0 +1,35 @@
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -3359,12 +3359,16 @@
+                     record_id_val = str(payload.get("record_id", "")).strip()
+                     if not record_id_val:
+                         self._send(400, {"success": False, "error": "memory delete requires record_id", "terminal": True, "retryable": False}); return
++                    root_input = str(payload.get("root") or "").strip()
++                    project_context = _trusted_project_context(root_input)
++                    root_value = getattr(project_context, "root", root_input)
++                    repository_id_value = getattr(project_context, "coordination_id", None)
+                     scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                         _parse_memory_scope(payload.get("scope")),
+                         scope_id=payload.get("scope_id"),
+-                        root=payload.get("root"),
+-                        repository_id=payload.get("repository_id"),
+-                        tenant=payload.get("tenant"),
++                        root=root_value,
++                        repository_id=repository_id_value,
++                        tenant=tenant,
+                         task_id=payload.get("task_id"),
+                         session_id=payload.get("session_id"),
+                         clone_id=payload.get("clone_id"),
+@@ -3379,9 +3383,9 @@
+                         record_id_val,
+                         scope=scope_val,
+                         scope_id=str(scope_id_val) if scope_id_val is not None else None,
+-                        root=str(payload.get("root") or "") or None,
+-                        repository_id=str(payload.get("repository_id") or "") or None,
+-                        tenant=str(payload.get("tenant") or "") or None,
++                        root=str(root_value or "") or None,
++                        repository_id=str(repository_id_value or "") or None,
++                        tenant=str(tenant or "") or None,
+                         task_id=str(payload.get("task_id") or "") or None,
+                         session_id=str(payload.get("session_id") or "") or None,
+                         clone_id=str(payload.get("clone_id") or "") or None,

@@ -1,0 +1,96 @@
+diff --git a/src/local_ai_hub/operation_contracts.py b/src/local_ai_hub/operation_contracts.py
+--- a/src/local_ai_hub/operation_contracts.py
++++ b/src/local_ai_hub/operation_contracts.py
+@@ -467,8 +467,8 @@
+                 "action": {"type": "string", "default": "get"},
+                 "artifact_id": {"type": "string", "default": ""},
+                 "section": {"type": "string", "default": ""},
+-                "offset": {"type": "integer", "default": 0},
+-                "max_chars": {"type": "integer", "default": 4000},
++                "offset": {"type": "integer", "minimum": 0, "default": 0},
++                "max_chars": {"type": "integer", "minimum": 512, "maximum": 12000, "default": 4000},
+                 "extra_fields": {"type": "array", "items": {"type": "string"}},
+                 "binary": {"type": "boolean", "default": False},
+             },
+diff --git a/tests/test_operation_contracts.py b/tests/test_operation_contracts.py
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -753,6 +753,29 @@
+     ) == "artifact_id is not valid for action='list'"
+ 
+ 
++@pytest.mark.parametrize("action", ["get", "slice"])
++def test_artifact_slice_numeric_bounds_are_published_and_enforced(action):
++    schema = operation_input_schema("local_ai_artifact", action)
++    assert schema["properties"]["offset"]["minimum"] == 0
++    assert schema["properties"]["max_chars"]["minimum"] == 512
++    assert schema["properties"]["max_chars"]["maximum"] == 12000
++
++    base = {"artifact_id": "artifact-1"}
++    assert validate_operation_arguments(
++        "local_ai_artifact", action, {**base, "offset": 0, "max_chars": 512}
++    ) is None
++    assert validate_operation_arguments(
++        "local_ai_artifact", action, {**base, "max_chars": 12000}
++    ) is None
++    assert validate_operation_arguments(
++        "local_ai_artifact", action, {**base, "offset": -1}
++    ) is not None
++    for max_chars in (511, 12001):
++        assert validate_operation_arguments(
++            "local_ai_artifact", action, {**base, "max_chars": max_chars}
++        ) is not None
++
++
+ def test_artifact_output_schemas_describe_source_payload_variants():
+     list_schema = operation_output_schema("local_ai_artifact", "list")
+     get_schema = operation_output_schema("local_ai_artifact", "get")
+diff --git a/tests/test_mcp_contract_dispatch.py b/tests/test_mcp_contract_dispatch.py
+--- a/tests/test_mcp_contract_dispatch.py
++++ b/tests/test_mcp_contract_dispatch.py
+@@ -1,6 +1,8 @@
+ from __future__ import annotations
+ 
+ import asyncio
++
++import pytest
+ 
+ def test_mcp_dispatch_rejects_unknown_arguments_before_http_tool_call(monkeypatch) -> None:
+     from local_ai_hub import mcp_server
+@@ -47,6 +49,36 @@
+     assert payload["success"] is False
+     assert payload["status_code"] == 400
+     assert "artifact_id" in payload["error"]
++    assert calls == []
++
++
++@pytest.mark.parametrize(
++    "arguments",
++    [
++        {"action": "slice", "artifact_id": "artifact-1", "offset": -1},
++        {"action": "slice", "artifact_id": "artifact-1", "max_chars": 511},
++        {"action": "slice", "artifact_id": "artifact-1", "max_chars": 12001},
++    ],
++)
++def test_mcp_dispatch_rejects_out_of_range_artifact_slice_before_tool_call(
++    monkeypatch, arguments
++) -> None:
++    from local_ai_hub import mcp_server
++
++    calls: list[str] = []
++
++    async def fake_call_tool(name, _arguments, *, convert_result=False):
++        calls.append(name)
++        return {"success": True}
++
++    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
++
++    _content, payload = asyncio.run(
++        mcp_server._compact_mcp_call_tool("local_ai_artifact", arguments)
++    )
++
++    assert payload["success"] is False
++    assert payload["status_code"] == 400
+     assert calls == []
+ 
+ 

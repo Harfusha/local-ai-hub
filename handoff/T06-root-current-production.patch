@@ -1,0 +1,1355 @@
+diff --git a/src/local_ai_hub/command_transactions.py b/src/local_ai_hub/command_transactions.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ff3cbc1a68cac74ee6251df4d4428705b38b36f2
+--- /dev/null
++++ b/src/local_ai_hub/command_transactions.py
+@@ -0,0 +1,413 @@
++from __future__ import annotations
++
++import hashlib
++import ntpath
++import os
++import shutil
++import stat
++import subprocess
++from collections.abc import Iterable, Mapping
++from dataclasses import dataclass
++from pathlib import Path
++from types import MappingProxyType
++
++from .process_utils import hidden_run_kwargs
++
++
++@dataclass(frozen=True)
++class _TreeEntry:
++    kind: str
++    mode: int
++    size: int
++    mtime_ns: int
++    digest: str = ""
++    target: str = ""
++
++
++def _write_set(paths: Iterable[str]) -> dict[str, str]:
++    if isinstance(paths, (str, bytes)):
++        raise ValueError("transaction write set must be a collection of relative file paths")
++    try:
++        values = tuple(paths)
++    except TypeError as exc:
++        raise ValueError("transaction write set must be a collection of relative file paths") from exc
++    if len(values) > 128:
++        raise ValueError("transaction write set exceeds 128 paths")
++    normalized: dict[str, str] = {}
++    for raw in values:
++        if not isinstance(raw, str) or not raw or "\x00" in raw:
++            raise ValueError("transaction write set contains an invalid path")
++        portable = raw.replace("\\", "/")
++        drive, _ = ntpath.splitdrive(raw)
++        parts = portable.split("/")
++        if drive or ntpath.isabs(raw) or portable.startswith("/") or any(part in {"", ".", ".."} for part in parts):
++            raise ValueError(f"transaction write path must be relative and normalized: {raw[:160]}")
++        reserved = {
++            "CON", "PRN", "AUX", "NUL",
++            *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10)),
++            "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³",
++        }
++        if any(
++            ":" in part or part.endswith((".", " "))
++            or part.split(".", 1)[0].rstrip(" .").upper() in reserved
++            for part in parts
++        ):
++            raise ValueError(f"transaction write path is not portable: {raw[:160]}")
++        key = "/".join(parts)
++        comparison = key.casefold() if os.name == "nt" else key
++        if comparison in normalized:
++            raise ValueError(f"duplicate transaction write path: {raw[:160]}")
++        normalized[comparison] = key
++    if not normalized:
++        raise ValueError("transaction write set is required")
++    keys = tuple(normalized)
++    for left in keys:
++        if any(right.startswith(left + "/") for right in keys if right != left):
++            raise ValueError("transaction write paths cannot contain another write path")
++    return normalized
++
++
++def _manifest_index(manifest: Mapping[str, _TreeEntry]) -> dict[str, tuple[str, _TreeEntry]]:
++    indexed: dict[str, tuple[str, _TreeEntry]] = {}
++    for path, entry in manifest.items():
++        key = path.casefold() if os.name == "nt" else path
++        if key in indexed:
++            raise ValueError(f"transaction tree contains case-aliased paths: {path}")
++        indexed[key] = (path, entry)
++    return indexed
++
++
++def _entry_changed(
++    before: tuple[str, _TreeEntry] | None,
++    after: tuple[str, _TreeEntry] | None,
++) -> bool:
++    if before is None or after is None:
++        return before is not after
++    before_path, before_entry = before
++    after_path, after_entry = after
++    if before_entry.kind == after_entry.kind == "directory":
++        return before_path != after_path or before_entry.mode != after_entry.mode
++    return before != after
++
++
++def validate_transaction_output(
++    baseline: Mapping[str, _TreeEntry],
++    transaction_root: str | Path,
++    paths: Iterable[str],
++) -> dict[str, _TreeEntry | None]:
++    """Return declared postimages; reject any transaction change outside its write set."""
++    write_set = _write_set(paths)
++    baseline_index = _manifest_index(baseline)
++    current_index = _manifest_index(_tree_manifest(Path(transaction_root).resolve(strict=True)))
++    changes: dict[str, _TreeEntry | None] = {}
++    for key in baseline_index.keys() | current_index.keys():
++        before = baseline_index.get(key)
++        after = current_index.get(key)
++        if not _entry_changed(before, after):
++            continue
++        relative = (after or before)[0]
++        entry = after[1] if after else None
++        declared = write_set.get(key)
++        if (
++            entry is not None
++            and entry.kind == "directory"
++            and (before is None or after is None)
++        ):
++            if any(
++                (target.casefold() if os.name == "nt" else target).startswith(key + "/")
++                for target in write_set.values()
++            ):
++                continue
++        if declared is None:
++            raise ValueError(f"undeclared transaction output: {relative}")
++        if entry is not None and entry.kind != "file":
++            raise ValueError(f"transaction write path is not a regular file: {declared}")
++        changes[declared] = entry
++    return changes
++
++
++def verify_transaction_source_unchanged(
++    source_root: str | Path,
++    baseline: Mapping[str, _TreeEntry],
++    paths: Iterable[str],
++) -> None:
++    """Fail if a declared import target changed while private command ran."""
++    write_set = _write_set(paths)
++    baseline_index = _manifest_index(baseline)
++    current_index = _manifest_index(_tree_manifest(Path(source_root).resolve(strict=True)))
++    for key, relative in write_set.items():
++        if _entry_changed(baseline_index.get(key), current_index.get(key)):
++            raise OSError(f"transaction source path changed while command was running: {relative}")
++
++
++def _clean_git_env() -> dict[str, str]:
++    return {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
++
++
++def _git_output(root: Path, *args: str) -> str:
++    result = subprocess.run(
++        ["git", "-C", str(root), *args],
++        capture_output=True,
++        text=True,
++        check=False,
++        timeout=15,
++        env=_clean_git_env(),
++        **hidden_run_kwargs(),
++    )
++    if result.returncode != 0:
++        raise OSError(f"git {' '.join(args)} failed: {result.stderr[-512:]}")
++    return result.stdout.strip()
++
++
++def _inside(path: Path, root: Path) -> bool:
++    try:
++        path.relative_to(root)
++        return True
++    except ValueError:
++        return False
++
++
++def _tree_manifest(root: Path) -> dict[str, _TreeEntry]:
++    manifest: dict[str, _TreeEntry] = {}
++    pending = [root]
++    while pending:
++        directory = pending.pop()
++        relative_dir = directory.relative_to(root)
++        try:
++            with os.scandir(directory) as scanner:
++                entries = sorted(scanner, key=lambda entry: entry.name.casefold())
++        except OSError as exc:
++            raise OSError(f"cannot enumerate transaction input: {exc}") from exc
++        for entry in entries:
++            if not relative_dir.parts and entry.name.casefold() == ".git":
++                continue
++            if entry.name.casefold() == ".git":
++                raise ValueError("nested Git metadata is unsupported in transaction inputs")
++            path = Path(entry.path)
++            relative = path.relative_to(root).as_posix()
++            try:
++                # Windows scandir metadata may omit file identity (st_dev/st_ino
++                # are zero); use handle-backed stat before comparing with fstat.
++                before = os.stat(path, follow_symlinks=False)
++            except OSError as exc:
++                raise OSError(f"cannot inspect transaction input {relative}: {exc}") from exc
++            attrs = int(getattr(before, "st_file_attributes", 0))
++            if attrs & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
++                if not entry.is_symlink():
++                    raise ValueError(f"unsupported reparse point in transaction inputs: {relative}")
++            if entry.is_symlink():
++                target = os.readlink(path)
++                resolved_target = (path.parent / target).resolve(strict=False)
++                if not _inside(resolved_target, root):
++                    raise ValueError(f"external symlink in transaction inputs: {relative}")
++                manifest[relative] = _TreeEntry(
++                    "symlink", int(before.st_mode), int(before.st_size),
++                    int(before.st_mtime_ns), target=target,
++                )
++                continue
++            if stat.S_ISDIR(before.st_mode):
++                manifest[relative] = _TreeEntry(
++                    "directory", int(before.st_mode), 0, int(before.st_mtime_ns)
++                )
++                pending.append(path)
++                continue
++            if not stat.S_ISREG(before.st_mode):
++                raise ValueError(f"unsupported file type in transaction inputs: {relative}")
++            digest = hashlib.sha256()
++            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
++            try:
++                fd = os.open(path, flags)
++                with os.fdopen(fd, "rb") as stream:
++                    opened = os.fstat(stream.fileno())
++                    if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) != (
++                        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
++                    ):
++                        raise OSError(f"transaction input changed while opening: {relative}")
++                    for block in iter(lambda: stream.read(1024 * 1024), b""):
++                        digest.update(block)
++                    after = os.fstat(stream.fileno())
++            except OSError as exc:
++                raise OSError(f"cannot read transaction input {relative}: {exc}") from exc
++            if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (
++                before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
++            ):
++                raise OSError(f"transaction input changed while reading: {relative}")
++            manifest[relative] = _TreeEntry(
++                "file", int(before.st_mode), int(before.st_size),
++                int(before.st_mtime_ns), digest=digest.hexdigest(),
++            )
++    return manifest
++
++
++def _copy_tree(source: Path, destination: Path) -> None:
++    pending = [(source, destination)]
++    directory_metadata: list[tuple[Path, Path]] = []
++    while pending:
++        source_dir, destination_dir = pending.pop()
++        with os.scandir(source_dir) as scanner:
++            entries = sorted(scanner, key=lambda entry: entry.name.casefold())
++        for entry in entries:
++            if source_dir == source and entry.name.casefold() == ".git":
++                continue
++            source_path = Path(entry.path)
++            target_path = destination_dir / entry.name
++            info = entry.stat(follow_symlinks=False)
++            if entry.is_symlink():
++                link = os.readlink(source_path)
++                resolved = (source_path.parent / link).resolve(strict=False)
++                if not _inside(resolved, source):
++                    raise ValueError(f"external symlink in transaction inputs: {source_path.relative_to(source)}")
++                os.symlink(link, target_path, target_is_directory=resolved.is_dir())
++                shutil.copystat(source_path, target_path, follow_symlinks=False)
++            elif stat.S_ISDIR(info.st_mode):
++                target_path.mkdir()
++                pending.append((source_path, target_path))
++                directory_metadata.append((source_path, target_path))
++            elif stat.S_ISREG(info.st_mode):
++                shutil.copy2(source_path, target_path, follow_symlinks=False)
++            else:
++                raise ValueError(f"unsupported file type in transaction inputs: {source_path.relative_to(source)}")
++    for source_dir, target_dir in sorted(
++        directory_metadata, key=lambda pair: len(pair[0].parts), reverse=True
++    ):
++        shutil.copystat(source_dir, target_dir, follow_symlinks=False)
++
++
++def _git_path(root: Path, path: str) -> Path:
++    value = Path(_git_output(root, "rev-parse", "--git-path", path))
++    return value if value.is_absolute() else (root / value).resolve(strict=False)
++
++
++def _stable_file_digest(path: Path) -> tuple[int, int, int, int, int, str]:
++    before = path.lstat()
++    if not stat.S_ISREG(before.st_mode):
++        raise OSError(f"Git index metadata is not a regular file: {path.name}")
++    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
++    fd = os.open(path, flags)
++    digest = hashlib.sha256()
++    with os.fdopen(fd, "rb") as stream:
++        opened = os.fstat(stream.fileno())
++        identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_mode)
++        opened_identity = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_mode)
++        if opened_identity != identity:
++            raise OSError(f"Git index metadata changed while opening: {path.name}")
++        for block in iter(lambda: stream.read(1024 * 1024), b""):
++            digest.update(block)
++        after = os.fstat(stream.fileno())
++    current = path.lstat()
++    after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_mode)
++    if after_identity != identity:
++        raise OSError(f"Git index metadata changed while reading: {path.name}")
++    current_identity = (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_mode)
++    if current_identity != identity:
++        raise OSError(f"Git index metadata path changed while reading: {path.name}")
++    return (*identity, digest.hexdigest())
++
++
++def _index_state(root: Path) -> tuple[Path, dict[str, tuple[int, int, int, int, int, str]]]:
++    index = _git_path(root, "index")
++    lock = index.with_name(index.name + ".lock")
++    if lock.exists() or lock.is_symlink():
++        raise OSError("source Git index is locked during transaction snapshot")
++    paths = ([index] if index.exists() else []) + sorted(index.parent.glob("sharedindex.*"))
++    state = {path.name: _stable_file_digest(path) for path in paths}
++    if lock.exists() or lock.is_symlink():
++        raise OSError("source Git index became locked during transaction snapshot")
++    return index, state
++
++
++def _copy_private_index(source: Path, destination: Path) -> None:
++    source_index, source_state = _index_state(source)
++    destination_index = _git_path(destination, "index")
++    for name in source_state:
++        shutil.copy2(source_index.parent / name, destination_index.parent / name)
++        if _stable_file_digest(destination_index.parent / name)[-1] != source_state[name][-1]:
++            raise OSError(f"private Git index metadata copy failed: {name}")
++
++    staged = subprocess.run(
++        ["git", "-C", str(source), "ls-files", "--stage", "-z"],
++        capture_output=True,
++        check=False,
++        timeout=15,
++        env=_clean_git_env(),
++        **hidden_run_kwargs(),
++    )
++    if staged.returncode != 0:
++        raise OSError(f"cannot inspect source Git index: {staged.stderr[-512:].decode(errors='replace')}")
++    object_ids = {
++        record.split(b" ", 2)[1].decode("ascii")
++        for record in staged.stdout.split(b"\0")
++        if record and b" " in record
++    }
++    for object_id in object_ids:
++        _git_output(destination, "cat-file", "-e", f"{object_id}^{{blob}}")
++    _, current_state = _index_state(source)
++    if current_state != source_state:
++        raise OSError("source Git index changed while transaction snapshot was being created")
++
++
++def create_private_transaction_snapshot_with_manifest(
++    source: str | Path,
++    destination: str | Path,
++) -> tuple[Path, Mapping[str, _TreeEntry]]:
++    """Create private checkout and return the exact source manifest it preserves."""
++    source_root = Path(source).expanduser().resolve(strict=True)
++    if not source_root.is_dir():
++        raise ValueError("transaction source must be a directory")
++    destination_root = Path(destination).expanduser().resolve(strict=False)
++    parent = destination_root.parent.resolve(strict=True)
++    if destination_root.exists() or not parent.is_dir():
++        raise ValueError("transaction destination must not exist and its parent must exist")
++    if _inside(destination_root, source_root) or _inside(source_root, destination_root):
++        raise ValueError("transaction source and destination must be disjoint")
++    top = _git_output(source_root, "rev-parse", "--show-toplevel")
++    if Path(top).resolve(strict=True) != source_root:
++        raise ValueError("transaction source must be a Git worktree root")
++
++    source_manifest = _tree_manifest(source_root)
++    try:
++        clone = subprocess.run(
++            ["git", "clone", "--no-hardlinks", "--no-checkout", "--", str(source_root), str(destination_root)],
++            capture_output=True,
++            text=True,
++            check=False,
++            timeout=120,
++            env=_clean_git_env(),
++            **hidden_run_kwargs(),
++        )
++        if clone.returncode != 0:
++            raise OSError(f"cannot create private Git metadata: {clone.stderr[-512:]}")
++        source_head = _git_output(source_root, "rev-parse", "HEAD")
++        _git_output(destination_root, "cat-file", "-e", f"{source_head}^{{commit}}")
++        _git_output(destination_root, "update-ref", "refs/heads/codex-transaction", source_head)
++        _git_output(destination_root, "symbolic-ref", "HEAD", "refs/heads/codex-transaction")
++        _git_output(destination_root, "remote", "remove", "origin")
++        _git_output(destination_root, "config", "--local", "core.hooksPath", "/dev/null")
++        _git_output(destination_root, "reset", "--mixed", source_head)
++        _copy_private_index(source_root, destination_root)
++        _copy_tree(source_root, destination_root)
++        cloned_manifest = _tree_manifest(destination_root)
++        current_source_manifest = _tree_manifest(source_root)
++        if cloned_manifest != source_manifest or current_source_manifest != source_manifest:
++            raise OSError("transaction source changed while snapshot was being created")
++        source_common = Path(_git_output(source_root, "rev-parse", "--git-common-dir"))
++        clone_common = Path(_git_output(destination_root, "rev-parse", "--git-common-dir"))
++        if not source_common.is_absolute():
++            source_common = (source_root / source_common).resolve(strict=True)
++        if not clone_common.is_absolute():
++            clone_common = (destination_root / clone_common).resolve(strict=True)
++        if source_common == clone_common or not _inside(clone_common, destination_root):
++            raise OSError("transaction Git metadata is not private")
++        if _git_output(destination_root, "rev-parse", "HEAD") != source_head:
++            raise OSError("transaction Git HEAD does not match source worktree")
++        return destination_root, MappingProxyType(source_manifest)
++    except Exception:
++        if destination_root.exists():
++            shutil.rmtree(destination_root, ignore_errors=True)
++        raise
++
++
++def create_private_transaction_snapshot(source: str | Path, destination: str | Path) -> Path:
++    """Copy a worktree's complete file input state into a private Git checkout."""
++    transaction_root, _ = create_private_transaction_snapshot_with_manifest(source, destination)
++    return transaction_root
+diff --git a/src/local_ai_hub/commands.py b/src/local_ai_hub/commands.py
+index 73ae43ec9144e8ee8a6317b4c10c1041c527ef08..95b11c95c4c0935d5534f02c0cfadd589c599bfa 100644
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import ast
++import base64
+ import codecs
+ import getpass
+ import hashlib
+@@ -26,12 +27,19 @@ import time
+ import uuid
+ from collections import deque
+ from collections.abc import Mapping, Sequence
++from functools import wraps
+ from dataclasses import dataclass, field
+ from pathlib import Path
+ from typing import Any
+ from urllib.parse import urljoin, urlsplit, urlunsplit
+ 
+ from .cache import SQLiteCache, TieredCache, stable_hash
++from .command_transactions import (
++    create_private_transaction_snapshot_with_manifest,
++    validate_transaction_output,
++    verify_transaction_source_unchanged,
++)
++from .leases import ScopeLeaseStore
+ from .features import rollout_feature_enabled
+ from .process_utils import (
+     _resume_suspended_process,
+@@ -1684,6 +1692,18 @@ def _is_interactive_prompt(text: str) -> bool:
+     return any(p.search(tail) for p in _INTERACTIVE_PATTERNS)
+ 
+ 
++def _stable_rollback_status(method: Any) -> Any:
++    @wraps(method)
++    def wrapped(self: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
++        result = method(self, *args, **kwargs)
++        rollback_key = "auto_rollback" if method.__name__ == "patch_and_verify" else "rollback_on_failure"
++        rollback_default = method.__name__ == "patch_and_verify"
++        if kwargs.get(rollback_key, rollback_default) and isinstance(result, dict):
++            result.setdefault("rolled_back", False)
++        return result
++    return wrapped
++
++
+ class CommandBroker:
+     """Safe shared command runner with repo-state-aware cache and single-flight."""
+ 
+@@ -1740,6 +1760,10 @@ class CommandBroker:
+         workspace_cache = config.get("workspace_cache", {})
+         self.git_snapshot_timeout = max(0.5, float(workspace_cache.get("git_status_timeout_seconds", 2.5)))
+         state_dir = configured_state_dir(config)
++        self._transaction_state_dir = state_dir / "command-transactions"
++        self._transaction_leases = ScopeLeaseStore(state_dir)
++        self._active_transaction_roots: dict[str, Path] = {}
++        self._transaction_roots_lock = threading.RLock()
+         self._daemon_state_dir = state_dir / "daemons"
+         self._daemon_registry_path = self._daemon_state_dir / "registry.json"
+         l1_entries = int(cfg.get("l1_entries", 128))
+@@ -3537,6 +3561,785 @@ class CommandBroker:
+         text = (str(result.get("stderr", "")) + "\n" + str(result.get("stdout", ""))).strip()
+         return bool(text)
+ 
++    @staticmethod
++    def _transaction_docker_argv(
++        transaction_id: str,
++        transaction_root: Path,
++        command: str,
++        image: str,
++        *,
++        read_only_mount: bool = False,
++    ) -> list[str]:
++        mount_mode = "ro" if read_only_mount else "rw"
++        return [
++            "docker", "run", "--rm", "--init", "--name", f"local-ai-{transaction_id}",
++            "--network=none", "--read-only", "--cap-drop=ALL",
++            "--security-opt=no-new-privileges", "--pids-limit=256", "--memory=2g",
++            "--cpus=2", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m",
++            "--env", "HOME=/tmp", "--env", "PYTHONDONTWRITEBYTECODE=1",
++            "--env", "PYTEST_ADDOPTS=-p no:cacheprovider",
++            "--env", "GIT_CONFIG_GLOBAL=/workspace/.git/transaction-global-config",
++            "--env", "GIT_CONFIG_SYSTEM=/dev/null", "--env", "GIT_CONFIG_NOSYSTEM=1",
++            "--volume", f"{transaction_root}:/workspace:{mount_mode}", "--workdir", "/workspace",
++            image, "/bin/sh", "-lc", command,
++        ]
++
++    @staticmethod
++    def _transaction_docker_ready() -> tuple[bool, str]:
++        executable = shutil.which("docker")
++        if not executable:
++            return False, "docker executable not found for private command transaction"
++        try:
++            probe = subprocess.run(
++                [executable, "info", "--format", "{{.ServerVersion}}"],
++                capture_output=True,
++                text=True,
++                check=False,
++                timeout=8,
++                **hidden_run_kwargs(),
++            )
++        except (OSError, subprocess.SubprocessError) as exc:
++            return False, f"Docker engine unavailable for private command transaction: {str(exc)[:240]}"
++        if probe.returncode != 0 or not probe.stdout.strip():
++            detail = (probe.stderr or probe.stdout or "Docker engine unavailable").strip()[:240]
++            return False, f"Docker engine unavailable for private command transaction: {detail}"
++        return True, ""
++
++    def _transaction_stop_container(transaction_id: str) -> bool:
++        executable = shutil.which("docker")
++        if not executable:
++            return False
++        name = f"local-ai-{transaction_id}"
++        try:
++            probe = subprocess.run(
++                [executable, "info", "--format", "{{.ServerVersion}}"],
++                capture_output=True,
++                text=True,
++                check=False,
++                timeout=8,
++                **hidden_run_kwargs(),
++            )
++            if probe.returncode != 0 or not probe.stdout.strip():
++                return False
++            subprocess.run(
++                [executable, "rm", "--force", name],
++                capture_output=True,
++                text=True,
++                check=False,
++                timeout=20,
++                **hidden_run_kwargs(),
++            )
++            remaining = subprocess.run(
++                [executable, "inspect", name],
++                capture_output=True,
++                text=True,
++                check=False,
++                timeout=8,
++                **hidden_run_kwargs(),
++            )
++            return remaining.returncode != 0
++        except (OSError, subprocess.SubprocessError):
++            return False
++
++    def _transaction_root_for_context(self, transaction_id: str) -> Path:
++        with self._transaction_roots_lock:
++            active = self._active_transaction_roots.get(transaction_id)
++        return active if active is not None else (self._transaction_state_dir / transaction_id)
++
++    def _transaction_file_matches(left: RollbackFileSnapshot, right: RollbackFileSnapshot) -> bool:
++        return (
++            left.content == right.content
++            and left.mode == right.mode
++            and left.xattrs == right.xattrs
++            and left.mtime_ns == right.mtime_ns
++        )
++
++    def _recover_partial_transaction_import(
++        self,
++        source: Path,
++        source_snapshot: RollbackSnapshot,
++        transaction_snapshot: RollbackSnapshot,
++        paths: list[str],
++    ) -> bool:
++        current, error = _snapshot_rollback_scope(str(source), paths)
++        if error or current is None:
++            return False
++        try:
++            _capture_rollback_postimages(current)
++            restore_paths: list[str] = []
++            for path in paths:
++                observed = current.files[path]
++                before = source_snapshot.files[path]
++                after = transaction_snapshot.files[path]
++                if self._transaction_file_matches(observed, before):
++                    continue
++                if not self._transaction_file_matches(observed, after):
++                    return False
++                source_snapshot.postimages[path] = current.postimages[path]
++                restore_paths.append(path)
++            if restore_paths:
++                rollback = RollbackSnapshot(
++                    root=source_snapshot.root,
++                    root_identity=source_snapshot.root_identity,
++                    files={path: source_snapshot.files[path] for path in restore_paths},
++                    root_guard=source_snapshot.root_guard,
++                    postimages={path: source_snapshot.postimages[path] for path in restore_paths},
++                )
++                _restore_rollback_scope(str(source), rollback)
++            verified, verify_error = _snapshot_rollback_scope(str(source), paths)
++            if verify_error or verified is None:
++                return False
++            try:
++                return all(
++                    self._transaction_file_matches(verified.files[path], source_snapshot.files[path])
++                    for path in paths
++                )
++            finally:
++                _close_rollback_root(verified.root_guard)
++        except (OSError, ValueError):
++            return False
++        finally:
++            _close_rollback_root(current.root_guard)
++
++    def _transaction_file_payload(snapshot: RollbackFileSnapshot) -> dict[str, Any]:
++        return {
++            "content": base64.b64encode(snapshot.content).decode("ascii") if snapshot.content is not None else None,
++            "mode": snapshot.mode,
++            "xattrs": {
++                name: base64.b64encode(value).decode("ascii")
++                for name, value in snapshot.xattrs.items()
++            },
++            "windows_dacl": base64.b64encode(snapshot.windows_dacl).decode("ascii")
++            if snapshot.windows_dacl is not None else None,
++            "atime_ns": snapshot.atime_ns,
++            "mtime_ns": snapshot.mtime_ns,
++        }
++
++    def _transaction_file_from_payload(payload: Any) -> RollbackFileSnapshot:
++        if not isinstance(payload, dict):
++            raise ValueError("transaction journal file entry is invalid")
++        encoded_content = payload.get("content")
++        content = base64.b64decode(encoded_content, validate=True) if encoded_content is not None else None
++        raw_xattrs = payload.get("xattrs", {})
++        if not isinstance(raw_xattrs, dict) or len(raw_xattrs) > 256:
++            raise ValueError("transaction journal metadata is invalid")
++        xattrs = {
++            str(name): base64.b64decode(value, validate=True)
++            for name, value in raw_xattrs.items()
++        }
++        encoded_dacl = payload.get("windows_dacl")
++        windows_dacl = base64.b64decode(encoded_dacl, validate=True) if encoded_dacl is not None else None
++        mode = payload.get("mode")
++        atime_ns = payload.get("atime_ns")
++        mtime_ns = payload.get("mtime_ns")
++        if mode is not None and not isinstance(mode, int):
++            raise ValueError("transaction journal mode is invalid")
++        if atime_ns is not None and not isinstance(atime_ns, int):
++            raise ValueError("transaction journal atime is invalid")
++        if mtime_ns is not None and not isinstance(mtime_ns, int):
++            raise ValueError("transaction journal mtime is invalid")
++        return RollbackFileSnapshot(content, mode, xattrs, windows_dacl, atime_ns, mtime_ns)
++
++    def _persist_transaction_journal(path: Path, payload: dict[str, Any]) -> None:
++        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
++        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
++        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
++        try:
++            with os.fdopen(fd, "wb") as stream:
++                fd = -1
++                stream.write(encoded)
++                stream.flush()
++                os.fsync(stream.fileno())
++            os.replace(temporary, path)
++        finally:
++            if fd >= 0:
++                os.close(fd)
++            try:
++                temporary.unlink()
++            except FileNotFoundError:
++                pass
++
++    def _recover_transaction_journals(
++        self,
++        source: Path,
++        task_id: str,
++        transaction_parent: Path,
++        lease_tenant: str,
++    ) -> dict[str, Any] | None:
++        for journal_path in sorted(transaction_parent.glob("*.journal.json")):
++            lease: dict[str, Any] | None = None
++            journal: dict[str, Any] = {}
++            try:
++                if journal_path.stat().st_size > 96 * 1024 * 1024:
++                    raise ValueError("transaction journal exceeds size limit")
++                journal = json.loads(journal_path.read_text(encoding="utf-8"))
++                if not isinstance(journal, dict):
++                    raise ValueError("transaction journal is invalid")
++                if journal.get("schema") != 1:
++                    raise ValueError("transaction journal schema is unsupported")
++                if journal.get("source_root") != str(source) or journal.get("task_id") != task_id:
++                    continue
++                files = journal.get("files")
++                paths = journal.get("paths")
++                if (
++                    not isinstance(files, dict)
++                    or not isinstance(paths, list)
++                    or len(paths) != len(set(paths))
++                    or set(paths) != set(files)
++                ):
++                    raise ValueError("transaction journal write set is invalid")
++                if any(not isinstance(path, str) or not isinstance(entries, dict) for path, entries in files.items()):
++                    raise ValueError("transaction journal file entry is invalid")
++                if any(
++                    not isinstance(path, str)
++                    or not path
++                    or Path(path).is_absolute()
++                    or ".." in Path(path).parts
++                    for path in paths
++                ):
++                    raise ValueError("transaction journal path is invalid")
++                before = {path: self._transaction_file_from_payload(files[path].get("before")) for path in paths}
++                after = {path: self._transaction_file_from_payload(files[path].get("after")) for path in paths}
++                lease = self._transaction_leases.claim(
++                    tenant=lease_tenant,
++                    root=str(source),
++                    paths=list(paths),
++                    ttl_seconds=300,
++                    purpose=f"recover command transaction {journal.get('transaction_id', '')}",
++                )
++                if not lease.get("success"):
++                    return {
++                        "success": False,
++                        "transaction_id": str(journal.get("transaction_id", "")),
++                        "transaction_status": "recovery_required",
++                        "failure_kind": "destination_conflict",
++                        "outcome_unknown": True,
++                        "retryable": False,
++                        "terminal": True,
++                        "error": str(lease.get("error") or "transaction recovery lease denied")[:512],
++                    }
++                current, scope_error = _snapshot_rollback_scope(str(source), list(paths))
++                if scope_error or current is None:
++                    raise OSError(scope_error or "cannot inspect transaction recovery targets")
++                try:
++                    _capture_rollback_postimages(current)
++                    pending: list[str] = []
++                    for path in paths:
++                        observed = current.files[path]
++                        if self._transaction_file_matches(observed, after[path]):
++                            continue
++                        if not self._transaction_file_matches(observed, before[path]):
++                            raise OSError(f"transaction recovery conflict at {path}")
++                        pending.append(path)
++                    if pending:
++                        import_files = {
++                            path: RollbackFileSnapshot(
++                                after[path].content,
++                                after[path].mode,
++                                after[path].xattrs,
++                                current.files[path].windows_dacl,
++                                after[path].atime_ns,
++                                after[path].mtime_ns,
++                            )
++                            for path in pending
++                        }
++                        import_snapshot = RollbackSnapshot(
++                            current.root,
++                            current.root_identity,
++                            import_files,
++                            current.root_guard,
++                            {path: current.postimages[path] for path in pending},
++                        )
++                        _restore_rollback_scope(str(source), import_snapshot)
++                    verified, verify_error = _snapshot_rollback_scope(str(source), list(paths))
++                    if verify_error or verified is None:
++                        raise OSError(verify_error or "cannot verify recovered transaction outputs")
++                    try:
++                        if not all(
++                            self._transaction_file_matches(verified.files[path], after[path])
++                            for path in paths
++                        ):
++                            raise OSError("transaction recovery postimages did not verify")
++                    finally:
++                        _close_rollback_root(verified.root_guard)
++                finally:
++                    _close_rollback_root(current.root_guard)
++                journal_path.unlink()
++                transaction_root_value = journal.get("transaction_root")
++                if isinstance(transaction_root_value, str):
++                    transaction_root = Path(transaction_root_value).resolve(strict=False)
++                    try:
++                        transaction_relative = transaction_root.relative_to(
++                            transaction_parent.resolve(strict=True)
++                        )
++                    except ValueError:
++                        pass
++                    else:
++                        if transaction_relative.parts:
++                            shutil.rmtree(transaction_root, ignore_errors=True)
++            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
++                return {
++                    "success": False,
++                    "transaction_id": str(journal.get("transaction_id", "")),
++                    "transaction_status": "recovery_required",
++                    "failure_kind": "destination_conflict",
++                    "outcome_unknown": True,
++                    "retryable": False,
++                    "terminal": True,
++                    "error": str(exc)[:512],
++                }
++            finally:
++                if lease is not None and lease.get("success"):
++                    self._transaction_leases.release(lease_tenant, str(lease.get("lease_id") or ""))
++        return None
++
++    def _run_private_transaction(
++        self,
++        command: str,
++        source_root: str | Path,
++        tenant: str,
++        *,
++        task_id: str,
++        paths: list[str],
++        timeout: int,
++        docker_image: str,
++        cancel_event: threading.Event | None = None,
++        log_callback: Any | None = None,
++        operation: Any | None = None,
++        command_key: str = "",
++        attempt_key: str = "",
++    ) -> dict[str, Any]:
++        transaction_id = uuid.uuid4().hex
++        if not isinstance(docker_image, str) or not docker_image.strip() or "\x00" in docker_image:
++            return {
++                "success": False, "transaction_id": transaction_id,
++                "transaction_status": "discarded", "failure_kind": "sandbox_unavailable",
++                "error": "invalid Docker image for private command transaction",
++                "terminal": True, "retryable": False,
++            }
++        ready, ready_error = self._transaction_docker_ready()
++        if not ready:
++            return {
++                "success": False, "transaction_id": transaction_id,
++                "transaction_status": "discarded", "failure_kind": "sandbox_unavailable",
++                "error": ready_error, "mutation_sandbox_required": True,
++                "terminal": True, "retryable": False,
++            }
++
++        source = Path(canonical_root(source_root)).resolve(strict=True)
++        if not attempt_key:
++            attempt_key = self._attempt_key(command, str(source))
++        if not command_key:
++            try:
++                command_key, _transaction_state = self._key(
++                    command, str(source), self.classify(command)
++                )
++            except (OSError, ValueError, RuntimeError):
++                command_key = ""
++        transaction_name = f"command-transaction:{transaction_id}"
++        transaction_parent = self._transaction_state_dir
++        source_resolved = source.resolve(strict=True)
++        transaction_parent_resolved = transaction_parent.resolve(strict=False)
++        try:
++            transaction_parent_resolved.relative_to(source_resolved)
++            overlaps_source = True
++        except ValueError:
++            try:
++                source_resolved.relative_to(transaction_parent_resolved)
++                overlaps_source = True
++            except ValueError:
++                overlaps_source = False
++        if overlaps_source:
++            fallback = Path(tempfile.gettempdir()) / "local-ai-hub-command-transactions"
++            state_key = hashlib.sha256(str(self._transaction_state_dir.resolve()).encode("utf-8")).hexdigest()[:20]
++            transaction_parent = fallback / state_key
++        transaction_parent.mkdir(parents=True, exist_ok=True)
++        try:
++            recovery = self._recover_transaction_journals(
++                source, task_id, transaction_parent,
++                f"recovery:{task_id}:{hashlib.sha256(str(source).encode()).hexdigest()[:16]}",
++            )
++        except OSError as exc:
++            return {
++                "success": False,
++                "transaction_id": transaction_id,
++                "transaction_status": "recovery_required",
++                "failure_kind": "destination_conflict",
++                "outcome_unknown": True,
++                "retryable": False,
++                "terminal": True,
++                "error": str(exc)[:512],
++            }
++        if recovery is not None:
++            recovery.setdefault("transaction_id", transaction_id)
++            if recovery.get("outcome_unknown"):
++                recovery_paths = recovery.get("rollback_paths", paths)
++                if not isinstance(recovery_paths, list):
++                    recovery_paths = paths
++                recovery_error = RuntimeError(str(recovery.get("error") or "transaction recovery outcome is unknown"))
++                self._mark_rollback_outcome_unknown(
++                    recovery,
++                    command_key=command_key,
++                    attempt_key=attempt_key,
++                    error=recovery_error,
++                    rollback_paths=recovery_paths,
++                )
++                self._capture_rollback_unknown_incident(recovery, command=command)
++            return recovery
++        lease = self._transaction_leases.claim(
++            tenant=transaction_name,
++            root=str(source),
++            paths=paths,
++            ttl_seconds=min(7200, max(30, int(timeout) + 60)),
++            purpose=f"command transaction task={task_id}",
++        )
++        if not lease.get("success"):
++            return {
++                "success": False, "transaction_id": transaction_id,
++                "transaction_status": "discarded", "failure_kind": "destination_conflict",
++                "error": str(lease.get("error") or "transaction write-set lease denied")[:512],
++                "terminal": True, "retryable": False,
++            }
++
++        transaction_root = transaction_parent / transaction_id
++        source_snapshot: RollbackSnapshot | None = None
++        transaction_snapshot: RollbackSnapshot | None = None
++        retain_transaction = False
++        retain_lease = False
++        result: dict[str, Any] = {
++            "success": False, "transaction_id": transaction_id,
++            "transaction_status": "discarded", "failure_kind": "command_failed",
++            "terminal": True, "retryable": False,
++        }
++        try:
++            source_snapshot, scope_error = _snapshot_rollback_scope(str(source), paths)
++            if scope_error or source_snapshot is None:
++                result.update({
++                    "error": scope_error or "cannot snapshot transaction write set",
++                    "failure_kind": "destination_conflict",
++                })
++                return result
++            _capture_rollback_postimages(source_snapshot)
++            if any(not entry.safe for entry in source_snapshot.postimages.values()):
++                result.update({
++                    "error": "transaction source write set could not be verified",
++                    "failure_kind": "destination_conflict",
++                })
++                return result
++
++            transaction_parent.mkdir(parents=True, exist_ok=True)
++            transaction_root, baseline = create_private_transaction_snapshot_with_manifest(
++                source, transaction_root
++            )
++            with self._transaction_roots_lock:
++                self._active_transaction_roots[transaction_id] = transaction_root.resolve(strict=True)
++            if callable(operation):
++                try:
++                    execution = operation(transaction_root, transaction_id)
++                except subprocess.TimeoutExpired as exc:
++                    execution = {
++                        "success": False,
++                        "exit_code": -1,
++                        "timed_out": True,
++                        "cleanup_unconfirmed": True,
++                        "error": f"transaction operation timed out: {exc}",
++                        "stdout": "",
++                        "stderr": "",
++                    }
++            else:
++                argv = self._transaction_docker_argv(
++                    transaction_id, transaction_root, command, docker_image
++                )
++                try:
++                    execution = self._execute(
++                        argv,
++                        str(transaction_root),
++                        timeout,
++                        cancel_event,
++                        log_callback=log_callback,
++                    )
++                except subprocess.TimeoutExpired as exc:
++                    execution = {
++                        "success": False,
++                        "exit_code": -1,
++                        "timed_out": True,
++                        "cleanup_unconfirmed": True,
++                        "error": f"transaction command timed out: {exc}",
++                        "stdout": "",
++                        "stderr": "",
++                    }
++            result.update(execution)
++            result["transaction_id"] = transaction_id
++
++            cleanup_confirmed = not bool(execution.get("cleanup_unconfirmed"))
++            if execution.get("timed_out") or execution.get("cancelled") or not cleanup_confirmed:
++                cleanup_confirmed = self._transaction_stop_container(transaction_id)
++            if not cleanup_confirmed:
++                retain_transaction = True
++                retain_lease = True
++                self._mark_rollback_outcome_unknown(
++                    result,
++                    command_key=command_key,
++                    attempt_key=attempt_key,
++                    error=OSError("transaction container termination could not be confirmed"),
++                    rollback_paths=paths,
++                )
++                self._capture_rollback_unknown_incident(result, command=command)
++                result.update({
++                    "success": False,
++                    "transaction_status": "recovery_required",
++                    "failure_kind": "child_termination_unconfirmed",
++                    "outcome_unknown": True,
++                    "retryable": False,
++                    "terminal": True,
++                    "error": "transaction container termination could not be confirmed",
++                })
++                return result
++            if execution.get("cleanup_unconfirmed"):
++                execution["cleanup_unconfirmed"] = False
++                result["cleanup_unconfirmed"] = False
++
++            if not execution.get("success"):
++                try:
++                    verify_transaction_source_unchanged(source, baseline, paths)
++                except (OSError, ValueError) as exc:
++                    retain_transaction = True
++                    retain_lease = True
++                    self._mark_rollback_outcome_unknown(
++                        result,
++                        command_key=command_key,
++                        attempt_key=attempt_key,
++                        error=exc,
++                        rollback_paths=paths,
++                    )
++                    self._capture_rollback_unknown_incident(result, command=command)
++                    result.update({
++                        "success": False,
++                        "transaction_status": "recovery_required",
++                        "failure_kind": "destination_conflict",
++                        "rolled_back": False,
++                        "fail_closed": True,
++                        "incident_required": True,
++                        "rollback_paths": list(paths),
++                        "outcome_unknown": True,
++                        "retryable": False,
++                        "terminal": True,
++                        "error": str(exc)[:512],
++                    })
++                    return result
++                if execution.get("outcome_unknown") or execution.get("cleanup_unconfirmed"):
++                    if not result.get("incident_required"):
++                        self._mark_rollback_outcome_unknown(
++                            result,
++                            command_key=command_key,
++                            attempt_key=attempt_key,
++                            error=OSError(str(result.get("error") or "transaction outcome is unknown")),
++                            rollback_paths=paths,
++                        )
++                        self._capture_rollback_unknown_incident(result, command=command)
++                    result.update({
++                        "success": False,
++                        "transaction_status": "discarded",
++                        "failure_kind": "command_outcome_unknown",
++                        "rolled_back": bool(result.get("rolled_back", True)),
++                        "source_unchanged": True,
++                        "outcome_unknown": True,
++                        "fail_closed": True,
++                        "incident_required": True,
++                        "retryable": False,
++                        "terminal": True,
++                    })
++                    return result
++                result.update({
++                    "success": False,
++                    "transaction_status": "discarded",
++                    "failure_kind": (
++                        "timeout" if execution.get("timed_out") else
++                        "cancelled" if execution.get("cancelled") else "command_failed"
++                    ),
++                    "outcome_unknown": False,
++                    "rolled_back": True,
++                    "source_unchanged": True,
++                    "retryable": False,
++                    "terminal": True,
++                })
++                return result
++
++            try:
++                verify_transaction_source_unchanged(source, baseline, paths)
++                changes = validate_transaction_output(baseline, transaction_root, paths)
++            except (OSError, ValueError) as exc:
++                source_conflict = "source path changed while command was running" in str(exc)
++                if source_conflict:
++                    retain_transaction = True
++                    retain_lease = True
++                    self._mark_rollback_outcome_unknown(
++                        result,
++                        command_key=command_key,
++                        attempt_key=attempt_key,
++                        error=exc,
++                        rollback_paths=paths,
++                    )
++                    self._capture_rollback_unknown_incident(result, command=command)
++                result.update({
++                    "success": False,
++                    "transaction_status": "recovery_required" if source_conflict else "discarded",
++                    "failure_kind": (
++                        "undeclared_output" if "undeclared transaction output" in str(exc)
++                        else "destination_conflict" if source_conflict
++                        else "import_failed"
++                    ),
++                    "outcome_unknown": source_conflict,
++                    "rolled_back": not source_conflict,
++                    "source_unchanged": not source_conflict,
++                    "retryable": False,
++                    "terminal": True,
++                    "error": str(exc)[:512],
++                })
++                return result
++
++            changed_paths = list(changes)
++            try:
++                if changed_paths:
++                    transaction_snapshot, output_error = _snapshot_rollback_scope(
++                        str(transaction_root), changed_paths
++                    )
++                    if output_error or transaction_snapshot is None:
++                        raise OSError(output_error or "cannot snapshot transaction outputs")
++                    expected_preimages = {
++                        path: source_snapshot.postimages[path]
++                        for path in changed_paths
++                    }
++                    imported_files = {
++                        path: RollbackFileSnapshot(
++                            content=transaction_snapshot.files[path].content,
++                            mode=transaction_snapshot.files[path].mode,
++                            xattrs=transaction_snapshot.files[path].xattrs,
++                            windows_dacl=source_snapshot.files[path].windows_dacl,
++                            atime_ns=transaction_snapshot.files[path].atime_ns,
++                            mtime_ns=transaction_snapshot.files[path].mtime_ns,
++                        )
++                        for path in changed_paths
++                    }
++                    import_snapshot = RollbackSnapshot(
++                        root=source_snapshot.root,
++                        root_identity=source_snapshot.root_identity,
++                        files=imported_files,
++                        root_guard=source_snapshot.root_guard,
++                        postimages=expected_preimages,
++                    )
++                    journal_path = transaction_parent / f"{transaction_id}.journal.json"
++                    journal_payload = {
++                        "schema": 1,
++                        "transaction_id": transaction_id,
++                        "task_id": task_id,
++                        "source_root": str(source),
++                        "transaction_root": str(transaction_root),
++                        "paths": changed_paths,
++                        "files": {
++                            path: {
++                                "before": self._transaction_file_payload(source_snapshot.files[path]),
++                                "after": self._transaction_file_payload(imported_files[path]),
++                            }
++                            for path in changed_paths
++                        },
++                    }
++                    self._persist_transaction_journal(journal_path, journal_payload)
++                    try:
++                        _restore_rollback_scope(str(source), import_snapshot)
++                    except Exception as import_error:
++                        restored = self._recover_partial_transaction_import(
++                            source, source_snapshot, transaction_snapshot, changed_paths
++                        )
++                        if restored:
++                            journal_path.unlink(missing_ok=True)
++                            result.update({
++                                "success": False,
++                                "transaction_status": "discarded",
++                                "failure_kind": "import_failed",
++                                "outcome_unknown": False,
++                                "retryable": False,
++                                "terminal": True,
++                                "rolled_back": True,
++                                "error": f"transaction output import failed; source restored: {str(import_error)[:384]}",
++                            })
++                            return result
++                        raise OSError(f"transaction output import failed: {str(import_error)[:384]}") from import_error
++
++                    verify_snapshot, verify_error = _snapshot_rollback_scope(
++                        str(source), changed_paths
++                    )
++                    if verify_error or verify_snapshot is None:
++                        raise OSError(verify_error or "cannot verify imported transaction outputs")
++                    try:
++                        for path in changed_paths:
++                            if not self._transaction_file_matches(
++                                verify_snapshot.files[path], transaction_snapshot.files[path]
++                            ):
++                                raise OSError(f"imported transaction output changed: {path}")
++                    finally:
++                        _close_rollback_root(verify_snapshot.root_guard)
++                    journal_path.unlink()
++                    try:
++                        descriptor = os.open(transaction_parent, os.O_RDONLY)
++                    except OSError:
++                        descriptor = None
++                    if descriptor is not None:
++                        try:
++                            os.fsync(descriptor)
++                        finally:
++                            os.close(descriptor)
++                result.update({
++                    "success": True,
++                    "transaction_status": "committed",
++                    "failure_kind": "",
++                    "outcome_unknown": False,
++                    "retryable": False,
++                    "terminal": True,
++                    "imported_paths": changed_paths if 'changed_paths' in locals() else [],
++                })
++            except Exception as exc:
++                retain_transaction = True
++                retain_lease = True
++                result.update({
++                    "success": False,
++                    "transaction_status": "recovery_required",
++                    "failure_kind": "destination_conflict" if "changed" in str(exc).lower() else "import_failed",
++                    "outcome_unknown": True,
++                    "retryable": False,
++                    "terminal": True,
++                    "error": str(exc)[:512],
++                })
++            return result
++        except Exception as exc:
++            result.update({
++                "success": False,
++                "transaction_status": "discarded",
++                "failure_kind": "command_failed",
++                "error": str(exc)[:512],
++                "retryable": False,
++                "terminal": True,
++            })
++            return result
++        finally:
++            if transaction_snapshot is not None:
++                try:
++                    _close_rollback_root(transaction_snapshot.root_guard)
++                except OSError:
++                    pass
++            if source_snapshot is not None:
++                try:
++                    _close_rollback_root(source_snapshot.root_guard)
++                except OSError:
++                    pass
++            if not retain_transaction:
++                shutil.rmtree(transaction_root, ignore_errors=True)
++            with self._transaction_roots_lock:
++                self._active_transaction_roots.pop(transaction_id, None)
++            if not retain_lease:
++                self._transaction_leases.release(transaction_name, str(lease.get("lease_id") or ""))
++
++
+     def _distill_error_with_model(self, result: dict[str, Any]) -> str:
+         if not callable(self.error_distiller):
+             return ""
+@@ -3718,6 +4521,7 @@ class CommandBroker:
+             _cache_context=resolved.cache_context,
+         )
+ 
++    @_stable_rollback_status
+     def run(
+         self,
+         command: str | CommandInvocation,
+@@ -3737,6 +4541,7 @@ class CommandBroker:
+         sandbox: str = "local",
+         docker_image: str = "python:3.11-slim",
+         bypass_cache: bool = False,
++        paths: list[str] | None = None,
+         rollback_paths: list[str] | None = None,
+         _environment_overrides: Mapping[str, str] | None = None,
+         _cache_context: str = "",
+@@ -3835,7 +4640,15 @@ class CommandBroker:
+                     "terminal": True,
+                     "retryable": False,
+                 }
+-        if sandbox == "docker":
++        declared_paths = paths if paths is not None else (rollback_paths if rollback_on_failure else None)
++        if is_mutating and not declared_paths:
++            return {"success": False, "error": "mutating command requires an explicit non-empty paths write set", "mutation_write_set_required": True, "terminal": True, "retryable": False}
++        if rollback_on_failure and paths is not None and rollback_paths is not None:
++            if {value.replace(chr(92), "/") for value in paths} != {value.replace(chr(92), "/") for value in rollback_paths}:
++                return {"success": False, "error": "paths and rollback_paths must describe the same write set", "mutation_write_set_invalid": True, "terminal": True, "retryable": False}
++        if (is_mutating or rollback_on_failure) and _environment_overrides:
++            return {"success": False, "error": "mutating transaction does not accept project environment overrides", "terminal": True, "retryable": False}
++        if sandbox == "docker" and not is_mutating:
+             if not shutil.which("docker"):
+                 return {
+                     "success": False,
+@@ -4033,7 +4846,7 @@ class CommandBroker:
+ 
+         # Acquire rollback handles only after every preflight and early-return path.
+         # Otherwise a rejected task can retain the root directory handle on Windows.
+-        if rollback_on_failure:
++        if rollback_on_failure and not is_mutating:
+             rollback_state, scope_error = _snapshot_rollback_scope(cwd, rollback_paths)
+             if scope_error:
+                 key = "rollback_scope_required" if scope_error == "rollback paths are required" else "rollback_scope_invalid"
+@@ -4081,15 +4894,28 @@ class CommandBroker:
+             except Exception:
+                 pass
+         try:
+-            result = self._execute(
+-                command,
+-                cwd,
+-                int(timeout or self.timeout),
+-                cancel_event,
+-                log_callback=log_callback,
+-                argv_override=argv_override,
+-                environment_overrides=_environment_overrides,
+-            )
++            if is_mutating or rollback_on_failure:
++                result = self._run_private_transaction(
++                    command, cwd, tenant,
++                    task_id=task_id,
++                    paths=list(declared_paths or []),
++                    timeout=int(timeout or self.timeout),
++                    docker_image=docker_image,
++                    cancel_event=cancel_event,
++                    log_callback=log_callback,
++                    command_key=key,
++                    attempt_key=attempt_key,
++                )
++            else:
++                result = self._execute(
++                    command,
++                    cwd,
++                    int(timeout or self.timeout),
++                    cancel_event,
++                    log_callback=log_callback,
++                    argv_override=argv_override,
++                    environment_overrides=_environment_overrides,
++                )
+             # CPython compileall reports missing targets as a diagnostic while
+             # still exiting 0. A green exit code must not hide that no target
+             # was compiled.
+@@ -4274,6 +5100,7 @@ class CommandBroker:
+             return repaired
+         return compacted
+ 
++    @_stable_rollback_status
+     def patch_and_verify(
+         self,
+         patch: str,

@@ -1,0 +1,29 @@
+--- a/tests/test_http_route_operation_acceptance.py
++++ b/tests/test_http_route_operation_acceptance.py
+@@ -85,11 +85,21 @@
+         to_dict=lambda: {"seq": 8, "kind": "task.updated", "stream_id": "stream-31"}
+     )
+ 
+-    def list_events(*, stream_id="", after_seq=0, limit=100):
+-        calls.append((stream_id, after_seq, limit))
+-        return [event]
+-
+-    monkeypatch.setattr(app.agent_state, "events", list_events)
++    def event_page(*, stream_id="", after_seq=0, limit=100, through_seq=None):
++        calls.append((stream_id, int(after_seq), limit))
++        return {
++            "success": True,
++            "events": [event.to_dict()],
++            "next_seq": 8,
++            "first_retained_seq": 1,
++            "last_seq": 8,
++            "has_more": False,
++            "gap_ranges": [],
++            "cursor_reset": False,
++            "error": None,
++        }
++
++    monkeypatch.setattr(app.agent_state, "event_page", event_page)
+     url = f"{base_url}/api/agent-state/events?stream_id=stream-31&after_seq=4&limit=9"
+     request = urllib_request.Request(
+         url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"

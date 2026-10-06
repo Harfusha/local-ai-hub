@@ -3,9 +3,9 @@ from pathlib import Path
 
 from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.delivery import decide_delivery
+from local_ai_hub.mcp_server import _task_delivery_contract
 from local_ai_hub.telemetry import TelemetryStore
 from local_ai_hub import http_server
-from local_ai_hub.mcp_server import _task_delivery_contract
 
 
 def test_async_delivery_docs_match_supported_actions_and_cold_start_rules():
@@ -117,8 +117,6 @@ def test_mcp_task_description_exposes_async_and_conversation_contracts():
         "POST /api/conversations/continue",
     ):
         assert phrase in contract
-
-
 def test_auto_delivery_uses_async_when_observed_p95_exceeds_budget():
     decision = decide_delivery("auto", latency_budget_ms=5_000, observed_p95_ms=5_001, samples=20)
 

@@ -1,0 +1,8 @@
+{
+  "capture.json": "17b6fd37e3fd715c6b8308000747b1a6a0ae8b15f68088f93539c41cae094b2b",
+  "finalize-current.py": "5b29f280cca26a6e603d7047406c43c16ac10d7f926f8053da76f9e96c91568a",
+  "misc-pyflakes-current-root.patch": "e794d48f949ddcf8996fe0ff46f8bed8e593d84c5eeccab2d798ae7e9b9c5b09",
+  "prior-14-file-static-receipt.json": "33558288745f16d804cebd03329cdfb544e1da321f3b44e3549a6abee86b1763",
+  "receipt.json": "a975ef9c29aae5b1e414a13649d2ca1bb796a02401efce6271adb30409a65a74",
+  "refresh-current.ps1": "43e5f790e483b5cd54bab463a1ab6e049e84e3745d4e368e34106bab81f8f3cb"
+}

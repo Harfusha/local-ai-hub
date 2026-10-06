@@ -1,0 +1,47 @@
+{
+  "captured_at": "2026-10-03",
+  "candidate_root": "C:/Users/Adam/.codex/worktrees/t08-agent-os/.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "root_preimage_sha256": {
+    "src/local_ai_hub/agent_context.py": "01B647D7EB685C2849DBE960F47B364849B1C130A3F567E875DD82173E1786C1",
+    "src/local_ai_hub/agent_memory.py": "6527F766FE9706CAA09E19779045532F6A75809161D2CA72C23FD5FE0176B271",
+    "tests/test_agent_context.py": "29C6016608514B7462860DF9D48F242B016F4464AA6F9DC8CBCAD88ABB493E65"
+  },
+  "root_scoped_dirty_paths": [
+    "src/local_ai_hub/agent_context.py",
+    "src/local_ai_hub/agent_memory.py",
+    "tests/test_agent_context.py"
+  ],
+  "hunk_ownership": {
+    "T08": [
+      "agent_context.py ContextCompiler query/diagnostic caller: pass session_id as independent scope",
+      "tests/test_agent_context.py scoped-session contract: request uses session_id, not tenant"
+    ],
+    "T05": [
+      "agent_memory.py _context_scope_sql / find_for_context / diagnostic_summary provider query API; session_id parameter and rootless task/session provenance rule require T05 owner review"
+    ]
+  },
+  "failure_evidence": {
+    "source": "artifacts/t08-t23-t24-acceptance-receipt-20261003.json and artifacts/t08-acceptance-gate-20261003.json",
+    "recorded_red": "1 failed at current_session after setup used explicit session_id",
+    "assertion": "test_authoritative_memory_is_root_and_task_session_scoped expects current_session.record_id in compiled element IDs",
+    "diagnosis": "ContextCompiler/MemoryStore conflated tenant with session identity. Root SQL used tenant for AgentScope.SESSION, then tenant provenance filtering excluded unowned session record; root-required predicate also excluded task/session rows without root provenance.",
+    "combined_24_plus_1_run": "not evidenced: acceptance gate records 24 passed, 0 failed for separate migration/durable suite and separately records the scoped-memory red selector."
+  },
+  "root_written": false,
+  "tests_run_this_continuation": false,
+  "root_current_patch": {
+    "path": "artifacts/t08-scoped-memory-session-root-current-20261003.patch",
+    "sha256": "432D141FC7F097F6A9496E6A5F2BF81DA01EF720EE21170A633309873D4DAD5D",
+    "files": [
+      "src/local_ai_hub/agent_context.py",
+      "src/local_ai_hub/agent_memory.py",
+      "tests/test_agent_context.py"
+    ],
+    "apply_stat": "3 files changed, 15 insertions(+), 4 deletions(-)",
+    "root_apply_check": "PASS, git apply --check --whitespace=error; no apply"
+  },
+  "test_gate": "No tests run in this continuation; valid serial test slot not established. Existing scoped-memory red receipt remains historical."
+}

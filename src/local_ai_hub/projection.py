@@ -381,7 +381,7 @@ class AgentProjector:
 
     @staticmethod
     def _clean_empty(val: Any, preserve_keys: set[str] | None = None) -> Any:
-        preserve = preserve_keys or {"results", "files", "symbols"}
+        preserve = preserve_keys or {"results", "files", "symbols", "active_tasks"}
         if isinstance(val, dict):
             cleaned = {}
             for k, v in val.items():

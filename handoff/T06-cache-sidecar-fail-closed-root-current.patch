@@ -1,0 +1,269 @@
+diff --git a/src/local_ai_hub/cache.py b/src/local_ai_hub/cache.py
+index 44d89bf..407a3a6 100644
+--- a/src/local_ai_hub/cache.py
++++ b/src/local_ai_hub/cache.py
+@@ -6,6 +6,7 @@ import hashlib
+ import json
+ import os
+ import sqlite3
++import stat
+ import threading
+ import uuid
+ import time
+@@ -135,8 +136,33 @@ class _CommandCacheCoordinator:
+             except Exception as exc:
+                 errors.append(exc)
+         if len(errors) == 2:
++            # The cross-process lock excludes readers during direct publication.
++            # A torn write is unreadable, so readers fail closed rather than reuse old epoch.
++            for state_path in (self.state_path, self.fallback_state_path):
++                try:
++                    self._write_state_path_in_place(state_path, generation, poisoned)
++                except Exception:
++                    continue
++                return
+             raise OSError("all command-cache coordination sidecars failed") from errors[-1]
+ 
++    def _write_state_path_in_place(self, state_path: Path, generation: int, poisoned: bool) -> None:
++        payload = json.dumps({"generation": generation, "poisoned": poisoned}, separators=(",", ":")).encode("utf-8")
++        flags = os.O_CREAT | os.O_WRONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
++        fd = os.open(state_path, flags, 0o600)
++        try:
++            info = os.fstat(fd)
++            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
++                raise OSError("command-cache state must be a single-link regular file")
++            os.lseek(fd, 0, os.SEEK_SET)
++            os.ftruncate(fd, 0)
++            with os.fdopen(fd, "wb", closefd=False) as stream:
++                stream.write(payload)
++                stream.flush()
++                os.fsync(fd)
++        finally:
++            os.close(fd)
++
+     def _write_state_path(self, state_path: Path, generation: int, poisoned: bool) -> None:
+         payload = json.dumps({"generation": generation, "poisoned": poisoned}, separators=(",", ":"))
+         temporary = self.directory / f".{state_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+@@ -650,7 +676,8 @@ class TieredCache:
+         self._l1_generation = recovered_generation
+         return recovered_generation, False
+ 
+-    def get(self, key: str) -> Any | None:
++    def get_checked(self, key: str) -> tuple[Any | None, bool]:
++        """Return cached value and whether coordination state was trustworthy."""
+         if self._coordinator is not None:
+             try:
+                 with self._coordinator.locked():
+@@ -658,39 +685,39 @@ class TieredCache:
+                     self._sync_l1_generation(generation)
+                     if poisoned:
+                         self.l1.clear()
+-                        if self._recover_poisoned_namespace(generation) is None:
+-                            self.misses += 1
+-                            return None
++                        self._recover_poisoned_namespace(generation)
+                         self.misses += 1
+-                        return None
++                        return None, False
+                     value = self.l1.get(key)
+                     if value is not None:
+                         self.l1_hits += 1
+-                        return value
++                        return value, True
+                     value = self.l2.get(key)
+                     if value is not None:
+                         self.l2_hits += 1
+                         self.l1.set(key, value)
+-                        return value
++                        return value, True
+                     self.misses += 1
+-                    return None
++                    return None, True
+             except Exception:
+-                # Coordination failures fail closed; never fall back to an unvalidated L1.
+                 self.l1.clear()
+                 self._l1_generation = None
+                 self.misses += 1
+-                return None
++                return None, False
+         value = self.l1.get(key)
+         if value is not None:
+             self.l1_hits += 1
+-            return value
++            return value, True
+         value = self.l2.get(key)
+         if value is not None:
+-            self.l2_hits += 1
+             self.l1.set(key, value)
+-            return value
++            self.l2_hits += 1
++            return value, True
+         self.misses += 1
+-        return None
++        return None, True
++
++    def get(self, key: str) -> Any | None:
++        return self.get_checked(key)[0]
+ 
+     def set(self, key: str, value: Any) -> None:
+         if self._coordinator is not None:
+diff --git a/src/local_ai_hub/commands.py b/src/local_ai_hub/commands.py
+index 5bc84bd..783d396 100644
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -5375,6 +5375,24 @@ class CommandBroker:
+             _project_command_context=resolved,
+         )
+ 
++    @staticmethod
++    def _read_cache_entry(cache: Any, key: str) -> tuple[Any | None, bool]:
++        checked = getattr(cache, "get_checked", None)
++        if callable(checked):
++            value, healthy = checked(key)
++            return (value if healthy else None), healthy
++        return cache.get(key), True
++
++    @classmethod
++    def _read_cached_command_result(cls, success_cache: Any, failure_cache: Any, key: str) -> Any | None:
++        value, healthy = cls._read_cache_entry(success_cache, key)
++        if not healthy:
++            return None
++        if value is not None:
++            return value
++        value, healthy = cls._read_cache_entry(failure_cache, key)
++        return value if healthy else None
++
+     @_stable_rollback_status
+     def run(
+         self,
+@@ -5621,8 +5639,8 @@ class CommandBroker:
+             else self._attempt_key(command, cwd)
+         )
+         if not force and not bypass_cache and not is_mutating and not _transaction_context:
+-            suppressed = self.suppression_cache.get(attempt_key)
+-            if isinstance(suppressed, dict):
++            suppressed, suppression_cache_healthy = self._read_cache_entry(self.suppression_cache, attempt_key)
++            if suppression_cache_healthy and isinstance(suppressed, dict):
+                 self.suppressed += 1
+                 result = dict(suppressed)
+                 result.update({"suppression_cache_hit": True, "classification": classification})
+@@ -5690,7 +5708,7 @@ class CommandBroker:
+             return self._compact(result, tenant, command)
+         cacheable = bool(classification["cacheable"]) and not is_mutating and not _transaction_context
+         if cacheable and not force and not bypass_cache:
+-            cached = self.success_cache.get(key) or self.failure_cache.get(key)
++            cached = self._read_cached_command_result(self.success_cache, self.failure_cache, key)
+             if isinstance(cached, dict):
+                 stale_key = key
+                 invalidate_repo_state = getattr(self.repo_state, "invalidate", None)
+@@ -5707,7 +5725,7 @@ class CommandBroker:
+                     cached = None
+                 else:
+                     if key != stale_key:
+-                        cached = self.success_cache.get(key) or self.failure_cache.get(key)
++                        cached = self._read_cached_command_result(self.success_cache, self.failure_cache, key)
+             if isinstance(cached, dict):
+                 self.hits += 1
+                 result = dict(cached)
+diff --git a/tests/test_cache_invalidation.py b/tests/test_cache_invalidation.py
+index 9556a1e..17067ac 100644
+--- a/tests/test_cache_invalidation.py
++++ b/tests/test_cache_invalidation.py
+@@ -498,3 +498,52 @@ def test_posix_lock_timeout_clears_stale_l1_and_returns_miss(
+     assert elapsed < 1
+     assert observed == [None]
+     assert second.l1.get("key") is None
++
++
++def test_both_sidecar_atomic_replacements_failing_keep_cross_process_l1_safe(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    first = _cache(tmp_path, "command:failure")
++    first.set("key", "old")
++    source_root = str(Path(__file__).resolve().parents[1] / "src")
++    environment = os.environ.copy()
++    environment["PYTHONPATH"] = source_root + os.pathsep + environment.get("PYTHONPATH", "")
++    script = (
++        "import json, sys, time\n"
++        "from pathlib import Path\n"
++        "from local_ai_hub.cache import SQLiteCache, TieredCache\n"
++        "root=Path(sys.argv[1])\n"
++        "c=TieredCache(SQLiteCache(root/'cache.sqlite3','command:failure'))\n"
++        "print(json.dumps(c.get('key')), flush=True)\n"
++        "(root/'reader-ready').write_text('ready')\n"
++        "deadline=time.monotonic()+10\n"
++        "while not (root/'reader-go').exists() and time.monotonic()<deadline: time.sleep(.01)\n"
++        "print(json.dumps(c.get('key')), flush=True)\n"
++    )
++    reader = subprocess.Popen(
++        [sys.executable, "-B", "-c", script, str(tmp_path)],
++        cwd=Path(__file__).resolve().parents[1], env=environment,
++        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
++    )
++    try:
++        assert reader.stdout is not None
++        assert reader.stdout.readline().strip() == '\"old\"'
++        deadline = time.monotonic() + 5
++        while not (tmp_path / "reader-ready").exists() and time.monotonic() < deadline: time.sleep(.01)
++        assert (tmp_path / "reader-ready").exists()
++        assert first._coordinator is not None
++        replace = cache_module.os.replace
++        def fail_sidecar_replace(source, destination):
++            if Path(destination).parent == first._coordinator.directory:
++                raise OSError("coordination sidecar replace failed")
++            return replace(source, destination)
++        monkeypatch.setattr(cache_module.os, "replace", fail_sidecar_replace)
++        assert first.delete("key") is True
++        (tmp_path / "reader-go").write_text("read", encoding="utf-8")
++        stdout, stderr = reader.communicate(timeout=15)
++        assert reader.returncode == 0, stderr
++        assert stdout.splitlines() == ["null"]
++    finally:
++        if reader.poll() is None:
++            reader.terminate()
++            reader.wait(timeout=5)
+diff --git a/tests/test_t06_command_cache_read_fail_closed.py b/tests/test_t06_command_cache_read_fail_closed.py
+new file mode 100644
+index 0000000..2408994
+--- /dev/null
++++ b/tests/test_t06_command_cache_read_fail_closed.py
+@@ -0,0 +1,39 @@
++from __future__ import annotations
++
++from typing import Any
++
++from local_ai_hub.commands import CommandBroker
++
++
++class _ReadCache:
++    def __init__(self, value: Any, healthy: bool) -> None:
++        self.value = value
++        self.healthy = healthy
++        self.keys: list[str] = []
++
++    def get_checked(self, key: str) -> tuple[Any, bool]:
++        self.keys.append(key)
++        return self.value, self.healthy
++
++
++def test_unhealthy_success_cache_cannot_fall_through_to_stale_failure_value() -> None:
++    success = _ReadCache(None, False)
++    failure = _ReadCache({"success": False, "stale": True}, True)
++
++    result = CommandBroker._read_cached_command_result(success, failure, "key")
++
++    assert result is None
++    assert success.keys == ["key"]
++    assert failure.keys == []
++
++
++def test_unhealthy_failure_cache_is_a_cache_miss() -> None:
++    success = _ReadCache(None, True)
++    failure = _ReadCache({"success": False, "stale": True}, False)
++
++    assert CommandBroker._read_cached_command_result(success, failure, "key") is None
++
++def test_unhealthy_suppression_cache_is_miss() -> None:
++    suppression = _ReadCache({"success": False, "stale": True}, False)
++
++    assert CommandBroker._read_cache_entry(suppression, "attempt") == (None, False)

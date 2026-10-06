@@ -1,0 +1,44 @@
+{
+  "task": "T08 crash recovery root-current test compatibility",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "candidate_test_sha256": "5D74703C2AB77D2C3B59412C3E7FB6BCDE505764BBF7F9BADB4FB85B44BC0FBF",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_preimage_sha256": {
+    "tests/test_agent_crash_recovery.py": "09A1B08ABBEDBA3D6396EB54B793C259BFE6666AAAC724FD0B4F50465F293D24",
+    "src/local_ai_hub/agent_verification.py": "FB477438FF110AB80FE6F2D486FFA5D87AAB1A855735FCD94592F8080EAF0017",
+    "src/local_ai_hub/agent_events.py": "30AB4485F34A67D8212E6151057E06EF806D40F92073036D8F9F4F4546B44822"
+  },
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub\\artifacts\\t08-crash-recovery-test-compat-root-current.patch",
+  "patch_sha256": "70D3D7B9F0383B69FC44C0C60E0BC67AD7F4EB74F1E419D29777B0F252575352",
+  "patch_scope": [
+    "tests/test_agent_crash_recovery.py"
+  ],
+  "changes": [
+    "Use AgentStateStore.events() for event-kind assertion while retaining event_page sequence assertions.",
+    "Set stable command_id on passed test receipt fixture to satisfy current VerificationReceipt contract."
+  ],
+  "candidate_receipt": {
+    "command": "python -m pytest -q --tb=short tests/test_agent_crash_recovery.py::test_crash_after_task_event_append_before_commit_rolls_back_projection_and_event tests/test_agent_crash_recovery.py::test_os_exit_after_task_event_insert_rolls_back_projection_and_event tests/test_agent_crash_recovery.py::test_committed_receipt_and_task_projection_survive_restart_before_publish tests/test_agent_t08_crash_after_commit.py::test_process_exit_during_receipt_write_recovers_atomically",
+    "result": "5 passed in 1.27s"
+  },
+  "root_apply_check": {
+    "command": "git apply --check --whitespace=error <patch> (cwd root)",
+    "result": "passed",
+    "root_modified": false
+  },
+  "root_overlay_receipt": {
+    "overlay": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t08-root-crash-patched-4ef28bbc746a40fc936fa719a3cb85e2",
+    "source": "current root src/local_ai_hub copied to temp; current root crash test copied and T08 test-only patch applied in temp; T08 process-exit test copied; .git pointer used read-only for git rev-parse",
+    "command": "same four selectors as candidate receipt",
+    "result": "5 passed in 1.72s",
+    "root_modified": false
+  },
+  "ownership": {
+    "test_file": "T08-owned crash recovery test",
+    "receipt_contract": "T09-owned VerificationReceipt requires command_id; fixture now supplies command_id, production contract untouched",
+    "agent_tasks.py": "T09 query hunks untouched"
+  },
+  "root_write": "none"
+}

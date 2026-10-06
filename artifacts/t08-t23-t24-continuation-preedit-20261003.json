@@ -1,0 +1,90 @@
+{
+  "captured_at": "2026-10-03",
+  "root": "C:/Users/Adam/.codex/worktrees/t08-agent-os/.local-ai-hub",
+  "head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "status": " M src/local_ai_hub/agent_blackboard.py\n M src/local_ai_hub/agent_consistency.py\n M src/local_ai_hub/agent_context.py\n M src/local_ai_hub/agent_events.py\n M src/local_ai_hub/agent_incidents.py\n M src/local_ai_hub/agent_memory.py\n M src/local_ai_hub/agent_tasks.py\n M src/local_ai_hub/agent_verification.py\n M src/local_ai_hub/app.py\n M src/local_ai_hub/async_jobs.py\n M src/local_ai_hub/commands.py\n M src/local_ai_hub/deterministic.py\n M src/local_ai_hub/embeddings.py\n M src/local_ai_hub/http_server.py\n M src/local_ai_hub/leases.py\n M src/local_ai_hub/pipeline.py\n M src/local_ai_hub/rag.py\n M src/local_ai_hub/reranker.py\n M src/local_ai_hub/services.py\n M src/local_ai_hub/sqlite_support.py\n M src/local_ai_hub/swarm.py\n M src/local_ai_hub/task_context.py\n M src/local_ai_hub/token_router.py\n M tests/test_agent_consistency.py\n M tests/test_agent_context.py\n M tests/test_agent_memory.py\n M tests/test_agent_state_e2e.py\n M tests/test_agent_state_operations.py\n M tests/test_agent_state_reliability.py\n M tests/test_agent_state_transport.py\n M tests/test_agent_tasks.py\n M tests/test_agent_verification.py\n M tests/test_all_advanced_improvements.py\n M tests/test_all_categories_expanded.py\n M tests/test_async_job_reliability_contract.py\n M tests/test_audit_round2_enhancements.py\n M tests/test_auto_negative_knowledge.py\n M tests/test_sse_events_stream.py\n M tests/test_storage_service_reliability.py\n M tests/test_swarm_orchestrator.py\n?? artifacts/\n?? benchmarks/\n?? docs/superpowers/plans/2026-09-28-t08-atomicity-recovery-continuation.md\n?? t08-atomic-event-page-receipt-tests-root.patch\n?? t08-atomic-idempotency-root-824.patch\n?? t08-context-stale-event-stream.patch\n?? t08-crash-recovery-tests-root.patch\n?? t08-e2e-completion-gate-trusted-evidence.patch\n?? t08-e2e-trusted-verification-evidence.patch\n?? t08-event-cursor-atomic-root.patch\n?? t08-incident-scope-root-handoff.patch\n?? t08-ordered-event-publication-contextmanager.patch\n?? t08-ordered-publication-tests-root.patch\n?? t08-owner-filtered-tests-root-98a9a1a.patch\n?? t08-repository-root-caller.patch\n?? t08-resume-idempotency-root-handoff.patch\n?? t08-root-current-verified-source.patch\n?? t08-root-current-verified-tests.patch\n?? t08-same-status-idempotency.patch\n?? t08-task-memory-adoption-root.patch\n?? t08-task-memory-adoption-working-tree.patch\n?? t08-task-memory-transition-working-tree.patch\n?? tests/test_agent_context_cleanup.py\n?? tests/test_agent_context_identity.py\n?? tests/test_agent_crash_recovery.py\n?? tests/test_agent_incident_scope.py\n?? tests/test_agent_memory_t08_rollback_masking.py\n?? tests/test_agent_memory_t08_tombstones.py\n?? tests/test_agent_t08_cache_isolation.py\n?? tests/test_agent_t08_crash_after_commit.py\n?? tests/test_agent_t08_durable_contract.py\n?? tests/test_agent_t08_event_page_snapshot.py\n?? tests/test_agent_t08_live_order.py\n?? tests/test_agent_t08_migration_recovery.py\n?? tests/test_agent_t08_receipt_transaction.py\n?? tests/test_agent_task_memory_adoption.py\n?? tests/test_agent_task_scope.py\n?? tests/test_t05_agent_state_migrations.py\n?? tests/test_t08_async_admission_lifecycle.py\n?? tests/test_t08_coordination_identity.py\n?? tests/test_t08_http_memory_context_immutable.py\n?? tests/test_t08_t13_t12_consumer_overlay.py",
+  "diff_summary": "src/local_ai_hub/agent_blackboard.py         |  438 +++++--\r\n src/local_ai_hub/agent_consistency.py        |   28 +-\r\n src/local_ai_hub/agent_context.py            |  102 +-\r\n src/local_ai_hub/agent_events.py             | 1655 +++++++++++++++++++++++---\r\n src/local_ai_hub/agent_incidents.py          |  140 ++-\r\n src/local_ai_hub/agent_memory.py             |  841 +++++++++----\r\n src/local_ai_hub/agent_tasks.py              | 1290 ++++++++++++++++++--\r\n src/local_ai_hub/agent_verification.py       |  258 ++--\r\n src/local_ai_hub/app.py                      |   24 +-\r\n src/local_ai_hub/async_jobs.py               |  574 ++++++++-\r\n src/local_ai_hub/commands.py                 |    8 +-\r\n src/local_ai_hub/deterministic.py            |    2 +-\r\n src/local_ai_hub/embeddings.py               |    2 +-\r\n src/local_ai_hub/http_server.py              |  292 ++++-\r\n src/local_ai_hub/leases.py                   |  173 ++-\r\n src/local_ai_hub/pipeline.py                 |    2 +-\r\n src/local_ai_hub/rag.py                      |    4 +-\r\n src/local_ai_hub/reranker.py                 |    2 +-\r\n src/local_ai_hub/services.py                 |   43 +-\r\n src/local_ai_hub/sqlite_support.py           |  395 ++++++\r\n src/local_ai_hub/swarm.py                    |  868 +++++++++++---\r\n src/local_ai_hub/task_context.py             |   27 +-\r\n src/local_ai_hub/token_router.py             |    2 +-\r\n tests/test_agent_consistency.py              |   26 +-\r\n tests/test_agent_context.py                  |    3 +-\r\n tests/test_agent_memory.py                   |   75 ++\r\n tests/test_agent_state_e2e.py                |  267 ++++-\r\n tests/test_agent_state_operations.py         |    4 +-\r\n tests/test_agent_state_reliability.py        |   15 +-\r\n tests/test_agent_state_transport.py          |  126 ++\r\n tests/test_agent_tasks.py                    |  683 ++++++++++-\r\n tests/test_agent_verification.py             |   33 +\r\n tests/test_all_advanced_improvements.py      |    9 +-\r\n tests/test_all_categories_expanded.py        |    9 +-\r\n tests/test_async_job_reliability_contract.py |  212 +++-\r\n tests/test_audit_round2_enhancements.py      |    2 +-\r\n tests/test_auto_negative_knowledge.py        |   13 +-\r\n tests/test_sse_events_stream.py              |  256 +++-\r\n tests/test_storage_service_reliability.py    |    9 +-\r\n tests/test_swarm_orchestrator.py             |  202 +++-\r\n 40 files changed, 8034 insertions(+), 1080 deletions(-)",
+  "scope": {
+    "inherited_t08_owned": [
+      "src/local_ai_hub/agent_context.py",
+      "src/local_ai_hub/agent_memory.py",
+      "tests/test_agent_context.py",
+      "tests/test_agent_context_identity.py",
+      "tests/test_agent_context_cleanup.py",
+      "benchmarks/bench_context_element_identity.py",
+      "docs/superpowers/plans/2026-09-28-t08-atomicity-recovery-continuation.md",
+      "artifacts/ existing T08 receipts and patches"
+    ],
+    "protected_other_dirty": [
+      "src/local_ai_hub/agent_blackboard.py",
+      "src/local_ai_hub/agent_consistency.py",
+      "src/local_ai_hub/agent_events.py",
+      "src/local_ai_hub/agent_incidents.py",
+      "src/local_ai_hub/agent_tasks.py",
+      "src/local_ai_hub/agent_verification.py",
+      "src/local_ai_hub/app.py",
+      "src/local_ai_hub/async_jobs.py",
+      "src/local_ai_hub/commands.py",
+      "src/local_ai_hub/deterministic.py",
+      "src/local_ai_hub/embeddings.py",
+      "src/local_ai_hub/http_server.py",
+      "src/local_ai_hub/leases.py",
+      "src/local_ai_hub/pipeline.py",
+      "src/local_ai_hub/rag.py",
+      "src/local_ai_hub/reranker.py",
+      "src/local_ai_hub/services.py",
+      "src/local_ai_hub/sqlite_support.py",
+      "src/local_ai_hub/swarm.py",
+      "src/local_ai_hub/task_context.py",
+      "src/local_ai_hub/token_router.py",
+      "tests/test_agent_consistency.py",
+      "tests/test_agent_memory.py",
+      "tests/test_agent_state_e2e.py",
+      "tests/test_agent_state_operations.py",
+      "tests/test_agent_state_reliability.py",
+      "tests/test_agent_state_transport.py",
+      "tests/test_agent_tasks.py",
+      "tests/test_agent_verification.py",
+      "tests/test_all_advanced_improvements.py",
+      "tests/test_all_categories_expanded.py",
+      "tests/test_async_job_reliability_contract.py",
+      "tests/test_audit_round2_enhancements.py",
+      "tests/test_auto_negative_knowledge.py",
+      "tests/test_sse_events_stream.py",
+      "tests/test_storage_service_reliability.py",
+      "tests/test_swarm_orchestrator.py",
+      "T08 overlay patches owned by other agents; preserve all unclaimed hunks"
+    ]
+  },
+  "pre_edit_hashes": {
+    "src/local_ai_hub/agent_context.py": "69564D221526F68DE711267D42A8AEF9F247771695037C85D7161E81EFF23AE0",
+    "src/local_ai_hub/agent_memory.py": "39EB33A440EA96D02CBE5D1A1E3D182B0F30A1B6487C881BD913FF23A9C68AB6",
+    "tests/test_agent_context.py": "3BF4067362768A8E87DC7188CC65435F36853D87275C87A3A509815D23223F99",
+    "tests/test_agent_context_identity.py": "1252F5B71A9635877B6258924C655D31DFC954C677A98EDED2F1B84179FEB1C8",
+    "tests/test_agent_context_cleanup.py": "6EBC933CE3B4ACEAF5732E3B9FBB11C543AC685DEA4CE6034FF1B8A184999EA2",
+    "benchmarks/bench_context_element_identity.py": "349F6599417E7910BBB5B1ED7D5A428D9E2D0BC806F008B4D93C53BEF365CDA7",
+    "plan": "0B37B1F1E590094D1D4A478B60BF7E3BA8A073B11F9C2CD1C284B48F4AE3CCC2"
+  },
+  "lease": {
+    "source": "local_ai_coord:claim",
+    "status": "success",
+    "id": "lease_c11c16e6cb0a4043a7bc",
+    "paths": [
+      "src/local_ai_hub/agent_context.py",
+      "tests/test_agent_context_identity.py",
+      "tests/test_agent_context_cleanup.py",
+      "benchmarks/bench_context_element_identity.py",
+      "docs/superpowers/plans/2026-09-28-t08-atomicity-recovery-continuation.md"
+    ],
+    "expires_at": 1791034850.9483228,
+    "receipt_lease": "lease_b0afaf3c100c4be49e37",
+    "receipt_path": "artifacts/t08-t23-t24-continuation-preedit-20261003.json",
+    "expires_at_receipt": 1791034964.6962137
+  },
+  "goal": {
+    "threadId": "01a0d30c-43ad-7f63-83cd-57cb666585d7",
+    "status": "blocked",
+    "objective": "Complete T08 Agent OS atomicity, durable event, and crash-recovery end-to-end acceptance; integrate only T08-owned hunks, preserve T05/T09/T18/T21 ownership, then obtain current-hash validation after explicit serial test-slot release.",
+    "task_lookup": "task_get T08 returned terminal 404 task not found"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "task": "T08 producer-to-durable-receipt-to-task-completion",
+  "base_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "root_edited": false,
+  "prior_dirty_work_preserved": true,
+  "preserved_blackboard_patch_sha256": "0310DF3732A1F53BDA346B7DAB1D8BDE51AF9D58D9C019FB4536893B8B984B66",
+  "files": {
+    "src/local_ai_hub/agent_events.py": "B00AAF9A109B697CE7D3A8756EF3E88BD72772D2F36DEC30BF3ACDA76E6BABE3",
+    "src/local_ai_hub/agent_verification.py": "468E4B18117CF77CE0BB34CFE08F9D1898EE0BDA43C5494BEAF7AE23F418645D",
+    "tests/test_agent_t08_receipt_transaction.py": "D07BFDF7781F42C93730E867AEFB66FD04CD528E23D222AF7A69DCB5EEBCA118"
+  },
+  "red": {
+    "command": "python -m pytest -q --tb=short tests/test_agent_t08_receipt_transaction.py::test_command_receipt_is_durable_and_allows_task_completion",
+    "result": "failed as expected",
+    "assertion": "publication_calls == 1; observed 0 before fix"
+  },
+  "green": {
+    "command": "python -m pytest -q --tb=short tests/test_agent_t08_receipt_transaction.py::test_command_receipt_is_durable_and_allows_task_completion",
+    "result": "1 passed in 0.72s",
+    "evidence": [
+      "command exit_code=0, no verification_receipt_warning",
+      "ArtifactStore evidence retrieved after write",
+      "receipt and verification event read through reopened AgentStateStore and VerificationStore",
+      "completion gate passed, TaskStore.complete returned completed"
+    ]
+  },
+  "provider_selector": {
+    "command": "python -m pytest -q --tb=short tests/test_agent_t08_live_order.py::test_ordered_event_publication_serializes_caller_owned_batch",
+    "result": "1 passed in 0.20s"
+  },
+  "implementation": "VerificationStore.record enters AgentStateStore.ordered_event_publication before BEGIN, commits receipt and task projection atomically, publishes committed events before closing connection."
+}

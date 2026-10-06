@@ -1,0 +1,12 @@
+--- a/tests/test_sse_events_stream.py
++++ b/tests/test_sse_events_stream.py
+@@ -151,6 +151,9 @@
+     client = HubClient.__new__(HubClient)
+     client.base_url = "http://127.0.0.1:11435"
+     client.api_token = "tok"
++    client.tenant = "test-tenant"
++    client.agent = "test-agent"
++    client.max_request_timeout = 1800.0
+ 
+     sse_payload = (
+         b": keep-alive\n\n"
