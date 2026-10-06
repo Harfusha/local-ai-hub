@@ -1,0 +1,42 @@
+{
+  "schema": "t12-review-diagnostic-v1",
+  "created_epoch": 1790708129,
+  "config_path": "C:\\Users\\Adam\\.codex\\worktrees\\4816\\.local-ai-hub\\.handoff\\t12-measured-isolated-config.toml",
+  "hardware_profile": "balanced",
+  "results": [
+    {
+      "task": "review",
+      "success": true,
+      "failure_code": null,
+      "routed_profile": "heavy_code",
+      "quality_score_pct": 100.0,
+      "ttft_ms": 8329.1,
+      "end_to_end_latency_ms": 9044.27,
+      "load_duration_ms": 3024.8,
+      "model_digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364"
+    },
+    {
+      "task": "scaffold",
+      "success": true,
+      "failure_code": null,
+      "routed_profile": "heavy_code",
+      "quality_score_pct": 100.0,
+      "ttft_ms": 61.01,
+      "end_to_end_latency_ms": 626.69,
+      "load_duration_ms": 2.09,
+      "model_digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364"
+    },
+    {
+      "task": "review",
+      "success": true,
+      "failure_code": null,
+      "routed_profile": "heavy_code",
+      "quality_score_pct": 100.0,
+      "ttft_ms": 39.82,
+      "end_to_end_latency_ms": 747.54,
+      "load_duration_ms": 3.16,
+      "model_digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364"
+    }
+  ],
+  "managed_server_stopped": true
+}

@@ -1,0 +1,28 @@
+diff --git a/tests/test_project_path_hints.py b/tests/test_project_path_hints.py
+index 3e71071..f2101d0 100644
+--- a/tests/test_project_path_hints.py
++++ b/tests/test_project_path_hints.py
+@@ -134,6 +134,23 @@ def test_hint_freshness_scope_existence_and_containment_are_rechecked(
+     ) is None
+ 
+ 
++def test_path_hint_rejects_paths_over_t03_contract_limit(tmp_path: Path) -> None:
++    hint = PathHint(
++        path="a" * 1025,
++        purpose="search",
++        scope="repo",
++    )
++
++    assert validate_path_hint(
++        tmp_path,
++        hint,
++        purpose="search",
++        scope="repo",
++        repository_revision="rev-1",
++        config_digest="digest-1",
++    ) is None
++
++
+ def test_persisted_hints_share_only_within_same_git_common_directory(
+     tmp_path: Path, monkeypatch
+ ) -> None:

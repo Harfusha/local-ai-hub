@@ -1,0 +1,39 @@
+--- a/tests/test_agent_tasks.py
++++ b/tests/test_agent_tasks.py
+@@ -255,10 +255,14 @@
+ 
+     resolved = {}
+     project_config = ModuleType("local_ai_hub.project_config")
++    project_config.ProjectSettings = SimpleNamespace
+ 
+     def resolve_project_context(root, state_dir):
+         resolved["root"] = Path(root)
+-        return SimpleNamespace(settings=SimpleNamespace(verification_rules={}, commands={}))
++        return SimpleNamespace(
++            config_digest="test-config-digest",
++            settings=SimpleNamespace(verification_rules={}, commands={}),
++        )
+ 
+     project_config.resolve_project_context = resolve_project_context
+     monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
+@@ -294,7 +298,9 @@
+         )
+     )
+     project_config = ModuleType("local_ai_hub.project_config")
++    project_config.ProjectSettings = SimpleNamespace
+     project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
++        config_digest="test-config-digest",
+         settings=SimpleNamespace(
+             verification_rules={"tests": ("test",)}, commands={"test": "pytest"}
+         )
+@@ -316,6 +322,10 @@
+             current_mutation_generation,
+             verification_rules,
+             configured_criteria,
++            configured_commands,
++            project_config_digest,
++            configured_environment_sha256,
++            project_root,
+         ):
+             self.calls.append(
+                 (task_id, current_revision, current_mutation_generation, verification_rules, configured_criteria)

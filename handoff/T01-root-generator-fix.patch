@@ -1,0 +1,144 @@
+diff --git a/tools/surface_inventory.py b/tools/surface_inventory.py
+--- a/tools/surface_inventory.py
++++ b/tools/surface_inventory.py
+@@ -2414,93 +2414,6 @@
+                         inventory["mcp_schema_evidence"].get(tool_name, SOURCE_FILES["generator"]),
+                         "src/local_ai_hub/operation_contracts.py:OPERATION_CONTRACTS",
+                     ],
+-                }
+-            )
+-    for tool_name, actions in inventory["conditional_mcp_actions"].items():
+-        for action, gate in actions.items():
+-            if action in inventory["mcp_actions"].get(tool_name, []):
+-                continue
+-            findings.append(
+-                {
+-                    "surface": f"MCP action {tool_name}",
+-                    "name": action,
+-                    "condition": f"feature gate: {gate}",
+-                    "owner": SOURCE_FILES["mcp"],
+-                    "handler": mcp_tools_by_name.get(tool_name, {}).get("handler"),
+-                    "contract": {
+-                        "action": action,
+-                        "request_payload": {"action": action, "schema": inventory["mcp_contracts"].get(tool_name, {}).get("input_schema", {}).get("properties", {}).get("action", {})},
+-                        "response_contract": inventory["mcp_contracts"].get(tool_name, {}).get("output_schema", "not declared"),
+-                        "status_codes": "not applicable: MCP tool protocol",
+-                        "timeout": inventory["mcp_contracts"].get(tool_name, {}).get("timeout", "not statically identified"),
+-                        "operation_side_effects": inventory["mcp_contracts"].get(tool_name, {}).get("operation_side_effects", "MCP action dispatch effects unverified"),
+-                        "backend_availability": f"conditional feature gate {gate}; runtime backend health unverified",
+-                        "feature_gates": [gate],
+-                        "input_property_schema": inventory["mcp_contracts"].get(tool_name, {}).get("input_schema", {}).get("properties", {}).get("action", {}),
+-                    },
+-                    "acceptance": f"Generated schema advertises this action when {gate} is enabled.",
+-                    "evidence_status": "conditional",
+-                    "evidence": [f"{SOURCE_FILES['mcp']}:RepoAction"],
+-                }
+-            )
+-    for tool in inventory["mcp_tools"]:
+-        findings.append(
+-            {
+-                "surface": "MCP tool",
+-                "name": tool["name"],
+-                "owner": SOURCE_FILES["mcp"],
+-                "handler": tool.get("handler"),
+-                "evidence_status": tool.get("evidence_status", "confirmed"),
+-                "condition": tool.get("registration_condition"),
+-                "contract": inventory["mcp_contracts"].get(tool["name"], {}),
+-                "acceptance": "Generated MCP JSON schema declares a tool registered by the MCP server.",
+-                "evidence": [tool["evidence"], tool["schema_evidence"]],
+-            }
+-        )
+-    for route in inventory["http_routes"]:
+-        findings.append(
+-            {
+-                "surface": f"HTTP {route['method']}",
+-                "name": route["path"],
+-                "condition": route.get("classification"),
+-                "owner": SOURCE_FILES["http"] if route.get("classification") is None else "tools/surface_inventory.py",
+-                "handler": route.get("handler"),
+-                "contract": route.get("contract", {}),
+-                "acceptance": "HTTP method and path resolve to a handler or registered dynamic route.",
+-                "evidence": [route["evidence"]],
+-            }
+-        )
+-    for tool_name, actions in inventory["mcp_actions"].items():
+-        conditional = inventory["conditional_mcp_actions"].get(tool_name, {})
+-        for action in actions:
+-            gate = conditional.get(action)
+-            findings.append(
+-                {
+-                    "surface": f"MCP action {tool_name}",
+-                    "name": action,
+-                    "condition": f"feature gate: {gate}" if gate else None,
+-                    "owner": SOURCE_FILES["generator"],
+-                    "handler": mcp_tools_by_name.get(tool_name, {}).get("handler"),
+-                    "contract": {
+-                        "action": action,
+-                        "request_payload": {"action": action, "schema": inventory["mcp_contracts"].get(tool_name, {}).get("input_schema", {}).get("properties", {}).get("action", {})},
+-                        "response_contract": inventory["mcp_contracts"].get(tool_name, {}).get("output_schema", "not declared"),
+-                        "status_codes": "not applicable: MCP tool protocol",
+-                        "timeout": inventory["mcp_contracts"].get(tool_name, {}).get("timeout", "not statically identified"),
+-                        "operation_side_effects": inventory["mcp_contracts"].get(tool_name, {}).get("operation_side_effects", "MCP action dispatch effects unverified"),
+-                        "backend_availability": (
+-                            f"conditional feature gate {gate}; runtime backend health unverified"
+-                            if gate
+-                            else inventory["mcp_contracts"].get(tool_name, {}).get("backend_availability", "runtime backend health unverified")
+-                        ),
+-                        "feature_gates": [gate] if gate else [],
+-                        "input_property_schema": inventory["mcp_contracts"].get(tool_name, {}).get("input_schema", {}).get("properties", {}).get("action", {}),
+-                        "required": inventory["mcp_contracts"].get(tool_name, {}).get("required", []),
+-                        "http_target": inventory["mcp_contracts"].get(tool_name, {}).get("http_target", "not statically identified"),
+-                    },
+-                    "acceptance": "Generated MCP JSON schema action enum advertises this action.",
+-                    "evidence_status": "conditional" if gate else "confirmed",
+-                    "evidence": [inventory["mcp_schema_evidence"].get(tool_name, SOURCE_FILES["generator"])],
+                 }
+             )
+     for tool_name, actions in inventory["conditional_mcp_actions"].items():
+diff --git a/tests/test_surface_inventory.py b/tests/test_surface_inventory.py
+--- a/tests/test_surface_inventory.py
++++ b/tests/test_surface_inventory.py
+@@ -178,7 +178,12 @@
+     }
+ 
+     assert row["owner"]
+-    assert row["owner_task"] == ROOT_TASK_ID
++    expected_owner_task = (
++        "T01"
++        if row["surface"] == "HTTP GET" and row["name"] == "/api/context/pack"
++        else ROOT_TASK_ID
++    )
++    assert row["owner_task"] == expected_owner_task
+     assert row["acceptance"]
+     assert row["evidence"]
+     assert row["state"] in {"verified", "conditional", "unsupported", "removed"}
+@@ -896,7 +901,12 @@
+         row["contract"][field] not in (None, "")
+         for row in rows for field in required_contract_fields
+     )
+-    assert all(row["owner_task"] == task_id for row in rows)
++    assert all(row.get("task_id") == task_id for row in rows)
++    assert all(
++        row["owner_task"]
++        == ("T01" if row["surface"] == "HTTP GET" and row["name"] == "/api/context/pack" else task_id)
++        for row in rows
++    )
+     assert all(row["operation_id"] and row["handler"] and row["test_ids"] for row in rows)
+     contract = next(row["contract"] for row in rows if row["surface"] == "MCP tool" and row["name"] == "local_ai_repo")
+     assert contract["input_schema"]["properties"]["query"]["default"] == ""
+@@ -1388,3 +1398,15 @@
+     )
+     assert gap["evidence_status"] == "confirmed"
+     assert "generated action enum" in gap["contract"]["schema_gap"]
++
++def test_generation_task_preserves_explicit_dynamic_route_owner():
++    inventory = MODULE.collect_inventory(ROOT)
++    rows = MODULE.coverage_rows(MODULE._findings(inventory), task_id="T19")
++    matches = [
++        row for row in rows
++        if row["surface"] == "HTTP GET" and row["name"] == "/api/context/pack"
++    ]
++
++    assert len(matches) == 1
++    assert matches[0]["owner_task"] == "T01"
++    assert matches[0]["task_id"] == "T19"

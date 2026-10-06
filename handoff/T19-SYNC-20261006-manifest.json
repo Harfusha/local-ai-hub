@@ -1,0 +1,631 @@
+{
+  "scope": "C:/Users/Adam/.codex/worktrees/t19-docs-rollout/.local-ai-hub",
+  "branch": "codex/sync-t19-docs-rollout-20261006",
+  "pinned_master": "fb32354f8bf632e560e052e9b12c73f64b00cba4",
+  "original_head": "974fed0d66f19421b3ceec100565316f97213d79",
+  "ordinary_work_checkpoint": "224bc94e808605161a75dfdd007ca03fe068786f",
+  "changed_paths_snapshot": [
+    "M\tdocs/API_COVERAGE.md",
+    "M\tdocs/INSTALL_PROMPT.md",
+    "M\tdocs/SECURITY_MODEL.md",
+    "M\tdocs/UPDATE_PROMPT.md",
+    "M\tdocs/superpowers/plans/2026-09-22-adaptive-retrieval-orchestrator.md",
+    "A\thandoff/T19-API_COVERAGE-current-root.patch",
+    "A\thandoff/T19-O4-cli-partial-cleanup-20261001.md",
+    "A\thandoff/T19-O4-cli-partial-cleanup.patch",
+    "A\thandoff/T19-SYNC-20261006-INTEGRATION.md",
+    "A\thandoff/T19-SYNC-20261006-manifest.json",
+    "A\thandoff/T19-SYNC-20261006-validation.toml",
+    "A\thandoff/T19-SYNC-20261006-verification.json",
+    "A\thandoff/T19-acceptance-followup-20261001.md",
+    "A\thandoff/T19-candidate-installer-suite-receipt-20261004.json",
+    "A\thandoff/T19-candidate-validation-20261001.md",
+    "A\thandoff/T19-capabilities-root-98a9a1a.patch",
+    "A\thandoff/T19-capabilities-root.patch",
+    "A\thandoff/T19-clean-host-installer-cycle-root-current-20261002.patch",
+    "A\thandoff/T19-clean-host-readiness-20261004.md",
+    "A\thandoff/T19-clean-host-slot-policy-20261002.patch",
+    "A\thandoff/T19-clean-host-slot-policy-20261002.receipt.json",
+    "A\thandoff/T19-clean-profile-roundtrip-20261001.md",
+    "A\thandoff/T19-codegraph-optional-version-root.patch",
+    "A\thandoff/T19-config-prompt-owner-comparison-20261003.md",
+    "A\thandoff/T19-coverage-doc-delta-20261001.md",
+    "A\thandoff/T19-coverage-owner-root.patch",
+    "A\thandoff/T19-current-prompt-contract-audit-20261001.md",
+    "A\thandoff/T19-current-prompt-contract-tests-20261001-v1.patch",
+    "A\thandoff/T19-disposable-release-evidence-20261005.json",
+    "A\thandoff/T19-docs-only-sync-handoff-20261005.json",
+    "A\thandoff/T19-docs-static-acceptance-20261001.md",
+    "A\thandoff/T19-docs-static-check-20261001.ps1",
+    "A\thandoff/T19-docs-sync-20261003.json",
+    "A\thandoff/T19-feature-profile-parity-20261001.md",
+    "A\thandoff/T19-feature-profile-parity-20261001.patch",
+    "A\thandoff/T19-feature-profile-parity-root-current-20261001.patch",
+    "A\thandoff/T19-final-acceptance-20261001.md",
+    "A\thandoff/T19-high-routing-current-root.patch",
+    "A\thandoff/T19-independent-install-docs-validation-20261003.md",
+    "A\thandoff/T19-install-parity-acceptance-20261001.md",
+    "A\thandoff/T19-owned-verified-install-prompts-20261003.json",
+    "A\thandoff/T19-owned-verified-install-prompts-20261003.patch",
+    "A\thandoff/T19-owner-acceptance-ready-20261004.md",
+    "A\thandoff/T19-package-candidate-smoke-20261001.md",
+    "A\thandoff/T19-package-sdk-smoke-blocker-20261005.json",
+    "A\thandoff/T19-packaged-sdk-smoke-20261001-r1.md",
+    "A\thandoff/T19-packaged-sdk-smoke-20261001-r2-root.md",
+    "A\thandoff/T19-prompt-clean-host-checklist-20261002.md",
+    "A\thandoff/T19-prompt-path-hints-final-receipt-20261005.json",
+    "A\thandoff/T19-prompt-path-hints-root-current-20261005-r2.json",
+    "A\thandoff/T19-prompt-path-hints-root-current-20261005.json",
+    "A\thandoff/T19-prompt-path-hints-root-current-20261005.patch",
+    "A\thandoff/T19-prompt-profile-parity-root-current-20261004-v1.json",
+    "A\thandoff/T19-prompt-profile-parity-root-current-20261004-v1.patch",
+    "A\thandoff/T19-prompt-profile-parity-root-current-20261004-v2-exact.json",
+    "A\thandoff/T19-prompt-profile-parity-root-current-20261004-v2-exact.patch",
+    "A\thandoff/T19-prompt-profile-parity-root-current-20261004-v2.json",
+    "A\thandoff/T19-prompt-profile-parity-root-current-20261004-v2.patch",
+    "A\thandoff/T19-prompt-profile-parity-root-receipt-20261004.json",
+    "A\thandoff/T19-prompts-current-root.patch",
+    "A\thandoff/T19-prompts-release-contract-current-root.patch",
+    "A\thandoff/T19-release-hygiene-test-patch-receipt-20261002.json",
+    "A\thandoff/T19-release-hygiene-tests-root-current-20261002.patch",
+    "A\thandoff/T19-release-owner-packet-20261005.json",
+    "A\thandoff/T19-release-validation-runbook-root-current-20261002.patch",
+    "A\thandoff/T19-release-validation-runbook-root-current-v2-20261002.patch",
+    "A\thandoff/T19-root-current-API_COVERAGE-20261003.json",
+    "A\thandoff/T19-root-current-API_COVERAGE-20261003.patch",
+    "A\thandoff/T19-root-current-clean-host-blocker-20261001.md",
+    "A\thandoff/T19-root-current-clean-host-handoff-20261002-v2.md",
+    "A\thandoff/T19-root-current-docs-prompt-20261002.json",
+    "A\thandoff/T19-root-current-docs-prompt-20261002.patch",
+    "A\thandoff/T19-root-current-install-docs-packaging-20261003-v2.json",
+    "A\thandoff/T19-root-current-install-docs-packaging-20261003-v2.patch",
+    "A\thandoff/T19-root-current-install-docs-packaging-20261003-v3.json",
+    "A\thandoff/T19-root-current-install-docs-packaging-20261003-v3.patch",
+    "A\thandoff/T19-root-current-install-docs-packaging-20261003.json",
+    "A\thandoff/T19-root-current-install-docs-packaging-20261003.patch",
+    "A\thandoff/T19-root-current-install-prompt-parity-20261003.json",
+    "A\thandoff/T19-root-current-install-prompt-parity-20261003.patch",
+    "A\thandoff/T19-root-current-install-sdk-docs-disjoint-20261001.json",
+    "A\thandoff/T19-root-current-install-sdk-docs-disjoint-20261001.patch",
+    "A\thandoff/T19-root-current-install-sdk-prompts-20261003.json",
+    "A\thandoff/T19-root-current-install-sdk-prompts-20261003.patch",
+    "A\thandoff/T19-root-current-owned-overlay-20261001.json",
+    "A\thandoff/T19-root-current-owned-overlay-20261001.patch",
+    "A\thandoff/T19-root-current-parity-hunk-20261001.patch",
+    "A\thandoff/T19-root-current-parity-review-20261001.md",
+    "A\thandoff/T19-root-delta-classification.md",
+    "A\thandoff/T19-root-import-receipt-20261001.md",
+    "A\thandoff/T19-root-source-tests-20261001.json",
+    "A\thandoff/T19-root.patch",
+    "A\thandoff/T19-runbook-review-20261002.md",
+    "A\thandoff/T19-runbook-root-addition.patch",
+    "A\thandoff/T19-runbook-serial-slot-policy-20261002.patch",
+    "A\thandoff/T19-runbook-serial-slot-policy-20261002.receipt.json",
+    "A\thandoff/T19-runtime-parity-contract-20261001-v2.patch",
+    "A\thandoff/T19-source-install-sdk-clean-host-acceptance-20261005-v2.json",
+    "A\thandoff/T19-targeted-install-sdk-acceptance-20261005.json",
+    "A\thandoff/T19-working-tree-ownership-20261005.txt",
+    "A\thandoff/T19-worktree-ownership-20261001.md",
+    "A\thandoff/lint-root-current-overlay/capture-current.ps1",
+    "A\thandoff/lint-root-current-overlay/capture.json",
+    "A\thandoff/lint-root-current-overlay/finalize-current.py",
+    "A\thandoff/lint-root-current-overlay/first-overlay-pyflakes.txt",
+    "A\thandoff/lint-root-current-overlay/inspect-rebase.py",
+    "A\thandoff/lint-root-current-overlay/owned/src/local_ai_hub/agent_incidents.py",
+    "A\thandoff/lint-root-current-overlay/owned/src/local_ai_hub/benchmark.py",
+    "A\thandoff/lint-root-current-overlay/owned/src/local_ai_hub/browser_bridge.py",
+    "A\thandoff/lint-root-current-overlay/owned/src/local_ai_hub/client.py",
+    "A\thandoff/lint-root-current-overlay/owned/src/local_ai_hub/deterministic.py",
+    "A\thandoff/lint-root-current-overlay/owned/src/local_ai_hub/generator.py",
+    "A\thandoff/lint-root-current-overlay/owned/src/local_ai_hub/pipeline.py",
+    "A\thandoff/lint-root-current-overlay/owned/src/local_ai_hub/repo_tools.py",
+    "A\thandoff/lint-root-current-overlay/owned/src/local_ai_hub/response_protocol.py",
+    "A\thandoff/lint-root-current-overlay/owned/src/local_ai_hub/scheduler.py",
+    "A\thandoff/lint-root-current-overlay/owned/src/local_ai_hub/supervisor.py",
+    "A\thandoff/lint-root-current-overlay/owned/src/local_ai_hub/token_economy.py",
+    "A\thandoff/lint-root-current-overlay/owned/tools/benchmark_command_broker.py",
+    "A\thandoff/lint-root-current-overlay/owned/tools/benchmark_surfaces.py",
+    "A\thandoff/lint-root-current-overlay/preimage/src/local_ai_hub/agent_incidents.py",
+    "A\thandoff/lint-root-current-overlay/preimage/src/local_ai_hub/benchmark.py",
+    "A\thandoff/lint-root-current-overlay/preimage/src/local_ai_hub/browser_bridge.py",
+    "A\thandoff/lint-root-current-overlay/preimage/src/local_ai_hub/client.py",
+    "A\thandoff/lint-root-current-overlay/preimage/src/local_ai_hub/deterministic.py",
+    "A\thandoff/lint-root-current-overlay/preimage/src/local_ai_hub/generator.py",
+    "A\thandoff/lint-root-current-overlay/preimage/src/local_ai_hub/pipeline.py",
+    "A\thandoff/lint-root-current-overlay/preimage/src/local_ai_hub/repo_tools.py",
+    "A\thandoff/lint-root-current-overlay/preimage/src/local_ai_hub/response_protocol.py",
+    "A\thandoff/lint-root-current-overlay/preimage/src/local_ai_hub/scheduler.py",
+    "A\thandoff/lint-root-current-overlay/preimage/src/local_ai_hub/supervisor.py",
+    "A\thandoff/lint-root-current-overlay/preimage/src/local_ai_hub/token_economy.py",
+    "A\thandoff/lint-root-current-overlay/preimage/tools/benchmark_command_broker.py",
+    "A\thandoff/lint-root-current-overlay/preimage/tools/benchmark_surfaces.py",
+    "A\thandoff/lint-root-current-overlay/publish-20261001T160334903909Z/FAILED-check.json",
+    "A\thandoff/lint-root-current-overlay/publish-20261001T160334903909Z/misc-pyflakes-current-root.patch",
+    "A\thandoff/lint-root-current-overlay/publish-20261001T160429863497Z/HANDOFF.md",
+    "A\thandoff/lint-root-current-overlay/publish-20261001T160429863497Z/SHA256.json",
+    "A\thandoff/lint-root-current-overlay/publish-20261001T160429863497Z/misc-pyflakes-current-root.patch",
+    "A\thandoff/lint-root-current-overlay/publish-20261001T160429863497Z/receipt.json",
+    "A\thandoff/lint-root-current-overlay/ready-current-root/SHA256.json",
+    "A\thandoff/lint-root-current-overlay/ready-current-root/capture.json",
+    "A\thandoff/lint-root-current-overlay/ready-current-root/finalize-current.py",
+    "A\thandoff/lint-root-current-overlay/ready-current-root/misc-pyflakes-current-root.patch",
+    "A\thandoff/lint-root-current-overlay/ready-current-root/prior-14-file-static-receipt.json",
+    "A\thandoff/lint-root-current-overlay/ready-current-root/receipt.json",
+    "A\thandoff/lint-root-current-overlay/ready-current-root/refresh-current.ps1",
+    "A\thandoff/lint-root-current-overlay/refresh-current.ps1",
+    "A\thandoff/lint-root-current-overlay/refresh1/capture.json",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/src/local_ai_hub/agent_incidents.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/src/local_ai_hub/benchmark.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/src/local_ai_hub/browser_bridge.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/src/local_ai_hub/client.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/src/local_ai_hub/deterministic.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/src/local_ai_hub/generator.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/src/local_ai_hub/pipeline.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/src/local_ai_hub/repo_tools.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/src/local_ai_hub/response_protocol.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/src/local_ai_hub/scheduler.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/src/local_ai_hub/supervisor.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/src/local_ai_hub/token_economy.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/tools/benchmark_command_broker.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/owned/tools/benchmark_surfaces.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/src/local_ai_hub/agent_incidents.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/src/local_ai_hub/benchmark.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/src/local_ai_hub/browser_bridge.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/src/local_ai_hub/client.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/src/local_ai_hub/deterministic.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/src/local_ai_hub/generator.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/src/local_ai_hub/pipeline.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/src/local_ai_hub/repo_tools.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/src/local_ai_hub/response_protocol.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/src/local_ai_hub/scheduler.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/src/local_ai_hub/supervisor.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/src/local_ai_hub/token_economy.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/tools/benchmark_command_broker.py",
+    "A\thandoff/lint-root-current-overlay/refresh1/preimage/tools/benchmark_surfaces.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/capture.json",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/src/local_ai_hub/agent_incidents.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/src/local_ai_hub/benchmark.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/src/local_ai_hub/browser_bridge.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/src/local_ai_hub/client.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/src/local_ai_hub/deterministic.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/src/local_ai_hub/generator.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/src/local_ai_hub/pipeline.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/src/local_ai_hub/repo_tools.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/src/local_ai_hub/response_protocol.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/src/local_ai_hub/scheduler.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/src/local_ai_hub/supervisor.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/src/local_ai_hub/token_economy.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/tools/benchmark_command_broker.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/owned/tools/benchmark_surfaces.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/src/local_ai_hub/agent_incidents.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/src/local_ai_hub/benchmark.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/src/local_ai_hub/browser_bridge.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/src/local_ai_hub/client.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/src/local_ai_hub/deterministic.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/src/local_ai_hub/generator.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/src/local_ai_hub/pipeline.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/src/local_ai_hub/repo_tools.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/src/local_ai_hub/response_protocol.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/src/local_ai_hub/scheduler.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/src/local_ai_hub/supervisor.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/src/local_ai_hub/token_economy.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/tools/benchmark_command_broker.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/preimage/tools/benchmark_surfaces.py",
+    "A\thandoff/lint-root-current-overlay/refresh2/rebase-status.json",
+    "A\thandoff/lint-root-current-overlay/refresh3/capture.json",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/src/local_ai_hub/agent_incidents.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/src/local_ai_hub/benchmark.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/src/local_ai_hub/browser_bridge.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/src/local_ai_hub/client.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/src/local_ai_hub/deterministic.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/src/local_ai_hub/generator.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/src/local_ai_hub/pipeline.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/src/local_ai_hub/repo_tools.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/src/local_ai_hub/response_protocol.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/src/local_ai_hub/scheduler.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/src/local_ai_hub/supervisor.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/src/local_ai_hub/token_economy.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/tools/benchmark_command_broker.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/owned/tools/benchmark_surfaces.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/src/local_ai_hub/agent_incidents.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/src/local_ai_hub/benchmark.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/src/local_ai_hub/browser_bridge.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/src/local_ai_hub/client.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/src/local_ai_hub/deterministic.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/src/local_ai_hub/generator.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/src/local_ai_hub/pipeline.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/src/local_ai_hub/repo_tools.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/src/local_ai_hub/response_protocol.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/src/local_ai_hub/scheduler.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/src/local_ai_hub/supervisor.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/src/local_ai_hub/token_economy.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/tools/benchmark_command_broker.py",
+    "A\thandoff/lint-root-current-overlay/refresh3/preimage/tools/benchmark_surfaces.py",
+    "A\thandoff/lint-root-current-overlay/seal-current.ps1",
+    "A\thandoff/lint-root-current-overlay/verify-publish.py",
+    "A\thandoff/root-docs-overlay-stage/docs/INSTALLATION.md",
+    "A\thandoff/root-docs-overlay-stage/docs/INSTALL_PROMPT.md",
+    "A\thandoff/root-docs-overlay-stage/docs/PYTHON_SDK.md",
+    "A\thandoff/root-docs-overlay-stage/docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md",
+    "A\thandoff/root-docs-overlay-stage/docs/T19_RELEASE_VALIDATION_RUNBOOK.md",
+    "A\thandoff/root-docs-overlay-stage/docs/UPDATE_PROMPT.md",
+    "A\thandoff/t19-current-prompt-adoption/01-baseline.json",
+    "A\thandoff/t19-current-prompt-adoption/02-red-adaptive-schema.json",
+    "A\thandoff/t19-current-prompt-adoption/03-red-path-modes-memory.json",
+    "A\thandoff/t19-current-prompt-adoption/04-root-current-narrow.patch",
+    "A\thandoff/t19-current-prompt-adoption/05-source-review.json",
+    "A\thandoff/t19-current-prompt-adoption/06-worker-only.patch",
+    "A\thandoff/t19-current-prompt-adoption/07-HANDOFF.md",
+    "A\thandoff/t19-current-prompt-adoption/08-verification-manifest.json",
+    "A\thandoff/t19-current-prompt-adoption/09-R2-root-current-docs.patch",
+    "A\thandoff/t19-current-prompt-adoption/10-R2-manifest.json",
+    "A\thandoff/t19-current-prompt-adoption/11-R3-root-current-docs.patch",
+    "A\thandoff/t19-current-prompt-adoption/12-R4-mode-contract-only.patch",
+    "A\thandoff/t19-current-prompt-adoption/13-R5-mode-contract-only-context.patch",
+    "A\thandoff/t19-current-prompt-adoption/14-R6-mode-contract-only-context.patch",
+    "A\thandoff/t19-current-prompt-adoption/15-orchestrator-mode-contract-receipt.md",
+    "M\ttests/test_doctor_support.py",
+    "M\ttests/test_release_contract.py",
+    "M\ttests/test_release_hardening.py",
+    "M\ttests/test_setup.py",
+    "M\ttests/test_surface_inventory.py",
+    "M\ttools/surface_inventory.py"
+  ],
+  "conflict_hunk_decisions": [
+    {
+      "path": "AGENTS.md",
+      "hunk": 1,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "docs/INSTALL_PROMPT.md",
+      "hunk": 1,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "docs/UPDATE_PROMPT.md",
+      "hunk": 1,
+      "choice": "candidate",
+      "reason": "Drop duplicate paragraph; merged default-compact paragraph retained."
+    },
+    {
+      "path": "docs/SECURITY_MODEL.md",
+      "hunk": 1,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-22-adaptive-retrieval-orchestrator.md",
+      "hunk": 1,
+      "choice": "combined",
+      "reason": "Retain both historical warnings and T14 contract ownership."
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunk": 1,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunk": 2,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunk": 3,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunk": 4,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunk": 5,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunk": 6,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunk": 7,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunk": 8,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunk": 9,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunk": 10,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunk": 11,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunk": 12,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/mcp_server.py",
+      "hunk": 1,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "src/local_ai_hub/mcp_server.py",
+      "hunk": 2,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_agent_os_enhancements.py",
+      "hunk": 1,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_client_transport.py",
+      "hunk": 1,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_mcp_agent_routing.py",
+      "hunk": 1,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_release_contract.py",
+      "hunk": 1,
+      "choice": "combined",
+      "reason": "Retain standalone assertion plus independent T19 test functions."
+    },
+    {
+      "path": "tests/test_release_contract.py",
+      "hunk": 2,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_t19_sdk_scenarios.py",
+      "hunk": 1,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 1,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 2,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 3,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 4,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 5,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 6,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 7,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 8,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 9,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 10,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 11,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 12,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 13,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 14,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 15,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 16,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 17,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 18,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 19,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 20,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "hunk": 21,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "hunk": 1,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "hunk": 2,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "hunk": 3,
+      "choice": "combined",
+      "reason": "Retain independent urllib fixtures plus master dynamic action alias fixture."
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "hunk": 4,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "hunk": 5,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "hunk": 6,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "hunk": 7,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "hunk": 8,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "hunk": 9,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "hunk": 10,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "hunk": 11,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "hunk": 12,
+      "choice": "master",
+      "reason": "Preserve pinned master contract and safety behavior."
+    }
+  ],
+  "subsequent_refinements": [
+    "Retain original OPTIONS browser/vision inventory entries after targeted test caught omission.",
+    "Retain feature-conditional action helper required by non-conflicting T19 inventory caller.",
+    "Remove unused candidate transport import/helper; all src equals pinned master.",
+    "Replace stale T12/T13/client hints claims with verified source behavior in both canonical prompts.",
+    "Regenerate API_COVERAGE using actual merged AST evidence."
+  ]
+}

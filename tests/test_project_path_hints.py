@@ -134,6 +134,23 @@ def test_hint_freshness_scope_existence_and_containment_are_rechecked(
     ) is None
 
 
+def test_path_hint_rejects_paths_over_t03_contract_limit(tmp_path: Path) -> None:
+    hint = PathHint(
+        path="a" * 1025,
+        purpose="search",
+        scope="repo",
+    )
+
+    assert validate_path_hint(
+        tmp_path,
+        hint,
+        purpose="search",
+        scope="repo",
+        repository_revision="rev-1",
+        config_digest="digest-1",
+    ) is None
+
+
 def test_persisted_hints_share_only_within_same_git_common_directory(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -533,6 +550,38 @@ def test_project_context_prioritizes_entry_points_then_request_hints_then_saved(
     ) is False
 
 
+def test_request_path_hint_accepts_partial_optional_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import local_ai_hub.project_config as project_config
+
+    for relative in ("src/main.py", "src/hinted.py"):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
+    context = resolve_project_context(tmp_path, tmp_path / "state")
+
+    usage = context.prioritize_paths(
+        ("src/main.py", "src/hinted.py"),
+        purpose="repository_search",
+        scope="repo_search",
+        repository_revision="rev-1",
+        path_hints=(
+            PathHint(
+                path="src/hinted.py",
+                purpose="repository_search",
+                scope="repo_search",
+                evidence_id="evidence-1",
+            ),
+        ),
+    )
+
+    assert usage.paths == ("src/hinted.py", "src/main.py")
+    assert usage.hint_used is True
+    assert usage.fallback_used is False
+
+
 def test_project_context_caps_request_hints_at_sixty_four(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -658,3 +707,179 @@ def test_hint_store_caps_rows_without_evicting_newest_other_revision(
         ).fetchall()
 
     assert rows == [("revision-1",), ("revision-2",)]
+
+
+def test_path_hint_normalizes_windows_separators_and_outer_whitespace(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "templates" / "element" / "button.php"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text("button()", encoding="utf-8")
+    hint = PathHint(
+        r" templates\element\button.php ",
+        "repository_search",
+        "repo_search",
+    )
+
+    resolved = validate_path_hint(
+        tmp_path,
+        hint,
+        purpose="repository_search",
+        scope="repo_search",
+        repository_revision="rev-1",
+        config_digest="digest-1",
+    )
+
+    assert resolved == candidate.resolve()
+
+
+def test_path_hint_rejects_absolute_and_dot_paths(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    candidate = root / "src" / "main.py"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text("main()", encoding="utf-8")
+    expected = {
+        "purpose": "repository_search",
+        "scope": "repo_search",
+        "repository_revision": "rev-1",
+        "config_digest": "digest-1",
+    }
+
+    assert validate_path_hint(
+        root,
+        PathHint(str(candidate), "repository_search", "repo_search"),
+        **expected,
+    ) is None
+    assert validate_path_hint(
+        root,
+        PathHint(".", "repository_search", "repo_search"),
+        **expected,
+    ) is None
+
+
+def test_path_hint_rejects_absolute_and_relative_paths_outside_root(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("outside", encoding="utf-8")
+    expected = {
+        "purpose": "repository_search",
+        "scope": "repo_search",
+        "repository_revision": "rev-1",
+        "config_digest": "digest-1",
+    }
+
+    for path in (str(outside), "../outside.py"):
+        assert validate_path_hint(
+            root,
+            PathHint(path, "repository_search", "repo_search"),
+            **expected,
+        ) is None
+
+
+def test_path_hint_requires_exact_purpose_and_scope(tmp_path: Path) -> None:
+    candidate = tmp_path / "src" / "main.py"
+    candidate.parent.mkdir()
+    candidate.write_text("x", encoding="utf-8")
+    hint = PathHint("src/main.py", "search", "repository_search")
+    expected = {
+        "repository_revision": "rev-1",
+        "config_digest": "digest-1",
+    }
+
+    assert validate_path_hint(
+        tmp_path, hint, purpose="other", scope="repository_search", **expected
+    ) is None
+    assert validate_path_hint(
+        tmp_path, hint, purpose="search", scope="other", **expected
+    ) is None
+
+
+def test_path_hint_rejects_absolute_unc_and_glob_paths(tmp_path: Path) -> None:
+    for path in ("C:/private/secret.py", "//server/share/secret.py", "src/*.py"):
+        assert validate_path_hint(
+            tmp_path,
+            PathHint(path, "search", "repo"),
+            purpose="search",
+            scope="repo",
+            repository_revision="rev-1",
+            config_digest="digest-1",
+        ) is None
+
+
+def test_path_hint_rejects_symlink_target_outside_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    alias = root / "src" / "alias.py"
+    alias.parent.mkdir()
+    alias.write_text("inside", encoding="utf-8")
+    outside = tmp_path / "outside.py"
+    outside.write_text("outside", encoding="utf-8")
+    original_resolve = Path.resolve
+
+    def resolve_escape(path: Path, *args, **kwargs) -> Path:
+        if path == alias:
+            return outside
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve_escape)
+
+    assert validate_path_hint(
+        root,
+        PathHint("src/alias.py", "search", "repo"),
+        purpose="search",
+        scope="repo",
+        repository_revision="rev-1",
+        config_digest="digest-1",
+    ) is None
+
+
+def test_path_hint_rejects_non_path_hint_values(tmp_path: Path) -> None:
+    target = tmp_path / "source.py"
+    target.write_text("safe", encoding="utf-8")
+
+    assert validate_path_hint(
+        tmp_path,
+        object(),  # type: ignore[arg-type]
+        purpose="search",
+        scope="repo",
+        repository_revision="rev-1",
+        config_digest="digest-1",
+    ) is None
+
+def test_request_path_hint_accepts_partial_optional_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import local_ai_hub.project_config as project_config
+
+    for relative in ("src/main.py", "src/hinted.py"):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
+    context = resolve_project_context(tmp_path, tmp_path / "state")
+
+    usage = context.prioritize_paths(
+        ("src/main.py", "src/hinted.py"),
+        purpose="repository_search",
+        scope="repo_search",
+        repository_revision="rev-1",
+        path_hints=(
+            PathHint(
+                path="src/hinted.py",
+                purpose="repository_search",
+                scope="repo_search",
+                evidence_id="evidence-1",
+            ),
+        ),
+    )
+
+    assert usage.paths == ("src/hinted.py", "src/main.py")
+    assert usage.hint_used is True
+    assert usage.fallback_used is False

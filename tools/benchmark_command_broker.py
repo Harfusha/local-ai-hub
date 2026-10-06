@@ -194,6 +194,14 @@ def _measure_cache_pairs(
     }
 
 
+def _seed_concurrency_cache(broker: CommandBroker, root: str) -> dict[str, Any]:
+    seed = broker.run(COMMAND, root, tenant="t15-benchmark")
+    _require_success(seed, "concurrency cache seed")
+    if _require_cache_outcome(seed, "concurrency cache seed") is not False:
+        raise RuntimeError("concurrency cache seed did not report a cache miss")
+    return seed
+
+
 def _source_snapshot(root: Path) -> dict[str, Any]:
     source_path = root / "src" / "local_ai_hub" / "commands.py"
     script_path = Path(__file__).resolve()
@@ -485,15 +493,20 @@ def run_benchmark(
         paired_hit_samples = paired_cache["hit_samples"]
         pair_reductions = paired_cache["reductions_pct"]
 
-        seed = broker.run(COMMAND, str(root), tenant="t15-benchmark")
-        _require_success(seed, "concurrency cache seed")
-        if _require_cache_outcome(seed, "concurrency cache seed") is not False:
-            raise RuntimeError("concurrency cache seed did not report a cache miss")
+        concurrency_broker = CommandBroker(
+            {
+                **config,
+                "server": {"state_dir": str(Path(temp_dir) / "concurrency-state")},
+            }
+        )
+        seed = _seed_concurrency_cache(concurrency_broker, str(root))
         concurrency_results: dict[str, Any] = {}
         for workers in CONCURRENCY_LEVELS:
             def warm_hit(_index: int) -> tuple[float, bool]:
                 elapsed, result = _timed(
-                    lambda: broker.run(COMMAND, str(root), tenant="t15-benchmark")
+                    lambda: concurrency_broker.run(
+                        COMMAND, str(root), tenant="t15-benchmark"
+                    )
                 )
                 _require_success(result, "concurrent warm command")
                 cache_hit = _require_cache_outcome(result, "concurrent warm command")

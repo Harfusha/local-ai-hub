@@ -1,0 +1,171 @@
+{
+  "status": "READY_SOURCE_STATIC_PASS; main review next; T20 root integration/release acceptance NOT RUN",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "snapshot": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3",
+  "owner": "overlay misc worker; main review; T20 integration and release validation",
+  "captured_utc": "2026-10-01T16:08:49.6299493Z",
+  "source_only": true,
+  "root_writes": false,
+  "app_imports": false,
+  "hub_gpu_build_pytest": false,
+  "new_chat_task_worktree": false,
+  "baseline": "User-provided genuine full-root Pyflakes exit 1, 31 diagnostics; not rerun",
+  "ast_command": "C:\\Python313\\python.exe -B C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\finalize-current.py",
+  "ast_proof": "Each of 14 final source ASTs equals prior validated desired AST; scheduler loop binding alpha-renamed only within requested_fields loop",
+  "root_drift_resolution": "Fresh Copy-Item capture; omit 10 already-applied files; restore original lower() RHS; complete existing metric_name loop references; preserve as_posix() RHS; restore original CommandBroker annotation via TYPE_CHECKING",
+  "files": [
+    {
+      "path": "src/local_ai_hub/agent_incidents.py",
+      "pre_sha256": "79f7d3f4bc182dc8461da70450342892335ff93bac88564373dfb4fb419fc45b",
+      "post_sha256": "79f7d3f4bc182dc8461da70450342892335ff93bac88564373dfb4fb419fc45b",
+      "ast": "PASS",
+      "changed": false
+    },
+    {
+      "path": "src/local_ai_hub/benchmark.py",
+      "pre_sha256": "324f743296dcb3c961d5612f9a43d3c31f2468aea0ef96323da3cf06b9780a7e",
+      "post_sha256": "324f743296dcb3c961d5612f9a43d3c31f2468aea0ef96323da3cf06b9780a7e",
+      "ast": "PASS",
+      "changed": false
+    },
+    {
+      "path": "src/local_ai_hub/browser_bridge.py",
+      "pre_sha256": "0e9f18848695d144001b3d8f15e8438e37ea88c26bba2da91b62d3e0e20b4a94",
+      "post_sha256": "0e9f18848695d144001b3d8f15e8438e37ea88c26bba2da91b62d3e0e20b4a94",
+      "ast": "PASS",
+      "changed": false
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "pre_sha256": "5518706e0e81623e3ff0184274bd17f18c9bf7f43d9bc4dd37fd754586b0d056",
+      "post_sha256": "5518706e0e81623e3ff0184274bd17f18c9bf7f43d9bc4dd37fd754586b0d056",
+      "ast": "PASS",
+      "changed": false
+    },
+    {
+      "path": "src/local_ai_hub/deterministic.py",
+      "pre_sha256": "e37ae34cc714751305f184a382ce75066db56a2c4194860c6735b9e5b0b0a134",
+      "post_sha256": "7d98dc287fd8805e0d43587bf292dfb4431009a92ab5ccb7efbc09b6a35b0d77",
+      "ast": "PASS",
+      "changed": true
+    },
+    {
+      "path": "src/local_ai_hub/generator.py",
+      "pre_sha256": "2147622d0713579f7be9eee9890c646d50f932f26687d26bb951a51e560cdfcb",
+      "post_sha256": "2147622d0713579f7be9eee9890c646d50f932f26687d26bb951a51e560cdfcb",
+      "ast": "PASS",
+      "changed": false
+    },
+    {
+      "path": "src/local_ai_hub/pipeline.py",
+      "pre_sha256": "1ba9f6a1e43f4b5b2a5068f8b054be1fdb45e0c5c896476f142c9b6889d57664",
+      "post_sha256": "1ba9f6a1e43f4b5b2a5068f8b054be1fdb45e0c5c896476f142c9b6889d57664",
+      "ast": "PASS",
+      "changed": false
+    },
+    {
+      "path": "src/local_ai_hub/response_protocol.py",
+      "pre_sha256": "055f4d7926fde98897e76a44fd7b9b5251641cad9f9ee57670d888ecc7fc84bb",
+      "post_sha256": "055f4d7926fde98897e76a44fd7b9b5251641cad9f9ee57670d888ecc7fc84bb",
+      "ast": "PASS",
+      "changed": false
+    },
+    {
+      "path": "src/local_ai_hub/scheduler.py",
+      "pre_sha256": "fa783cbb41e7e2f4c3b406cc4dcbd47937a485a323a2655ecf459a8d4735a804",
+      "post_sha256": "7ae7979652dd07fdd092139aa2cfcc8980f8aa0087956975354c79e41ef4c9da",
+      "ast": "PASS",
+      "changed": true
+    },
+    {
+      "path": "src/local_ai_hub/supervisor.py",
+      "pre_sha256": "4c72395546cad01d9249b6c18cfe051ee5137e840cdfde65d5e5238dc19ded2c",
+      "post_sha256": "4c72395546cad01d9249b6c18cfe051ee5137e840cdfde65d5e5238dc19ded2c",
+      "ast": "PASS",
+      "changed": false
+    },
+    {
+      "path": "src/local_ai_hub/token_economy.py",
+      "pre_sha256": "2a20b79bb15d53659ec62c538150cf1115b0696f1ac9fede983a4c99a73c45e3",
+      "post_sha256": "2a20b79bb15d53659ec62c538150cf1115b0696f1ac9fede983a4c99a73c45e3",
+      "ast": "PASS",
+      "changed": false
+    },
+    {
+      "path": "src/local_ai_hub/repo_tools.py",
+      "pre_sha256": "4f4368b5de27727fd4abd125991455477f91b687b41b4ef95bfc762ac48f79db",
+      "post_sha256": "afb79eae567b603db4aecdf07d077a56dd8f1cb7e3562fadb1893176ef8f1e8a",
+      "ast": "PASS",
+      "changed": true
+    },
+    {
+      "path": "tools/benchmark_command_broker.py",
+      "pre_sha256": "5b0fd8951f7d20dbdf74ca6d39a1a93169ded5b37b434736d52b946cdb61d01e",
+      "post_sha256": "28f0f793960ffb0ec811a6e828ea8211b958c828522793ed4f801d16f66c1687",
+      "ast": "PASS",
+      "changed": true
+    },
+    {
+      "path": "tools/benchmark_surfaces.py",
+      "pre_sha256": "dcaed06cf711090e692d4b44555c6e76ff37f06093275b63c121d7cce0ad3de0",
+      "post_sha256": "dcaed06cf711090e692d4b44555c6e76ff37f06093275b63c121d7cce0ad3de0",
+      "ast": "PASS",
+      "changed": false
+    }
+  ],
+  "checks": [
+    {
+      "argv": [
+        "C:\\Python313\\python.exe",
+        "-B",
+        "-m",
+        "pyflakes",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\agent_incidents.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\benchmark.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\browser_bridge.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\client.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\deterministic.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\generator.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\pipeline.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\response_protocol.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\scheduler.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\supervisor.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\token_economy.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\repo_tools.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\tools\\benchmark_command_broker.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\tools\\benchmark_surfaces.py"
+      ],
+      "command": "C:\\Python313\\python.exe -B -m pyflakes C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\agent_incidents.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\benchmark.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\browser_bridge.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\client.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\deterministic.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\generator.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\pipeline.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\response_protocol.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\scheduler.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\supervisor.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\token_economy.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\src\\local_ai_hub\\repo_tools.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\tools\\benchmark_command_broker.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3\\owned\\tools\\benchmark_surfaces.py",
+      "cwd": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\refresh3",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "timeout_seconds": 60
+    },
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "--whitespace=error",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\ready-current-root\\misc-pyflakes-current-root.patch"
+      ],
+      "command": "git apply --check --whitespace=error C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\ready-current-root\\misc-pyflakes-current-root.patch",
+      "cwd": "C:\\Users\\Adam\\.local-ai-hub",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "timeout_seconds": 60
+    }
+  ],
+  "patch_sha256": "e794d48f949ddcf8996fe0ff46f8bed8e593d84c5eeccab2d798ae7e9b9c5b09",
+  "patch_files": [
+    "src/local_ai_hub/deterministic.py",
+    "src/local_ai_hub/repo_tools.py",
+    "src/local_ai_hub/scheduler.py",
+    "tools/benchmark_command_broker.py"
+  ],
+  "ast_passed": 14,
+  "root_preimages_match_after_checks": true,
+  "completed_utc": "2026-10-01T16:10:11.291388+00:00"
+}

@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "task": "T08 root-current test/schema fixture reconciliation",
+  "recorded_date": "2026-10-03",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "root_root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "patch": {
+    "path": "artifacts/t08-root-current-test-schema-reconciliation-20261003.patch",
+    "sha256": "6C62A3881CED7E91B0231C970487CD9A227C8D0E7D5F10C2B53E5F023B04A456",
+    "root_apply_check": {
+      "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check --whitespace=error -- C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub\\artifacts\\t08-root-current-test-schema-reconciliation-20261003.patch",
+      "result": "PASS",
+      "exit_code": 0,
+      "applied": false
+    }
+  },
+  "root_preimages": {
+    "src/local_ai_hub/agent_events.py": "1B8E63A5FF329090801CD7F19E7DF7A95E42AC0034465AC5FA06D566B279CCF4",
+    "tests/test_agent_t08_durable_contract.py": "2B75E1FBB4EF0DCBC7B82BDFA811DE688E54B90A9D23D74F0D4A29BC1A9B2725"
+  },
+  "candidate_postimages": {
+    "src/local_ai_hub/agent_events.py": "2102BCB71BB5521034355B3BAD6D88D08003CC7509E7E39CE6C1580CA1055056",
+    "tests/test_agent_t08_migration_recovery.py": "3F4779B1A0969466EFD015A3F233C6D4C45A1A5C1EEFBFBCA25ADFFDB95AF142",
+    "tests/test_agent_t08_durable_contract.py": "82A22FEC6BA55808E03367459CB10DD35FDAE763747C3FDE42E9412F9D3CBE66"
+  },
+  "validation": {
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_t08_durable_contract.py tests/test_agent_t08_cache_isolation.py tests/test_agent_t08_receipt_transaction.py tests/test_agent_t08_event_page_snapshot.py tests/test_agent_t08_migration_recovery.py tests/test_agent_t08_live_order.py tests/test_agent_t08_crash_after_commit.py tests/test_agent_crash_recovery.py tests/test_agent_state_e2e.py tests/test_agent_state_reliability.py tests/test_swarm_orchestrator.py tests/test_sse_events_stream.py tests/test_agent_verification.py tests/test_agent_tasks.py::test_transition_idempotency_reuse_by_different_actor_is_rejected tests/test_agent_tasks.py::test_checkpoint_idempotency_replay_requires_same_actor tests/test_agent_tasks.py::test_same_status_transition_rejects_idempotency_key_owned_by_another_actor tests/test_agent_tasks.py::test_completed_uses_task_context_repo_root_without_worktree_checkpoint tests/test_agent_task_memory_adoption.py::test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope tests/test_lease_atomic_deadlock.py",
+    "result": "129 passed in 82.99s",
+    "exit_code": 0,
+    "root_tests_run": false
+  },
+  "owner_boundaries": {
+    "T05": "Preserved legacy fingerprint 6ea9770a...; no agent_memory edits.",
+    "T09": "No T09 source/test edits.",
+    "T18": "No byte-cap/pub-sub hunks; event values normalized for semantic equality."
+  },
+  "root_writes": 0,
+  "completion": "Patch prepared and apply-checked; candidate selectors pass; root integration remains unapplied.",
+  "supersedes": {
+    "path": "artifacts/t08-root-current-test-fixture-reconciliation-20261003.patch",
+    "sha256": "D445BDFB966C42D1917B1539A3F28D450E8673C2B956DE09F3CF67697C160ED2",
+    "instruction": "Do not apply both; combined schema reconciliation patch is canonical."
+  },
+  "reported_root_baseline": {
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_t08_migration_recovery.py tests/test_agent_t08_durable_contract.py tests/test_agent_events.py",
+    "result": "19 passed, 5 failed",
+    "source": "user-reported",
+    "rerun": false,
+    "root_head_not_pinned_by_report": true
+  },
+  "scoped_followup": {
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_t08_migration_recovery.py tests/test_agent_t08_durable_contract.py tests/test_agent_events.py",
+    "result": "24 passed in 5.32s",
+    "source_sha256": "2102BCB71BB5521034355B3BAD6D88D08003CC7509E7E39CE6C1580CA1055056"
+  },
+  "missing_t09_selectors": [
+    "tests/test_t09_command_execution_completion.py::test_actual_broker_receipt_completes_agent_task",
+    "tests/test_t09_command_execution_completion.py::test_actual_broker_completion_rejects_missing_or_forged_sidecar"
+  ],
+  "blackboard_trust_selector_verification": {
+    "selector": "tests/test_agent_task_memory_adoption.py::test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope",
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_task_memory_adoption.py::test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope",
+    "result": "1 passed in 3.38s",
+    "exit_code": 0,
+    "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+    "candidate_source_sha256": "60FD4C3C5233934F58E1C8B79E0FD309D785A1B479765EA021A6E55F700096C7",
+    "candidate_test_sha256": "1C7BA84AF0FE58895F16B66F18EA42FEF4D6D3940FA8905E641FE1F0E8CA8920",
+    "root_source_sha256": "01B647D7EB685C2849DBE960F47B364849B1C130A3F567E875DD82173E1786C1",
+    "root_test_sha256": "22E0A371A50E9D728940682D43783ED0A1ECC546355C075EAA645F27CBCCCAC4",
+    "root_selector_present": true,
+    "root_trust_hunk_state": "postimage already present; candidate and root trust snippets match",
+    "root_current_overlay_patch": "artifacts/t08-root-current-test-schema-reconciliation-20261003.patch",
+    "overlay_patch_sha256": "6C62A3881CED7E91B0231C970487CD9A227C8D0E7D5F10C2B53E5F023B04A456",
+    "stale_blackboard_patch_apply_check": "FAIL; source and selector postimages already present in root",
+    "root_modified": false
+  }
+}

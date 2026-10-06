@@ -1,0 +1,33 @@
+--- a/tests/test_t05_cache_state_isolation.py
++++ b/tests/test_t05_cache_state_isolation.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ from contextlib import closing
++import os
+ from pathlib import Path
+ import sqlite3
+ import subprocess
+@@ -272,15 +273,19 @@
+         "        raise TimeoutError('parent did not release recovery workers')\n"
+         "    time.sleep(0.01)\n"
+         "if database_kind == 'cache':\n"
+-        "    from local_ai_hub.cache import SQLiteCache\n"
++        "    import local_ai_hub.cache as loaded_module\n"
++        "    assert Path(loaded_module.__file__).resolve().is_relative_to(Path(source_dir).resolve())\n"
++        "    SQLiteCache = loaded_module.SQLiteCache\n"
+         "    SQLiteCache(Path(database_path), 't05-concurrent-recovery')\n"
+         "else:\n"
+-        "    from local_ai_hub.code_index import CodeIndex\n"
++        "    import local_ai_hub.code_index as loaded_module\n"
++        "    assert Path(loaded_module.__file__).resolve().is_relative_to(Path(source_dir).resolve())\n"
++        "    CodeIndex = loaded_module.CodeIndex\n"
+         "    CodeIndex({'server': {'state_dir': str(Path(database_path).parent)}}, repo_tools=None)\n"
+         "with sqlite3.connect(database_path) as connection:\n"
+         "    assert connection.execute('PRAGMA quick_check').fetchone() == ('ok',)\n"
+     )
+-    source_dir = Path(__file__).resolve().parents[1] / "src"
++    source_dir = Path(os.environ.get("T05_ROOT_SOURCE_DIR", Path(__file__).resolve().parents[1] / "src")).resolve()
+     workers = []
+     try:
+         for ready_path in ready_paths:

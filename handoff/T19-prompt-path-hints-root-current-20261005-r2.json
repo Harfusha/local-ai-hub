@@ -1,0 +1,53 @@
+{
+  "date": "2026-10-05",
+  "task": "T19 root-current prompt path-hint handoff update",
+  "candidate": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub",
+    "base_commit": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+    "dirty_entries_at_snapshot": 323,
+    "ownership_manifest": "handoff/T19-working-tree-ownership-20261005.txt",
+    "ownership_manifest_sha256": "d75346e2b4ffbd9f9bb76e74c34ea86b98eb44026088df226dda108f06d7d2ab",
+    "t19_scoped_paths": 135,
+    "other_inherited_unassigned_paths": 188
+  },
+  "root_current": {
+    "head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+    "dirty_entries_observed": 479,
+    "written_by_t19": false,
+    "changed_paths_owned_elsewhere": [
+      "docs/INSTALL_PROMPT.md",
+      "docs/UPDATE_PROMPT.md",
+      "tests/test_t19_current_prompt_adoption.py"
+    ],
+    "sha256": {
+      "docs/INSTALL_PROMPT.md": "8b1e4cb353b252204a1922063d4df6fdc54c25127d9d74d9aa81f099cbb82f89",
+      "docs/UPDATE_PROMPT.md": "ebc178e1a4889a308bb669793cd812bea264ae30ac24aae6f37eced669c46323",
+      "tests/test_t19_current_prompt_adoption.py": "6782784bcb88d66f3186759d06452fea56b39fdde17c049ba402885cf4a1d019"
+    },
+    "equivalent_contract_present": true,
+    "path_hint_contract": "HubClient.post forwards typed hints to /api/search only and strips them from /api/command",
+    "context_pack_contract_untouched": true
+  },
+  "prior_patch": {
+    "path": "handoff/T19-prompt-path-hints-root-current-20261005.patch",
+    "sha256": "5cbb921e917e394b830cf78cf6a7389444184ac6df8ba1aaa64f451af7e27e5b",
+    "state": "stale: current root already contains the equivalent correction; do not apply"
+  },
+  "tests": {
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t19_install_contracts.py tests/test_t19_verified_install_flow.py tests/test_t19_prompt_profile_parity.py tests/test_t19_sdk_docs.py tests/test_t19_sdk_wrapper_payloads.py tests/test_t19_sdk_scenarios.py tests/test_t19_packaging_contract.py tests/test_t19_rollback_contract.py tests/test_t19_rollback_snapshot.py tests/test_t19_packaged_sdk_smoke.py tests/test_t19_doctor_optional_status.py tests/test_t19_hubctl_config_isolation.py tests/test_t19_mcp_handshake.py tests/test_t19_clean_profile_roundtrip.py tests/test_t19_project_config_prompts.py tests/test_t19_shared_daemon_rollout.py tests/test_t19_current_prompt_adoption.py tests/test_t19_parity_contract.py",
+    "exit_code": 0,
+    "result": "80 passed, 2 skipped, 3 subtests passed in 35.63s",
+    "skips": [
+      "Rollback symlink test unavailable: WinError 1314 privilege not held.",
+      "Ambient interpreter lacks isolated setuptools/wheel; candidate SDK package smoke was separately verified in a disposable venv before the latest prompt edit."
+    ]
+  },
+  "release_blockers": [
+    "T20 frozen integrated source and matching sdist receipt absent; existing candidate package predates the latest prompt bytes.",
+    "Latest T20 status is NO-GO after T03 test_stdio_tools_list_hides_feature_disabled_tools failed.",
+    "Clean-host Windows/Linux install, doctor, update, and rollback acceptance not run."
+  ],
+  "root_patch_needed": false,
+  "no_root_write": true,
+  "t14_context_pack_untouched": true
+}

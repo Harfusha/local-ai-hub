@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-40",
+  "owner": "T06",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "selector": "test_untrusted_python_scripts_require_mutation_policy",
+  "status": "RED_EXPECTED",
+  "summary": "3 failed for custom_report.py, custom_audit.py, custom_check.py",
+  "input_sha256_before": null,
+  "input_sha256_after": {
+    "src/local_ai_hub/commands.py": "FCFE25432B91A75EA6F40E183A3B7AE1C3B74664F470D418BCBA4FEC851524BD",
+    "tests/test_command_rollback.py": "07181CFF41C4A4A57954419242F292C4940316E2FCBACA5F9A2A54DCAAEB3808"
+  },
+  "log_path": "handoff/T20-CPU-SLOT-20261002-40/01-t06-classifier-red.log",
+  "log_sha256": "D8F076431672EBD4986FB8C2B0F2A09E70BADC6F2E88392AE5D257A7D0BA15C2"
+}

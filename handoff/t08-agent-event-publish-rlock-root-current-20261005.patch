@@ -1,0 +1,11 @@
+--- a/src/local_ai_hub/agent_events.py
++++ b/src/local_ai_hub/agent_events.py
+@@ -235,7 +235,7 @@
+         lock_key = os.path.normcase(str(self.db_path.resolve()))
+         with self._append_publish_locks_guard:
+             self._append_publish_lock = self._append_publish_locks.setdefault(
+-                lock_key, threading.Lock()
++                lock_key, threading.RLock()
+             )
+         self._lock = threading.RLock()
+         self._initialized = False

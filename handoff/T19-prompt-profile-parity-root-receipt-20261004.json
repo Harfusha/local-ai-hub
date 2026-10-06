@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-04",
+  "scope": "T19 prompt profile parity; partial root integration receipt",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "source_patch": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\T19-prompt-profile-parity-root-current-20261004-v2-exact.patch",
+  "source_patch_sha256": "2ef756de149f97a6a0dcc04b6c0158981836c99b31c3c64eede8d37dd5afe14c",
+  "source_manifest": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\T19-prompt-profile-parity-root-current-20261004-v2-exact.json",
+  "changed_paths": {
+    "docs/INSTALL_PROMPT.md": {
+      "preimage_raw": "6f993aa0a3f5dbd272dc7b0163e4e1108220231eb8ca54057aae906abf24a9ac",
+      "postimage_raw": "04a6a5cc23797a9eaad8dfae025784148dc81a20f57a339f7864f8ac945d0eda",
+      "postimage_lf": "37f5f302db1528047461977c42b22083e12d39b9ba5210ea15599725047e6dfa"
+    },
+    "docs/UPDATE_PROMPT.md": {
+      "preimage_raw": "f31f7022aa401eb49dce7316a6ff288a56f621b4a2b691cedb6f7849f79339bf",
+      "postimage_raw": "57fdbe84b03563bf161bba1440d9975033d04c7c22ed2183f3ec4bb6185fc10f",
+      "postimage_lf": "16d823a876e0cbc752df7c7b9a129ba850c5ab39ea64de1a33f71282ea31a783"
+    }
+  },
+  "checks": {
+    "root_posthashes": "PASS; raw hashes match integrated root; normalized LF hashes match patch manifest",
+    "git_diff_check": "PASS (exit 0; scoped to two prompt paths)",
+    "root_selector": {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t19_prompt_profile_parity.py::test_install_prompt_balanced_routes_match_profile_and_update_prompt",
+      "result": "PASS; 1 passed in 0.72s",
+      "source": "T20 orchestrator report",
+      "rerun_by_T19": false
+    },
+    "candidate_selector": {
+      "result": "PASS; 1 passed in 0.01s",
+      "environment": "isolated temporary candidate tree; PYTHONPATH current root src"
+    },
+    "root_writes_by_T19": false
+  },
+  "remaining_acceptance": [
+    "T19 clean-host install/reinstall/uninstall/rollback/update acceptance remains open",
+    "Requires separate T20 serial slot and frozen artifact receipts"
+  ]
+}

@@ -1,0 +1,170 @@
+diff --git a/src/local_ai_hub/agent_tasks.py b/src/local_ai_hub/agent_tasks.py
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -787,6 +787,26 @@
+         except (RecursionError, OSError, ValueError, TypeError):
+             return False
+ 
++    def _run_ordered_task_write(
++        self,
++        write: Any,
++        *,
++        timeout_seconds: float | None = None,
++    ) -> Any:
++        connection_options: dict[str, Any] = {"isolation_level": None}
++        if timeout_seconds is not None:
++            connection_options["timeout_seconds"] = timeout_seconds
++        con = connect_sqlite(self.state_store.db_path, **connection_options)
++        try:
++            with self.state_store.ordered_event_publication(con) as publish_committed:
++                result, events = retry_busy(
++                    lambda: write(con), retries=5, base_delay_seconds=0.02
++                )
++                publish_committed(events)
++                return result
++        finally:
++            con.close()
++
+     def _init_projection_table(self) -> None:
+         if self._initialized or not self._db_path_available():
+             return
+@@ -1170,36 +1190,24 @@
+         if not self._db_path_available():
+             raise RuntimeError("agent task storage is unavailable")
+         self._init_projection_table()
+-        published: list[AgentEvent] = []
+-        result: list[TaskState | None] = []
+-
+-        def _write() -> None:
+-            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
++        def _write(con: sqlite3.Connection) -> tuple[TaskState | None, list[AgentEvent]]:
+             try:
+                 con.execute("BEGIN IMMEDIATE")
+                 state, event = self.add_verification_receipt_in_transaction(
+                     con, task_id, criterion, receipt_id
+                 )
+                 con.execute("COMMIT")
+-                result.append(state)
+-                if event is not None:
+-                    published.append(event)
++                return state, [event] if event is not None else []
+             except Exception:
+                 try:
+                     con.execute("ROLLBACK")
+                 except Exception:
+                     pass
+                 raise
+-            finally:
+-                con.close()
+-
+-        with self.state_store._append_publish_lock:
+-            retry_busy(_write, retries=5, base_delay_seconds=0.02)
+-            for event in published:
+-                self.state_store._publish(event)
+-        if not result or result[0] is None:
++        state = self._run_ordered_task_write(_write)
++        if state is None:
+             raise KeyError(f"Task {task_id} not found")
+-        return result[0]
++        return state
+ 
+     def add_verification_receipt_in_transaction(
+         self,
+@@ -2261,8 +2269,8 @@
+         })
+         published: list[AgentEvent] = []
+ 
+-        def _do_commit() -> TaskState:
+-            con = connect_sqlite(self.state_store.db_path, isolation_level=None, timeout_seconds=0.25)
++        def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
++            published.clear()
+             try:
+                 con.execute("BEGIN IMMEDIATE")
+                 existing = con.execute(
+@@ -2283,7 +2291,7 @@
+                     ).fetchone()
+                     if current:
+                         con.execute("COMMIT")
+-                        return self._row_to_state(current)
++                        return self._row_to_state(current), []
+                     if str(existing_event.payload.get("task_id", "")) != state.task_id:
+                         raise RuntimeError("task create event conflicts with requested task identity")
+ 
+@@ -2320,21 +2328,16 @@
+                     if appended.event:
+                         published.append(appended.event)
+                 con.execute("COMMIT")
+-                return state
++                return state, published
+             except Exception:
+                 try:
+                     con.execute("ROLLBACK")
+                 except Exception:
+                     pass
+                 raise
+-            finally:
+-                con.close()
+-
+-        with self.state_store._append_publish_lock:
+-            saved = retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
+-            for persisted in published:
+-                self.state_store._publish(persisted)
+-        return saved
++        return self._run_ordered_task_write(
++            _do_commit, timeout_seconds=0.25
++        )
+ 
+     def _commit_update(
+         self,
+@@ -2394,10 +2397,9 @@
+             current.updated_at,
+         )
+         published: list[AgentEvent] = []
+-        committed: list[TaskState] = []
+-
+-        def _do_commit() -> None:
+-            con = connect_sqlite(self.state_store.db_path, isolation_level=None, timeout_seconds=0.25)
++
++        def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
++            published.clear()
+             try:
+                 con.execute("BEGIN IMMEDIATE")
+                 if event.idempotency_key:
+@@ -2425,9 +2427,9 @@
+                         ).fetchone()
+                         if not current_row:
+                             raise RuntimeError("task event exists without its durable projection")
+-                        committed.append(self._row_to_state(current_row))
++                        replayed = self._row_to_state(current_row)
+                         con.execute("COMMIT")
+-                        return
++                        return replayed, []
+ 
+                 con.execute(
+                     """
+@@ -2455,21 +2457,16 @@
+                 if appended.event:
+                     published.append(appended.event)
+                 con.execute("COMMIT")
+-                committed.append(updated)
++                return updated, published
+             except Exception:
+                 try:
+                     con.execute("ROLLBACK")
+                 except Exception:
+                     pass
+                 raise
+-            finally:
+-                con.close()
+-
+-        with self.state_store._append_publish_lock:
+-            retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
+-            for persisted in published:
+-                self.state_store._publish(persisted)
+-        return committed[0] if committed else updated
++        return self._run_ordered_task_write(
++            _do_commit, timeout_seconds=0.25
++        )
+ 
+     def _row_to_state(self, row: tuple[Any, ...]) -> TaskState:
+         (

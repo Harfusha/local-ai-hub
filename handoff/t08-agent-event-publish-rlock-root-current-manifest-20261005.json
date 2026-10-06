@@ -1,0 +1,41 @@
+{
+  "scope": "T08-owned per-database event publication lock must permit documented nested AgentStateStore writes",
+  "target": "src/local_ai_hub/agent_events.py",
+  "root_base_sha256": "35423195a298391bd23c8342f9358119af85f71c5a314262d75654a4a303b34f",
+  "root_expected_post_sha256": "b8c509034c24882fdd49537908f6fce1c8c0432221a1e87dc663684d0e71431b",
+  "patch": "t08-agent-event-publish-rlock-root-current-20261005.patch",
+  "patch_sha256": "6d618141e7ddf3f235fcff93912ebdd4413a3684bdbd9d61a6908bff0c9aebb0",
+  "change": "per-database append/publish lock initializer: threading.Lock -> threading.RLock; cross-thread serialization retained, same-thread nested publish operations no longer deadlock",
+  "root_red": {
+    "receipt": "faulthandler after 8s in `test_agent_state_reliability.py` followed by overlay `test_swarm_lifecycle_success`",
+    "stack": "swarm.py serialized wrapper -> dispatch -> _reconcile_leases -> _recover_swarm_state serialized wrapper -> blocked reacquiring AgentStateStore._append_publish_lock"
+  },
+  "overlay": {
+    "package_path": "handoff/overlay-t08-publish-rlock/src/local_ai_hub",
+    "root_module_fallback": "C:\\Users\\Adam\\.local-ai-hub\\src\\local_ai_hub",
+    "test_fixture_overlay": "handoff/overlay-swarm-shared-state/tests/test_swarm_orchestrator.py",
+    "green_pending": false
+  },
+  "overlay_probe": {
+    "command": "python handoff/overlay-t08-publish-rlock/run_pytest.py -vv -o faulthandler_timeout=10 -p no:cacheprovider --tb=short tests/test_agent_state_reliability.py handoff/overlay-swarm-shared-state/tests/test_swarm_orchestrator.py",
+    "result": "10 passed, 1 failed in 3.71s",
+    "exit_code": 1,
+    "failure": "test_swarm_lifecycle_success reached Reviewer step3; T09 API mismatch: root record_in_transaction returns list while swarm consumer unpacks tuple",
+    "rlock_effect": "prior 8s deadlock stack at nested _append_publish_lock acquisition no longer occurs when overlay module is pinned"
+  },
+  "status": "RLock hunk root-applyable; overlay proves nested lock deadlock cleared; downstream T09 receipt API mismatch remains",
+  "full_root_current_overlay_suite": {
+    "command": "root-current T08 owner selector set, loaded through run_pytest.py with three immutable source/test overlays",
+    "result": "143 passed in 58.54s",
+    "exit_code": 0,
+    "overlays": [
+      "t08-agent-event-publish-rlock-root-current-20261005.patch",
+      "t08-swarm-receipt-list-consumer-root-current-20261005.patch",
+      "t08-swarm-shared-agent-state-root-current-20261005.patch"
+    ],
+    "runner": "handoff/overlay-t08-publish-rlock/run_pytest.py",
+    "root_written": false
+  },
+  "root_apply_check": "passed after suite; root preimage hashes unchanged",
+  "root_written": false
+}

@@ -1,0 +1,236 @@
+{
+  "status": "VERIFIED bounded T19 R2 correction only; whole T19 NOT VERIFIED",
+  "workspace": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub",
+  "ownership": "Two prompts and candidate test corrected in existing released ownership. Docs returned to orchestrator with this handoff.",
+  "changed_paths": [
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\docs\\INSTALL_PROMPT.md",
+      "pre_sha256": "1D6021FDE9EB66411F274607B517C6F498B51C1D9565B5AAC2187BDC16FB6A3D",
+      "post_sha256": "29928055513E6949CB6ED728B1F80A770943A4E9490534636FAA927B98A3FD66"
+    },
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\docs\\UPDATE_PROMPT.md",
+      "pre_sha256": "3B0513C3BFF44EF95AD4EB3908D3C95F7152E3A45FFCDDFC74EE81532BC5995D",
+      "post_sha256": "A45C4CB859ED495782427696FA9463404C82CE0A1142DB8CACC90CCFC00A4ACE"
+    },
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\tests\\test_t19_current_prompt_adoption.py",
+      "pre_sha256": "4DC9A34231395D45884FDE62B932F6304EEACBC675893A79010976F12324B78E",
+      "post_sha256": "1A3EE8865E4067DFE03F7B821E7B688732B13DBFDFACC43B2E4D83F446FB1013"
+    }
+  ],
+  "new_immutable_artifacts": [
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\t19-current-prompt-adoption\\09-R2-root-current-docs.patch",
+      "pre_sha256": null,
+      "post_sha256": "8269FCA4B7E1DB051635395489883CDD59DA515C7414A4DC36DB56387046572C"
+    },
+    {
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\t19-current-prompt-adoption\\10-R2-manifest.json",
+      "pre_sha256": null,
+      "post_sha256": "Returned externally after creation; no recursive self-hash"
+    }
+  ],
+  "prior_eight_immutable_artifacts": {
+    "verified_unchanged": true,
+    "files": [
+      {
+        "path": "handoff\\t19-current-prompt-adoption\\01-baseline.json",
+        "sha256": "68516703973B39C74E25203F93E504846B9FD929B5D864DAD2137C92206D6BC5"
+      },
+      {
+        "path": "handoff\\t19-current-prompt-adoption\\02-red-adaptive-schema.json",
+        "sha256": "FB804A72789058B5E448B08F42CE86CA00DC21554ACF13258202A8DFBD170486"
+      },
+      {
+        "path": "handoff\\t19-current-prompt-adoption\\03-red-path-modes-memory.json",
+        "sha256": "A8B34F4A416392A5B80F1CAE52799BDEAE6560153E1A61E045203CB819F725B7"
+      },
+      {
+        "path": "handoff\\t19-current-prompt-adoption\\04-root-current-narrow.patch",
+        "sha256": "C4F762C533C63FA0D29A563836BF2F7C0BB4F276FA3D4CC471F6050B668D0A8D"
+      },
+      {
+        "path": "handoff\\t19-current-prompt-adoption\\05-source-review.json",
+        "sha256": "4C03BD70D13385A1A36885213071C643A9A482C178D379056040D18E95AD2364"
+      },
+      {
+        "path": "handoff\\t19-current-prompt-adoption\\06-worker-only.patch",
+        "sha256": "2857CF3C5CD87339FF88E98F2CC9FEEF0BDD473D460309863DE66D4DBC341F85"
+      },
+      {
+        "path": "handoff\\t19-current-prompt-adoption\\07-HANDOFF.md",
+        "sha256": "1095818392548ECBC917B8E7CFF5FA735C4700468CD0CD6A4F6A0BD701A51775"
+      },
+      {
+        "path": "handoff\\t19-current-prompt-adoption\\08-verification-manifest.json",
+        "sha256": "E15B5447AA663D6D2D7EBE657189C9B92D4C8C89A7B74C1D7009898048DDA9BA"
+      }
+    ],
+    "prior_patch_review": "Main HOLD: C4F762... strict --whitespace=error rejected two newly added EOF blank lines. R1 artifacts retained, never overwritten. Use 09-R2-root-current-docs.patch for docs review."
+  },
+  "scope_exceptions": "User explicitly forbids Hub/install/build/GPU/root mutation. All native commands ran in T19 cwd. Current root read only through bounded explicit source/doc slices and read-only strict applycheck. No root imports or source execution.",
+  "tests": {
+    "command": "$env:PYTHONDONTWRITEBYTECODE='1'; $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'; python -B -m pytest -q -p no:cacheprovider --confcutdir=tests --noconftest tests/test_t19_current_prompt_adoption.py --tb=short",
+    "red": {
+      "exit_code": 1,
+      "actual_result": "4 failed, 11 passed in 0.17s",
+      "missing": "Agent memory adoption directive and checkpoint example contract in both prompts"
+    },
+    "green": {
+      "exit_code": 0,
+      "actual_result": "15 passed in 0.08s"
+    },
+    "meaning": "Docs-only adoption directives, JSON checkpoint examples and both-prompt parity. No TaskStore runtime test/import; main owns its validation.",
+    "original_receipt": "Original 11 passed remains valid for R1 state; current R2 has 15 passed."
+  },
+  "patch": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\t19-current-prompt-adoption\\09-R2-root-current-docs.patch",
+    "sha256": "8269FCA4B7E1DB051635395489883CDD59DA515C7414A4DC36DB56387046572C",
+    "targets": [
+      "docs/INSTALL_PROMPT.md",
+      "docs/UPDATE_PROMPT.md"
+    ],
+    "kind": "Fresh root-current docs-only narrow patch; does not overwrite inherited T19/root divergence. Candidate test is the separately owned worktree path above.",
+    "numstat": {
+      "docs/INSTALL_PROMPT.md": {
+        "insertions": 69,
+        "deletions": 1
+      },
+      "docs/UPDATE_PROMPT.md": {
+        "insertions": 68,
+        "deletions": 0
+      }
+    },
+    "strict_applycheck": {
+      "command": "git apply --check --whitespace=error --unsafe-paths --directory=C:/Users/Adam/.local-ai-hub handoff/t19-current-prompt-adoption/09-R2-root-current-docs.patch",
+      "cwd": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub",
+      "exit_code": 0,
+      "actual_output": "{\"strict_applycheck_exit_code\":0}",
+      "applied": false,
+      "eof": "Appended contract trimmed before patch creation; final line contains text and exactly one terminating newline, no added EOF blank line."
+    },
+    "root_doc_pre_and_post_sha256": [
+      {
+        "path": "C:\\Users\\Adam\\.local-ai-hub\\docs\\INSTALL_PROMPT.md",
+        "sha256": "1B5E57631929A3CA1FDDEF87DB3A3DCE0E9CCE1A61E485B96FABE0AB8CFC71C5"
+      },
+      {
+        "path": "C:\\Users\\Adam\\.local-ai-hub\\docs\\UPDATE_PROMPT.md",
+        "sha256": "692301661A67C0FEF78A0CEAAD90F87665ADC1EFC88BCE934F1D2366355D2BCF"
+      }
+    ],
+    "root_documents_unchanged": true,
+    "drift_policy": "Check recorded root preimage hashes before applying; do not overwrite later drift."
+  },
+  "source_review": {
+    "current_root_source_hashes": [
+      {
+        "path": "C:\\Users\\Adam\\.local-ai-hub\\src\\local_ai_hub\\agent_tasks.py",
+        "sha256": "228DD393AB76A30A703BAA381BEC39D111E93B18FF7CE5F155290672AAA51395"
+      },
+      {
+        "path": "C:\\Users\\Adam\\.local-ai-hub\\src\\local_ai_hub\\agent_context.py",
+        "sha256": "0B705B6E5EED61FFB021414854ED983F380C32D2EB686C7D11F5D4138BD16EDD"
+      },
+      {
+        "path": "C:\\Users\\Adam\\.local-ai-hub\\src\\local_ai_hub\\http_server.py",
+        "sha256": "4B635B978EF556A69863507D9B7672604068997BE32C55CEFA1E1C1CCCC9C8BE"
+      },
+      {
+        "path": "C:\\Users\\Adam\\.local-ai-hub\\src\\local_ai_hub\\agent_memory.py",
+        "sha256": "B3736D39B44722C9030CD9F47F58B58A5F86C1197921375310604EF31F79D8E7"
+      }
+    ],
+    "origins": [
+      {
+        "path": "src/local_ai_hub/agent_tasks.py",
+        "lines": "229-242,414-429,500-518,568-643",
+        "assertions": "Server-managed memory_context cannot be modified. Normal memory_record element ID is fetched as record ID, emitted as items[].id. Completion requires audit when items or warnings exist. used_ids list/tuple strings subset server item allowlist; docs prescribe list. No used IDs requires nonempty stripped not_used_reason. Volatile used IDs require source_checks mapping by ID, each check with nonempty source OR evidence_ids list/tuple containing a nonempty string."
+      },
+      {
+        "path": "src/local_ai_hub/agent_context.py",
+        "lines": "822-829",
+        "assertions": "Normal memory_record element_id=rec.record_id. Existing regression assertion retained, mapping valid. preload_memory_* belongs another source_kind/section and must not be invented as audit IDs."
+      },
+      {
+        "path": "src/local_ai_hub/http_server.py",
+        "lines": "3294-3317,3406-3484,3531-3568",
+        "assertions": "task_checkpoint passes checkpoint.state_data. Existing record API accepts source/evidence_ids/provenance and creates a record. Existing scoped delete requires explicit scope identity. Docs use installed-schema memory_get/memory_record/memory_delete; no invented correction alias or new store."
+      },
+      {
+        "path": "src/local_ai_hub/agent_memory.py",
+        "lines": "699-720,1830-1867",
+        "assertions": "Existing memory record/event workflow and scope-authorized delete. Model/hypothesis records are candidates; user instruction here saves only confirmed reusable evidence, not raw model output."
+      }
+    ],
+    "memory_audit_examples": [
+      {
+        "state_data": {
+          "memory_audit": {
+            "used_ids": [
+              "supplied-record-id"
+            ]
+          }
+        }
+      },
+      {
+        "state_data": {
+          "memory_audit": {
+            "used_ids": [
+              "supplied-volatile-id"
+            ],
+            "source_checks": {
+              "supplied-volatile-id": {
+                "source": "verified-current-source-reference",
+                "evidence_ids": [
+                  "verified-current-evidence-id"
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "state_data": {
+          "memory_audit": {
+            "used_ids": [],
+            "not_used_reason": "Supplied memory was reviewed but did not support this task."
+          }
+        }
+      }
+    ],
+    "placeholder_policy": "Example IDs must be replaced with exact current server items[].id values; source/evidence placeholders replaced by actual verified source. Examples never modify memory_context.",
+    "audit_fields_documented": [
+      "used_ids",
+      "not_used_reason",
+      "source_checks"
+    ],
+    "unsupported_ignored_ids_not_documented": true,
+    "honesty": "Selection/injection, shape validation and allowlist membership do not prove model used memory or source-reference truth."
+  },
+  "docs_directives": {
+    "consider": "Agents must consider supplied relevant memory as advisory and verify volatile facts at current source before relying on them.",
+    "checkpoint": "Checkpoint truthful memory_audit used_ids or nonempty not_used_reason; source_checks for volatile used IDs.",
+    "save": "Only confirmed reusable findings with scoped provenance/evidence; no chat history, prompts, source text, model output, secrets or personal data.",
+    "correct_delete": "Use only existing installed-schema scoped get/record/delete actions. Preserve original source/provenance/evidence/prior-record linkage for corrections; no new store/alias.",
+    "holds": "Cross-worktree Agent OS memory sharing remains HOLD. Physical GPU/full-release proof not claimed. Operational retryable gates retained."
+  },
+  "whitespace_check": {
+    "command": "git diff --check -- docs/INSTALL_PROMPT.md docs/UPDATE_PROMPT.md",
+    "exit_code": 0
+  },
+  "protected_sdk_test": {
+    "path": "tests/test_t19_packaged_sdk_smoke.py",
+    "sha256": "CF0889E223467D5606161270FF9831005971E4F1BFFF315D1201E50BD9F46144",
+    "unchanged": true
+  },
+  "remaining_main_owned": [
+    "Full T19 release acceptance",
+    "Actual TaskStore runtime validation and installed schema review",
+    "Integration of candidate test into root",
+    "Cross-worktree memory sharing HOLD",
+    "Any root patch application"
+  ],
+  "immutability": "Created numbered R2 files once; no old published artifact edited."
+}

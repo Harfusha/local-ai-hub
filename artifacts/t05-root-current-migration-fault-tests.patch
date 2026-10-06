@@ -1,0 +1,108 @@
+--- /dev/null
++++ b/tests/test_t05_root_migration_faults.py
+@@ -0,0 +1,105 @@
++from __future__ import annotations
++
++from contextlib import closing
++from pathlib import Path
++import json
++import sqlite3
++
++import pytest
++
++from local_ai_hub import agent_events as agent_events_module
++from local_ai_hub.agent_events import AgentEvent, AgentStateStore
++
++
++def _legacy_agent_state(db_path: Path) -> AgentEvent:
++    state = AgentStateStore(db_path)
++    event = AgentEvent.create(
++        "t05-migration-stream",
++        "migration.seeded",
++        {"marker": "durable"},
++        "migration-seed",
++    )
++    assert state.append(event).event == event.with_seq(1)
++    with closing(sqlite3.connect(db_path)) as connection:
++        connection.execute("DROP TABLE agent_event_cursors")
++        connection.execute("PRAGMA user_version=0")
++        connection.commit()
++    return event
++
++
++def _assert_legacy_source_unchanged(db_path: Path, event: AgentEvent) -> None:
++    with closing(sqlite3.connect(db_path)) as connection:
++        assert connection.execute("PRAGMA user_version").fetchone() == (0,)
++        tables = {
++            row[0]
++            for row in connection.execute(
++                "SELECT name FROM sqlite_master WHERE type='table'"
++            )
++        }
++        assert "agent_event_cursors" not in tables
++        row = connection.execute(
++            "SELECT stream_id, seq, event_id, kind, payload, idempotency_key "
++            "FROM agent_events WHERE stream_id = ?",
++            (event.stream_id,),
++        ).fetchone()
++        assert row[:4] == (event.stream_id, 1, event.event_id, event.kind)
++        assert json.loads(row[4]) == event.payload
++        assert row[5] == event.idempotency_key
++
++
++def test_root_migration_ddl_failure_keeps_source_and_retry_preserves_event(tmp_path, monkeypatch):
++    db_path = tmp_path / "agent_state.sqlite3"
++    event = _legacy_agent_state(db_path)
++    real_connect = agent_events_module.connect_sqlite
++
++    def fail_cursor_table_creation(*args, **kwargs):
++        connection = real_connect(*args, **kwargs)
++
++        def deny_cursor_table(action, table, _column, _database, _trigger):
++            if action == sqlite3.SQLITE_CREATE_TABLE and table == "agent_event_cursors":
++                return sqlite3.SQLITE_DENY
++            return sqlite3.SQLITE_OK
++
++        connection.set_authorizer(deny_cursor_table)
++        return connection
++
++    monkeypatch.setattr(agent_events_module, "connect_sqlite", fail_cursor_table_creation)
++    with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
++        AgentStateStore(db_path).events(event.stream_id)
++
++    _assert_legacy_source_unchanged(db_path, event)
++    backups = list(tmp_path.glob("agent_state.sqlite3.migration-v0-v1-*.bak"))
++    assert len(backups) == 1
++    with closing(sqlite3.connect(backups[0])) as backup:
++        assert backup.execute("PRAGMA quick_check").fetchone() == ("ok",)
++        assert backup.execute("PRAGMA user_version").fetchone() == (0,)
++
++    monkeypatch.setattr(agent_events_module, "connect_sqlite", real_connect)
++    recovered = AgentStateStore(db_path)
++    assert recovered.events(event.stream_id) == [event.with_seq(1)]
++    with closing(sqlite3.connect(db_path)) as connection:
++        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
++        assert connection.execute(
++            "SELECT last_seq FROM agent_event_cursors WHERE stream_id = ?",
++            (event.stream_id,),
++        ).fetchone() == (1,)
++
++
++def test_root_migration_backup_failure_keeps_source_and_retry_preserves_event(tmp_path, monkeypatch):
++    db_path = tmp_path / "agent_state.sqlite3"
++    event = _legacy_agent_state(db_path)
++    real_backup = AgentStateStore._verified_migration_backup
++
++    def fail_backup(_self, _connection):
++        raise sqlite3.DatabaseError("injected backup verification failure")
++
++    monkeypatch.setattr(AgentStateStore, "_verified_migration_backup", fail_backup)
++    with pytest.raises(sqlite3.DatabaseError, match="injected backup verification failure"):
++        AgentStateStore(db_path).events(event.stream_id)
++
++    _assert_legacy_source_unchanged(db_path, event)
++    assert list(tmp_path.glob("agent_state.sqlite3.migration-v0-v1-*.bak")) == []
++
++    monkeypatch.setattr(AgentStateStore, "_verified_migration_backup", real_backup)
++    recovered = AgentStateStore(db_path)
++    assert recovered.events(event.stream_id) == [event.with_seq(1)]

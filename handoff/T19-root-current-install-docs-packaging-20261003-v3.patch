@@ -1,0 +1,363 @@
+diff --git a/docs/INSTALL_PROMPT.md b/docs/INSTALL_PROMPT.md
+--- a/docs/INSTALL_PROMPT.md
++++ b/docs/INSTALL_PROMPT.md
+@@ -2,7 +2,7 @@
+ 
+ Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, Gemini, Roo, GitHub Copilot) in any repository to bootstrap Local AI Hub, configure background services and MCP, and integrate the tool and token economy policies into repository instructions.
+ 
+-Local model routing starts from `[hardware].profile="auto"`; hardware detection or an explicit profile selects a role map, then user overrides apply. In order `background_code/fast_code/heavy_code/reasoning/general/vision`: integrated=`qwen2.5-coder:0.5b/qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen2.5-coder:1.5b/qwen3-vl:4b`; balanced=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen2.5-coder:7b/qwen3.5:9b`; high=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`; max=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`. Ordinary reasoning uses `heavy_code`; only heavy reasoning uses `reasoning`. These are routing targets, not proof that models are installed; model pulls remain opt-in. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
++Local model routing starts from `[hardware].profile="auto"`; hardware detection or an explicit profile selects a role map, then user overrides apply only to configured model tiers at or above the routed quality floor. In order `background_code/fast_code/heavy_code/reasoning/general/vision`: integrated=`qwen2.5-coder:0.5b/qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen2.5-coder:1.5b/qwen3-vl:4b`; balanced=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen2.5-coder:7b/qwen3.5:9b`; high=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`; max=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`. Ordinary reasoning uses `heavy_code`; only heavy reasoning uses `reasoning`. These are routing targets, not proof that models are installed; model pulls remain opt-in. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
+ 
+ Before changing model routing or claiming a model switch is safe, measure supported hardware/backend cohorts and attach revision-bound quality, latency, and VRAM evidence before and after. Model output is advisory, not verification.
+ 
+@@ -37,6 +37,8 @@
+ 
+ ### PHASE 2: RUN BOOTSTRAP INSTALLATION
+ 
++Before setup, use the exact source commit SHA selected by the T20 release owner. Record `git rev-parse HEAD` and `git status --porcelain=v1 --untracked-files=all`; require the approved SHA and a clean source tree. Current installer wrappers do not enforce a revision pin, so verify manually immediately before setup. If checkout is dirty or SHA differs, stop and preserve it; do not install a moving `master` tip.
++
+ Run the platform installer from the repository root. This automatically configures Python 3.11+, the virtual environment, Token Economy tools, backend-appropriate local model support, Serena in an isolated environment, global MCP configs, and the background supervisor. Ollama is installed or pulled only when `[ollama].enabled = true`, `server.auto_start_ollama = true`, and `llama_cpp.fallback_to_ollama = true`; the default is disabled. When Ollama is disabled, `llama_cpp.mode = "on"` explicitly provisions a pinned llama.cpp runtime and default Qwen 1.5B model under `server.state_dir`, then supervises its loopback server; Intel Windows tries SYCL and falls back to CPU. `mode = "auto"` detects an existing endpoint only; `"off"` disables llama.cpp. Ollama wins provider selection whenever enabled. Setup must never switch providers silently or install Ollama as a fallback. Set `features.vision = false` to remove vision capability and its model pull. The default install deploys the `token-economizer` skill and registers its CLI directory on the user's persistent PATH; verify both after setup, then open a new terminal. Do not pass `--skip-token-economy` or `--skip-companion-skills` for the standard install.
+ 
+ For an upgrade or rollback, stop the Hub and back up the installation, `config.toml`, and complete configured `server.state_dir` together; include SQLite `-wal` and `-shm` files. Caches are disposable and do not contain durable tasks, receipts, jobs, memory, or leases. Restore only declared roots and preserve data outside the rollback write set.
+@@ -54,7 +56,7 @@
+ 
+ *Note*: If an explicitly configured local backend or heavy model is unavailable, the installer still sets up deterministic tools and built-in indexers and reports the unavailable optional backend.
+ 
+-If this checkout includes `docs/PYTHON_SDK.md`, consult it for the Python package's `HubClient`, install extras, and replay/error contracts before writing Python integration code.
++Consult [PYTHON_SDK.md](PYTHON_SDK.md) for the Python package's `HubClient`, install extras, and replay/error contracts. See [INSTALLATION.md](INSTALLATION.md#optional-standalone-tool-codegraphcontext) for independent CodeGraphContext installation and MCP setup; Hub setup does not install or configure it.
+ 
+ ---
+ 
+@@ -65,7 +67,7 @@
+    ```bash
+    curl -s http://127.0.0.1:11435/health
+    ```
+-   Must return `{"status":"ok", ...}` with the hub version.
++   Must return `{"success":true,"hub_online":true,"version":"..."}`. `/health` proves liveness and package version only, not source revision or MCP adapter identity.
+ 2. **If Service Not Running**:
+    Start it via python venv:
+    - Windows:
+diff --git a/docs/UPDATE_PROMPT.md b/docs/UPDATE_PROMPT.md
+--- a/docs/UPDATE_PROMPT.md
++++ b/docs/UPDATE_PROMPT.md
+@@ -2,7 +2,7 @@
+ 
+ Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, Gemini, Roo, GitHub Copilot) in any repository to upgrade an existing Local AI Hub installation from V3 to V4 from the canonical `master` branch, upgrade dependencies, restart services, and refresh the repository's instruction policies.
+ 
+-Local model routing starts from `[hardware].profile="auto"`; hardware detection or an explicit profile selects a role map, then user overrides apply. In order `background_code/fast_code/heavy_code/reasoning/general/vision`: integrated=`qwen2.5-coder:0.5b/qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen2.5-coder:1.5b/qwen3-vl:4b`; balanced=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen2.5-coder:7b/qwen3.5:9b`; high=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`; max=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`. Ordinary reasoning uses `heavy_code`; only heavy reasoning uses `reasoning`. These are routing targets, not proof that models are installed; model pulls remain opt-in. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
++Local model routing starts from `[hardware].profile="auto"`; hardware detection or an explicit profile selects a role map, then user overrides apply only to configured model tiers at or above the routed quality floor. In order `background_code/fast_code/heavy_code/reasoning/general/vision`: integrated=`qwen2.5-coder:0.5b/qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen2.5-coder:1.5b/qwen3-vl:4b`; balanced=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen2.5-coder:7b/qwen3.5:9b`; high=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`; max=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`. Ordinary reasoning uses `heavy_code`; only heavy reasoning uses `reasoning`. These are routing targets, not proof that models are installed; model pulls remain opt-in. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
+ Semantic delegation is optional and on-demand; use it when bounded independent work would add value.
+ 
+ Before changing model routing or claiming a model switch is safe, measure supported hardware/backend cohorts and attach revision-bound quality, latency, and VRAM evidence before and after. Model output is advisory, not verification.
+@@ -20,7 +20,7 @@
+ 
+ ---
+ 
+-### PHASE 1: LOCATE INSTALLATION & FAST-FORWARD TO V4 MASTER
++### PHASE 1: LOCATE INSTALLATION & SELECT VERIFIED RELEASE REVISION
+ 
+ 1. **Locate Installation Directory**:
+    - Windows: `$HOME\.local-ai-hub` (or `%USERPROFILE%\.local-ai-hub`)
+@@ -28,16 +28,13 @@
+ 2. **Protect Local Changes**:
+    - Run `git status --short` before changing branches.
+    - If the installation worktree is dirty, preserve the changes and stop for operator review. Never use `git reset --hard`, `git checkout -- .`, or discard local configuration/source changes.
+-3. **Fetch V4 from the Canonical Master Branch**:
+-   - V4 is published on `origin/master`. Do not use the old `codex/v4.0-hardening` feature branch for installations.
+-   - Fetch `master`, switch to local `master`, and fast-forward only:
+-     ```bash
+-     git -C "$HOME/.local-ai-hub" fetch --prune origin
+-     git -C "$HOME/.local-ai-hub" switch master
+-     git -C "$HOME/.local-ai-hub" pull --ff-only origin master
+-     ```
+-     *(On Windows PowerShell: `git -C "$HOME\.local-ai-hub" fetch --prune origin`, then `git -C "$HOME\.local-ai-hub" switch master`, then `git -C "$HOME\.local-ai-hub" pull --ff-only origin master`.)*
+-   - If local `master` does not exist, create it only as a tracking branch from `origin/master`; never overwrite an existing local branch.
++3. **Select the T20-approved release revision**:
++   - Obtain exact commit SHA from the T20 release owner; moving `master` is not a release pin.
++   - Before fetching or switching, preserve the installation checkout and require `git status --porcelain=v1 --untracked-files=all` to be empty. If dirty, stop; never reset, clean, or overwrite user changes.
++   - Fetch canonical origin, verify the SHA is reachable from `origin/master`, then check out that exact SHA (detached checkout is acceptable).
++   - Verify `git rev-parse HEAD` equals approved SHA and full porcelain status remains empty before setup.
++   - Current `install.ps1`, `install.sh`, and `tools/setup.py` do not accept or enforce `--expected-revision`; manual verification is required.
++
+ 
+ ---
+ 
+@@ -58,23 +55,16 @@
+ 
+ ---
+ 
+-### PHASE 3: RESTART SERVICE & VERIFY HEALTH
+-
+-1. **Restart Hub Service**:
+-   - Windows:
+-     ```powershell
+-     & "$HOME\.local-ai-hub\.venv\Scripts\python.exe" "$HOME\.local-ai-hub\tools\service.py" restart
+-     ```
+-   - Linux / macOS:
+-     ```bash
+-     "$HOME/.local-ai-hub/.venv/bin/python" "$HOME/.local-ai-hub/tools/service.py" restart
+-     ```
+-2. **Verify Health Endpoint**:
++Consult [PYTHON_SDK.md](PYTHON_SDK.md) for the current Python API and replay/error contracts.
++
++### PHASE 3: VERIFY SERVICE, MCP, AND HEALTH
++
++1. **Verify Health Endpoint**:
+    ```bash
+    curl -s http://127.0.0.1:11435/health
+    ```
+-   Must return `{"status":"ok", ...}` with the updated package version.
+-3. **Run Doctor Diagnostic**:
++   Must return `{"success":true,"hub_online":true,"version":"..."}`. `/health` proves liveness and package version only. Setup reconciles/restarts the Hub; do not issue a second unconditional restart. Reload the Codex MCP host separately, then verify `tools/list` and one bounded `tools/call`. Capture daemon and adapter PIDs, executable/module paths, and source fingerprints separately; `4.0.0` alone is not revision identity. Never replay `outcome_unknown` automatically.
++2. **Run Doctor Diagnostic**:
+    - Windows:
+      ```powershell
+      & "$HOME\.local-ai-hub\.venv\Scripts\python.exe" "$HOME\.local-ai-hub\tools\doctor.py"
+@@ -83,7 +73,7 @@
+      ```bash
+      "$HOME/.local-ai-hub/.venv/bin/python" "$HOME/.local-ai-hub/tools/doctor.py"
+      ```
+-4. **Hardware Acceleration Check (iGPU / NPU)**:
++3. **Hardware Acceleration Check (iGPU / NPU)**:
+    - On Windows Intel systems, managed llama.cpp setup tries SYCL0 and retries on CPU if GPU startup fails. `mode = "auto"` checks an existing endpoint only. Do not set `OLLAMA_VULKAN` for Intel llama.cpp inference.
+    - Other supported platforms use the pinned CPU build for managed llama.cpp. NVIDIA/AMD GPU builds require an explicitly configured external endpoint.
+    - If an NPU (Intel AI Boost / AMD XDNA) or Intel iGPU is present:
+@@ -159,7 +149,7 @@
+ 
+ Repository-only context can use the available bounded retrieval result when optional backends degrade. A pack requested with `task_id` requires a complete task-context receipt: missing/unavailable compilation returns `context_task_context_unavailable`; missing, stale, or incomplete provenance returns `context_task_context_incomplete`. Do not present either as successful task context or repeat/poll the same operation. Consume `task_context`, `context_id`/`task_context_id`, `etag`, revision, freshness, omitted sections and `next_action` where returned; keep partial/stale context explicit.
+ 
+-Feature-specific schemas expose only enabled tools/actions and applicable fields. Use installed `tools/list` input/output schemas and the generated schema for that configuration: `dry_run` and `edits` require `features.batch_replacement`; `local_ai_task` requires tasks plus a configured model. Internal adapters do not establish public MCP fields. CodeGraph remains optional external standalone tooling outside Hub setup/runtime. Cloud reasoning and planning are never blocked by mandatory local handoffs. Source contracts do not establish physical GPU execution, model quality, or completed release acceptance.
++Feature-specific schemas expose only enabled tools/actions and applicable fields. Use installed `tools/list` input/output schemas and the generated schema for that configuration: `dry_run` and `edits` require `features.batch_replacement`; `local_ai_task` requires tasks plus a configured model. Internal adapters do not establish public MCP fields. CodeGraph remains optional external standalone tooling outside Hub setup/runtime; see [INSTALLATION.md](INSTALLATION.md#optional-standalone-tool-codegraphcontext) for independent installation. Cloud reasoning and planning are never blocked by mandatory local handoffs. Source contracts do not establish physical GPU execution, model quality, or completed release acceptance.
+ 
+ ### Project configuration, verification, and PathHints
+ 
+diff --git a/docs/PYTHON_SDK.md b/docs/PYTHON_SDK.md
+new file mode 100644
+--- /dev/null
++++ b/docs/PYTHON_SDK.md
+@@ -0,0 +1,149 @@
++# Python SDK
++
++The `local-ai-hub` package includes a thin Python client at `local_ai_hub.client.HubClient`.
++
++## Install
++
++From a Local AI Hub checkout, install the core package:
++
++```bash
++python -m pip install .
++```
++
++For optional token economy tools, install `python -m pip install ".[token-economy]"`. The SDK does not require a separate client package.
++
++Package extras are optional and do not change the `HubClient` API:
++
++| Extra | Adds |
++| --- | --- |
++| `local-nlp` | Sentence Transformers for local NLP features. |
++| `intel-accelerators` | `sentence-transformers[openvino]>=5.4,<6` and `openvino>=2026.1,<2027`. |
++| `token-economy` | Token counting, prompt packing, AST search, and repository-map tools. |
++| `performance` | Optional `orjson`, `msgspec`, and Cython accelerators. |
++| `profiling` | `py-spy` and Scalene profiling tools. |
++| `dev` | Pytest, Pyflakes, and coverage tools. |
++
++Install multiple extras together, for example `python -m pip install ".[local-nlp,performance]"`. The base package remains sufficient for the Python client.
++
++`HubClient` communicates with Local AI Hub only.
++
++## Connect
++
++```python
++from local_ai_hub.client import HubClient
++
++client = HubClient()
++try:
++    status = client.status(detail="brief")
++    print(status)
++finally:
++    client.close()
++```
++
++`HubClient()` loads the normal Hub configuration and may start the configured local service when needed. Pass `config_path="..."` to select another config file, `tenant="..."` to set the request tenant, or `auto_start=False` when the application should only connect to an already-running service. `status()` returns a dictionary from the route selected by `detail`; `close()` releases the client's HTTP connection and does not stop the Hub service.
++
++## Requests and timeouts
++
++Use `get(path, timeout=15.0)` for GET requests and `post(path, payload=None, timeout=360.0, *, request_id=None, path_hints=None)` for POST requests. `request(path, payload=None, *, timeout=30.0, replay_safe=False, request_id=None, operational_action=None, requires_heavy_work=True, cancel_event=None)` exposes the lower-level request path; all options after `*` are keyword-only. Timeouts are capped by the configured `client.max_request_timeout_seconds` value.
++
++`post("/api/search", payload, path_hints=...)` and `post("/api/command", payload, path_hints=...)` accept up to 64 validated hints when payload has no explicit `path`; an explicit `path` removes hints.
++
++The client returns response dictionaries. Transport failures can include `success: false`, `outcome_unknown: true`, and a generated `request_id`: the server may have applied a mutating request before the connection failed. `request()` and `post()` also accept an optional caller-supplied request ID, validated as 1–128 visible ASCII characters without whitespace and sent in `X-LocalAI-Request-ID`. Automatic retries after transport loss are limited to read-only operations the client classifies as replay-safe. Replaying a mutation with the same ID is safe only where server journal coverage is verified. For an uncertain mutation, inspect resulting state before retry unless its coverage row confirms that contract.
++
++`post()` classifies replay safety through a small, fail-closed allowlist of read-only POST paths/actions. Unknown or mutating POSTs are not resent automatically after transport loss. `request()` defaults to `replay_safe=False`; set it to `True` only when that exact operation is verified safe to repeat. For mutations, require verified server journal coverage before enabling replay. A caller-supplied `request_id` does not make an operation replay-safe. The client may retry a server-declared `in_progress` duplicate within the request deadline using the same ID; this is separate from replay after transport loss.
++
++Use existing Hub API paths and payload schemas. The client is a transport wrapper, not a replacement for endpoint-specific validation or task/evidence verification.
++
++`request()` performs a small local preflight before opening a socket. `POST /api/code/symbol` returns a terminal, non-retryable `symbol is required` result when `symbol` is blank (or `query` is blank when `symbol` is absent). `POST /api/review/diff` and `POST /api/repo/impact` return a terminal, non-retryable result when `root` resolves to an existing directory without a `.git` entry. These results include `preflight: true`; transport is not attempted.
++
++## Convenience methods
++
++`HubClient` exposes these public methods, grouped by role. Generic request methods are repeated above for orientation:
++
++| Area | Methods |
++| --- | --- |
++| Connection and diagnostics | `close`, `ensure_server`, `status`, `doctor`, `logs`, `events`, `stream_events` |
++| HTTP transport | `request`, `get`, `post` |
++| Agent state, tasks, evidence, and memory | `coord`, `context_compile`, `verify_receipt`, `verify_completion`, `create_task`, `get_task`, `list_tasks`, `complete_task`, `fail_task`, `checkpoint_task`, `record_memory`, `find_memory` |
++| Conversation | `continue_conversation` |
++| Repository analysis | `circular_dependencies`, `generate_types`, `complexity`, `api_spec`, `dependency_slice`, `migration_drift`, `package_audit`, `git_diff`, `git_history_search`, `hotspots`, `generate_tests_for_diff`, `cross_repo_contract` |
++| Other workflows | `diff_hunk_stage`, `flaky_detect`, `webhook_replay`, `eval_drift`, `mock_server`, `ingest_diagram`, `curate_training_dataset` |
++
++The generated [API coverage inventory](API_COVERAGE.md) has a `HubClient method` row for each method and a `HubClient target` row for each HTTP target. Those rows record the payload, status, timeout, side-effect, and backend-availability evidence. A value marked `unverified` means the inventory lacks evidence; treat it as unknown.
++
++### Method-to-request mapping
++
++Convenience methods below call these Hub routes. `body` lists the wrapper's JSON keys; values come from the method arguments unless shown as a fixed action. For `coord()`, the selected route and body depend on `action`.
++
++| Method(s) | Request target and body/query |
++| --- | --- |
++| `request`, `get`, `post` | Caller-supplied path; `request()` sends POST JSON, `get()` sends GET query parameters, and `post()` sends POST JSON. |
++| `ensure_server` | Probes `GET /health`; it may start the configured service when no healthy instance answers. |
++| `status` | When `detail="agent_state"`, uses `GET /api/status?detail=agent_state`; otherwise uses `GET /api/live/status?light=1&scope=…&detail=…`. |
++| `doctor` | `GET /api/doctor`. |
++| `logs` | `GET /api/logs/tail?lines=…` (clamped to 1–1000). |
++| `events` | `GET /api/agent-state/events` with the supplied stream filters as query parameters. |
++| `stream_events` | `GET /api/agent-state/events/stream`; SSE wait timeout defaults to 30 seconds and accepts cancellation. |
++| `context_compile` | `POST /api/agent-state/context`; body contains action, task ID, token budget, changed paths, and `compact`; optional `since_hash` is sent when non-empty. |
++| `verify_receipt`, `verify_completion` | `POST /api/agent-state/verification`; bodies contain respectively action + receipt, or action + task ID. |
++| `create_task`, `get_task`, `list_tasks`, `complete_task`, `fail_task`, `checkpoint_task` | `POST /api/agent-state/tasks`; bodies select the action and carry task ID, goal, acceptance criteria, scope, filters, checkpoint, or reason as applicable. `create_task()` sends `action=create`, `goal`, `acceptance_criteria`, `task_id`, and `scope`, then merges any extra keyword fields into the body. |
++| `record_memory`, `find_memory` | `POST /api/agent-state/memory`; action and memory fields come from the method arguments. |
++| `continue_conversation` | `POST /api/conversations/continue`; body carries `conversation_id` and `task` (the `prompt` argument), plus optional `model`, `system`, `max_tokens`, and `temperature` settings. |
++| `circular_dependencies` | `POST /api/repo/circular_dependencies`; body: `root`, `language`. |
++| `generate_types` | `POST /api/repo/generate_types`; body: `root`, `file`, `write_stub`. |
++| `complexity`, `hotspots` | `POST /api/repo/complexity` (`root`, `path`, `max_results`) and `POST /api/repo/hotspots` (`root`, `days`, `limit`). |
++| `api_spec` | `POST /api/repo/api_spec`; body: `root`, `framework`. |
++| `dependency_slice` | `POST /api/repo/dependency_slice`; body: `root`, `symbol`, `path`, `depth`. |
++| `migration_drift`, `package_audit` | `POST /api/repo/migration_drift` (`root`, `db_path`) and `POST /api/repo/package_audit` (`root`, `lockfile_path`). |
++| `git_diff`, `git_history_search` | `POST /api/git/diff` (`root`, `path`, `staged`, `max_lines`) and `POST /api/git/history_search` (`root`, `query`, `max_commits`). |
++| `generate_tests_for_diff`, `cross_repo_contract` | `POST /api/repo/generate_tests_for_diff` (`root`, `diff`, `path`) and `POST /api/repo/cross_repo_contract` (`backend_root`, `frontend_root`). |
++| `diff_hunk_stage`, `flaky_detect`, `webhook_replay`, `mock_server` | `POST /api/command/diff_hunk_stage` (`cwd`, `root`, `patch`); `/api/command/flaky_detect` (`cwd`, `root`, `command`, `runs`, `timeout`); `/api/command/webhook_replay` (`url`, `payload`, `secret`, `signature_header`); `/api/command/mock_server` (`action`, `root`, `spec_path`, `port`). |
++| `eval_drift` | `POST /api/task/eval_drift`; body: `suite_name`. |
++| `ingest_diagram` | `POST /api/rag/ingest_diagram`; body: `workspace`, `image_path`, `caption`, `metadata`. |
++| `curate_training_dataset` | `POST /api/agent-state/tasks`; body: `action=curate_dataset`, `output_path`, `min_receipts`, `format`. |
++| `coord` | Dispatches by action to the routes below. |
++
++`coord()` action routes and body keys:
++
++| Action | Request target and body |
++| --- | --- |
++| `task_*` | `POST /api/agent-state/tasks`; body: `action` plus action arguments. |
++| `memory_*`, `relation_*` | `POST /api/agent-state/memory`; body: `action` plus action arguments. |
++| `memo_put`, `memo_get`, `memo_search`, `memo_delete` | `POST /api/memory/put` (`root`, `key`, `value`, `ttl_seconds`); `/api/memory/get` (`root`, `key`); `/api/memory/search` (`root`, `query`, `limit`); `/api/memory/delete` (`root`, `key`). |
++| `incident_decision`, `negative_knowledge_record`, `negative_knowledge_find` | `POST /api/agent-state/incidents`; body: action and action fields. |
++| `context_compile` | `POST /api/agent-state/context`; body: action, task ID, token budget, changed paths, root, and optional context fields. |
++| `verify_receipt`, `verify_completion` | `POST /api/agent-state/verification`; body: action, receipt or task ID, and optional root. |
++| `claim`, `claim_batch` | `POST /api/leases/claim_batch`; body: `root`, `paths`, `ttl_seconds`, `purpose`. |
++| `blackboard_*` | `POST /api/agent-state/blackboard`; body: action plus action arguments. |
++| `release`, `leases` | `POST /api/leases/release` with `lease_id`; `GET /api/leases?root=…` for `leases`. |
++| `worktree_lease`, `worktree_claim`, `worktree_release` | `POST /api/coord/worktree_lease` or `/api/coord/worktree_release`; body uses root, branch, and worktree fields as applicable. |
++| `pubsub_publish`, `pubsub_poll` | `POST /api/coord/pubsub_publish` or `/api/coord/pubsub_poll`; body uses root, topic, message/publisher or cursor/limit fields. |
++| `simulate_merge` | `POST /api/coord/simulate_merge`; body: `root`, `source_branch`, `target_branch`. |
++
++All wrapper calls through `get()` use its 15-second default; calls through `post()` use 360 seconds. Both are capped by `client.max_request_timeout_seconds`; the wrappers do not declare per-method timeout overrides. `stream_events()` uses its own 30-second wait default. `ensure_server()` can start the configured local service; `close()` closes the client connection only. Other server-side effects and per-operation replay status are established only where the matching inventory row has evidence; `unverified` remains unknown.
++
++## Effects and retries
++
++Convenience methods delegate to Hub endpoints. The method name or HTTP verb alone does not establish all server-side effects. `ensure_server()` may start the configured service; `close()` releases the client connection and does not stop that service. Check the matching coverage row before relying on an operation's side effects or replay safety. Methods using `get()` inherit its 15-second default; methods using `post()` inherit its 360-second default; both remain capped by configuration. `stream_events()` has its own wait behavior.
++
++`post()` applies the client's replay-safety policy for known endpoint and payload combinations. `request(..., replay_safe=True)` is a caller assertion that the operation can be safely replayed. If a mutating call returns `outcome_unknown`, inspect its state first. When an operation has verified same-ID journal support, retry only with unchanged method, path, payload, and `request_id`.
++
++## Common workflows
++
++Each row shows the SDK call for the first operation; follow-up calls appear where needed. Use valid task, conversation, job, and evidence IDs from earlier successful responses.
++
++| Scenario | SDK call |
++| --- | --- |
++| Find callers | `client.post("/api/repo/callers", {"root": root, "symbol": symbol, "limit": 50})` |
++| Build repository context | `client.post("/api/context/pack", {"root": root, "query": task, "task_id": task_id, "phase": "edit"})` |
++| Verify a change | `client.verify_receipt(task_id, criterion, passed=True, evidence_id=evidence_id, details=details)`; then `client.verify_completion(task_id)` only when checking task-level completion |
++| Continue a conversation | `client.continue_conversation(conversation_id, prompt)` |
++| Cancel an asynchronous job | `client.post("/api/async-jobs", {"action": "cancel", "job_id": job_id})` |
++| Resume a task | `client.coord("task_resume", task_id=task_id)` |
++| Retrieve evidence | `client.post("/api/evidence/get", {"evidence_id": evidence_id, "verify": True})` |
++
++These calls return the Hub response dictionary directly. Check `success` before using a result; on failure, retain its `error`, `terminal`, `retryable`, and `retry_after_seconds` fields. A transport error may include `outcome_unknown` and `request_id`, so inspect operation state before replaying a mutation.
++
++## Release evidence
++
++This guide describes the Python source API. It does not prove package installation, clean-host update, MCP adapter/daemon revision identity, live model availability, or runtime quality. See [T19 Release Validation Runbook](T19_RELEASE_VALIDATION_RUNBOOK.md); clean-host lifecycle evidence remains pending T04 blocker clearance, T20's frozen revision, and an assigned serial slot.
+diff --git a/docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md b/docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md
+--- a/docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md
++++ b/docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md
+@@ -1,12 +1,12 @@
+ # T19 clean-host installer cycle
+ 
+-**Status: NOT RUN.** This procedure is future acceptance, not evidence of install, reinstall, uninstall, or release success. Run only after T20 freezes a post-integration source distribution and explicitly assigns T19 a serial clean-host slot for that exact revision; a prior slot release alone does not authorize a run. The v7 artifacts in `T19_RELEASE_VALIDATION_RUNBOOK.md` predate T19 edits.
++**Status: NOT RUN.** Future acceptance only; no install/reinstall/uninstall success claimed. Run only after T20 freezes artifacts and explicitly assigns T19 a serial clean-host slot. Verify the sdist SHA-256 against the T20 revision-bound receipt before extraction. Root wrappers do not enforce `--expected-revision`. This procedure covers install, same-version reinstall, and uninstall with persistent service registration skipped; service lifecycle needs a separate receipt. Cross-version upgrade awaits a T20-approved baseline/target artifact pair and config/state-preservation assertions. The v7 artifacts in `T19_RELEASE_VALIDATION_RUNBOOK.md` predate T19 edits.
+ 
+ ## Safety boundary
+ 
+ - Use a disposable snapshot VM and new local account with no synced profile, vault, personal configuration, or durable Hub state. The installer configures agent files in that account; uninstall removes Hub-managed entries and skills there.
+ - Exactly one selected Python 3.11+ interpreter must be available to the bootstrap script. Stop if it would install Python or if the scratch path already exists.
+-- Allow outbound traffic only to the configured Python package index. Keep Hub, Ollama, and model registries unreachable. Skip model pulls, optional tools/runtimes, and service registration.
++- Allow outbound traffic only to the configured Python package index. Keep external Hub, Ollama, and model registries unreachable. Skip model pulls, optional tools/runtimes, and service registration. `--skip-service` still runs setup's local `hubctl restart` path; capture it and stop if it reaches external providers.
+ - Set `setup.install_dir` and `server.state_dir` under a unique scratch root. Preserve that root and the receipts; run no recursive cleanup.
+ 
+ ## Windows PowerShell
+@@ -18,12 +18,15 @@
+ $Lab = Join-Path $env:TEMP "t19-installer-cycle-py$($PythonVersion.Replace('.', ''))"
+ if (Test-Path $Lab) { throw 'Scratch exists; choose a fresh VM or unique path.' }
+ $Sdist = Join-Path $ArtifactRoot 'local_ai_hub-4.0.0.tar.gz'
++$ExpectedSdistSha256 = '<T20_RECEIPT_SDIST_SHA256>'
++$ActualSdistSha256 = (Get-FileHash -Algorithm SHA256 $Sdist).Hash.ToLower()
++if ($ActualSdistSha256 -ne $ExpectedSdistSha256.ToLower()) { throw 'sdist SHA-256 does not match T20 receipt' }
+ $Extract = Join-Path $Lab 'source'
+ $Source = Join-Path $Extract 'local_ai_hub-4.0.0'
+ $Install = Join-Path $Lab 'install'
+ $State = Join-Path $Lab 'state'
+ New-Item -ItemType Directory -Path $Extract | Out-Null
+-Get-FileHash -Algorithm SHA256 $Sdist
++Write-Host "Verified sdist SHA-256: $ActualSdistSha256"
+ tar -xzf $Sdist -C $Extract
+ Copy-Item (Join-Path $Source 'config.toml.example') (Join-Path $Source 'config.toml')
+ $InstallToml = $Install.Replace('\', '/')
+@@ -58,11 +61,14 @@
+ PYTHON_TAG=py313
+ LAB="$(mktemp -d "/tmp/t19-installer-cycle-$PYTHON_TAG.XXXXXX")"
+ SDIST="$ARTIFACT_ROOT/local_ai_hub-4.0.0.tar.gz"
++EXPECTED_SDIST_SHA256="<T20_RECEIPT_SDIST_SHA256>"
++ACTUAL_SDIST_SHA256=$(sha256sum "$SDIST" | cut -d ' ' -f 1)
++test "$ACTUAL_SDIST_SHA256" = "$EXPECTED_SDIST_SHA256" || { echo "sdist SHA-256 does not match T20 receipt" >&2; exit 2; }
+ EXTRACT="$LAB/source"
+ SOURCE="$EXTRACT/local_ai_hub-4.0.0"
+ INSTALL="$LAB/install"
+ STATE="$LAB/state"
+-"$PYTHON_BIN" --version; sha256sum "$SDIST"
++"$PYTHON_BIN" --version; printf "Verified sdist SHA-256: %s\n" "$ACTUAL_SDIST_SHA256"
+ mkdir -p "$EXTRACT"; tar -xzf "$SDIST" -C "$EXTRACT"
+ cp "$SOURCE/config.toml.example" "$SOURCE/config.toml"
+ cat >> "$SOURCE/config.toml" <<EOF
+@@ -85,4 +91,8 @@
+ test ! -e "$INSTALL"; test -f "$STATE/preserve.marker"
+ ```
+ 
++## Cross-version upgrade acceptance
++
++The Windows and Linux snippets above cover first install, same-version reinstall, and uninstall only. For upgrade acceptance, T20 must supply a frozen baseline sdist and target sdist with separate SHA-256 values and identify the supported baseline version. On each disposable host, verify both hashes against the T20 receipt, install the baseline artifact into a fresh scratch `install`/`state` pair, record installed version and config/state hashes, then run the target artifact's installer against that same pair. Require target version, unchanged user config, and surviving durable state marker. Uninstall with the target artifact and verify install tree removal while external state remains. Test persistent service registration/restart separately with the production service flags. Use one host per OS/Python combination assigned by T20. Root wrappers do not pin revisions; artifact hashes and the retained receipt provide provenance.
++
+ Run one OS/Python combination per disposable VM with a fresh scratch path, only within the exact combination authorized by T20's serial slot. Request another assignment before validating another combination. Record artifact hash, exact commands and exit codes, CLI output, pre/post config hashes, install-tree removal, and survival of the external state marker. One passing cycle covers only that combination. T20 must record Windows and Linux receipts on the integrated candidate before this gate closes.
+diff --git a/docs/T19_RELEASE_VALIDATION_RUNBOOK.md b/docs/T19_RELEASE_VALIDATION_RUNBOOK.md
+--- a/docs/T19_RELEASE_VALIDATION_RUNBOOK.md
++++ b/docs/T19_RELEASE_VALIDATION_RUNBOOK.md
+@@ -174,6 +174,12 @@
+ 
+ **Historical gate status (2026-10-01; refresh before release):** T08 had not issued a root rollback-recovery receipt. Its recorded prerequisites named owner-approved `append_in_transaction` and ordered event-publication APIs, a receipt-projection helper, cursor-backed event-page and retention behavior, T05-owned migration/backup guards, and T05-owned `agent_memory` writer call sites. Do not treat this historical list as the current T08 blocker; use T08's latest root-bound receipt and T20's frozen acceptance matrix. Require a current root receipt for crash recovery, atomic receipt-write recovery/rollback, ordered publication, event-page snapshot/retention cursor, idempotency/CAS, and scope/cache behavior before closing this gate. Preserve command and log hashes, root HEAD, and changed-file list. Candidate-only T08 passes do not satisfy it.
+ 
++## MCP adapter and daemon identity mismatch
++
++**Reported 2026-10-03; not independently re-run.** Installed diagnostics reported Hub v4.0.0 online (PID 121388), doctor exit 0 with Python 3.13.2 and compact MCP listing 8 tools. Serena reported healthy but `tools/call` timed out; `local_ai_coord` lease returned terminal HTTP 500 with legacy `_singleflight(request_id)` `TypeError`. Current root `HubClient._singleflight` accepts `request_id`; health exposes version only, not source revision. Cause remains unresolved: stale MCP adapter, daemon, package path, or another loaded-code mismatch.
++
++After T20 GO and a serial slot, record adapter and daemon PID, parent PID, executable/command line, Python executable, loaded `local_ai_hub` path, and `client.py`/`mcp_server.py` hashes. Verify artifact SHA against T20 receipt, run update once, reload MCP host separately, then verify `hubctl status`, `doctor.py`, MCP `tools/list`, and one bounded `local_ai_coord` claim/release. Setup reconciles/restarts daemon; do not restart twice. Accept only if both processes match pinned artifact and tool call succeeds without timeout/500/TypeError. Stop on first failure; never auto-replay `outcome_unknown`.
++
+ ## Open owners and release gates
+ 
+ - **T03 transport/schema:** provide a revision-bound contract receipt and integrate it with the candidate.

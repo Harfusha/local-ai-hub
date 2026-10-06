@@ -1,0 +1,116 @@
+--- a/tests/test_operational_mode.py
++++ b/tests/test_operational_mode.py
+@@ -210,23 +210,33 @@
+     assert status_calls
+ 
+     set_operational_mode(tmp_path, "maintenance")
+-    maintenance_rejection = mcp_server.local_ai_status(action="health")
+-    assert maintenance_rejection["mode"] == "maintenance"
+-    assert maintenance_rejection["error"] == "hub paused: maintenance mode active"
+-    assert len(status_calls) == 1
++    maintenance_status = mcp_server.local_ai_status(action="health")
++    assert maintenance_status["success"] is True
++    assert "mode" not in maintenance_status
++    assert len(status_calls) == 2
+ 
+ 
+ def test_http_mode_routes_read_and_update_persisted_mode(monkeypatch, tmp_path):
+     from local_ai_hub import http_server
+ 
+     unload_calls = []
+-    runtime = type("Runtime", (), {
+-        "unload_configured_models": lambda self, **kwargs: unload_calls.append(kwargs) or {
+-            "success": True, "backend_available": True, "unloaded": ["model-a"], "failed": {},
+-        },
+-    })()
++    release_events = []
++    release_tokens = set()
+     mode_changes = []
+     guard_state = []
++
++    def unload_configured_models(_self, **kwargs):
++        assert guard_state[-1] == "exited"
++        assert release_tokens == {"gaming"}
++        unload_calls.append(kwargs)
++        release_events.append("unloaded")
++        return {
++            "success": True, "backend_available": True, "unloaded": ["model-a"], "failed": {},
++        }
++
++    runtime = type("Runtime", (), {
++        "unload_configured_models": unload_configured_models,
++    })()
+ 
+     class ModeGuard:
+         def __enter__(self):
+@@ -242,6 +252,10 @@
+     async_jobs = type("AsyncJobs", (), {
+         "operational_mode_change_guard": lambda self: ModeGuard(),
+         "on_operational_mode_changed": mode_changed,
++        "resource_release_active": lambda self: bool(release_tokens),
++        "begin_resource_release": lambda self: (release_tokens.add("gaming"), release_events.append("reserved"), "gaming")[-1],
++        "end_resource_release": lambda self, token: (release_tokens.discard(token), release_events.append("released")),
++        "wait_for_inference_actions": lambda self, _actions, _timeout: True,
+         "inference_actions_active": lambda self, **_kwargs: False,
+     })()
+     monkeypatch.setattr(http_server, "APP", type("App", (), {
+@@ -268,6 +282,7 @@
+     assert mode_changes[0][0].mode == "gaming"
+     assert mode_changes[0][1].mode == "gaming"
+     assert guard_state == ["entered", "exited", "entered", "exited"]
++    assert release_events == ["reserved", "unloaded", "released"]
+     assert load_operational_mode(tmp_path).mode == "gaming"
+     assert responses[-1][1]["runtime_unload"] == {
+         "success": True, "backend_available": True, "unloaded": ["model-a"], "failed": {},
+@@ -293,9 +308,14 @@
+             if len(guard_entries) == 2:
+                 set_operational_mode(tmp_path, "active")
+ 
++    release_tokens = set()
+     async_jobs = type("AsyncJobs", (), {
+         "operational_mode_change_guard": lambda self: ModeGuard(),
+         "on_operational_mode_changed": lambda self, _snapshot: None,
++        "resource_release_active": lambda self: bool(release_tokens),
++        "begin_resource_release": lambda self: (release_tokens.add("gaming"), "gaming")[-1],
++        "end_resource_release": lambda self, token: release_tokens.discard(token),
++        "wait_for_inference_actions": lambda self, _actions, _timeout: True,
+         "inference_actions_active": lambda self, **_kwargs: False,
+     })()
+     monkeypatch.setattr(http_server, "APP", type("App", (), {
+@@ -317,6 +337,7 @@
+     assert responses[-1][1]["success"] is False
+     assert responses[-1][1]["mode_transition_stale"] is True
+     assert unload_calls == []
++    assert release_tokens == set()
+     assert load_operational_mode(tmp_path).mode == "active"
+ def test_http_mode_update_rejects_invalid_and_unauthorized_requests(monkeypatch, tmp_path):
+     from local_ai_hub import http_server
+--- a/tests/test_async_operational_mode.py
++++ b/tests/test_async_operational_mode.py
+@@ -9,6 +9,7 @@
+ 
+ import local_ai_hub.async_jobs as async_jobs
+ from local_ai_hub.async_jobs import AsyncJobManager
++from local_ai_hub.operational_mode import operational_mode_gate_error
+ 
+ 
+ class _Artifacts:
+@@ -39,14 +40,16 @@
+ def test_gaming_rejects_new_inference_before_database_insert(tmp_path, monkeypatch):
+     manager = _manager(tmp_path)
+     monkeypatch.setattr(async_jobs, "load_operational_mode", lambda _path: _mode("gaming"), raising=False)
++    monkeypatch.setattr(async_jobs, "operational_mode_gate_error", operational_mode_gate_error, raising=False)
+     try:
+         result = manager.submit("tenant-a", "reason", {"task": "blocked"}, dispatch_delay_seconds=30)
+ 
+         assert result["success"] is False
+         assert result["mode"] == "gaming"
+         assert result["error"] == "hub paused: gaming mode active"
+-        assert result["terminal"] is True
+-        assert result["retryable"] is False
++        assert result["terminal"] is False
++        assert result["retryable"] is True
++        assert 0 < result["retry_after_seconds"] <= 10
+         assert _states(manager) == {}
+     finally:
+         manager.close()
