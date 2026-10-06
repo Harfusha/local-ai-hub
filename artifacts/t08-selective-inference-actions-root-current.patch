@@ -1,0 +1,83 @@
+diff --git a/src/local_ai_hub/async_jobs.py b/src/local_ai_hub/async_jobs.py
+--- a/src/local_ai_hub/async_jobs.py
++++ b/src/local_ai_hub/async_jobs.py
+@@ -69,8 +69,8 @@
+         self._resource_release_tokens: set[str] = set()
+         self._resource_release_workers: dict[str, threading.Thread] = {}
+         self._resource_release_waiters: set[str] = set()
+-        self._inference_admission_depth: ContextVar[int] = ContextVar(
+-            f"async_job_inference_admission_{id(self)}", default=0
++        self._inference_admission_actions_context: ContextVar[tuple[str, ...]] = ContextVar(
++            f"async_job_inference_admission_actions_{id(self)}", default=()
+         )
+         self._events: dict[str, threading.Event] = {}
+         self._delayed_dispatch: dict[str, threading.Timer] = {}
+@@ -446,8 +446,8 @@
+                         else:
+                             con.commit()
+             if rejection is None and action in self.INFERENCE_ADMISSION_ACTIONS:
+-                depth = self._inference_admission_depth.get()
+-                if depth == 0:
++                active_actions = self._inference_admission_actions_context.get()
++                if action not in active_actions:
+                     active_token = uuid.uuid4().hex
+                     with self._inference_condition:
+                         self._inference_admissions.add(active_token)
+@@ -456,7 +456,9 @@
+                             str(job_id) if job_id is not None else None
+                         )
+                         self._inference_condition.notify_all()
+-                context_token = self._inference_admission_depth.set(depth + 1)
++                context_token = self._inference_admission_actions_context.set(
++                    (*active_actions, action)
++                )
+ 
+         if rejection is not None:
+             yield rejection
+@@ -465,7 +467,7 @@
+             yield None
+         finally:
+             if context_token is not None:
+-                self._inference_admission_depth.reset(context_token)
++                self._inference_admission_actions_context.reset(context_token)
+             if active_token is not None:
+                 callbacks: list[Callable[[], Any]] = []
+                 with self._inference_condition:
+diff --git a/tests/test_t08_async_admission_lifecycle.py b/tests/test_t08_async_admission_lifecycle.py
+--- a/tests/test_t08_async_admission_lifecycle.py
++++ b/tests/test_t08_async_admission_lifecycle.py
+@@ -116,3 +116,34 @@
+     finally:
+         release.set()
+         manager.close()
++
++
++def test_nested_admissions_track_distinct_actions_and_drain_selectively(tmp_path: Path, monkeypatch):
++    manager = _manager(tmp_path)
++    _allow_active_mode(manager, monkeypatch)
++    drained: list[str] = []
++    try:
++        with manager.inference_admission("delegate") as outer_rejection:
++            assert outer_rejection is None
++            assert len(manager._inference_admissions) == 1
++
++            with manager.inference_admission("delegate") as same_action_rejection:
++                assert same_action_rejection is None
++                assert len(manager._inference_admissions) == 1
++
++            with manager.inference_admission("vision") as nested_rejection:
++                assert nested_rejection is None
++                assert len(manager._inference_admissions) == 2
++                assert not manager.wait_for_inference_actions({"vision"}, 0)
++                assert manager.inference_actions_active(exclude_actions={"delegate"})
++                manager.when_inference_actions_drained(
++                    {"vision"}, lambda: drained.append("vision")
++                )
++                assert drained == []
++
++            assert manager.wait_for_inference_actions({"vision"}, 0.1)
++            assert drained == ["vision"]
++            assert not manager.inference_actions_active(exclude_actions={"delegate"})
++            assert manager.inference_actions_active()
++    finally:
++        manager.close()

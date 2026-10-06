@@ -1,0 +1,135 @@
+--- a/tests/test_mcp_coord_operation_acceptance.py
++++ b/tests/test_mcp_coord_operation_acceptance.py
+@@ -1,6 +1,17 @@
+ """Operation-specific behavior coverage for unlinked local_ai_coord actions."""
+ 
++import asyncio
++import json
++from types import SimpleNamespace
++from pathlib import Path
++
++import mcp.types as mcp_types
++
+ from local_ai_hub import mcp_server
++from local_ai_hub import http_server
++from local_ai_hub.agent_events import AgentStateStore
++from local_ai_hub.agent_identity import ScopeContext
++from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint, TaskStore
+ 
+ 
+ class CoordBackend:
+@@ -194,3 +205,114 @@
+     )]
+     assert result["success"] is True
+     assert result["summary"] == "lease granted"
++
++
++def _direct_post(app, path, payload):
++    handler = object.__new__(http_server.Handler)
++    handler.path = path
++    handler.headers = {"Content-Type": "application/json", "X-LocalAI-Agent": "T08-test"}
++    replies = []
++    handler._begin_trace = lambda _path: None
++    handler._require_authorized = lambda: True
++    handler._read_json = lambda: payload
++    handler._send = lambda status, body: replies.append((status, body))
++    previous_app = http_server.APP
++    http_server.APP = app
++    try:
++        http_server.Handler.do_POST(handler)
++    finally:
++        http_server.APP = previous_app
++    assert len(replies) == 1
++    return replies[0]
++
++
++def _assert_candidate_import_origin():
++    candidate_root = Path(__file__).resolve().parents[1]
++    assert Path(mcp_server.__file__).resolve() == (
++        candidate_root / "src" / "local_ai_hub" / "mcp_server.py"
++    )
++    assert Path(http_server.__file__).resolve() == (
++        candidate_root / "src" / "local_ai_hub" / "http_server.py"
++    )
++
++
++def test_http_agent_task_rejects_unknown_action_without_store_mutation(tmp_path):
++    _assert_candidate_import_origin()
++    state_store = AgentStateStore(tmp_path / "agent-state.sqlite3")
++    tasks = TaskStore(state_store)
++    app = SimpleNamespace(agent_tasks=tasks, config={"security": {}})
++
++    status, result = _direct_post(
++        app, "/api/agent-state/tasks", {"action": "delete_all", "task_id": "task-1"}
++    )
++
++    assert status == 400
++    assert result["success"] is False
++    assert result["error"] == "unknown task action 'delete_all'"
++    assert tasks.list_tasks() == []
++    assert state_store.events("task:task-1") == []
++
++
++def test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint(
++    monkeypatch, tmp_path
++):
++    _assert_candidate_import_origin()
++    db_path = tmp_path / "agent-state.sqlite3"
++    state_store = AgentStateStore(db_path)
++    tasks = TaskStore(state_store)
++    task_id = "task-rollback-acceptance"
++    target = tmp_path / "rollback-target.txt"
++    target.write_text("baseline", encoding="utf-8")
++    tasks.create(
++        GoalContract(goal="exercise rollback"),
++        ScopeContext(task_id=task_id),
++        task_id=task_id,
++    )
++    tasks.checkpoint(
++        task_id,
++        TaskCheckpoint(
++            phase="baseline",
++            state_data={"file_snapshots": {str(target): "baseline"}},
++        ),
++    )
++    target.write_text("changed", encoding="utf-8")
++    tasks.checkpoint(
++        task_id,
++        TaskCheckpoint(
++            phase="changed",
++            state_data={"file_snapshots": {str(target): "changed"}},
++        ),
++    )
++    app = SimpleNamespace(agent_tasks=tasks, config={"security": {}})
++    monkeypatch.setattr(http_server, "APP", app)
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++
++    def post_without_socket(path, payload, **_kwargs):
++        assert path == "/api/agent-state/tasks"
++        assert payload["action"] == "rollback"
++        assert payload["task_id"] == task_id
++        status, response = _direct_post(app, path, payload)
++        assert status == 200
++        return response
++
++    monkeypatch.setattr(mcp_server.CLIENT, "post", post_without_socket)
++    tool_result = asyncio.run(
++        mcp_server.mcp.call_tool(
++            "local_ai_coord", {"action": "task_rollback", "task_id": task_id}
++        )
++    )
++    if isinstance(tool_result, tuple):
++        content = tool_result[0][0]
++    else:
++        assert isinstance(tool_result, list)
++        content = tool_result[0]
++    assert isinstance(content, mcp_types.TextContent)
++    result = json.loads(content.text)
++
++    assert result["success"] is True
++    assert target.read_text(encoding="utf-8") == "baseline"
++    reopened = TaskStore(AgentStateStore(db_path))
++    persisted = reopened.get(task_id)
++    assert persisted is not None
++    assert persisted.checkpoint.phase == "baseline"
++    assert reopened.state_store.events(f"task:{task_id}")[-1].kind == "task.rolled_back"

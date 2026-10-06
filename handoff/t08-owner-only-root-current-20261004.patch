@@ -1,0 +1,178 @@
+--- a/tests/test_agent_t08_durable_contract.py
++++ b/tests/test_agent_t08_durable_contract.py
+@@ -107,7 +107,16 @@
+         con.close()
+ 
+     persisted = store.event_page(stream_id)
+-    assert persisted["events"] == [committed.event]
++    page_events = [
++        event.to_dict() if isinstance(event, AgentEvent) else event
++        for event in persisted["events"]
++    ]
++    committed_event = (
++        committed.event.to_dict()
++        if isinstance(committed.event, AgentEvent)
++        else committed.event
++    )
++    assert page_events == [committed_event]
+     assert persisted["last_seq"] == committed.seq == 1
+     store.unsubscribe(subscriber)
+ @pytest.mark.parametrize(
+@@ -343,7 +352,8 @@
+     )
+     verifications = VerificationStore(state_store, task_store=tasks)
+     receipt = VerificationReceipt.create(
+-        "task-append-error", "tests", passed=True, evidence_id="evidence-tests"
++        "task-append-error", "tests", passed=True, evidence_id="evidence-tests",
++        command_id="cmd-append-error",
+     )
+     monkeypatch.setattr(
+         state_store,
+@@ -372,7 +382,8 @@
+         task_id="task-atomic-receipt",
+     )
+     receipt = VerificationReceipt.create(
+-        "task-atomic-receipt", "tests", passed=True, evidence_id="evidence-tests"
++        "task-atomic-receipt", "tests", passed=True, evidence_id="evidence-tests",
++        command_id="cmd-atomic-receipt",
+     )
+     with closing(sqlite3.connect(db_path)) as con, con:
+         con.execute(
+@@ -416,7 +427,8 @@
+     tasks = TaskStore(state_store)
+     verifications = VerificationStore(state_store, task_store=tasks)
+     receipt = VerificationReceipt.create(
+-        "missing-task", "tests", passed=True, evidence_id="evidence-tests"
++        "missing-task", "tests", passed=True, evidence_id="evidence-tests",
++        command_id="cmd-unknown-task",
+     )
+ 
+     assert verifications.record(receipt) is receipt
+--- a/tests/test_agent_t08_live_order.py
++++ b/tests/test_agent_t08_live_order.py
+@@ -1,4 +1,5 @@
+ from contextlib import closing
++from dataclasses import replace
+ import threading
+ import time
+ 
+@@ -122,6 +123,15 @@
+     publish = state_store._publish
+     append_publish_lock = state_store._append_publish_lock
+     task_thread = None
++    publication_calls = []
++    ordered_publication = state_store.ordered_event_publication
++
++    def track_ordered_publication(con):
++        if threading.current_thread() is task_thread:
++            publication_calls.append(True)
++        return ordered_publication(con)
++
++    monkeypatch.setattr(state_store, "ordered_event_publication", track_ordered_publication)
+ 
+     class ObservedAppendPublishLock:
+         def __enter__(self):
+@@ -193,6 +203,7 @@
+     assert not task_thread.is_alive()
+     assert errors == []
+     assert lock_was_used
++    assert publication_calls == [True]
+     assert task_published_before_release == []
+     published = [subscriber.get_nowait(), subscriber.get_nowait()]
+     assert [event.seq for event in published] == [first_seq, first_seq + 1]
+@@ -402,3 +413,70 @@
+     assert seqs == sorted(seqs)
+     assert len(seqs) >= 2
+     state_store.unsubscribe(subscriber)
++
++def test_ordered_event_publication_rejects_committed_row_content_mismatch(tmp_path):
++    db_path = tmp_path / "agent_state.sqlite3"
++    state_store = AgentStateStore(db_path)
++    state_store._ensure_schema()
++    with closing(connect_sqlite(db_path, isolation_level=None)) as con:
++        con.execute("BEGIN IMMEDIATE")
++        result = state_store.append_in_transaction(
++            con, AgentEvent.create("task:publication-row", "task.created", {"n": 1})
++        )
++        con.execute("COMMIT")
++    subscriber = state_store.subscribe()
++    forged = replace(result.event, payload={"n": 2})
++
++    with closing(connect_sqlite(db_path, isolation_level=None)) as con:
++        with state_store.ordered_event_publication(con) as publish_committed:
++            with pytest.raises(RuntimeError, match="event is not committed"):
++                publish_committed([forged])
++
++    assert subscriber.empty()
++    state_store.unsubscribe(subscriber)
++
++@pytest.mark.parametrize("batch_kind", ("duplicate", "out_of_order"))
++def test_ordered_event_publication_rejects_duplicate_or_out_of_order_batch(
++    tmp_path, batch_kind
++):
++    db_path = tmp_path / "agent_state.sqlite3"
++    state_store = AgentStateStore(db_path)
++    state_store._ensure_schema()
++    with closing(connect_sqlite(db_path, isolation_level=None)) as con:
++        con.execute("BEGIN IMMEDIATE")
++        first = state_store.append_in_transaction(
++            con, AgentEvent.create("task:publication-validation", "task.one", {"n": 1})
++        )
++        second = state_store.append_in_transaction(
++            con, AgentEvent.create("task:publication-validation", "task.two", {"n": 2})
++        )
++        con.execute("COMMIT")
++    subscriber = state_store.subscribe()
++
++    events = [first.event, first.event] if batch_kind == "duplicate" else [second.event, first.event]
++    with closing(connect_sqlite(db_path, isolation_level=None)) as con:
++        with state_store.ordered_event_publication(con) as publish_committed:
++            with pytest.raises(ValueError, match="stream sequence order"):
++                publish_committed(events)
++
++    assert subscriber.empty()
++    state_store.unsubscribe(subscriber)
++
++def test_ordered_event_publication_rejects_publish_after_scope_closes(tmp_path):
++    db_path = tmp_path / "agent_state.sqlite3"
++    state_store = AgentStateStore(db_path)
++    state_store._ensure_schema()
++    subscriber = state_store.subscribe()
++    with closing(connect_sqlite(db_path, isolation_level=None)) as con:
++        with state_store.ordered_event_publication(con) as publish_committed:
++            con.execute("BEGIN IMMEDIATE")
++            result = state_store.append_in_transaction(
++                con, AgentEvent.create("task:closed-publication", "task.created", {})
++            )
++            con.execute("COMMIT")
++
++        with pytest.raises(RuntimeError, match="scope is closed"):
++            publish_committed([result.event])
++
++    assert subscriber.empty()
++    state_store.unsubscribe(subscriber)
+--- a/tests/test_agent_incident_scope.py
++++ b/tests/test_agent_incident_scope.py
+@@ -120,3 +120,22 @@
+     assert loaded.tenant_key == incident.tenant_key
+     assert str(root) not in repr(loaded.to_dict())
+     assert "tenant-alpha" not in repr(loaded.to_dict())
++
++def test_scoped_incident_attempts_do_not_aggregate_across_repository_or_tenant(tmp_path: Path):
++    store = IncidentStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
++    root_a = tmp_path / "repo-a"
++    root_b = tmp_path / "repo-b"
++    root_a.mkdir()
++    root_b.mkdir()
++
++    first = _capture(store, root_a, "tenant-alpha")
++    repeated = _capture(store, root_a, "tenant-alpha")
++    other_repository = _capture(store, root_b, "tenant-alpha")
++    other_tenant = _capture(store, root_a, "tenant-beta")
++
++    assert repeated.incident_id == first.incident_id
++    assert repeated.attempts == 2
++    assert other_repository.incident_id != first.incident_id
++    assert other_repository.attempts == 1
++    assert other_tenant.incident_id != first.incident_id
++    assert other_tenant.attempts == 1

@@ -1,0 +1,53 @@
+{
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_preimages_sha256": {
+    "agent_tasks": "228DD393AB76A30A703BAA381BEC39D111E93B18FF7CE5F155290672AAA51395",
+    "adoption_tests": "7709335CF1337D3F1A2017BD220311FA39B15554FFDBD4B69269116391593DA6"
+  },
+  "patched_source_sha256": "7A4E16FC2EEFC3AF056310FB9B06E7BFF5C335F7467942358341C020DBA34A29",
+  "candidate_tests_sha256": "EE5415A2DAEEEE70694351E574A5A35B9AFEE87C321C16B170CD04C86DFD8970",
+  "patch_sha256": "2EDEA0C6650CF608E2B6FF7C94F8A73F734355955BC806E6E43BB5A1882D918C",
+  "scope": [
+    "src/local_ai_hub/agent_tasks.py: TaskStore.transition checkpoint invariant, server-memory preservation, and trusted resume refresh only",
+    "tests/test_agent_task_memory_adoption.py: root-source overlay loader and direct transition regression"
+  ],
+  "receipts": [
+    {
+      "run": "candidate RED before source fix",
+      "result": "1 failed: direct transition replacement did not raise"
+    },
+    {
+      "run": "exact root agent_tasks preimage overlay: direct transition regression before patch",
+      "result": "expected RED: replacement did not raise CompletionGateError"
+    },
+    {
+      "run": "exact patched root agent_tasks source overlay: new transition regression + direct resume refresh + public HTTP adoption",
+      "result": "3 passed in 4.11s"
+    },
+    {
+      "run": "exact patched root agent_tasks source overlay: test_agent_task_memory_adoption.py + test_t08_http_memory_context_immutable.py",
+      "result": "14 passed in 23.39s"
+    },
+    {
+      "run": "candidate implementation: adoption + agent tasks + public HTTP memory tests",
+      "result": "40 passed in 25.87s"
+    },
+    {
+      "run": "exact patched root agent_tasks overlay including test_agent_tasks.py",
+      "result": "28 passed, 12 failed in 27.43s; all 12 failures are T09 verification/project-root API gaps in that root preimage; T09-owned methods unchanged"
+    },
+    {
+      "run": "joined root-source overrides for agent_tasks.py and async_jobs.py plus current T13/T12 consumers; T08 adoption, HTTP, async lifecycle/reliability selectors; T09 test_agent_tasks.py excluded by ownership",
+      "result": "33 passed in 15.87s"
+    }
+  ],
+  "root_apply_check": "passed with --whitespace=error",
+  "root_write": false,
+  "root_tests": false,
+  "root_agent_tasks_preimage_copy_sha256": "228DD393AB76A30A703BAA381BEC39D111E93B18FF7CE5F155290672AAA51395",
+  "root_postimage_sha256": {
+    "agent_tasks": "3DAD24D298EE482F2349DBDECE32044A4C7223B0F3A2FC106882330F81B82506",
+    "adoption_tests": "8734415431FFAC89AC515A6712A8B1DF2F12E8C284CE0640D3A7A1B63DEBBF49"
+  },
+  "root_patch_state": "T20 postimage observed: helper, transition guard, trusted resume flag, and direct regression are present. Original root preimage apply-check passed before integration; it now fails because root differs after integration. T08 did not write root or run root tests."
+}

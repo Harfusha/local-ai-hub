@@ -1,0 +1,40 @@
+{
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\t10-path-hints\\.local-ai-hub",
+  "base": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+  "patch": {
+    "path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t10-repo-search-path-hints.patch",
+    "sha256": "365C4D65C2C273B1CDE79BABBED229296B205C59D0347D809D34D1305F186D67"
+  },
+  "own_paths": [
+    "src/local_ai_hub/services.py",
+    "src/local_ai_hub/tool_agent.py",
+    "tests/test_t10_repo_search_path_hints.py"
+  ],
+  "inherited_paths": [
+    "docs/PROJECT_CONFIGURATION.md",
+    "src/local_ai_hub/project_config.py",
+    "tests/test_project_config.py",
+    "tests/test_project_path_hints.py"
+  ],
+  "blobs": {
+    "src/local_ai_hub/services.py": {
+      "base": "9e37b5b99991a668987d3811fe3f6decad37d0c2",
+      "worktree": "731ab97c07561315e45eaeb1b177dd4c512a04e7"
+    },
+    "src/local_ai_hub/tool_agent.py": {
+      "base": "e47bb9bdc55f01692ac63641059f1f69ef8d99ae",
+      "worktree": "9ce1e43148c0f85aab6dcb490bb06dda91827211"
+    },
+    "tests/test_t10_repo_search_path_hints.py": {
+      "base": null,
+      "worktree": "1c64a0a1b79e7e88860f57455528d69e71c10dee"
+    }
+  },
+  "test_command": "python -B -m pytest -q --tb=short tests/test_t10_repo_search_path_hints.py tests/test_repo_cache_outcomes.py tests/test_projection_extra_fields.py::test_clean_repo_search_and_profile tests/test_adaptive_retrieval.py",
+  "test_result": "26 passed in 1.25s",
+  "tracked_diff_check": "git diff --check -- src/local_ai_hub/services.py src/local_ai_hub/tool_agent.py: exit 0",
+  "untracked_diff_check": "git diff --no-index --check -- /dev/null tests/test_t10_repo_search_path_hints.py: exit 1 because file differs; only LF/CRLF warning, no whitespace error",
+  "reverse_patch_check": "git apply --reverse --check: exit 0",
+  "t03_scope": "No schema, HTTP handler, route_context, or /api/context/pack edits",
+  "commit": false
+}

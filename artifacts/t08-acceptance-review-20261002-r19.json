@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "task": "T08 Agent OS event, receipt, recovery acceptance review",
+  "date": "2026-10-02",
+  "review_mode": "static only; no tests; no root writes",
+  "root": {
+    "path": "C:/Users/Adam/.local-ai-hub",
+    "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "source_hashes": {
+      "src/local_ai_hub/agent_events.py": "09B31135FF2493F2B8E236074DBF7FB2C9CC274BC2DD5841ECDDD07F974ADA5A",
+      "src/local_ai_hub/agent_tasks.py": "79487FCE9F8A477A9DE888A6C7FEF77C3526F9B63151EF69FF0CE2019502BA45",
+      "src/local_ai_hub/agent_verification.py": "FB477438FF110AB80FE6F2D486FFA5D87AAB1A855735FCD94592F8080EAF0017",
+      "src/local_ai_hub/agent_incidents.py": "79F7D3F4BC182DC8461DA70450342892335FF93BAC88564373DFB4FB419FC45B",
+      "src/local_ai_hub/commands.py": "B2A5B2B0570C45D16560FECA92E1BBF2C5B28476A12D7C9A602F03B714283E3E"
+    },
+    "acceptance_pin_manifest_sha256": "F53E6557569AEB17FAD9F6BD08490DF0494052AB3890B2109043FAE7CE4F5361",
+    "root_manifest_files_checked": 24,
+    "manifest_drift_count": 3,
+    "manifest_drift": [
+      {
+        "path": "src/local_ai_hub/agent_memory.py",
+        "expected_sha256": "2168D2442E271F26EDD10DF5EBBA19C011E4C66ADAE3C4C204DDCE725BF79018",
+        "observed_sha256": "3CEE6327E4EC692B171405C3A7E27A603A76355C3C6B2D0C35C5129849A7D187",
+        "owner": "T05 boundary; provenance unresolved; do not patch"
+      },
+      {
+        "path": "src/local_ai_hub/leases.py",
+        "expected_sha256": "173842B7359C8579868D72F448F52984A62E08B5FFEEE33A6EDC185481865793",
+        "observed_sha256": "AA94DD3459CB8E15E664ABDED714AA886437ECD34FD5936F051959B7137BE2A8"
+      },
+      {
+        "path": "tests/test_agent_t08_migration_recovery.py",
+        "expected_sha256": "7218D318223FCEC6705B1514EB0820A4B88FB635CAB21C1BF35AFBE259022E73",
+        "observed_sha256": "A5E2FD43EA63162AC5898DE11A2755FB8F560DA27F6E3CCFFEAC2928917A849D"
+      }
+    ]
+  },
+  "root_current_findings": {
+    "event_provider": "append_in_transaction, ordered_event_publication, event_page(through_seq), strict replay binding, and committed-row validation are present in root source. No T08 source patch needed for these APIs.",
+    "t09_gap": "T09 /32fc remains on legacy agent_stream_cursors and lacks append_in_transaction, ordered_event_publication, and inclusive through_seq. T09 latest evidence was 1 passed, 1 failed at receipt publication. Preserve T09 consumer and T18 hunks; provider rebase belongs to T20/T09.",
+    "receipt_gap": "Root test_agent_t08_receipt_transaction.py lacks test_command_receipt_is_durable_and_allows_task_completion. T08 candidate contains it. This leaves producer receipt, artifact persistence, restart reload, completion gate, and task completion without a fresh root selector.",
+    "receipt_branches_without_selectors": [
+      "failed command returns without creating a passed verification receipt",
+      "verification evidence or receipt persistence raises; command result remains successful and carries verification_receipt_warning"
+    ],
+    "incident_branch_without_selector": "Root query partitions aggregate attempts by repository and tenant; test_agent_incident_scope.py has no attempts assertions for identical signatures across roots or tenants.",
+    "publication_branches_without_explicit_selectors": [
+      "publication scope is closed after context exit",
+      "batch rejects duplicate or out-of-order sequence values",
+      "published event row content mismatch is rejected"
+    ],
+    "runtime_gate": "No fresh T08 root acceptance run. Historical passes are not current-hash receipts. Wait for explicit T20 T08 slot."
+  },
+  "prepared_selectors": {
+    "root_present_once": [
+      "tests/test_agent_tasks.py::test_transition_idempotency_reuse_by_different_actor_is_rejected",
+      "tests/test_agent_tasks.py::test_checkpoint_idempotency_replay_requires_same_actor",
+      "tests/test_agent_tasks.py::test_same_status_transition_rejects_idempotency_key_owned_by_another_actor",
+      "tests/test_agent_tasks.py::test_completed_uses_task_context_repo_root_without_worktree_checkpoint",
+      "tests/test_agent_task_memory_adoption.py::test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope",
+      "tests/test_t09_command_execution_completion.py::test_actual_broker_receipt_completes_agent_task",
+      "tests/test_t09_command_execution_completion.py::test_actual_broker_completion_rejects_missing_or_forged_sidecar"
+    ],
+    "root_present_recovery_and_event": [
+      "tests/test_agent_t08_durable_contract.py::test_append_in_transaction_preserves_caller_rollback_and_strict_replay",
+      "tests/test_agent_t08_durable_contract.py::test_duplicate_replay_rebuilds_cursor_from_stream_high_water",
+      "tests/test_agent_t08_event_page_snapshot.py::test_event_page_through_seq_excludes_events_appended_between_pages",
+      "tests/test_agent_t08_live_order.py::test_ordered_event_publication_serializes_caller_owned_batch",
+      "tests/test_agent_t08_live_order.py::test_task_event_commits_share_append_publish_order_lock[receipt]",
+      "tests/test_agent_crash_recovery.py::test_crash_after_task_event_append_before_commit_rolls_back_projection_and_event",
+      "tests/test_agent_crash_recovery.py::test_os_exit_after_task_event_insert_rolls_back_projection_and_event",
+      "tests/test_agent_crash_recovery.py::test_committed_receipt_and_task_projection_survive_restart_before_publish",
+      "tests/test_agent_t08_crash_after_commit.py::test_process_exit_after_commit_before_publish_recovers_event",
+      "tests/test_agent_t08_crash_after_commit.py::test_process_exit_during_receipt_write_recovers_atomically"
+    ],
+    "candidate_only_or_missing": [
+      "tests/test_agent_t08_receipt_transaction.py::test_command_receipt_is_durable_and_allows_task_completion",
+      "proposed: test_failed_command_does_not_create_passed_verification_receipt",
+      "proposed: test_receipt_storage_failure_warns_without_overwriting_command_result",
+      "proposed: test_scoped_incident_attempts_do_not_aggregate_across_repository_or_tenant",
+      "proposed: test_ordered_publication_rejects_closed_scope_duplicate_sequence_and_row_mismatch"
+    ],
+    "not_run": true
+  },
+  "root_current_patches": {
+    "applicable_read_only": [
+      {
+        "path": "artifacts/t08-command-receipt-e2e-root-current.patch",
+        "sha256": "5F477D4D8D32C885ECD6961A5FBB98051073D3C03B7774DCFB43C114888EDA69",
+        "preimage_sha256": "D27745D7407DD7596F8ED1C1F7DFFE65660DD3C29D7787657D9478A3DA940699",
+        "postimage_sha256": "D07BFDF7781F42C93730E867AEFB66FD04CD528E23D222AF7A69DCB5EEBCA118",
+        "git_apply_check": "PASS; not applied; T08-owned test file"
+      },
+      {
+        "path": "artifacts/t08-agent-incidents-legacy-schema-allowlist-root-current.patch",
+        "sha256": "0EED05FF6AB60BFD66F3A295DD8A413FDD8D7E69CF5AB9B29DBA09C855554F7D",
+        "git_apply_check": "PASS; not applied; confirm T05 migration ownership before integration"
+      }
+    ],
+    "stale_or_already_integrated_count": 19,
+    "decision": "Do not apply old root-current overlays. Most fail exact root preimage checks or target files already exist. Blackboard trust hunk and selector already exist in root. T09 provider patch only matches recorded T09 preimage, not root."
+  },
+  "ownership": {
+    "T05": "No agent_memory.py patch or write. Root provenance unresolved; preserve T05 ownership.",
+    "T09": "No T09 checkout or consumer edits. Provider proposal remains T09-preimage-only.",
+    "root_written_by_T08": false
+  },
+  "handoff": {
+    "destination": "T20",
+    "status": "failed",
+    "diagnostic": "Could not determine whether Codex thread exists; host durable unavailable.",
+    "tests_run": false
+  }
+}

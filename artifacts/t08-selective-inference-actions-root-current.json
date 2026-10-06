@@ -1,0 +1,46 @@
+{
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_preimages_sha256": {
+    "async_jobs": "324181DCDA22F76BF4787455A4EDB05D7BF2A91C76A50F6D2EE081B52FCEA54B",
+    "lifecycle_test": "D868337E53AAF3C7E47172A9114143D9E7C174CC0CD343197BE4C5D6FA6691FB"
+  },
+  "candidate_sha256": {
+    "async_jobs": "65166587C7E256C63C7C3717B32DC9A7A2C658487F97EC1C794DC79E73F0C6A8",
+    "lifecycle_test": "E1668784DCFB28C1560FC4FCC2F9C4E9EFE2FD1248236D0AC0FAE0B1E5DCB65C"
+  },
+  "patch_sha256": "AD990253ECCE77343D8FFB75156D098155F9C3D8719F4B11457AE61666A0099D",
+  "scope": [
+    "src/local_ai_hub/async_jobs.py",
+    "tests/test_t08_async_admission_lifecycle.py"
+  ],
+  "behavior": "Track a nested inference admission for each distinct action; deduplicate nested admissions for the same action. Preserve async job worker tracking and cancellation code.",
+  "receipts": [
+    {
+      "command": "tests/test_t08_async_admission_lifecycle.py::test_nested_admissions_track_distinct_actions_and_drain_selectively before source change",
+      "result": "expected RED: failed because nested vision did not receive an action token"
+    },
+    {
+      "command": "tests/test_t08_async_admission_lifecycle.py::test_nested_admissions_track_distinct_actions_and_drain_selectively after source change",
+      "result": "1 passed in 0.15s"
+    },
+    {
+      "command": "tests/test_t08_async_admission_lifecycle.py tests/test_t08_t13_t12_consumer_overlay.py with current T13/T12 worktrees",
+      "result": "4 passed in 1.26s"
+    },
+    {
+      "command": "tests/test_t08_async_admission_lifecycle.py tests/test_async_job_reliability_contract.py tests/test_t08_t13_t12_consumer_overlay.py",
+      "result": "4 passed, 15 failed in 5.00s; reliability failures return no job_id. This run is not a passing receipt and remains an integration limitation."
+    },
+    {
+      "command": "T08 lifecycle + actual T13/T12 consumer overlay with patched root-current async_jobs source override",
+      "result": "4 passed in 2.30s"
+    },
+    {
+      "command": "T08 public adoption + task + actual T13/T12 overlay + lifecycle selectors with patched root-current async_jobs source override",
+      "result": "43 passed in 23.20s"
+    }
+  ],
+  "root_apply_check": "passed with --whitespace=error",
+  "root_write": false,
+  "root_tests": false
+}

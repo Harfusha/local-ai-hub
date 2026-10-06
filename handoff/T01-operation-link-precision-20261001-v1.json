@@ -1,0 +1,30 @@
+{
+  "candidate_head": "689165fbe18101feacf5f489847a4890fc27ed1f",
+  "candidate_source_sha256": {
+    "tools/surface_inventory.py": "a0e5c30cd2d5a551e09550c99135865f3d54152f51df7036b0947320be131664",
+    "tests/test_surface_inventory.py": "632b27ac4030727b183d6b47dc387b2f2a783148d52a21ab2fb6eba98bcc2ae0"
+  },
+  "root_preimage_sha256": {
+    "tools/surface_inventory.py": "862731fdb1312d2b6a604a1eb7f2559c196eac11985c032c091633dea960a85c",
+    "tests/test_surface_inventory.py": "4ccfe67302bd9a46676324db967d3a8bd2491375afd5c9c59a8bd74658ae73b1"
+  },
+  "patch": "C:\\Users\\Adam\\.codex\\worktrees\\t01-coverage-main-verify\\.local-ai-hub\\handoff\\T01-operation-link-precision-20261001-v1.patch",
+  "patch_sha256": "40807e085f3dbe833849d622eb246f1ef9d4563c58ab07415507b57f8bb3cd28",
+  "patch_bytes": 5589,
+  "issue": "HubClient target links keyed only by HTTP method+path bled behavior to unrelated client handlers; fixture-returned HubClient methods were omitted; repeated same-method/path coord branches were ambiguous.",
+  "fix": "Qualify target links by client handler; recognize running_app_client tuple fixture; suppress ambiguous repeated method/path links.",
+  "focused_test": "tests/test_surface_inventory.py::test_hubclient_target_links_match_the_client_method_handler",
+  "test_result": "1 passed in 8.15s after source changes; two fail-first runs demonstrated both bugs.",
+  "inventory_snapshot": {
+    "operation_rows": 642,
+    "behavior_linked_rows": 127,
+    "state_counts": {
+      "verified": 633,
+      "conditional": 7,
+      "unsupported": 2,
+      "removed": 0
+    }
+  },
+  "root_modified": false,
+  "coverage_document_modified": false
+}

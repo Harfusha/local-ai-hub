@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from local_ai_hub.commands import CommandBroker
+
+
+class _Artifacts:
+    def __init__(self) -> None:
+        self.records: list[tuple[dict[str, Any], str, str]] = []
+
+    def put_json(self, value: dict[str, Any], owner: str, kind: str) -> str:
+        self.records.append((value, owner, kind))
+        return "artifact-server-stub"
+
+
+class _VerificationStore:
+    def __init__(self) -> None:
+        self.receipts: list[Any] = []
+
+    def record(self, receipt: Any) -> Any:
+        self.receipts.append(receipt)
+        return receipt
+
+
+def test_cached_success_does_not_mint_command_verification_receipt(tmp_path: Path) -> None:
+    artifacts = _Artifacts()
+    verification = _VerificationStore()
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}}, artifacts=artifacts)
+    broker.set_verification_store(verification)
+
+    broker._record_command_verification(
+        {"success": True, "exit_code": 0},
+        tenant="tenant-a",
+        task_id="task-a",
+        criterion="pytest",
+        command="pytest -q",
+        command_id="cache_fabricated-id",
+        command_digest="a" * 64,
+        repository_revision="revision-1",
+        duration_ms=2.0,
+        project_alias="pytest",
+        project_config_digest="config-digest",
+        project_environment_sha256="environment-digest",
+        cached=True,
+    )
+
+    assert artifacts.records == []
+    assert verification.receipts == []
+
+
+def test_command_verification_records_server_run_by_command_id(tmp_path: Path) -> None:
+    artifacts = _Artifacts()
+    verification = _VerificationStore()
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}}, artifacts=artifacts)
+    broker.set_verification_store(verification)
+    command_id = "1" * 32
+
+    broker._record_command_verification(
+        {"success": True, "exit_code": 0},
+        tenant="tenant-a",
+        task_id="task-a",
+        criterion="pytest",
+        command="pytest -q",
+        command_id=command_id,
+        command_digest="b" * 64,
+        repository_revision="revision-2",
+        duration_ms=3.0,
+        project_alias="pytest",
+        project_config_digest="config-digest",
+        project_environment_sha256="environment-digest",
+        cached=False,
+        repository_root=str(tmp_path.resolve()),
+    )
+
+    scoped_record = broker.get_command_execution_record(
+        command_id, tenant="tenant-a", task_id="task-a", repository_root=str(tmp_path)
+    )
+    assert scoped_record is not None
+    assert scoped_record["repository_root"] == str(tmp_path.resolve())
+    assert broker.get_command_execution_record(
+        command_id, tenant="other-tenant", task_id="task-a", repository_root=str(tmp_path)
+    ) is None
+    assert broker.get_command_execution_record(
+        command_id, tenant="tenant-a", task_id="other-task", repository_root=str(tmp_path)
+    ) is None
+    assert broker.get_command_execution_record(
+        command_id, tenant="tenant-a", task_id="task-a", repository_root=str(tmp_path.parent)
+    ) is None
+
+    record = broker._get_server_command_execution_record(command_id)
+    assert record is not None
+    assert record["command_id"] == command_id
+    assert record["task_id"] == "task-a"
+    assert record["tenant_identity"] == broker._tenant_identity("tenant-a")
+    assert record["command_sha256"] == "b" * 64
+    assert record["evidence_id"] == "artifact-server-stub"
+    assert "issuer" not in record
+    record["task_id"] = "forged-task"
+    restarted = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}}, artifacts=artifacts)
+    persisted = restarted._get_server_command_execution_record(command_id)
+    assert persisted is not None
+    assert persisted["task_id"] == "task-a"
+    assert persisted["tenant_identity"] == restarted._tenant_identity("tenant-a")

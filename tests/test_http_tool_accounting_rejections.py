@@ -10,7 +10,23 @@ def test_tool_accounting_reports_aggregate_rejections_without_exception_details(
                 raise RuntimeError("private source text")
 
     class App:
+        config = {}
         telemetry = Telemetry()
+
+        class Recovery:
+            @staticmethod
+            def fingerprint_payload(_payload):
+                return "test-fingerprint"
+
+            @staticmethod
+            def begin(*_args, **_kwargs):
+                return {"claimed": True, "state": "running", "response": None}
+
+            @staticmethod
+            def finish(*_args, **_kwargs):
+                return None
+
+        recovery = Recovery()
 
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = "/api/telemetry/tool-accounting"
@@ -24,6 +40,7 @@ def test_tool_accounting_reports_aggregate_rejections_without_exception_details(
     responses = []
     handler._send = lambda status, data: responses.append((status, data))
     monkeypatch.setattr(http_server, "APP", App())
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
 
     handler.do_POST()
 

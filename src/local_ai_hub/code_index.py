@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+
+_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v13-scoped-fallback"
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
@@ -24,7 +26,7 @@ MAX_IMPACT_DEPENDENTS = 100_000
 
 IDENT = re.compile(r"\b[A-Za-z_$][A-Za-z0-9_$]{2,}\b")
 GENERIC_DEF = re.compile(r"^\s*(?:(?:public|private|protected|internal|static|final|async|export|abstract|virtual|override|sealed|readonly)\s+)*(class|interface|trait|enum|struct|record|function|func|fn|def|type)\s+([A-Za-z_$][A-Za-z0-9_$]*)")
-IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w./@-]+)|(?:require_once|include_once|require|include|using|use)\s*\(?[\'\"]?([^\'\";]+)[\'\"]?\)?)")
+IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w./@-]+)|(?:use|require|require_once|include|include_once|using)\s*\(?[\'\"]?([^\'\";]+)[\'\"]?\)?)")
 ARROW_DEF = re.compile(r"^\s*(?:(?:export|default|public|private|protected|internal|static|readonly|const|let|var)\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>")
 INLINE_ARROW_DEF = re.compile(r"(?<![\w$])(?:(?:export|default|public|private|protected|internal|static|readonly|const|let|var)\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>")
 GO_METHOD = re.compile(r"^\s*func\s*(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
@@ -32,7 +34,6 @@ TYPED_METHOD = re.compile(r"^\s*(?:(?:public|private|protected|internal|static|f
 JS_METHOD = re.compile(r"^\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*\{")
 TRAILING_CALL_AFTER_CLOSE = re.compile(r"}\s*;?\s*(?:[A-Za-z_$][\w$]*\s*\??\.\s*)*[A-Za-z_$][A-Za-z0-9_$]*\s*\(")
 _CONTROL_NAMES = {"if","for","while","switch","catch","return","new","throw","using","lock","foreach","typeof","sizeof","default"}
-_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v12-named-arrow-callers"
 
 
 def _javascript_regex_end(chars: list[str], start: int) -> int | None:
@@ -896,6 +897,10 @@ def _declaration_call_spans(line: str) -> set[tuple[int, int]]:
     }
 
 
+def _escape_like_literal(value: str) -> str:
+    return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+
+
 class CodeIndex:
     def __init__(self, config: dict[str, Any], repo_tools: Any):
         self.config = config
@@ -931,22 +936,13 @@ class CodeIndex:
         return con
 
     def _schema(self, con: sqlite3.Connection) -> None:
-        has_files = con.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='files'"
-        ).fetchone()
-        if has_files:
-            file_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(files)")}
-            if "analyzer_version" not in file_columns:
-                # This database is a disposable index; rebuild obsolete shape instead of migrating it.
-                for table in ("edges", "refs", "symbols", "files", "parse_blobs"):
-                    con.execute(f"DROP TABLE IF EXISTS {table}")
         con.executescript("""
         CREATE TABLE IF NOT EXISTS files(
             root TEXT,
             path TEXT,
             content_hash TEXT,
+            analyzer_version TEXT,
             language TEXT,
-            analyzer_version TEXT NOT NULL DEFAULT '',
             updated_at REAL,
             PRIMARY KEY(root, path)
         );
@@ -1006,6 +1002,12 @@ class CodeIndex:
         );
         CREATE INDEX IF NOT EXISTS idx_parse_blobs_updated ON parse_blobs(updated_at);
         """)
+        file_columns = {str(row["name"]) for row in con.execute("PRAGMA table_info(files)").fetchall()}
+        if "analyzer_version" not in file_columns:
+            raise sqlite3.DatabaseError(
+                "stale derived code-index schema; rebuild this cache"
+            )
+
     def _init_db(self) -> None:
         try:
             with self._lock, closing(self._connect()) as con:
@@ -1210,13 +1212,39 @@ class CodeIndex:
         closing = pairs.get(opening)
         return (closing + 1) if closing is not None else start_index + 1
 
+    @staticmethod
+    def _call_owners_by_line(symbols: list[dict[str, Any]], line_count: int) -> list[str]:
+        """Map source lines to the narrowest enclosing fallback function symbol."""
+        function_kinds = {"function", "method", "constructor", "func", "fn"}
+        starts: dict[int, list[dict[str, Any]]] = {}
+        for symbol in symbols:
+            start = int(symbol.get("line", 0))
+            end = int(symbol.get("end_line", 0))
+            if str(symbol.get("kind", "")).lower() in function_kinds and 1 <= start <= end <= line_count:
+                starts.setdefault(start, []).append(symbol)
+
+        owners = ["<module>"] * (line_count + 1)
+        active: list[dict[str, Any]] = []
+        for line in range(1, line_count + 1):
+            active = [symbol for symbol in active if int(symbol.get("end_line", 0)) >= line]
+            active.extend(starts.get(line, ()))
+            if active:
+                owner = min(
+                    active,
+                    key=lambda symbol: (
+                        int(symbol.get("end_line", 0)) - int(symbol.get("line", 0)),
+                        -int(symbol.get("line", 0)),
+                    ),
+                )
+                owners[line] = str(owner.get("name_path") or owner.get("name") or "<module>")
+        return owners
+
     def _parse_csharp(self, text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         syms: list[dict[str, Any]] = []
         refs: list[dict[str, Any]] = []
         edges: list[dict[str, Any]] = []
 
-        raw_lines = text.splitlines()
-        lines = _mask_non_code(text, "csharp").splitlines()
+        lines = text.splitlines()
         brace_pairs, next_open = self._brace_metadata(lines)
 
         class_re = re.compile(
@@ -1235,6 +1263,7 @@ class CodeIndex:
 
         container_stack: list[tuple[str, str, int, int]] = []
         overloads: dict[str, int] = {}
+        class_names: set[str] = set()
 
         for i, line in enumerate(lines, 1):
             um = using_re.match(line)
@@ -1250,6 +1279,7 @@ class CodeIndex:
                 access = cm.group(1) or "internal"
                 kind = cm.group(2)
                 name = cm.group(3)
+                class_names.add(name)
                 heritage = cm.group(4) or ""
 
                 end_l = self._block_end_line(i - 1, brace_pairs, next_open, 3500)
@@ -1259,7 +1289,7 @@ class CodeIndex:
 
                 doc = ""
                 if i > 1:
-                    prev = raw_lines[i - 2].strip()
+                    prev = lines[i - 2].strip()
                     if prev.startswith("///"):
                         doc = re.sub(r"<[^>]+>", "", prev.replace("///", "")).strip()
 
@@ -1349,16 +1379,13 @@ class CodeIndex:
                     symbol["_body_close_position"] = close_position
 
         call_pattern = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{2,})\s*\(")
-        definitions = {(int(symbol["line"]), str(symbol["name"])) for symbol in syms}
+        declaration_lines = {int(symbol["line"]) for symbol in syms}
+        call_owners = self._call_owners_by_line(syms, len(lines))
         for i, line in enumerate(lines, 1):
-            declaration_spans = _declaration_call_spans(line)
-            for m in call_pattern.finditer(line):
+            cleaned = line.split("//")[0]
+            for m in call_pattern.finditer(cleaned):
                 cname = m.group(1)
-                if (
-                    cname not in _CONTROL_NAMES
-                    and (m.start(1), m.end(1)) not in declaration_spans
-                    and (i, cname) not in definitions
-                ):
+                if cname not in _CONTROL_NAMES and i not in declaration_lines:
                     refs.append({"name": cname, "line": i, "kind": "call"})
                     edges.append({
                         "src": _call_edge_source(syms, i, column=m.start(1), source_line=line),
@@ -1371,12 +1398,11 @@ class CodeIndex:
             symbol.pop("_body_close_position", None)
         return syms, refs, edges
 
-    def _parse_generic(self, text: str, language: str = "") -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    def _parse_generic(self, text: str, lang: str = "generic") -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         syms: list[dict[str, Any]] = []
         refs: list[dict[str, Any]] = []
         edges: list[dict[str, Any]] = []
-        lines = _mask_non_code(text, language).splitlines()
-        import_lines = _mask_non_code(text, language, mask_literals=False).splitlines()
+        lines = text.splitlines()
         brace_pairs, next_open = self._brace_metadata(lines)
 
         ns_pattern = re.compile(r"^\s*namespace\s+([A-Za-z0-9_\\]+)")
@@ -1419,7 +1445,7 @@ class CodeIndex:
                     "docstring": "",
                 })
 
-            im = IMPORT.match(import_lines[i - 1])
+            im = IMPORT.match(line)
             if im:
                 dst = next((x for x in im.groups() if x), "")
                 edges.append({"src": "<module>", "dst": dst, "kind": "imports", "line": i})
@@ -1448,16 +1474,12 @@ class CodeIndex:
             syms.append(s)
 
         call_re = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{2,})\s*\(")
-        definitions = {(int(symbol["line"]), str(symbol["name"])) for symbol in syms}
+        declaration_lines = {int(symbol["line"]) for symbol in syms}
+        call_owners = self._call_owners_by_line(syms, len(lines))
         for i, line in enumerate(lines, 1):
-            declaration_spans = _declaration_call_spans(line)
             for m in call_re.finditer(line):
                 name = m.group(1)
-                if (
-                    name.lower() not in _CONTROL_NAMES
-                    and (m.start(1), m.end(1)) not in declaration_spans
-                    and (i, name) not in definitions
-                ):
+                if name.lower() not in _CONTROL_NAMES and i not in declaration_lines:
                     refs.append({"name": name, "line": i, "kind": "call"})
                     edges.append({
                         "src": _call_edge_source(syms, i, column=m.start(1), source_line=line),
@@ -1516,6 +1538,7 @@ class CodeIndex:
             diagnostic["error_type"] = str(parser_report["error_type"])
         return (*parsed, diagnostic)
 
+
     def _parse_file_content(self, text: str, lang: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         symbols, refs, edges, _diagnostic = self._parse_file_content_report(text, lang)
         return symbols, refs, edges
@@ -1523,6 +1546,7 @@ class CodeIndex:
     def _parse_blob_get(self, content_hash: str, language: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]] | None:
         cached = self._parse_blob_get_with_report(content_hash, language)
         return cached[0] if cached is not None else None
+
 
     def _parse_blob_get_with_report(
         self, content_hash: str, language: str
@@ -1569,7 +1593,7 @@ class CodeIndex:
             pass
 
     def files_needing_reindex(self, root: str, items: list[tuple[str, str]]) -> list[tuple[str, str]]:
-        """Select changed files and files analyzed by an older parser version."""
+        """Select paths with changed content or stale parser analyzer versions."""
         c_root = canonical_root(root)
         if not items:
             return []
@@ -1633,9 +1657,10 @@ class CodeIndex:
                     con.execute(f"DELETE FROM {t} WHERE root=? AND path=?", (str(base), path))
                 con.commit()
             self._advance_query_cache_generation()
+            self._status_cache.pop(str(base), None)
             return {"success": True, "deleted": True}
 
-        digest, lines = self.repo_tools._read_snapshot(target)
+        digest, lines = self.repo_tools._read_snapshot(target, force=True)
         content_hash = content_hash or digest
         lang = self._language_for_path(path, settings)
         with self._lock, closing(self._connect()) as con:
@@ -1647,19 +1672,21 @@ class CodeIndex:
                     "parse_outcome": dict(cached[1]) if cached is not None else {"status": "unknown", "parser": "unknown"},
                 }
 
-        parsed = self._parse_blob_get_with_report(content_hash, lang)
+        parsed_with_report = self._parse_blob_get_with_report(content_hash, lang)
+        parsed = parsed_with_report[0] if parsed_with_report is not None else None
         if parsed is None:
             text = "\n".join(lines)
             syms, refs, edges, parse_outcome = self._parse_file_content_report(text, lang)
             self._parse_blob_put(content_hash, lang, syms, refs, edges, parse_outcome)
         else:
-            (syms, refs, edges), parse_outcome = parsed
+            syms, refs, edges = parsed
+            parse_outcome = parsed_with_report[1]
 
         with self._lock, closing(self._connect()) as con:
             con.execute("BEGIN IMMEDIATE")
             for t in ("symbols", "refs", "edges"):
                 con.execute(f"DELETE FROM {t} WHERE root=? AND path=?", (str(base), path))
-            con.execute("INSERT OR REPLACE INTO files(root,path,content_hash,language,analyzer_version,updated_at) VALUES(?,?,?,?,?,?)", (str(base), path, content_hash, lang, _PARSER_ANALYZER_VERSION, time.time()))
+            con.execute("INSERT OR REPLACE INTO files(root, path, content_hash, analyzer_version, language, updated_at) VALUES(?,?,?,?,?,?)", (str(base), path, content_hash, _PARSER_ANALYZER_VERSION, lang, time.time()))
             con.executemany(
                 "INSERT OR REPLACE INTO symbols(root, path, name, kind, line, end_line, container, name_path, signature, access, docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 [(str(base), path, s["name"], s["kind"], s["line"], s["end_line"], s.get("container", ""), s.get("name_path", s["name"]), s.get("signature", ""), s.get("access", "public"), s.get("docstring", "")) for s in syms],
@@ -1669,6 +1696,7 @@ class CodeIndex:
             con.commit()
 
         self._advance_query_cache_generation()
+        self._status_cache.pop(str(base), None)
         return {
             "success": True, "cached": False, "path": path,
             "symbols": len(syms), "refs": len(refs), "edges": len(edges),
@@ -1710,7 +1738,7 @@ class CodeIndex:
         candidates: list[tuple[str, str, str, list[str] | None]] = []
         cached = 0
         denied_paths: list[str] = []
-        deleted_paths: list[str] = []
+        deleted_paths: list[tuple[str, str]] = []
         for path, supplied_hash in normalized:
             file_path = (base / path).resolve(strict=False)
             try:
@@ -1718,7 +1746,7 @@ class CodeIndex:
             except ValueError:
                 continue
             if not file_path.is_file():
-                deleted_paths.append(path)
+                deleted_paths.append((c_root, path))
                 continue
             if api is not None and settings is not None:
                 try:
@@ -1737,7 +1765,7 @@ class CodeIndex:
                 candidates.append((path, supplied_hash, lang, None))
                 continue
             try:
-                digest, lines = self.repo_tools._read_snapshot(file_path)
+                digest, lines = self.repo_tools._read_snapshot(file_path, force=True)
             except OSError:
                 continue
             content_hash = supplied_hash or digest
@@ -1746,12 +1774,9 @@ class CodeIndex:
                 continue
             candidates.append((path, content_hash, lang, lines))
 
-        self._remove_indexed_paths(c_root, [*denied_paths, *deleted_paths])
+        self._remove_indexed_paths(c_root, denied_paths)
 
-        blob_map: dict[
-            tuple[str, str],
-            tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]],
-        ] = {}
+        blob_map: dict[tuple[str, str], tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]] = {}
         if candidates:
             pairs = list(dict.fromkeys((h, lang) for _, h, lang, _ in candidates))
             for content_hash, language in pairs:
@@ -1782,14 +1807,7 @@ class CodeIndex:
                             diagnostic = data.get("parse_outcome")
                             if not isinstance(diagnostic, dict):
                                 diagnostic = {"status": "unknown", "parser": "unknown", "fallback_used": False}
-                            blob_map[(str(row[0]), str(row[1]))] = (
-                                list(data.get("symbols", [])), list(data.get("refs", [])),
-                                list(data.get("edges", [])), dict(diagnostic),
-                            )
-                            self._parse_blob_l1.set(
-                                f"{row[0]}:{_PARSER_ANALYZER_VERSION}:{row[1]}",
-                                blob_map[(str(row[0]), str(row[1]))],
-                            )
+                            blob_map[(str(row[0]), str(row[1]))] = (list(data.get("symbols", [])), list(data.get("refs", [])), list(data.get("edges", [])), diagnostic)
             except Exception:
                 pass
 
@@ -1812,87 +1830,58 @@ class CodeIndex:
         edges_to_insert: list[tuple[Any, ...]] = []
         parse_blob_rows: list[tuple[Any, ...]] = []
         paths_to_clean: list[tuple[str, str]] = []
-        parse_counts = {"syntax_error_files": 0, "fallback_files": 0, "unavailable_files": 0, "failed_files": 0}
-        parse_diagnostics: list[dict[str, Any]] = []
         now = time.time()
         def _parse_candidate(cand: tuple[str, str, str, list[str]]):
             path, content_hash, lang, lines = cand
             parsed = blob_map.get((content_hash, lang))
             if parsed is None:
                 syms, refs, edges, diagnostic = self._parse_file_content_report("\n".join(lines), lang)
-                row_blob = (
-                    content_hash, _PARSER_ANALYZER_VERSION, lang,
-                    json_dumps({"symbols": syms, "refs": refs, "edges": edges, "parse_outcome": diagnostic}, ensure_ascii=False, separators=(",", ":")),
-                    now,
-                )
+                row_blob = (content_hash, _PARSER_ANALYZER_VERSION, lang, json_dumps({"symbols": syms, "refs": refs, "edges": edges, "parse_outcome": diagnostic}, ensure_ascii=False, separators=(",", ":")), now)
             else:
                 syms, refs, edges, diagnostic = parsed
                 row_blob = None
-            return path, content_hash, lang, syms, refs, edges, diagnostic, row_blob
+            return path, content_hash, lang, syms, refs, edges, row_blob
 
         # Tree-sitter parsers are shared per language and guarded by one lock.
         # Threading here queues parses behind that lock and adds scheduler cost;
         # the bounded batch SQL write is where this path gains throughput.
         parsed_candidates = [_parse_candidate(c) for c in candidates]
 
-        for path, content_hash, lang, syms, refs, edges, diagnostic, row_blob in parsed_candidates:
+        for path, content_hash, lang, syms, refs, edges, row_blob in parsed_candidates:
             if row_blob is not None:
                 parse_blob_rows.append(row_blob)
-            parse_state = str(diagnostic.get("status") or "unknown")
-            if parse_state == "syntax_error":
-                parse_counts["syntax_error_files"] += 1
-            if bool(diagnostic.get("fallback_used")):
-                parse_counts["fallback_files"] += 1
-            if str(diagnostic.get("fallback_reason") or "") == "parser_unavailable":
-                parse_counts["unavailable_files"] += 1
-            if str(diagnostic.get("fallback_reason") or "") == "parser_error":
-                parse_counts["failed_files"] += 1
-            if parse_state != "ok":
-                parse_diagnostics.append({
-                    "path": path,
-                    "language": lang,
-                    "status": parse_state,
-                    "parser": str(diagnostic.get("parser") or "unknown"),
-                    "fallback_used": bool(diagnostic.get("fallback_used")),
-                    "fallback_reason": str(diagnostic.get("fallback_reason") or ""),
-                    "syntax_error_count": int(diagnostic.get("syntax_error_count", 0) or 0),
-                    "syntax_error_count_truncated": bool(diagnostic.get("syntax_error_count_truncated", False)),
-                    **({"error_type": str(diagnostic["error_type"])} if diagnostic.get("error_type") else {}),
-                })
             paths_to_clean.append((c_root, path))
-            files_to_insert.append((c_root, path, content_hash, lang, _PARSER_ANALYZER_VERSION, now))
+            files_to_insert.append((c_root, path, content_hash, _PARSER_ANALYZER_VERSION, lang, now))
             syms_to_insert.extend((c_root, path, x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""), x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"), x.get("docstring", "")) for x in syms)
             refs_to_insert.extend((c_root, path, x["name"], x["line"], x.get("kind", "call")) for x in refs)
             edges_to_insert.extend((c_root, x["src"], x["dst"], x.get("kind", "reference"), path, x["line"]) for x in edges)
 
-        if files_to_insert:
+        if files_to_insert or deleted_paths:
             with self._lock, closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 if parse_blob_rows:
                     con.executemany("INSERT OR REPLACE INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)", parse_blob_rows)
                 _IDX_TABLES = frozenset({"symbols", "refs", "edges"})
+                if deleted_paths:
+                    con.executemany("DELETE FROM files WHERE root=? AND path=?", deleted_paths)
+                    for table in ("symbols", "refs", "edges"):
+                        assert table in _IDX_TABLES
+                        con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", deleted_paths)  # noqa: S608
                 for table in ("symbols", "refs", "edges"):
                     assert table in _IDX_TABLES  # defence-in-depth whitelist
                     con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)  # noqa: S608
-                con.executemany("INSERT OR REPLACE INTO files(root,path,content_hash,language,analyzer_version,updated_at) VALUES(?,?,?,?,?,?)", files_to_insert)
+                con.executemany("INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at) VALUES(?,?,?,?,?,?)", files_to_insert)
                 con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
                 con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
                 con.executemany("INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)", edges_to_insert)
                 con.commit()
             self._advance_query_cache_generation()
         self._status_cache.pop(c_root, None)
-        return {
-            "success": True, "files_processed": len(files_to_insert), "cached": cached,
-            "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert),
-            "parse_blob_hits": len(candidates) - len(parse_blob_rows),
-            "parse_outcomes": {
-                "scope": "processed_candidates",
-                "files_processed": len(parsed_candidates),
-                **parse_counts,
-                "diagnostics": parse_diagnostics[:64],
-                "diagnostics_truncated": len(parse_diagnostics) > 64,
-            },
-        }
+        return {"success": True, "files_processed": len(files_to_insert), "cached": cached, "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert), "parse_blob_hits": len(candidates) - len(parse_blob_rows)}
+
+    @staticmethod
+    def _query_terms(query: str) -> list[str]:
+        return [t.lower() for t in tokenize_query_terms(query, min_len=2, max_terms=16)]
 
     def _candidate_freshness(self, root: str, paths: list[str]) -> dict[str, Any]:
         unique_paths = list(dict.fromkeys(self._norm_rel(path) for path in paths if path))
@@ -1932,7 +1921,7 @@ class CodeIndex:
                 unknown.append(rel_path)
                 continue
             try:
-                current_hash, _lines = reader(target)
+                current_hash, _lines = reader(target, force=True)
             except (OSError, ValueError):
                 unknown.append(rel_path)
                 continue
@@ -1947,6 +1936,7 @@ class CodeIndex:
             "unknown_paths": unknown[:64],
             "complete": False,
         }
+
 
     def _parse_outcomes_for_paths(self, root: str, paths: list[str]) -> dict[str, Any]:
         unique_paths = list(dict.fromkeys(self._norm_rel(path) for path in paths if path))
@@ -1999,10 +1989,6 @@ class CodeIndex:
             "diagnostics": diagnostics[:64], "diagnostics_truncated": len(diagnostics) > 64,
             "complete": len(rows) == len(unique_paths),
         }
-
-    @staticmethod
-    def _query_terms(query: str) -> list[str]:
-        return [t.lower() for t in tokenize_query_terms(query, min_len=2, max_terms=16)]
 
     def query(self, root: str, query: str, limit: int = 20, *, verify_freshness: bool = False) -> dict[str, Any]:
         """Search the built-in symbol index without requiring an external model.
@@ -2808,6 +2794,7 @@ class CodeIndex:
                 "error": str(exc),
                 "busy": is_busy_error(exc),
                 "confidence": 0.0,
+                "graph_complete": False,
                 "changed_symbols": [],
                 "likely_dependents": [],
                 "suggested_tests": [],
@@ -2880,6 +2867,8 @@ class CodeIndex:
             "freshness": {"status": "not_checked"},
             "truncated": truncated,
             "truncation": truncation,
+            "graph_complete": False,
+            "dependency_graph_complete": not truncated,
         }
         self._impact_result_l1.set(cache_key, result)
         return result
@@ -2978,9 +2967,9 @@ class CodeIndex:
             return {"success": False, "error": "symbol cannot be empty"}
         sym = symbol.strip()
         result_limit = max(0, int(limit))
-        escaped_sym = sym.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        escaped_sym = _escape_like_literal(sym)
         try:
-            with closing(self._connect()) as con:
+            with self._lock, closing(self._connect()) as con:
                 rows = con.execute(
                     """SELECT src, dst, kind, path, line FROM edges
                        WHERE root=? AND kind='calls'
@@ -3026,9 +3015,9 @@ class CodeIndex:
             return {"success": False, "error": "symbol cannot be empty"}
         sym = symbol.strip()
         result_limit = max(0, int(limit))
-        escaped_sym = sym.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        escaped_sym = _escape_like_literal(sym)
         try:
-            with closing(self._connect()) as con:
+            with self._lock, closing(self._connect()) as con:
                 rows = con.execute(
                     """SELECT src, dst, kind, path, line FROM edges
                        WHERE root=? AND kind='calls'

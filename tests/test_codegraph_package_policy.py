@@ -27,7 +27,7 @@ def test_generated_mcp_config_ignores_stale_codegraph_flag(tmp_path):
     assert "codegraph" not in generated["mcpServers"]
 
 
-def test_codegraph_removed_from_configs_and_backends():
+def test_codegraph_removed_from_configs_and_features():
     for path in (ROOT / "defaults.toml", ROOT / "src" / "local_ai_hub" / "defaults.toml"):
         with path.open("rb") as config_file:
             cfg = tomllib.load(config_file)
@@ -38,17 +38,22 @@ def test_codegraph_removed_from_configs_and_backends():
     assert not hasattr(feat, "codegraph")
 
     ext = ExternalCodeIntelligence({"code_intelligence": {"enabled": True}})
-    assert ext.backend_available("codegraph") is False
-    assert not hasattr(ext, "codegraph_enabled")
-    assert not hasattr(ext, "query_codegraph")
-    assert not hasattr(ext, "_codegraph_sessions")
-    res = ext.query(".", "test", backend="codegraph")
-    assert res.get("unsupported") is True
-    assert ext.index("codegraph", ".").get("unsupported") is True
-    assert "codegraph" not in ext.status()
-    assert ext.reset_sessions("codegraph").get("success") is False
-    assert not hasattr(ext, "_codegraph")
-    ext.close()
+    try:
+        assert ext.backend_available("codegraph") is False
+        assert not hasattr(ext, "codegraph_enabled")
+        assert not hasattr(ext, "query_codegraph")
+        assert not hasattr(ext, "_codegraph_sessions")
+        res = ext.query(".", "test", backend="codegraph")
+        assert res.get("success") is False
+        assert res.get("unavailable") is True
+        assert ext.index("codegraph", ".").get("success") is False
+        assert "codegraph" not in ext.status()
+        assert ext.reset_sessions("codegraph").get("success") is False
+        assert not hasattr(ext, "_codegraph")
+        ext.close()
+    finally:
+        ext.close()
+
 
 
 def test_runtime_has_no_managed_codegraph_or_kuzu_references():

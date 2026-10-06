@@ -1,0 +1,48 @@
+{
+  "task": "T05 current-preimage identity selectors",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "root_preimage_sha256": {
+    "tests/test_agent_memory.py": "F4F12E52C105D23E88A6F0F69A6D5AC2C23580BF9515E5DD1EA5C1EC6206E29C",
+    "src/local_ai_hub/agent_memory.py": "C68A8C70386BA5155C23D48AE23735E3E0344C3E72F021F0D76DEF708AF2B838"
+  },
+  "patch": "artifacts/t05-root-current-memory-v1.patch",
+  "patch_sha256": "F7B2F7761E72755A8AB7ACF889DEAF02CB7AD413C15E0AC1CC287A87344DCB19",
+  "isolated_apply_check": "PASS",
+  "selector_run": {
+    "command": "python -B -c $py",
+    "pytest_args": [
+      "-q",
+      "-p",
+      "no:cacheprovider",
+      "--tb=short",
+      "-W",
+      "always::ResourceWarning"
+    ],
+    "selectors": [
+      "tests/test_agent_memory.py::test_find_filters_global_and_repository_rows_by_tenant_and_root",
+      "tests/test_agent_memory.py::test_memory_find_enforces_root_repository_and_tenant_identity",
+      "tests/test_agent_memory.py::test_global_memory_delete_ignores_transport_tenant_but_keeps_scope",
+      "tests/test_agent_memory.py::test_scoped_memory_delete_requires_matching_tenant"
+    ],
+    "candidate_agent_memory_sha256": "784116FF1ADA548979126F9639C4B795016540AF5ED85D1897C6963DFA6AC73E",
+    "root_agent_events_sha256": "30AB4485F34A67D8212E6151057E06EF806D40F92073036D8F9F4F4546B44822",
+    "result": "4 passed in 1.68s",
+    "exit_code": 0,
+    "active_pytest_before": 0,
+    "active_pytest_after": 0
+  },
+  "root_modified": false,
+  "source_fix_necessity": "The old JSON decoder converted a scalar JSON string with tuple(str), yielding character-level evidence IDs; the record decoder accepted those strings. Normalization is required to reject non-list stored shapes. The four identity selectors validate tenant/global-delete behavior, not this evidence_ids shape branch; its two dedicated selectors passed earlier.",
+  "remaining_dependency": "Seven migration selectors remain blocked by current root/T08 agent_events.py rejecting agent_incidents.",
+  "candidate_native_migrations": {
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short -W always::ResourceWarning tests/test_t05_agent_state_migrations.py",
+    "workdir": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub",
+    "package_source": "candidate/src; no root event bridge injected",
+    "candidate_agent_events_sha256": "84EDB06DFD22FA900DB09474EFCF0689393E1A9FB76C0E0D636BFD5826B63AC2",
+    "result": "24 passed in 16.77s",
+    "exit_code": 0,
+    "active_pytest_before": 0,
+    "active_pytest_after": 0
+  },
+  "candidate_acceptance_summary": "Candidate-native migration suite 24/24 passed. Root-current bridge integration migration suite previously failed 7 selectors because root agent_events rejects agent_incidents; retain as separate T08/root integration dependency."
+}

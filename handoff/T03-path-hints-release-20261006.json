@@ -1,0 +1,87 @@
+{
+  "task": "T03 path_hints public contract release",
+  "created_utc_date": "2026-10-06",
+  "root": "C:/Users/Adam/.codex/worktrees/t03-contracts-resume/.local-ai-hub",
+  "base_head": "ad622f8a90a81e349e94d3402f297f2995e733b2",
+  "ownership": {
+    "T03": [
+      "src/local_ai_hub/operation_contracts.py: public local_ai_repo(search) schema; optional path_hints, maxItems 64, each item requires path/purpose/scope",
+      "src/local_ai_hub/mcp_server.py: forwards the complete path_hints list to /api/search",
+      "tests/test_mcp_contract_dispatch.py: verifies exactly one /api/search call and complete payload; this continuation filters intentional telemetry from that assertion"
+    ],
+    "T21": [
+      "downstream /api/search path_hints consumer and tests/test_mcp_repo_path_hints.py"
+    ]
+  },
+  "continuation_edits": [
+    "tests/test_mcp_contract_dispatch.py"
+  ],
+  "inherited_dirty_candidate_paths": {
+    "src/local_ai_hub/mcp_server.py": {
+      "base_blob": "6b4317b3457bfcf5995da1758a3ae229d4a00ba8",
+      "post_blob": "6b521650683424f3a918219d9c8b3e88d017c3ca",
+      "note": "pre-existing dirty T03 candidate state; not edited in this continuation"
+    },
+    "src/local_ai_hub/operation_contracts.py": {
+      "base_blob": "2ef2b0a3e574e3f88d040cb332059e4deccfa933",
+      "post_blob": "bbee5bf01ffb17a4a5506574237c7e3ad75935f9",
+      "note": "pre-existing dirty T03 candidate state; not edited in this continuation"
+    },
+    "tests/test_mcp_contract_dispatch.py": {
+      "base_blob": "6367c3d59f95f5f846a893dd86d816b216f530b1",
+      "post_blob": "b207fc744d24095955888e5e0872220cb2d658a5",
+      "note": "pre-existing dirty T03 tests plus this continuation's assertion adjustment"
+    },
+    "handoff/T03-path-hints-contract-manifest-20261004.md": {
+      "base_blob": null,
+      "post_blob": "dc3252673c18b62b4d591ad122be5d9a3a08dcd7",
+      "note": "pre-existing untracked T03 contract manifest"
+    }
+  },
+  "test_receipts": [
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_mcp_live_wire_schema.py tests/test_recovery_journal_contract.py tests/test_mcp_contract_dispatch.py",
+      "result": "35 passed, 2 failed in 27.10s",
+      "request_id": "req_6d6afc89367d",
+      "failures": [
+        "tests/test_mcp_live_wire_schema.py::test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up",
+        "tests/test_mcp_contract_dispatch.py::test_mcp_repo_search_forwards_path_hints_to_http_payload"
+      ],
+      "note": "inherited receipt; not repeated"
+    },
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_mcp_live_wire_schema.py::test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up",
+      "result": "1 passed in 11.31s",
+      "request_id": "req_159b7cd9c6fb",
+      "note": "exact selector run once as previously authorized"
+    },
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_mcp_contract_dispatch.py::test_mcp_repo_search_forwards_path_hints_to_http_payload",
+      "result": "1 passed in 1.88s",
+      "request_id": "req_43909003c5d7",
+      "execution_id": "5e41bdf19f784b50917535a8f9756a6d",
+      "repository_revision": "81619716a7785f9e15d8b3b1f575098983b2f24476a7cd7ca86282116506910c",
+      "note": "post-edit exact selector; no broad suite rerun"
+    }
+  ],
+  "telemetry_evidence": {
+    "source_test": "tests/test_mcp_contract_dispatch.py::test_protocol_accounting_uses_shared_mcp_client_as_light_telemetry",
+    "assertions": ["one telemetry call", "/api/telemetry/tool-accounting", "event payload", "batch_id", "timeout 0.25", "telemetry operational context"],
+    "decision": "Keep telemetry assertion in its dedicated test. Filter it from path_hints dispatch assertion, which still asserts the full /api/search payload."
+  },
+  "bugbot": {
+    "result": "no findings",
+    "scope": "path_hints dispatch-test adjustment and adjacent telemetry behavior",
+    "tests_run_by_reviewer": false
+  },
+  "t21_notification": {
+    "sent": true,
+    "thread_id": "01a0d7b9-04b9-7da1-906e-393693d07f65"
+  },
+  "remaining": [
+    "No full acceptance suite rerun; only the exact post-edit selector passed.",
+    "Other pre-existing dirty/untracked T03 candidate paths remain untouched and require their own acceptance evidence.",
+    "T21 downstream consumer acceptance is not claimed here."
+  ],
+  "integration": "No commit; do not alter T21 files or repository root."
+}
