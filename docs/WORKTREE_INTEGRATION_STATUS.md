@@ -166,6 +166,42 @@ regression did not raise the expected HTTP 403. Keep the denial expectation;
 repair authorization after historical consolidation. Passing memory-adoption
 and ordering tests are targeted integration evidence, not full release proof.
 
+Additional integrations:
+
+- T10 path hints `69c11dae` integrated: constructor call ownership, parser
+  initialization locking, Java/C++ extractors and literal wildcard escaping
+  retained with master path/config/security constraints. Worker 225 passed /
+  6 failed / 10 skipped, then corrected merge-scope selector 5 passed. Aggregate
+  was not rerun; native parser and inherited T14/verification gaps remain.
+- Historical fefe `7f8f4105` integrated at `896fbedb`. Two broker guard
+  overlaps combined conservatively: uncertainty/cancellation, unsafe command
+  class, and explicit replay safety all restrict repair. Worker broad checks
+  151 passed / 46 failed / 10 skipped, final safety 8 passed / 1 failed.
+  Cleanup/drain/callback/daemon/rollback acceptance remains unfinished.
+- Post-fefe root repair check: `python -B -m pytest -q -p no:cacheprovider
+  tests/test_auto_fix_repair_loop.py --tb=short --maxfail=3`: 4 passed / 3 failed,
+  stopped at three failures in 8.76s. It exposed actual merged call-site bugs:
+  `_attempt_key` now requires tenant and timeout, but private transaction and
+  patch rollback paths omitted them; `_key` silently used default scope.
+- Root integration correction retains tenant/timeout at all four stale
+  identity calls. New signature regression was run RED: 2 failed in 0.42s.
+  Then `python -B -m pytest -q -p no:cacheprovider
+  tests/test_sync_command_identity_calls.py tests/test_auto_fix_repair_loop.py
+  -k 'transaction_identity_calls_bind_current_required_scope or
+  test_command_run_auto_fix_flag or
+  test_repair_loop_rejects_patch_outside_write_set_before_writing'
+  --tb=short --maxfail=3`: **3 passed, 1 failed, 19 deselected in 14.46s**.
+  Both identity signature regressions and write-set rejection passed; auto-fix
+  still returns unsuccessful. Do not describe all transaction behavior as fixed.
+- T14 snippet `46087216` integrated: original isolated regression retained;
+  production source matches worker pin. Worker 15 tests passed; inherited
+  identity/budget and full release acceptance remain open.
+- T18 candidate original eight ordinary untracked tests/patches/handoffs
+  checkpoint-committed at `357099ba`; source reconciliation remains pending.
+
+Current parallel owners: T21 project config; T19 docs rollout; historical
+55ed docs/SDK contracts; T16 orchestration resume; T14 path-scan checkout.
+
 ## Rules for the remainder
 
 - Preserve each original HEAD and dirty tracked content in a checkpoint ref
