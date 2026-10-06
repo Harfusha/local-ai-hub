@@ -38,7 +38,9 @@ def fuse_ranked_paths(
                 backend_weights[str(source)] *= float(configured)
     scores: dict[str, float] = defaultdict(float)
     sources: dict[str, set[str]] = defaultdict(set)
-    for source, paths in groups.items():
+    # Backend results can arrive in different completion orders. Stable source
+    # iteration prevents floating-point accumulation from reordering tied paths.
+    for source, paths in sorted(groups.items(), key=lambda item: str(item[0])):
         weight = backend_weights.get(str(source), 0.75)
         seen: set[str] = set()
         for rank, raw_path in enumerate(paths):

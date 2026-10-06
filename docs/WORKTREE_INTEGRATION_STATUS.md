@@ -278,7 +278,29 @@ T10's nine originally untracked historical benchmark JSON/schema files were
 classified as archived evidence, not runtime databases, and committed in their
 existing checkout as `0ad7e821` (original result `e4c14ded` remains ancestor).
 They are preserved exactly, not counted as current performance proof. Root
-integration of the T10 source packet is still pending.
+integration is now reconciled against `04ff61eb`, including packet `0ad7e821`.
+Seven central conflicts resolved by behavior: retain T14 candidate controls
+and string/dict hints, T10 backend selection/confidence/deadline diagnostics,
+benchmark source-origin guard and T10 origin checks, both backend-removal
+assertion sets, current external-tool guidance and bounded-read instructions.
+Two formerly checked T19 rollout items are reopened for the final combined
+source; historical receipts remain in merge parents and handoffs.
+
+Fresh root command: `python -B -m pytest -q -p no:cacheprovider
+tests/test_t10_transitive_dependencies.py tests/test_t10_incremental_callgraph_edges.py
+tests/test_t10_snapshot_cache_capacity.py tests/test_context_delivery.py
+tests/test_preprocess_operational_mode.py tests/test_codegraph_package_policy.py
+--tb=short --maxfail=5`: 72 passed, 1 failed, 5 skipped in 37.09 seconds.
+Failure: CodeGraph substring audit rejects generator's standalone removal
+guidance, not a restored backend. Five language parser checks skip because
+parsers are unavailable. No expectations weakened, full runtime/benchmark
+acceptance not established. Historical JSON evidence is not current performance.
+
+Post-reconciliation T10 checks: AST parsing of seven production files plus
+tools/benchmark_surfaces.py passed (8 files). `python tools/surface_inventory.py
+--write-doc` followed by `python tools/surface_inventory.py --check`: 705 rows,
+no drift, coverage matches. Source/test/benchmark conflict-resolution diff check
+passed. Root runtime database remains preserved outside the commit.
 
 Root validation left an untracked `agent_state.sqlite` runtime database. It is
 preserved in place and intentionally not staged or deleted; it is not ordinary

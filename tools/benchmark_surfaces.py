@@ -51,6 +51,7 @@ sys.path[:] = [
     if Path(entry or os.getcwd()).resolve() != _REPO_SOURCE
 ]
 sys.path.insert(0, str(_REPO_SOURCE))
+_SOURCE_ROOT = _REPO_SOURCE
 _FULL_FILE_SIZES = {100, 10_000, 100_000}
 _FULL_RAG_SIZES = {10_000, 100_000}
 _MAX_CONCURRENCY = 256
@@ -88,6 +89,21 @@ _REQUIRED_COMPARISON_STAGES = {
     "hub_rag_batch_index", "hub_rag_search", "hub_rag_fixture_relevance",
     "hub_queue_admission", "hub_rag_chunking", "parent_worktree_seed",
 }
+_QUEUE_ERROR_TYPES = frozenset({"Exception", "OSError", "RuntimeError", "TimeoutError", "ValueError"})
+_QUEUE_STATES = frozenset({
+    "queued", "running", "done", "failed", "cancelled", "expired",
+    "outcome_unknown", "rejected", "conflict",
+})
+_QUEUE_REASONS = frozenset({
+    "capacity_available", "resource_pressure", "queue_limit",
+    "duplicate_active_job", "idempotent_request_replay",
+})
+_QUEUE_PRESSURE_LEVELS = frozenset({"nominal", "moderate", "high", "critical"})
+
+
+def _safe_queue_label(value: object, allowed: frozenset[str]) -> str:
+    return value if isinstance(value, str) and value in allowed else "unknown"
+
 _REQUIRED_LIGHT_SAMPLE_STAGES = {
     "transport", "hub_health", "hub_validation", "hub_queue_admission",
 }
@@ -3749,6 +3765,11 @@ def run_benchmark(
 
         from local_ai_hub import http_server as http_server_module
         from local_ai_hub.app import LocalAIApp
+        runtime_source_root = Path(http_server_module.__file__).resolve().parents[1]
+        if runtime_source_root != _SOURCE_ROOT:
+            raise RuntimeError(
+                f"benchmark runtime source mismatch: expected {_SOURCE_ROOT}, got {runtime_source_root}"
+            )
 
         app_state_dir = scratch / "hub-state"
         app_config_path = scratch / "hub-config.toml"
@@ -5448,6 +5469,7 @@ def run_benchmark(
             "cold_warm_policy": "Explicit cold query keys and preseeded warm keys for cached Hub routes; uncached operations use fresh calls; no OS cache flush.",
             "revision": _revision(),
             "implementation_fingerprint": _implementation_fingerprint(),
+            "runtime_source_root": str(runtime_source_root),
             "workload_fingerprint": _stable_fingerprint({
                 "benchmark_scope": "hub_app_synthetic_repo_plus_hardware_inference" if include_inference else "hub_app_synthetic_repo",
                 "synthetic_file_count": recorded_file_count,
