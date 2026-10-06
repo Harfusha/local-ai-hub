@@ -376,7 +376,7 @@ class DebugTraceStore:
         max_bytes: int = _TRACE_DETAIL_DEFAULT_BYTES,
     ) -> dict[str, Any]:
         try:
-            cursor = 0 if isinstance(since_seq, bool) else max(0, int(since_seq))
+            cursor = 0 if isinstance(since_seq, bool) else min(2**63 - 1, max(0, int(since_seq)))
         except (TypeError, ValueError, OverflowError):
             cursor = 0
         try:
@@ -403,8 +403,10 @@ class DebugTraceStore:
                 events_total = int(stats[0] or 0) if stats else 0
                 first_retained_seq = int(stats[1] or 0) if stats else 0
                 last_seq = int(stats[2] or 0) if stats else 0
-                cursor_reset = cursor > last_seq
-                effective_cursor = max(0, first_retained_seq - 1) if cursor_reset else cursor
+                # Preserve the pinned forward-cursor contract: past-end requests
+                # are empty, not an implicit replay of previously retained events.
+                cursor_reset = False
+                effective_cursor = cursor
                 gap_ranges: list[dict[str, int]] = []
                 if first_retained_seq and effective_cursor < first_retained_seq - 1:
                     gap_ranges.append({"from_seq": effective_cursor + 1, "to_seq": first_retained_seq - 1})
@@ -593,12 +595,16 @@ class DebugTraceStore:
             with closing(self._connect()) as con:
                 con.row_factory = sqlite3.Row
                 total = int(con.execute(f"SELECT COUNT(*) FROM traces{clause}", values).fetchone()[0])
-                rows = con.execute(f"""SELECT trace_id,kind,tenant,agent,action,source,model,request_id,async_job_id,scheduler_job_id,state,created_at,updated_at,finished_at,error,
-                    CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.action'), 1, 48) END AS request_action,
-                    CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.command'), 1, 512) END AS request_command,
-                    CASE WHEN json_valid(request_json) THEN COALESCE(json_extract(request_json, '$.project'), json_extract(request_json, '$.workspace'), json_extract(request_json, '$.root'), json_extract(request_json, '$.repo_root')) END AS request_project,
-                    CASE WHEN json_valid(effective_payload_json) THEN COALESCE(json_extract(effective_payload_json, '$.project'), json_extract(effective_payload_json, '$.workspace'), json_extract(effective_payload_json, '$.root'), json_extract(effective_payload_json, '$.repo_root')) END AS payload_project
-                    FROM traces{clause} ORDER BY updated_at DESC LIMIT ? OFFSET ?""", [*values, limit, offset]).fetchall()
+                if offset >= total:
+                    # Past-end pages are empty; avoid binding oversized offsets to SQLite.
+                    rows = []
+                else:
+                    rows = con.execute(f"""SELECT trace_id,kind,tenant,agent,action,source,model,request_id,async_job_id,scheduler_job_id,state,created_at,updated_at,finished_at,error,
+                        CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.action'), 1, 48) END AS request_action,
+                        CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.command'), 1, 512) END AS request_command,
+                        CASE WHEN json_valid(request_json) THEN COALESCE(json_extract(request_json, '$.project'), json_extract(request_json, '$.workspace'), json_extract(request_json, '$.root'), json_extract(request_json, '$.repo_root')) END AS request_project,
+                        CASE WHEN json_valid(effective_payload_json) THEN COALESCE(json_extract(effective_payload_json, '$.project'), json_extract(effective_payload_json, '$.workspace'), json_extract(effective_payload_json, '$.root'), json_extract(effective_payload_json, '$.repo_root')) END AS payload_project
+                        FROM traces{clause} ORDER BY updated_at DESC LIMIT ? OFFSET ?""", [*values, limit, offset]).fetchall()
                 items = []
                 for row in rows:
                     item = dict(row)

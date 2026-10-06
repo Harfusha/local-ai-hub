@@ -203,6 +203,71 @@ def test_config_file_resolving_outside_its_source_root_is_rejected(
     assert result.error_codes == ("unsafe_config_path",)
 
 
+def test_invalid_lower_layer_cannot_be_hidden_by_valid_worktree_override(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        'skip_phases = "rag"\n', encoding="utf-8"
+    )
+    (tmp_path / ".local-ai.worktree.toml").write_text(
+        "skip_phases = []\n", encoding="utf-8"
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.settings == ProjectSettings()
+    assert result.active_sources == ("defaults",)
+    assert result.error_codes == ("invalid_config",)
+
+
+def test_verification_alias_can_be_defined_in_lower_config_layer(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        '[commands]\ntest = "python -m pytest"\n', encoding="utf-8"
+    )
+    (tmp_path / ".local-ai.worktree.toml").write_text(
+        '[verification_rules]\ntask_complete = ["test"]\n', encoding="utf-8"
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.error_codes == ()
+    assert result.settings.commands == {"test": "python -m pytest"}
+    assert result.settings.verification_rules == {"task_complete": ("test",)}
+
+
+def test_config_loader_opens_resolved_path_that_passed_containment_check(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from io import BytesIO
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    config = root / ".local-ai.toml"
+    config.write_text('project_type = "python"\n', encoding="utf-8")
+    verified_path = root / "verified.toml"
+    verified_path.write_text('project_type = "python"\n', encoding="utf-8")
+    original_resolve = Path.resolve
+    original_open = Path.open
+
+    def resolve_config(self: Path, strict: bool = False) -> Path:
+        if self == config:
+            return verified_path
+        return original_resolve(self, strict=strict)
+
+    def retarget_config_after_validation(self: Path, *args, **kwargs):
+        if self == config:
+            return BytesIO(b'project_type = "outside"\n')
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve_config)
+    monkeypatch.setattr(Path, "open", retarget_config_after_validation)
+
+    result = resolve_project_config(root)
+
+    assert result.settings.project_type == "python"
+    assert result.error_codes == ()
 def test_config_overlay_accepts_256_kib_and_rejects_one_byte_more(
     tmp_path: Path,
 ) -> None:

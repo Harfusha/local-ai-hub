@@ -516,7 +516,7 @@ class AgentStateStore:
     def _classify_schema(cls, con: sqlite3.Connection) -> tuple[Any, ...]:
         version = int(con.execute("PRAGMA user_version").fetchone()[0])
         if version > cls._SCHEMA_VERSION or version < 0:
-            raise RuntimeError(f"unsupported agent_state schema version: {version}")
+            raise RuntimeError(f"unsupported agent state schema version: {version}")
 
         event_columns = cls._columns(con, "agent_events")
         snapshot_columns = cls._columns(con, "agent_snapshots")

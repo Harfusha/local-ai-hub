@@ -7,7 +7,7 @@ Local AI Hub is a local deterministic-first service between coding agents and re
 1. **Compact MCP surface** — eight public tools in `src/local_ai_hub/mcp_server.py`; agent-specific projection and result compaction happen before responses leave the hub.
 2. **HTTP service** — authenticated local API, request limits, recovery journal, telemetry and dashboard.
 3. **Deterministic repository layer** — inventory/search, code index, AST/facts, dependency/security/test/git analysis, evidence and artifacts.
-4. **Code intelligence** — Serena provides semantic and symbol operations; the built-in AST index supplies local code structure.
+4. **Code intelligence** — the built-in Tree-sitter/SQLite index provides deterministic symbols and call relationships; optional Serena adds semantic navigation. Serena runs in timeout-bounded per-project sessions with LRU/TTL eviction and circuit failure handling. CodeGraphContext/KuzuDB are not Hub backends.
 5. **Retrieval** — lexical search, semantic cache, embeddings/reranking and RAG; deterministic sources are preferred before semantic retrieval.
 6. **Local inference** — Ollama scheduler with background/fast/smart roles selected by configuration/hardware profiles.
 7. **Preprocessing** — checkpointed pipeline that warms indexes and cards without blocking interactive requests.

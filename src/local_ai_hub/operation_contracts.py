@@ -7,6 +7,54 @@ import math
 from copy import deepcopy
 from typing import Any
 
+REPO_PHASES = ("", "plan", "edit", "review", "test", "handoff")
+MAX_REPO_PIPELINE_PARALLEL_STEPS = 4
+MAX_EVENT_SEQUENCE = (1 << 63) - 1
+REPO_PIPELINE_MUTATING_ACTIONS = frozenset({
+    "batch_replace", "ast_refactor", "preprocess", "preprocess_refresh",
+    "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister",
+})
+
+
+def normalize_transport_error(status_code: int, payload: Any) -> dict[str, Any]:
+    """Normalize errors without replacing explicit delivery/retry state."""
+    result = dict(payload) if isinstance(payload, dict) else {"error": str(payload)}
+    result["success"] = False
+    result["status_code"] = int(status_code)
+    retryable = status_code in {408, 425, 429, 500, 502, 503, 504}
+    if "retryable" not in result and "terminal" not in result:
+        result.update(retryable=retryable, terminal=not retryable)
+    elif "retryable" not in result:
+        result["retryable"] = not bool(result["terminal"])
+    elif "terminal" not in result:
+        result["terminal"] = not bool(result["retryable"])
+    if isinstance(result.get("error"), str):
+        result["error"] = result["error"][:500]
+    return result
+
+
+def contract_error(message: str, *, status_code: int = 400) -> dict[str, Any]:
+    return normalize_transport_error(status_code, {"error": message[:500]})
+
+
+def repo_pipeline_step_schema(repo_properties: dict[str, Any], repo_actions: Any) -> dict[str, Any]:
+    """Preserve registry types and bounds in closed pipeline step inputs."""
+    properties = deepcopy({key: value for key, value in repo_properties.items() if key not in {"steps", "action"}})
+    properties["id"] = {"type": "string", "maxLength": 128}
+    properties["action"] = {"type": "string", "enum": [action for action in repo_actions if action != "pipeline"]}
+    return {"type": "object", "required": ["action"], "properties": properties, "additionalProperties": False}
+
+
+def validate_repo_pipeline_step(step: Any, *, index: int, step_schema: dict[str, Any], features: Any = None) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(step, dict):
+        return None, f"steps[{index}] must be an object"
+    error = _validate_nested_schema(step, step_schema, f"steps[{index}]", "pipeline")
+    if error:
+        return None, error
+    arguments = {key: value for key, value in step.items() if key != "id"}
+    error = validate_operation_arguments("local_ai_repo", step.get("action"), arguments, features=features)
+    return (None, error) if error else (dict(step), None)
+
 
 def _action_contracts(
     actions: tuple[str, ...],
@@ -458,7 +506,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "focus": {"type": "array", "items": {"type": "string"}},
             "include_diagnostics": {"type": "boolean", "default": False},
             "base": {"type": "string", "default": "HEAD"},
-            "after_seq": {"type": "integer", "minimum": 0, "default": 0},
+            "after_seq": {"type": "integer", "minimum": 0, "maximum": MAX_EVENT_SEQUENCE, "default": 0},
             "topic": {"type": "string", "default": ""},
             "include_stale": {"type": "boolean", "default": False},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
@@ -1060,6 +1108,16 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
     for requirements, conditional_properties in contract.get("conditional_properties", {}).items():
         if _requirements_met(features, (str(requirements),)):
             properties.update(deepcopy(conditional_properties))
+
+    if tool == "local_ai_repo":
+        properties["phase"] = {"type": "string", "enum": list(REPO_PHASES), "default": ""}
+        for field in ("max_tokens", "token_budget"):
+            properties[field].update(minimum=0, maximum=100000)
+        properties["steps"] = {
+            "type": "array", "items": repo_pipeline_step_schema(properties, available_actions),
+        }
+    if tool == "local_ai_coord":
+        properties["max_tokens"].update(minimum=0, maximum=100000)
 
     parameters: dict[str, Any] = {"type": "object", "properties": properties}
     if contract.get("selector_required", True):

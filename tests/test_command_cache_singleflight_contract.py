@@ -41,7 +41,7 @@ def test_bypass_cache_skips_reads_and_does_not_write_results(tmp_path, monkeypat
     monkeypatch.setattr(
         broker,
         "_key",
-        lambda _command, _cwd, _classification: (
+        lambda _command, _cwd, _classification, **_kwargs: (
             "stable-key",
             {"fingerprint": "stable", "changed_paths": []},
         ),
@@ -110,7 +110,7 @@ def test_singleflight_waiter_receives_escaped_owner_timeout(tmp_path, monkeypatc
     monkeypatch.setattr(
         broker,
         "_key",
-        lambda _command, _cwd, _classification: (
+        lambda _command, _cwd, _classification, **_kwargs: (
             "stable-key",
             {"fingerprint": "stable", "changed_paths": []},
         ),
@@ -185,6 +185,40 @@ def test_command_cache_key_changes_with_environment_tool_and_revision(
     assert len({env_one, env_two, tool_two, revision_two}) == 4
 
 
+def test_command_result_cache_does_not_reuse_across_environment_values(
+    tmp_path, monkeypatch
+) -> None:
+    broker = _broker(tmp_path)
+    broker.config["commands"]["environment_keys"] = ["T15_CACHE_CONTEXT"]
+    monkeypatch.setattr(broker, "_unavailable_executable", lambda *_args: None)
+    monkeypatch.setattr(broker, "_tool_identity", lambda *_args: "fixed-tool")
+    monkeypatch.setenv("T15_CACHE_CONTEXT", "environment-one")
+    executions = 0
+
+    def execute(*_args, **_kwargs):
+        nonlocal executions
+        executions += 1
+        return {
+            "success": True,
+            "exit_code": 0,
+            "stdout": os.environ["T15_CACHE_CONTEXT"],
+            "stderr": "",
+            "duration_ms": 1,
+        }
+
+    monkeypatch.setattr(broker, "_execute", execute)
+    first = broker.run("python -m pytest -q", str(tmp_path), tenant="test")
+    warm = broker.run("python -m pytest -q", str(tmp_path), tenant="test")
+    monkeypatch.setenv("T15_CACHE_CONTEXT", "environment-two")
+    changed = broker.run("python -m pytest -q", str(tmp_path), tenant="test")
+
+    assert first["stdout"] == "environment-one"
+    assert warm["cache_hit"] is True
+    assert changed["cache_hit"] is False
+    assert changed["stdout"] == "environment-two"
+    assert executions == 2
+
+
 def test_command_result_cache_observes_l1_and_l2_ttl(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
     broker.success_cache.l1.ttl_seconds = 2
@@ -232,76 +266,6 @@ def test_command_result_cache_observes_l1_and_l2_ttl(tmp_path, monkeypatch) -> N
     assert expired["cache_hit"] is False
     assert executions == 2
     assert expired["stdout"] == "run-2"
-
-
-def test_suppression_cache_does_not_cross_policy_configuration(tmp_path, monkeypatch) -> None:
-    strict = _broker(tmp_path, policy_blocking=True)
-    first = strict.run("unknown-tool", str(tmp_path), tenant="test")
-    assert first["policy_blocked"] is True
-
-    permissive = _broker(tmp_path, policy_blocking=False)
-    monkeypatch.setattr(
-        permissive, "_unavailable_executable", lambda _command, _cwd: "unknown-tool"
-    )
-    second = permissive.run("unknown-tool", str(tmp_path), tenant="test")
-
-    assert second.get("suppression_cache_hit") is not True
-    assert second.get("policy_blocked") is not True
-    assert second.get("preflight") is True
-
-
-def test_singleflight_waiter_receives_escaped_owner_timeout(tmp_path, monkeypatch) -> None:
-    broker = _broker(tmp_path, coalesced_wait_seconds=2.0)
-    command = "python -m pytest -q"
-    monkeypatch.setattr(broker, "_unavailable_executable", lambda _command, _cwd: None)
-    monkeypatch.setattr(
-        broker,
-        "_key",
-        lambda _command, _cwd, _classification: (
-            "stable-key",
-            {"fingerprint": "stable", "changed_paths": []},
-        ),
-    )
-    owner_entered = threading.Event()
-    release_owner = threading.Event()
-
-    def execute(actual_command, _cwd, timeout, *_args, **_kwargs):
-        owner_entered.set()
-        assert release_owner.wait(2.0)
-        raise subprocess.TimeoutExpired(actual_command, timeout)
-
-    monkeypatch.setattr(broker, "_execute", execute)
-    owner_result: dict[str, object] = {}
-    waiter_result: dict[str, object] = {}
-    owner = threading.Thread(
-        target=lambda: owner_result.update(
-            broker.run(command, str(tmp_path), tenant="test", timeout=1)
-        )
-    )
-    waiter = threading.Thread(
-        target=lambda: waiter_result.update(
-            broker.run(command, str(tmp_path), tenant="test", timeout=1)
-        )
-    )
-
-    owner.start()
-    assert owner_entered.wait(1.0)
-    waiter.start()
-    deadline = time.monotonic() + 1.0
-    while broker.coalesced < 1 and time.monotonic() < deadline:
-        time.sleep(0.005)
-    coalesced_waiters = broker.coalesced
-    release_owner.set()
-    owner.join(2.0)
-    waiter.join(2.0)
-
-    assert not owner.is_alive()
-    assert not waiter.is_alive()
-    assert coalesced_waiters == 1
-    assert owner_result.get("timed_out") is True
-    assert waiter_result.get("timed_out") is True
-    assert waiter_result.get("coalesced") is True
-    assert waiter_result.get("error") == owner_result.get("error")
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure"])
@@ -395,37 +359,3 @@ def test_configured_suppression_l1_ttl_does_not_outlive_l2(
     assert first["policy_blocked"] is True
     assert warm["suppression_cache_hit"] is True
     assert expired.get("suppression_cache_hit") is not True
-
-
-def test_command_result_cache_does_not_reuse_across_environment_values(
-    tmp_path, monkeypatch
-) -> None:
-    broker = _broker(tmp_path)
-    broker.config["commands"]["environment_keys"] = ["T15_CACHE_CONTEXT"]
-    monkeypatch.setattr(broker, "_unavailable_executable", lambda *_args: None)
-    monkeypatch.setattr(broker, "_tool_identity", lambda *_args: "fixed-tool")
-    monkeypatch.setenv("T15_CACHE_CONTEXT", "environment-one")
-    executions = 0
-
-    def execute(*_args, **_kwargs):
-        nonlocal executions
-        executions += 1
-        return {
-            "success": True,
-            "exit_code": 0,
-            "stdout": os.environ["T15_CACHE_CONTEXT"],
-            "stderr": "",
-            "duration_ms": 1,
-        }
-
-    monkeypatch.setattr(broker, "_execute", execute)
-    first = broker.run("python -m pytest -q", str(tmp_path), tenant="test")
-    warm = broker.run("python -m pytest -q", str(tmp_path), tenant="test")
-    monkeypatch.setenv("T15_CACHE_CONTEXT", "environment-two")
-    changed = broker.run("python -m pytest -q", str(tmp_path), tenant="test")
-
-    assert first["stdout"] == "environment-one"
-    assert warm["cache_hit"] is True
-    assert changed["cache_hit"] is False
-    assert changed["stdout"] == "environment-two"
-    assert executions == 2

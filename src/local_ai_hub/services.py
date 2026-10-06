@@ -43,6 +43,8 @@ from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
 from .vision_contracts import (
+    UNTRUSTED_CONTEXT_INSTRUCTION,
+    VISION_MAX_PROMPT_CHARS,
     VISION_MAX_RUNTIME_OUTPUT_CHARS,
     bound_vision_result,
     image_dimensions,
@@ -52,7 +54,7 @@ from .frontend_review import (
     build_coder_context,
 )
 from .vision_inputs import prepare_vision_inputs
-from .vision_payload import vision_success_payload
+from .vision_payload import vision_input_error, vision_success_payload
 from .vision_request import build_vision_request, select_vision_model, vision_feature_error, vision_request_timeout
 from .vision_runtime import vision_capability_error, vision_generation_error
 from .agent_consistency import AdaptiveContextPack, ConsistencyRequest, GuardWarning
@@ -2012,11 +2014,230 @@ class LocalAIServices:
             "tokens_generated": gen_result.get("tokens", 0),
         }
 
-    def vision(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    @staticmethod
+    def _vision_cancelled_result(model_name: str = "") -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "success": False,
+            "reason": "cancelled",
+            "cancelled": True,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "cancelled",
+            "error": "Vision request was cancelled.",
+        }
+        if model_name:
+            result["model"] = model_name
+        return result
+
+    @staticmethod
+    def _vision_prompt_context(
+        prompt: str,
+        model_context: Any,
+        bundle_context: str,
+        prompt_suffix: str,
+    ) -> str | None:
+        prompt_context = prompt
+        if model_context is not None:
+            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + json_dumps(
+                model_context.prompt_payload(), ensure_ascii=False
+            )
+        elif bundle_context:
+            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + bundle_context
+        prompt_budget = max(0, VISION_MAX_PROMPT_CHARS - len(prompt_suffix))
+        if len(prompt_context) > prompt_budget:
+            return None
+        return prompt_context + prompt_suffix
+
+    @staticmethod
+    def _vision_capability_error(model: str, response: Any) -> dict[str, Any] | None:
+        if not isinstance(response, dict):
+            return {
+                "success": False,
+                "model": model,
+                "terminal": True,
+                "retryable": False,
+                "error": "Vision model capability preflight returned an invalid response.",
+            }
+        if response.get("error"):
+            capability_error = str(response.get("error", "")).lower()
+            missing_model = (
+                "model not found" in capability_error
+                or "no such model" in capability_error
+                or ("not found" in capability_error and "model" in capability_error)
+            )
+            transient = any(
+                marker in capability_error
+                for marker in (
+                    "timeout", "timed out", "connection", "network", "handoff",
+                    "temporarily", "unavailable", "try again", "http 429", "http 502", "http 503",
+                )
+            )
+            if missing_model:
+                return {
+                    "success": False,
+                    "model": model,
+                    "unsupported": True,
+                    "degraded": True,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
+                    "error_code": "vision_model_missing",
+                }
+            return {
+                "success": False,
+                "model": model,
+                "terminal": not transient,
+                "retryable": transient,
+                "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision model capability preflight failed; inspect the configured local backend and vision model.",
+                "error_code": "vision_preflight_failed",
+            }
+        capability_values: list[str] = []
+        for value in response.get("capabilities", []):
+            capability_values.append(str(value).lower())
+        details = response.get("details")
+        if isinstance(details, dict):
+            for key in ("family", "families"):
+                values = details.get(key, [])
+                if isinstance(values, list):
+                    capability_values.extend(str(value).lower() for value in values)
+                elif values:
+                    capability_values.append(str(values).lower())
+        supports_vision = any(
+            marker in value
+            for value in capability_values
+            for marker in ("vision", "image", "multimodal", "clip", "vl")
+        )
+        if not supports_vision:
+            return {
+                "success": False,
+                "model": model,
+                "unsupported": True,
+                "degraded": True,
+                "terminal": True,
+                "retryable": False,
+                "error": f"Vision model '{model}' does not advertise image or multimodal capability; choose a configured vision-capable local model.",
+                "error_code": "vision_model_unsupported",
+            }
+        return None
+
+    @staticmethod
+    def _vision_default_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "required": ["summary", "findings", "unknowns", "recommended_checks"],
+            "properties": {
+                "summary": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "id", "severity", "category", "problem", "observed",
+                            "hypothesized", "uncertainty", "confidence", "element_ids",
+                            "bbox", "evidence", "likely_cause", "fix_hint",
+                            "needs_runtime_check", "observation_facts",
+                        ],
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                            "severity": {
+                                "type": "string",
+                                "enum": ["blocker", "high", "medium", "low", "info"],
+                            },
+                            "category": {
+                                "type": "string",
+                                "enum": [
+                                    "layout", "responsive", "accessibility",
+                                    "interaction", "visual-regression", "runtime",
+                                ],
+                            },
+                            "problem": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                            "observed": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                            "hypothesized": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                            "uncertainty": {"type": "array", "items": {"type": "string"}},
+                            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                            "element_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": r"\S"}},
+                            "bbox": {
+                                "anyOf": [
+                                    {
+                                        "type": "array",
+                                        "items": {"type": "number"},
+                                        "minItems": 4,
+                                        "maxItems": 4,
+                                    },
+                                    {"type": "null"},
+                                ],
+                            },
+                            "evidence": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": r"\S"}, "minItems": 1},
+                            "likely_cause": {"type": "string"},
+                            "fix_hint": {"type": "string"},
+                            "needs_runtime_check": {"type": "boolean"},
+                            "observation_facts": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["source", "element_id", "field", "value"],
+                                    "properties": {
+                                        "source": {
+                                            "type": "string",
+                                            "enum": [
+                                                "dom", "accessibility",
+                                                "computed_styles", "runtime",
+                                            ],
+                                        },
+                                        "element_id": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                                        "field": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                                        "value": {
+                                            "anyOf": [
+                                                {"type": "string"},
+                                                {"type": "number"},
+                                                {"type": "boolean"},
+                                            ],
+                                        },
+                                    },
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "unknowns": {"type": "array", "items": {"type": "string"}},
+                "recommended_checks": {"type": "array", "items": {"type": "string"}},
+            },
+            "additionalProperties": False,
+        }
+
+    def vision(
+        self,
+        args: dict[str, Any],
+        tenant: str,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         """Multimodal image understanding via local vision model."""
-        feature_error = vision_feature_error(self.config)
-        if feature_error:
-            return feature_error
+        features = self.config.get("features", {})
+        if isinstance(features, dict) and not bool(features.get("vision", True)):
+            return {
+                "success": False,
+                "unsupported": True,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "vision_disabled",
+                "error": "Vision capability is disabled. Enable features.vision explicitly.",
+            }
+        def is_cancelled() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
+
+        if is_cancelled():
+            return self._vision_cancelled_result()
+        if not isinstance(args, dict):
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "invalid_request",
+                "error": "Vision request must be an object.",
+            }
         image_path = str(args.get("image", args.get("image_path", "")))
         prompt = str(args.get("prompt", args.get("task", "Describe this image in detail.")))
         model, model_error = select_vision_model(args, self.config)
@@ -2038,6 +2259,7 @@ class LocalAIServices:
         bundle_context = prepared_inputs.bundle_context
         frontend_bundle = prepared_inputs.frontend_bundle
         model_context = prepared_inputs.model_context
+        image_size = prepared_inputs.image_size
 
         request_plan = build_vision_request(
             args=args,
@@ -2048,6 +2270,8 @@ class LocalAIServices:
             model_context=model_context,
             model_policy=self.model_policy,
             max_output_tokens=self._VISION_MAX_OUTPUT_TOKENS,
+            default_schema=(self._vision_default_schema() if bool(self.config.get("ollama", {}).get("enabled", False)) else None),
+            image_size=image_size,
         )
         if isinstance(request_plan, dict):
             return request_plan
@@ -2056,15 +2280,21 @@ class LocalAIServices:
         schema = request_plan.schema
         timeout = vision_request_timeout(self.config)
         try:
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
             capability_response = self.runtime.request(
                 "/api/show",
                 {"name": model},
                 timeout=min(timeout, 1.0),
             )
             capability_error = vision_capability_error(capability_response, model)
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
             if capability_error:
                 return capability_error
             res = self.runtime.request("/api/generate", payload, timeout=timeout)
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
             generation_error = vision_generation_error(res, model)
             if generation_error:
                 return generation_error
@@ -2088,20 +2318,16 @@ class LocalAIServices:
                 raw_artifact_id = str(self.artifacts.put(raw_output, tenant, "vision-output"))
             except Exception:
                 pass
-            valid_element_ids = None
-            if model_context is not None:
-                dom_elements = model_context.dom.get("elements", [])
-                valid_element_ids = {
-                    element_id
-                    for element in dom_elements
-                    if isinstance(element, dict)
-                    and isinstance((element_id := element.get("element_id")), str)
-                    and element_id
-                } if isinstance(dom_elements, list) else set()
-            try:
-                image_size = image_dimensions(base64.b64decode(images[0], validate=True))
-            except (ValueError, TypeError):
-                image_size = None
+            dom_context = model_context.dom if model_context is not None else {}
+            dom_elements = dom_context.get("elements", []) if isinstance(dom_context, dict) else []
+            valid_element_ids = {
+                str(element["element_id"])
+                for element in dom_elements
+                if isinstance(element, dict)
+                and isinstance(element.get("element_id"), (str, int, float))
+                and not isinstance(element.get("element_id"), bool)
+                and str(element["element_id"])
+            } if isinstance(dom_elements, list) else set()
             parsed = parse_vision_result(
                 raw_output,
                 strict_output_shape=bool(
@@ -2110,14 +2336,16 @@ class LocalAIServices:
                 ),
                 require_observation_fields=model_context is not None,
                 valid_element_ids=valid_element_ids,
-                observation_sources=(model_context.observation_sources if model_context is not None else None),
+                observation_sources=(
+                    model_context.observation_sources if model_context is not None else None
+                ),
                 image_size=image_size,
             )
             if parsed.terminal:
                 return {
                     "success": False,
-                    "model": model,
                     "degraded": True,
+                    "model": model,
                     "terminal": True,
                     "retryable": False,
                     "error": parsed.error or {"code": "malformed_vision_output", "message": "Vision output is invalid."},
@@ -2172,6 +2400,8 @@ class LocalAIServices:
                 result["coder_context"] = coder_context
             return result
         except Exception as exc:
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
             detail = str(exc).lower()
             transient = isinstance(exc, (TimeoutError, ConnectionError, OSError)) or any(
                 marker in detail for marker in ("timeout", "timed out", "connection", "network", "handoff", "temporarily", "unavailable")
@@ -2272,7 +2502,7 @@ class LocalAIServices:
 
         from tempfile import TemporaryDirectory
 
-        from .process_utils import ProcessCancelledError, run_hidden
+        from .process_utils import ProcessCancelledError, ProcessCleanupUnverifiedError, run_hidden
 
         try:
             with TemporaryDirectory(prefix="local-ai-hub-transcribe-") as output_dir:
@@ -2367,6 +2597,8 @@ class LocalAIServices:
                     "model": model,
                     "engine": "whisper_cli",
                 }
+        except ProcessCleanupUnverifiedError:
+            raise
         except ProcessCancelledError:
             return {
                 "success": False,
@@ -2388,6 +2620,7 @@ class LocalAIServices:
                 "reason": "timeout",
                 "error": "Whisper CLI timed out before transcription completed.",
             }
+
         except Exception:
             return {
                 "success": False,
@@ -3319,6 +3552,7 @@ class LocalAIServices:
 
     def _repository_test_impact_service(self):
         from .repository_test_impact import RepositoryTestImpactService
+
         return RepositoryTestImpactService(
             self.deterministic,
             self.deterministic_operation,
@@ -3601,9 +3835,9 @@ class LocalAIServices:
         from .process_utils import create_git_worktree
         return create_git_worktree(root, branch_name=branch_name, worktree_path=worktree_path)
 
-    def worktree_release(self, root: str, worktree_path: str, delete_branch: bool = True, branch_name: str | None = None) -> dict[str, Any]:
+    def worktree_release(self, root: str, worktree_path: str, delete_branch: bool = True, branch_name: str | None = None, *, worktree_id: str = "") -> dict[str, Any]:
         from .process_utils import remove_git_worktree
-        return remove_git_worktree(root, worktree_path, delete_branch=delete_branch, branch_name=branch_name)
+        return remove_git_worktree(root, worktree_path, delete_branch=delete_branch, branch_name=branch_name, worktree_id=worktree_id)
 
     def list_worktrees(self, root: str) -> dict[str, Any]:
         from .process_utils import list_git_worktrees
@@ -4724,6 +4958,21 @@ class LocalAIServices:
         found: list[str] = []
         visited = 0
 
+        def add_path(raw_path: str | Path) -> None:
+            candidate_text = str(raw_path).strip()
+            candidate = Path(candidate_text).expanduser()
+            if not candidate.is_absolute():
+                candidate = root_path / Path(candidate_text.replace("\\", "/"))
+            try:
+                resolved = candidate.resolve(strict=False)
+                resolved.relative_to(root_path)
+                if resolved.is_file():
+                    relative = resolved.relative_to(root_path).as_posix()
+                    if relative not in found:
+                        found.append(relative)
+            except (OSError, ValueError):
+                pass
+
         def visit(value: Any) -> None:
             nonlocal visited
             if visited >= 500:
@@ -4732,19 +4981,14 @@ class LocalAIServices:
             if isinstance(value, dict):
                 for key, item in value.items():
                     if str(key).lower() in path_keys and isinstance(item, (str, Path)):
-                        candidate = Path(str(item)).expanduser()
-                        if not candidate.is_absolute():
-                            candidate = root_path / candidate
-                        try:
-                            resolved = candidate.resolve(strict=False)
-                            resolved.relative_to(root_path)
-                            if resolved.is_file():
-                                relative = resolved.relative_to(root_path).as_posix()
-                                if relative not in found:
-                                    found.append(relative)
-                        except (OSError, ValueError):
-                            pass
+                        add_path(item)
                     else:
+                        if (
+                            isinstance(key, str)
+                            and ("/" in key or "\\" in key)
+                            and isinstance(item, (dict, list, tuple))
+                        ):
+                            add_path(key)
                         visit(item)
             elif isinstance(value, (list, tuple)):
                 for item in value:
@@ -4763,11 +5007,16 @@ class LocalAIServices:
         external = getattr(self, "external_tools", None)
         if external is None:
             return groups, warnings, {"serena": "skipped"}
+        if getattr(external, "serena_enabled", True) is False:
+            return groups, warnings, {"serena": "skipped"}
         try:
             terms = list(self.repo_tools.search_terms(query))[:8]
         except Exception:
             terms = []
         anchor_query = (terms[0] if terms else str(query)[:80]).strip()
+        surface_match = re.search(re.escape(anchor_query), str(query), flags=re.IGNORECASE)
+        if surface_match:
+            anchor_query = surface_match.group(0)
         if not anchor_query:
             return groups, warnings, {"serena": "skipped"}
 
@@ -4833,6 +5082,31 @@ class LocalAIServices:
         # per-backend lane bounds stragglers without delaying this request.
         return groups, warnings, states
 
+    @staticmethod
+    def _adaptive_builtin_confidence(
+        deterministic_result: dict[str, Any] | None,
+        path_groups: dict[str, list[str]],
+    ) -> float:
+        """Require deterministic confidence plus independent index agreement."""
+        if not isinstance(deterministic_result, dict) or deterministic_result.get("success") is not True:
+            return 0.0
+        if not any(
+            deterministic_result.get(key)
+            for key in ("facts", "dependencies", "scripts", "evidence", "code_index", "test_candidates")
+        ):
+            return 0.0
+        try:
+            confidence = float(deterministic_result.get("confidence", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        if not 0.0 <= confidence <= 1.0:
+            return 0.0
+        deterministic_paths = {str(path) for path in path_groups.get("deterministic", []) if path}
+        indexed_paths = {str(path) for path in path_groups.get("code_index", []) if path}
+        union = deterministic_paths | indexed_paths
+        agreement = len(deterministic_paths & indexed_paths) / len(union) if union else 0.0
+        return min(confidence, agreement)
+
     def _hybrid_context_uncached(
         self,
         root: str,
@@ -4853,6 +5127,18 @@ class LocalAIServices:
         retrieval_weights: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         started_at = time.perf_counter()
+        search_cfg = self.config.get("search", {})
+
+        def bounded_timeout(key: str, default: float) -> float:
+            try:
+                return max(0.05, min(float(search_cfg.get(key, default)), 120.0))
+            except (TypeError, ValueError, OverflowError):
+                return default
+
+        backend_deadline = started_at + max(
+            bounded_timeout("context_backend_timeout_seconds", 3.0),
+            bounded_timeout("context_rag_timeout_seconds", 3.0),
+        )
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
@@ -4871,27 +5157,20 @@ class LocalAIServices:
             except Exception as exc:
                 rag_setup_error = f"rag workspace unavailable: {type(exc).__name__}"
 
-        search_cfg = self.config.get("search", {})
         rag_configured = self.rag is not None and self.config.get("features", {}).get("rag", True)
         retrieval_warnings: list[str] = [rag_setup_error] if rag_setup_error else []
         if rag_configured and not rag_revision_available:
             retrieval_warnings.append("rag revision unavailable; cache bypassed")
         rag_pool = None
         rag_future = None
-        if rag_configured and target_workspace and query.strip():
-            rag_pool = _CONTEXT_BACKEND_POOLS["rag"]
-            rag_future = rag_pool.submit(
-                self.rag.search, query, tenant, target_workspace,
-                top_k=10, use_reranker=True,
-            )
         semantic_fraction = max(0.0, min(float(search_cfg.get("semantic_fraction", 0.35)), 0.7))
         lexical_tokens = max_tokens if not target_workspace else max(512, int(max_tokens * (1.0 - semantic_fraction)))
-        # Local AI: preprocessed deterministic/semantic cards narrow the lexical scan to likely files.
-        # This is an optimization hint only; if cards are absent or select nothing,
-        # the full lexical search remains the correctness fallback.
+        # Local AI: deterministic/semantic paths are ranking hints only. Keep lexical
+        # search repository-wide so one hit in a hinted file cannot hide other candidates.
         candidate_paths: list[str] = []
         path_groups: dict[str, list[str]] = {}
         backend_states: dict[str, str] = {}
+        deterministic_result: dict[str, Any] | None = None
         # Prioritize files explicitly named in the query/task (e.g. AGENTS.md, src/main.py)
         root_path = Path(root)
         explicit_paths: list[str] = []
@@ -4908,7 +5187,24 @@ class LocalAIServices:
             path_groups["explicit"] = explicit_paths
         if self.deterministic is not None:
             try:
-                path_groups["deterministic"] = list(self.deterministic.related_paths(root, query, limit=28))
+                if quality_first:
+                    try:
+                        deterministic_result = self.deterministic_query(root, query, 30)
+                    except Exception:
+                        deterministic_result = None
+                related_kwargs: dict[str, Any] = {"limit": 28}
+                if deterministic_result is not None:
+                    try:
+                        import inspect
+
+                        parameters = inspect.signature(self.deterministic.related_paths).parameters
+                        if "result" in parameters or any(
+                            parameter.kind == parameter.VAR_KEYWORD for parameter in parameters.values()
+                        ):
+                            related_kwargs["result"] = deterministic_result
+                    except Exception:
+                        pass
+                path_groups["deterministic"] = list(self.deterministic.related_paths(root, query, **related_kwargs))
                 backend_states["deterministic"] = "used"
             except Exception as exc:
                 backend_states["deterministic"] = "degraded"
@@ -4937,13 +5233,68 @@ class LocalAIServices:
                 retrieval_warnings.append("preprocessor degraded")
         else:
             backend_states["preprocessor"] = "skipped"
-        if quality_first:
-            external_groups, external_warnings, external_states = self._external_context_candidates(root, query)
+        confidence = self._adaptive_builtin_confidence(deterministic_result, path_groups) if quality_first else 0.0
+        try:
+            confidence_threshold = max(
+                0.0,
+                min(float(self.config.get("deterministic", {}).get("context_confidence", 0.80)), 1.0),
+            )
+        except (TypeError, ValueError, OverflowError):
+            confidence_threshold = 0.80
+        confident_builtin = quality_first and confidence >= confidence_threshold
+        remaining_budget = max(0.0, backend_deadline - time.perf_counter())
+        request_optional = not confident_builtin
+        rag_ready = bool(
+            rag_configured and target_workspace and query.strip() and rag_revision_available
+        )
+        requested_backends: list[str] = []
+        external_tools = getattr(self, "external_tools", None)
+        serena_enabled = external_tools is not None and getattr(external_tools, "serena_enabled", True) is not False
+        if quality_first and request_optional and serena_enabled:
+            requested_backends.append("serena")
+        if rag_ready and request_optional:
+            requested_backends.append("rag")
+        if rag_ready and request_optional and remaining_budget > 0.0:
+            rag_pool = _CONTEXT_BACKEND_POOLS["rag"]
+            rag_future = rag_pool.submit(
+                self.rag.search, query, tenant, target_workspace,
+                top_k=10, use_reranker=True,
+            )
+        elif rag_ready and request_optional:
+            backend_states["rag"] = "skipped"
+        elif rag_configured and not rag_revision_available:
+            backend_states["rag"] = "degraded"
+        else:
+            backend_states["rag"] = "skipped"
+        if confident_builtin:
+            backend_states["serena"] = "skipped"
+        elif quality_first and remaining_budget <= 0.0:
+            backend_states["serena"] = "skipped"
+        elif quality_first:
+            external_groups, external_warnings, external_states = self._external_context_candidates(
+                root, query, timeout_budget=remaining_budget,
+            )
             path_groups.update(external_groups)
             backend_states.update(external_states)
             retrieval_warnings.extend(external_warnings)
         else:
             backend_states.update({"serena": "skipped", "rag": "skipped"})
+        selected_backends = requested_backends if remaining_budget > 0.0 else []
+        if confident_builtin:
+            selection_decision = "builtin_confident"
+        elif requested_backends and remaining_budget <= 0.0:
+            selection_decision = "deadline_exhausted"
+        elif selected_backends:
+            selection_decision = "optional_backends_selected"
+        else:
+            selection_decision = "no_optional_backend_available"
+        backend_selection = {
+            "decision": selection_decision,
+            "confidence": round(confidence, 4),
+            "threshold": round(confidence_threshold, 4),
+            "selected_backends": selected_backends,
+            "remaining_budget_ms": round(remaining_budget * 1000, 3),
+        }
         hinted_paths = [
             str(item.get("path", "")) if isinstance(item, dict) else item
             for item in path_hints
@@ -5332,6 +5683,14 @@ class LocalAIServices:
                 blocks[evidence_index] = context[start:end]
             context = "".join(blocks[index] for index in range(len(evidence)))
         semantic_used = False
+        semantic_candidate_count = 0
+        semantic_included_count = 0
+        semantic_omitted_count = 0
+        semantic_truncated_count = 0
+        semantic_malformed_count = 0
+        semantic_declared_hash_count = 0
+        semantic_backend_truncated: bool | None = None
+        semantic_backend_coverage_complete: bool | None = None
         per_path: dict[str, int] = {}
         for item in evidence:
             path = str(item.get("path", ""))
@@ -5339,11 +5698,10 @@ class LocalAIServices:
         max_per_file = max(1, int(search_cfg.get("max_snippets_per_file", 3)))
 
         if rag_future is not None and rag_pool is not None:
-            try:
-                configured_rag_timeout = search_cfg.get("context_rag_timeout_seconds", 3.0)
-                rag_timeout = max(0.05, min(float(configured_rag_timeout), 120.0))
-            except (TypeError, ValueError):
-                rag_timeout = 3.0
+            rag_timeout = min(
+                bounded_timeout("context_rag_timeout_seconds", 3.0),
+                max(0.0, backend_deadline - time.perf_counter()),
+            )
             rag_done, rag_pending = wait((rag_future,), timeout=rag_timeout)
             if rag_pending:
                 rag_future.cancel()
@@ -5367,11 +5725,17 @@ class LocalAIServices:
             from .token_router import strip_boilerplate
             if isinstance(rr, dict) and rr.get("success") and isinstance(rr.get("results"), list):
                 raw_results = rr["results"]
+                if isinstance(rr.get("truncated"), bool):
+                    semantic_backend_truncated = rr["truncated"]
+                raw_backend_coverage = rr.get("coverage")
+                if isinstance(raw_backend_coverage, dict) and isinstance(raw_backend_coverage.get("complete"), bool):
+                    semantic_backend_coverage_complete = raw_backend_coverage["complete"]
                 sorted_results_input = []
                 malformed_results = False
                 for item in raw_results:
                     if not isinstance(item, dict) or not str(item.get("path") or "").strip():
                         malformed_results = True
+                        semantic_malformed_count += 1
                         continue
                     rag_path = str(item.get("path", "")).replace("\\", "/").strip("/")
                     if excluded_path(rag_path):
@@ -5380,9 +5744,11 @@ class LocalAIServices:
                         chunk_no = int(item.get("chunk_no", 0))
                     except (TypeError, ValueError, OverflowError):
                         malformed_results = True
+                        semantic_malformed_count += 1
                         continue
                     if not isinstance(item.get("text", ""), str):
                         malformed_results = True
+                        semantic_malformed_count += 1
                         continue
                     sorted_results_input.append({**item, "chunk_no": chunk_no})
                 if malformed_results:
@@ -5400,13 +5766,15 @@ class LocalAIServices:
                 fused_order = [p for p, _score in fuse_ranked_paths(path_groups, limit=64, max_per_path=2)]
                 fused_rank = {p: i for i, p in enumerate(fused_order)}
                 sorted_results = sorted(sorted_results_input, key=lambda item: fused_rank.get(str(item.get("path", "")), 999))
+                semantic_candidate_count = len(sorted_results)
                 remaining = max(0, chars_for_tokens(max_tokens) - len(context))
                 seen_chunks: set[tuple[str, int]] = set()
-                for item in sorted_results:
+                for result_index, item in enumerate(sorted_results):
                     path = str(item.get("path", ""))
                     chunk_no = int(item.get("chunk_no", 0))
                     key = (path, chunk_no)
                     if key in seen_chunks or per_path.get(path, 0) >= max_per_file:
+                        semantic_omitted_count += 1
                         continue
                     seen_chunks.add(key)
                     clean_text = strip_boilerplate(str(item.get("text", "")))
@@ -5414,7 +5782,9 @@ class LocalAIServices:
                     if len(rendered) > remaining:
                         if remaining > 400:
                             rendered = rendered[:remaining] + "\n[semantic snippet truncated]\n"
+                            semantic_truncated_count += 1
                         else:
+                            semantic_omitted_count += len(sorted_results) - result_index
                             break
                     context += rendered
                     remaining -= len(rendered)
@@ -5430,7 +5800,11 @@ class LocalAIServices:
                         if field in item:
                             rag_evidence[field] = item[field]
                     evidence.append(rag_evidence)
+                    semantic_included_count += 1
+                    if item.get("content_hash"):
+                        semantic_declared_hash_count += 1
                     if remaining <= 0:
+                        semantic_omitted_count += len(sorted_results) - result_index - 1
                         break
             elif backend_states.get("rag") != "degraded":
                 backend_states["rag"] = "degraded" if rr is not None else "skipped"
@@ -5443,6 +5817,55 @@ class LocalAIServices:
         for backend_paths in path_groups.values():
             for candidate in set(backend_paths):
                 path_backend_counts[candidate] = path_backend_counts.get(candidate, 0) + 1
+        lexical_coverage = lexical.get("coverage")
+        lexical_freshness = lexical.get("freshness")
+        lexical_truncation = lexical.get("truncation")
+        lexical_metadata = {
+            "coverage": dict(lexical_coverage) if isinstance(lexical_coverage, dict) else {
+                "scope": "unknown", "complete": False,
+            },
+            "freshness": dict(lexical_freshness) if isinstance(lexical_freshness, dict) else {
+                "scope": "unknown", "status": "not_reported", "complete": False,
+            },
+            "truncated": lexical.get("truncated") if isinstance(lexical.get("truncated"), bool) else None,
+            "truncation": dict(lexical_truncation) if isinstance(lexical_truncation, dict) else {
+                "status": "unknown", "complete": False,
+            },
+        }
+        semantic_metadata = {
+            "coverage": {
+                "scope": "returned_rag_candidates",
+                "candidate_count": semantic_candidate_count,
+                "included_evidence_count": semantic_included_count,
+                "omitted_chunk_count": semantic_omitted_count,
+                "malformed_chunk_count": semantic_malformed_count,
+                "complete": semantic_candidate_count > 0 and semantic_omitted_count == 0 and semantic_truncated_count == 0 and semantic_malformed_count == 0 and semantic_backend_truncated is not True and semantic_backend_coverage_complete is not False,
+            },
+            "freshness": {
+                "scope": "included_semantic_evidence",
+                "status": "not_checked" if semantic_included_count else "not_available",
+                "checked_chunks": 0,
+                "declared_hash_chunks": semantic_declared_hash_count,
+                "complete": False,
+            },
+            "truncated": (
+                semantic_truncated_count > 0 or semantic_omitted_count > 0 or semantic_backend_truncated is True or semantic_backend_coverage_complete is False
+                if semantic_candidate_count > 0 or semantic_backend_truncated is not None or semantic_backend_coverage_complete is not None else None
+            ),
+            "truncation": {
+                "status": "truncated" if semantic_truncated_count or semantic_omitted_count or semantic_backend_truncated is True or semantic_backend_coverage_complete is False else "none_observed" if semantic_candidate_count else "not_available",
+                "rendered_truncated_chunks": semantic_truncated_count,
+                "omitted_chunks": semantic_omitted_count,
+                "backend_reported_truncated": semantic_backend_truncated,
+                "backend_coverage_complete": semantic_backend_coverage_complete,
+                "complete": semantic_candidate_count > 0 and semantic_truncated_count == 0 and semantic_omitted_count == 0 and semantic_backend_truncated is not True and semantic_backend_coverage_complete is not False,
+            },
+        }
+        fallbacks = [
+            {"backend": name, "fallback": "lexical"}
+            for name, state in sorted(backend_states.items())
+            if name != "lexical" and state == "degraded" and backend_states.get("lexical") == "used"
+        ]
         return {
             "success": True, "root": lexical["root"], "query": query, "context": context,
             "evidence": evidence, "estimated_tokens": estimate_tokens(context),
@@ -5458,6 +5881,10 @@ class LocalAIServices:
                 "skipped_backends": sorted(name for name, state in backend_states.items() if state == "skipped"),
                 "degraded_backends": sorted(name for name, state in backend_states.items() if state == "degraded"),
                 "backend_states": dict(sorted(backend_states.items())),
+                "backend_selection": backend_selection,
+                "fallbacks": fallbacks,
+                "lexical": lexical_metadata,
+                "semantic": semantic_metadata,
                 "warnings": list(dict.fromkeys(retrieval_warnings))[:8],
                 "fused_paths": [path for path, _score in fuse_ranked_paths(path_groups, limit=24, max_per_path=2)],
                 "quality": {

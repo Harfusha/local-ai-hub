@@ -1,7 +1,7 @@
 """treesitter_parser.py — Tree-Sitter AST symbol and reference extractor.
 
-Provides robust, syntax-aware AST extraction for C#, TypeScript, JavaScript,
-and Python. Falls back gracefully when language grammars are missing.
+Provides robust, syntax-aware AST extraction for C#, TypeScript/TSX,
+JavaScript, Python, Go, and Rust. Falls back when grammars are missing.
 """
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -153,15 +154,29 @@ def is_treesitter_available(lang: str) -> bool:
     return False
 
 
+def language_for_path(path: str, fallback_language: str, settings: Any | None = None) -> str:
+    """Resolve project-configured extensions to parser language names."""
+    suffix = Path(path).suffix.lower()
+    overrides = getattr(settings, "language_overrides", {}) if settings is not None else {}
+    if isinstance(overrides, dict) or hasattr(overrides, "items"):
+        for language, override in overrides.items():
+            extensions = override.get("text_extensions", ()) if hasattr(override, "get") else ()
+            if suffix in {str(extension).lower() for extension in extensions}:
+                return str(language).strip().lower()
+    return fallback_language
+
+
 def parse_treesitter(
     text: str, language: str
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]] | None:
-    """Parse source text using Tree-Sitter.
+    """Return syntax data while retaining the tuple API."""
+    return parse_treesitter_with_status(text, language)["result"]
 
-    Returns (symbols, refs, edges) or None if tree-sitter is unavailable for this language.
-    """
+
+def parse_treesitter_with_status(text: str, language: str) -> dict[str, Any]:
+    """Return extracted syntax data and an explicit, bounded parser outcome."""
     if not text or not text.strip():
-        return [], [], []
+        return {"result": ([], [], []), "status": "empty", "parser": "tree_sitter", "syntax_error_count": 0}
 
     if not _INIT_ATTEMPTED:
         _init_treesitter()
@@ -175,42 +190,81 @@ def parse_treesitter(
         "py": "python", "python": "python",
         "go": "go", "golang": "go",
         "rs": "rust", "rust": "rust",
-        "java": "java",
-        "cpp": "cpp", "c++": "cpp",
+        "java": "java", "cpp": "cpp", "c++": "cpp",
     }.get(norm)
 
     if not key or key not in _PARSERS:
-        return None
+        return {"result": None, "status": "unavailable", "parser": "tree_sitter", "fallback_reason": "parser_unavailable", "syntax_error_count": 0}
 
     parser = _PARSERS[key]
     source_bytes = text.encode("utf-8", errors="replace")
-    lines = text.splitlines()
-    try:
-        # Parser instances and their native tree nodes are shared with concurrent
-        # indexing workers. Keep parse and node traversal in one critical section:
-        # reusing a parser before its returned tree has been walked can invalidate
-        # native node state in some Windows bindings.
-        with _PARSER_LOCK:
+    # Keep native parsing, syntax walk and extraction in one critical section.
+    with _PARSER_LOCK:
+        try:
+            # Parser instances are mutable in the native Tree-sitter bindings and are
+            # shared per language. Serialize calls so concurrent preprocessing cannot
+            # corrupt parser state and crash the Python process.
             tree = parser.parse(source_bytes)
-            if key == "csharp":
-                return _extract_csharp(tree.root_node, lines, source_bytes)
-            elif key in ("typescript", "tsx", "javascript"):
-                return _extract_js_ts(tree.root_node, lines, source_bytes)
-            elif key == "python":
-                return _extract_python(tree.root_node, lines, source_bytes)
-            elif key == "go":
-                return _extract_go(tree.root_node, lines, source_bytes)
-            elif key == "rust":
-                return _extract_rust(tree.root_node, lines, source_bytes)
-            elif key == "java":
-                return _extract_java(tree.root_node, lines, source_bytes)
-            elif key == "cpp":
-                return _extract_cpp(tree.root_node, lines, source_bytes)
-    except Exception as exc:
-        logger.debug("Tree-sitter parse or extraction failed for %s: %s", language, exc)
-        return None
+        except Exception as exc:
+            logger.debug("Tree-sitter parse failed for %s: %s", language, exc)
+            return {"result": None, "status": "failed", "parser": key, "fallback_reason": "parser_error", "error_type": type(exc).__name__, "syntax_error_count": 0}
 
-    return None
+        lines = text.splitlines()
+        root = tree.root_node
+        has_syntax_errors = bool(getattr(root, "has_error", False))
+        error_count = 0
+        error_count_truncated = False
+        if has_syntax_errors:
+            pending = [root]
+            visited = 0
+            while pending and visited < 10000:
+                node = pending.pop()
+                visited += 1
+                if bool(getattr(node, "is_error", False)) or bool(getattr(node, "is_missing", False)):
+                    error_count += 1
+                    if error_count >= 64:
+                        error_count_truncated = bool(pending or getattr(node, "child_count", 0))
+                        break
+                try:
+                    pending.extend(reversed(node.children))
+                except Exception:
+                    continue
+            if pending and visited >= 10000:
+                error_count_truncated = True
+            # Tree-sitter reports root.has_error for recovery cases where a grammar
+            # does not expose an explicit ERROR or missing node in the bounded walk.
+            if error_count == 0:
+                error_count = 1
+                error_count_truncated = True
+
+        try:
+            if key == "csharp":
+                result = _extract_csharp(root, lines, source_bytes)
+            elif key in ("typescript", "tsx", "javascript"):
+                result = _extract_js_ts(root, lines, source_bytes)
+            elif key == "python":
+                result = _extract_python(root, lines, source_bytes)
+            elif key == "go":
+                result = _extract_go(root, lines, source_bytes)
+            elif key == "rust":
+                result = _extract_rust(root, lines, source_bytes)
+            elif key == "java":
+                result = _extract_java(root, lines, source_bytes)
+            elif key == "cpp":
+                result = _extract_cpp(root, lines, source_bytes)
+            else:
+                return {"result": None, "status": "unavailable", "parser": key, "fallback_reason": "parser_unavailable", "syntax_error_count": 0}
+        except Exception as exc:
+            logger.debug("Tree-sitter extraction failed for %s: %s", language, exc)
+            return {"result": None, "status": "failed", "parser": key, "fallback_reason": "parser_error", "error_type": type(exc).__name__, "syntax_error_count": 0}
+
+        return {
+            "result": result,
+            "status": "syntax_error" if has_syntax_errors else "ok",
+            "parser": key,
+            "syntax_error_count": error_count,
+            "syntax_error_count_truncated": error_count_truncated,
+        }
 
 
 def _node_text(node: Any, source_bytes: bytes) -> str:

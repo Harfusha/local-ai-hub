@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import gc
 import json
+import hashlib
+import os
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 import uuid
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -29,6 +34,18 @@ from tools.benchmark_surfaces import (
     _vision_matches_golden,
 )
 import tools.benchmark_surfaces as surface_benchmarks
+
+
+def test_implementation_fingerprint_includes_retrieval_dependency(monkeypatch, tmp_path: Path) -> None:
+    package_dir = tmp_path / "src" / "local_ai_hub"
+    package_dir.mkdir(parents=True)
+    retrieval = package_dir / "retrieval.py"
+    retrieval.write_text("weight = 0.0\n", encoding="utf-8")
+    monkeypatch.setattr(surface_benchmarks, "_REPO_ROOT", tmp_path)
+    before = surface_benchmarks._implementation_fingerprint()
+    retrieval.write_text("weight = 0.75\n", encoding="utf-8")
+    after = surface_benchmarks._implementation_fingerprint()
+    assert after != before, "fingerprint must include imported runtime dependencies"
 from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.normalizer import tokenize_query_terms
 
@@ -180,11 +197,34 @@ def _async_jobs_lifecycle_snapshot(scratch_root: Path) -> dict[str, object]:
             continue
         try:
             uri = f"{database_path.resolve().as_uri()}?mode=ro"
-            with sqlite3.connect(uri, uri=True, timeout=0.05) as connection:
+            with closing(sqlite3.connect(uri, uri=True, timeout=0.05)) as connection:
                 table_exists = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='async_jobs'"
                 ).fetchone() is not None
-            schema = {"async_jobs_table_exists": table_exists}
+                queue_rows: list[dict[str, object]] = []
+                if table_exists:
+                    available = {
+                        str(row[1])
+                        for row in connection.execute("PRAGMA table_info(async_jobs)").fetchall()
+                    }
+                    fields = (
+                        "job_id", "tenant", "action", "task_id", "state", "cancel_requested",
+                        "dispatch_not_before", "lease_until", "created_at", "updated_at",
+                    )
+                    selected = [field for field in fields if field in available]
+                    if {"job_id", "tenant", "action"}.issubset(selected):
+                        order_by = "created_at DESC" if "created_at" in selected else "job_id"
+                        rows = connection.execute(
+                            f"SELECT {', '.join(selected)} FROM async_jobs "
+                            "WHERE tenant = ? AND action = ? "
+                            f"ORDER BY {order_by} LIMIT 50",
+                            ("benchmark", "reason"),
+                        ).fetchall()
+                        queue_rows = [dict(zip(selected, row)) for row in rows]
+            schema = {
+                "async_jobs_table_exists": table_exists,
+                "benchmark_queue_rows": queue_rows,
+            }
         except sqlite3.Error as exc:
             schema = {"read_only_probe_error": f"{type(exc).__name__}: {exc}"}
         observed.append({
@@ -203,6 +243,34 @@ def _async_jobs_lifecycle_snapshot(scratch_root: Path) -> dict[str, object]:
         "sqlite_worker_alive": any(manager["sqlite_worker_alive"] for manager in observed),
         "managers": observed,
     }
+
+
+def test_async_jobs_lifecycle_snapshot_includes_benchmark_queue_rows(tmp_path: Path) -> None:
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path)}},
+        scheduler=None,
+        artifacts=None,
+        executor=lambda _action, _payload, _tenant: {"success": True},
+    )
+    try:
+        submitted = manager.submit(
+            "benchmark", "reason", {"task": "T02 snapshot probe"},
+            dispatch_delay_seconds=30,
+        )
+        assert submitted.get("success") is True
+        job_id = str(submitted["job_id"])
+
+        snapshot = _async_jobs_lifecycle_snapshot(tmp_path)
+
+        observed = next(item for item in snapshot["managers"] if item["database_path"] == str(manager.path))
+        queue_rows = observed["benchmark_queue_rows"]
+        row = next(item for item in queue_rows if item["job_id"] == job_id)
+        assert row["tenant"] == "benchmark"
+        assert row["state"] == "queued"
+        assert row["cancel_requested"] == 0
+        assert "payload_json" not in row
+    finally:
+        manager.close()
 
 
 def _comparison_diagnostic(
@@ -422,6 +490,91 @@ def test_benchmark_records_service_load_and_available_golden_outputs(tmp_path: P
     assert affected_golden["measurement"] == "Services.affected_tests over indexed synthetic import edge"
     assert affected_golden["expected_test"] in affected_golden["observed_tests"]
     assert result["golden"]["retrieval_relevance"]["status"] == "passed"
+
+
+def test_queue_admission_failure_retains_phase_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original_submit = AsyncJobManager.submit
+
+    def reject_benchmark_submission(
+        self: AsyncJobManager,
+        tenant: str,
+        action: str,
+        payload: dict[str, object],
+        *,
+        dispatch_delay_seconds: float = 0.0,
+    ) -> dict[str, object]:
+        if tenant == "benchmark":
+            return {
+                "success": False,
+                "state": "rejected",
+                "error": "SENTINEL_PAYLOAD_SECRET",
+                "admission": {"state": "rejected", "reason": "resource_pressure", "pressure_level": "critical"},
+            }
+        return original_submit(self, tenant, action, payload, dispatch_delay_seconds=dispatch_delay_seconds)
+
+    monkeypatch.setattr(AsyncJobManager, "submit", reject_benchmark_submission)
+    result = run_benchmark(
+        state_dir=tmp_path / "state",
+        scratch_dir=tmp_path / "scratch",
+        file_count=4,
+        rag_chunks=2,
+        repetitions=1,
+        light_repetitions=1,
+        comparison_repetitions=1,
+        concurrency=(1,),
+    )
+
+    stage = result["stages"]["hub_queue_admission"]
+    assert stage["status"] == "failed"
+    assert stage["error_count"] == 1
+    assert stage["error_types"] == ["RuntimeError"]
+    assert stage["error_reasons"] == {"submit_rejected": 1}
+    assert len(stage["failed_samples"]) == 1
+    diagnostic = stage["failed_samples"][0]
+    assert diagnostic["error_type"] == "RuntimeError"
+    assert diagnostic["error_reason"] == "submit_rejected"
+    assert diagnostic["submit"]["success"] is False
+    assert diagnostic["submit"]["state"] == "rejected"
+    assert diagnostic["submit"]["admission_reason"] == "resource_pressure"
+    assert "SENTINEL_PAYLOAD_SECRET" not in repr(result)
+
+
+def test_queue_admission_exception_redacts_exception_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original_submit = AsyncJobManager.submit
+
+    def raise_benchmark_submission(
+        self: AsyncJobManager,
+        tenant: str,
+        action: str,
+        payload: dict[str, object],
+        *,
+        dispatch_delay_seconds: float = 0.0,
+    ) -> dict[str, object]:
+        if tenant == "benchmark":
+            raise RuntimeError("SENTINEL_EXCEPTION_SECRET")
+        return original_submit(self, tenant, action, payload, dispatch_delay_seconds=dispatch_delay_seconds)
+
+    monkeypatch.setattr(AsyncJobManager, "submit", raise_benchmark_submission)
+    result = run_benchmark(
+        state_dir=tmp_path / "state",
+        scratch_dir=tmp_path / "scratch",
+        file_count=4,
+        rag_chunks=2,
+        repetitions=1,
+        light_repetitions=1,
+        comparison_repetitions=1,
+        concurrency=(1,),
+    )
+
+    stage = result["stages"]["hub_queue_admission"]
+    assert stage["status"] == "failed"
+    assert stage["error_count"] == 1
+    assert stage["error_types"] == ["RuntimeError"]
+    assert stage["error_reasons"] == {"exception_RuntimeError": 1}
+    assert len(stage["failed_samples"]) == 1
+    assert stage["failed_samples"][0]["error_type"] == "RuntimeError"
+    assert stage["failed_samples"][0]["error_reason"] == "exception_RuntimeError"
+    assert "SENTINEL_EXCEPTION_SECRET" not in repr(result)
 
 
 def test_summarize_samples_reports_percentiles_and_throughput() -> None:
@@ -1296,6 +1449,7 @@ def test_run_benchmark_is_isolated_and_preserves_existing_scratch_data(
     assert result["success"] is True
     assert collision_path.read_text(encoding="utf-8") == "user-owned sentinel"
     assert result["metadata"]["benchmark_scope"] == "hub_app_synthetic_repo"
+    assert result["metadata"]["runtime_source_root"] == str(Path(__file__).resolve().parents[1] / "src")
     assert "preseeded warm keys" in result["metadata"]["cold_warm_policy"]
     assert result["metadata"]["prewarm_enabled"] is False
     assert result["metadata"]["observability_enabled"] is False
@@ -2967,6 +3121,9 @@ def test_cli_wall_timeout_returns_incomplete_receipt_without_state_artifact(
     assert payload == {
         "success": False, "status": "incomplete",
         "error": "benchmark_timeout", "timeout_seconds": 1.0,
+        "record_complete": False, "return_code": 124,
+        "stdout": {"byte_count": 0, "sha256": hashlib.sha256(b"").hexdigest()},
+        "stderr": {"byte_count": 0, "sha256": hashlib.sha256(b"").hexdigest()},
     }
     assert calls["timeout"] == 1.0
     assert not state_dir.exists()
@@ -2998,9 +3155,33 @@ def test_cli_worker_enforces_wall_timeout_against_real_hung_child(
     assert payload == {
         "success": False, "status": "incomplete",
         "error": "benchmark_timeout", "timeout_seconds": 1.5,
+        "record_complete": False, "return_code": 124,
+        "stdout": {"byte_count": 0, "sha256": hashlib.sha256(b"").hexdigest()},
+        "stderr": {"byte_count": 0, "sha256": hashlib.sha256(b"").hexdigest()},
     }
     assert elapsed >= 1.0
     assert elapsed < 4.5
+
+
+def test_cli_worker_cancellation_never_reports_successful_record(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    record = {"success": True, "record_path": "benchmark.json", "comparison": {"status": "passed"}}
+
+    def cancelled(command: list[str], **kwargs: Any) -> Any:
+        return surface_benchmarks.subprocess.CompletedProcess(
+            command, 130, stdout=json.dumps(record), stderr="cancelled",
+        )
+
+    monkeypatch.setattr(surface_benchmarks.subprocess, "run", cancelled)
+    exit_code = surface_benchmarks._run_cli_worker(["benchmark-worker"], timeout_seconds=1.0)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 130
+    assert payload["success"] is False
+    assert payload["status"] == "cancelled"
+    assert payload["record_path"] == "benchmark.json"
+    assert payload["worker_return_code"] == 130
 
 
 def test_concurrent_benchmark_future_wait_has_a_deadline() -> None:

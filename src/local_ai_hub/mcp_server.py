@@ -41,6 +41,15 @@ from local_ai_hub.budget import RootFamilyBudget
 from local_ai_hub.projection import AgentProjector
 from local_ai_hub.config import load_config
 from local_ai_hub.features import FeatureSet
+from local_ai_hub.operation_contracts import (
+    MAX_EVENT_SEQUENCE,
+    MAX_REPO_PIPELINE_PARALLEL_STEPS,
+    REPO_PHASES,
+    REPO_PIPELINE_MUTATING_ACTIONS,
+    contract_error,
+    repo_pipeline_step_schema,
+    validate_repo_pipeline_step,
+)
 from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
 from local_ai_hub.process_utils import canonical_root, is_rooted_path
 from local_ai_hub.token_accounting import account_projection, attach_accounting, context_digest, finalize_tool_accounting, json_tokens, pop_accounting, tool_request_tokens
@@ -566,6 +575,7 @@ def _desc_rag() -> str:
     if LEAN_SCHEMAS:
         return (
             "Semantic RAG and documentation search with aggregate-bounded responses; response controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Actions: search, index, list, docset_index, docset_search, ingest_document, ingest_diagram."
+            " Document ingestion requires non-empty content; title and metadata are optional."
             " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
             " Skip when: deterministic/indexed evidence is sufficient or RAG is disabled."
         )
@@ -586,6 +596,7 @@ def _desc_rag() -> str:
         " Do not trigger index repeatedly for a fresh stable workspace."
         " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
         " Skip when: deterministic/indexed evidence is sufficient or Codex-owned subagent orchestration is the right owner."
+        " Document ingestion requires non-empty content; title and metadata are optional."
     )
 
 
@@ -713,16 +724,19 @@ _STATUS_ACTION_ALIASES = ("status", "health", "check", "info")
 StatusAction: TypeAlias = Literal.__getitem__(
     tuple(dict.fromkeys((*operation_actions("local_ai_status"), *_STATUS_ACTION_ALIASES)))
 )
+STATUS_DETAILS = operation_actions("local_ai_status")
+STATUS_ALIASES = _STATUS_ACTION_ALIASES
+STATUS_ACTIONS = ("", *StatusAction.__args__)
+RepoPhase: TypeAlias = Literal.__getitem__(REPO_PHASES)
 StatusScope: TypeAlias = Literal["process", "window"]
 WorkAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_work"))
 ArtifactAction: TypeAlias = Literal[*operation_actions("local_ai_artifact")]
 
 
 def _invalid_action(tool: str, action: str, valid: tuple[str, ...], guidance: str) -> dict[str, Any]:
-    return {
-        "success": False,
-        "error": f"Unknown {tool} action '{action}'. Valid actions: {', '.join(valid)}. {guidance}",
-    }
+    return contract_error(
+        f"Unknown {tool} action '{action}'. Valid actions: {', '.join(valid)}. {guidance}"
+    )
 
 
 def _release_root_family_reservation() -> None:
@@ -763,6 +777,7 @@ _STATUS_PROTECTED_KEYS = (
     "job_id", "trace_id", "task_id", "state", "artifact_id", "cancel_requested",
     "expires_at", "wait_timeout_seconds", "outcome_unknown", "coalesced", "idempotent_replay",
     "admission_state", "terminal", "retryable", "in_progress",
+    "worktree_id", "worktree_path", "lease_id", "branch",
     "enabled", "active_tasks", "tasks_count", "incidents_count", "candidates_count", "status",
 )
 _RELIABILITY_PROTECTED_KEYS = (
@@ -946,6 +961,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
         max_evidence=MAX_EVIDENCE,
         extra_fields=compact_extra_fields,
     )
+    compacted = _preserve_contract_state(raw_value, compacted)
     requested, profile, reuse_key, enabled = _response_budget(task_kind, options)
     if enabled:
         repeated, previous = _reuse_state(reuse_key, compacted)
@@ -1044,6 +1060,32 @@ def _telemetry_failure(value: Any) -> dict[str, Any]:
             if type(value.get(key)) is bool:
                 result[key] = value[key]
     return result
+def _preserve_contract_state(raw: Any, projected: Any) -> Any:
+    """Restore bounded result-state fields after projection and compaction."""
+    state_keys = {
+        "success", "status_code", "error", "terminal", "retryable", "degraded",
+        "stale", "evidence", "cancel", "cancelled", "timed_out",
+    }
+    if isinstance(raw, dict) and isinstance(projected, dict):
+        for key in state_keys:
+            if key not in raw:
+                continue
+            value = raw[key]
+            if key == "error" and isinstance(value, str):
+                value = value[:500]
+            elif key == "evidence" and isinstance(value, list):
+                value = _bound_context_json(value[:MAX_EVIDENCE])
+            elif key == "cancel":
+                value = _bound_context_json(value)
+            projected[key] = value
+        for key, value in raw.items():
+            if key in projected and key not in state_keys:
+                projected[key] = _preserve_contract_state(value, projected[key])
+        return projected
+    if isinstance(raw, list) and isinstance(projected, list):
+        for index, value in enumerate(raw[:len(projected)]):
+            projected[index] = _preserve_contract_state(value, projected[index])
+    return projected
 
 
 def _telemetry_status_projection(value: Any) -> dict[str, Any]:
@@ -1557,48 +1599,61 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
 @_instrumented_tool()
 def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
     """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state. scope: process (default) or window. action is an alias for detail. To report a deliberate bypass, set adoption_signal=bypassed with validated target_tool and target_action; omitted means no bypass. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, or telemetry check. Skip when: repository evidence or task work is needed."""
+    if not isinstance(action, str) or action not in STATUS_ACTIONS:
+        return contract_error(f"action must be one of: {', '.join(STATUS_ACTIONS[1:])}")
+    if not isinstance(detail, str) or detail not in StatusDetail.__args__:
+        return contract_error(f"detail must be one of: {', '.join(STATUS_DETAILS)}")
+    if not isinstance(scope, str) or scope.strip().lower() not in {"process", "window"}:
+        return contract_error("scope must be process or window")
+    if not isinstance(max_response_tokens, int) or isinstance(max_response_tokens, bool) or not 0 <= max_response_tokens <= 100000:
+        return contract_error("max_response_tokens must be between 0 and 100000")
     if action:
         act = action.strip().lower()
-        if act in StatusDetail.__args__:
+        if act in STATUS_DETAILS:
             detail = act  # type: ignore
-        elif act in {"status", "health", "check", "info"}:
+        elif act in STATUS_ALIASES:
             detail = "brief"
+        else:
+            return contract_error(
+                f"Unknown local_ai_status action '{act}'. Valid actions: {', '.join(STATUS_ACTIONS[1:])}."
+            )
     if adoption_signal not in {"", "bypassed"}:
-        return {"success": False, "error": "adoption_signal must be empty or bypassed"}
+        return contract_error("adoption_signal must be empty or bypassed")
     if adoption_signal == "bypassed" and _adoption_target({"adoption_signal": adoption_signal, "target_tool": target_tool, "target_action": target_action}) is None:
-        return {"success": False, "error": "bypass report requires a supported target_tool and safe target_action"}
+        return contract_error("bypass report requires a supported target_tool and safe target_action")
     if adoption_signal == "" and (target_tool or target_action):
-        return {"success": False, "error": "target_tool and target_action require adoption_signal=bypassed"}
+        return contract_error("target_tool and target_action require adoption_signal=bypassed")
     if not FEATURES.status:
-        return {"success": False, "unsupported": True, "error": "local_ai_status is disabled in configuration"}
+        return {**contract_error("local_ai_status is disabled in configuration", status_code=403), "unsupported": True}
     scope = scope.strip().lower()
     if scope not in {"process", "window"}:
-        return {"success": False, "error": "scope must be process or window"}
-    # Status stays on the foreground agent path; live/light keeps this read
-    # local, bounded, and independent of a slow user-managed runtime.
-    try:
-        status = CLIENT.get(f"/api/live/status?light=1&scope={scope}")
-    except Exception as exc:
-        if detail == "telemetry":
-            return _compact(_telemetry_failure(exc), "status")
-        raise
-    runtime_stats = status.get("runtime_stats") if isinstance(status, dict) else {}
-    if not isinstance(runtime_stats, dict):
-        runtime_stats = {}
-    if detail == "full":
-        status["success"] = bool(status.get("hub_online", False))
-        status["capabilities"] = CLIENT.get("/api/capabilities")
-        return _compact(status, "status")
+        return contract_error("scope must be process or window")
+    if detail == "agent_state":
+        return _compact(CLIENT.status(detail="agent_state"), "status")
     if detail == "telemetry":
         try:
             report = CLIENT.get(f"/api/telemetry/report?days=30&scope={scope}")
         except Exception as exc:
             return _compact(_telemetry_failure(exc), "status")
-        return _compact(_telemetry_status_projection(report), "status")
-    if detail == "agent_state":
-        return _compact(CLIENT.status(detail="agent_state"), "status")
+        projected = _telemetry_status_projection(report)
+        safe_state = _sanitize_telemetry_payload(report)
+        if isinstance(safe_state, dict) and "error" in projected:
+            safe_state["error"] = projected["error"]
+        projected = _preserve_contract_state(safe_state, projected)
+        return _compact(projected, "status")
+    if detail == "full":
+        status = CLIENT.get(f"/api/status?scope={scope}")
+        if not isinstance(status, dict):
+            return contract_error("full status endpoint returned an invalid payload", status_code=502)
+        status["capabilities"] = CLIENT.get("/api/capabilities")
+        return _compact(status, "status")
+    # Brief and cache stay on the bounded, cached live status path.
+    status = CLIENT.get(f"/api/live/status?light=1&scope={scope}")
+    runtime_stats = status.get("runtime_stats") if isinstance(status, dict) else {}
+    if not isinstance(runtime_stats, dict):
+        runtime_stats = {}
     if detail == "cache":
-        return _compact({
+        projected = {
             "success": bool(status.get("hub_online", False)),
             "generation_cache": runtime_stats.get("generation_cache"),
             "semantic_cache": runtime_stats.get("semantic_cache"),
@@ -1615,7 +1670,8 @@ def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", s
             "reranker": status.get("reranker"),
             "token_saving": status.get("observability"),
             "context_ledger": CONTEXT_LEDGER.snapshot(),
-        }, "status")
+        }
+        return _compact(_preserve_contract_state(status, projected), "status")
     sched = status.get("scheduler", {}) if isinstance(status, dict) else {}
     saving = status.get("observability", {}) if isinstance(status, dict) else {}
     vram = status.get("vram_balancer") if isinstance(status, dict) else None
@@ -1633,7 +1689,7 @@ def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", s
     if vram and isinstance(vram, dict):
         res["vram_pressure"] = vram.get("pressure_level", "nominal")
         res["context_budget_factor"] = vram.get("context_budget_factor", 1.0)
-    return res
+    return _preserve_contract_state(status, res)
 
 
 @mcp.tool()
@@ -2253,6 +2309,15 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     return _normalize_deterministic(final)
 
 
+def _repo_pipeline_step_contract() -> dict[str, Any]:
+    tool_manager = getattr(mcp, "_tool_manager", None)
+    tools = getattr(tool_manager, "_tools", {}) if tool_manager is not None else {}
+    repo_tool = tools.get("local_ai_repo") if isinstance(tools, dict) else None
+    parameters = getattr(repo_tool, "parameters", {}) if repo_tool is not None else {}
+    properties = parameters.get("properties", {}) if isinstance(parameters, dict) else {}
+    return repo_pipeline_step_schema(properties, FEATURES.supported_repo_actions())
+
+
 def _local_ai_repo_impl(
     action: RepoAction,
     root: str = ".",
@@ -2287,7 +2352,7 @@ def _local_ai_repo_impl(
     session_id: str = "",
     repository_revision: str = "",
     changed_paths: list[str] | None = None,
-    phase: str = "",
+    phase: RepoPhase = "",
     focus: list[str] | None = None,
     preload_profile: str = "",
     guarded: bool = False,
@@ -2306,7 +2371,7 @@ def _local_ai_repo_impl(
     """Primary bounded repository worker for the main agent.
 
     Call this before broad repository reads/searches for any non-trivial repo
-    task. Use deterministic, code-index/search, semantic/graph, context and
+    task. Use deterministic, code-index/search, semantic, context and
     solve for repository evidence and implementation support. After needed
     evidence, route semantic generation, reasoning, review, independent second
     opinions and compression to local_ai_task; use local_ai_artifact for exact
@@ -2319,8 +2384,24 @@ def _local_ai_repo_impl(
     repository task needs indexed evidence or bounded Hub support; skip when
     the task is not repository-scoped and no independent Hub scope exists."""
     if not FEATURES.repo:
-        return {"success": False, "unsupported": True, "error": "local_ai_repo is disabled in configuration"}
+        return {**contract_error("local_ai_repo is disabled in configuration", status_code=403), "unsupported": True}
+    if not isinstance(phase, str) or phase not in REPO_PHASES:
+        return contract_error(f"phase must be one of: {', '.join(REPO_PHASES[1:])}")
+    for numeric_name, numeric_value in (
+        ("max_tokens", max_tokens),
+        ("max_response_tokens", max_response_tokens),
+        ("token_budget", token_budget),
+    ):
+        if isinstance(numeric_value, bool) or not isinstance(numeric_value, int):
+            return contract_error(f"{numeric_name} must be an integer")
+        if numeric_value < 0 or numeric_value > 100000:
+            return contract_error(f"{numeric_name} must be between 0 and 100000")
     action = _resolve_action("repo", action)
+    context_query = ""
+    if action == "context":
+        context_query = str(query).strip() or str(task).strip()
+        if not context_query:
+            return contract_error("context query cannot be empty")
     if action in {"preprocess", "preprocess_refresh", "preprocess_cancel", "preprocess_unregister"}:
         candidate = Path(root).expanduser()
         if not candidate.is_absolute():
@@ -2442,7 +2523,7 @@ def _local_ai_repo_impl(
         configured_tokens = CFG.get("token_saving", {}).get("default_repo_context_tokens", 8000)
         effective_tokens = token_budget or max_tokens or configured_tokens
         payload: dict[str, Any] = {
-            "root": root, "query": query or task, "workspace": workspace or None,
+            "root": root, "query": context_query, "workspace": workspace or None,
             "max_tokens": effective_tokens,
             # Preserve adaptive as the quality-first multi-backend context path.
             # Do not silently downgrade the public default to deterministic-fast.
@@ -2558,58 +2639,119 @@ def _local_ai_repo_impl(
     if action == "pipeline":
         pipeline_steps = steps or edits or []
         if not isinstance(pipeline_steps, list) or not pipeline_steps:
-            return {"success": False, "error": "pipeline action requires a non-empty 'steps' list of actions"}
+            return contract_error("pipeline action requires a non-empty 'steps' list of actions")
 
-        def _exec_step(step: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-            step_action = str(step.get("action", ""))
-            step_root = step.get("root", root)
-            res = _local_ai_repo_impl(
-                action=step_action,
-                root=step_root,
-                query=step.get("query", query),
-                diff=step.get("diff", diff),
-                task=step.get("task", task),
-                workspace=step.get("workspace", workspace),
-                path=step.get("path", path),
-                base=step.get("base", base),
-                staged=step.get("staged", staged),
-                dry_run=step.get("dry_run", dry_run),
-                max_tokens=step.get("max_tokens", max_tokens),
-                evidence=step.get("evidence", evidence),
-                mode=step.get("mode", mode),
-                relation=step.get("relation", relation),
-                language=step.get("language", language),
-                profile=step.get("profile", profile),
-                receipt=step.get("receipt", receipt),
-                task_id=step.get("task_id", task_id),
-                include_code=step.get("include_code", include_code),
-                include_tests=step.get("include_tests", include_tests),
-                extra_fields=step.get("extra_fields", extra_fields),
-                max_response_tokens=step.get("max_response_tokens", max_response_tokens),
-                response_profile=step.get("response_profile", response_profile),
-                reuse_key=step.get("reuse_key", reuse_key),
-                phase=step.get("phase", phase),
-                focus=step.get("focus", focus),
+        step_schema = _repo_pipeline_step_contract()
+        step_actions = set(step_schema["properties"]["action"].get("enum", []))
+        parent_params: dict[str, Any] = {
+            "root": root,
+            "query": query,
+            "diff": diff,
+            "task": task,
+            "workspace": workspace,
+            "path": path,
+            "base": base,
+            "staged": staged,
+            "dry_run": dry_run,
+            "max_tokens": max_tokens,
+            "evidence": evidence,
+            "mode": mode,
+            "relation": relation,
+            "language": language,
+            "profile": profile,
+            "receipt": receipt,
+            "task_id": task_id,
+            "include_code": include_code,
+            "include_tests": include_tests,
+            "edits": edits,
+            "extra_fields": extra_fields,
+            "max_response_tokens": max_response_tokens,
+            "response_profile": response_profile,
+            "reuse_key": reuse_key,
+            "include_diagnostics": include_diagnostics,
+            "clone_id": clone_id,
+            "worktree_id": worktree_id,
+            "branch": branch,
+            "repository_id": repository_id,
+            "session_id": session_id,
+            "repository_revision": repository_revision,
+            "changed_paths": changed_paths,
+            "phase": phase,
+            "focus": focus,
+            "preload_profile": preload_profile,
+            "guarded": guarded,
+            "since_hash": since_hash,
+            "approval": approval,
+            "override_reason": override_reason,
+            "token_budget": token_budget,
+            "is_worktree": is_worktree,
+            "parent_root": parent_root,
+            "path_hints": path_hints,
+            "directory_hints": directory_hints,
+            "exclude_paths": exclude_paths,
+            "force_include_paths": force_include_paths,
+        }
+
+        def _exec_step(index: int, raw_step: Any) -> dict[str, Any]:
+            step, validation_error = validate_repo_pipeline_step(
+                raw_step, index=index, step_schema=step_schema, features=FEATURES
             )
-            return step_action, res
+            raw_action = raw_step.get("action", "") if isinstance(raw_step, Mapping) else ""
+            step_action = raw_action[:128] if isinstance(raw_action, str) else ""
+            step_id = raw_step.get("id", "") if isinstance(raw_step, Mapping) else ""
+            step_id = step_id if isinstance(step_id, str) and step_id else f"step-{index}"
+            if validation_error:
+                return {
+                    "index": index,
+                    "id": step_id[:128],
+                    "action": step_action,
+                    "result": contract_error(validation_error),
+                }
+            assert step is not None
+            step_action = step["action"]
+            if step_action not in step_actions:
+                return {
+                    "index": index,
+                    "id": step_id[:128],
+                    "action": step_action,
+                    "result": contract_error(f"unsupported repo pipeline action '{step_action}'"),
+                }
+            step_params = dict(parent_params)
+            step_params.update({key: value for key, value in step.items() if key not in {"id", "action"}})
+            try:
+                result = _local_ai_repo_impl(action=step_action, **step_params)
+            except Exception as exc:
+                result = contract_error(f"pipeline step failed: {type(exc).__name__}", status_code=500)
+            if not isinstance(result, dict):
+                result = contract_error("pipeline step returned an invalid result", status_code=500)
+            return {"index": index, "id": step_id[:128], "action": step_action, "result": result}
 
-        has_mutations = any(s.get("action") in {"batch_replace", "ast_refactor"} for s in pipeline_steps)
-        results: dict[str, Any] = {}
+        has_mutations = any(
+            isinstance(step, Mapping) and step.get("action") in REPO_PIPELINE_MUTATING_ACTIONS
+            for step in pipeline_steps
+        )
         if has_mutations or len(pipeline_steps) <= 1:
-            for s in pipeline_steps:
-                k, v = _exec_step(s)
-                results[k] = v
+            step_results = [_exec_step(index, step) for index, step in enumerate(pipeline_steps)]
         else:
-            with ThreadPoolExecutor(max_workers=min(4, len(pipeline_steps)), thread_name_prefix="repo-pipeline") as pool:
-                step_results = list(pool.map(_exec_step, pipeline_steps))
-            for k, v in step_results:
-                results[k] = v
+            with ThreadPoolExecutor(
+                max_workers=min(MAX_REPO_PIPELINE_PARALLEL_STEPS, len(pipeline_steps)),
+                thread_name_prefix="repo-pipeline",
+            ) as pool:
+                step_results = list(pool.map(lambda pair: _exec_step(*pair), enumerate(pipeline_steps)))
+        results: dict[str, Any] = {}
+        for record in step_results:
+            key = record["action"] or f"step-{record['index']}"
+            results[key] = record["result"]
+        steps_failed = sum(record["result"].get("success") is False for record in step_results)
         return {
-            "success": True,
+            "success": steps_failed == 0,
             "pipeline": True,
             "steps_total": len(pipeline_steps),
-            "steps_completed": len(results),
+            "steps_attempted": len(pipeline_steps),
+            "steps_completed": len(step_results),
+            "steps_failed": steps_failed,
             "results": results,
+            "step_results": step_results,
         }
     if action == "preprocess":
         return _compact(CLIENT.post("/api/preprocess", {
@@ -2814,7 +2956,7 @@ def local_ai_repo(
     session_id: str = "",
     repository_revision: str = "",
     changed_paths: list[str] | None = None,
-    phase: str = "",
+    phase: RepoPhase = "",
     focus: list[str] | None = None,
     preload_profile: str = "",
     guarded: bool = False,
@@ -2917,7 +3059,7 @@ def local_ai_rag(
     image_path: str = "",
     caption: str = "",
 ) -> dict[str, Any]:
-    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. For document ingestion pass content, title, and metadata; for diagram ingestion pass image_path, caption, and metadata. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
+    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
     if not FEATURES.rag:
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
     action = action.strip().lower().replace("-", "_")
@@ -3100,10 +3242,13 @@ def local_ai_coord(
     preload_profile: str = "",
     since_hash: str = "",
     expected_version: int | None = None,
+    after_seq: int = 0,
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_delete, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete, swarm_dispatch, swarm_step, swarm_status, swarm_list, swarm_cancel. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
+    if isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= MAX_EVENT_SEQUENCE:
+        return contract_error(f"after_seq must be an integer between 0 and {MAX_EVENT_SEQUENCE}")
     action = _resolve_action("coord", action)
     requested_root = str(root or "").strip()
     root = _client_root(root)
@@ -3297,11 +3442,11 @@ def local_ai_coord(
         return _compact(CLIENT.coord(action="worktree_lease", root=root, branch=key or task or task_id or None), "status")
     if action == "worktree_release":
         del_branch = status.lower() not in {"false", "0", "no"} if status else True
-        return _compact(CLIENT.coord(action="worktree_release", root=root, worktree_path=value or lease_id or key or "", delete_branch=del_branch, branch=key or task or task_id or None), "status")
+        return _compact(CLIENT.coord(action="worktree_release", root=root, worktree_path=value or lease_id or key or "", worktree_id=worktree_id, delete_branch=del_branch, branch=key or task or task_id or None), "status")
     if action == "pubsub_publish":
         return _compact(CLIENT.coord(action="pubsub_publish", topic=key or target_scope or "default", message=value or query or record or {}, publisher=approver or "agent", root=root), "status")
     if action == "pubsub_poll":
-        return _compact(CLIENT.coord(action="pubsub_poll", topic=key or target_scope or "default", subscriber=approver or "agent", limit=ttl_seconds or 50, root=root), "status")
+        return _compact(CLIENT.coord(action="pubsub_poll", topic=key or target_scope or "default", after_seq=after_seq, limit=ttl_seconds or 50, root=root), "status")
     if action == "simulate_merge":
         return _compact(CLIENT.coord(action="simulate_merge", root=root, source_branch=key or task_id or value, target_branch=target_scope or "HEAD"), "status")
     if action in {"curate_dataset", "curate_training_dataset"}:
@@ -3426,7 +3571,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
 
     for _tool_name, _desc_fn in _all_desc_map.items():
         if _tool_name in mcp._tool_manager._tools:
-            mcp._tool_manager._tools[_tool_name].description = _desc_fn()
+            description = _desc_fn()
+            mcp._tool_manager._tools[_tool_name].description = description
 
 if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types is not None:
     from local_ai_hub.json_utils import dumps as json_dumps

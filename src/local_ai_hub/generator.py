@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
-import json
 import os
 from pathlib import Path
 from typing import Any
@@ -296,6 +295,47 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_coord` — leases before overlapping edits; memos before repeating investigation.')
         r_idx += 1
     routing_section = "\n".join(routing_lines) if routing_lines else "*(No actions available: all tools disabled)*"
+    public_contract_lines: list[str] = []
+    if fs.rag:
+        public_contract_lines.append(
+            '- For `local_ai_rag(action="ingest_document")`, non-empty `content` is required; `title` and `metadata` are optional. '
+            'Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`. '
+            'Embedding errors do not stop lexical publication. For `ingest_diagram`, `image_path` must resolve to an existing '
+            '`.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional. '
+            'Success also returns `diagram_indexed` and the resolved image path.'
+        )
+    contract_notes: list[str] = []
+    if fs.status:
+        contract_notes.append(
+            '`local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, or `agent_state`; '
+            'action also accepts `status`, `health`, `check`, and `info` aliases.'
+        )
+    if fs.repo:
+        contract_notes.append(
+            '`local_ai_repo(action="pipeline")` accepts closed step objects with a supported action and per-step `id`/`result`; '
+            'run no more than four steps in parallel.'
+        )
+    if fs.artifacts:
+        contract_notes.append(
+            '`local_ai_artifact(action="list")` does not require `artifact_id`; `binary` is supported and binary payloads are never inlined.'
+        )
+    if fs.coord:
+        contract_notes.append(
+            '`local_ai_coord(action="pubsub_poll")` accepts `after_seq` from 0 through 2^63-1; '
+            '`local_ai_coord` bounds `max_tokens` to 0 through 100000.'
+        )
+    if fs.repo:
+        contract_notes.append(
+            'Repository pipelines serialize preprocessing mutation actions with other mutating steps.'
+        )
+    if contract_notes:
+        public_contract_lines.append("- Contract notes: " + " ".join(contract_notes))
+    public_contract_lines.extend([
+        "CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as optional standalone CLI/MCP tooling outside Hub; install and configure it separately only when the user independently wants it. It is not a Hub dependency, runtime, backend, or MCP integration.",
+        "",
+        "`disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs. It does not disable module/project cards: `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences, and either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold. Check active configuration and backend state before claiming synthesis is disabled.",
+    ])
+    public_contract_guidance = "\n".join(public_contract_lines)
 
     # Advisory subagents section
     subagents_section = ""
@@ -402,7 +442,7 @@ Delegation is the default for any task with useful bounded independent work.
 ## READ-ONLY AUDIT CONTRACT
 
 - Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects. Never label such work read-only when any of these occur; split validation into a separately owned, explicitly side-effecting task.
-- Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. Native discovery is fallback-only after one bounded terminal Hub failure.
+- Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. Native fallback requires an explicit `terminal=true` and `retryable=false` result.
 {audit_fallback}
 - Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.
 - Do not run parallel duplicate commands or scopes. Tool labels are not evidence; preserve exact action, arguments, result, and ownership in the audit record.
@@ -413,7 +453,7 @@ For every non-trivial repository task, use Local AI Hub before broad repository 
 
 {repo_gate_section}
 
-Before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files for discovery, call the hub first. Native broad discovery is fallback-only after one bounded hub failure.
+Before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files for discovery, call the hub first. Native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
 Stop escalating when evidence is sufficient; reuse cached results and bounded evidence instead of widening the search.
 
@@ -423,13 +463,17 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 
 {routing_section}
 
+## Public API contracts
+
+{public_contract_guidance}
+
 ## Reuse and failure protocol
 
 - `cache_hit`/`coalesced`: reuse the result.
 - `in_progress=true`: do not duplicate the work.
 - `retryable`/429/503: back off and do independent work.
 - `degraded`/`stale`: verify only the affected slice.
-- Hub unavailable: one bounded health/retry attempt, then native fallback. Never loop or inflate timeouts.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
 Do not fan out overlapping retrieval layers. Stop escalating when evidence is sufficient. Local AI Hub handles its own bounded work; Codex handles native-subagent design and integration.
 {subagents_section}{agent_os_section}
@@ -674,7 +718,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         " generated artifacts, or other workspace side effects. Never label such work read-only when any of these occur;"
         " split validation into a separately owned, explicitly side-effecting task.\n"
         "- Before native discovery or validation, retain preceding Hub result with action, absolute root, status,"
-        " cache/in_progress state, and evidence IDs. Native discovery is fallback-only after one bounded terminal Hub failure.\n"
+        " cache/in_progress state, and evidence IDs. Native fallback requires an explicit `terminal=true` and `retryable=false` result.\n"
         + ("- Native validation fallback is allowed only after `local_ai_command` returns `terminal=true` and `retryable=false`; run one bounded fallback, state side effects/owner, and never repeat identical commands.\n" if fs.commands else "")
         + "- Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly"
         " enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.\n"
@@ -957,9 +1001,11 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "x-operation-contract": operation_metadata("local_ai_artifact"),
         }
 
-    for name, schema in schemas.items():
-        schema["parameters"] = operation_parameters_schema(name, fs)
-        schema["x-operation-contract"] = operation_metadata(name)
+    for tool_name, schema in schemas.items():
+        if operation_contract(tool_name) is not None:
+            # Tool properties, selectors, requirements, and shared response fields live in one registry.
+            schema["parameters"] = operation_parameters_schema(tool_name, fs)
+            schema["x-operation-contract"] = operation_metadata(tool_name)
 
     _apply_response_budget_schema(schemas, cfg)
     return schemas

@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
 import urllib.request
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import __version__
 from .app import LocalAIApp
@@ -40,6 +40,7 @@ from .agent_incidents import IncidentFingerprint, ToolOutcome
 from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
+from .operation_contracts import normalize_transport_error
 from .json_utils import dumps as json_dumps
 
 from .browser_bridge import (
@@ -65,8 +66,37 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 APP: LocalAIApp | None = None
-_DB_QUERY_MAX_RESPONSE_BYTES = 256 * 1024
 _MODE_UNLOAD_STATUS_LOCK = threading.Lock()
+MAX_EVENT_SEQUENCE = (1 << 63) - 1
+_DB_QUERY_TIMEOUT_SECONDS = 0.5
+_DB_QUERY_MAX_ROWS = 100
+_DB_QUERY_MAX_RESPONSE_BYTES = 256 * 1024
+_DB_QUERY_MAX_SQL_BYTES = 8192
+_MODEL_PULL_TIMEOUT_SECONDS = 120.0
+
+
+def _encode_agent_event_cursor(stream_id: str, seq: int) -> str:
+    return f"{quote(str(stream_id), safe='')}:{max(0, min(int(seq), MAX_EVENT_SEQUENCE))}"
+
+
+def _parse_agent_event_cursor(value: Any) -> tuple[str, int] | None:
+    raw = str(value or "")
+    if not raw or len(raw) > 2048 or "\r" in raw or "\n" in raw:
+        return None
+    encoded_stream, separator, encoded_seq = raw.rpartition(":")
+    if not separator or not encoded_stream or not encoded_seq.isascii() or not encoded_seq.isdecimal():
+        return None
+    try:
+        stream_id = unquote(encoded_stream)
+        seq = int(encoded_seq)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not stream_id or seq < 0 or seq > MAX_EVENT_SEQUENCE:
+        return None
+    return stream_id, seq
+_MODEL_PULL_MAX_RESPONSE_BYTES = 1024 * 1024
+_HTTP_MAX_JSON_BODY_BYTES = 64 * 1024 * 1024
+_HTTP_MAX_BODY_SECONDS = 60.0
 
 
 def _trusted_project_context(root: str) -> Any | None:
@@ -1441,10 +1471,60 @@ class Handler(BaseHTTPRequestHandler):
                     return {"success": True, "deleted": model_name}
             elif action == "pull":
                 req = urllib.request.Request(f"{ollama_url}/api/pull", data=json_dumps({"name": model_name, "stream": False}).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
-                with urllib.request.urlopen(req, timeout=120):
+                timeout = max(0.001, min(float(_MODEL_PULL_TIMEOUT_SECONDS), 600.0))
+                deadline = time.monotonic() + timeout
+                timed_out = threading.Event()
+                response_holder: dict[str, Any] = {}
+
+                def _expire_pull() -> None:
+                    timed_out.set()
+                    response = response_holder.get("response")
+                    if response is not None:
+                        try:
+                            response.close()
+                        except Exception:
+                            pass
+
+                timer = threading.Timer(timeout, _expire_pull)
+                timer.daemon = True
+                timer.start()
+                try:
+                    response = urllib.request.urlopen(req, timeout=max(0.001, deadline - time.monotonic()))
+                    response_holder["response"] = response
+                    remaining = deadline - time.monotonic()
+                    if timed_out.is_set() or remaining <= 0:
+                        return {"success": False, "degraded": True, "retryable": True, "error": "model pull time budget exceeded"}
+                    sock = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+                    if sock is not None:
+                        sock.settimeout(remaining)
+                    body = response.read(max(1, min(int(_MODEL_PULL_MAX_RESPONSE_BYTES), 4 * 1024 * 1024)) + 1)
+                    if timed_out.is_set() or time.monotonic() >= deadline:
+                        return {"success": False, "degraded": True, "retryable": True, "error": "model pull time budget exceeded"}
+                    if len(body) > _MODEL_PULL_MAX_RESPONSE_BYTES:
+                        return {"success": False, "error": "model pull response exceeded byte limit"}
+                    if body:
+                        payload = json_loads(body)
+                        if isinstance(payload, dict) and payload.get("error"):
+                            return {"success": False, "error": str(payload["error"])}
                     return {"success": True, "pulled": model_name}
+                finally:
+                    timer.cancel()
+                    response = response_holder.get("response")
+                    if response is not None:
+                        try:
+                            response.close()
+                        except Exception:
+                            pass
             return {"success": False, "error": f"Unknown action: {action}"}
         except Exception as exc:
+            timed_out_event = locals().get("timed_out")
+            deadline = locals().get("deadline")
+            pull_timed_out = action == "pull" and (
+                bool(timed_out_event and timed_out_event.is_set())
+                or (deadline is not None and time.monotonic() >= deadline)
+            )
+            if pull_timed_out:
+                return {"success": False, "degraded": True, "retryable": True, "error": "model pull time budget exceeded"}
             return {"success": False, "error": str(exc)}
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -2190,13 +2270,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
         self._audit_admin_result(status)
-        if status >= 400 and isinstance(data, dict):
-            data = dict(data)
-            data.setdefault("success", False)
-            data.setdefault("status_code", status)
-            retryable = status in {408, 425, 429, 500, 502, 503, 504}
-            data.setdefault("retryable", retryable)
-            data.setdefault("terminal", not retryable)
+        if status >= 400:
+            data = normalize_transport_error(status, data)
         request_id = getattr(self, "_journal_request_id", None)
         if request_id and isinstance(data, dict):
             data = dict(data)
@@ -2312,7 +2387,14 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         self._close_trace_context()
 
-    def _stream_agent_events(self, stream_id: str = "", kind: str = "", after_seq: int = 0, timeout: float = 0.0) -> None:
+    def _stream_agent_events(
+        self,
+        stream_id: str = "",
+        kind: str = "",
+        after_seq: int = 0,
+        timeout: float = 0.0,
+        last_event_id: str = "",
+    ) -> None:
         if APP is None or not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
             self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False})
             return
@@ -2708,18 +2790,11 @@ class Handler(BaseHTTPRequestHandler):
                     scope_val = _parse_memory_scope(scope_raw)
                     scope_id_val = (query.get("scope_id") or [None])[0]
                     requested_root = (query.get("root") or [None])[0]
-                    requested_repository_id = (query.get("repository_id") or [None])[0]
                     project_identity = self._memory_project_identity(requested_root)
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
-                    root_val = project_identity[0] if project_identity else None
-                    repository_id_val = None
-                    if requested_repository_id:
-                        repository_id_val = project_identity[1] if project_identity and project_identity[1] else str(requested_repository_id).strip()
-                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
-                    tenant_val = str(explicit_tenant).strip() if explicit_tenant else (query.get("tenant") or [None])[0]
-                    if tenant_val:
-                        tenant_val = str(tenant_val).strip() or None
+                    root_val, repository_id_val = project_identity or (None, None)
+                    tenant_val = self._tenant()
                     task_id_val = (query.get("task_id") or [None])[0]
                     session_id_val = (query.get("session_id") or [None])[0]
                     clone_id_val = (query.get("clone_id") or [None])[0]
@@ -2773,18 +2848,11 @@ class Handler(BaseHTTPRequestHandler):
                 limit_val = _memory_query_limit((query.get("limit") or [100])[0])
                 scope_id_val = (query.get("scope_id") or [None])[0]
                 requested_root = (query.get("root") or [None])[0]
-                requested_repository_id = (query.get("repository_id") or [None])[0]
                 project_identity = self._memory_project_identity(requested_root)
                 if requested_root and project_identity is None:
                     self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
-                root_val = project_identity[0] if project_identity else None
-                repository_id_val = None
-                if requested_repository_id:
-                    repository_id_val = project_identity[1] if project_identity and project_identity[1] else str(requested_repository_id).strip()
-                explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
-                tenant_val = str(explicit_tenant).strip() if explicit_tenant else (query.get("tenant") or [None])[0]
-                if tenant_val:
-                    tenant_val = str(tenant_val).strip() or None
+                root_val, repository_id_val = project_identity or (None, None)
+                tenant_val = self._tenant()
                 task_id_val = (query.get("task_id") or [None])[0]
                 session_id_val = (query.get("session_id") or [None])[0]
                 clone_id_val = (query.get("clone_id") or [None])[0]
@@ -2916,9 +2984,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 stream_filter = (query.get("stream_id") or [""])[0]
                 kind_filter = (query.get("kind") or [""])[0]
-                after_seq = int((query.get("after_seq") or [0])[0])
+                after_seq = max(0, min(int((query.get("after_seq") or [0])[0]), MAX_EVENT_SEQUENCE))
                 timeout = float((query.get("timeout") or [0.0])[0])
-                self._stream_agent_events(stream_id=stream_filter, kind=kind_filter, after_seq=after_seq, timeout=timeout)
+                last_event_id = str(self.headers.get("Last-Event-ID", "") or (query.get("last_event_id") or [""])[0])
+                self._stream_agent_events(
+                    stream_id=stream_filter,
+                    kind=kind_filter,
+                    after_seq=after_seq,
+                    timeout=timeout,
+                    last_event_id=last_event_id,
+                )
                 return
             if path == "/api/capabilities":
                 self._send(200, APP.capabilities()); return
@@ -2988,7 +3063,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 for item in result.get("items", []):
                     self._reconcile_debug_trace(item)
-                self._send(200, result); return
+                self._send(200 if result.get("success") else 503 if result.get("retryable") else 400, result); return
             if path.startswith("/api/debug-traces/"):
                 trace_id = path.rsplit("/", 1)[-1]
                 detail_args = {
@@ -3731,7 +3806,18 @@ class Handler(BaseHTTPRequestHandler):
             rejection_reasons: dict[str, int] = {}
             for event in payload.get("events", []):
                 try:
-                    APP.telemetry.record_tool_accounting(event)
+                    recorded = APP.telemetry.record_tool_accounting(event)
+                    if recorded is False:
+                        rejected += 1
+                        tool = event.get("tool") if isinstance(event, dict) else None
+                        if isinstance(tool, str) and tool[:160] == "local_ai_telemetry":
+                            reason = "self_accounting"
+                        elif getattr(APP.telemetry, "enabled", True) is False:
+                            reason = "telemetry_disabled"
+                        else:
+                            reason = "queue_full"
+                        rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                        continue
                     accepted += 1
                 except Exception as exc:
                     rejected += 1
@@ -4263,14 +4349,7 @@ class Handler(BaseHTTPRequestHandler):
                         if requested_root and project_identity is None:
                             self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                         root_val, repository_id_val = project_identity or (None, None)
-                        explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
-                        tenant_val = (
-                            str(explicit_tenant).strip()
-                            if explicit_tenant
-                            else (payload.get("tenant") or rec_data.get("tenant") or (provenance.get("tenant") if isinstance(provenance, Mapping) else None))
-                        )
-                        if tenant_val:
-                            tenant_val = str(tenant_val).strip() or None
+                        tenant_val = self._tenant()
                         scope_val, resolved_scope_id, ambiguous_scope = _resolve_memory_scope(
                             requested_scope,
                             scope_id=rec_data.get("scope_id") or payload.get("scope_id"),
@@ -4312,8 +4391,7 @@ class Handler(BaseHTTPRequestHandler):
                             provenance["root"] = root_val
                         if repository_id_val:
                             provenance["repository_id"] = repository_id_val
-                        if tenant_val:
-                            provenance["tenant"] = tenant_val
+                        provenance["tenant"] = tenant_val
                         if discarded_identity_fields:
                             provenance["discarded_identity_fields"] = discarded_identity_fields
                         for identity_key in (
@@ -4357,18 +4435,11 @@ class Handler(BaseHTTPRequestHandler):
                     scope_val = _parse_memory_scope(scope_raw)
                     scope_id_val = payload.get("scope_id")
                     requested_root = payload.get("root")
-                    requested_repository_id = payload.get("repository_id")
                     project_identity = self._memory_project_identity(requested_root)
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
-                    root_val = project_identity[0] if project_identity else None
-                    repository_id_val = None
-                    if requested_repository_id:
-                        repository_id_val = project_identity[1] if project_identity and project_identity[1] else str(requested_repository_id).strip()
-                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
-                    tenant_val = str(explicit_tenant).strip() if explicit_tenant else payload.get("tenant")
-                    if tenant_val:
-                        tenant_val = str(tenant_val).strip() or None
+                    root_val, repository_id_val = project_identity or (None, None)
+                    tenant_val = self._tenant()
                     task_id_val = payload.get("task_id")
                     session_id_val = payload.get("session_id")
                     clone_id_val = payload.get("clone_id")
@@ -4411,18 +4482,12 @@ class Handler(BaseHTTPRequestHandler):
                     if not record_id_val:
                         self._send(400, {"success": False, "error": "memory delete requires record_id", "terminal": True, "retryable": False}); return
                     requested_root = payload.get("root")
-                    requested_repository_id = payload.get("repository_id")
                     project_identity = self._memory_project_identity(requested_root)
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
-                    root_val = project_identity[0] if project_identity else None
-                    repository_id_val = None
-                    if requested_repository_id:
-                        repository_id_val = project_identity[1] if project_identity and project_identity[1] else str(requested_repository_id).strip()
+                    root_val, repository_id_val = project_identity or (None, None)
                     requested_scope = _parse_memory_scope(payload.get("scope"))
-                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
-                    raw_tenant = str(explicit_tenant).strip() if explicit_tenant else payload.get("tenant")
-                    tenant_val = None if requested_scope is AgentScope.GLOBAL else (str(raw_tenant).strip() if raw_tenant else None)
+                    tenant_val = None if requested_scope is AgentScope.GLOBAL else self._tenant()
                     scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
                         requested_scope,
                         scope_id=payload.get("scope_id"),
@@ -4467,18 +4532,11 @@ class Handler(BaseHTTPRequestHandler):
                     limit_val = _memory_query_limit(payload.get("limit", 100))
                     scope_id_val = payload.get("scope_id")
                     requested_root = payload.get("root")
-                    requested_repository_id = payload.get("repository_id")
                     project_identity = self._memory_project_identity(requested_root)
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
-                    root_val = project_identity[0] if project_identity else None
-                    repository_id_val = None
-                    if requested_repository_id:
-                        repository_id_val = project_identity[1] if project_identity and project_identity[1] else str(requested_repository_id).strip()
-                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
-                    tenant_val = str(explicit_tenant).strip() if explicit_tenant else payload.get("tenant")
-                    if tenant_val:
-                        tenant_val = str(tenant_val).strip() or None
+                    root_val, repository_id_val = project_identity or (None, None)
+                    tenant_val = self._tenant()
                     task_id_val = payload.get("task_id")
                     session_id_val = payload.get("session_id")
                     clone_id_val = payload.get("clone_id")
@@ -5935,9 +5993,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.services.profile_digest(str(payload.get("profile_path") or payload.get("path") or ""), top_n=int(payload.get("top_n", 15)))); return
             if 'post_coord_worktree_lease_1' in post_route_ids:
                 self._send(200, APP.services.worktree_lease(str(payload.get("root", ".")), branch_name=payload.get("branch"))); return
-            if 'post_coord_worktree_release_1' in post_route_ids:
-                self._send(200, APP.services.worktree_release(str(payload.get("root", ".")), str(payload.get("worktree_path", "")), delete_branch=bool(payload.get("delete_branch", True)), branch_name=payload.get("branch"))); return
-            if 'post_coord_worktrees_1' in post_route_ids:
+            if path in {"/api/coord/worktree_release", "/api/worktree_release"}:
+                self._send(200, APP.services.worktree_release(str(payload.get("root", ".")), str(payload.get("worktree_path", "")), delete_branch=bool(payload.get("delete_branch", True)), branch_name=payload.get("branch"), worktree_id=str(payload.get("worktree_id", "")))); return
+            if path in {"/api/coord/worktrees", "/api/worktrees"}:
                 self._send(200, APP.services.list_worktrees(str(payload.get("root", ".")))); return
             if 'post_coord_worktree_prune_1' in post_route_ids:
                 self._send(200, APP.services.prune_worktrees(str(payload.get("root", ".")))); return
