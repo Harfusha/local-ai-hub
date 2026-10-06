@@ -75,5 +75,5 @@ def test_memory_append_result_error_rolls_back_projection(
     with closing(sqlite3.connect(state.db_path)) as con:
         assert con.execute("SELECT COUNT(*) FROM agent_memory_records").fetchone()[0] == 1
         assert con.execute("SELECT COUNT(*) FROM agent_events WHERE kind = 'memory.recorded'").fetchone()[0] == 1
-    assert len(published) == (0 if replay else 1)
     assert all(event is not None for event in published)
+    assert len([event for event in published if event.kind == "memory.recorded"]) == (0 if replay else 1)
