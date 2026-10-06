@@ -411,7 +411,7 @@ def test_repo_search_prioritizes_verified_project_path_hint_without_narrowing(
         def search(self, *_args, **_kwargs):
             return {"success": True, "results": []}
 
-        def search_paths(self, _root, query, paths, top_k, context_lines=None):
+        def search_paths(self, _root, query, paths, top_k, context_lines=None, **_kwargs):
             self.observed_paths = list(paths)
             return {"success": True, "results": [{"path": path} for path in paths[:top_k]]}
 
@@ -536,7 +536,7 @@ def test_repo_search_keeps_full_original_candidate_window_when_adding_hints(
         def search(self, *_args, **_kwargs):
             return {"success": True, "results": []}
 
-        def search_paths(self, _root, _query, paths, _top_k, context_lines=None):
+        def search_paths(self, _root, _query, paths, _top_k, context_lines=None, **_kwargs):
             self.observed_paths = list(paths)
             return {"success": True, "results": []}
 
@@ -616,7 +616,7 @@ def test_repo_search_hint_hit_does_not_skip_broader_results(
                 ],
             }
 
-        def search_paths(self, _root, _query, paths, _top_k, context_lines=None):
+        def search_paths(self, _root, _query, paths, _top_k, context_lines=None, **_kwargs):
             self.targeted_paths = list(paths)
             return {
                 "success": True,
@@ -755,7 +755,7 @@ def test_repo_search_hints_respect_gitignore_and_searchable_file_rules(
     assert [item["path"] for item in result["results"]] == [
         "templates/element/button.php"
     ]
-    assert inventory_calls == 2
+    assert inventory_calls == 1
 
 
 def test_search_paths_skips_unresolvable_git_inventory_entries(
