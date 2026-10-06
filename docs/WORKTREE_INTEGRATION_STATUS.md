@@ -689,10 +689,9 @@ The tracked/index disposition owner supplied a doc-only follow-up, commit
 `b7757a77d57374d8ef04971d417f81ac42d1d57a` (parent
 `19ff3fc27268243f7d9a63059b17528eccafca3e`), merged into master. It refines
 three prior conflict classifications: V04-H062, V27-H002, and V27-H010 are
-now master-improved, changing the 533-hunk totals to 332 behavior-preserved,
-80 master-improved, 17 missing, and 104 owner-conflict. Source remains
-unchanged; the seven-hunk missing-integration list is unchanged. This is
-static documentation evidence only, not runtime or release acceptance.
+master-improved. A later tracked/index update supersedes its interim totals;
+see the latest follow-up below. Source remains unchanged. This is static
+documentation evidence only, not runtime or release acceptance.
 
 #### Agent event schema review (read-only owner queue)
 
@@ -709,4 +708,16 @@ state policy are reconciled. V13-H005 is now classified master-improved: all
 53 original accepted hashes remain among the current 61. A read-only T18
 owner review is assigned in the existing T18 checkout; no DB/runtime/source
 mutation or test is authorized by this evidence. Five additional event hunks
-have manual counterparts awaiting the auditor's document follow-up.
+have manual counterparts, now dispositioned in follow-up commit
+`088f9b3300b36f46ba131652082040b1d46339a6` (parent
+`b7757a77d57374d8ef04971d417f81ac42d1d57a`), merged into master. The report
+now counts 333 behavior-preserved, 85 master-improved, 17 missing, and 98
+owner-conflict hunks across 533 total. It adjudicates six conflicts: V02-H007
+shared canonical DB lock, H026 docstring/parsing guards, H028 reset/cursor
+upper bound, H029 replay gap/JSON envelope, H031 timeout/error/list wrapper,
+and V13-H005 accepted-object map. V02-H027 retains the current fail-closed
+disabled sentinel semantics. V02-H006 remains open for exactly the three
+missing accepted-map fingerprints above. No runtime, import, model, DB, or
+source changes; this follow-up changes only the disposition document. Original
+refs/stash IDs remain retained. Counts are static review, not release
+acceptance.
