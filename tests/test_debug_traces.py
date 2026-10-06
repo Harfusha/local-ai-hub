@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
+from contextlib import closing
 
+import pytest
+
+from local_ai_hub import http_server
 from local_ai_hub.debug_traces import DebugTraceStore
 
 
@@ -39,6 +44,20 @@ def test_trace_defaults_allow_large_retained_payloads(tmp_path):
     assert store.max_event_bytes == 4 * 1024 * 1024
     assert store.max_session_text_bytes == 64 * 1024 * 1024
 
+
+
+def test_trace_retention_days_override_terminal_ttl_and_are_reported(tmp_path):
+    store = DebugTraceStore(_config(tmp_path, terminal_ttl_seconds=10, retention_days=2))
+    trace_id = store.start(kind="api_request", tenant="tenant")
+    store.finish(trace_id, state="done", response={"ok": True})
+
+    with closing(sqlite3.connect(store.path)) as con:
+        updated_at, expires_at = con.execute(
+            "SELECT updated_at,expires_at FROM traces WHERE trace_id=?", (trace_id,)
+        ).fetchone()
+
+    assert expires_at - updated_at >= 2 * 86400 - 1
+    assert store.stats()["retention_days"] == 2
 
 def test_trace_detail_preserves_ordered_full_debug_content(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
@@ -171,3 +190,39 @@ def test_model_request_promotes_model_to_trace_summary(tmp_path):
     DebugTraceObserver(store, trace_id).model_request({"model": "qwen2.5-coder:7b", "messages": []})
 
     assert store.detail(trace_id)["session"]["model"] == "qwen2.5-coder:7b"
+
+
+def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
+    class DebugTraces:
+        TERMINAL_STATES = set()
+
+        def detail(self, trace_id, *, since_seq):
+            return {"success": False, "error": "trace not found"}
+
+    class App:
+        debug_traces = DebugTraces()
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/debug-traces/missing-trace"
+    handler._begin_trace = lambda path: None
+    handler._require_authorized = lambda: True
+    responses = []
+    handler._send = lambda status, data: responses.append((status, data))
+    monkeypatch.setattr(http_server, "APP", App())
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+
+    handler.do_GET()
+
+    assert responses == [(404, {"success": False, "error": "trace not found"})]
+
+
+@pytest.mark.parametrize("since_seq", [2**63 - 1, 2**63, 2**100])
+def test_trace_detail_clamps_forward_cursor_to_sqlite_integer_range(tmp_path, since_seq):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    store.event(trace_id, "progress", {"index": 1})
+
+    detail = store.detail(trace_id, since_seq=since_seq)
+
+    assert detail["success"] is True
+    assert detail["events"] == []

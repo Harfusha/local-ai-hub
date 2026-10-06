@@ -1,0 +1,44 @@
+{
+  "schema": "t05.memory_delete_identity_candidate_receipt.v10",
+  "owner": "T05",
+  "date": "2026-10-02",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "candidate": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub",
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "candidate_dirty_count": 28,
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-root-current-memory-delete-identity-v3.patch",
+  "patch_sha256": "6DDE50EAB5A824A67ED3C1CA5A3D83B9C98E57323E8210E1E0179F5521102A4B",
+  "source_test_pins": {
+    "root/src/local_ai_hub/agent_memory.py": "C68A8C70386BA5155C23D48AE23735E3E0344C3E72F021F0D76DEF708AF2B838",
+    "root/src/local_ai_hub/agent_events.py": "30AB4485F34A67D8212E6151057E06EF806D40F92073036D8F9F4F4546B44822",
+    "root/src/local_ai_hub/agent_tasks.py": "79487FCE9F8A477A9DE888A6C7FEF77C3526F9B63151EF69FF0CE2019502BA45",
+    "root/tests/test_agent_task_memory_adoption.py": "874C9F5BB901F0EDD1F3456D8409DAB79CD79528C80C6D9D3455814484D0A318",
+    "candidate/src/local_ai_hub/agent_memory.py": "71BA186D315700268F2AF9A67AAF84274BEF7E08052CDC032A3A13308AD7CDFC",
+    "candidate/src/local_ai_hub/agent_tasks.py": "02C3E954D056710F6123FC9CBCE57029DBA7F2379A61D4957C186566C74E90FC",
+    "candidate/tests/test_memory_delete_identity_contract.py": "0794267AE976830A1CBFF9432365BCBEAC277648F760636670E4A2DAA2180F56"
+  },
+  "changed_paths": [
+    "tests/test_agent_task_memory_adoption.py",
+    "tests/test_memory_delete_identity_contract.py"
+  ],
+  "target_selector": "test_correction_stale_transition_and_delete_preserve_provenance_lineage",
+  "setup_fix": "Target test does not use tasks or incidents; replace overbroad build_task_store fixture with MemoryStore(AgentStateStore(...)) because candidate TaskStore has no set_memory_adoption API.",
+  "identity_fix": "Pass repository scope, scope_id, root, and tenant to delete; preserve fail-closed production expectation.",
+  "new_regression_selector": "test_repository_memory_delete_requires_matching_root_and_tenant",
+  "previous_attempt": "1 failed, 1 passed in 0.51s; adoption selector blocked before delete by candidate TaskStore missing set_memory_adoption; unauthorized identity regression passed.",
+  "test_run_status": "complete",
+  "scope": "Test and patch setup only; no production source changes.",
+  "test_command": "python -B -; add candidate/src to sys.path; inject root src/local_ai_hub/agent_events.py; pytest.main(['-q','-p','no:cacheprovider','--tb=short', '<overlay>/test_agent_task_memory_adoption.py::test_correction_stale_transition_and_delete_preserve_provenance_lineage', '<overlay>/test_memory_delete_identity_contract.py::test_repository_memory_delete_requires_matching_root_and_tenant'])",
+  "test_result": "2 passed in 0.57s",
+  "test_environment": "T05 candidate agent_memory.py + current-root agent_events.py bridge; isolated patched test overlay; no source edits",
+  "test_setup_fix": "Replaced unused TaskStore-based build_task_store fixture with direct MemoryStore(AgentStateStore(...)); actual candidate TaskStore exposes create/resume but no set_memory_adoption. Root TaskStore has set_memory_adoption. Delete still requires caller scope/root/tenant.",
+  "root_changed_by_run": false,
+  "root_pins": {
+    "src/local_ai_hub/agent_memory.py": "C68A8C70386BA5155C23D48AE23735E3E0344C3E72F021F0D76DEF708AF2B838",
+    "src/local_ai_hub/agent_events.py": "30AB4485F34A67D8212E6151057E06EF806D40F92073036D8F9F4F4546B44822",
+    "tests/test_agent_task_memory_adoption.py": "874C9F5BB901F0EDD1F3456D8409DAB79CD79528C80C6D9D3455814484D0A318"
+  },
+  "acceptance_status": "This T05 memory-delete slice passes candidate overlay selectors. Full T05 current-root acceptance remains blocked pending T20 root identity/privacy/migration/cache/reopen receipts. Older root receipts pin HEAD 98a9 and remain historical.",
+  "receipt_path": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-memory-delete-identity-candidate-receipt-v10.json"
+}

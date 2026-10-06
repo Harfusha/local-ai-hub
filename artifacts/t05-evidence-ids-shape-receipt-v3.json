@@ -1,0 +1,16 @@
+{
+  "task": "T05 memory evidence_ids shape",
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "candidate_source_sha256": "784116FF1ADA548979126F9639C4B795016540AF5ED85D1897C6963DFA6AC73E",
+  "candidate_test_sha256": "623B443B72360D5BAB0FAA450DCFCF19AB4AB6B4EAC82A8F7E92ED7E15CF88DB",
+  "patch": "artifacts/t05-evidence-ids-shape-v3.patch",
+  "patch_sha256": "F681BD90CADACC2AB9997C68F2BA5E6BB7DAD21F7DAEAFEB846FE0C50B32BCAD",
+  "patch_reverse_check": "PASS",
+  "selectors": [
+    "tests/test_agent_memory.py::test_find_skips_corrupt_rows_without_aborting_scoped_read",
+    "tests/test_agent_memory.py::test_memory_record_from_dict_rejects_scalar_evidence_ids"
+  ],
+  "result": "2 passed in 0.48s",
+  "test_status": "RUN after T20 released slot",
+  "note": "Broad suite previously saw fixture TypeError because scope was omitted; fixture corrected before this passing targeted run."
+}

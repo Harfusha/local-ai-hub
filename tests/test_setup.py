@@ -81,9 +81,8 @@ def test_compact_agent_config_is_default(tmp_path: Path):
     install = tmp_path / "install"
     py = tmp_path / "python"
     serena = tmp_path / "serena"
-    cgc = tmp_path / "cgc"
-    cfg = {"code_intelligence": {"direct_agent_mcp": False, "serena_enabled": True, "codegraph_enabled": True}}
-    entries = setup.build_mcp_entries(install, py, serena, cgc, "codex", cfg)
+    cfg = {"code_intelligence": {"direct_agent_mcp": False, "serena_enabled": True}}
+    entries = setup.build_mcp_entries(install, py, serena, "codex", cfg)
     assert set(entries) == {"local-ai"}
     assert entries["local-ai"]["env"]["LOCAL_AI_AGENT"] == "codex"
     assert entries["local-ai"]["args"] == ["-m", "local_ai_hub.mcp_server"]
@@ -107,32 +106,47 @@ def test_global_policy_has_explicit_read_only_and_fallback_contract() -> None:
         assert phrase in policy
 
 
-def test_direct_agent_backends_are_explicit_opt_in(tmp_path: Path):
-    cfg = {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True, "codegraph_enabled": True}}
-    entries = setup.build_mcp_entries(tmp_path, tmp_path / "python", tmp_path / "serena", tmp_path / "cgc", "codex", cfg)
-    assert set(entries) == {"local-ai", "serena", "codegraph"}
+@pytest.mark.parametrize("relative_path", ["AGENTS.md", "docs/INSTALL_PROMPT.md", "docs/UPDATE_PROMPT.md"])
+def test_instruction_policy_blocks_match_generated_policy_sources(relative_path: str) -> None:
+    text = (ROOT / relative_path).read_text(encoding="utf-8")
+    expected_agent = setup.generate_global_policy({})
+    expected_token = setup.generate_token_economy_policy({})
+
+    def block(begin: str, end: str) -> str:
+        start = text.find(begin)
+        assert start >= 0, f"{relative_path} missing {begin}"
+        assert text.find(begin, start + len(begin)) < 0, f"{relative_path} repeats {begin}"
+        finish = text.find(end, start + len(begin))
+        assert finish >= 0, f"{relative_path} missing {end}"
+        return text[start:finish + len(end)]
+
+    assert block(setup.GLOBAL_POLICY_BEGIN, setup.GLOBAL_POLICY_END) == expected_agent
+    assert block(setup.TOKEN_ECONOMY_POLICY_BEGIN, setup.TOKEN_ECONOMY_POLICY_END) == expected_token
+
+
+def test_direct_serena_is_explicit_opt_in(tmp_path: Path):
+    cfg = {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True}}
+    entries = setup.build_mcp_entries(tmp_path, tmp_path / "python", tmp_path / "serena", "codex", cfg)
+    assert set(entries) == {"local-ai", "serena"}
     assert "--project-from-cwd" in entries["serena"]["args"]
-    assert entries["codegraph"]["args"] == ["mcp", "start"]
 
 
 def test_direct_agent_serena_context_matches_gemini(tmp_path: Path):
     cfg = {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True}}
-    entries = setup.build_mcp_entries(tmp_path, tmp_path / "python", tmp_path / "serena", None, "gemini", cfg)
+    entries = setup.build_mcp_entries(tmp_path, tmp_path / "python", tmp_path / "serena", "gemini", cfg)
     assert entries["serena"]["args"][1:3] == ["--context", "gemini"]
 
 
 def test_antigravity_mcp_sync_uses_gemini_and_prunes_stale_backends(tmp_path: Path):
     path = tmp_path / "mcp_config.json"
     serena = tmp_path / "serena.exe"
-    codegraph = tmp_path / "codegraph.exe"
     path.write_text(json.dumps({"mcpServers": {
         "user-server": {"command": "keep"},
         "serena": {"command": str(serena), "args": ["start-mcp-server"]},
-        "codegraph": {"command": str(codegraph), "args": ["mcp", "start"]},
     }}), encoding="utf-8")
 
     setup.sync_antigravity_mcp_config(
-        path, tmp_path / "install", tmp_path / "python", serena, codegraph,
+        path, tmp_path / "install", tmp_path / "python", serena,
         {"code_intelligence": {"direct_agent_mcp": False}}, False,
     )
 

@@ -60,9 +60,8 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     workflows_reference = references["workflows.md"].lower()
     assert "semantic generation" in tools_reference
     assert "exact facts, symbols, diff and tests" in tools_reference
-    assert "preserves one bounded local pass" in tools_reference
-    assert "semantic handoff is mandatory" in tools_reference
-    assert "before cloud reasoning" in tools_reference
+    assert "semantic delegation is on-demand" in tools_reference
+    assert "never blocked by mandatory local handoffs" in tools_reference
     assert 'local_ai_task(action="delegate")' in workflows_reference
     assert 'local_ai_task(action="explore")' in workflows_reference
     assert 'local_ai_task(action="reason")' in workflows_reference
@@ -85,8 +84,14 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     assert {"prompt", "model", "format", "json_schema", "candidate_data", "evaluation_cohort", "job_id", "latency_budget_ms", "timeout_seconds", "extra_fields"}.issubset(task_properties)
     assert {"docset_index", "docset_search", "ingest_document", "ingest_diagram"}.issubset(_actions(schemas["local_ai_rag"]))
     assert {"contract", "checkpoint", "record", "tool_outcome", "target_scope"}.issubset(schemas["local_ai_coord"]["parameters"]["properties"])
-    assert schemas["local_ai_artifact"]["parameters"]["required"] == ["artifact_id"]
-    assert "id" not in schemas["local_ai_artifact"]["parameters"]["properties"]
+    artifact_parameters = schemas["local_ai_artifact"]["parameters"]
+    assert "artifact_id" not in artifact_parameters.get("required", [])
+    artifact_list_rule = next(
+        rule for rule in artifact_parameters["allOf"]
+        if rule["if"]["properties"]["action"]["enum"] == ["list"]
+    )
+    assert artifact_list_rule["else"]["required"] == ["artifact_id"]
+    assert "id" not in artifact_parameters["properties"]
     assert "agent_state" in schemas["local_ai_status"]["description"]
     assert "local_ai_work" not in schemas
 

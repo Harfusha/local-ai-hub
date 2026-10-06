@@ -1,0 +1,41 @@
+{
+  "task": "T20 read-only integration review of T08 agent_context hunk",
+  "date": "2026-10-02",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "owner_patch_sha256": "083F374A69EEF762E3B28D1C0E6CCCACF4FA6321A0DA6C598094F8E73FBB5C3F",
+  "scope": {
+    "included_path": "src/local_ai_hub/agent_context.py",
+    "excluded_patch_sections": [
+      "agent_events.py",
+      "agent_tasks.py",
+      "app.py",
+      "other stale sections from the full T08 patch"
+    ],
+    "reviewed_behavior": "Blackboard content is labeled unverified, confidence is reduced, and provenance identifies board, section, author, version, and trust level."
+  },
+  "integration_evidence": {
+    "root_preimage_sha256": "90BBFB0F687AF6E60E0910680BA788098083140F908C35FE8C3B3A32714167ED",
+    "root_postimage_sha256": "C4E050715A090633BD7F7AADF426FD16952878C6FE03CF4468F33EB5E14988A2",
+    "current_root_sha256": "C4E050715A090633BD7F7AADF426FD16952878C6FE03CF4468F33EB5E14988A2",
+    "application_method": "Previously applied with only the agent_context.py patch section after exact preimage match and include-only apply check.",
+    "current_review": "Postimage matches the recorded owner-confirmed root result. The file has additional dirty changes outside this hunk; those are not attributed to T08."
+  },
+  "verification": {
+    "test_file": "tests/test_agent_task_memory_adoption.py",
+    "current_test_file_sha256": "B85E72F40C2EFE491AF08383C81D7FEDF03689096F42F630B7BA3DB71EF92847",
+    "owner_selector": "test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope",
+    "selector_present_in_current_root_test_file": false,
+    "test_run": "1 passed in 0.80s; exit 0; candidate-independent root test",
+    "status": "source-integrated-and-reviewed; focused root selector passed",
+    "test_patch_sha256": "B031EB1E22AE8DAF2BE03C0879D47C61F3A5D6FD348070026489AABE82ED6794",
+    "root_test_postimage_sha256": "FFE89E25A765C2727A3DA7B4BD5ABD369B1F05936DC8F711D5521B95A31CD467",
+    "test_command": "PYTHONDONTWRITEBYTECODE=1; PYTHONPATH=C:\\Users\\Adam\\.local-ai-hub\\src; python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_task_memory_adoption.py::test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope",
+    "test_run_scope": "C:\\Users\\Adam\\.local-ai-hub root only"
+  },
+  "limitations": [
+    "The full T08 patch did not apply cleanly; only the owned agent_context.py section was integrated.",
+    "Do not count candidate-only tests as root evidence.",
+    "Shared serial test slot currently belongs to T04; no root tests were run."
+  ]
+}

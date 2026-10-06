@@ -1,0 +1,52 @@
+--- a/tests/test_agent_memory.py
++++ b/tests/test_agent_memory.py
+@@ -363,8 +363,49 @@
+     ) is False
+     assert store.get(session_record.record_id, scope=AgentScope.SESSION, scope_id="session-codex") == session_record
+ 
+ 
++
++def test_scoped_memory_delete_requires_matching_tenant(store: MemoryStore):
++    record = store.record(MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.SESSION,
++        scope_id="session-owner",
++        key="tenant-delete-identity",
++        value="tenant private value",
++        provenance={"tenant": "owner-tenant"},
++    ), actor="user")
++
++    assert store.delete(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++    ) is False
++    assert store.delete(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++        tenant="other-tenant",
++    ) is False
++    assert store.get(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++        tenant="owner-tenant",
++    ) == record
++    assert store.delete(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++        tenant="owner-tenant",
++    ) is True
++    assert store.get(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++        tenant="owner-tenant",
++    ) is None
++
+ def test_legacy_memory_find_requires_explicit_root_or_identity(store: MemoryStore):
+     with pytest.raises(ValueError, match="explicit root or identity"):
+         store.find(allow_legacy_unscoped=True)
+ 

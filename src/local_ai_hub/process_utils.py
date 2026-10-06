@@ -1,17 +1,156 @@
 from __future__ import annotations
 
+import ctypes
+import json
+import ntpath
 import os
+import posixpath
+import sys
 import threading
 from pathlib import Path, PureWindowsPath
 import signal
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from typing import Any, Sequence
 
 
 _LOW_PRIORITY_VALUES = {"idle", "below_normal", "normal"}
+_POST_TERMINATION_DRAIN_SECONDS = 0.5
+_WORKTREE_OWNERSHIP_FILE = "local-ai-hub-worktree-ownership.json"
+_CANCEL_POLL_SECONDS = 0.1
+_CANCEL_GRACE_SECONDS = 1.0
+
+
+class ProcessCancelledError(subprocess.SubprocessError):
+    """Raised after a cancelled child process tree is terminated and drained."""
+
+    def __init__(self, cmd: Sequence[str], output: Any = None, stderr: Any = None):
+        super().__init__("process cancelled")
+        self.cmd = list(cmd)
+        self.output = output
+        self.stderr = stderr
+
+
+class ProcessCleanupUnverifiedError(subprocess.SubprocessError):
+    """Raised when cancellation cannot prove child-tree termination."""
+
+    def __init__(
+        self,
+        cmd: Sequence[str],
+        *,
+        process: subprocess.Popen[Any],
+        tree_termination_confirmed: bool,
+        output: Any = None,
+        stderr: Any = None,
+    ):
+        super().__init__("process cleanup could not be verified")
+        self.cmd = list(cmd)
+        self.process = process
+        self.tree_termination_confirmed = bool(tree_termination_confirmed)
+        self.output = output
+        self.stderr = stderr
+
+
+class _FILETIME(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", ctypes.c_uint32), ("dwHighDateTime", ctypes.c_uint32)]
+
+
+def _linux_process_starttime(pid: int) -> int:
+    stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+    # comm is parenthesized but may itself contain spaces or closing parens.
+    end_comm = stat.rfind(")")
+    if end_comm < 0 or int(stat[: stat.find(" ")]) != pid:
+        raise ValueError("invalid proc stat")
+    fields = stat[end_comm + 1 :].split()  # starts at field 3 (state)
+    if len(fields) <= 19:
+        raise ValueError("incomplete proc stat")
+    return int(fields[19])  # field 22: starttime, in clock ticks after boot
+
+
+def _windows_process_identity(pid: int) -> dict[str, Any] | None:
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_FILETIME),
+        ctypes.POINTER(_FILETIME),
+        ctypes.POINTER(_FILETIME),
+        ctypes.POINTER(_FILETIME),
+    ]
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        creation = _FILETIME()
+        exit_time = _FILETIME()
+        kernel = _FILETIME()
+        user = _FILETIME()
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_time),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            return None
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            return None
+        executable = ntpath.normcase(ntpath.normpath(buffer.value))
+        if not executable:
+            return None
+        creation_identity = (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
+        return {
+            "pid": pid,
+            "executable": executable,
+            "creation_identity": creation_identity,
+            "creation_identity_type": "windows_creation_filetime_100ns",
+        }
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def process_identity(pid: int) -> dict[str, Any] | None:
+    """Return metadata-only PID identity, or None when it cannot be proven."""
+    if isinstance(pid, bool) or not isinstance(pid, int) or not 0 < pid <= 0xFFFFFFFF:
+        return None
+    try:
+        if os.name == "nt":
+            return _windows_process_identity(pid)
+        if sys.platform != "linux":
+            return None
+
+        starttime_before = _linux_process_starttime(pid)
+        executable = os.readlink(f"/proc/{pid}/exe")
+        starttime_after = _linux_process_starttime(pid)
+        if starttime_before != starttime_after or not executable.startswith("/"):
+            return None
+        return {
+            "pid": pid,
+            "executable": posixpath.normpath(executable),
+            "creation_identity": starttime_before,
+            "creation_identity_type": "linux_proc_starttime_ticks",
+        }
+    except (OSError, ValueError, TypeError, OverflowError, AttributeError):
+        return None
 
 
 def _normalise_priority(priority: str | None) -> str | None:
@@ -175,7 +314,9 @@ def process_executable(pid: int) -> str | None:
         return None
 
 
-def terminate_tree(pid: int, *, grace_seconds: float = 5.0) -> bool:
+def terminate_tree(
+    pid: int, *, process_group: int | None = None, grace_seconds: float = 5.0
+) -> bool:
     if pid <= 0:
         return True
     if os.name == "nt":
@@ -201,37 +342,336 @@ def terminate_tree(pid: int, *, grace_seconds: float = 5.0) -> bool:
             return cp.returncode in {0, 128}
         except Exception:
             return not pid_alive(pid)
-    try:
-        # Runtime children are started in their own sessions. Prefer the group, then
-        # fall back to the process itself for older/recovered installations.
+    group_id = pid if process_group in (None, 0) else int(process_group)
+
+    def group_alive() -> bool | None:
         try:
-            os.killpg(pid, signal.SIGTERM)
+            os.killpg(group_id, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # EPERM proves a group exists, but not that it is still the owned
+            # group. Treat it as unverifiable so cleanup cannot claim success.
+            return None
         except OSError:
-            os.kill(pid, signal.SIGTERM)
+            # Group state is unknown. A bare PID check can observe a recycled PID
+            # and must not authorize a later signal to that unrelated process.
+            return None
+
+    try:
+        # Runtime children are started in their own sessions. Never fall back to a
+        # bare PID: it may have been reused after the original process group vanished.
+        try:
+            os.killpg(group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
         deadline = time.monotonic() + max(0.1, grace_seconds)
         while time.monotonic() < deadline:
-            if not pid_alive(pid):
+            alive = group_alive()
+            if alive is False:
                 return True
+            if alive is None:
+                return False
             time.sleep(0.05)
         try:
-            os.killpg(pid, signal.SIGKILL)
+            os.killpg(group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            return True
         except OSError:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-        return not pid_alive(pid)
+            return False
+        alive = group_alive()
+        return alive is False
     except OSError:
+        return False
+
+
+def _resume_suspended_process(process: subprocess.Popen[Any]) -> bool:
+    """Resume suspended Windows process thread after Job Object assignment."""
+    if os.name != "nt":
         return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class THREADENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+        kernel32.Thread32First.restype = wintypes.BOOL
+        kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+        kernel32.Thread32Next.restype = wintypes.BOOL
+        kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenThread.restype = wintypes.HANDLE
+        kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+        kernel32.ResumeThread.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x00000004, 0)
+        snapshot_value = snapshot if isinstance(snapshot, int) else snapshot.value
+        if not snapshot_value or snapshot_value == ctypes.c_void_p(-1).value:
+            return False
+        try:
+            entry = THREADENTRY32()
+            entry.dwSize = ctypes.sizeof(entry)
+            found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+            while found:
+                if int(entry.th32OwnerProcessID) == int(process.pid):
+                    thread_handle = kernel32.OpenThread(
+                        0x0002, False, int(entry.th32ThreadID)
+                    )  # THREAD_SUSPEND_RESUME
+                    if not thread_handle:
+                        return False
+                    try:
+                        return int(kernel32.ResumeThread(thread_handle)) == 1
+                    finally:
+                        kernel32.CloseHandle(thread_handle)
+                entry.dwSize = ctypes.sizeof(entry)
+                found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+            return False
+        finally:
+            kernel32.CloseHandle(snapshot)
+    except Exception:
+        return False
+
+
+def _release_process_job(process: subprocess.Popen[Any]) -> bool:
+    """Close the owned kill-on-close Job Object, killing any remaining children."""
+    job_handle = getattr(process, "_local_ai_job_handle", None)
+    if not job_handle:
+        return True
+    for _ in range(2):
+        if close_job_object(job_handle):
+            process._local_ai_job_handle = None
+            return True
+        terminate_job_object(job_handle)
+        if close_job_object(job_handle):
+            process._local_ai_job_handle = None
+            return True
+    return False
 
 
 def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     opts = dict(kwargs)
     text = bool(opts.get("text", False))
-    for key, value in hidden_run_kwargs(text=text).items():
+    for key, value in hidden_run_kwargs(text=text, new_group=True).items():
         opts.setdefault(key, value)
     timeout = opts.pop("timeout", 60.0)
-    return subprocess.run([str(x) for x in argv], timeout=timeout, **opts)
+    cancel_event = opts.pop("cancel_event", None)
+    cancel_grace_seconds = float(opts.pop("cancel_grace_seconds", _CANCEL_GRACE_SECONDS))
+    check = bool(opts.pop("check", False))
+    input_data = opts.pop("input", None)
+    capture_output = bool(opts.pop("capture_output", False))
+    if input_data is not None:
+        if opts.get("stdin") is not None:
+            raise ValueError("stdin and input arguments may not both be used.")
+        opts["stdin"] = subprocess.PIPE
+    if capture_output:
+        if opts.get("stdout") is not None or opts.get("stderr") is not None:
+            raise ValueError("stdout and stderr arguments may not be used with capture_output.")
+        opts["stdout"] = subprocess.PIPE
+        opts["stderr"] = subprocess.PIPE
+
+    job_handle = None
+    if os.name == "nt":
+        required_flags = windows_creationflags(new_group=True)
+        job_handle = create_job_object_kill_on_close()
+        if not job_handle:
+            raise OSError("Unable to create a kill-on-close Windows Job Object")
+        opts["creationflags"] = (
+            int(opts.get("creationflags", 0)) | required_flags | 0x00000004
+        )  # CREATE_SUSPENDED prevents child creation before job assignment.
+    else:
+        # Keep explicit session ownership, but isolate the group unless the caller
+        # selected one so timeout cleanup can still terminate this child's descendants.
+        if "start_new_session" not in opts and "process_group" not in opts:
+            opts["start_new_session"] = True
+        elif opts.get("start_new_session") is False and "process_group" not in opts:
+            opts["process_group"] = 0
+
+    command = [str(x) for x in argv]
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelledError(command)
+    process: subprocess.Popen[Any] | None = None
+    try:
+        process = subprocess.Popen(command, **opts)
+        if job_handle:
+            process._local_ai_job_handle = job_handle
+            if not assign_process_to_job(job_handle, process.pid):
+                raise OSError("Unable to assign suspended process to Windows Job Object")
+            if not _resume_suspended_process(process):
+                raise OSError("Unable to resume suspended Windows process")
+    except BaseException:
+        if process is not None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            _release_process_job(process)
+        elif job_handle:
+            close_job_object(job_handle)
+        raise
+    try:
+        if cancel_event is None:
+            stdout, stderr = process.communicate(input=input_data, timeout=timeout)
+        else:
+            deadline = None if timeout is None else time.monotonic() + float(timeout)
+            first_communicate = True
+            while True:
+                if cancel_event.is_set():
+                    process_group = None
+                    if os.name != "nt":
+                        requested_group = opts.get("process_group")
+                        if requested_group is not None:
+                            process_group = process.pid if int(requested_group) == 0 else int(requested_group)
+                        elif opts.get("start_new_session"):
+                            process_group = process.pid
+                    stdout, stderr = _terminate_and_drain(
+                        process,
+                        process_group=process_group,
+                        grace_seconds=cancel_grace_seconds,
+                        require_tree_termination=True,
+                    )
+                    raise ProcessCancelledError(command, stdout, stderr)
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                wait_for = _CANCEL_POLL_SECONDS if remaining is None else min(_CANCEL_POLL_SECONDS, remaining)
+                try:
+                    stdout, stderr = process.communicate(
+                        input=input_data if first_communicate else None,
+                        timeout=wait_for,
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    first_communicate = False
+                    continue
+    except ProcessCancelledError:
+        raise
+    except ProcessCleanupUnverifiedError:
+        raise
+    except subprocess.TimeoutExpired as timeout_error:
+        process_group = None
+        if os.name != "nt":
+            requested_group = opts.get("process_group")
+            if requested_group is not None:
+                process_group = process.pid if int(requested_group) == 0 else int(requested_group)
+            elif opts.get("start_new_session"):
+                process_group = process.pid
+        stdout, stderr = _terminate_and_drain(process, process_group=process_group)
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout,
+            output=stdout if stdout is not None else timeout_error.output,
+            stderr=stderr if stderr is not None else timeout_error.stderr,
+        ) from None
+    except BaseException:
+        _terminate_and_drain(process)
+        raise
+
+    returncode = process.wait()
+    if job_handle and not _release_process_job(process):
+        _terminate_and_drain(process)
+        if getattr(process, "_local_ai_job_handle", None):
+            raise OSError("Unable to close Windows Job Object after process completion")
+    completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
+    if check and returncode:
+        raise subprocess.CalledProcessError(returncode, command, stdout, stderr)
+    return completed
+
+
+def _terminate_and_drain(
+    process: subprocess.Popen[Any],
+    *,
+    process_group: int | None = None,
+    grace_seconds: float | None = None,
+    require_tree_termination: bool = False,
+) -> tuple[Any, Any]:
+    cleanup_kwargs = {"grace_seconds": grace_seconds} if grace_seconds is not None else {}
+    if process_group is not None:
+        cleanup_kwargs["process_group"] = process_group
+    job_handle = getattr(process, "_local_ai_job_handle", None)
+    tree_termination_confirmed = False
+    if job_handle:
+        tree_termination_confirmed = _release_process_job(process)
+        if not tree_termination_confirmed:
+            try:
+                tree_termination_confirmed = bool(terminate_tree(process.pid, **cleanup_kwargs))
+            except Exception:
+                pass
+    else:
+        try:
+            tree_termination_confirmed = bool(terminate_tree(process.pid, **cleanup_kwargs))
+        except Exception:
+            pass
+    try:
+        if process.poll() is None:
+            process.kill()
+    except OSError:
+        pass
+
+    try:
+        output = process.communicate(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+    except subprocess.TimeoutExpired as drain_error:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        output = (drain_error.output, drain_error.stderr)
+    except Exception:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        output = (None, None)
+
+    if require_tree_termination:
+        try:
+            leader_exited = process.poll() is not None
+        except Exception:
+            leader_exited = False
+        if not tree_termination_confirmed or not leader_exited:
+            stdout, stderr = output if isinstance(output, tuple) and len(output) == 2 else (None, None)
+            raise ProcessCleanupUnverifiedError(
+                getattr(process, "args", ()),
+                process=process,
+                tree_termination_confirmed=tree_termination_confirmed,
+                output=stdout,
+                stderr=stderr,
+            )
+    return output
 
 
 def _find_listening_pid_win32(port: int) -> int | None:
@@ -403,6 +843,8 @@ def _job_kernel32() -> Any:
         ("SetInformationJobObject", [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD], wintypes.BOOL),
         ("OpenProcess", [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
         ("AssignProcessToJobObject", [wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
+        ("TerminateJobObject", [wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+        ("ResumeThread", [wintypes.HANDLE], wintypes.DWORD),
         ("CloseHandle", [wintypes.HANDLE], wintypes.BOOL),
     ):
         fn = getattr(kernel32, name)
@@ -500,11 +942,68 @@ def create_sandboxed_job_object(
 
 
 
+def _git_worktree_admin_dir(repo: Path, target: Path) -> Path | None:
+    common_proc = run_hidden(
+        ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        **hidden_run_kwargs(),
+    )
+    admin_proc = run_hidden(
+        ["git", "-C", str(target), "rev-parse", "--git-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        **hidden_run_kwargs(),
+    )
+    if common_proc.returncode != 0 or admin_proc.returncode != 0:
+        return None
+    common = Path(common_proc.stdout.strip())
+    admin = Path(admin_proc.stdout.strip())
+    if not common.is_absolute():
+        common = repo / common
+    if not admin.is_absolute():
+        admin = target / admin
+    common = common.resolve(strict=False)
+    admin = admin.resolve(strict=False)
+    try:
+        admin.relative_to(common / "worktrees")
+    except ValueError:
+        return None
+    return admin
+
+
+def get_git_worktree_ownership(repo_root: str | Path, worktree_path: str | Path) -> dict[str, Any] | None:
+    """Read ownership metadata stored outside a linked worktree's working files."""
+    repo = Path(repo_root).expanduser().resolve(strict=False)
+    target = Path(worktree_path).expanduser().resolve(strict=False)
+    admin = _git_worktree_admin_dir(repo, target)
+    if admin is None:
+        return None
+    marker = admin / "local_ai_hub_worktree.json"
+    try:
+        import json
+
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def create_git_worktree(
     repo_root: str | Path,
     branch_name: str | None = None,
     worktree_path: str | Path | None = None,
     base_commit: str = "HEAD",
+    *,
+    task_id: str = "",
+    owner: str = "",
+    created_at: float | None = None,
+    ttl_seconds: float = 86400.0,
+    expires_at: float | None = None,
 ) -> dict[str, Any]:
     """Create an isolated temporary Git worktree for safe agent modifications."""
     repo = Path(repo_root).expanduser().resolve(strict=False)
@@ -513,34 +1012,116 @@ def create_git_worktree(
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found in PATH"}
 
+    import math
+    import tempfile
     import uuid
-    lease_id = f"wt_{uuid.uuid4().hex[:8]}"
+    try:
+        created_at_value = float(created_at) if created_at is not None else time.time()
+        ttl_value = float(ttl_seconds)
+        expires_at_value = float(expires_at) if expires_at is not None else None
+        task_id_value = str(task_id)
+        owner_value = str(owner)
+    except Exception as exc:
+        return {"success": False, "error": f"invalid worktree metadata: {exc}"}
+    if (
+        not math.isfinite(created_at_value)
+        or not math.isfinite(ttl_value)
+        or (expires_at_value is not None and not math.isfinite(expires_at_value))
+    ):
+        return {"success": False, "error": "invalid worktree metadata: values must be finite"}
+    ttl_value = max(60.0, min(ttl_value, 30 * 24 * 60 * 60.0))
+    lease_id = f"lease_{uuid.uuid4().hex[:12]}"
+    worktree_id = f"worktree_{uuid.uuid4().hex[:12]}"
     branch = branch_name or f"lease/{lease_id}"
+    temp_root = Path(tempfile.gettempdir()).resolve(strict=False)
     if not worktree_path:
-        import tempfile
-        target_dir = Path(tempfile.gettempdir()) / f"lah_wt_{lease_id}"
+        target_dir = temp_root / f"lah_wt_{worktree_id}"
     else:
-        target_dir = Path(worktree_path).resolve(strict=False)
+        raw_target = Path(worktree_path).expanduser()
+        if ".." in raw_target.parts:
+            return {"success": False, "error": "worktree path traversal is not allowed"}
+        target_dir = raw_target.resolve(strict=False)
+    try:
+        target_dir.relative_to(temp_root)
+    except ValueError:
+        return {"success": False, "error": "worktree path escapes the temporary root"}
 
     cmd = ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(target_dir), base_commit]
+    created_checkout = False
     try:
-        completed = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
+        completed = run_hidden(cmd, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
         if completed.returncode != 0:
             return {
                 "success": False,
                 "error": completed.stderr.strip() or "failed to create git worktree",
                 "exit_code": completed.returncode,
             }
+        created_checkout = True
+        metadata_path = _worktree_ownership_path(target_dir)
+        if metadata_path is None:
+            raise RuntimeError("could not locate worktree administrative directory")
+        metadata = {
+            "schema_version": 1,
+            "worktree_id": worktree_id,
+            "task_id": task_id_value,
+            "owner": owner_value,
+            "repo_root": str(repo),
+            "worktree_path": str(target_dir),
+            "branch": branch,
+            "created_at": created_at_value,
+            "ttl_seconds": ttl_value,
+            "expires_at": expires_at_value,
+        }
+        metadata_tmp = metadata_path.with_name(f".{metadata_path.name}.{uuid.uuid4().hex}.tmp")
+        metadata_tmp.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
+        os.replace(metadata_tmp, metadata_path)
         return {
             "success": True,
             "lease_id": lease_id,
+            "worktree_id": worktree_id,
             "worktree_path": str(target_dir),
             "branch": branch,
             "base_commit": base_commit,
             "repo_root": str(repo),
+            "task_id": task_id_value,
+            "owner": owner_value,
+            "created_at": created_at_value,
+            "ttl_seconds": ttl_value,
+            "expires_at": expires_at_value,
         }
     except Exception as exc:
+        if created_checkout:
+            subprocess.run(
+                ["git", "-C", str(repo), "worktree", "remove", str(target_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+                **hidden_run_kwargs(),
+            )
         return {"success": False, "error": str(exc)}
+
+
+def _git_value(root: Path, *arguments: str, timeout: float = 15.0) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+            **hidden_run_kwargs(),
+        )
+    except Exception:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _worktree_ownership_path(worktree_path: str | Path) -> Path | None:
+    git_dir = _git_value(Path(worktree_path), "rev-parse", "--absolute-git-dir")
+    if not git_dir:
+        return None
+    return Path(git_dir).expanduser().resolve(strict=False) / _WORKTREE_OWNERSHIP_FILE
 
 
 def remove_git_worktree(
@@ -548,42 +1129,141 @@ def remove_git_worktree(
     worktree_path: str | Path,
     delete_branch: bool = True,
     branch_name: str | None = None,
+    *,
+    worktree_id: str = "",
+    expected_task_id: str = "",
+    expected_owner: str = "",
+    expected_created_at: float | None = None,
+    expected_ttl_seconds: float | None = None,
+    expected_expires_at: float | None = None,
 ) -> dict[str, Any]:
-    """Remove a previously leased Git worktree and optionally prune its branch."""
+    """Remove only clean worktree whose persisted owner metadata matches caller."""
     repo = Path(repo_root).expanduser().resolve(strict=False)
-    target = Path(worktree_path).resolve(strict=False)
+    raw_target = Path(worktree_path).expanduser()
+    if raw_target.is_symlink():
+        return {"success": False, "error": "worktree path must not be a symlink"}
+    target = raw_target.resolve(strict=False)
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
-
+    if not worktree_id.strip():
+        return {"success": False, "error": "worktree ownership identifier is required"}
     try:
-        cmd_rm = ["git", "-C", str(repo), "worktree", "remove", "--force", str(target)]
-        subprocess.run(cmd_rm, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
+        temp_root = Path(tempfile.gettempdir()).resolve(strict=False)
+        try:
+            target.relative_to(temp_root)
+        except ValueError:
+            return {"success": False, "error": "worktree path escapes the temporary root"}
+        if not target.is_dir() or not (repo / ".git").exists():
+            return {"success": False, "error": "repository or worktree path is unavailable"}
 
-        cmd_prune = ["git", "-C", str(repo), "worktree", "prune"]
-        subprocess.run(cmd_prune, capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs())
+        repo_common_raw = _git_value(repo, "rev-parse", "--git-common-dir")
+        target_common_raw = _git_value(target, "rev-parse", "--git-common-dir")
+        if not repo_common_raw or not target_common_raw:
+            return {"success": False, "error": "repository worktree identity is unavailable"}
+        repo_common = Path(repo_common_raw)
+        target_common = Path(target_common_raw)
+        if not repo_common.is_absolute():
+            repo_common = repo / repo_common
+        if not target_common.is_absolute():
+            target_common = target / target_common
+        if repo_common.resolve(strict=False) != target_common.resolve(strict=False):
+            return {"success": False, "error": "worktree belongs to another repository"}
 
-        if target.exists():
-            try:
-                shutil.rmtree(target, ignore_errors=True)
-            except Exception:
-                pass
+        top_level = _git_value(target, "rev-parse", "--show-toplevel")
+        if not top_level or Path(top_level).resolve(strict=False) != target:
+            return {"success": False, "error": "worktree path does not match checkout root"}
+        listed = _git_value(repo, "worktree", "list", "--porcelain", timeout=20)
+        listed_paths = {
+            Path(line.removeprefix("worktree ")).resolve(strict=False)
+            for line in listed.splitlines()
+            if line.startswith("worktree ")
+        }
+        if target not in listed_paths:
+            return {"success": False, "error": "checkout is not registered to this repository"}
 
+        metadata_path = _worktree_ownership_path(target)
+        if metadata_path is None or not metadata_path.is_file():
+            return {"success": False, "error": "worktree ownership metadata is unavailable"}
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict):
+            return {"success": False, "error": "worktree ownership metadata is invalid"}
+        recorded_branch = str(metadata.get("branch", ""))
+        current_branch = _git_value(target, "symbolic-ref", "--short", "HEAD")
+        if (
+            metadata.get("schema_version") != 1
+            or str(metadata.get("worktree_id", "")) != worktree_id
+            or Path(str(metadata.get("repo_root", ""))).resolve(strict=False) != repo
+            or Path(str(metadata.get("worktree_path", ""))).resolve(strict=False) != target
+            or not recorded_branch
+            or recorded_branch != (branch_name or recorded_branch)
+            or current_branch != recorded_branch
+        ):
+            return {"success": False, "error": "worktree ownership or branch metadata does not match"}
+        if expected_task_id and str(metadata.get("task_id", "")) != expected_task_id:
+            return {"success": False, "error": "worktree task ownership does not match"}
+        if expected_owner and str(metadata.get("owner", "")) != expected_owner:
+            return {"success": False, "error": "worktree owner metadata does not match"}
+
+        try:
+            created_at = float(metadata.get("created_at"))
+            ttl_seconds = float(metadata.get("ttl_seconds"))
+            expires_at_raw = metadata.get("expires_at")
+            expires_at = float(expires_at_raw) if expires_at_raw is not None else None
+        except (TypeError, ValueError):
+            return {"success": False, "error": "worktree time metadata is invalid"}
+        import math
+        if (
+            not math.isfinite(created_at)
+            or not math.isfinite(ttl_seconds)
+            or ttl_seconds < 60
+            or ttl_seconds > 30 * 24 * 60 * 60
+            or (expires_at is not None and (not math.isfinite(expires_at) or abs(expires_at - (created_at + ttl_seconds)) > max(1e-6, ttl_seconds * 1e-9)))
+        ):
+            return {"success": False, "error": "worktree time metadata is inconsistent"}
+        for expected, actual in (
+            (expected_created_at, created_at),
+            (expected_ttl_seconds, ttl_seconds),
+            (expected_expires_at, expires_at),
+        ):
+            if expected is not None and (actual is None or abs(float(expected) - float(actual)) > max(1e-6, ttl_seconds * 1e-9)):
+                return {"success": False, "error": "worktree time metadata does not match task ownership"}
+
+        status = subprocess.run(
+            ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all", "--ignored"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            **hidden_run_kwargs(),
+        )
+        if status.returncode != 0 or status.stdout.strip():
+            return {"success": False, "error": "worktree contains uncommitted or ignored changes"}
+
+        removed = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "remove", str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            **hidden_run_kwargs(),
+        )
+        if removed.returncode != 0:
+            return {"success": False, "error": removed.stderr.strip() or "Git refused to remove worktree"}
         branch_deleted = False
-        if delete_branch and branch_name:
-            cmd_branch = ["git", "-C", str(repo), "branch", "-D", branch_name]
+        if delete_branch:
+            cmd_branch = ["git", "-C", str(repo), "branch", "-d", recorded_branch]
             proc_b = subprocess.run(cmd_branch, capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs())
             branch_deleted = (proc_b.returncode == 0)
-
         return {
             "success": True,
-            "worktree_removed": True,
+            "worktree_removed": not target.exists(),
             "branch_deleted": branch_deleted,
             "repo_root": str(repo),
             "worktree_path": str(target),
+            "worktree_id": worktree_id,
         }
     except Exception as exc:
         return {"success": False, "error": str(exc)}
-
 
 def list_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
     """Enumerate active Git worktrees and metadata."""
@@ -591,7 +1271,7 @@ def list_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
     try:
-        proc = subprocess.run(
+        proc = run_hidden(
             ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
             capture_output=True, text=True, check=False, timeout=15, **hidden_run_kwargs()
         )
@@ -634,7 +1314,7 @@ def prune_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
     try:
-        proc = subprocess.run(
+        proc = run_hidden(
             ["git", "-C", str(repo), "worktree", "prune", "-v"],
             capture_output=True, text=True, check=False, timeout=15, **hidden_run_kwargs()
         )
@@ -758,3 +1438,14 @@ def close_job_object(job_handle: Any) -> bool:
         return bool(_job_kernel32().CloseHandle(job_handle))
     except Exception:
         return False
+
+
+def terminate_job_object(job_handle: Any) -> bool:
+    """Force-terminate all processes currently owned by a Windows Job Object."""
+    if os.name != "nt" or not job_handle:
+        return False
+    try:
+        return bool(_job_kernel32().TerminateJobObject(job_handle, 1))
+    except Exception:
+        return False
+

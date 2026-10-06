@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import os
 import threading
 import time
 from typing import Any
@@ -8,6 +10,7 @@ from .cache import SQLiteCache, SingleFlightGroup, TieredCache, stable_hash
 from .priority_gate import CooperativePriorityGate
 from .accelerators import openvino_cache_dir, openvino_device_candidates
 from .state_paths import configured_state_dir
+from .model_lifecycle import acquire_locks, load_model, release_model, uses_torch_cuda
 
 
 class Reranker:
@@ -46,10 +49,33 @@ class Reranker:
         self._cache_hits = 0
         self._computed = 0
 
-    def _cache_identity(self) -> str:
+    def _loaded_model_revision(self) -> str | None:
+        model = self._model
+        for candidate in (model, getattr(model, "model", None)):
+            config = getattr(candidate, "config", None)
+            revision = getattr(config, "_commit_hash", None)
+            if isinstance(revision, str) and revision.strip():
+                value = revision.strip().lower()
+                if len(value) in {40, 64} and all(char in "0123456789abcdef" for char in value):
+                    return value
+        return None
+
+    def _execution_identity(self) -> str:
         backend = self.active_backend or self.backend
         device = str(self.active_device or self.device or "cpu").strip().lower()
-        return f"{backend}:{device}:{self.model_name}"
+        revision = self._loaded_model_revision() or ""
+        return stable_hash({
+            "backend": backend,
+            "device": device,
+            "model": self.model_name,
+            "revision": revision,
+            "max_length": self.max_length,
+        })
+
+    def _cache_identity(self) -> str | None:
+        if self._loaded_model_revision() is None:
+            return None
+        return self._execution_identity()
 
     def _candidate_specs(self) -> list[tuple[str, str]]:
         if self.backend == "openvino":
@@ -74,6 +100,13 @@ class Reranker:
         self._candidates = candidates
         self._candidate_index = index
         try:
+            if backend == "torch" or str(device).lower() == "cpu":
+                try:
+                    import torch
+                    if hasattr(torch, "set_num_threads") and torch.get_num_threads() > 4:
+                        torch.set_num_threads(max(1, min(4, (os.cpu_count() or 4) // 2)))
+                except Exception:
+                    pass
             from sentence_transformers import CrossEncoder
             kwargs: dict[str, Any] = {
                 "device": str(device).lower(),
@@ -91,7 +124,11 @@ class Reranker:
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
                 kwargs["model_kwargs"] = ov_model_kwargs
-            self._model = CrossEncoder(self.model_name, **kwargs)
+            self._model = load_model(
+                self,
+                uses_cuda=uses_torch_cuda(backend, device),
+                factory=lambda: CrossEncoder(self.model_name, **kwargs),
+            )
             self.active_backend = backend
             self.active_device = str(device)
             self._load_error = None
@@ -121,14 +158,37 @@ class Reranker:
                     return True
             return False
 
+    def release(self, timeout_seconds: float = 3.0) -> bool:
+        """Detach the reranker model; CUDA allocator cleanup remains best-effort."""
+        with acquire_locks((self._predict_lock, self._load_lock), timeout_seconds) as acquired:
+            if not acquired:
+                return False
+            model = self._model
+            if model is None:
+                return False
+            used_cuda = uses_torch_cuda(self.active_backend, self.active_device)
+            self._model = None
+            self.active_backend = None
+            self.active_device = None
+            self._candidates = None
+            self._candidate_index = -1
+            del model
+            release_model(self, used_cuda=used_cuda)
+            return True
+
     def _predict(self, pairs: list[tuple[str, str]], *, priority: int) -> Any | None:
         while True:
-            if not self._ensure_model() or self._model is None:
+            if not self._ensure_model():
                 return None
+            if self._model is None:
+                continue
             try:
                 with self._cpu_gate.slot(priority):
                     with self._predict_lock:
-                        return self._model.predict(pairs, batch_size=self.batch_size, show_progress_bar=False)
+                        model = self._model
+                        if model is None:
+                            continue
+                        return model.predict(pairs, batch_size=self.batch_size, show_progress_bar=False)
             except Exception as exc:
                 if self.backend == "openvino" and self.active_backend == "openvino":
                     failed = self.active_device or "openvino"
@@ -147,6 +207,25 @@ class Reranker:
         if not self._ensure_model():
             return {"success": False, "error": self._load_error or "reranker disabled", "results": []}
 
+        request_key = stable_hash({
+            "execution": self._execution_identity(),
+            "query": query,
+            "documents": documents,
+            "top_k": top_k,
+        })
+        result, _coalesced = self.flight_group.do(
+            request_key,
+            lambda: self._rerank_uncached(query, documents, top_k=top_k, priority=priority),
+        )
+        output = dict(result)
+        if isinstance(output.get("results"), list):
+            output["results"] = [dict(item) if isinstance(item, dict) else item for item in output["results"]]
+        return output
+
+    def _rerank_uncached(
+        self, query: str, documents: list[str], top_k: int | None = None, priority: int = 3
+    ) -> dict[str, Any]:
+
         # OpenVINO may compile successfully for NPU and then reject a real input
         # shape at predict time.  Keep each logical ranking on exactly one
         # backend/device: if inference falls through NPU -> GPU -> CPU, restart
@@ -154,7 +233,9 @@ class Reranker:
         # writing GPU results into NPU cache keys.
         max_restarts = max(1, len(self._candidate_specs()) + 1)
         for _restart in range(max_restarts):
-            execution_identity = self._cache_identity()
+            execution_identity = self._execution_identity()
+            cache_identity = self._cache_identity()
+            use_cache = self.cache_enabled and cache_identity is not None
             scores: list[float | None] = [None] * len(documents)
             missing_pairs: list[tuple[str, str]] = []
             missing_indices: list[int] = []
@@ -162,10 +243,14 @@ class Reranker:
             local_cache_hits = 0
 
             for i, doc in enumerate(documents):
-                key = stable_hash({"identity": execution_identity, "q": query, "d": doc})
-                cached = self.cache.get(key) if self.cache_enabled else None
-                if isinstance(cached, (int, float)):
-                    scores[i] = float(cached)
+                key = stable_hash({"identity": cache_identity, "q": query, "d": doc}) if use_cache else ""
+                cached = self.cache.get(key) if use_cache else None
+                try:
+                    cached_score = float(cached)
+                except (TypeError, ValueError, OverflowError):
+                    cached_score = float("nan")
+                if isinstance(cached, (int, float)) and not isinstance(cached, bool) and math.isfinite(cached_score):
+                    scores[i] = cached_score
                     local_cache_hits += 1
                 else:
                     missing_pairs.append((query, doc))
@@ -180,11 +265,24 @@ class Reranker:
                     predicted = self._predict(missing_pairs[start:stop], priority=priority)
                     if predicted is None:
                         return {"success": False, "error": self._load_error or "reranker backend unavailable", "results": []}
-                    if self._cache_identity() != execution_identity:
+                    try:
+                        predicted_count = len(predicted)
+                    except TypeError:
+                        predicted_count = -1
+                    if predicted_count != stop - start:
+                        return {"success": False, "error": "reranker returned invalid score count", "results": []}
+                    if self._execution_identity() != execution_identity:
                         switched = True
                         break
                     for idx, key, score in zip(missing_indices[start:stop], missing_keys[start:stop], predicted):
-                        value = float(score)
+                        if isinstance(score, bool):
+                            return {"success": False, "error": "reranker returned invalid score", "results": []}
+                        try:
+                            value = float(score)
+                        except (TypeError, ValueError, OverflowError):
+                            return {"success": False, "error": "reranker returned invalid score", "results": []}
+                        if not math.isfinite(value):
+                            return {"success": False, "error": "reranker returned invalid score", "results": []}
                         scores[idx] = value
                         pending_writes.append((key, value))
 
@@ -194,7 +292,7 @@ class Reranker:
             if any(score is None for score in scores):
                 return {"success": False, "error": "reranker returned incomplete scores", "results": []}
 
-            if self.cache_enabled:
+            if use_cache:
                 for key, value in pending_writes:
                     self.cache.set(key, value)
             self._cache_hits += local_cache_hits
@@ -210,6 +308,8 @@ class Reranker:
                 "success": True, "model": self.model_name, "backend": self.active_backend or self.backend,
                 "device": self.active_device or self.device, "results": ranked,
                 "cache_hits": local_cache_hits, "computed": len(pending_writes),
+                "cache_enabled": use_cache,
+                **({} if use_cache else {"cache_bypass_reason": "loaded_model_revision_unavailable"}),
             }
 
         return {"success": False, "error": "reranker accelerator repeatedly changed", "results": []}

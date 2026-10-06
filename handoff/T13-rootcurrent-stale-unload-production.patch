@@ -1,0 +1,132 @@
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+index ec96854..dfb9ed1 100644
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -2276,57 +2276,77 @@ class Handler(BaseHTTPRequestHandler):
+             response = {"success": True, **snapshot.to_dict()}
+             runtime_unload: dict[str, Any] | None = None
+             if mode == "gaming":
+-                runtime = getattr(APP, "runtime", None)
+-                unload = getattr(runtime, "unload_configured_models", None)
+-                if callable(unload):
+-                    try:
+-                        result = unload(timeout_seconds=3.0)
+-                        runtime_unload = result if isinstance(result, dict) else {
+-                            "success": False, "backend_available": False,
+-                            "unloaded": [], "failed": {"backend": "invalid unload result"},
+-                        }
+-                    except Exception as exc:
+-                        runtime_unload = {
+-                            "success": False, "backend_available": False,
+-                            "unloaded": [], "failed": {"backend": type(exc).__name__},
+-                        }
++                stale_unload = {"success": False, "backend_available": False, "unloaded": [], "failed": {"mode": "stale mode transition"}}
++                stale_accelerator = {"success": False, "verified": False, "released": [], "failed": {"mode": "stale mode transition"}}
++                if not callable(guard_factory):
++                    response["success"] = False
++                    response["mode_transition_stale"] = True
++                    response["runtime_unload"] = stale_unload
++                    response["accelerator_release"] = stale_accelerator
+                 else:
+-                    runtime_unload = {
+-                        "success": False, "backend_available": False,
+-                        "unloaded": [], "failed": {"backend": "unload unavailable"},
+-                    }
+-                response["runtime_unload"] = runtime_unload
+-                components = {
+-                    "embeddings": getattr(APP, "embeddings", None),
+-                    "reranker": getattr(APP, "reranker", None),
+-                }
+-                accelerator_release: dict[str, Any] = {
+-                    "success": True, "verified": True, "released": [], "failed": {},
+-                }
+-                release_deadline = time.monotonic() + 3.0
+-                for name, component in components.items():
+-                    status_fn = getattr(component, "status", None)
+-                    release_fn = getattr(component, "release", None)
+-                    try:
+-                        before = status_fn() if callable(status_fn) else None
+-                        if not isinstance(before, dict):
+-                            raise RuntimeError("component status unavailable")
+-                        if not before.get("loaded") or str(before.get("active_backend", "")).lower() == "ollama":
+-                            continue
+-                        if not callable(release_fn):
+-                            raise RuntimeError("accelerator release unavailable")
+-                        timeout = max(0.0, release_deadline - time.monotonic())
+-                        if timeout <= 0.0 or not release_fn(timeout_seconds=timeout):
+-                            raise TimeoutError("accelerator release deadline reached")
+-                        after = status_fn()
+-                        if not isinstance(after, dict) or after.get("loaded"):
+-                            raise RuntimeError("accelerator release was not verified")
+-                        accelerator_release["released"].append(name)
+-                    except Exception as exc:
+-                        accelerator_release["success"] = False
+-                        accelerator_release["verified"] = False
+-                        accelerator_release["failed"][name] = type(exc).__name__
+-                response["accelerator_release"] = accelerator_release
++                    with guard_factory():
++                        release_snapshot = load_operational_mode(APP.config.get("server", {}).get("state_dir", "state"))
++                        if (
++                            release_snapshot.degraded
++                            or release_snapshot.mode != snapshot.mode
++                            or release_snapshot.revision != snapshot.revision
++                        ):
++                            response["success"] = False
++                            response["mode_transition_stale"] = True
++                            response["runtime_unload"] = stale_unload
++                            response["accelerator_release"] = stale_accelerator
++                        else:
++                            runtime = getattr(APP, "runtime", None)
++                            unload = getattr(runtime, "unload_configured_models", None)
++                            if callable(unload):
++                                try:
++                                    result = unload(timeout_seconds=3.0)
++                                    runtime_unload = result if isinstance(result, dict) else {
++                                        "success": False, "backend_available": False,
++                                        "unloaded": [], "failed": {"backend": "invalid unload result"},
++                                    }
++                                except Exception as exc:
++                                    runtime_unload = {
++                                        "success": False, "backend_available": False,
++                                        "unloaded": [], "failed": {"backend": type(exc).__name__},
++                                    }
++                            else:
++                                runtime_unload = {
++                                    "success": False, "backend_available": False,
++                                    "unloaded": [], "failed": {"backend": "unload unavailable"},
++                                }
++                            response["runtime_unload"] = runtime_unload
++                            components = {
++                                "embeddings": getattr(APP, "embeddings", None),
++                                "reranker": getattr(APP, "reranker", None),
++                            }
++                            accelerator_release: dict[str, Any] = {
++                                "success": True, "verified": True, "released": [], "failed": {},
++                            }
++                            release_deadline = time.monotonic() + 3.0
++                            for name, component in components.items():
++                                status_fn = getattr(component, "status", None)
++                                release_fn = getattr(component, "release", None)
++                                try:
++                                    before = status_fn() if callable(status_fn) else None
++                                    if not isinstance(before, dict):
++                                        raise RuntimeError("component status unavailable")
++                                    if not before.get("loaded") or str(before.get("active_backend", "")).lower() == "ollama":
++                                        continue
++                                    if not callable(release_fn):
++                                        raise RuntimeError("accelerator release unavailable")
++                                    timeout = max(0.0, release_deadline - time.monotonic())
++                                    if timeout <= 0.0 or not release_fn(timeout_seconds=timeout):
++                                        raise TimeoutError("accelerator release deadline reached")
++                                    after = status_fn()
++                                    if not isinstance(after, dict) or after.get("loaded"):
++                                        raise RuntimeError("accelerator release was not verified")
++                                    accelerator_release["released"].append(name)
++                                except Exception as exc:
++                                    accelerator_release["success"] = False
++                                    accelerator_release["verified"] = False
++                                    accelerator_release["failed"][name] = type(exc).__name__
++                            response["accelerator_release"] = accelerator_release
+             if cancellation_error:
+                 response["job_cancellation"] = {"success": False, "error": cancellation_error}
+             elif mode in {"gaming", "maintenance"} and not callable(mode_changed):

@@ -1,0 +1,59 @@
+{
+  "version": "v1",
+  "date": "2026-10-01",
+  "owner": "T05",
+  "candidate_worktree": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub",
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "root_worktree": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "patch": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\handoff\\t05-d1-d4-tests-v1-20261001.patch",
+    "sha256": "FA75589AC55DEFCEFCD7438FD4D5835DEE5A88C16BCFB394512528944B32139C",
+    "root_apply_check": "passed; no root files changed"
+  },
+  "root_test_preimages_sha256": {
+    "tests/test_t05_memory_delete_artifacts.py": "4f79e0c19498706ab351e8ec4f9ca617e95592ea9b351269dc87710b4ff22940",
+    "tests/test_t05_memory_fts_atomicity.py": "178a783f64d5e3c305987e7b76e857ab8e939c923287f136aa719589ff08b8e9"
+  },
+  "candidate_changed_paths_for_this_slice": [
+    "src/local_ai_hub/agent_memory.py",
+    "tests/test_t05_memory_delete_artifacts.py",
+    "tests/test_t05_memory_fts_atomicity.py",
+    "tests/test_t05_agent_state_migrations.py"
+  ],
+  "retired_stale_candidate_test": "tests/test_t05_root_migration_faults.py; duplicated current migration suite with obsolete agent_event_cursors/_verified_migration_backup names",
+  "candidate_file_sha256": {
+    "src/local_ai_hub/agent_memory.py": "FAE4E3DC6E0B34CB2DD80E7D4A3B32ED4356B045D68C78BCBCBA3CF186EF00FC",
+    "tests/test_t05_memory_delete_artifacts.py": "5F82540B7E6E19CB4C66DA5F38C34C321D7D17BE5A6BCB96814536CCD6CA7637",
+    "tests/test_t05_memory_fts_atomicity.py": "E2C07E0CAAE7C8D493CA7DBE240CBCE4571FEA1F27F2243D23DC13BC572BE189",
+    "tests/test_t05_agent_state_migrations.py": "1447C8B4D5D113F729A8CCAEB1AD8B5494A4D5DB2B70F985378E98B45ED6167D"
+  },
+  "root_agent_events_overlay": {
+    "path": "C:\\Users\\Adam\\.local-ai-hub\\src\\local_ai_hub\\agent_events.py",
+    "sha256_before_after": "02a25102b888b23fe99b8c508f59aedd846ba24fd38a268bcc6893b0877e0a38",
+    "import_asserted": true,
+    "candidate_agent_memory_import_asserted": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\src\\local_ai_hub\\agent_memory.py"
+  },
+  "test_receipts": [
+    {
+      "scope": "T05 candidate isolated tmp-state cache, reopen, deletion, migration, optional FTS",
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short -W always::ResourceWarning tests/test_t05_cache_state_isolation.py tests/test_t05_cache_clear_durable_state.py tests/test_t05_memory_delete_artifacts.py tests/test_t05_agent_state_migrations.py tests/test_t05_memory_fts_atomicity.py::test_record_write_succeeds_when_optional_fts_table_is_absent",
+      "result": "38 passed in 45.11s, exit 0"
+    },
+    {
+      "scope": "T05 FTS transaction plus namespace, corrupt-row, privacy, correction-lineage selectors",
+      "command": "python -X tracemalloc=5 -B - with pytest.main(['-q','-s','-p','no:cacheprovider','--tb=short','-W','always::ResourceWarning', <5 exact selectors>]); inject root agent_events.py as local_ai_hub.agent_events; assert both module __file__ values",
+      "result": "5 passed in 3.68s, exit 0, no ResourceWarning; root source SHA unchanged"
+    },
+    {
+      "scope": "T20 read-only patch compatibility check",
+      "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\handoff\\t05-d1-d4-tests-v1-20261001.patch",
+      "result": "passed, root test file hashes unchanged"
+    }
+  ],
+  "blockers": [
+    "T20 root integration and root receipts remain pending; root was not modified.",
+    "Full T05 task acceptance is not complete; broader adoption and runtime acceptance remain outside these receipts.",
+    "One exploratory all-files root overlay was invalid for candidate-only migration APIs and returned 22 failures; final root overlay was restricted to the 5 requested selectors."
+  ]
+}

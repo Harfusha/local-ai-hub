@@ -1,0 +1,2686 @@
+[
+  {
+    "path": ".sync-t01-runtime/adoption_metrics.sqlite3",
+    "sha256": "E475AE223AE02392E8135E7B4A0DFE9635B0FA70F314D4D1D58827495D37A6E1"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links0/tests/test_operation_behavior.py",
+    "sha256": "FCE003F86329D9151E103C1C8D64DC97EC971AD0DAD5F474627A775143802E8E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links1/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links1/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links1/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links1/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links1/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links1/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links1/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links1/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links1/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links1/tests/test_mcp_compact_transport.py",
+    "sha256": "B969DD085E6DFBCB6300E046EBC51D7870D287BB156867434A5A6B803E7428B0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links1/tests/test_operation_behavior.py",
+    "sha256": "C4684199A89A28156B3ABFE7DBFAAB9F94DE53BB56994B48A34A2BF125D80954"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_coverage_links1/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_links_require_0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_links_require_0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_links_require_0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_links_require_0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_links_require_0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_links_require_0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_links_require_0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_links_require_0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_links_require_0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_links_require_0/tests/test_behavioral_precision.py",
+    "sha256": "F9DE20459FF6A94F8E50C8D837138E300D4011F3BA0835BB91DD59B2CC28C19F"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_behavioral_links_require_0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_and_write_doc_are_r0/docs/API_COVERAGE.md",
+    "sha256": "4113E3D69E27D8010FBE8E0BBD72CA0DA60F3370DD2FF30DB75C7B7F48BF4878"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_and_write_doc_are_r0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_and_write_doc_are_r0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_and_write_doc_are_r0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_and_write_doc_are_r0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_and_write_doc_are_r0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_and_write_doc_are_r0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_and_write_doc_are_r0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_and_write_doc_are_r0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_and_write_doc_are_r0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_and_write_doc_are_r0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_accepts_coverag0/docs/API_COVERAGE.md",
+    "sha256": "FF0FFBFCAFED017C32BAB3A168F8B5E110502BB61206C643E63F496843086F6A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_accepts_coverag0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_accepts_coverag0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_accepts_coverag0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_accepts_coverag0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_accepts_coverag0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_accepts_coverag0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_accepts_coverag0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_accepts_coverag0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_accepts_coverag0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_accepts_coverag0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_cover0/docs/API_COVERAGE.md",
+    "sha256": "603D373063A4AE49DE8B0950D42AE797C1952EF1953CBBBC7D453AD3C1B56F48"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_cover0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_cover0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_cover0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_cover0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_cover0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_cover0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_cover0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_cover0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_cover0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_cover0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_stale0/docs/API_COVERAGE.md",
+    "sha256": "EEC434154E388709DA3C11F236E755B0071E0BBA28662C14C1353D80516FEA2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_stale0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_stale0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_stale0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_stale0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_stale0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_stale0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_stale0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_stale0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_stale0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_preserves_stale0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_reports_drift_w0/docs/API_COVERAGE.md",
+    "sha256": "E31ED8A9F52AF8AB829751468D84EE7AD10274D4E6F945CA45A098EC31DE7BFE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_reports_drift_w0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_reports_drift_w0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_reports_drift_w0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_reports_drift_w0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_reports_drift_w0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_reports_drift_w0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_reports_drift_w0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_reports_drift_w0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_reports_drift_w0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_cli_reports_drift_w0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_detects_drift_0/docs/API_COVERAGE.md",
+    "sha256": "4211D3658DA39630645EA63AD419459928EBC32E73E73962919B4EDF8CDD4C49"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_detects_drift_0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_detects_drift_0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_detects_drift_0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_detects_drift_0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_detects_drift_0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_detects_drift_0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_detects_drift_0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_detects_drift_0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_detects_drift_0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_detects_drift_0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_infers_task_id0/docs/API_COVERAGE.md",
+    "sha256": "36F29F8324B5B759A34C075A87EEEAB9C803DB7DD390806423C45267FEF8DE40"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_infers_task_id0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_infers_task_id0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_infers_task_id0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_infers_task_id0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_infers_task_id0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_infers_task_id0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_infers_task_id0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_infers_task_id0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_infers_task_id0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_infers_task_id0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_reports_missin0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_reports_missin0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_reports_missin0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_reports_missin0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_reports_missin0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_reports_missin0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_reports_missin0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_reports_missin0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_reports_missin0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_reports_missin0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_with_real_sche0/config.toml",
+    "sha256": "FA32F488599757511EBAB347F90F8F68BEB4C6AB20AFE7CF83C8E05C573345E2"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_with_real_sche0/docs/API_COVERAGE.md",
+    "sha256": "F45136DE9B234F6EB26522892B1A7BB90F24CE771D4EC6BF950ECE267AC82920"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_with_real_sche0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_with_real_sche0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_with_real_sche0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_with_real_sche0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_with_real_sche0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_with_real_sche0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_with_real_sche0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_mode_with_real_sche0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_with_disabled_sourc0/config.toml",
+    "sha256": "A578C7C09ECFC56C3952B06873AB02963C60325E33D0EB4076FD32DE33528736"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_with_disabled_sourc0/defaults.toml",
+    "sha256": "418B62992343D074C33BB6DF7D2E8139F2B0DDCD6B47CDB1A4E94971A502D57B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_with_disabled_sourc0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_with_disabled_sourc0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_with_disabled_sourc0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_with_disabled_sourc0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_with_disabled_sourc0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_with_disabled_sourc0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_with_disabled_sourc0/src/local_ai_hub/mcp_server.py",
+    "sha256": "CB997BFAF14860CA5A7D19F7DB3DF50BB2DA3F5BF235BC0BD49D7B94FB2C26F2"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_check_with_disabled_sourc0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_complexity_targets0/missing-hub.toml",
+    "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_context_compile_ta0/missing-hub.toml",
+    "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_create_task_target0/missing-hub.toml",
+    "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_incident_decision_0/missing-hub.toml",
+    "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_ingest_diagram_tar0/missing-hub.toml",
+    "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_mock_server_target0/missing-hub.toml",
+    "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_package_audit_retu0/missing-hub.toml",
+    "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_record_memory_targ0/missing-hub.toml",
+    "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_accep0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_accep0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_accep0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_accep0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_accep0/src/local_ai_hub/client.py",
+    "sha256": "6B1821EEE9CB64B00F38E629CD80A5ED425E6E74DDB88C77E8B9AA32EB361BCB"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_accep0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_accep0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_accep0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_accep0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_accep0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_requi0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_requi0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_requi0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_requi0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_requi0/src/local_ai_hub/client.py",
+    "sha256": "B14D9ED7D9DA993AD592A05BE3C511A4AE69B6E9B5289A1CE11CD67453C66AE8"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_requi0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_requi0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_requi0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_requi0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_route_parity_requi0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_verify_receipt_tar0/missing-hub.toml",
+    "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_client_worktree_lease_tar0/missing-hub.toml",
+    "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_conditional_action_stays_0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_conditional_action_stays_0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_conditional_action_stays_0/generated/schemas/local_ai_repo.json",
+    "sha256": "B61AFC4F326D5366CA53DB5096445D6D7625B4A0684B9601EB39E70785D05290"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_conditional_action_stays_0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_conditional_action_stays_0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_conditional_action_stays_0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_conditional_action_stays_0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_conditional_action_stays_0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_conditional_action_stays_0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_conditional_action_stays_0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout1/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout1/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout1/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout1/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout1/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout1/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout1/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout1/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout1/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_context_pack_dynamic_rout1/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_mcp_action_with0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_mcp_action_with0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_mcp_action_with0/generated/schemas/local_ai_repo.json",
+    "sha256": "9EC1EF49DA1EC1A750B16663194FF9BB30A8D54DD37A928FD26D7DB4A73E8BF9"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_mcp_action_with0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_mcp_action_with0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_mcp_action_with0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_mcp_action_with0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_mcp_action_with0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_mcp_action_with0/src/local_ai_hub/mcp_server.py",
+    "sha256": "CEDC547F473397228C1CA05B1C88D9520A1EC555E21C026554C99565E91A71EA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_mcp_action_with0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_schema_without_0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_schema_without_0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_schema_without_0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_schema_without_0/generated/schemas/local_ai_rogue.json",
+    "sha256": "756041A7047FB030B379B8920F1F828E3BA0B75C10AC0694FA7FC5463B026B8A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_schema_without_0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_schema_without_0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_schema_without_0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_schema_without_0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_schema_without_0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_schema_without_0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generated_schema_without_0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generic_truthy_return_doe0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generic_truthy_return_doe0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generic_truthy_return_doe0/generated/schemas/local_ai_repo.json",
+    "sha256": "EBE6020BA92B73C5775949F1428712D6BA06BEC002FAC6BA4E54425C1445FE33"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generic_truthy_return_doe0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generic_truthy_return_doe0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generic_truthy_return_doe0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generic_truthy_return_doe0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generic_truthy_return_doe0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generic_truthy_return_doe0/src/local_ai_hub/mcp_server.py",
+    "sha256": "B8E62B9EC4795D3FE0FD34B2C79B2B3356A0F3750F4E55FB47F6D931AA4BA279"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_generic_truthy_return_doe0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_agent_task_rejects_u0/agent-state.sqlite3",
+    "sha256": "4AA0790F9A61BA93E02AD16F5959E3016E498A8653CF1DEDE74E9C7839616428"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/config.toml",
+    "sha256": "1683B8311EA5D9CCCC18017EC1C8A59570E68F29ECF92DB85A89C75EA0347F83"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/debug_traces.sqlite3",
+    "sha256": "2F06AEB1C5993122748274CA5ACF5B6A9DBE3D7BFE909CB7142DD086AE99A224"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/recovery.sqlite3",
+    "sha256": "04F8B0EED29BF092C75E04201C57A78B44A8F4003A9DB425AD2BB5B40122E82B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/telemetry.sqlite3",
+    "sha256": "3F051F6E6FC66C542605FE58989BBE32A045DCC66FEE90A8A802311C74CFAD18"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_affected_tests_f0/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/config.toml",
+    "sha256": "E993C494BBAF8864DA6502E88820B793DDFDF4FEE8EA4C957661939E54F3E46F"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/debug_traces.sqlite3",
+    "sha256": "D37B24BE12BDAB3DE00FABDF79F542BCE7B2EEBFA5D6DAA218FE760A3890346E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/recovery.sqlite3",
+    "sha256": "04F8B0EED29BF092C75E04201C57A78B44A8F4003A9DB425AD2BB5B40122E82B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/telemetry.sqlite3",
+    "sha256": "C6F39EC96238879E3434D347CF9327B46850327F80245CD871199DDB96E7A210"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_blac0/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/config.toml",
+    "sha256": "843204A08E2FC5401EE370C5477C4E0ECDC8334FA57C7CF1E32CDE81E6BEEF27"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/debug_traces.sqlite3",
+    "sha256": "70E93E862BDA1B7C9D48A193CC34C8189AD4D0AEAFBE14ABFCBE1583472CBA98"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/recovery.sqlite3",
+    "sha256": "04F8B0EED29BF092C75E04201C57A78B44A8F4003A9DB425AD2BB5B40122E82B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/telemetry.sqlite3",
+    "sha256": "2AF9808196B4A3DE8B9E7F2121667AF1BD3FE1B8B46B702FD109740874306737"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_even0/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/config.toml",
+    "sha256": "513F9435E1815E3FB0793C2470F2C5B52331569D4EC8702284A7BEB4D656B04D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/debug_traces.sqlite3",
+    "sha256": "A6A597DBA65534B336BDB93E6C3BD141B08A736E9AD8E0913ABBCDC980C0760B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/recovery.sqlite3",
+    "sha256": "04F8B0EED29BF092C75E04201C57A78B44A8F4003A9DB425AD2BB5B40122E82B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/telemetry.sqlite3",
+    "sha256": "CD7AD19E1BB3809C8530ABCA7CD11616079642972B0D16E01EAD279B742487BC"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar0/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/config.toml",
+    "sha256": "D6D40F71FFFDD35D2DEA65CF4CF87D391308BA5BEA1B70E9A627D43382119E74"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/debug_traces.sqlite3",
+    "sha256": "66B1227715D5725853186B1DD17AD6ACE4553902E62324698002EE8F9B210347"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/recovery.sqlite3",
+    "sha256": "04F8B0EED29BF092C75E04201C57A78B44A8F4003A9DB425AD2BB5B40122E82B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/telemetry.sqlite3",
+    "sha256": "9B71D82060CC385F4E5B9B7B845E5C31572BCED30ACE1352A7D2CB049AA50927"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_swar1/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/config.toml",
+    "sha256": "0649F92F7B161CCA3332A5579F22181EEBA7035CED6DC1A6A01232B8C4F6713A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/debug_traces.sqlite3",
+    "sha256": "2658885FA377FC0EFC02D9271C6A7C7C52622762D2B2A7E49C991C65BDDA13C3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/recovery.sqlite3",
+    "sha256": "04F8B0EED29BF092C75E04201C57A78B44A8F4003A9DB425AD2BB5B40122E82B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/telemetry.sqlite3",
+    "sha256": "EEEFA3309D3C9DDF63C8B46995C53FF4A438513699F449C797C65E8A7E0FFAC4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_agent_state_task0/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/config.toml",
+    "sha256": "B16157A30CEBC4C7D53BDC3D86BBE37842F293A44BAF32212BBFABFB674CECC3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/debug_traces.sqlite3",
+    "sha256": "3782B7651E1A9579F2D9CDBD5E7BD91B8A5568AA45E791C7E7FD9D4ED4B20DD0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/recovery.sqlite3",
+    "sha256": "04F8B0EED29BF092C75E04201C57A78B44A8F4003A9DB425AD2BB5B40122E82B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/telemetry.sqlite3",
+    "sha256": "06D88FE7601C661A9021CEF774E744F69E5FB708EA085835440182ED72302F1F"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_dependenci0/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/config.toml",
+    "sha256": "AE9145A70BFD4E4F5080AB9E2EE5771D168520857DBD7BA7F9529AA1E66BA47D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/debug_traces.sqlite3",
+    "sha256": "AE71210AEBF24413E22DE096260E37727581E41615656B807B5CACD48FEB4697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/recovery.sqlite3",
+    "sha256": "04F8B0EED29BF092C75E04201C57A78B44A8F4003A9DB425AD2BB5B40122E82B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/telemetry.sqlite3",
+    "sha256": "517BE6655E391C253235F496D8DFCFF35ED8837A4507015D95B47E71ECD6B1F9"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_audit_tail_forwa0/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/config.toml",
+    "sha256": "2E60A438FCD9EE4B605F4DA073F58CA201352D912768831EE689C849BD8BD77F"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/debug_traces.sqlite3",
+    "sha256": "AE71210AEBF24413E22DE096260E37727581E41615656B807B5CACD48FEB4697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/recovery.sqlite3",
+    "sha256": "04F8B0EED29BF092C75E04201C57A78B44A8F4003A9DB425AD2BB5B40122E82B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/telemetry.sqlite3",
+    "sha256": "3701984FBE114F04991365878295D80EA3C00CC04100947FD39FC9A0F7BB7101"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_capabilities_ret0/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/config.toml",
+    "sha256": "B15A6DD6D8B6696A57BAD8BE81648B5145C3BFBB287AE0990B0AB3FF36190DAF"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/debug_traces.sqlite3",
+    "sha256": "AE71210AEBF24413E22DE096260E37727581E41615656B807B5CACD48FEB4697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/recovery.sqlite3",
+    "sha256": "04F8B0EED29BF092C75E04201C57A78B44A8F4003A9DB425AD2BB5B40122E82B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/telemetry.sqlite3",
+    "sha256": "CB07074E2460A440B9B9B408541FD9B23CD64627418542052D1DD219D542F6DB"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_get_config_redacts_c0/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/config.toml",
+    "sha256": "73D5A71D7A1C071B21561B9E571415860C1A656F5A8B547ABC6B74C3A9477B60"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/debug_traces.sqlite3",
+    "sha256": "362C5584EBA0F6CB0A7FD23B3C10448E5D65E1A2FB9FA36529588841189D56C9"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/recovery.sqlite3",
+    "sha256": "8DD1551E93BF2D7E32079B1E8C10702212C61AAEDAAE75B7EBA46E66CFFFCF78"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/telemetry.sqlite3",
+    "sha256": "2718790EC5BF87466CB720DA8F4E5976F3CD03A7951ACAA0F114240F906681B6"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_affected_tests_0/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/config.toml",
+    "sha256": "F1785B1E7230F2865C724C044F03BD81BCE9DC98237B3AFD2E58E558B8F7449A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/debug_traces.sqlite3",
+    "sha256": "2AF87CFD9D62ED74C69D9EE47052015FA2BA17DE45A9FAAD7973CDF889E946FD"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/recovery.sqlite3",
+    "sha256": "FC480FD58870BDE74D16B7D6FE7B80AF9E385CF2BFC86BF50227A83C752E9737"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/telemetry.sqlite3",
+    "sha256": "09A85600A4047397082BE6C8796ABDA2D3F6285EAB58F4C3206D6DE87AE00FE7"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_cle0/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/config.toml",
+    "sha256": "C996D07CD75EEBD2043304C69A3B1C8484638E721506A5FBD500D324CDCAAE4E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/adoption_metrics.sqlite3",
+    "sha256": "ED9F52336F0B2F436533DCC7025DD801DDABB647B6F0913629211CF767E05F63"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/agent_state.sqlite3",
+    "sha256": "3E5D8961090EDBBEFAACBE44B75FD798476C3B17D040E48B54A413F9C981AC4A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/artifacts.sqlite3",
+    "sha256": "A949F4685A016E4AFA38E7DB188A976E17ADE000E0888B78029C780554E3E61D"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/async_jobs.sqlite3",
+    "sha256": "A0132C132DC98673BC4BA93B760B982E4A496B45973BED7E7950CF18CE121697"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/cache.sqlite3",
+    "sha256": "630F072B5BAA1718949573ED7937BBC344005B0516F807D9404C91D094D207A3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/code-index.sqlite3",
+    "sha256": "E28F3637A4AF5761068C1ECB4A5C652E5C35115C483768A5B7F46D3F0F5DD67B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/debug_traces.sqlite3",
+    "sha256": "EAC298B3BE0CF01D31CC1AA5811C52118FA0F3D3F750D3FA44C7E710FF3AF66F"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/deterministic.sqlite3",
+    "sha256": "5DA105D6E72387E6837B5A25DE9E0B7E05F723E4748DC9ABA078D6742EB7B37E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/evidence.sqlite3",
+    "sha256": "CE2AC89418B526BB01D08317246F2004209BB2AD679301DCC6DE492DCDCEC5FE"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/learning.sqlite3",
+    "sha256": "166EB5C5628C97CDC384FB14F07AD58542EC369B5218129F46321CE8F4D67FD3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/leases.sqlite3",
+    "sha256": "1FEDB3E28A0ADE2A0D28C068EF163AC1743834BABD70465D7B35DFA8A4C77422"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/preprocess.sqlite3",
+    "sha256": "6006EBBF0AED69D03E4FFB3BE863BBED0C886F7AFFBCF8AEC70475CF83A9A368"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/rag.sqlite3",
+    "sha256": "33D10569C691F5E6258DAC60E489A66D83646D741E1423DB6EAE79E21A5A6E2B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/recovery.sqlite3",
+    "sha256": "B997938DFD5077C4D8BE989B555094B5953E0ED12F7BCD21C609AFCD27847E86"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/semantic-cache.sqlite3",
+    "sha256": "01E191C7547B2E3A00D0840B3EA144FD9E782D84F890AB13338A11AA563FBDCA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/telemetry.sqlite3",
+    "sha256": "4B71BB4A3F757226667A536544880B301BC70C065508A2EF6A8A54396B380840"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/work_fencing.sqlite3",
+    "sha256": "0DE18B4BAA3CFD5F248921657D8045E4DCC46EE9788B8F9AB7A9E8D2B152AF87"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/work_orders.sqlite3",
+    "sha256": "E478BBD8D705DC6D5612F7E5DB79E31114E25C4A0A6DCC9A8B8220DEF2B4130E"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_post_agent_state_swa0/state/workspace_memory.sqlite3",
+    "sha256": "DDBDA99585C73362EACCB2928AF1BE37E890D1FF531B8B0EA85203DD3DC8129B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_route_evidence_statu0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_route_evidence_statu0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_route_evidence_statu0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_route_evidence_statu0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_route_evidence_statu0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_route_evidence_statu0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_route_evidence_statu0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_route_evidence_statu0/src/local_ai_hub/http_server.py",
+    "sha256": "8B7CF0D8368B077CC244BB49BA08C353B3B3E778EA2844B1B71B6B3103511FE7"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_route_evidence_statu0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_http_route_evidence_statu0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_hubctl_service_status_rea0/state/supervisor.status.json",
+    "sha256": "20F1870173F99E4CFE9E8AAAE584B9CA2CE98E71D97BF5183076FDF781CF3AFF"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_contract_rows_i0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_contract_rows_i0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_contract_rows_i0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_contract_rows_i0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_contract_rows_i0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_contract_rows_i0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_contract_rows_i0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_contract_rows_i0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_contract_rows_i0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_contract_rows_i0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_extracts_surfac0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_extracts_surfac0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_extracts_surfac0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_extracts_surfac0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_extracts_surfac0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_extracts_surfac0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_extracts_surfac0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_extracts_surfac0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_extracts_surfac0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_extracts_surfac0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_finds_decorated0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_finds_decorated0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_finds_decorated0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_finds_decorated0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_finds_decorated0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_finds_decorated0/src/local_ai_hub/features.py",
+    "sha256": "42F70C43B60121634540215DCC236ECEF2ADA17478C0F26CDB396D45468F55CA"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_finds_decorated0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_finds_decorated0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_finds_decorated0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_finds_decorated0/tools/hubctl.py",
+    "sha256": "F3FBF7888B2AE83B6E374909AD877FF223A1E9D2C4D9E084A8C47AFE13CEF0C0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_includes_get_ro0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_includes_get_ro0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_includes_get_ro0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_includes_get_ro0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_includes_get_ro0/src/local_ai_hub/client.py",
+    "sha256": "A6BFF2746F43B01082AEFCF9D45A12D491DC6CCEA903C9AC94D5A4B6CA7A2B4F"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_includes_get_ro0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_includes_get_ro0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_includes_get_ro0/src/local_ai_hub/http_route_registry.py",
+    "sha256": "11153DDF20A64FC6580F3601A1BDC36BEB190A041577AA592A8A4B2A8664442C"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_includes_get_ro0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_includes_get_ro0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_includes_get_ro0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_recognizes_acti0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_recognizes_acti0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_recognizes_acti0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_recognizes_acti0/generated/schemas/local_ai_status.json",
+    "sha256": "00071043D8EA70C445D8CBBFB1CD91B45212D0E68A6B9237EA3B58645E3C8A71"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_recognizes_acti0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_recognizes_acti0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_recognizes_acti0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_recognizes_acti0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_recognizes_acti0/src/local_ai_hub/mcp_server.py",
+    "sha256": "D915274D59FCD49545F1B678F15FE60D228127FA41C8D030CC7E2C6E2CDA639A"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_recognizes_acti0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_reports_orphan_0/docs/INSTALL_PROMPT.md",
+    "sha256": "365C42E9B017A5E9F5F7AF5C928754438FDF0873026C8749BD999A159D1284A8"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_reports_orphan_0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_reports_orphan_0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_reports_orphan_0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_reports_orphan_0/src/local_ai_hub/client.py",
+    "sha256": "C6C7C181F3B94CC85E18695D437D2BE9D495890E2DBB260C7023713C5A04C426"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_reports_orphan_0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_reports_orphan_0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_reports_orphan_0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_reports_orphan_0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_inventory_reports_orphan_0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_local_ai_coord_task_rollb0/agent-state.sqlite3",
+    "sha256": "EAD4611F8DD3D24371B8BD6BA5BE5619C18D8F20170E84FA996A7CC63A902F0B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_local_ai_coord_task_rollb0/rollback-target.txt",
+    "sha256": "8BA8496A2525AE171FFD104D632DEDE6EF418D9B95962A9D88E2FCDBC8D48D24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_missing_generated_manifes0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_missing_generated_manifes0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_missing_generated_manifes0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_missing_generated_manifes0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_missing_generated_manifes0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_missing_generated_manifes0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_missing_generated_manifes0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_missing_generated_manifes0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_missing_generated_manifes0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_orphan_dynamic_route_regi0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_orphan_dynamic_route_regi0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_orphan_dynamic_route_regi0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_orphan_dynamic_route_regi0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_orphan_dynamic_route_regi0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_orphan_dynamic_route_regi0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_orphan_dynamic_route_regi0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_orphan_dynamic_route_regi0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_orphan_dynamic_route_regi0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_orphan_dynamic_route_regi0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_rendered_coverage_include0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_rendered_coverage_include0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_rendered_coverage_include0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_rendered_coverage_include0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_rendered_coverage_include0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_rendered_coverage_include0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_rendered_coverage_include0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_rendered_coverage_include0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_rendered_coverage_include0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_rendered_coverage_include0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_schema_fallback_uses_proj0/ambient.toml",
+    "sha256": "3B60553948A8D82216CE082B86721D28AB88E8363F4AB9C0A992A09947BACDC1"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_schema_fallback_uses_proj0/defaults.toml",
+    "sha256": "418B62992343D074C33BB6DF7D2E8139F2B0DDCD6B47CDB1A4E94971A502D57B"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_source_mcp_tool_without_g0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_source_mcp_tool_without_g0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_source_mcp_tool_without_g0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_source_mcp_tool_without_g0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_source_mcp_tool_without_g0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_source_mcp_tool_without_g0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_source_mcp_tool_without_g0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_source_mcp_tool_without_g0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_source_mcp_tool_without_g0/src/local_ai_hub/mcp_server.py",
+    "sha256": "DF6267FE4BEE83B0DCD505A41C761E3A213872AB3A676B39D8274B2D7E763E52"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_source_mcp_tool_without_g0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_cli_process_gen0/docs/API_COVERAGE.md",
+    "sha256": "92B3391653EE3D98EFB3156BAEE47DBAC723EE2169269C3992D9B15788979FB4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_cli_process_gen0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_cli_process_gen0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_cli_process_gen0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_cli_process_gen0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_cli_process_gen0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_cli_process_gen0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_cli_process_gen0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_cli_process_gen0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_cli_process_gen0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_cli_process_gen0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_mode_updates_co0/docs/API_COVERAGE.md",
+    "sha256": "976FD7A8B4EE863E5FB56CE1EDC6E61157670A83F59206CB5F9E2BDF49FF55F7"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_mode_updates_co0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_mode_updates_co0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_mode_updates_co0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_mode_updates_co0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_mode_updates_co0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_mode_updates_co0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_mode_updates_co0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_mode_updates_co0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_mode_updates_co0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest/test_write_doc_mode_updates_co0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout1/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout1/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout1/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout1/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout1/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout1/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout1/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout1/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout1/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-final/test_context_pack_dynamic_rout1/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout0/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout0/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout0/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout0/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout0/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout0/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout0/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout0/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout0/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout0/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout1/docs/INSTALL_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout1/docs/UPDATE_PROMPT.md",
+    "sha256": "3901AC0837187AC2C47B1830980488D7616F15934F1933668161A78CE78976F3"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout1/generated/schemas/local_ai_repo.json",
+    "sha256": "371AE3F246B5251B1C544D0B70C6706DE5D95A9ADE131273345550735EB3F128"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout1/generated/schemas/local_ai_status.json",
+    "sha256": "4386C583C6866918EB4875F7ACE4E9C42E31EB2CB5B132C4A0381CD0927141E0"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout1/src/local_ai_hub/client.py",
+    "sha256": "E2F40D59AFC6D648C61BFA1424DD24683010F42F7FB33712C5738076539B8D66"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout1/src/local_ai_hub/features.py",
+    "sha256": "E551F995775F32D427692FAD04ED0B2295D3B90AA683285649477AEA96B21829"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout1/src/local_ai_hub/generator.py",
+    "sha256": "0399395ED189ECB9D8CAB5B906BC67A43ACC05EDCB8948E3CEE7C877CB76ED24"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout1/src/local_ai_hub/http_server.py",
+    "sha256": "A12BA7AA0B85D7ED377A512D58CF03D303F0F45901DCEDEC289C75E84910E2B4"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout1/src/local_ai_hub/mcp_server.py",
+    "sha256": "AEF8E1811DB4204728CAFE9ED0653BF9D9622704FDA296136736FA07D01C2566"
+  },
+  {
+    "path": ".sync-t01-runtime/pytest-context-followup/test_context_pack_dynamic_rout1/tools/hubctl.py",
+    "sha256": "EA36D7339C4FF27216824EF8A2235611941BC2CF0FA358D7B5F289E795942504"
+  }
+]
