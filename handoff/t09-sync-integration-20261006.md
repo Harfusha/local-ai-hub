@@ -11,7 +11,8 @@
 - That checkpoint commits all 24 remaining ordinary untracked files: 22 historical handoff documents/patches/JSON artifacts, `verification_rules.py`, and the T09 receipt tests. No tracked dirty changes remained at task entry.
 - Initial conflict-resolved merge: `80f6708c`, second parent `27c66a43addb5dd352263d02cc7426180d2c44c2`.
 - Preservation-handoff follow-up merge: `515ea2fd`, second parent `ca2f86237b1f8ac9ce4f576a308b65b94a24a69c`.
-- Final source master target: `fc950005f84998cad0b965fb40f0a0f9eaff488c`; final merge commit is the commit containing this note. Obtain its identity with `git log -1 --format=%H -- handoff/t09-sync-integration-20261006.md`.
+- T05 source merge: `741b3506`, second parent `fc950005f84998cad0b965fb40f0a0f9eaff488c`.
+- Final master target: `be112d6a1f5f419b0615e0147153c57fb90d97c2` (documentation-only delta from the tested `fc950005`). Final merge commit is the latest commit updating this note. Obtain its identity with `git log -1 --format=%H -- handoff/t09-sync-integration-20261006.md`.
 - Master was advancing concurrently; incoming references were read only. Root checkout/master ref never written by this task.
 
 ## Manual integration decisions
