@@ -1,0 +1,150 @@
+diff --git a/src/local_ai_hub/commands.py b/src/local_ai_hub/commands.py
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -3880,15 +3880,40 @@
+                 return self._compact(result, tenant, command)
+ 
+         singleflight = not is_mutating and not bypass_cache
+         event: threading.Event | None = None
++        owner = False
+         if singleflight:
+-            with self._lock:
+-                event = self._inflight.get(key)
+-                if event is None:
+-                    event = threading.Event(); self._inflight[key] = event; owner = True
+-                else:
+-                    owner = False; self.coalesced += 1
++            refreshed_for_inflight = False
++            while True:
++                with self._lock:
++                    event = self._inflight.get(key)
++                    if event is None:
++                        event = threading.Event(); self._inflight[key] = event; owner = True
++                        break
++                    if refreshed_for_inflight:
++                        owner = False; self.coalesced += 1
++                        break
++                invalidate_repo_state = getattr(self.repo_state, "invalidate", None)
++                if not callable(invalidate_repo_state):
++                    refreshed_for_inflight = True
++                    continue
++                invalidate_repo_state(cwd)
++                try:
++                    if _cache_context:
++                        key, state = self._key(command, cwd, classification, cache_context=_cache_context)
++                    else:
++                        key, state = self._key(command, cwd, classification)
++                except ValueError as exc:
++                    return self._compact({
++                        "success": False,
++                        "error": str(exc),
++                        "classification": classification,
++                        "preflight": True,
++                        "terminal": True,
++                        "retryable": False,
++                    }, tenant, command)
++                refreshed_for_inflight = True
+         if singleflight and not owner:
+             # A second agent should benefit from single-flight without being trapped
+             # behind a very long build/test command. The owner keeps running and will
+             # populate the cache; the waiter gets a bounded in-progress response.
+diff --git a/tests/test_command_singleflight_revision.py b/tests/test_command_singleflight_revision.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_command_singleflight_revision.py
+--- /dev/null
++++ b/tests/test_command_singleflight_revision.py
+@@ -0,0 +1,93 @@
++from __future__ import annotations
++
++import subprocess
++import threading
++from pathlib import Path
++
++from local_ai_hub.commands import CommandBroker
++from local_ai_hub.repo_state import RepoStateTracker
++
++
++class _Artifacts:
++    def put(self, *_args, **_kwargs):
++        return "artifact"
++
++
++def test_changed_repository_does_not_join_stale_singleflight(tmp_path: Path, monkeypatch) -> None:
++    repo = tmp_path / "repo"
++    repo.mkdir()
++    source = repo / "app.py"
++    source.write_text("value = 1\n", encoding="utf-8")
++    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
++    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
++    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
++    subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
++    subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repo, check=True)
++
++    config = {
++        "server": {"state_dir": str(tmp_path / "state")},
++        "workspace_cache": {"fingerprint_ttl_seconds": 60.0},
++        "commands": {"enabled": True, "coalesced_wait_seconds": 2},
++    }
++    broker = CommandBroker(config, _Artifacts(), RepoStateTracker(config))
++    monkeypatch.setattr(broker, "_unavailable_executable", lambda *_args: None)
++    started = {value: threading.Event() for value in ("value = 1\n", "value = 2\n")}
++    release = {value: threading.Event() for value in started}
++    executions: list[str] = []
++    results: dict[str, dict] = {}
++    errors: list[BaseException] = []
++
++    def execute(_command, _cwd, _timeout, *_args, **_kwargs):
++        value = source.read_text(encoding="utf-8")
++        executions.append(value)
++        started[value].set()
++        if not release[value].wait(5):
++            raise TimeoutError(f"test did not release {value!r}")
++        return {
++            "success": True,
++            "exit_code": 0,
++            "stdout": value,
++            "stderr": "",
++            "duration_ms": 1,
++            "timed_out": False,
++            "cancelled": False,
++            "aborted_interactive": False,
++        }
++
++    monkeypatch.setattr(broker, "_execute", execute)
++
++    def run(label: str) -> None:
++        try:
++            results[label] = broker.run("python -m pytest -q", str(repo), "tenant")
++        except BaseException as exc:
++            errors.append(exc)
++
++    first = threading.Thread(target=run, args=("first",), daemon=True)
++    second = threading.Thread(target=run, args=("second",), daemon=True)
++    first.start()
++    try:
++        assert started["value = 1\n"].wait(3)
++        source.write_text("value = 2\n", encoding="utf-8")
++        second.start()
++        assert started["value = 2\n"].wait(3)
++        assert len(broker._inflight) == 2
++    finally:
++        for event in release.values():
++            event.set()
++        first.join(5)
++        if second.ident is not None:
++            second.join(5)
++
++    assert not first.is_alive()
++    assert not second.is_alive()
++    assert errors == []
++    assert executions == ["value = 1\n", "value = 2\n"]
++    assert results["first"]["success"] is True
++    assert results["second"]["success"] is True
++    assert results["first"]["coalesced"] is False
++    assert results["second"]["coalesced"] is False
++    assert results["first"]["cache_hit"] is False
++    assert results["second"]["cache_hit"] is False
++    assert results["first"]["stdout"] == "value = 1\n"
++    assert results["second"]["stdout"] == "value = 2\n"
++    assert results["first"]["repository_revision"] != results["second"]["repository_revision"]
