@@ -1,0 +1,6 @@
+diff --git a/tests/test_async_jobs_tasks.py b/tests/test_async_jobs_tasks.py
+--- a/tests/test_async_jobs_tasks.py
++++ b/tests/test_async_jobs_tasks.py
+@@ -103,0 +104,2 @@ def test_async_batch_persists_sixteen_ordered_partial_outcomes(tmp_path: Path):
++    finally:
++        manager.close()
