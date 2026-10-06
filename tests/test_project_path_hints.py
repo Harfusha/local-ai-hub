@@ -308,9 +308,11 @@ def test_project_context_reuses_only_current_evidence_bound_hints(
 
     context = resolve_project_context(tmp_path, tmp_path / "state")
     assert git_lookups == 1
-    assert sorted(path.name for path in (tmp_path / "state").iterdir()) == [
-        "project-path-hints.sqlite3"
-    ]
+    assert not (tmp_path / "state").exists()
+    assert context.path_hints(
+        purpose="entry", scope="task", repository_revision="rev-1"
+    ) == ()
+    assert not (tmp_path / "state").exists()
     hint = PathHint(
         path="src/main.py",
         purpose="entry",
@@ -321,6 +323,9 @@ def test_project_context_reuses_only_current_evidence_bound_hints(
         config_digest=context.config_digest,
     )
     context.save_path_hint(hint)
+    assert sorted(path.name for path in (tmp_path / "state").iterdir()) == [
+        "project-path-hints.sqlite3"
+    ]
 
     assert context.path_hints(
         purpose="entry", scope="task", repository_revision="rev-1"
@@ -328,6 +333,67 @@ def test_project_context_reuses_only_current_evidence_bound_hints(
     assert context.path_hints(
         purpose="entry", scope="task", repository_revision="rev-2"
     ) == ()
+
+
+def test_expired_persisted_hint_is_not_reused(tmp_path: Path) -> None:
+    (tmp_path / "main.py").write_text("x")
+    store = ProjectPathHintStore(
+        tmp_path / "state", tmp_path, git_common_dir=None
+    )
+    store.add(
+        PathHint(
+            path="main.py",
+            purpose="entry",
+            scope="repo",
+            evidence_id="evidence-expired",
+            provenance="verified_search",
+            repository_revision="revision-current",
+            config_digest="digest-current",
+            expires_at="2099-01-01T00:00:00+00:00",
+        )
+    )
+    with closing(store._connect()) as connection, connection:
+        connection.execute(
+            """UPDATE project_path_hints SET expires_at = ?
+               WHERE project_id = ? AND evidence_id = ?""",
+            (
+                "2000-01-01T00:00:00+00:00",
+                store.project_id,
+                "evidence-expired",
+            ),
+        )
+
+    assert store.find(
+        purpose="entry",
+        scope="repo",
+        repository_revision="revision-current",
+        config_digest="digest-current",
+    ) == ()
+
+
+def test_hint_find_does_not_recreate_database_removed_after_existence_check(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = ProjectPathHintStore(
+        tmp_path / "state", tmp_path, git_common_dir=None
+    )
+    with closing(store._connect()):
+        pass
+    connect = store._connect
+
+    def unlink_before_read(**kwargs):
+        store.database.unlink()
+        return connect(**kwargs)
+
+    monkeypatch.setattr(store, "_connect", unlink_before_read)
+
+    assert store.find(
+        purpose="entry",
+        scope="repo",
+        repository_revision="revision-current",
+        config_digest="digest-current",
+    ) == ()
+    assert not store.database.exists()
 
 
 def test_project_context_prioritizes_candidates_with_current_saved_hints(
