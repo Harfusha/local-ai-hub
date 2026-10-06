@@ -106,6 +106,17 @@ These commits preserve unfinished work without product edits. Each still
 needs its manually reconciled master merge and later acceptance; no claim of
 functional completion follows from preservation.
 
+T14 context-budget reconciliation: `fcdc58a7` integrated. Complete original
+checkpoint `dd07cfe0` retains source/tests/handoffs before merge. Incremental
+production changes are limited to MCP context projection and response-budget
+citation retention. Worker: 98 passed / 7 failed; final affected rerun
+26 passed / 2 failed. In-memory AST and scoped whitespace passed. Outstanding
+128-token error truncation, rollback status fields, older scope/path fixtures
+and strict CodeGraph substring assertion remain in
+`handoff/T14-SYNC-INTEGRATION-20261006.md`. Long citation/identity truncation
+also needs acceptance review before release; no broad completion claim.
+T14 render-order checkout now assigned to Anscombe independently.
+
 ## Rules for the remainder
 
 - Preserve each original HEAD and dirty tracked content in a checkpoint ref
