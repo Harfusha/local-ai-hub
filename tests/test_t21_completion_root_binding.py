@@ -1,5 +1,5 @@
-from __future__ import annotations
-
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +13,7 @@ from local_ai_hub.project_config import resolve_project_context
 from local_ai_hub.verification_rules import (
     complete_task_with_project_rules,
     evaluate_project_completion,
+    project_command_environment_sha256,
 )
 
 
@@ -59,6 +60,23 @@ def _task_with_test_receipt(tmp_path: Path, *, opaque_id: bool = False, require_
         ),
         actor=owner,
     )
+    context = resolve_project_context(project, state_dir)
+    actual_command = str(context.settings.commands["test"])
+    command_sha256 = hashlib.sha256(actual_command.encode("utf-8")).hexdigest()
+    configured_command_sha256 = command_sha256
+    caller_arguments_sha256 = hashlib.sha256(b"[]").hexdigest()
+    project_env_sha256 = project_command_environment_sha256(context.settings, "test")
+    binding_fields = {
+        "project_alias": "test",
+        "project_config_digest": context.config_digest,
+        "configured_command_sha256": configured_command_sha256,
+        "caller_arguments_sha256": caller_arguments_sha256,
+        "command_sha256": command_sha256,
+        "project_environment_sha256": project_env_sha256,
+    }
+    binding_sha256 = hashlib.sha256(
+        json.dumps(binding_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     proof_id = artifacts.put_json(
         {
             "kind": "work_command_verification",
@@ -69,6 +87,15 @@ def _task_with_test_receipt(tmp_path: Path, *, opaque_id: bool = False, require_
             "mutation_generation": 0,
             "criterion": "test",
             "command_id": "test-command",
+            "command_classification": "test",
+            "command": actual_command,
+            "project_alias": "test",
+            "project_config_digest": context.config_digest,
+            "project_environment_sha256": project_env_sha256,
+            "configured_command_sha256": configured_command_sha256,
+            "caller_arguments_sha256": caller_arguments_sha256,
+            "project_execution_binding_sha256": binding_sha256,
+            "command_sha256": command_sha256,
             "exit_code": 0,
             "result": {"success": True, "exit_code": 0},
         },

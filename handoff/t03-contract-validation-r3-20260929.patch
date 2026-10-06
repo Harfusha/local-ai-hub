@@ -1,0 +1,1345 @@
+diff --git a/src/local_ai_hub/mcp_server.py b/src/local_ai_hub/mcp_server.py
+index 6b4317b..1ad2622 100644
+--- a/src/local_ai_hub/mcp_server.py
++++ b/src/local_ai_hub/mcp_server.py
+@@ -494,7 +494,7 @@ _STATUS_PROTECTED_KEYS = (
+ )
+ _RELIABILITY_PROTECTED_KEYS = (
+     "success", "terminal", "retryable", "degraded", "stale",
+-    "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
++    "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
+ )
+ _REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
+ _REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()
+@@ -2721,6 +2721,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
+             getattr(_registered_tool, "__dict__", {}).pop("output_schema", None)
+ 
+     async def _compact_mcp_call_tool(name: str, arguments: dict[str, Any]) -> Any:
++        """Mirror HTTP error statuses: invalid=400, disabled=403, dispatch failure=500."""
+         validation = validate_operation_call(name, arguments, features=FEATURES)
+         if validation is not None:
+             status_code, error = validation
+diff --git a/src/local_ai_hub/operation_contracts.py b/src/local_ai_hub/operation_contracts.py
+index 2ef2b0a..817e80a 100644
+--- a/src/local_ai_hub/operation_contracts.py
++++ b/src/local_ai_hub/operation_contracts.py
+@@ -86,6 +86,14 @@ _COORD_ACTIONS = (
+ )
+ _WORK_ACTIONS = ("submit", "status", "wait", "get", "cancel", "continue")
+ _ARTIFACT_ACTIONS = ("get", "slice", "list")
++_ADOPTION_TOOL_NAMES = (
++    "local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_rag",
++    "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_work",
++)
++_ACTION_OUTPUT_TOOL_NAMES = frozenset({
++    "local_ai_repo", "local_ai_task", "local_ai_rag",
++    "local_ai_command", "local_ai_coord", "local_ai_work",
++})
+ 
+ _RESPONSE_BUDGET_PROPERTIES = {
+     "max_response_tokens": {"type": "integer", "minimum": 0, "default": 0},
+@@ -182,6 +190,10 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
+             "action": {"type": "string", "enum": ["status", "health", "check", "info"], "default": ""},
+             "detail": {"type": "string", "default": "brief"},
+             "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
++            "adoption_signal": {"type": "string", "enum": ["", "bypassed"], "default": ""},
++            "target_tool": {"type": "string", "enum": list(_ADOPTION_TOOL_NAMES)},
++            "target_action": {"type": "string", "minLength": 1, "maxLength": 80,
++                               "pattern": "^[a-z][a-z0-9_]{0,79}$"},
+             "extra_fields": {"type": "array", "items": {"type": "string"}},
+         },
+     ),
+@@ -200,6 +212,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
+             "task_id": {"type": "string", "default": ""},
+             "include_code": {"type": "boolean", "default": False},
+             "include_tests": {"type": "boolean", "default": False},
++            "include_diagnostics": {"type": "boolean", "default": False},
+             "phase": {"type": "string", "default": ""},
+             "focus": {"type": "array", "items": {"type": "string"}},
+             "preload_profile": {"type": "string", "default": ""},
+@@ -246,6 +259,15 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
+                     },
+                 }],
+             },
++            "is_worktree": {"type": "boolean", "default": False},
++            "parent_root": {"type": "string", "default": ""},
++            "steps": {"type": "array", "items": {"type": "object"}},
++            "session_id": {"type": "string", "default": ""},
++            "clone_id": {"type": "string", "default": ""},
++            "worktree_id": {"type": "string", "default": ""},
++            "branch": {"type": "string", "default": ""},
++            "repository_id": {"type": "string", "default": ""},
++            "repository_revision": {"type": "string", "default": ""},
+             "extra_fields": {"type": "array", "items": {"type": "string"}},
+         },
+         conditional_properties={
+@@ -276,6 +298,13 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
+             )},
+             "complexity": {"type": "string", "default": "auto"},
+             "job_action": {"type": "string", "default": "reason"},
++            "task_id": {"type": "string", "default": ""},
++            "phase": {"type": "string", "default": ""},
++            "focus": {"type": "array", "items": {"type": "string"}},
++            "preload_profile": {"type": "string", "default": ""},
++            "changed_paths": {"type": "array", "items": {"type": "string"}},
++            "repository_revision": {"type": "string", "default": ""},
++            "language": {"type": "string", "default": "auto"},
+             "max_tokens": {"type": "integer", "default": 0},
+             "evaluation_days": {"type": "integer", "default": 30},
+             "latency_budget_ms": {"type": "number", "default": 0},
+@@ -295,6 +324,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
+             "candidate_data": {"type": "object"},
+             "json_schema": {"type": "object"},
+             "tasks": {"type": "array", "items": {"type": "object"}},
++            "cases": {"type": "array", "items": {"type": "object"}},
+             "format": {"type": ["string", "object"]},
+             "extra_fields": {"type": "array", "items": {"type": "string"}},
+         },
+@@ -335,6 +365,12 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
+             "max_attempts": {"type": "integer", "default": 3},
+             "snapshot": {"type": "boolean", "default": False},
+             "rollback_on_failure": {"type": "boolean", "default": False},
++            "paths": {"type": "array", "items": {"type": "string"}},
++            "patch": {"type": "string", "default": ""},
++            "auto_rollback": {"type": "boolean", "default": True},
++            "job_id": {"type": "string", "default": ""},
++            "execution_id": {"type": "string", "default": ""},
++            "lint_action": {"type": "string", "default": "submit"},
+             "extra_fields": {"type": "array", "items": {"type": "string"}},
+         },
+     ),
+@@ -357,13 +393,35 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
+                 "lease_id", "task_id", "key", "value", "query", "command", "task", "status", "reason",
+                 "record_id", "target_scope", "approver",
+             )},
++            "criterion": {"type": "string", "default": ""},
++            "board_id": {"type": "string", "default": ""},
++            "section": {"type": "string", "default": ""},
++            "changed_paths": {"type": "array", "items": {"type": "string"}},
+             "ttl_seconds": {"type": "integer", "default": 0},
+             "max_tokens": {"type": "integer", "default": 0},
+             "contract": {"type": "object"},
+             "checkpoint": {"type": "object"},
+-            "record": {"type": "object"},
++            "record": {"type": ["object", "array"]},
+             "fingerprint": {"type": "object"},
+             "tool_outcome": {"type": "object"},
++            "scope": {"type": "string", "default": ""},
++            "scope_id": {"type": "string", "default": ""},
++            "target_scope": {"type": "string", "default": ""},
++            "tenant": {"type": "string", "default": ""},
++            "branch": {"type": "string", "default": ""},
++            "clone_id": {"type": "string", "default": ""},
++            "worktree_id": {"type": "string", "default": ""},
++            "repository_id": {"type": "string", "default": ""},
++            "session_id": {"type": "string", "default": ""},
++            "repository_revision": {"type": "string", "default": ""},
++            "phase": {"type": "string", "default": ""},
++            "focus": {"type": "array", "items": {"type": "string"}},
++            "preload_profile": {"type": "string", "default": ""},
++            "since_hash": {"type": "string", "default": ""},
++            "include_diagnostics": {"type": "boolean", "default": False},
++            "base": {"type": "string", "default": "HEAD"},
++            "after_seq": {"type": "integer", "minimum": 0, "default": 0},
++            "topic": {"type": "string", "default": ""},
+             "include_stale": {"type": "boolean", "default": False},
+             "extra_fields": {"type": "array", "items": {"type": "string"}},
+         },
+@@ -415,6 +473,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
+             "timeout_seconds": {"type": "number", "default": 90},
+             "answer": {"type": "string", "default": ""},
+             "return_fields": {"type": "array", "items": {"type": "string"}},
++            "response_profile": {"type": "string", "default": "compact"},
++            "extra_fields": {"type": "array", "items": {"type": "string"}},
+             "max_output_tokens": {"type": "integer", "default": 0},
+             "keep_failed_workspace": {"type": "boolean", "default": False},
+         },
+@@ -422,6 +482,193 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
+ }
+ 
+ 
++def _action_input_fields(tool: str, action: str) -> tuple[str, ...]:
++    """Return only arguments consumed by this action's MCP handler."""
++    if tool == "local_ai_status":
++        return ("detail", "scope", "adoption_signal", "target_tool", "target_action")
++    if tool == "local_ai_repo":
++        root = {"root"}
++        context = {
++            "query", "task", "workspace", "mode", "max_tokens", "token_budget", "task_id", "phase",
++            "focus", "preload_profile", "guarded", "changed_paths", "since_hash", "approval",
++            "override_reason", "base", "staged", "session_id", "repository_revision", "clone_id",
++            "worktree_id", "branch", "repository_id", "include_diagnostics",
++        }
++        groups = {
++            "search": {"query", "task", "include_code"},
++            "context": context | {"include_tests"},
++            "generate_dataset": {"query", "task", "path", "max_tokens", "relation"},
++            "secret_scan": {"query", "task", "path", "staged"},
++            "complexity": {"query", "task", "path", "max_tokens", "include_tests"},
++            "git_diff": {"path", "query", "staged", "max_tokens"},
++            "mutation_test": {"path", "query", "diff"},
++            "pipeline": {"steps"},
++            "batch_replace": {"edits", "dry_run"},
++            "verify": {"evidence"},
++            "verify_receipt": {"receipt"},
++            "verify_completion": {"task_id", "query", "task"},
++            "preprocess": {"is_worktree", "parent_root"},
++            "preprocess_refresh": {"is_worktree", "parent_root"},
++            "preprocess_pause": set(), "preprocess_resume": set(),
++            "preprocess_cancel": set(), "preprocess_unregister": set(),
++            "context_compile": context,
++            "route": {"path", "query", "task"},
++            "delegate": {"task", "query", "workspace", "profile", "max_tokens"},
++            "solve": {"task", "query", "workspace", "mode", "max_tokens", "base", "staged"},
++            "review_diff": {"base", "staged", "task", "mode", "max_tokens"},
++            "impact": {"base", "staged"},
++            "refactor_impact": {"path", "query", "task"},
++            "resolve_imports": {"query", "task", "language"},
++            "generate_tests": {"path", "query", "task", "max_tokens"},
++            "generate_tests_for_diff": {"path", "query", "task", "diff", "max_tokens"},
++            "validate_patch": {"query", "task"},
++            "ast_outline": {"path", "query", "task"},
++            "ast_refactor": {"path", "query", "task", "diff", "staged"},
++            "generate_mocks": {"path", "query", "task"},
++            "affected_tests": {"path", "query"},
++            "split_changes": {"path", "query"},
++            "semantic": {"path", "query", "task", "relation"},
++            "graph": {"path", "query", "task", "relation"},
++            "intelligence": {"path", "query", "task", "relation"},
++            "call_graph_diff": {"base", "staged", "query", "task"},
++            "semantic_diff": {"base", "staged", "query", "task"},
++            "cross_project_graph": {"root", "changed_paths"},
++            "cross_repo_graph": {"root", "changed_paths"},
++            "cross_project_symbols": {"root", "query", "path"},
++            "cross_repo_symbols": {"root", "query", "path"},
++            "cross_project_impact": {"root", "changed_paths"},
++            "cross_repo_impact": {"root", "changed_paths"},
++            "cross_repo_contract": {"root", "query", "task", "path"},
++        }
++        if action in groups:
++            return tuple(sorted(root | groups[action]))
++        if action in {"profile", "map", "topology", "audit_dependencies", "test_matrix", "security_audit",
++                      "synthesize_rules", "package_audit", "hotspots", "repo_state", "git_status"}:
++            return ("root",)
++        if action in {"git_diff", "git_history_search", "synthesize_commit", "repo_state"}:
++            return ("root", "base", "staged", "query", "task")
++        if action in {"generate_dataset", "code_invariants", "profile_digest", "schema_inspect", "explain_query",
++                      "env_compat", "circular_dependencies", "generate_types", "complexity", "api_spec",
++                      "dependency_slice", "migration_drift", "structural_search", "context_budget",
++                      "dead_code", "secret_scan", "callers", "reachability_dead_code", "mutation_test",
++                      "type_stubs", "skeletonize", "investigate", "diagnose", "briefing", "deterministic"}:
++            return ("root", "query", "task", "path", "mode", "max_tokens")
++        return ("root", "query", "task", "path")
++    if tool == "local_ai_task":
++        semantic = {"task", "prompt", "model", "context", "complexity", "max_tokens", "root", "workspace",
++                    "task_id", "phase", "focus", "preload_profile", "changed_paths", "repository_revision",
++                    "delivery", "latency_budget_ms", "profile"}
++        if action == "submit":
++            return tuple(sorted({
++                "job_id", "job_action", "timeout_seconds", "task", "context", "candidate",
++                "complexity", "max_tokens", "tasks", "profile", "root", "workspace", "task_id",
++                "phase", "focus", "preload_profile", "changed_paths", "repository_revision",
++            }))
++        if action in {"status", "wait", "result", "cancel"}:
++            return tuple(sorted({"job_id", "job_action", "timeout_seconds", "root", "task_id"}))
++        if action == "batch":
++            return ("tasks", "task", "model", "complexity", "max_tokens", "delivery")
++        if action in {"benchmark", "hardware_benchmark", "evaluation_report", "eval_suite", "eval_drift"}:
++            return tuple(sorted({"cases", "profile", "max_tokens", "evaluation_task_id", "evaluation_cohort", "evaluation_days"}))
++        if action == "evaluation_record":
++            return tuple(sorted({"evaluation_task_id", "evaluation_cohort", "quality_pass", "test_pass", "evaluation_duration_ms"}))
++        if action == "prompt_eval":
++            return tuple(sorted({"task", "prompt", "cases", "model", "max_tokens", "json_schema", "format"}))
++        if action in {"candidate_create", "candidate_promote"}:
++            return tuple(sorted({"candidate", "candidate_data", "task", "evaluation_task_id", "approver"}))
++        if action == "speculative_draft":
++            return tuple(sorted({"task", "prompt", "model", "context", "profile", "max_tokens"}))
++        if action in {"vision", "transcribe"}:
++            return tuple(sorted({"task", "prompt", "model", "context", "image_artifact_id", "screenshot_artifact_id",
++                                 "bundle_artifact_id", "dom_artifact_id", "accessibility_artifact_id",
++                                 "computed_styles_artifact_id", "runtime_artifact_id", "network_artifact_id",
++                                 "source", "dom", "accessibility", "computed_styles", "runtime", "bundle", "html",
++                                 "accessibility_snapshot", "computed_style_data", "runtime_context", "viewport", "page",
++                                 "language", "max_tokens", "complexity"}))
++        if action == "route":
++            return ("task", "prompt", "model", "context", "complexity", "profile", "root", "workspace")
++        if action == "continue":
++            return tuple(sorted(semantic | {"conversation_id"}))
++        return tuple(sorted(semantic))
++    if tool == "local_ai_rag":
++        if action in {"index", "docset_index"}:
++            return ("root", "workspace")
++        if action in {"search", "docset_search"}:
++            return ("root", "workspace", "query", "top_k")
++        if action == "list":
++            return ()
++        if action == "ingest_document":
++            return ("workspace", "query", "root")
++        return ("workspace", "query", "root", "extra_fields")
++    if tool == "local_ai_command":
++        run_fields = {"command", "cwd", "timeout", "force", "task_id", "criterion", "auto_fix", "max_attempts",
++                      "stream", "stream_id", "execution_id", "snapshot", "rollback_on_failure", "paths", "patch", "auto_rollback"}
++        if action in {"classify", "discover", "stats", "preflight"}:
++            return ("command", "cwd")
++        if action in {"spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "mock_server", "mock_server_start",
++                      "mock_server_stop", "mock_server_status", "record_mock", "replay_mock"}:
++            return ("cwd", "command", "criterion", "timeout")
++        if action in {"stash_save", "stash_restore"}:
++            return ("cwd", "paths", "patch", "force")
++        if action == "diff_hunk_stage":
++            return ("cwd", "paths", "patch", "command")
++        if action == "speculative_lint":
++            return ("cwd", "paths", "command", "job_id", "execution_id", "lint_action")
++        return tuple(sorted(run_fields))
++    if tool == "local_ai_coord":
++        if action == "task_sync":
++            return ("root", "status", "key", "task_id", "ttl_seconds", "max_tokens", "record")
++        if action in {"claim", "renew", "release", "leases"}:
++            return ("root", "paths", "lease_id", "ttl_seconds")
++        if action.startswith("memo_"):
++            return ("root", "key", "value", "query", "record_id", "scope", "scope_id", "target_scope")
++        if action.startswith("task_"):
++            return ("root", "task", "task_id", "contract", "checkpoint", "status", "reason", "tool_outcome",
++                    "fingerprint", "ttl_seconds", "include_stale", "include_diagnostics")
++        if action.startswith("memory_"):
++            return ("root", "record", "record_id", "key", "value", "query", "scope", "scope_id", "target_scope")
++        if action.startswith("relation_"):
++            return ("root", "key", "task_id", "query", "task", "reason", "status", "value",
++                    "target_scope", "record", "ttl_seconds", "max_tokens")
++        if action == "context_compile":
++            return ("root", "task_id", "max_tokens", "include_diagnostics", "clone_id", "worktree_id", "branch",
++                    "repository_id", "session_id", "repository_revision", "changed_paths", "phase", "focus", "preload_profile", "since_hash")
++        if action in {"verify_receipt", "verify_completion"}:
++            if action == "verify_receipt":
++                return ("root", "task_id", "criterion", "key", "value", "query", "checkpoint", "status")
++            return ("root", "task_id", "query", "value", "key", "repository_revision")
++        if action.startswith("negative_knowledge_") or action == "incident_decision":
++            return ("root", "record", "record_id", "query", "reason", "status", "scope", "scope_id", "target_scope", "approver",
++                    "fingerprint", "tool_outcome")
++        if action.startswith("blackboard_"):
++            return ("root", "board_id", "section", "scope", "scope_id", "record", "value", "query", "status")
++        if action.startswith("swarm_"):
++            return ("root", "task", "task_id", "contract", "checkpoint", "status", "reason", "board_id", "ttl_seconds")
++        if action.startswith("worktree_"):
++            return ("root", "paths", "lease_id", "ttl_seconds", "branch", "clone_id", "worktree_id", "repository_id")
++        if action.startswith("pubsub_"):
++            return ("root", "topic", "key", "value", "after_seq", "tenant")
++        if action == "simulate_merge":
++            return ("root", "key", "task_id", "value", "target_scope")
++        if action == "curate_dataset":
++            return ("root", "record", "record_id", "query", "scope", "scope_id")
++        return ("root", "task_id", "status", "reason", "record", "record_id")
++    if tool == "local_ai_work":
++        if action == "submit":
++            return ("root", "task", "acceptance_criteria", "constraints", "mode", "permissions", "budget",
++                    "timeout_seconds", "return_fields", "max_output_tokens", "keep_failed_workspace")
++        if action == "continue":
++            return ("work_id", "answer", "timeout_seconds", "response_profile", "return_fields", "max_output_tokens")
++        return ("work_id", "timeout_seconds", "response_profile", "return_fields", "max_output_tokens")
++    return ()
++
++
++for _tool_name, _tool_contract_row in OPERATION_CONTRACTS.items():
++    for _action_name, _action_row in _tool_contract_row["actions"].items():
++        if _action_row.get("allowed") is None:
++            _action_row["allowed"] = _action_input_fields(_tool_name, _action_name)
++
++
+ def operation_contract(tool: str) -> dict[str, Any] | None:
+     """Return the authored contract for a tool, if it has one."""
+     return OPERATION_CONTRACTS.get(tool)
+@@ -468,10 +715,13 @@ def operation_input_schema(tool: str, action: str) -> dict[str, Any]:
+     allowed = contract["actions"][action].get("allowed")
+     if allowed is not None:
+         common = set(_RESPONSE_BUDGET_PROPERTIES) | {"extra_fields", selector}
++        if tool == "local_ai_status":
++            common.add("action")
+         schema["properties"] = {
+             name: value for name, value in properties.items()
+             if name in common or name in allowed
+         }
++        schema["additionalProperties"] = False
+     required = [selector, *contract["actions"][action].get("required", ())]
+     schema["required"] = list(dict.fromkeys(required))
+     return schema
+@@ -484,7 +734,7 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
+         return {"type": "object", "properties": {}, "additionalProperties": False}
+ 
+     actions = operation_actions(tool, features)
+-    schema = operation_parameters_schema(tool)
++    schema = operation_parameters_schema(tool, features)
+     selector = str(contract.get("selector_field", "action"))
+     properties = schema.setdefault("properties", {})
+     selector_schema = properties.setdefault(selector, {"type": "string"})
+@@ -508,6 +758,15 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
+             then["required"] = list(dict.fromkeys((selector, *required)))
+         if disallowed:
+             then["not"] = {"anyOf": [{"required": [field]} for field in sorted(disallowed)]}
++        if allowed is not None:
++            common = set(_RESPONSE_BUDGET_PROPERTIES) | {"extra_fields", selector}
++            if tool == "local_ai_status":
++                common.add("action")
++            allowed_names = common | set(allowed)
++            then["properties"] = {
++                name: properties[name] for name in allowed_names if name in properties
++            }
++            then["additionalProperties"] = False
+         if not then:
+             continue
+         conditions.append({
+@@ -517,8 +776,12 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
+             },
+             "then": then,
+         })
+-    if conditions:
+-        schema["allOf"] = conditions
++    existing_conditions = (
++        list(schema.get("allOf", ())) if tool == "local_ai_status" else []
++    )
++    combined_conditions = [*existing_conditions, *conditions]
++    if combined_conditions:
++        schema["allOf"] = combined_conditions
+     else:
+         schema.pop("allOf", None)
+     return schema
+@@ -549,6 +812,9 @@ def operation_output_schema(tool: str, action: str) -> dict[str, Any]:
+         "properties": properties,
+         "additionalProperties": True,
+     }
++    if tool in _ACTION_OUTPUT_TOOL_NAMES:
++        schema["x-operation-action"] = action
++    properties.update(_action_output_properties(tool, action))
+     if tool == "local_ai_artifact":
+         schema["anyOf"] = _artifact_output_variants(action)
+     elif tool == "local_ai_status":
+@@ -558,6 +824,198 @@ def operation_output_schema(tool: str, action: str) -> dict[str, Any]:
+     return schema
+ 
+ 
++def _action_output_properties(tool: str, action: str) -> dict[str, Any]:
++    """Expose stable action payload fields without constraining extra Hub data."""
++    array_object = {"type": "array", "items": {"type": "object"}}
++    object_value = {"type": "object"}
++    string_value = {"type": "string"}
++    integer_value = {"type": ["integer", "null"]}
++    number_value = {"type": ["number", "null"]}
++    json_value = {"type": ["object", "array", "string", "number", "boolean", "null"]}
++    if tool == "local_ai_repo":
++        fields: dict[str, dict[str, Any]] = {
++            "search": {"results": array_object, "query": string_value, "root": string_value},
++            "context": {"context_pack": object_value, "evidence": array_object,
++                        "warnings": array_object},
++            "pipeline": {
++                "steps_total": {"type": "integer"},
++                "steps_attempted": {"type": "integer"},
++                "steps_completed": {"type": "integer"},
++                "steps_failed": {"type": "integer"},
++                "step_results": array_object, "results": object_value,
++            },
++            "map": {"tree": object_value, "files": array_object},
++            "code_index": {"symbols": array_object, "edges": array_object},
++            "verify": {"valid": {"type": "boolean"}, "issues": array_object},
++            "affected_tests": {"tests": array_object, "paths": array_object},
++            "profile": {"profile": object_value},
++            "verify_receipt": {"receipt_id": string_value, "evidence_id": string_value},
++        }
++        if action.startswith("preprocess"):
++            return {"job_id": string_value, "status": string_value, "progress": object_value}
++        if action in fields:
++            return fields[action]
++        if action in {"route"}:
++            return {"route": string_value, "provider": string_value, "reason": string_value}
++        if action in {"delegate", "solve", "generate_tests", "generate_tests_for_diff"}:
++            return {"text": string_value, "summary": string_value, "plan": array_object,
++                    "evidence_ids": {"type": "array", "items": string_value}}
++        if action in {"review_diff", "security_audit", "secret_scan", "package_audit", "verify"}:
++            return {"findings": array_object, "issues": array_object, "summary": string_value}
++        if action in {"impact", "refactor_impact", "cross_project_impact", "cross_repo_impact"}:
++            return {"dependents": array_object, "callers": array_object, "affected_tests": array_object}
++        if action in {"git_status", "repo_state", "synthesize_commit", "git_diff", "git_history_search", "hotspots"}:
++            return {"branch": string_value, "changes": array_object, "commits": array_object,
++                    "files": array_object, "summary": string_value}
++        if action in {
++            "semantic", "graph", "intelligence", "callers", "dead_code", "circular_dependencies",
++            "dependency_slice", "structural_search", "reachability_dead_code", "call_graph_diff",
++            "semantic_diff", "cross_project_graph", "cross_project_symbols", "cross_repo_graph",
++            "cross_repo_symbols", "cross_repo_contract", "topology",
++        }:
++            return {"symbols": array_object, "edges": array_object, "references": array_object,
++                    "relationships": array_object, "summary": string_value}
++        if action in {"affected_tests", "test_matrix", "generate_mocks", "mutation_test"}:
++            return {"tests": array_object, "cases": array_object, "results": array_object}
++        if action in {"batch_replace", "ast_refactor", "validate_patch", "verify_completion", "verify_receipt"}:
++            return {"valid": {"type": "boolean"}, "issues": array_object, "changed_paths": {"type": "array", "items": string_value}}
++        if action in {"pipeline"}:
++            return {"steps_total": {"type": "integer"}, "steps_completed": {"type": "integer"},
++                    "results": object_value}
++        if action in {"preprocess_status", "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister"}:
++            return {"status": string_value, "root": string_value, "progress": object_value}
++        if action in {"context_compile"}:
++            return {"context_id": string_value, "text": string_value, "evidence_ids": {"type": "array", "items": string_value}}
++        repo_fields: dict[str, dict[str, Any]] = {
++            "deterministic": {"facts": array_object, "evidence": array_object, "confidence": number_value},
++            "resolve_imports": {"resolutions": array_object, "missing": array_object, "dependencies": array_object},
++            "audit_dependencies": {"dependencies": array_object, "findings": array_object, "summary": string_value},
++            "ast_outline": {"symbols": array_object, "nodes": array_object, "path": string_value},
++            "code_invariants": {"invariants": array_object, "violations": array_object, "summary": string_value},
++            "generate_dataset": {"dataset_id": string_value, "records": array_object, "examples": array_object},
++            "profile_digest": {"profile": object_value, "digest": string_value, "paths": array_object},
++            "schema_inspect": {"schema": object_value, "fields": array_object},
++            "explain_query": {"explanation": string_value, "query_plan": array_object},
++            "env_compat": {"compatible": {"type": "boolean"}, "environment": object_value, "issues": array_object},
++            "generate_types": {"types": array_object, "files": array_object},
++            "type_stubs": {"types": array_object, "files": array_object, "stubs": array_object},
++            "complexity": {"metrics": object_value, "files": array_object},
++            "api_spec": {"endpoints": array_object, "schema": object_value},
++            "migration_drift": {"migrations": array_object, "drift": array_object, "findings": array_object},
++            "context_budget": {"token_budget": {"type": "integer"}, "total_tokens": {"type": "integer"}, "sections": array_object},
++            "skeletonize": {"skeleton": string_value, "files": array_object},
++            "investigate": {"findings": array_object, "summary": string_value, "evidence_ids": {"type": "array", "items": string_value}},
++            "diagnose": {"diagnosis": string_value, "issues": array_object, "recommendations": array_object},
++            "briefing": {"summary": string_value, "highlights": array_object, "risks": array_object},
++            "split_changes": {"changes": array_object, "groups": array_object, "summary": string_value},
++            "synthesize_rules": {"rules": array_object, "sources": array_object, "summary": string_value},
++        }
++        return repo_fields.get(action, {})
++    if tool == "local_ai_task":
++        if action in {"submit", "status", "wait", "result", "cancel"}:
++            return {"job_id": string_value, "status": string_value,
++                    "result": {"type": ["object", "array", "string", "number", "boolean", "null"]}}
++        if action in {"candidate_create", "candidate_promote"}:
++            return {"candidate_id": string_value, "candidate": object_value, "status": string_value}
++        if action in {"delegate", "explore", "reason", "continue", "review", "second_opinion",
++                      "compress", "complete_code", "scaffold"}:
++            return {"text": string_value, "model": string_value, "usage": object_value}
++        if action in {"vision", "transcribe"}:
++            return {"text": string_value, "segments": array_object,
++                    "language": string_value, "grounding": object_value}
++        if action in {"benchmark", "hardware_benchmark", "evaluation_report", "eval_suite", "eval_drift"}:
++            return {"results": array_object, "metrics": object_value, "summary": string_value}
++        if action == "batch":
++            return {"results": array_object, "tasks_total": {"type": "integer"}}
++        if action in {"evaluation_record"}:
++            return {"evaluation_id": string_value, "recorded": {"type": "boolean"}, "cohort": string_value}
++        if action in {"prompt_eval"}:
++            return {"cases": array_object, "results": array_object, "summary": string_value, "passed": {"type": "boolean"}}
++        if action == "speculative_draft":
++            return {"draft_id": string_value, "text": string_value, "model": string_value, "status": string_value}
++        if action == "route":
++            return {"route": string_value, "model": string_value, "reason": string_value}
++        return {"summary": string_value, "status": string_value, "evidence_ids": {"type": "array", "items": string_value}}
++    if tool == "local_ai_rag":
++        if action in {"search", "docset_search"}:
++            return {"results": array_object, "query": string_value, "total": integer_value}
++        if action == "list":
++            return {"collections": array_object, "docsets": array_object}
++        if action in {"index", "docset_index", "ingest_document", "ingest_diagram"}:
++            return {"indexed_count": {"type": "integer"}, "document_id": string_value,
++                    "docset_id": string_value, "status": string_value}
++    if tool == "local_ai_command":
++        if action in {"run", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix",
++                      "patch_and_verify", "flaky_detect", "webhook_replay"}:
++            return {"command_id": string_value, "exit_code": integer_value, "stdout": string_value,
++                    "stderr": string_value, "changed_paths": {"type": "array", "items": string_value}}
++        if action in {"spawn_daemon", "daemon_status", "stop_daemon", "http_probe"}:
++            return {"pid": integer_value, "port": integer_value, "running": {"type": "boolean"},
++                    "status": string_value}
++        if action in {"classify", "discover", "stats", "preflight"}:
++            return {"classification": string_value, "commands": array_object, "stats": object_value}
++        if action.startswith("mock_server") or action in {"record_mock", "replay_mock"}:
++            return {"server_id": string_value, "mock_id": string_value, "status": string_value}
++        if action == "cancel":
++            return {"job_id": string_value, "cancelled": {"type": "boolean"}, "status": string_value}
++        if action in {"stash_save", "stash_restore"}:
++            return {"stash_id": string_value, "restored": {"type": "boolean"}, "files": {"type": "array", "items": string_value}, "status": string_value}
++        if action == "diff_hunk_stage":
++            return {"path": string_value, "staged": {"type": "boolean"}, "hunk_id": string_value}
++        if action == "speculative_lint":
++            return {"job_id": string_value, "status": string_value, "result": object_value}
++        if action == "webhook_replay":
++            return {"replay_id": string_value, "status": string_value, "events": array_object}
++        return {"command_id": string_value, "exit_code": integer_value, "changed_paths": {"type": "array", "items": string_value}, "status": string_value}
++    if tool == "local_ai_coord":
++        if action == "task_sync":
++            return {
++                "events": array_object,
++                "count": {"type": "integer"},
++                "imported_count": {"type": "integer"},
++                "duplicate_count": {"type": "integer"},
++            }
++        if action.startswith("task_") or action == "task_create":
++            return {"task_id": string_value, "task": object_value, "status": string_value}
++        if action.startswith("memory_") or action.startswith("relation_"):
++            return {"record_id": string_value, "records": array_object, "value": json_value}
++        if action.startswith("pubsub_"):
++            return {"events": array_object, "cursor": string_value, "sequence": integer_value}
++        if action.startswith("worktree_") or action == "leases":
++            return {"leases": array_object, "lease_id": string_value, "expires_at": number_value}
++        if action.startswith("blackboard_") or action.startswith("swarm_"):
++            return {"board_id": string_value, "step_id": string_value, "status": string_value,
++                    "items": array_object}
++        if action.startswith("memo_"):
++            return {"memo_id": string_value, "memo": object_value, "results": array_object}
++        if action in {"claim", "renew", "release", "leases"}:
++            return {"lease_id": string_value, "leases": array_object, "expires_at": number_value, "status": string_value}
++        if action in {"context_compile"}:
++            return {"context_id": string_value, "task_context": object_value, "evidence_ids": {"type": "array", "items": string_value}}
++        if action in {"verify_receipt", "verify_completion"}:
++            return {"passed": {"type": "boolean"}, "receipt_id": string_value, "evidence_id": string_value, "issues": array_object}
++        if action in {"incident_decision", "negative_knowledge_record", "negative_knowledge_find"}:
++            return {"decision_id": string_value, "record_id": string_value, "records": array_object, "decision": object_value}
++        if action in {"simulate_merge"}:
++            return {"conflicts": array_object, "merged": {"type": "boolean"}, "summary": string_value}
++        if action in {"curate_dataset"}:
++            return {"dataset_id": string_value, "records_added": {"type": "integer"}, "status": string_value}
++        if action in {"task_sync", "task_zombie_reap", "task_cleanup_worktree"}:
++            return {"tasks": array_object, "reaped": {"type": "integer"}, "cleaned": {"type": "integer"}, "status": string_value}
++        return {"record_id": string_value, "records": array_object, "status": string_value}
++    if tool == "local_ai_work":
++        return {
++            "work_id": string_value,
++            "status": string_value,
++            "state": string_value,
++            "acceptance_criteria": {"type": "array", "items": string_value},
++            "verification": object_value,
++            "handoff": object_value,
++            "awaiting_input": {"type": "boolean"},
++        }
++    return {}
++
++
+ def _status_output_variants(action: str) -> list[dict[str, Any]]:
+     """Describe stable fields emitted by the MCP status projections."""
+     failure = {
+@@ -762,17 +1220,20 @@ def _validate_output_schema(value: Any, schema: dict[str, Any], path: str = "res
+ def validate_operation_output(tool: str, action: str, result: Any) -> str | None:
+     """Validate shared response-envelope fields while preserving payload fields."""
+     contract = operation_contract(tool)
+-    if contract is None or action not in contract["actions"] or not isinstance(result, dict):
++    if contract is None or action not in contract["actions"]:
+         return None
+-    for field in ("success", "terminal", "retryable"):
+-        if field in result and not isinstance(result[field], bool):
+-            return f"{field} must be boolean for action='{action}'"
+-    if "error" in result and not isinstance(result["error"], str):
+-        return f"error must be string for action='{action}'"
+-    if tool in {"local_ai_artifact", "local_ai_status"}:
+-        error = _validate_output_schema(result, operation_output_schema(tool, action))
+-        if error:
+-            return f"{error} for action='{action}'"
++    if isinstance(result, dict):
++        for field in ("success", "terminal", "retryable"):
++            if field in result and not isinstance(result[field], bool):
++                return f"{field} must be boolean for action='{action}'"
++        if "error" in result and not isinstance(result["error"], str):
++            return f"error must be string for action='{action}'"
++    non_finite_path = _non_finite_number_path(result, "result")
++    if non_finite_path is not None:
++        return f"{non_finite_path} must be finite for action='{action}'"
++    error = _validate_output_schema(result, operation_output_schema(tool, action))
++    if error:
++        return f"{error} for action='{action}'"
+     return None
+ 
+ 
+@@ -871,6 +1332,25 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
+             }
+             for action, row in required_actions
+         ]
++    if tool == "local_ai_status":
++        parameters.setdefault("allOf", []).extend([
++            {
++                "if": {
++                    "properties": {"adoption_signal": {"const": "bypassed"}},
++                    "required": ["adoption_signal"],
++                },
++                "then": {"required": ["target_tool", "target_action"]},
++            },
++            {
++                "if": {
++                    "anyOf": [{"required": ["target_tool"]}, {"required": ["target_action"]}],
++                },
++                "then": {
++                    "required": ["adoption_signal"],
++                    "properties": {"adoption_signal": {"const": "bypassed"}},
++                },
++            },
++        ])
+     return parameters
+ 
+ 
+@@ -923,7 +1403,11 @@ def _matches_json_type(value: Any, expected: Any) -> bool:
+         if expected_type == "integer" and type(value) is int:
+             return True
+         if expected_type == "number" and isinstance(value, (int, float)) and not isinstance(value, bool):
+-            return True
++            try:
++                if math.isfinite(value):
++                    return True
++            except OverflowError:
++                pass
+         if expected_type == "boolean" and type(value) is bool:
+             return True
+         if expected_type == "object" and isinstance(value, dict):
+@@ -935,6 +1419,19 @@ def _matches_json_type(value: Any, expected: Any) -> bool:
+     return not recognized
+ 
+ 
++def _non_finite_number_path(value: Any, path: str) -> str | None:
++    pending = [(value, path)]
++    while pending:
++        current, current_path = pending.pop()
++        if isinstance(current, float) and not math.isfinite(current):
++            return current_path
++        if isinstance(current, dict):
++            pending.extend((item, f"{current_path}.{key}") for key, item in current.items())
++        elif isinstance(current, list):
++            pending.extend((item, f"{current_path}[{index}]") for index, item in enumerate(current))
++    return None
++
++
+ def _validate_nested_schema(value: Any, schema: dict[str, Any], path: str, action: str) -> str | None:
+     """Validate declared constraints recursively for nested registry values."""
+     expected = schema.get("type")
+@@ -1008,6 +1505,8 @@ def validate_operation_arguments(
+     allowed = action_contract.get("allowed")
+     if allowed is not None:
+         common = set(_RESPONSE_BUDGET_PROPERTIES) | {"extra_fields", contract["selector_field"]}
++        if tool == "local_ai_status":
++            common.add("action")
+         unexpected = sorted(set(arguments) - set(allowed) - common)
+         if unexpected:
+             return f"{unexpected[0]} is not valid for action='{action}'"
+@@ -1016,6 +1515,9 @@ def validate_operation_arguments(
+             return f"{field} is required for action='{action}'"
+ 
+     for field, value in arguments.items():
++        non_finite_path = _non_finite_number_path(value, field)
++        if non_finite_path is not None:
++            return f"{non_finite_path} must be finite for action='{action}'"
+         schema = properties.get(field) if isinstance(properties, dict) else None
+         if not isinstance(schema, dict):
+             continue
+@@ -1050,6 +1552,17 @@ def validate_operation_arguments(
+                 return f"{field} must have at least {schema['minItems']} items for action='{action}'"
+             if "maxItems" in schema and len(value) > int(schema["maxItems"]):
+                 return f"{field} must have at most {schema['maxItems']} items for action='{action}'"
++    if tool == "local_ai_status":
++        adoption_signal = arguments.get("adoption_signal", "")
++        target_tool = arguments.get("target_tool", "")
++        target_action = arguments.get("target_action", "")
++        if adoption_signal == "bypassed":
++            if not target_tool or not target_action:
++                return "bypass report requires target_tool and target_action"
++            if target_action not in operation_actions(target_tool):
++                return f"target_action is not supported for target_tool='{target_tool}'"
++        elif target_tool or target_action:
++            return "target_tool requires adoption_signal='bypassed'"
+     if tool == "local_ai_repo" and action == "verify_receipt":
+         receipt = arguments.get("receipt")
+         if not isinstance(receipt, dict):
+diff --git a/tests/test_mcp_compact_transport.py b/tests/test_mcp_compact_transport.py
+index 25a8306..3bafb01 100644
+--- a/tests/test_mcp_compact_transport.py
++++ b/tests/test_mcp_compact_transport.py
+@@ -10,6 +10,10 @@ import mcp.types as t
+ from local_ai_hub.token_accounting import json_tokens
+ 
+ 
++def test_fallback_used_is_protected_reliability_metadata() -> None:
++    assert "fallback_used" in local_ai_mcp._RELIABILITY_PROTECTED_KEYS
++
++
+ def test_python_direct_invocation_returns_dict() -> None:
+     res = local_ai_mcp.local_ai_status()
+     assert isinstance(res, dict)
+diff --git a/tests/test_mcp_contract_dispatch.py b/tests/test_mcp_contract_dispatch.py
+index 6367c3d..2f341f7 100644
+--- a/tests/test_mcp_contract_dispatch.py
++++ b/tests/test_mcp_contract_dispatch.py
+@@ -2,6 +2,8 @@ from __future__ import annotations
+ 
+ import asyncio
+ 
++import pytest
++
+ def test_mcp_dispatch_rejects_unknown_arguments_before_http_tool_call(monkeypatch) -> None:
+     from local_ai_hub import mcp_server
+ 
+@@ -107,3 +109,230 @@ def test_live_mcp_schema_publishes_action_conditions_and_output_schema() -> None
+         branch["properties"]["success"]["type"] == "boolean"
+         for branch in output_schema["anyOf"]
+     )
++
++
++def test_status_adoption_contract_allows_valid_bypass_and_dispatches_fields(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    captured: dict[str, object] = {}
++
++    async def fake_call_tool(name, arguments, *, convert_result=False):
++        captured.update(name=name, arguments=arguments)
++        return {
++            "success": True,
++            "version": None,
++            "ollama_online": None,
++            "active_model": None,
++            "queued": 0,
++            "inflight": 0,
++            "net_cloud_token_delta_est": 0,
++            "cache_hits": 0,
++            "coalesced_waiters": 0,
++        }
++
++    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
++    status_tool = next(
++        tool for tool in asyncio.run(mcp_server.mcp.list_tools())
++        if tool.name == "local_ai_status"
++    )
++    status_properties = status_tool.inputSchema["properties"]
++    assert status_properties["adoption_signal"]["enum"] == ["", "bypassed"]
++    assert status_properties["target_tool"]["enum"]
++    assert any(
++        row.get("if", {}).get("properties", {}).get("adoption_signal", {}).get("const") == "bypassed"
++        and row.get("then", {}).get("required") == ["target_tool", "target_action"]
++        for row in status_tool.inputSchema["allOf"]
++    )
++    arguments = {
++        "detail": "brief",
++        "adoption_signal": "bypassed",
++        "target_tool": "local_ai_repo",
++        "target_action": "search",
++    }
++
++    _content, payload = asyncio.run(
++        mcp_server._compact_mcp_call_tool("local_ai_status", arguments)
++    )
++
++    assert payload["success"] is True
++    assert captured == {"name": "local_ai_status", "arguments": arguments}
++
++
++@pytest.mark.parametrize(
++    "arguments",
++    [
++        {"detail": "brief", "adoption_signal": "bypassed", "target_action": "search"},
++        {"detail": "brief", "adoption_signal": "bypassed", "target_tool": "local_ai_repo"},
++        {"detail": "brief", "target_tool": "local_ai_repo", "target_action": "search"},
++        {
++            "detail": "brief",
++            "adoption_signal": "bypassed",
++            "target_tool": "local_ai_repo",
++            "target_action": "not_an_action",
++        },
++    ],
++)
++def test_invalid_status_adoption_pair_is_rejected_before_dispatch(monkeypatch, arguments) -> None:
++    from local_ai_hub import mcp_server
++
++    async def fail_if_dispatched(*_args, **_kwargs):
++        pytest.fail("invalid adoption metadata must be rejected before tool dispatch")
++
++    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fail_if_dispatched)
++    _content, payload = asyncio.run(
++        mcp_server._compact_mcp_call_tool("local_ai_status", arguments)
++    )
++
++    assert payload["success"] is False
++    assert payload["status_code"] == 400
++    assert payload["terminal"] is True
++    assert payload["retryable"] is False
++
++
++def test_mcp_validation_and_disabled_tool_errors_keep_http_status_parity(monkeypatch) -> None:
++    from types import SimpleNamespace
++    from local_ai_hub import mcp_server
++    from local_ai_hub.operation_contracts import validate_operation_call
++
++    disabled_features = SimpleNamespace(repo=False)
++    monkeypatch.setattr(mcp_server, "FEATURES", disabled_features)
++    calls = []
++
++    async def fake_call_tool(name, arguments, *, convert_result=False):
++        calls.append(name)
++        return {"success": True}
++
++    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fake_call_tool)
++    disabled = validate_operation_call("local_ai_repo", {"action": "search"}, features=disabled_features)
++    _content, payload = asyncio.run(
++        mcp_server._compact_mcp_call_tool("local_ai_repo", {"action": "search"})
++    )
++
++    assert disabled is not None and disabled[0] == payload["status_code"] == 403
++    assert payload["terminal"] is True and payload["retryable"] is False
++    assert calls == []
++
++
++def test_mcp_unexpected_dispatch_failure_is_bounded_http_500_shape(monkeypatch) -> None:
++    from local_ai_hub import mcp_server
++
++    async def fail_dispatch(*_args, **_kwargs):
++        raise RuntimeError("backend exploded\nprivate detail")
++
++    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fail_dispatch)
++    _content, payload = asyncio.run(
++        mcp_server._compact_mcp_call_tool("local_ai_status", {"detail": "brief"})
++    )
++
++    assert payload == {
++        "success": False,
++        "status_code": 500,
++        "terminal": True,
++        "retryable": False,
++        "error": "MCP tool failed: backend exploded",
++    }
++
++
++def test_http_mcp_invalid_work_continue_error_semantics_match(tmp_path, monkeypatch) -> None:
++    import json
++    import threading
++    import urllib.error
++    import urllib.request
++    from types import SimpleNamespace
++
++    from local_ai_hub.app import LocalAIApp
++    from local_ai_hub import http_server, mcp_server
++
++    state_dir = tmp_path / "state"
++    config_path = tmp_path / "config.toml"
++    config_path.write_text(
++        "\n".join([
++            '[server]',
++            'bind = "127.0.0.1"',
++            'port = 11498',
++            f'state_dir = "{state_dir.as_posix()}"',
++        ]),
++        encoding="utf-8",
++    )
++    app = LocalAIApp(str(config_path))
++    previous_app = http_server.APP
++    http_server.APP = app
++    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++    monkeypatch.setattr(mcp_server, "FEATURES", SimpleNamespace(work_orchestrator=True))
++
++    async def fail_if_dispatched(*_args, **_kwargs):
++        pytest.fail("MCP must reject the same missing answer before tool dispatch")
++
++    monkeypatch.setattr(mcp_server.mcp._tool_manager, "call_tool", fail_if_dispatched)
++    try:
++        request_body = {"action": "continue", "work_id": "work-1"}
++        request = urllib.request.Request(
++            f"http://127.0.0.1:{server.server_address[1]}/api/work-orders",
++            data=json.dumps(request_body).encode("utf-8"),
++            headers={
++                "Content-Type": "application/json",
++                "X-LocalAI-Tenant": "tenant-a",
++            },
++            method="POST",
++        )
++        try:
++            with urllib.request.urlopen(request) as response:
++                http_status = response.status
++                http_payload = json.loads(response.read().decode("utf-8"))
++        except urllib.error.HTTPError as error:
++            http_status = error.code
++            http_payload = json.loads(error.read().decode("utf-8"))
++
++        _content, mcp_payload = asyncio.run(
++            mcp_server._compact_mcp_call_tool("local_ai_work", request_body)
++        )
++
++        assert http_status == mcp_payload["status_code"] == 400, (
++            f"HTTP returned {http_status} {http_payload!r}; MCP returned {mcp_payload!r}"
++        )
++        for field, expected in (("success", False), ("terminal", True), ("retryable", False)):
++            assert http_payload[field] == mcp_payload[field] == expected
++        assert http_payload["error"] == "answer is required"
++        assert mcp_payload["error"] == "answer is required for action='continue'"
++        assert mcp_payload["error"].startswith(http_payload["error"])
++    finally:
++        server.shutdown()
++        server.server_close()
++        thread.join(timeout=2)
++        http_server.APP = previous_app
++        app.close()
++
++
++def test_live_output_schemas_expose_action_specific_variants() -> None:
++    from local_ai_hub import mcp_server
++    from local_ai_hub.operation_contracts import operation_actions
++
++    tools = mcp_server.mcp._tool_manager._tools
++    catalog = asyncio.run(mcp_server.mcp.list_tools())
++    for name in (
++        "local_ai_repo", "local_ai_task", "local_ai_rag",
++        "local_ai_command", "local_ai_coord", "local_ai_work",
++    ):
++        output_schema = tools[name].output_schema
++        wire_tool = next(tool for tool in catalog if tool.name == name)
++        assert output_schema["anyOf"]
++        assert {
++            branch["x-operation-action"] for branch in output_schema["anyOf"]
++        } == set(operation_actions(name, mcp_server.FEATURES))
++        assert {
++            branch["x-operation-action"] for branch in wire_tool.outputSchema["anyOf"]
++        } == set(operation_actions(name, mcp_server.FEATURES))
++
++
++def test_enabled_batch_replacement_schema_publishes_edit_arguments() -> None:
++    from local_ai_hub.features import FeatureSet
++    from local_ai_hub.operation_contracts import operation_tool_input_schema
++
++    features = FeatureSet({"features": {"repo": True, "batch_replacement": True}})
++    schema = operation_tool_input_schema("local_ai_repo", features)
++
++    assert "batch_replace" in schema["properties"]["action"]["enum"]
++    assert "edits" in schema["properties"]
++    assert "dry_run" in schema["properties"]
+diff --git a/tests/test_operation_contracts.py b/tests/test_operation_contracts.py
+index ace4083..8ab2077 100644
+--- a/tests/test_operation_contracts.py
++++ b/tests/test_operation_contracts.py
+@@ -4,6 +4,8 @@ from pathlib import Path
+ from types import SimpleNamespace
+ from typing import get_args
+ 
++import pytest
++
+ ROOT = Path(__file__).resolve().parents[1]
+ sys.path.insert(0, str(ROOT / "src"))
+ 
+@@ -17,6 +19,8 @@ from local_ai_hub.operation_contracts import (
+     operation_metadata,
+     operation_output_schema,
+     operation_parameters_schema,
++    operation_tool_output_schema,
++    operation_tool_input_schema,
+     validate_operation_arguments,
+     validate_operation_output,
+ )
+@@ -510,8 +514,8 @@ def test_runtime_validation_enforces_registered_schema_constraints():
+         "local_ai_artifact", "list", {"response_profile": "unregistered"}
+     ) == "response_profile must be one of minimal, compact, standard, debug, delta for action='list'"
+     assert validate_operation_arguments(
+-        "local_ai_task", "reason", {"quality_pass": "true"}
+-    ) == "quality_pass must be boolean or null for action='reason'"
++        "local_ai_task", "evaluation_record", {"quality_pass": "true"}
++    ) == "quality_pass must be boolean or null for action='evaluation_record'"
+ 
+ 
+ def test_mcp_compaction_preserves_reliability_evidence_and_cancel_metadata(monkeypatch):
+@@ -610,6 +614,261 @@ def test_action_metadata_exposes_consistent_input_and_output_schemas():
+             assert generated["x-operation-contract"]["actions"][action] == action_metadata
+ 
+ 
++def test_status_adoption_fields_are_registered_and_validated_as_a_pair():
++    parameters = operation_parameters_schema("local_ai_status")
++    properties = parameters["properties"]
++
++    assert properties["adoption_signal"]["enum"] == ["", "bypassed"]
++    assert properties["target_tool"]["enum"] == list(OPERATION_CONTRACTS)
++    assert properties["target_action"]["type"] == "string"
++    assert validate_operation_arguments(
++        "local_ai_status",
++        "brief",
++        {
++            "detail": "brief",
++            "adoption_signal": "bypassed",
++            "target_tool": "local_ai_repo",
++            "target_action": "search",
++        },
++    ) is None
++    assert validate_operation_arguments(
++        "local_ai_status", "brief", {"detail": "brief", "target_tool": "local_ai_repo"}
++    ) == "target_tool requires adoption_signal='bypassed'"
++    assert validate_operation_arguments(
++        "local_ai_status",
++        "brief",
++        {
++            "detail": "brief",
++            "adoption_signal": "bypassed",
++            "target_tool": "local_ai_repo",
++            "target_action": "unknown",
++        },
++    ) == "target_action is not supported for target_tool='local_ai_repo'"
++
++
++def test_primary_tool_outputs_publish_distinct_action_shapes():
++    representatives = {
++        "local_ai_repo": ("search", "results"),
++        "local_ai_task": ("submit", "job_id"),
++        "local_ai_rag": ("search", "results"),
++        "local_ai_command": ("run", "exit_code"),
++        "local_ai_coord": ("task_create", "task_id"),
++        "local_ai_work": ("submit", "work_id"),
++    }
++
++    for tool, (action, result_field) in representatives.items():
++        action_schema = operation_output_schema(tool, action)
++        tool_schema = operation_tool_output_schema(tool)
++
++        assert result_field in action_schema["properties"]
++        assert action_schema["x-operation-action"] == action
++        assert tool_schema["anyOf"]
++        assert {branch["x-operation-action"] for branch in tool_schema["anyOf"]} == set(
++            operation_actions(tool)
++        )
++
++
++def test_every_primary_action_publishes_typed_payload_fields():
++    envelope_fields = {
++        "success", "error", "terminal", "retryable", "degraded", "stale",
++        "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
++    }
++    for tool in (
++        "local_ai_repo", "local_ai_task", "local_ai_rag",
++        "local_ai_command", "local_ai_coord", "local_ai_work",
++    ):
++        for action in operation_actions(tool):
++            schema = operation_output_schema(tool, action)
++            payload_fields = set(schema["properties"]) - envelope_fields
++            assert payload_fields, f"{tool}.{action} has only a generic response envelope"
++            assert schema["x-operation-action"] == action
++
++
++def test_action_input_contracts_filter_tool_wide_fields_and_runtime_arguments():
++    search = operation_input_schema("local_ai_repo", "search")
++    batch = operation_input_schema("local_ai_repo", "batch_replace")
++
++    assert {"root", "query", "include_code"} <= set(search["properties"])
++    assert not {"receipt", "edits", "dry_run", "changed_paths"} & set(search["properties"])
++    assert {"root", "edits", "dry_run"} <= set(batch["properties"])
++    assert "receipt" not in batch["properties"]
++    assert validate_operation_arguments(
++        "local_ai_repo", "search", {"query": "needle", "receipt": {}}
++    ) == "receipt is not valid for action='search'"
++
++
++def test_task_submit_contract_includes_async_job_payload_arguments():
++    submit = operation_input_schema("local_ai_task", "submit")
++    status = operation_input_schema("local_ai_task", "status")
++
++    assert {"task", "context", "candidate", "complexity", "max_tokens", "tasks", "profile", "root", "workspace"} <= set(submit["properties"])
++    assert {"job_id", "job_action", "timeout_seconds"} <= set(submit["properties"])
++    assert not {"task", "context", "candidate", "tasks", "profile", "workspace"} & set(status["properties"])
++    assert validate_operation_arguments(
++        "local_ai_task",
++        "submit",
++        {"task": "summarize", "context": "brief", "tasks": [], "job_action": "reason"},
++    ) is None
++
++
++def test_coord_contracts_include_handler_consumed_arguments():
++    receipt = operation_input_schema("local_ai_coord", "verify_receipt")
++    completion = operation_input_schema("local_ai_coord", "verify_completion")
++    relation = operation_input_schema("local_ai_coord", "relation_record")
++    sync = operation_input_schema("local_ai_coord", "task_sync")
++
++    assert {"checkpoint", "status", "criterion", "key", "value", "query"} <= set(receipt["properties"])
++    assert {"repository_revision", "task_id", "query", "value", "key"} <= set(completion["properties"])
++    assert {"key", "task_id", "query", "task", "reason", "status", "value", "target_scope", "record", "ttl_seconds", "max_tokens"} <= set(relation["properties"])
++    assert {"key", "task_id", "status", "ttl_seconds", "max_tokens", "record"} <= set(sync["properties"])
++    assert validate_operation_arguments(
++        "local_ai_coord", "verify_receipt",
++        {"task_id": "task-1", "checkpoint": {"task_id": "task-1", "criterion": "check", "passed": True}, "status": "passed"},
++    ) is None
++    assert validate_operation_arguments(
++        "local_ai_coord", "verify_completion", {"task_id": "task-1", "repository_revision": "abc"}
++    ) is None
++    assert validate_operation_arguments(
++        "local_ai_coord", "relation_record", {"key": "source", "value": "target", "reason": "depends_on", "ttl_seconds": 1}
++    ) is None
++    assert validate_operation_arguments(
++        "local_ai_coord", "task_sync", {"status": "import", "record": [{"seq": 1}]}
++    ) is None
++
++
++def test_task_continue_contract_includes_conversation_id():
++    schema = operation_input_schema("local_ai_task", "continue")
++
++    assert "conversation_id" in schema["properties"]
++    assert validate_operation_arguments(
++        "local_ai_task", "continue", {"conversation_id": "conversation-1", "task": "continue"}
++    ) is None
++
++
++def test_coord_decision_and_merge_contracts_include_handler_inputs():
++    assert validate_operation_arguments(
++        "local_ai_coord", "incident_decision",
++        {"fingerprint": {"kind": "timeout"}, "tool_outcome": {"success": False}},
++    ) is None
++    assert validate_operation_arguments(
++        "local_ai_coord", "simulate_merge",
++        {"key": "feature", "task_id": "branch", "value": "source", "target_scope": "main"},
++    ) is None
++
++
++def test_repo_action_contracts_include_handler_inputs():
++    cases = [
++        ("generate_dataset", {"relation": "json"}),
++        ("secret_scan", {"staged": True}),
++        ("complexity", {"include_tests": True}),
++        ("git_diff", {"path": "src/app.py", "max_tokens": 100}),
++        ("mutation_test", {"diff": "diff --git a/a b/a"}),
++    ]
++    for action, arguments in cases:
++        schema = operation_input_schema("local_ai_repo", action)
++        assert set(arguments) <= set(schema["properties"]), action
++        assert validate_operation_arguments("local_ai_repo", action, arguments) is None, action
++
++
++@pytest.mark.parametrize(
++    ("tool", "action", "arguments", "path"),
++    [
++        ("local_ai_task", "batch", {"tasks": [{"options": {"temperature": float("nan")}}]}, "tasks[0].options.temperature"),
++        ("local_ai_coord", "task_sync", {"status": "import", "record": [{"weight": float("inf")}]}, "record[0].weight"),
++    ],
++)
++def test_non_finite_numbers_are_rejected_recursively(tool, action, arguments, path):
++    error = validate_operation_arguments(tool, action, arguments)
++    assert error == f"{path} must be finite for action='{action}'"
++
++
++def test_task_sync_output_contract_describes_export_and_import_deltas():
++    schema = operation_output_schema("local_ai_coord", "task_sync")
++
++    assert {"events", "count", "imported_count", "duplicate_count"} <= set(schema["properties"])
++    assert validate_operation_output(
++        "local_ai_coord", "task_sync", {"success": True, "events": [{"seq": 1}], "count": 1}
++    ) is None
++    assert validate_operation_output(
++        "local_ai_coord", "task_sync", {"success": True, "events": "bad", "count": 1}
++    ) is not None
++
++
++def test_non_finite_numbers_are_rejected_in_untyped_nested_output_fields():
++    error = validate_operation_output(
++        "local_ai_repo", "search", {"extension": {"scores": [float("nan")]}}
++    )
++    assert error == "result.extension.scores[0] must be finite for action='search'"
++
++
++def test_every_registered_action_has_a_narrow_input_contract():
++    for tool, contract in OPERATION_CONTRACTS.items():
++        tool_properties = set(operation_parameters_schema(tool)["properties"])
++        feature_properties = set()
++        for fields in contract.get("conditional_properties", {}).values():
++            feature_properties.update(fields)
++        for action in operation_actions(tool):
++            action_contract = contract["actions"][action]
++            schema = operation_input_schema(tool, action)
++            assert action_contract["allowed"] is not None, f"{tool}.{action} has no allowlist"
++            assert set(action_contract["allowed"]) <= tool_properties | feature_properties
++            assert schema["additionalProperties"] is False
++            common = {"extra_fields", contract["selector_field"]}
++            common.update({"max_response_tokens", "response_profile", "reuse_key"})
++            if tool == "local_ai_status":
++                common.add("action")
++            expected = (common | set(action_contract["allowed"])) & tool_properties
++            assert set(schema["properties"]) == expected, f"{tool}.{action} exposes unrelated inputs"
++
++
++def test_live_input_schema_conditions_each_action_on_its_allowed_fields():
++    feature_set = FeatureSet({"features": {"repo": True, "batch_replacement": True}})
++    schema = operation_tool_input_schema("local_ai_repo", feature_set)
++    branches = {
++        row["if"]["properties"]["action"]["const"]: row["then"]
++        for row in schema["allOf"]
++        if row.get("if", {}).get("properties", {}).get("action", {}).get("const")
++    }
++
++    search = branches["search"]
++    batch = branches["batch_replace"]
++    assert search["additionalProperties"] is False
++    assert {"root", "query", "include_code"} <= set(search["properties"])
++    assert not {"receipt", "edits", "dry_run", "changed_paths"} & set(search["properties"])
++    assert {"root", "edits", "dry_run"} <= set(batch["properties"])
++
++
++@pytest.mark.parametrize(
++    ("tool", "action", "result", "field"),
++    [
++        ("local_ai_repo", "search", {"results": "not-an-array"}, "results"),
++        ("local_ai_task", "submit", {"job_id": 42}, "job_id"),
++        ("local_ai_rag", "search", {"results": "not-an-array"}, "results"),
++        ("local_ai_command", "run", {"exit_code": "zero"}, "exit_code"),
++        ("local_ai_coord", "task_create", {"task_id": 42}, "task_id"),
++        ("local_ai_work", "submit", {"work_id": 42}, "work_id"),
++    ],
++)
++def test_all_public_tool_payload_fields_are_runtime_validated(tool, action, result, field):
++    error = validate_operation_output(tool, action, result)
++    assert error is not None
++    assert field in error
++
++
++@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
++def test_non_finite_top_level_numbers_are_rejected(value):
++    error = validate_operation_arguments(
++        "local_ai_task", "delegate", {"task": "summarize", "latency_budget_ms": value}
++    )
++    assert error == "latency_budget_ms must be finite for action='delegate'"
++
++
++def test_output_contract_rejects_non_object_and_non_finite_declared_values():
++    assert "wrong JSON type" in validate_operation_output("local_ai_repo", "search", ["not an object"])
++    error = validate_operation_output("local_ai_repo", "deterministic", {"confidence": float("nan")})
++    assert error is not None and "confidence" in error
++
++
+ def test_artifact_list_schema_rejects_fields_used_only_by_get_and_slice():
+     schema = operation_input_schema("local_ai_artifact", "list")
+ 
+@@ -722,8 +981,12 @@ def test_output_validation_checks_shared_envelope_and_keeps_extra_payloads():
+     }
+ 
+     assert validate_operation_output("local_ai_repo", "search", valid_result) is None
+-    assert validate_operation_output("local_ai_repo", "search", "plain text") is None
+-    assert validate_operation_output("local_ai_repo", "search", None) is None
++    assert validate_operation_output("local_ai_repo", "search", "plain text") == (
++        "result has the wrong JSON type for action='search'"
++    )
++    assert validate_operation_output("local_ai_repo", "search", None) == (
++        "result has the wrong JSON type for action='search'"
++    )
+     assert validate_operation_output(
+         "local_ai_repo", "search", {**valid_result, "success": "yes"}
+     ) == "success must be boolean for action='search'"
+diff --git a/docs/superpowers/specs/2026-09-29-t03-action-contract-validation.md b/docs/superpowers/specs/2026-09-29-t03-action-contract-validation.md
+new file mode 100644
+index 0000000..e72544e
+--- /dev/null
++++ b/docs/superpowers/specs/2026-09-29-t03-action-contract-validation.md
+@@ -0,0 +1,30 @@
++# T03 Action Contract Validation
++
++## Goal
++
++Make the MCP boundary publish, enforce, and validate contracts per registered action while preserving the existing eight-tool surface and Hub HTTP dispatch.
++
++## Decisions
++
++- Each action has an explicit allowlist. The single-action schema contains only the selector, shared response controls, and fields accepted by that action. The live MCP schema uses an action conditional with the same property set and rejects other properties.
++- Runtime argument validation uses the same action allowlist and typed property schemas before MCP calls the handler. Feature-disabled actions retain the HTTP-compatible 403 response; malformed calls return 400.
++- Numeric JSON values must be finite. The check applies to top-level and nested input/output values.
++- MCP outputs for status, artifact, repo, task, RAG, command, coordination, and work are checked against their action schema. The schemas type only declared stable fields and preserve extra Hub fields; a mismatch becomes a bounded terminal 500 response.
++- Unexpected MCP dispatch exceptions become a bounded terminal 500 error. HTTP validation and disabled-feature status semantics are mirrored at the MCP boundary.
++- `fallback_used` is protected reliability metadata during response budgeting and compaction.
++- Hub-owned daemon auto-start remains outside this T03 contract change. T04 owns its client lifecycle implementation and proof.
++- Keep `/api/context/pack`, its route, payload semantics, and Agent 2 ownership unchanged. No T01, T04, or T07 hunks enter the T03 patch.
++
++## Acceptance
++
++1. All registered actions have allowlists; representative action schemas omit unrelated tool-wide arguments, and runtime rejects them before dispatch.
++2. The live MCP schema encodes per-action properties, including enabled and disabled batch-replacement fields.
++3. Each public tool rejects wrong types in a declared action payload field; unknown response fields remain intact.
++4. `NaN`, positive infinity, and negative infinity fail numeric input validation; output numeric fields receive the same finite check.
++5. MCP validation, feature-disabled, and unexpected-dispatch errors have tested 400, 403, and 500 envelopes.
++6. `fallback_used` survives reliability-protected compaction.
++7. Focused contract/dispatch suites pass; the T04 `test_client_transport.py` failure is tracked separately and is not an acceptance claim for T03.
++
++## Boundaries
++
++This work changes the contract registry, MCP boundary validation, and focused tests only. It does not edit the Hub context-pack route, T01 inventory, T04 client lifecycle, T07 replay/journal handlers, or the T09/T21 completion integration.

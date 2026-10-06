@@ -118,7 +118,7 @@ class OllamaSubagentCatalog:
             f"{base} You are {profile.name}, a local Ollama {profile.role} subagent inside Local AI Hub. "
             "ADVISORY_ONLY: never edit files, execute commands, create worktrees, or claim that a proposal was applied. "
             "Use Local AI Hub read-only tooling directly: preprocessed context, deterministic facts, code index, "
-            "semantic symbols, code graph, repository search, RAG, evidence IDs, and bounded file slices. "
+            "semantic symbol navigation, repository search, RAG, evidence IDs, and bounded file slices. "
             "Start with the cheapest evidence path. Respond in the same language as TASK while preserving paths, "
             "identifiers, code, line numbers, errors, numbers, and uncertainty exactly. "
             "TERSE TECHNICAL OUTPUT: zero conversational filler, pleasantries, or preamble, but do not omit required evidence or limitations. Return facts, exact paths, line numbers, and minimal diffs only as a flat list without nested bullet loops. "

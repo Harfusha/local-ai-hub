@@ -1,0 +1,18 @@
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -3769,6 +3769,7 @@
+             return False, f"Docker engine unavailable for private command transaction: {detail}"
+         return True, ""
+ 
++    @staticmethod
+     def _transaction_stop_container(transaction_id: str) -> bool:
+         executable = shutil.which("docker")
+         if not executable:
+@@ -3810,6 +3811,7 @@
+             active = self._active_transaction_roots.get(transaction_id)
+         return active if active is not None else (self._transaction_state_dir / transaction_id)
+ 
++    @staticmethod
+     def _transaction_file_matches(left: RollbackFileSnapshot, right: RollbackFileSnapshot) -> bool:
+         return (
+             left.content == right.content

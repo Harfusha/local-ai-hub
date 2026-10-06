@@ -1,0 +1,34 @@
+{
+  "schema": "t09.validation_receipt.v1",
+  "task": "T09 receipt owner provenance, visibility, structured descriptions, keyword retrieval",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "candidate_worktree": "C:\\Users\\Adam\\.codex\\worktrees\\t09-root-current\\.local-ai-hub",
+  "candidate_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "patch": "handoff/t09-receipt-owner-provenance-root-current-20261003-r4.patch",
+  "patch_sha256": "0E5FDC52A3116448CEE57DFF6E77732D4349F05318309A43D466EC91FF8BF733",
+  "root_apply_check": "PASS",
+  "patch_applied_to_root": false,
+  "tests_not_run": [
+    "test_keyword_search_respects_requested_result_bound",
+    "test_recording_same_receipt_twice_is_idempotent",
+    "test_receipt_owner_metadata_uses_versioned_existing_details_envelope",
+    "test_unknown_receipt_metadata_schema_fails_closed",
+    "test_repo_bound_task_rejects_receipt_at_different_revision"
+  ],
+  "test_gate": "T20 GO absent",
+  "schema_change": "versioned JSON envelope in existing details column; no SQL schema change",
+  "changed_files": [
+    {
+      "candidate_sha256": "A1EF1BBB5BCAEC37CB7AFB9B3088C7C5EB116DE5166A0C7B4E9806DAD8C6F71D",
+      "root_preimage_sha256": "FB477438FF110AB80FE6F2D486FFA5D87AAB1A855735FCD94592F8080EAF0017",
+      "path": "src/local_ai_hub/agent_verification.py"
+    },
+    {
+      "candidate_sha256": "7CA1077518A56600E701F737262EE6F7F5B170CA15C6DC3C9730DE4706F64636",
+      "root_preimage_sha256": "A6B7684359D2126F9366EBCE97CA9DDE918AE383F491428947A850C4BB6409D9",
+      "path": "tests/test_agent_receipt_completion_t09.py"
+    }
+  ],
+  "t08_coordination": "interface request sent; response pending; no T08 worktree edits"
+}

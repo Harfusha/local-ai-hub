@@ -1,0 +1,139 @@
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -9,6 +9,7 @@
+ import http.client
+ import io
+ import ipaddress
++import inspect
+ import json
+ import math
+ import os
+@@ -2097,6 +2098,27 @@
+         store.assert_attempt_current(work_attempt_fence)
+         return payload
+ 
++    def _transaction_namespace_kwargs(self, source: Path, fencing_store: Any) -> dict[str, str]:
++        lease_claim = self._transaction_leases.claim
++        fence_acquire = fencing_store.acquire
++        lease_supports_namespace = "coordination_id" in inspect.signature(lease_claim).parameters
++        fence_supports_namespace = "coordination_id" in inspect.signature(fence_acquire).parameters
++        if not lease_supports_namespace and not fence_supports_namespace:
++            return {}
++        if not lease_supports_namespace or not fence_supports_namespace:
++            raise RuntimeError("transaction lease and mutation fence namespace APIs do not match")
++        try:
++            from .project_config import resolve_project_context
++
++            coordination_id = resolve_project_context(
++                source, configured_state_dir(self.config)
++            ).coordination_id
++        except Exception as exc:
++            raise RuntimeError("project coordination namespace could not be resolved") from exc
++        if not isinstance(coordination_id, str) or not coordination_id.strip():
++            raise RuntimeError("project coordination namespace is required")
++        return {"coordination_id": coordination_id}
++
+     @contextmanager
+     def _fenced_transaction_commit(
+         self,
+@@ -2106,6 +2128,7 @@
+         source: Path,
+         paths: list[str],
+         owner_id: str,
++        namespace_kwargs: dict[str, str] | None = None,
+     ):
+         payload = self._assert_work_attempt_fence(
+             work_attempt_fence, task_id=task_id, resource=source
+@@ -2114,6 +2137,7 @@
+         lease = store.acquire(
+             str(source), owner_id, paths, ttl_seconds=300.0,
+             attempt=work_attempt_fence,
++            **(namespace_kwargs or {}),
+         )
+         try:
+             with store.commit_guard(lease, paths):
+@@ -4197,11 +4221,27 @@
+         transaction_parent: Path,
+         lease_tenant: str,
+         work_attempt_fence: WorkAttemptFence,
++        namespace_kwargs: dict[str, str] | None = None,
+     ) -> dict[str, Any] | None:
+         self._assert_work_attempt_fence(
+             work_attempt_fence, task_id=task_id, resource=source
+         )
+-        for journal_path in sorted(transaction_parent.glob("*.journal.json")):
++        journal_paths = sorted(transaction_parent.glob("*.journal.json"))
++        if not journal_paths:
++            return None
++        if namespace_kwargs is None:
++            try:
++                namespace_kwargs = self._transaction_namespace_kwargs(
++                    source, self.fencing_lease_store
++                )
++            except Exception as exc:
++                return {
++                    "success": False, "transaction_status": "recovery_required",
++                    "failure_kind": "mutation_namespace_unavailable",
++                    "outcome_unknown": True, "terminal": True, "retryable": False,
++                    "error": str(exc)[:512],
++                }
++        for journal_path in journal_paths:
+             lease: dict[str, Any] | None = None
+             journal: dict[str, Any] = {}
+             try:
+@@ -4241,6 +4281,7 @@
+                     paths=list(paths),
+                     ttl_seconds=300,
+                     purpose=f"recover command transaction {journal.get('transaction_id', '')}",
++                    **namespace_kwargs,
+                 )
+                 if not lease.get("success"):
+                     return {
+@@ -4288,6 +4329,7 @@
+                     source=source,
+                     paths=list(paths),
+                     owner_id=f"command-recovery:{task_id}:{journal.get('transaction_id', '')}:{uuid.uuid4().hex}",
++                    namespace_kwargs=namespace_kwargs,
+                 ) as (fencing_lease, recovery_attempt_payload):
+                     if fencing_lease.fencing_token <= highest_writer_token:
+                         raise ValueError("transaction recovery writer fence is stale")
+@@ -4451,10 +4493,22 @@
+             transaction_parent = fallback / state_key
+         transaction_parent.mkdir(parents=True, exist_ok=True)
+         try:
++            namespace_kwargs = self._transaction_namespace_kwargs(
++                source, self.fencing_lease_store
++            )
++        except Exception as exc:
++            return {
++                "success": False, "transaction_id": transaction_id,
++                "transaction_status": "recovery_required",
++                "failure_kind": "mutation_namespace_unavailable",
++                "outcome_unknown": True, "terminal": True, "retryable": False,
++                "error": str(exc)[:512],
++            }
++        try:
+             recovery = self._recover_transaction_journals(
+                 source, task_id, transaction_parent,
+                 f"recovery:{task_id}:{hashlib.sha256(str(source).encode()).hexdigest()[:16]}",
+-                work_attempt_fence,
++                work_attempt_fence, namespace_kwargs,
+             )
+         except OSError as exc:
+             return {
+@@ -4491,6 +4545,7 @@
+             paths=paths,
+             ttl_seconds=min(7200, max(30, int(timeout) + 60)),
+             purpose=f"command transaction task={task_id}",
++            **namespace_kwargs,
+         )
+         if not lease.get("success"):
+             return {
+@@ -4755,6 +4810,7 @@
+                         source=source,
+                         paths=changed_paths,
+                         owner_id=f"command-import:{task_id}:{transaction_id}:{uuid.uuid4().hex}",
++                        namespace_kwargs=namespace_kwargs,
+                     ) as (fencing_lease, commit_attempt_payload):
+                         journal_payload["attempt_fence"] = commit_attempt_payload
+                         journal_payload["fencing"] = {

@@ -1,0 +1,11 @@
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -2613,6 +2613,7 @@
+                         admission_release = {
+                             "state": "active" if admission_active else "drained",
+                             "inference_active": admission_active,
++                            "source": "async_job_manager",
+                         }
+                     except Exception:
+                         admission_release = {"state": "unavailable", "inference_active": True}

@@ -7,9 +7,9 @@ import hashlib
 import json
 import math
 import os
+import stat
 import re
 import sqlite3
-import stat
 import subprocess
 import tomllib
 from contextlib import closing
@@ -661,6 +661,8 @@ def _normalize(
         raise ProjectConfigError("invalid_config")
     normalized_language_overrides: dict[str, dict[str, Any]] = {}
     for name, value in language_overrides.items():
+        if set(value) - {"text_extensions"}:
+            raise ProjectConfigError("invalid_config")
         override = _json_compatible(value)
         if "text_extensions" in value:
             override_extensions = _extensions(value["text_extensions"])
@@ -1071,7 +1073,7 @@ def path_is_allowed(
         resolved_relative, settings.exclude_paths
     ):
         return False
-    override = _path_override_for_paths(
+    override = _path_override_for_candidates(
         (lexical_relative, resolved_relative), settings.path_overrides
     )
     if override == "exclude":
@@ -1214,7 +1216,7 @@ def may_descend(
         resolved_relative, settings.exclude_paths
     ):
         return False
-    override = _path_override_for_paths(
+    override = _path_override_for_candidates(
         (lexical_relative, resolved_relative), settings.path_overrides
     )
     include_patterns = list(settings.force_include_paths) + [
@@ -1259,10 +1261,10 @@ def _matches_any(path: str, patterns: tuple[str, ...]) -> bool:
 
 
 def _path_override_for(path: str, overrides: Mapping[str, str]) -> str | None:
-    return _path_override_for_paths((path,), overrides)
+    return _path_override_for_candidates((path,), overrides)
 
 
-def _path_override_for_paths(
+def _path_override_for_candidates(
     paths: tuple[str, ...], overrides: Mapping[str, str]
 ) -> str | None:
     matched = [
@@ -1398,8 +1400,20 @@ class ProjectPathHintStore:
         scope_value = f"{os.path.normcase(str(identity))}\0{shared_namespace or ''}"
         self.project_id = hashlib.sha256(scope_value.encode("utf-8")).hexdigest()
         self.database = Path(state_dir).expanduser() / "project-path-hints.sqlite3"
-        self.database.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as connection:
+
+    def _connect(
+        self, *, ensure_schema: bool = True, existing_only: bool = False
+    ) -> sqlite3.Connection:
+        if existing_only:
+            database_uri = f"{self.database.as_uri()}?mode=ro"
+            connection = sqlite3.connect(
+                database_uri, timeout=2.0, uri=True
+            )
+        else:
+            self.database.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(self.database, timeout=2.0)
+        connection.execute("PRAGMA busy_timeout = 2000")
+        if ensure_schema:
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS project_path_hints (
                     project_id TEXT NOT NULL,
@@ -1415,16 +1429,6 @@ class ProjectPathHintStore:
                 )"""
             )
             connection.commit()
-
-    def _connect(self, *, existing_only: bool = False) -> sqlite3.Connection:
-        if existing_only:
-            database_uri = f"{self.database.resolve(strict=False).as_uri()}?mode=ro"
-            connection = sqlite3.connect(
-                database_uri, timeout=2.0, uri=True
-            )
-        else:
-            connection = sqlite3.connect(self.database, timeout=2.0)
-        connection.execute("PRAGMA busy_timeout = 2000")
         return connection
 
     def add(self, hint: PathHint) -> None:
@@ -1503,7 +1507,9 @@ class ProjectPathHintStore:
         if not self.database.is_file():
             return ()
         try:
-            with closing(self._connect(existing_only=True)) as connection:
+            with closing(
+                self._connect(ensure_schema=False, existing_only=True)
+            ) as connection:
                 table_exists = connection.execute(
                     """SELECT 1 FROM sqlite_master
                        WHERE type = 'table' AND name = 'project_path_hints'"""

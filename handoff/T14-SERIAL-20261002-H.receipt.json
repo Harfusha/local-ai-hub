@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "task": "T14",
+  "slot_id": "T20-SERIAL-20261002-H",
+  "slot_status": "released by T20 after one broker run",
+  "root": "C:\\Users\\Adam\\.codex\\worktrees\\t14-context-budget-recovery\\.local-ai-hub",
+  "head": "8c945bdeb5f92270613e53b307b6f646a4f0e21b",
+  "tested_candidate_patch_sha256": "bdaebb6258926dfcc2911fb02ea963567099011678575c51f5831a5eac44fc24",
+  "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_response_budget.py::test_budget_response_preserves_bounded_task_context_contract tests/test_response_budget.py::test_budget_rejection_keeps_bounded_adaptive_context_identity_and_citation tests/test_response_budget.py::test_budget_rejection_keeps_bounded_legacy_context_pack_citation tests/test_mcp_response_budget.py::test_context_projection_keeps_actual_context_text_after_budget tests/test_mcp_response_budget.py::test_context_projection_budget_rejection_keeps_bounded_identity_and_citation tests/test_mcp_compact_transport.py::test_local_ai_repo_context_returns_bounded_deterministic_projection tests/test_mcp_compact_transport.py::test_local_ai_repo_context_bounds_oversized_authoritative_fields tests/test_mcp_compact_transport.py::test_local_ai_repo_context_low_budget_preserves_authoritative_envelope tests/test_mcp_compact_transport.py::test_local_ai_repo_guarded_projection_drops_nested_raw_model_fields",
+  "runner": {
+    "tool": "local_ai_command",
+    "action": "run",
+    "cwd": "C:\\Users\\Adam\\.codex\\worktrees\\t14-context-budget-recovery\\.local-ai-hub",
+    "timeout_seconds": 180,
+    "response_profile": "compact",
+    "max_response_tokens": 700,
+    "reuse_key": "t14-context-mcp-budget-focused-acceptance-20261002-slot-h",
+    "execution_id": "0d49374a97824d30a904765a931434f9",
+    "request_id": "req_a0e0f1211251",
+    "allowed": true,
+    "class": "validation",
+    "repository_revision": "7e680ec4baeffcbb3a57bb3acd93b081251827bd5b3082db27a33a17a6ae3887",
+    "exit_code": 1,
+    "duration_ms": 8995.7,
+    "summary": "8 passed, 1 failed",
+    "failure": {
+      "test": "tests/test_mcp_response_budget.py::test_context_projection_budget_rejection_keeps_bounded_identity_and_citation",
+      "line": 113,
+      "message": "KeyError: 'response_budget'",
+      "analysis": "Projection output was already below the requested 220-token limit; budget_response correctly returned it without response_budget metadata. Assertion expectation was invalid."
+    },
+    "output_truncated": false,
+    "diagnostic_artifacts": {
+      "available": false,
+      "error": "diagnostic artifacts are disabled (features.diagnostic_artifacts=false)",
+      "artifact_id": null
+    },
+    "terminal": null,
+    "retryable": null,
+    "terminal_retryable_fields_present": false
+  },
+  "input_sha256_before": {
+    "src/local_ai_hub/response_budget.py": "934D5DA4D9A031568DE8A6AC05A1B655FB92CA375B99518DF17C1B32C621DD02",
+    "src/local_ai_hub/mcp_server.py": "BBA5A38D8E48577DA2BE5310C4363A21853B47F8ADDA6240667AFAC54DACBF0E",
+    "tests/test_response_budget.py": "7FC05067629EC863149C05B0F57797D22F8DA6CABDA77A89730D9534775A11D4",
+    "tests/test_mcp_response_budget.py": "8F7541B0219BE7D6EB0979659CB81994E47FB537CD13AFAE933A8002D120FD50"
+  },
+  "input_sha256_after": {
+    "src/local_ai_hub/response_budget.py": "934D5DA4D9A031568DE8A6AC05A1B655FB92CA375B99518DF17C1B32C621DD02",
+    "src/local_ai_hub/mcp_server.py": "BBA5A38D8E48577DA2BE5310C4363A21853B47F8ADDA6240667AFAC54DACBF0E",
+    "tests/test_response_budget.py": "7FC05067629EC863149C05B0F57797D22F8DA6CABDA77A89730D9534775A11D4",
+    "tests/test_mcp_response_budget.py": "8F7541B0219BE7D6EB0979659CB81994E47FB537CD13AFAE933A8002D120FD50"
+  },
+  "native_fallback": false,
+  "retry": false,
+  "benchmark": false,
+  "agent2_context_pack_route_touched": false
+}
