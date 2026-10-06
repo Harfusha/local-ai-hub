@@ -636,3 +636,34 @@ checkout. Root source integration is sequential. All 45 stash objects remain
 unchanged; no stash is declared disposable based on blob equality or ancestry
 alone. Missing functional hunks found by these queues must receive explicit
 source ownership, implementation, and validation before release acceptance.
+
+#### Tracked/index hunk disposition handoff
+
+Confucius delivered branch `release_context_render_perf_20261006`, commit
+`19ff3fc2` (parent `47a1f32f44f0ab23a17b5d6cc21c16dfc2549a1a`), from the
+existing checkout `lah_wt_worktree_e64978b4714c`. Its only change is
+`docs/integration/STASH-TRACKED-HUNK-DISPOSITION-20261006.md`: static
+dispositions for 32 immutable versions, 29 paths, and 533 unique hunk rows
+(332 behavior-preserved, 77 master-improved, 17 missing, 107 conflict-owner
+needed). The note binds original/base/current/checkpoint SHAs and per-hunk
+locations/evidence. It did not patch source, run tests/imports, or delete/apply
+stashes; its static findings are not runtime acceptance.
+
+Seven source queues are identified: T08 configurable worktree TTL (V03-H012/
+H014), terminal task retention in no-query listing (V03-H019), repeated
+completed-task revalidation (V03-H029/H030/H034), generation blocker/error
+propagation (V03-H036, V04-H041), strict receipt field types (V04-H018/H020/
+H021, V10-H003), WorkOrchestrator evidence/final receipts (V08-H009/H012/H013),
+and T05 task-root/tenant guard (V14-H004/H058). First-completion trusted
+project evaluator, all 17 original INDEX service hunks, hard-ignore, and
+no-CodeGraph context policy are classified as preserved/improved, not to be
+blindly reverted. The 107 overlap conflicts remain explicitly owner-routed.
+Source ownership and tests are still required for each remaining missing queue.
+
+The WorkOrchestrator queue is now repaired in root: evidence-required test or
+benchmark criteria trigger final validation without file changes; handoff
+artifacts and cancelled terminal payloads include collected verification
+receipts. Regression suite `tests/test_work_orchestrator.py` passed **24/24**
+in 22.43 s, and `git diff --check` passed. The other six queues remain pending
+scoped owners/implementation and acceptance; this handoff alone does not close
+them. All original checkpoint refs/stash objects remain preserved.
