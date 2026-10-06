@@ -356,18 +356,17 @@ def _snapshot_patch_targets(
         fd = os.open(target, _rollback_snapshot_open_flags())
         try:
             opened = os.fstat(fd)
+            # Path and descriptor timestamp values can differ on Windows even
+            # when both identify the same stable file. Pin identity here; the
+            # descriptor metadata is checked for stability across the read below.
             if not stat.S_ISREG(opened.st_mode) or (
                 opened.st_dev,
                 opened.st_ino,
                 opened.st_size,
-                opened.st_mtime_ns,
-                opened.st_ctime_ns,
             ) != (
                 info.st_dev,
                 info.st_ino,
                 info.st_size,
-                info.st_mtime_ns,
-                info.st_ctime_ns,
             ):
                 raise ValueError(f"patch target changed during snapshot before read: {relative}")
             chunks: list[bytes] = []
