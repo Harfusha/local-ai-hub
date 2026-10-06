@@ -321,6 +321,55 @@ def test_recovery_requeues_after_crash_between_journal_clear_and_state_update(
         recovered.close()
 
 
+def test_rollback_refuses_symlink_targets_without_touching_outside_file(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    target = outside / "victim.txt"
+    target.write_bytes(b"postimage\n")
+    alias = root / "alias"
+    try:
+        os.symlink(outside, alias, target_is_directory=True)
+    except OSError as exc:
+        if sys.platform == "win32" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege unavailable (WinError 1314); symlink rollback behavior unverified")
+        raise
+
+    entry = _JournalEntry("alias/victim.txt", True, b"preimage\n")
+    with pytest.raises(ValueError, match="symlink|reparse|escape"):
+        WorkOrchestrator._rollback(root, [entry])
+    assert target.read_bytes() == b"postimage\n"
+
+
+def test_rollback_preflights_all_reparse_targets_before_restoring_any_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    safe = root / "safe.txt"
+    safe.write_bytes(b"postimage\n")
+    alias = root / "junction"
+    alias.mkdir()
+    original_lstat = Path.lstat
+
+    def mark_junction(path: Path):
+        if path == alias:
+            return SimpleNamespace(st_mode=0, st_file_attributes=0x400)
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", mark_junction)
+    journal = [
+        _JournalEntry("junction/victim.txt", True, b"preimage\n"),
+        _JournalEntry("safe.txt", True, b"preimage\n"),
+    ]
+    with pytest.raises(ValueError, match="reparse"):
+        WorkOrchestrator._rollback(root, journal)
+    assert safe.read_bytes() == b"postimage\n"
+
+
 def test_restart_rolls_back_patch_using_postimage_journaled_before_mutation(
     tmp_path: Path, monkeypatch
 ) -> None:
