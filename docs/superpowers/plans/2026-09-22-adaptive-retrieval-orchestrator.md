@@ -1,5 +1,7 @@
 # Adaptive Retrieval Orchestrator Implementation Plan
 
+> **Superseded by T19 (2026-09-30):** This plan is historical, not current Hub behavior. CodeGraphContext and KuzuDB are optional standalone tools outside Local AI Hub; neither is a Hub backend, dependency, or preprocessing path. References below that call CodeGraphContext a retrieval backend are superseded design text. Historical live-probe results in rollout records do not establish current support or health. See [current installation guidance](../../INSTALLATION.md) and [architecture](../../ARCHITECTURE.md).
+
 > **Historical plan:** this proposal predates the current architecture. CodeGraphContext/KuzuDB were removed from the Hub and are optional standalone tools only. Do not implement the old CodeGraph integration steps below. The current `/api/context/pack` contract remains the adaptive retrieval contract; use `docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md` for current scope and acceptance criteria.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task with verification checkpoints.

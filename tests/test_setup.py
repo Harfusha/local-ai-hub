@@ -335,6 +335,52 @@ def test_setup_clean_checkout_bootstraps_from_example_config(tmp_path: Path, mon
     assert cfg["hardware"]["profile"] == "cpu"
 
 
+def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    install = tmp_path / "installed"
+    source.mkdir()
+    install.mkdir()
+    config_text = (
+        f'[setup]\ninstall_dir="{install.as_posix()}"\n'
+        "install_agent_configs=false\ninstall_optional_tools=false\n"
+        "[server]\nauto_start_ollama=false\n"
+        "[features]\ninstall_local_nlp_dependencies=false\n"
+        "install_openvino_dependencies=false\npull_models_during_setup=false\n"
+    )
+    source_config = source / "config.toml"
+    source_config.write_text(config_text, encoding="utf-8")
+    (install / "config.toml").write_text(config_text, encoding="utf-8")
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source)
+    monkeypatch.setattr(setup, "copy_install_tree", lambda *_args: None)
+    monkeypatch.setattr(setup, "ensure_venv", lambda _venv: tmp_path / "python.exe")
+    monkeypatch.setattr(setup, "install_requirements", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(setup, "ensure_ollama_for_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "ensure_llama_cpp_for_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    commands = []
+    monkeypatch.setattr(setup, "run", lambda command, **_kwargs: commands.append(command))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "setup.py", "--profile", "cpu", "--skip-service", "--skip-model-pull",
+            "--skip-tools", "--skip-agent-config", "--skip-ollama-install",
+            "--skip-local-nlp-preload", "--skip-token-economy", "--skip-companion-skills",
+        ],
+    )
+
+    assert setup.main() == 0
+    assert sum(
+        len(command) >= 2 and Path(command[-2]).name == "hubctl.py" and command[-1] == "restart"
+        for command in commands
+    ) == 1
+    assert not any(
+        len(command) >= 2 and Path(command[-2]).name == "service.py" and command[-1] == "install"
+        for command in commands
+    )
+
+
 def test_copy_install_tree_copies_only_current_package_roots(tmp_path: Path, monkeypatch):
     source = tmp_path / "source"
     for name in ("src", "skills", "tools"):
