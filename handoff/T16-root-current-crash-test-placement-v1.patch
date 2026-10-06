@@ -1,0 +1,214 @@
+--- a/tests/test_work_handoff_acceptance.py
++++ b/tests/test_work_handoff_acceptance.py
+@@ -356,6 +356,106 @@
+     finally:
+         recovered.close()
+ 
++def test_process_crash_after_patch_write_recovers_from_persisted_journal(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
++    target = root / "owned.txt"
++    target.write_text("old\n", encoding="utf-8")
++    subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
++    subprocess.run(["git", "-C", str(root), "-c", "user.name=T16", "-c", "user.email=t16@example.invalid", "add", "owned.txt"], check=True)
++    subprocess.run(["git", "-C", str(root), "-c", "user.name=T16", "-c", "user.email=t16@example.invalid", "commit", "--quiet", "-m", "seed"], check=True)
++
++    work_id = "work-process-crash-after-write"
++    now = [100.0]
++    fencing_path = state_dir / "work_fencing.sqlite3"
++    orchestrator.fencing_store = FencingLeaseStore(fencing_path, clock=lambda: now[0])
++    orchestrator.submit("tenant", _payload(root, work_id))
++    orchestrator.close()
++
++    script = textwrap.dedent(r"""
++        import os
++        import subprocess
++        import sys
++        from pathlib import Path
++
++        sys.path.insert(0, sys.argv[1])
++        import local_ai_hub.work_orchestrator as module
++        from local_ai_hub.work_fencing import FencingLeaseStore
++        from local_ai_hub.work_orchestrator import WorkOrchestrator
++
++        WorkOrchestrator._ensure_workers = lambda _self: None
++
++        class Leases:
++            def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose="", *, coordination_id=None):
++                return {"success": True, "lease_id": "child-lease", "paths": paths}
++            def release(self, tenant, lease_id=""):
++                return {"success": True}
++
++        class Artifacts:
++            def put(self, text, tenant, kind):
++                return f"artifact-{kind}"
++
++        root, state_dir, work_id = Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
++        config = {"work_orchestrator": {"enabled": True}}
++        orchestrator = WorkOrchestrator(
++            config, state_dir, services=object(), commands=object(),
++            leases=Leases(), artifacts=Artifacts(),
++            fencing_store=FencingLeaseStore(
++                state_dir / "work_fencing.sqlite3", clock=lambda: 100.0
++            ),
++        )
++        orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
++        run = subprocess.run
++
++        def exit_after_apply(*args, **kwargs):
++            result = run(*args, **kwargs)
++            command = args[0] if args else kwargs.get("args")
++            if (
++                isinstance(command, list)
++                and command[:4] == ["git", "-C", str(root), "apply"]
++                and "--check" not in command
++                and result.returncode == 0
++            ):
++                os._exit(73)
++            return result
++
++        module.subprocess.run = exit_after_apply
++        patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-old\n+new\n"
++        orchestrator._apply_patch(
++            root, patch, "tenant", work_id, [], lease_ttl_seconds=5
++        )
++        os._exit(74)
++    """)
++    project_src = Path(__file__).resolve().parents[1] / "src"
++    child = subprocess.run(
++        [sys.executable, "-B", "-c", script, str(project_src), str(root), str(state_dir), work_id],
++        capture_output=True,
++        text=True,
++        check=False,
++        timeout=20,
++    )
++    assert child.returncode == 73, child.stderr
++    assert target.read_text(encoding="utf-8") == "new\n"
++
++    now[0] = 106.0
++    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
++    recovered = WorkOrchestrator(
++        config,
++        state_dir,
++        services=object(),
++        commands=object(),
++        leases=_Leases(),
++        artifacts=_Artifacts(),
++        fencing_store=FencingLeaseStore(fencing_path, clock=lambda: now[0]),
++    )
++    try:
++        row = recovered._row(work_id, "tenant")
++        assert row is not None and row["state"] == "queued", dict(row) if row is not None else None
++        assert target.read_text(encoding="utf-8") == "old\n"
++        assert recovered._load_journal(work_id) == []
++    finally:
++        recovered.close()
+ 
+ def test_recovery_rollback_failure_fails_closed_and_preserves_journal(
+     tmp_path: Path, monkeypatch
+@@ -1014,104 +1114,3 @@
+         ):
+             target.write_text("stale\n", encoding="utf-8")
+     assert target.read_text(encoding="utf-8") == "committed\n"
+-
+-def test_process_crash_after_patch_write_recovers_from_persisted_journal(
+-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+-) -> None:
+-    orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
+-    target = root / "owned.txt"
+-    target.write_text("old\n", encoding="utf-8")
+-    subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+-    subprocess.run(["git", "-C", str(root), "-c", "user.name=T16", "-c", "user.email=t16@example.invalid", "add", "owned.txt"], check=True)
+-    subprocess.run(["git", "-C", str(root), "-c", "user.name=T16", "-c", "user.email=t16@example.invalid", "commit", "--quiet", "-m", "seed"], check=True)
+-
+-    work_id = "work-process-crash-after-write"
+-    now = [100.0]
+-    fencing_path = state_dir / "work_fencing.sqlite3"
+-    orchestrator.fencing_store = FencingLeaseStore(fencing_path, clock=lambda: now[0])
+-    orchestrator.submit("tenant", _payload(root, work_id))
+-    orchestrator.close()
+-
+-    script = textwrap.dedent(r"""
+-        import os
+-        import subprocess
+-        import sys
+-        from pathlib import Path
+-
+-        sys.path.insert(0, sys.argv[1])
+-        import local_ai_hub.work_orchestrator as module
+-        from local_ai_hub.work_fencing import FencingLeaseStore
+-        from local_ai_hub.work_orchestrator import WorkOrchestrator
+-
+-        WorkOrchestrator._ensure_workers = lambda _self: None
+-
+-        class Leases:
+-            def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose="", *, coordination_id=None):
+-                return {"success": True, "lease_id": "child-lease", "paths": paths}
+-            def release(self, tenant, lease_id=""):
+-                return {"success": True}
+-
+-        class Artifacts:
+-            def put(self, text, tenant, kind):
+-                return f"artifact-{kind}"
+-
+-        root, state_dir, work_id = Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
+-        config = {"work_orchestrator": {"enabled": True}}
+-        orchestrator = WorkOrchestrator(
+-            config, state_dir, services=object(), commands=object(),
+-            leases=Leases(), artifacts=Artifacts(),
+-            fencing_store=FencingLeaseStore(
+-                state_dir / "work_fencing.sqlite3", clock=lambda: 100.0
+-            ),
+-        )
+-        orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
+-        run = subprocess.run
+-
+-        def exit_after_apply(*args, **kwargs):
+-            result = run(*args, **kwargs)
+-            command = args[0] if args else kwargs.get("args")
+-            if (
+-                isinstance(command, list)
+-                and command[:4] == ["git", "-C", str(root), "apply"]
+-                and "--check" not in command
+-                and result.returncode == 0
+-            ):
+-                os._exit(73)
+-            return result
+-
+-        module.subprocess.run = exit_after_apply
+-        patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-old\n+new\n"
+-        orchestrator._apply_patch(
+-            root, patch, "tenant", work_id, [], lease_ttl_seconds=5
+-        )
+-        os._exit(74)
+-    """)
+-    project_src = Path(__file__).resolve().parents[1] / "src"
+-    child = subprocess.run(
+-        [sys.executable, "-B", "-c", script, str(project_src), str(root), str(state_dir), work_id],
+-        capture_output=True,
+-        text=True,
+-        check=False,
+-        timeout=20,
+-    )
+-    assert child.returncode == 73, child.stderr
+-    assert target.read_text(encoding="utf-8") == "new\n"
+-
+-    now[0] = 106.0
+-    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
+-    recovered = WorkOrchestrator(
+-        config,
+-        state_dir,
+-        services=object(),
+-        commands=object(),
+-        leases=_Leases(),
+-        artifacts=_Artifacts(),
+-        fencing_store=FencingLeaseStore(fencing_path, clock=lambda: now[0]),
+-    )
+-    try:
+-        row = recovered._row(work_id, "tenant")
+-        assert row is not None and row["state"] == "queued", dict(row) if row is not None else None
+-        assert target.read_text(encoding="utf-8") == "old\n"
+-        assert recovered._load_journal(work_id) == []
+-    finally:
+-        recovered.close()

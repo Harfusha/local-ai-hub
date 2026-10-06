@@ -2358,6 +2358,7 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
             "backend_availability": f"{backend_gate}; runtime backend health unverified",
             "input_schema": input_schema,
             "output_schema": output_schema,
+            "operation_contract": operation_contract,
             "defaults": defaults,
             "required": list(parameters.get("required", [])) if isinstance(parameters, dict) else [],
             "feature_gate": backend_gate,
