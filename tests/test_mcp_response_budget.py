@@ -296,3 +296,30 @@ def test_mcp_compact_rejects_subminimum_budget_without_exceeding_request() -> No
     assert result["success"] is False
     assert result["response_budget"]["requested_tokens"] == 64
     assert json_tokens(result) <= 64
+
+
+def test_command_response_budget_keeps_execution_disposition_within_limit(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())
+    monkeypatch.setattr(mcp_server, "_REUSE_VALUES", mcp_server.OrderedDict())
+    payload = {
+        "success": False,
+        "terminal": True,
+        "retryable": False,
+        "error": "diagnostic detail " * 300,
+        "stdout": "large output " * 300,
+        "stderr": "large error output " * 300,
+        "execution_id": "execution-123",
+    }
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(
+        _options(max_response_tokens=128, reuse_key="command-budget", tool="local_ai_command")
+    )
+    try:
+        result = mcp_server._compact(payload, "command")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert json_tokens(result) <= 128
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert result["response_budget"]["truncated"] is True

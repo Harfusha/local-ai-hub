@@ -4220,6 +4220,7 @@ def test_{sym}_regression_edge_cases():
             }
 
         test_paths_set: set[str] = set()
+        graph_complete = False
         for t_linked in self.get_test_source_links(str(resolved_root), norm_changed):
             test_paths_set.add(t_linked)
         for p in norm_changed:
@@ -4257,10 +4258,17 @@ def test_{sym}_regression_edge_cases():
         if code_index is not None:
             try:
                 imp = code_index.impact(str(resolved_root), norm_changed)
-                for st in imp.get("suggested_tests", []):
+                if not isinstance(imp, dict) or not isinstance(imp.get("suggested_tests", []), list):
+                    raise ValueError("code index returned malformed impact data")
+                suggested_tests = imp.get("suggested_tests", [])
+                if any(not isinstance(st, dict) or not isinstance(st.get("path"), str) for st in suggested_tests):
+                    raise ValueError("code index returned malformed test paths")
+                # Preserve conservative completeness until dependency coverage is verified.
+                graph_complete = imp.get("success") is True and imp.get("graph_complete") is True
+                for st in suggested_tests:
                     test_paths_set.add(st["path"].replace("\\", "/"))
             except Exception:
-                pass
+                graph_complete = False
 
         matched_tests = sorted(test_paths_set)
         cmd = ""
@@ -4286,6 +4294,7 @@ def test_{sym}_regression_edge_cases():
             "test_files": matched_tests,
             "suggested_command": cmd,
             "confidence": 0.95 if matched_tests else 0.5,
+            "selection_complete": graph_complete,
         }
 
     def repo_topology(self, root: str) -> dict[str, Any]:
