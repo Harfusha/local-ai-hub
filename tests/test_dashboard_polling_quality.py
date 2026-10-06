@@ -157,7 +157,7 @@ def test_repeated_status_payload_does_not_trigger_redundant_render_work() -> Non
         apiFetch = async function(path) {
           fetches.push(path);
           return path.startsWith('/api/live/status')
-            ? {json: async () => first}
+            ? {ok: true, status: 200, json: async () => first}
             : {ok: true, json: async () => ({cpu_count: 1, ram: {}, gpu: {}})};
         }
         await pollStatus(() => true);
@@ -175,7 +175,7 @@ def test_hidden_status_response_cannot_commit_after_visibility_changes() -> None
         const assert = require('node:assert/strict');
         let resolveStatus;
         apiFetch = async function() {
-          return new Promise(resolve => { resolveStatus = () => resolve({json: async () => ({success: true})}); });
+          return new Promise(resolve => { resolveStatus = () => resolve({ok: true, status: 200, json: async () => ({success: true})}); });
         }
         const pending = pollStatus(() => true);
         document.visibilityState = 'hidden';
@@ -196,7 +196,7 @@ def test_failed_hardware_poll_retries_for_unchanged_status_until_success() -> No
         const status = {success: true, status: {active: 2}};
         let hardwareAttempts = 0;
         apiFetch = async function(path) {
-          if (path.startsWith('/api/live/status')) return {json: async () => status};
+          if (path.startsWith('/api/live/status')) return {ok: true, status: 200, json: async () => status};
           hardwareAttempts++;
           if (hardwareAttempts === 1) throw Error('temporary hardware failure');
           return {
