@@ -1,0 +1,688 @@
+diff --git a/tools/repeat_t02_pytest.py b/tools/repeat_t02_pytest.py
+--- a/tools/repeat_t02_pytest.py
++++ b/tools/repeat_t02_pytest.py
+@@ -1,164 +1,226 @@
+-"""Repeat the T02 pytest suite and preserve bounded, hash-addressed receipts."""
++"""Repeat one allowlisted T02 regression selector with external evidence receipts.
++
++This helper performs no benchmark or inference. Keep invocations candidate-only,
++serial, bounded, and explicitly authorized by the active T20 test slot.
++"""
+ 
+ from __future__ import annotations
+ 
+ import argparse
++from datetime import datetime, timezone
+ import hashlib
+ import json
+-import math
+-import platform
+-import re
++import os
++from pathlib import Path
+ import subprocess
+ import sys
+ import time
+-from datetime import datetime, timezone
+-from pathlib import Path
+ from typing import Any
+ 
+-DEFAULT_TESTS = ("tests/test_benchmark_suite.py", "tests/test_surface_benchmarks.py")
+-TRACKED_INPUTS = (
+-    "tools/benchmark_surfaces.py",
+-    "tests/test_benchmark_suite.py",
+-    "tests/test_surface_benchmarks.py",
++
++_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
++_TARGET_SELECTOR = (
++    "tests/test_async_jobs.py::"
++    "test_early_delayed_dispatch_callback_preserves_queued_cancellation"
++)
++_ALLOWED_SELECTORS = frozenset({_TARGET_SELECTOR})
++_INPUT_PATHS = (
+     "src/local_ai_hub/async_jobs.py",
++    "tests/test_async_jobs.py",
+ )
+-
+-
+-def _utc_now() -> str:
+-    return datetime.now(timezone.utc).isoformat()
+-
+-
+-def _text(value: str | bytes | None) -> str:
++_MAX_REPEATS = 50
++_MAX_TIME_BUDGET_SECONDS = 900
++
++
++def _validate_repeat_count(value: int) -> int:
++    if type(value) is not int or not 1 <= value <= _MAX_REPEATS:
++        raise ValueError(f"repeat count must be between 1 and {_MAX_REPEATS}")
++    return value
++
++
++def _resolve_external_output(output_dir: Path, repository_root: Path) -> Path:
++    resolved = output_dir.expanduser().resolve()
++    repository = repository_root.resolve()
++    if resolved == repository or repository in resolved.parents:
++        raise ValueError("output directory must be outside the repository")
++    return resolved
++
++
++def _command_for_attempt(python: str, selector: str, basetemp: Path) -> list[str]:
++    if selector not in _ALLOWED_SELECTORS:
++        raise ValueError(f"unsupported T02 selector: {selector}")
++    return [
++        python, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
++        "--tb=short", "--basetemp", str(basetemp), selector,
++    ]
++
++
++def _sha256(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def _input_hashes(repository_root: Path) -> dict[str, str]:
++    return {
++        relative: _sha256(repository_root / relative)
++        for relative in _INPUT_PATHS
++    }
++
++
++def _git_revision(repository_root: Path) -> str:
++    completed = subprocess.run(
++        ["git", "rev-parse", "HEAD"],
++        cwd=repository_root,
++        capture_output=True,
++        check=True,
++        text=True,
++        timeout=10,
++    )
++    return completed.stdout.strip()
++
++
++def _write_receipt(path: Path, receipt: dict[str, Any]) -> None:
++    temporary = path.with_suffix(path.suffix + ".tmp")
++    temporary.write_text(
++        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n",
++        encoding="utf-8",
++    )
++    os.replace(temporary, path)
++
++
++def _decode_output(value: str | bytes | None) -> str:
+     if value is None:
+         return ""
+     return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+ 
+ 
+-def run_attempt(
+-    command: list[str], *, repo_root: Path, out_dir: Path, label: str, timeout_seconds: float,
+-) -> dict[str, Any]:
+-    out_dir.mkdir(parents=True, exist_ok=True)
+-    started_at = _utc_now()
+-    started = time.perf_counter()
+-    exit_code: int
+-    status: str
++def run_repetitions(
++    *,
++    selector: str,
++    repeat_count: int,
++    output_dir: Path,
++    time_budget_seconds: int = 900,
++    repository_root: Path = _REPOSITORY_ROOT,
++) -> int:
++    repeat_count = _validate_repeat_count(repeat_count)
++    if type(time_budget_seconds) is not int or not 1 <= time_budget_seconds <= _MAX_TIME_BUDGET_SECONDS:
++        raise ValueError(f"time budget must be between 1 and {_MAX_TIME_BUDGET_SECONDS} seconds")
++    if selector not in _ALLOWED_SELECTORS:
++        raise ValueError(f"unsupported T02 selector: {selector}")
++
++    repository = repository_root.resolve()
++    evidence_dir = _resolve_external_output(output_dir, repository)
++    evidence_dir.mkdir(parents=True, exist_ok=False)
++    logs_dir = evidence_dir / "logs"
++    logs_dir.mkdir()
++    receipt_path = evidence_dir / "receipt.json"
++    receipt: dict[str, Any] = {
++        "schema_version": 1,
++        "status": "in_progress",
++        "repository_root": str(repository),
++        "revision": _git_revision(repository),
++        "selector": selector,
++        "repeat_count_requested": repeat_count,
++        "time_budget_seconds": time_budget_seconds,
++        "inputs_before": _input_hashes(repository),
++        "attempts": [],
++    }
++    _write_receipt(receipt_path, receipt)
++    deadline = time.monotonic() + time_budget_seconds
++    environment = os.environ.copy()
++    environment["PYTHONDONTWRITEBYTECODE"] = "1"
++
+     try:
+-        result = subprocess.run(
+-            command, cwd=repo_root, capture_output=True, text=True,
+-            timeout=timeout_seconds, check=False,
+-        )
+-        stdout, stderr, exit_code = _text(result.stdout), _text(result.stderr), result.returncode
+-        status = "passed" if exit_code == 0 else "failed"
+-    except subprocess.TimeoutExpired as exc:
+-        stdout = _text(exc.stdout if exc.stdout is not None else exc.output)
+-        stderr, exit_code, status = _text(exc.stderr), 124, "timeout"
+-    except OSError as exc:
+-        stdout, stderr, exit_code, status = "", str(exc), 127, "spawn_error"
+-    finished_at = _utc_now()
+-
+-    stdout_file, stderr_file = f"{label}.stdout.log", f"{label}.stderr.log"
+-    (out_dir / stdout_file).write_text(stdout, encoding="utf-8")
+-    (out_dir / stderr_file).write_text(stderr, encoding="utf-8")
+-    combined = stdout + ("\n" if stdout and stderr else "") + stderr
+-    return {
+-        "label": label,
+-        "status": status,
+-        "exit_code": exit_code,
+-        "started_utc": started_at,
+-        "finished_utc": finished_at,
+-        "duration_seconds": round(time.perf_counter() - started, 3),
+-        "timeout_seconds": timeout_seconds,
+-        "command": command,
+-        "stdout_file": stdout_file,
+-        "stdout_sha256": hashlib.sha256(stdout.encode("utf-8")).hexdigest(),
+-        "stderr_file": stderr_file,
+-        "stderr_sha256": hashlib.sha256(stderr.encode("utf-8")).hexdigest(),
+-        "failed_node_ids": list(dict.fromkeys(re.findall(r"(?m)^(?:FAILED|ERROR)\s+(\S+)", combined))),
+-        "last_output_line": next((line for line in reversed(combined.splitlines()) if line.strip()), ""),
+-    }
+-
+-
+-def _git(repo_root: Path, *args: str) -> str:
+-    return subprocess.run(
+-        ["git", *args], cwd=repo_root, capture_output=True, text=True, check=True,
+-    ).stdout.strip()
+-
+-
+-def _sha256(path: Path) -> str:
+-    return hashlib.sha256(path.read_bytes()).hexdigest()
++        for attempt_number in range(1, repeat_count + 1):
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                break
++            basetemp = evidence_dir / f"pytest-tmp-{attempt_number:03d}"
++            command = _command_for_attempt(sys.executable, selector, basetemp)
++            started_at = datetime.now(timezone.utc).isoformat()
++            started = time.monotonic()
++            outcome = "timeout"
++            return_code: int | None = None
++            try:
++                completed = subprocess.run(
++                    command,
++                    cwd=repository,
++                    env=environment,
++                    capture_output=True,
++                    check=False,
++                    text=True,
++                    encoding="utf-8",
++                    errors="replace",
++                    timeout=remaining,
++                )
++                return_code = completed.returncode
++                outcome = "passed" if return_code == 0 else "failed"
++                output = f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
++            except subprocess.TimeoutExpired as exc:
++                output = (
++                    f"stdout:\n{_decode_output(exc.stdout)}\n"
++                    f"stderr:\n{_decode_output(exc.stderr)}"
++                )
++            duration = round(time.monotonic() - started, 3)
++            log_path = logs_dir / f"attempt-{attempt_number:03d}.log"
++            log_path.write_text(
++                f"command: {json.dumps(command)}\n"
++                f"outcome: {outcome}\nreturn_code: {return_code}\n{output}",
++                encoding="utf-8",
++            )
++            receipt["attempts"].append({
++                "number": attempt_number,
++                "started_at": started_at,
++                "duration_seconds": duration,
++                "outcome": outcome,
++                "return_code": return_code,
++                "log": str(log_path),
++                "log_sha256": _sha256(log_path),
++            })
++            _write_receipt(receipt_path, receipt)
++            if outcome == "timeout":
++                break
++    except KeyboardInterrupt:
++        receipt["status"] = "interrupted"
++        receipt["inputs_after"] = _input_hashes(repository)
++        _write_receipt(receipt_path, receipt)
++        return 130
++
++    receipt["inputs_after"] = _input_hashes(repository)
++    attempts = receipt["attempts"]
++    receipt["status"] = (
++        "complete"
++        if len(attempts) == repeat_count and all(item["outcome"] == "passed" for item in attempts)
++        else "failed"
++        if any(item["outcome"] == "failed" for item in attempts)
++        else "incomplete"
++    )
++    _write_receipt(receipt_path, receipt)
++    print(json.dumps({
++        "status": receipt["status"],
++        "attempts": len(attempts),
++        "passed": sum(item["outcome"] == "passed" for item in attempts),
++        "receipt": str(receipt_path),
++    }, ensure_ascii=False))
++    return 0 if receipt["status"] == "complete" else 1
+ 
+ 
+ def main(argv: list[str] | None = None) -> int:
+     parser = argparse.ArgumentParser(description=__doc__)
+-    parser.add_argument("--out-dir", type=Path, required=True, help="new directory outside the repository")
+-    parser.add_argument("--python", default=sys.executable, help="Python executable for pytest")
+-    parser.add_argument("--attempts", type=int, default=25)
+-    parser.add_argument("--timeout-seconds", type=float, default=180)
+-    parser.add_argument("--tests", nargs="+", default=list(DEFAULT_TESTS))
+-    parser.add_argument("--reverse-control", action=argparse.BooleanOptionalAction, default=True)
++    parser.add_argument("--selector", choices=sorted(_ALLOWED_SELECTORS), default=_TARGET_SELECTOR)
++    parser.add_argument("--repeat", type=int, default=25)
++    parser.add_argument("--output-dir", type=Path, required=True, help="new evidence directory outside the repository")
++    parser.add_argument("--time-budget-seconds", type=int, default=900)
+     args = parser.parse_args(argv)
+-
+-    repo_root = Path(__file__).resolve().parents[1]
+-    out_dir = args.out_dir.expanduser().resolve()
+-    if not 1 <= args.attempts <= 100 or not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
+-        parser.error("attempts must be 1..100 and timeout must be finite and positive")
+-    if out_dir.is_relative_to(repo_root):
+-        parser.error("receipt directory must be outside the repository")
+-    if out_dir.exists():
+-        parser.error("receipt directory must be new; existing evidence is never overwritten")
+-    test_paths = [Path(name) for name in args.tests]
+-    if any(not (repo_root / name).resolve().is_relative_to(repo_root) for name in test_paths):
+-        parser.error("test paths must remain inside the repository")
+-    if any(not (repo_root / name).is_file() for name in test_paths):
+-        parser.error("every test path must exist")
+-    out_dir.mkdir(parents=True, exist_ok=False)
+-
+-    def pytest_command(paths: list[Path]) -> list[str]:
+-        return [args.python, "-m", "pytest", "-q", "--tb=short", *[p.as_posix() for p in paths]]
+-
+-    command = pytest_command(test_paths)
+-    attempts = [
+-        run_attempt(command, repo_root=repo_root, out_dir=out_dir, label=f"ordered-{i:02d}",
+-                    timeout_seconds=args.timeout_seconds)
+-        for i in range(1, args.attempts + 1)
+-    ]
+-    reverse = None
+-    if args.reverse_control:
+-        reverse = run_attempt(
+-            pytest_command(list(reversed(test_paths))), repo_root=repo_root, out_dir=out_dir,
+-            label="reverse-control", timeout_seconds=args.timeout_seconds,
++    try:
++        return run_repetitions(
++            selector=args.selector,
++            repeat_count=args.repeat,
++            output_dir=args.output_dir,
++            time_budget_seconds=args.time_budget_seconds,
+         )
+-
+-    input_paths = list(dict.fromkeys((*TRACKED_INPUTS, Path(__file__).resolve().relative_to(repo_root).as_posix(), *args.tests)))
+-    status = _git(repo_root, "status", "--porcelain", "--untracked-files=all")
+-    all_runs = [*attempts, *([reverse] if reverse else [])]
+-    receipt = {
+-        "schema_version": "t02-pytest-repeat",
+-        "schema_file": "tools/schemas/t02-pytest-repeat.schema.json",
+-        "started_utc": attempts[0]["started_utc"],
+-        "finished_utc": _utc_now(),
+-        "repo_root": str(repo_root),
+-        "head": _git(repo_root, "rev-parse", "HEAD"),
+-        "branch": _git(repo_root, "rev-parse", "--abbrev-ref", "HEAD"),
+-        "python_version": sys.version.split()[0],
+-        "platform": platform.platform(),
+-        "working_tree_dirty": bool(status),
+-        "dirty_paths": [line[3:] for line in status.splitlines() if len(line) > 3],
+-        "inputs_sha256": {
+-            name: _sha256((repo_root / name).resolve()) for name in input_paths
+-        },
+-        "attempts_target": args.attempts,
+-        "command": command,
+-        "attempts": attempts,
+-        "reverse_control": reverse,
+-        "success": all(run["status"] == "passed" for run in all_runs),
+-    }
+-    temporary = out_dir / ".receipt.json.tmp"
+-    receipt_path = out_dir / "receipt.json"
+-    temporary.write_text(json.dumps(receipt, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+-    temporary.replace(receipt_path)
+-    print(json.dumps({"receipt_path": str(receipt_path), "success": receipt["success"]}, separators=(",", ":")))
+-    return 0 if receipt["success"] else 1
++    except (OSError, ValueError, subprocess.SubprocessError) as exc:
++        parser.error(str(exc))
++    return 2
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/tests/test_t02_repeat_pytest.py b/tests/test_t02_repeat_pytest.py
+--- a/tests/test_t02_repeat_pytest.py
++++ b/tests/test_t02_repeat_pytest.py
+@@ -1,69 +1,34 @@
+-from __future__ import annotations
+-
+-import hashlib
+-import subprocess
+-import sys
++from pathlib import Path
+ 
+ import pytest
+ 
+ from tools import repeat_t02_pytest
+ 
+ 
+-def test_run_attempt_persists_logs_and_failure_nodes(tmp_path, monkeypatch) -> None:
+-    stdout = "1 failed, 2 passed in 0.20s\nFAILED tests/test_sample.py::test_case\n"
+-
+-    def fake_run(command, *, cwd, capture_output, text, timeout, check):
+-        assert command[-1] == "tests/test_sample.py"
+-        assert cwd == tmp_path
+-        assert capture_output is True and text is True and check is False
+-        return subprocess.CompletedProcess(command, 1, stdout, "")
+-
+-    monkeypatch.setattr(repeat_t02_pytest.subprocess, "run", fake_run)
+-    result = repeat_t02_pytest.run_attempt(
+-        [sys.executable, "-m", "pytest", "tests/test_sample.py"],
+-        repo_root=tmp_path,
+-        out_dir=tmp_path / "receipts",
+-        label="ordered-01",
+-        timeout_seconds=5,
+-    )
+-
+-    assert result["status"] == "failed"
+-    assert result["exit_code"] == 1
+-    assert result["timeout_seconds"] == 5
+-    assert result["finished_utc"]
+-    assert result["failed_node_ids"] == ["tests/test_sample.py::test_case"]
+-    stdout_path = tmp_path / "receipts" / result["stdout_file"]
+-    assert stdout_path.read_text(encoding="utf-8") == stdout
+-    assert result["stdout_sha256"] == hashlib.sha256(stdout.encode()).hexdigest()
++def test_repeat_count_is_bounded() -> None:
++    assert repeat_t02_pytest._validate_repeat_count(1) == 1
++    assert repeat_t02_pytest._validate_repeat_count(25) == 25
++    assert repeat_t02_pytest._validate_repeat_count(50) == 50
++    for value in (0, 51, True):
++        with pytest.raises(ValueError, match="between 1 and 50"):
++            repeat_t02_pytest._validate_repeat_count(value)
+ 
+ 
+-def test_run_attempt_records_timeout_and_partial_output(tmp_path, monkeypatch) -> None:
+-    def fake_run(command, **kwargs):
+-        raise subprocess.TimeoutExpired(command, 0.01, output=b"partial", stderr=b"late")
+-
+-    monkeypatch.setattr(repeat_t02_pytest.subprocess, "run", fake_run)
+-    result = repeat_t02_pytest.run_attempt(
+-        [sys.executable, "-m", "pytest"],
+-        repo_root=tmp_path,
+-        out_dir=tmp_path / "receipts",
+-        label="ordered-01",
+-        timeout_seconds=0.01,
+-    )
+-
+-    assert result["status"] == "timeout"
+-    assert result["exit_code"] == 124
+-    assert result["timeout_seconds"] == 0.01
+-    assert (tmp_path / "receipts" / result["stdout_file"]).read_text(encoding="utf-8") == "partial"
+-    assert (tmp_path / "receipts" / result["stderr_file"]).read_text(encoding="utf-8") == "late"
++def test_output_directory_must_be_outside_repository(tmp_path: Path) -> None:
++    repository = tmp_path / "repo"
++    repository.mkdir()
++    with pytest.raises(ValueError, match="outside the repository"):
++        repeat_t02_pytest._resolve_external_output(repository / "receipts", repository)
+ 
+ 
+-@pytest.mark.parametrize("timeout", ["nan", "inf", "-inf"])
+-def test_main_rejects_nonfinite_timeout(tmp_path, capsys, timeout: str) -> None:
+-    with pytest.raises(SystemExit) as error:
+-        repeat_t02_pytest.main([
+-            "--out-dir", str(tmp_path / "receipt"),
+-            f"--timeout-seconds={timeout}",
+-        ])
++def test_attempt_command_pins_pytest_and_allowed_selector(tmp_path: Path) -> None:
++    selector = repeat_t02_pytest._TARGET_SELECTOR
++    scratch = tmp_path / "attempt-001"
++    command = repeat_t02_pytest._command_for_attempt("python", selector, scratch)
+ 
+-    assert error.value.code == 2
+-    assert "timeout must be finite and positive" in capsys.readouterr().err
++    assert command == [
++        "python", "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
++        "--tb=short", "--basetemp", str(scratch), selector,
++    ]
++    with pytest.raises(ValueError, match="unsupported T02 selector"):
++        repeat_t02_pytest._command_for_attempt("python", "tests/test_anything.py", scratch)
+diff --git a/docs/T02-quality-performance-baseline-contract.md b/docs/T02-quality-performance-baseline-contract.md
+--- a/docs/T02-quality-performance-baseline-contract.md
++++ b/docs/T02-quality-performance-baseline-contract.md
+@@ -1,73 +1,56 @@
+-# T02 quality and performance baseline contract
++# T02 Quality and Performance Baseline Contract
+ 
+-This contract makes a T02 baseline repeatable and comparable. A smoke run, a single size pair, mocked model output, or a provisional record is not acceptance evidence.
++## Scope
+ 
+-## Workload and measurements
++This contract covers offline CPU/index-only synthetic measurements from tools/benchmark_surfaces.py. It excludes model inference. A synthetic benchmark record does not establish real-input retrieval quality, production service quality, GPU inference latency, or live VRAM.
+ 
+-- Run the six-case cross product: files `{100, 10000, 100000}` × RAG chunks `{10000, 100000}`.
+-- Use 1000 light samples, 30 comparison samples, and concurrency `{1, 4, 16, 32}` for every case.
+-- Keep each run's synthetic state and scratch data outside the repository. Do not copy private project data into benchmark inputs.
+-- Preserve per-stage cold/warm samples and independent sample identities. Capture p50/p95/p99, throughput, errors, response bytes/token estimates, peak RSS, and VRAM when telemetry exists.
+-- Require successful transport, validation, index/database, graph, RAG, queue, context-pack, and parent-seed stages. Report skipped hardware telemetry as unavailable, not zero.
+-- Record these master-plan targets beside the hardware fingerprint: warm `/health` p95 ≤ 50 ms; cached metadata/status/artifact/lease reads p95 ≤ 150 ms; warm symbol/search/code-index p95 ≤ 300 ms on 10,000 files; deterministic-only context pack p95 ≤ 750 ms; warm RAG search without reranker p95 ≤ 750 ms on 100,000 chunks; queue admission p95 ≤ 150 ms.
+-- Paired comparison uses 10% regression tolerance. Any unexplained cold/warm p95 or p99 regression over 10% blocks acceptance. Inference has no universal latency limit; report queue wait, load time, TTFT, service time, and tokens/s separately.
++## Plan-grade requirements
+ 
+-## Golden and fixture contract
++A record is plan-grade only when it includes:
+ 
+-The master plan names symbols, graph, affected tests, retrieval relevance, code generation, vision, and speech. The current runner additionally gates `context_pack`; a plan-grade record must mark all eight operations true in the matrix summary, every matrix row, and each nested case record.
++- At least 1,000 light samples and 30 paired samples.
++- Concurrency levels 1, 4, 16, and 32.
++- Six completed workload cases, each with every required golden operation marked passed.
++- Cold and warm paired samples suitable for baseline/candidate comparison.
++- Matching baseline and candidate metadata and completed matrix; one per-case record is not an aggregate.
+ 
+-Code-generation, vision, and speech goldens require opted-in inference against the configured Hub. Speech requires a stable local audio fixture plus its exact expected transcript. Accept a fixture only when its audio bytes and transcript are verified and their source/provenance is recorded. Do not substitute mock bytes, metadata-only output, a degraded transcription fallback, or a guessed transcript.
++The six workload cases are the Cartesian product:
+ 
+-The result may retain the fixture digest, transcript digest, and word count. It must not retain the fixture path or transcript text. The fixture and transcript are inputs to the run, not benchmark-result payload.
++| Files | RAG chunks |
++| ---: | ---: |
++| 100 | 10,000 |
++| 100 | 100,000 |
++| 10,000 | 10,000 |
++| 10,000 | 100,000 |
++| 100,000 | 10,000 |
++| 100,000 | 100,000 |
+ 
+-## Plan-grade record and comparison
++The six workloads each measure concurrency 1, 4, 16, and 32: 24 workload/concurrency cells per baseline or candidate. The source currently labels each execution matrix_aggregation=not_performed_single_case_record and baseline_readiness=per_case. Never relabel a single-case record as plan-grade. See docs/T02-real-input-quality-evidence-plan.md for separate real-input quality evidence requirements.
+ 
+-Each saved matrix JSON must have `success: true`, `baseline_readiness: "plan_grade"`, `matrix_aggregation: "complete_six_case_cross_product"`, six unique completed cases, complete golden flags, and no readiness reasons. Keep the emitted `record_path` and SHA-256 with the exact command, UTC timestamp, and HEAD.
++## Run protocol
+ 
+-For every paired size case, preserve workload, configuration, and hardware fingerprints plus sample provenance. Baseline and candidate must match on `benchmark_scope`, `workload_fingerprint`, `config_fingerprint`, and `hardware_fingerprint`; the implementation fingerprint identifies which source revision produced each record and is expected to change between baseline and candidate.
++Run one workload case per separately owned T20 window. Each case has a 900-second hard limit and fresh external state and scratch directories. Keep offline settings enabled and omit inference.
+ 
+-## PowerShell run sequence
++Phase 1 smoke configuration: files 100, RAG chunks 1,000, concurrency 1, five light samples, one paired sample, fresh state/scratch, per-stage receipt, 120-second hard limit. Do not begin Phase 2 until smoke receipt is complete.
+ 
+-Set `$Config`, `$Audio`, and `$Transcript` to the real configured Hub TOML, verified audio fixture, and exact transcript. The configured state directory must match the config's Hub state directory. Use fresh external scratch paths for the two runs.
++Phase 2 configuration per workload case: --light-repetitions 1000 --paired-repetitions 30 --concurrency 1 4 16 32 --checkpoint <fresh-external-checkpoint> --checkpoint-batch-size 25. Use --resume only to continue the matching checkpoint. Never repeat a completed case.
+ 
+-```powershell
+-$Config = '<configured Hub TOML>'
+-$Audio = '<verified audio fixture>'
+-$Transcript = '<exact expected transcript>'
+-$StateDir = '<configured Hub state directory outside the repository>'
+-$BaselineScratch = Join-Path $env:TEMP 't02-baseline-scratch'
+-$CandidateScratch = Join-Path $env:TEMP 't02-candidate-scratch'
+-$Common = @('--state-dir', $StateDir, '--full-matrix', '--inference', '--config', $Config,
+-    '--speech-fixture', $Audio, '--speech-expected-text', $Transcript, '--timeout-seconds', '3600')
++PowerShell offline environment:
+ 
+-& C:\Python313\python.exe tools\benchmark_surfaces.py @Common --scratch-dir $BaselineScratch
+-# Save the emitted record_path as $BaselineRecord, then record its SHA-256.
++~~~powershell
++$env:HF_HUB_OFFLINE = '1'
++$env:TRANSFORMERS_OFFLINE = '1'
++$env:HF_HUB_DISABLE_TELEMETRY = '1'
++~~~
+ 
+-& C:\Python313\python.exe tools\benchmark_surfaces.py @Common --scratch-dir $CandidateScratch --compare-with $BaselineRecord
+-# Save the emitted candidate record_path and SHA-256; retain all six case comparisons.
+-```
++Command template; replace case values and use new absolute paths outside the repository:
+ 
+-Do not call the pair comparable unless both records pass the plan-grade gates and all six cases have comparison results. Keep failed and timed-out attempts as evidence; do not overwrite them with a later passing run.
++~~~powershell
++python -B tools/benchmark_surfaces.py --state-dir <fresh-state-dir> --scratch-dir <fresh-scratch-dir> --files <100-or-10000-or-100000> --rag-chunks <10000-or-100000> --repetitions 3 --full --light-repetitions 1000 --paired-repetitions 30 --concurrency 1 4 16 32 --checkpoint <fresh-checkpoint.json> --checkpoint-batch-size 25
++~~~
+ 
+-## Regression verification order
++Each accepted case needs its command, exit status, record/checkpoint paths and hashes, per-stage results, concurrency samples, and golden-operation results. A completed six-case aggregate needs six distinct case entries; baseline/candidate comparison remains a separate receipt.
+ 
+-After T13 reports GREEN, first confirm the delayed-dispatch fix and persisted-schema change are present in the T02 candidate. A T13 receipt from another HEAD or `async_jobs.py` hash does not clear this gate. Pin the T02 HEAD and input hashes. After T20 assigns the exclusive slot, run the direct queue-race selector on that candidate, then the benchmark lifecycle and matrix selectors. Run the repeat utility only after every selector passes against the same source snapshot:
++## Evidence boundaries
+ 
+-```powershell
+-$ReceiptDir = Join-Path $env:TEMP ("t02-repeat-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+-& C:\Python313\python.exe tools\repeat_t02_pytest.py --python C:\Python313\python.exe `
+-    --out-dir $ReceiptDir --attempts 25 --timeout-seconds 180 --reverse-control
+-```
+-
+-The utility saves one `receipt.json` plus per-attempt stdout/stderr logs. Receipt field `schema_file` points to JSON schema [t02-pytest-repeat-v1.schema.json](../tools/schemas/t02-pytest-repeat-v1.schema.json). Receipt version `t02-pytest-repeat/v1` pins HEAD, branch, Python/platform, dirty paths, input SHA-256 values, argv, duration, timeout, exit code, failed node IDs, and log hashes. Output directory must be new and outside the repository. Preserve each run; utility refuses to overwrite evidence.
+-
+-Current pending selectors:
+-
+-```powershell
+-C:\Python313\python.exe -m pytest -q --tb=short tests/test_surface_benchmarks.py::test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race
+-C:\Python313\python.exe -m pytest -q --tb=short tests/test_t02_repeat_pytest.py
+-C:\Python313\python.exe -m pytest -q --tb=short tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data
+-C:\Python313\python.exe -m pytest -q --tb=short tests/test_surface_benchmarks.py::test_full_matrix_persists_cases_and_compares_each_size_pair
+-```
+-
+-The current stored single-case receipt is failed and provisional; it is not a baseline for this contract. The queue-cancellation race is owned by T13 and must be repaired in its owner's scope before the repeated verification sequence.
++Current packet contains synthetic-only results. No real-input quality receipt is attached. No accepted full matrix, plan-grade aggregate, paired baseline/candidate comparison, root-current test receipt, GPU inference result, or live VRAM measurement is attached. GPU/VRAM requires its own explicit T20 scope.
+diff --git a/docs/T02-real-input-quality-evidence-plan.md b/docs/T02-real-input-quality-evidence-plan.md
+new file mode 100644
+--- /dev/null
++++ b/docs/T02-real-input-quality-evidence-plan.md
+@@ -0,0 +1,20 @@
++# T02 Real-Input Retrieval Quality Evidence Plan
++
++## Status
++
++Plan only. No real corpus, user query, or production data was inspected or measured in this candidate task. Synthetic benchmark golden operations do not count as real-input quality evidence.
++
++## Paired evidence design
++
++1. Select one permissioned, non-sensitive local corpus and pin its exact revision. Record corpus identifier, relative document IDs, per-file SHA-256, byte counts, format counts, parser/index versions, and corpus manifest hash. Do not place document contents or secrets in the receipt.
++2. Prepare a fixed query set before measurement. For each query, record a stable query ID, expected relevant document IDs, and relevance labels. Keep query text private if it contains sensitive information; receipt may store a query hash.
++3. Freeze retrieval settings for baseline and candidate: embedding space/model identity, chunking, filters, top-k, reranker, index schema, and any freshness cutoff. Reuse identical inputs and settings.
++4. Execute same queries against baseline then candidate with recorded revisions and config fingerprints. Keep raw per-query retrieved IDs in a private evidence artifact; publish only hashes and aggregate metrics.
++5. Report Recall@k, MRR, nDCG, empty-result/coverage rate, and per-query plus aggregate p50/p95 latency. Define k values and acceptance thresholds before the run; current T02 contract sets no real-input thresholds.
++6. Preserve exact command, UTC timestamps, environment/hardware summary, corpus/query manifest hashes, baseline/candidate revisions, configuration hashes, per-query result artifact hashes, metric output, exit status, and failure/skip reasons.
++
++## Boundaries and missing evidence
++
++This plan does not authorize access to private repositories or corpora, a real-input run, model inference, GPU use, or deployment. It does not prescribe a numeric relevance threshold. T20 must approve dataset scope, query count, labels, metrics, thresholds, and resource window before execution.
++
++Current packet has no real-input corpus manifest, query labels, retrieval outputs, or quality metrics. Those remain open receipts; synthetic matrix results cannot substitute.
+diff --git a/handoff/T02-remaining-acceptance.md b/handoff/T02-remaining-acceptance.md
+new file mode 100644
+--- /dev/null
++++ b/handoff/T02-remaining-acceptance.md
+@@ -0,0 +1,56 @@
++# T02 Remaining Acceptance
++
++## Candidate ownership
++
++- Worktree: C:\Users\Adam\.codex\worktrees\t02-quality-baseline-resume\.local-ai-hub
++- Verified before this documentation/harness edit: clean detached HEAD ad974c54e150d5f2c9bdada8179bc02457147549.
++- Candidate source ancestry includes async fix f8024d8ebb51c9bca68e9d8fdaf68c2491b0b1f9 over root baseline 7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf.
++- Other temp worktree for branch task_2d1d72257ea5 is outside this worktree; it was not modified.
++- No root checkout writes.
++
++## Accepted evidence already recorded
++
++- Checkpoint resume selector: 1 passed in 0.19s.
++- Scratch isolation selector: 1 passed in 19.51s.
++- Plan-grade and cold/warm comparison selectors: 2 passed in 0.14s.
++- Async recovery/reopen/eviction selectors: each 1 passed.
++- Delayed-dispatch cancellation regression: passed once plus 25 serial fresh-basetemp repetitions. Receipt JSON SHA-256: A7E789B2EAFEF82645AEC6797794A8EC652FA893D2E456399D3040B55519BE37.
++- Earlier entries are prior candidate receipts. Current authorized isolated harness command: python -B -W error::ResourceWarning -m pytest -q -p no:cacheprovider --tb=short tests/test_t02_repeat_pytest.py
++- Result: exit 0, 3 passed in 0.09s. Selectors: bounded repeat count, external output directory, and fixed allowlisted pytest command.
++- This was the only test invocation in this edit. No 25-run replay, broad suite, benchmark, GPU inference, or root test was run.
++
++## Benchmark status
++
++Earlier synthetic run was interrupted after more than ten minutes:
++
++- Command: python tools/benchmark_surfaces.py --state-dir <fresh> --scratch-dir <fresh> --files 100 --rag-chunks 1000 --repetitions 3 --light-repetitions 1000 --paired-repetitions 30 --concurrency 1 4
++- Result: exit 1 after Ctrl+C; 4,756/5,000 queue rows (95.12%), all cancelled; 30 evidence rows; no persisted timing samples or stage summary.
++- This is incomplete progress, not an accepted performance result.
++
++Open receipts:
++
++1. Complete six-workload by four-concurrency CPU/index-only matrix (24 cells; four concurrency series per workload): (files, RAG chunks) = (100, 10,000), (100, 100,000), (10,000, 10,000), (10,000, 100,000), (100,000, 10,000), (100,000, 100,000).
++2. Concurrency 1/4/16/32 with 1,000 light and 30 paired samples per accepted run.
++3. Smoke receipt before Phase 2, followed by one owned matrix case per T20 window, max 900 seconds each.
++4. Completed matrix aggregation; current benchmark emits matrix_aggregation=not_performed_single_case_record and baseline_readiness=per_case.
++5. Paired plan-grade baseline/candidate comparison.
++6. Real-input retrieval/quality receipt per docs/T02-real-input-quality-evidence-plan.md. Current packet is synthetic-only; no real-input quality is established.
++7. Root-current test receipt.
++8. GPU inference and live VRAM receipts; separate explicit T20 scope required.
++
++## Root-current integration packet
++
++Existing candidate artifacts:
++
++- Patch: artifacts/t02-root-current-async.patch
++- Patch SHA-256: 9BF1C38E0A0C7E4CD6CCDAA13640525883A0C0859DDA676BA5BF5FE5E50ADA3E
++- Receipt: artifacts/t02-root-current-async-receipt.json
++- Receipt SHA-256: E633C37C8732E78004FF531375B8BC1F6D9B0BF061361AB4801631569AD64CB0
++- Receipt root HEAD: 7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf
++- Receipt git_apply_check: pending
++
++This packet preserves candidate hunks only. Apply-check and root-current tests remain pending; no integration is claimed or authorized. Compare receipt preimage hashes with the then-current root before any future application.
++
++## Repeat-runner
++
++tools/repeat_t02_pytest.py allows only the delayed-dispatch cancellation selector, runs serially with fresh basetemp per attempt, writes logs and JSON receipt outside the repository, and caps the run at 50 attempts/900 seconds. Its unit selectors were run only under explicit narrow authorization; no 25-run reproduction was started by this edit.
+diff --git a/handoff/T02-instability-source-handoff-20261002.md b/handoff/T02-instability-source-handoff-20261002.md
+new file mode 100644
+--- /dev/null
++++ b/handoff/T02-instability-source-handoff-20261002.md
+@@ -0,0 +1,21 @@
++# T02 Instability Source Handoff
++
++## Reported symptom
++
++Historical handoff reports two failures in 25 attempts, but exact failing-attempt logs and provenance were not attached. Available evidence does not prove those two failures came from delayed-dispatch cancellation race.
++
++## Known race mechanism
++
++Commit f8024d8ebb51c9bca68e9d8fdaf68c2491b0b1f9 added a dispatch-not-before timestamp and moves delayed timer removal plus queued cancellation state update into one manager lock/database transaction. Regression selector:
++
++~~~text
++tests/test_async_jobs.py::test_early_delayed_dispatch_callback_preserves_queued_cancellation
++~~~
++
++Available candidate receipt: one pass plus 25/25 serial repetitions with fresh pytest basetemp. Receipt JSON SHA-256: A7E789B2EAFEF82645AEC6797794A8EC652FA893D2E456399D3040B55519BE37.
++
++## Attribution boundary
++
++The 25/25 candidate result shows selector stability in that run. It does not map the historical two failures to that code path. Preserve original attempt logs if found; record exact revision, selector, attempt number, timestamp, and failure output. Do not rewrite historical failure count as resolved.
++
++Current CPU test slot is not a benchmark grant. No broad suite, 25-run replay, benchmark, GPU inference, or root test is authorized by this handoff.
