@@ -19,6 +19,20 @@ def test_codegraph_is_absent_from_hub_runtime_configuration_and_telemetry() -> N
 
     for path in paths:
         source = path.read_text(encoding="utf-8")
+        if path == ROOT / "src/local_ai_hub/generator.py":
+            # This literal is generated agent guidance, not a runtime integration.
+            module = ast.parse(source)
+            guidance = [
+                node.value
+                for node in ast.walk(module)
+                if isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and "codegraphcontext/kuzudb was removed from local ai hub" in node.value.casefold()
+            ]
+            assert len(guidance) == 1
+            assert "optional standalone" in guidance[0].casefold()
+            assert "not a hub dependency, runtime, backend, or mcp integration" in guidance[0].casefold()
+            source = source.replace(guidance[0], "")
         if path == ROOT / "src/local_ai_hub/repo_tools.py":
             # Directory quarantine is mandatory; it is not a backend integration.
             module = ast.parse(source)
@@ -75,9 +89,10 @@ def test_optional_codegraph_docs_use_current_gcf_extra_without_hub_integration()
     installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
     standalone = installation.split("## Optional standalone tool: CodeGraphContext", 1)[1]
 
-    assert "not Hub dependencies or backends" in standalone
-    assert 'pip install "codegraphcontext[gcf]==0.6.13"' in standalone
-    assert "it does not configure Local AI Hub" in standalone
+    assert "official installation guide" in standalone
+    assert "Configure it directly with the agent that should use it" in standalone
+    assert "does not install, configure, invoke, monitor or fall back to it" in standalone
+    assert "it is not part of the Hub's `local-ai` MCP entry" in standalone
 
 
 def test_uninstall_preserves_standalone_codegraph_mcp_entry(tmp_path: Path) -> None:

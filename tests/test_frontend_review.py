@@ -31,6 +31,12 @@ def test_build_model_context_includes_screenshot_dom_and_prompt() -> None:
     assert context.screenshot_data_url.endswith("AA==")
     assert context.dom["elements"][0]["element_id"] == "el-1"
     assert context.accessibility["el-1"]["role"] == "button"
+    assert "observation_facts" in context.prompt_payload()["context_instructions"]
+    assert context.observation_sources == {
+        "dom": {"el-1": {"tag": "button"}},
+        "accessibility": {"el-1": {"role": "button"}},
+        "computed_styles": {"el-1": {"display": "none"}},
+    }
 
 
 def test_full_dom_is_not_semantically_redacted() -> None:
@@ -185,6 +191,20 @@ def test_project_live_dom_rejects_duplicate_element_ids() -> None:
     assert projected["error"]["code"] == "duplicate_dom_element_id"
 
 
+@pytest.mark.parametrize("element_id", [True, False])
+def test_project_live_dom_rejects_boolean_element_ids(element_id: bool) -> None:
+    projected = project_live_dom(
+        {
+            "redaction": "none",
+            "elements": [{"element_id": element_id, "tag": "button"}],
+        },
+        max_chars=10_000,
+    )
+
+    assert projected["terminal"] is True
+    assert projected["error"]["code"] == "missing_dom_element_id"
+
+
 def test_html_dom_requires_stable_elements_list() -> None:
     projected = project_live_dom(
         {"redaction": "none", "html": "<main />"}, max_chars=10_000
@@ -229,13 +249,13 @@ def test_service_passes_screenshot_and_dom_bundle_to_vision_model(tmp_path: Path
                             "element_ids": ["el-1"],
                             "observation_facts": [
                                 {
-                                    "source": "dom",
+                                    "source": "computed_styles",
                                     "element_id": "el-1",
-                                    "field": "tag",
-                                    "value": "button",
+                                    "field": "display",
+                                    "value": "none",
                                 }
                             ],
-                            "evidence": ["button display:none"],
+                            "evidence": ["display:none"],
                         }
                     ],
                     "unknowns": ["runtime visibility after hydration"],

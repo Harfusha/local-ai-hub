@@ -17,9 +17,12 @@ class ImmediateCache:
 
 
 class CaptureRuntime:
+    def __init__(self, result=None):
+        self.result = result or {"response": "completion"}
+
     def request(self, _endpoint, payload, timeout=None):
         self.model = payload["model"]
-        return {"response": "completion"}
+        return self.result
 
 
 class CompletionModelRoutingTests(unittest.TestCase):
@@ -48,6 +51,54 @@ class CompletionModelRoutingTests(unittest.TestCase):
         result = services.complete_code({"prefix": "def answer():"}, "test")
 
         self.assertEqual(result["model"], "qwen2.5-coder:1.5b")
+
+    def test_code_completion_rejects_empty_completion(self):
+        services = object.__new__(LocalAIServices)
+        services.config = {"models": {}}
+        services.scheduler = CaptureScheduler()
+        services.runtime = CaptureRuntime({"response": "  "})
+        services.generation_cache = ImmediateCache()
+
+        result = services.complete_code({"prefix": "def answer():"}, "test")
+
+        self.assertFalse(result["success"])
+        self.assertFalse(result.get("completion"))
+
+    def test_code_completion_rejects_null_completion(self):
+        services = object.__new__(LocalAIServices)
+        services.config = {"models": {}}
+        services.scheduler = CaptureScheduler()
+        services.runtime = CaptureRuntime({"response": None})
+        services.generation_cache = ImmediateCache()
+
+        result = services.complete_code({"prefix": "def answer():"}, "test")
+
+        self.assertFalse(result["success"])
+        self.assertFalse(result.get("completion"))
+
+    def test_code_completion_is_not_marked_validated(self):
+        services = object.__new__(LocalAIServices)
+        services.config = {"models": {}}
+        services.scheduler = CaptureScheduler()
+        services.runtime = CaptureRuntime({"response": "return 42"})
+        services.generation_cache = ImmediateCache()
+
+        result = services.complete_code({"prefix": "def answer():"}, "test")
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["validated"])
+
+    def test_code_completion_reports_unavailable_runtime(self):
+        services = object.__new__(LocalAIServices)
+        services.config = {"models": {}}
+        services.scheduler = CaptureScheduler()
+        services.runtime = CaptureRuntime({"error": "runtime unavailable"})
+        services.generation_cache = ImmediateCache()
+
+        result = services.complete_code({"prefix": "def answer():"}, "test")
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "runtime unavailable")
 
 
 if __name__ == "__main__":

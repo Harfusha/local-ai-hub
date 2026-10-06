@@ -1,0 +1,4928 @@
+{
+  "schema_version": 1,
+  "root_api_coverage_sha256": "66b5c89fe088021e5d32feebd1bf953edffad729ec16a55e2b814dc9dacc40f0",
+  "root_post_rows": 223,
+  "candidate_api_coverage_sha256": "0d04f226f2e065ed917b2b2146338503c84e6adeae6d36377c72f03eb3e158b4",
+  "candidate_post_rows": 222,
+  "candidate_missing_root_paths": [
+    "/api/admin/mode"
+  ],
+  "excluded_post_paths": [
+    "/api/context/pack"
+  ],
+  "owner_evidence_summary": {
+    "unassigned": 223
+  },
+  "rows": [
+    {
+      "row": 1,
+      "method": "POST",
+      "path": "/api/admin/mode",
+      "source_ref": "src/local_ai_hub/http_server.py:2785",
+      "operation_id": "op-8bf1bb5e54e6",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_admin_mode_1"
+      ],
+      "candidate_route_ids": [
+        "post_admin_mode_1"
+      ],
+      "root_dispatch_lines": [
+        2785
+      ],
+      "candidate_dispatch_lines": [
+        2749
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 2,
+      "method": "POST",
+      "path": "/api/affected_tests",
+      "source_ref": "src/local_ai_hub/http_server.py:4420",
+      "operation_id": "op-234c8b5b8401",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_affected_tests_1"
+      ],
+      "candidate_route_ids": [
+        "post_affected_tests_1"
+      ],
+      "root_dispatch_lines": [
+        4420
+      ],
+      "candidate_dispatch_lines": [
+        4056
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 3,
+      "method": "POST",
+      "path": "/api/agent-state/blackboard",
+      "source_ref": "src/local_ai_hub/http_server.py:4222",
+      "operation_id": "op-cba9a800cd60",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_agent_state_blackboard_1"
+      ],
+      "candidate_route_ids": [
+        "post_agent_state_blackboard_1"
+      ],
+      "root_dispatch_lines": [
+        4222
+      ],
+      "candidate_dispatch_lines": [
+        3858
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 4,
+      "method": "POST",
+      "path": "/api/agent-state/cleanup",
+      "source_ref": "src/local_ai_hub/http_server.py:4216",
+      "operation_id": "op-79a6996c295f",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_agent_state_cleanup_1"
+      ],
+      "candidate_route_ids": [
+        "post_agent_state_cleanup_1"
+      ],
+      "root_dispatch_lines": [
+        4216
+      ],
+      "candidate_dispatch_lines": [
+        3852
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 5,
+      "method": "POST",
+      "path": "/api/agent-state/context",
+      "source_ref": "src/local_ai_hub/http_server.py:4028",
+      "operation_id": "op-6329dad96448",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_agent_state_context_1"
+      ],
+      "candidate_route_ids": [
+        "post_agent_state_context_1"
+      ],
+      "root_dispatch_lines": [
+        4028
+      ],
+      "candidate_dispatch_lines": [
+        3664
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 6,
+      "method": "POST",
+      "path": "/api/agent-state/events/delta",
+      "source_ref": "src/local_ai_hub/http_server.py:5006",
+      "operation_id": "op-1f8a135931ba",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_agent_state_events_delta_1"
+      ],
+      "candidate_route_ids": [
+        "post_agent_state_events_delta_1"
+      ],
+      "root_dispatch_lines": [
+        5006
+      ],
+      "candidate_dispatch_lines": [
+        4531
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 7,
+      "method": "POST",
+      "path": "/api/agent-state/incidents",
+      "source_ref": "src/local_ai_hub/http_server.py:3895",
+      "operation_id": "op-7b18455195d1",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_agent_state_incidents_1"
+      ],
+      "candidate_route_ids": [
+        "post_agent_state_incidents_1"
+      ],
+      "root_dispatch_lines": [
+        3895
+      ],
+      "candidate_dispatch_lines": [
+        3531
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 8,
+      "method": "POST",
+      "path": "/api/agent-state/learning",
+      "source_ref": "src/local_ai_hub/http_server.py:4166",
+      "operation_id": "op-b25abfddc075",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_agent_state_learning_1"
+      ],
+      "candidate_route_ids": [
+        "post_agent_state_learning_1"
+      ],
+      "root_dispatch_lines": [
+        4166
+      ],
+      "candidate_dispatch_lines": [
+        3802
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 9,
+      "method": "POST",
+      "path": "/api/agent-state/memory",
+      "source_ref": "src/local_ai_hub/http_server.py:3548",
+      "operation_id": "op-f47db64095c5",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_agent_state_memory_1"
+      ],
+      "candidate_route_ids": [
+        "post_agent_state_memory_1"
+      ],
+      "root_dispatch_lines": [
+        3548
+      ],
+      "candidate_dispatch_lines": [
+        3248
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 10,
+      "method": "POST",
+      "path": "/api/agent-state/swarm/cancel",
+      "source_ref": "src/local_ai_hub/http_server.py:4273",
+      "operation_id": "op-4175b6a1f931",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_agent_state_swarm_cancel_1"
+      ],
+      "candidate_route_ids": [
+        "post_agent_state_swarm_cancel_1"
+      ],
+      "root_dispatch_lines": [
+        4273
+      ],
+      "candidate_dispatch_lines": [
+        3909
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 11,
+      "method": "POST",
+      "path": "/api/agent-state/swarm/dispatch",
+      "source_ref": "src/local_ai_hub/http_server.py:4252",
+      "operation_id": "op-b1b285bc55a8",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_agent_state_swarm_dispatch_1"
+      ],
+      "candidate_route_ids": [
+        "post_agent_state_swarm_dispatch_1"
+      ],
+      "root_dispatch_lines": [
+        4252
+      ],
+      "candidate_dispatch_lines": [
+        3888
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 12,
+      "method": "POST",
+      "path": "/api/agent-state/swarm/step",
+      "source_ref": "src/local_ai_hub/http_server.py:4264",
+      "operation_id": "op-9e0f81d1d7fb",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_agent_state_swarm_step_1"
+      ],
+      "candidate_route_ids": [
+        "post_agent_state_swarm_step_1"
+      ],
+      "root_dispatch_lines": [
+        4264
+      ],
+      "candidate_dispatch_lines": [
+        3900
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 13,
+      "method": "POST",
+      "path": "/api/agent-state/tasks",
+      "source_ref": "src/local_ai_hub/http_server.py:3286",
+      "operation_id": "op-847dedba74c4",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_agent_state_tasks_1"
+      ],
+      "candidate_route_ids": [
+        "post_agent_state_tasks_1"
+      ],
+      "root_dispatch_lines": [
+        3286
+      ],
+      "candidate_dispatch_lines": [
+        3043
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 14,
+      "method": "POST",
+      "path": "/api/agent-state/verification",
+      "source_ref": "src/local_ai_hub/http_server.py:3974",
+      "operation_id": "op-c1d17599d3d9",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_agent_state_verification_1"
+      ],
+      "candidate_route_ids": [
+        "post_agent_state_verification_1"
+      ],
+      "root_dispatch_lines": [
+        3974
+      ],
+      "candidate_dispatch_lines": [
+        3610
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 15,
+      "method": "POST",
+      "path": "/api/api_spec",
+      "source_ref": "src/local_ai_hub/http_server.py:5118",
+      "operation_id": "op-10282565dbbb",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_api_spec_1"
+      ],
+      "candidate_route_ids": [
+        "post_api_spec_1"
+      ],
+      "root_dispatch_lines": [
+        5118
+      ],
+      "candidate_dispatch_lines": [
+        4624
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 16,
+      "method": "POST",
+      "path": "/api/artifact/get",
+      "source_ref": "src/local_ai_hub/http_server.py:4914",
+      "operation_id": "op-4208c4f95ada",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_artifact_get_1"
+      ],
+      "candidate_route_ids": [
+        "post_artifact_get_1"
+      ],
+      "root_dispatch_lines": [
+        4914
+      ],
+      "candidate_dispatch_lines": [
+        4443
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 17,
+      "method": "POST",
+      "path": "/api/artifact/list",
+      "source_ref": "src/local_ai_hub/http_server.py:4919",
+      "operation_id": "op-5f24013f1564",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_artifact_list_1"
+      ],
+      "candidate_route_ids": [
+        "post_artifact_list_1"
+      ],
+      "root_dispatch_lines": [
+        4919
+      ],
+      "candidate_dispatch_lines": [
+        4448
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 18,
+      "method": "POST",
+      "path": "/api/ast_rename",
+      "source_ref": "src/local_ai_hub/http_server.py:4435",
+      "operation_id": "op-5e1bd42312ad",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_ast_rename_1"
+      ],
+      "candidate_route_ids": [
+        "post_ast_rename_1"
+      ],
+      "root_dispatch_lines": [
+        4435
+      ],
+      "candidate_dispatch_lines": [
+        4071
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 19,
+      "method": "POST",
+      "path": "/api/async-jobs",
+      "source_ref": "src/local_ai_hub/http_server.py:3254",
+      "operation_id": "op-9c908d8a47ec",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_async_jobs_1"
+      ],
+      "candidate_route_ids": [
+        "post_async_jobs_1"
+      ],
+      "root_dispatch_lines": [
+        3254
+      ],
+      "candidate_dispatch_lines": [
+        3017
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 20,
+      "method": "POST",
+      "path": "/api/audit_dependencies",
+      "source_ref": "src/local_ai_hub/http_server.py:4316",
+      "operation_id": "op-b52980d206d4",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_audit_dependencies_1"
+      ],
+      "candidate_route_ids": [
+        "post_audit_dependencies_1"
+      ],
+      "root_dispatch_lines": [
+        4316
+      ],
+      "candidate_dispatch_lines": [
+        3952
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 21,
+      "method": "POST",
+      "path": "/api/benchmark",
+      "source_ref": "src/local_ai_hub/http_server.py:4623",
+      "operation_id": "op-d2c3b35b0f60",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_benchmark_1"
+      ],
+      "candidate_route_ids": [
+        "post_benchmark_1"
+      ],
+      "root_dispatch_lines": [
+        4623
+      ],
+      "candidate_dispatch_lines": [
+        4259
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 22,
+      "method": "POST",
+      "path": "/api/benchmark/run",
+      "source_ref": "src/local_ai_hub/http_server.py:4280",
+      "operation_id": "op-3c94f1f1187b",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_benchmark_run_1"
+      ],
+      "candidate_route_ids": [
+        "post_benchmark_run_1"
+      ],
+      "root_dispatch_lines": [
+        4280
+      ],
+      "candidate_dispatch_lines": [
+        3916
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 23,
+      "method": "POST",
+      "path": "/api/browser/capability",
+      "source_ref": "src/local_ai_hub/http_server.py:3191",
+      "operation_id": "op-0da83b58049e",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_browser_capability_1"
+      ],
+      "candidate_route_ids": [
+        "post_browser_capability_1"
+      ],
+      "root_dispatch_lines": [
+        3191
+      ],
+      "candidate_dispatch_lines": [
+        2958
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 24,
+      "method": "POST",
+      "path": "/api/browser/capture",
+      "source_ref": "src/local_ai_hub/http_server.py:3228",
+      "operation_id": "op-fc062f29cc19",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_browser_capture_1"
+      ],
+      "candidate_route_ids": [
+        "post_browser_capture_1"
+      ],
+      "root_dispatch_lines": [
+        3228
+      ],
+      "candidate_dispatch_lines": [
+        2995
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 25,
+      "method": "POST",
+      "path": "/api/browser/capture/abandon",
+      "source_ref": "src/local_ai_hub/http_server.py:3210",
+      "operation_id": "op-7cd3d27a3948",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_browser_capture_abandon_1"
+      ],
+      "candidate_route_ids": [
+        "post_browser_capture_abandon_1"
+      ],
+      "root_dispatch_lines": [
+        3210
+      ],
+      "candidate_dispatch_lines": [
+        2977
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 26,
+      "method": "POST",
+      "path": "/api/browser/capture/commit",
+      "source_ref": "src/local_ai_hub/http_server.py:3223",
+      "operation_id": "op-483376ef8eb5",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_browser_capture_abandon_1"
+      ],
+      "candidate_route_ids": [
+        "post_browser_capture_abandon_1"
+      ],
+      "root_dispatch_lines": [
+        3210
+      ],
+      "candidate_dispatch_lines": [
+        2977
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 27,
+      "method": "POST",
+      "path": "/api/browser/capture/stage",
+      "source_ref": "src/local_ai_hub/http_server.py:3219",
+      "operation_id": "op-4d1662739283",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_browser_capture_abandon_1"
+      ],
+      "candidate_route_ids": [
+        "post_browser_capture_abandon_1"
+      ],
+      "root_dispatch_lines": [
+        3210
+      ],
+      "candidate_dispatch_lines": [
+        2977
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 28,
+      "method": "POST",
+      "path": "/api/bundle/export",
+      "source_ref": "src/local_ai_hub/http_server.py:4608",
+      "operation_id": "op-21ec1373e039",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_bundle_export_1"
+      ],
+      "candidate_route_ids": [
+        "post_bundle_export_1"
+      ],
+      "root_dispatch_lines": [
+        4608
+      ],
+      "candidate_dispatch_lines": [
+        4244
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 29,
+      "method": "POST",
+      "path": "/api/bundle/import",
+      "source_ref": "src/local_ai_hub/http_server.py:3022",
+      "operation_id": "op-e64c615a36e2",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_bundle_import_1"
+      ],
+      "candidate_route_ids": [
+        "post_bundle_import_1"
+      ],
+      "root_dispatch_lines": [
+        3022
+      ],
+      "candidate_dispatch_lines": [
+        2729
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 30,
+      "method": "POST",
+      "path": "/api/callers",
+      "source_ref": "src/local_ai_hub/http_server.py:5087",
+      "operation_id": "op-1bb7b2183105",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_callers_1"
+      ],
+      "candidate_route_ids": [
+        "post_callers_1"
+      ],
+      "root_dispatch_lines": [
+        5087
+      ],
+      "candidate_dispatch_lines": [
+        4593
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 31,
+      "method": "POST",
+      "path": "/api/chat",
+      "source_ref": "src/local_ai_hub/http_server.py:5153",
+      "operation_id": "op-168f9dbce8b8",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_chat_1"
+      ],
+      "candidate_route_ids": [
+        "post_chat_1"
+      ],
+      "root_dispatch_lines": [
+        5153
+      ],
+      "candidate_dispatch_lines": [
+        4659
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 32,
+      "method": "POST",
+      "path": "/api/circular_dependencies",
+      "source_ref": "src/local_ai_hub/http_server.py:5109",
+      "operation_id": "op-b968977fb729",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_circular_dependencies_1"
+      ],
+      "candidate_route_ids": [
+        "post_circular_dependencies_1"
+      ],
+      "root_dispatch_lines": [
+        5109
+      ],
+      "candidate_dispatch_lines": [
+        4615
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 33,
+      "method": "POST",
+      "path": "/api/code-intelligence/control",
+      "source_ref": "src/local_ai_hub/http_server.py:4544",
+      "operation_id": "op-630137102c4b",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_intelligence_control_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_intelligence_control_1"
+      ],
+      "root_dispatch_lines": [
+        4544
+      ],
+      "candidate_dispatch_lines": [
+        4180
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 34,
+      "method": "POST",
+      "path": "/api/code-intelligence/query",
+      "source_ref": "src/local_ai_hub/http_server.py:4463",
+      "operation_id": "op-ef992b94de5b",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_intelligence_query_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_intelligence_query_1"
+      ],
+      "root_dispatch_lines": [
+        4463
+      ],
+      "candidate_dispatch_lines": [
+        4099
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 35,
+      "method": "POST",
+      "path": "/api/code/ast_outline",
+      "source_ref": "src/local_ai_hub/http_server.py:4473",
+      "operation_id": "op-8cdf62b97a2a",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_ast_outline_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_ast_outline_1"
+      ],
+      "root_dispatch_lines": [
+        4473
+      ],
+      "candidate_dispatch_lines": [
+        4109
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 36,
+      "method": "POST",
+      "path": "/api/code/ast_rename",
+      "source_ref": "src/local_ai_hub/http_server.py:4435",
+      "operation_id": "op-9a568ca9a62b",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_ast_rename_1"
+      ],
+      "candidate_route_ids": [
+        "post_ast_rename_1"
+      ],
+      "root_dispatch_lines": [
+        4435
+      ],
+      "candidate_dispatch_lines": [
+        4071
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 37,
+      "method": "POST",
+      "path": "/api/code/batch_replace",
+      "source_ref": "src/local_ai_hub/http_server.py:4481",
+      "operation_id": "op-11a0e1ab4ae7",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_batch_replace_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_batch_replace_1"
+      ],
+      "root_dispatch_lines": [
+        4481
+      ],
+      "candidate_dispatch_lines": [
+        4117
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 38,
+      "method": "POST",
+      "path": "/api/code/diagnostics",
+      "source_ref": "src/local_ai_hub/http_server.py:4539",
+      "operation_id": "op-a80e54057076",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_diagnostics_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_diagnostics_1"
+      ],
+      "root_dispatch_lines": [
+        4539
+      ],
+      "candidate_dispatch_lines": [
+        4175
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 39,
+      "method": "POST",
+      "path": "/api/code/find_declaration",
+      "source_ref": "src/local_ai_hub/http_server.py:4515",
+      "operation_id": "op-19432aa6f94b",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_find_declaration_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_find_declaration_1"
+      ],
+      "root_dispatch_lines": [
+        4515
+      ],
+      "candidate_dispatch_lines": [
+        4151
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 40,
+      "method": "POST",
+      "path": "/api/code/find_implementations",
+      "source_ref": "src/local_ai_hub/http_server.py:4521",
+      "operation_id": "op-9d649e5eea89",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_find_implementations_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_find_implementations_1"
+      ],
+      "root_dispatch_lines": [
+        4521
+      ],
+      "candidate_dispatch_lines": [
+        4157
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 41,
+      "method": "POST",
+      "path": "/api/code/find_referencing_symbols",
+      "source_ref": "src/local_ai_hub/http_server.py:4527",
+      "operation_id": "op-4d80ce82548a",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_find_referencing_symbols_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_find_referencing_symbols_1"
+      ],
+      "root_dispatch_lines": [
+        4527
+      ],
+      "candidate_dispatch_lines": [
+        4163
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 42,
+      "method": "POST",
+      "path": "/api/code/find_symbol",
+      "source_ref": "src/local_ai_hub/http_server.py:4505",
+      "operation_id": "op-b42b9b6e3ebc",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_find_symbol_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_find_symbol_1"
+      ],
+      "root_dispatch_lines": [
+        4505
+      ],
+      "candidate_dispatch_lines": [
+        4141
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 43,
+      "method": "POST",
+      "path": "/api/code/generate_mocks",
+      "source_ref": "src/local_ai_hub/http_server.py:4446",
+      "operation_id": "op-2688077c92bc",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_generate_mocks_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_generate_mocks_1"
+      ],
+      "root_dispatch_lines": [
+        4446
+      ],
+      "candidate_dispatch_lines": [
+        4082
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 44,
+      "method": "POST",
+      "path": "/api/code/symbol",
+      "source_ref": "src/local_ai_hub/http_server.py:4500",
+      "operation_id": "op-ebdc3e262b0d",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_symbol_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_symbol_1"
+      ],
+      "root_dispatch_lines": [
+        4500
+      ],
+      "candidate_dispatch_lines": [
+        4136
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 45,
+      "method": "POST",
+      "path": "/api/code/symbols_overview",
+      "source_ref": "src/local_ai_hub/http_server.py:4533",
+      "operation_id": "op-5baa502b7efb",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_symbols_overview_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_symbols_overview_1"
+      ],
+      "root_dispatch_lines": [
+        4533
+      ],
+      "candidate_dispatch_lines": [
+        4169
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 46,
+      "method": "POST",
+      "path": "/api/code_invariants",
+      "source_ref": "src/local_ai_hub/http_server.py:5060",
+      "operation_id": "op-1fcdb085e7a7",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_invariants_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_invariants_1"
+      ],
+      "root_dispatch_lines": [
+        5060
+      ],
+      "candidate_dispatch_lines": [
+        4566
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 47,
+      "method": "POST",
+      "path": "/api/command",
+      "source_ref": "src/local_ai_hub/http_server.py:4946",
+      "operation_id": "op-24fe5fc51c7c",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_1"
+      ],
+      "root_dispatch_lines": [
+        4946
+      ],
+      "candidate_dispatch_lines": [
+        4473
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 48,
+      "method": "POST",
+      "path": "/api/command/daemon",
+      "source_ref": "src/local_ai_hub/http_server.py:5075",
+      "operation_id": "op-2b9bc7b00779",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_daemon_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_daemon_1"
+      ],
+      "root_dispatch_lines": [
+        5075
+      ],
+      "candidate_dispatch_lines": [
+        4581
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 49,
+      "method": "POST",
+      "path": "/api/command/diff_hunk_stage",
+      "source_ref": "src/local_ai_hub/http_server.py:5144",
+      "operation_id": "op-d41d3f037ca2",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_diff_hunk_stage_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_diff_hunk_stage_1"
+      ],
+      "root_dispatch_lines": [
+        5144
+      ],
+      "candidate_dispatch_lines": [
+        4650
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 50,
+      "method": "POST",
+      "path": "/api/command/flaky_detect",
+      "source_ref": "src/local_ai_hub/http_server.py:5146",
+      "operation_id": "op-bcd42b64552d",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_flaky_detect_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_flaky_detect_1"
+      ],
+      "root_dispatch_lines": [
+        5146
+      ],
+      "candidate_dispatch_lines": [
+        4652
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 51,
+      "method": "POST",
+      "path": "/api/command/http_probe",
+      "source_ref": "src/local_ai_hub/http_server.py:5085",
+      "operation_id": "op-f508ad854097",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_http_probe_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_http_probe_1"
+      ],
+      "root_dispatch_lines": [
+        5085
+      ],
+      "candidate_dispatch_lines": [
+        4591
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 52,
+      "method": "POST",
+      "path": "/api/command/lint_fix",
+      "source_ref": "src/local_ai_hub/http_server.py:5083",
+      "operation_id": "op-ffc0ff8f6ea6",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_lint_fix_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_lint_fix_1"
+      ],
+      "root_dispatch_lines": [
+        5083
+      ],
+      "candidate_dispatch_lines": [
+        4589
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 53,
+      "method": "POST",
+      "path": "/api/command/mock_server",
+      "source_ref": "src/local_ai_hub/http_server.py:5134",
+      "operation_id": "op-21e2955a8e85",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_mock_server_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_mock_server_1"
+      ],
+      "root_dispatch_lines": [
+        5134
+      ],
+      "candidate_dispatch_lines": [
+        4640
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 54,
+      "method": "POST",
+      "path": "/api/command/preflight",
+      "source_ref": "src/local_ai_hub/http_server.py:4648",
+      "operation_id": "op-9d27ad3768b2",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_preflight_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_preflight_1"
+      ],
+      "root_dispatch_lines": [
+        4648
+      ],
+      "candidate_dispatch_lines": [
+        4284
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 55,
+      "method": "POST",
+      "path": "/api/command/speculative-lint",
+      "source_ref": "src/local_ai_hub/http_server.py:3273",
+      "operation_id": "op-d310ded36aea",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_speculative_lint_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_speculative_lint_1"
+      ],
+      "root_dispatch_lines": [
+        3273
+      ],
+      "candidate_dispatch_lines": [
+        3030
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 56,
+      "method": "POST",
+      "path": "/api/command/webhook_replay",
+      "source_ref": "src/local_ai_hub/http_server.py:5148",
+      "operation_id": "op-172b371484b4",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_webhook_replay_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_webhook_replay_1"
+      ],
+      "root_dispatch_lines": [
+        5148
+      ],
+      "candidate_dispatch_lines": [
+        4654
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 57,
+      "method": "POST",
+      "path": "/api/complete",
+      "source_ref": "src/local_ai_hub/http_server.py:4553",
+      "operation_id": "op-236704d6d750",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_complete_1"
+      ],
+      "candidate_route_ids": [
+        "post_complete_1"
+      ],
+      "root_dispatch_lines": [
+        4553
+      ],
+      "candidate_dispatch_lines": [
+        4189
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 58,
+      "method": "POST",
+      "path": "/api/complexity",
+      "source_ref": "src/local_ai_hub/http_server.py:5113",
+      "operation_id": "op-41d0f2e9bd56",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_complexity_1"
+      ],
+      "candidate_route_ids": [
+        "post_complexity_1"
+      ],
+      "root_dispatch_lines": [
+        5113
+      ],
+      "candidate_dispatch_lines": [
+        4619
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 59,
+      "method": "POST",
+      "path": "/api/compress",
+      "source_ref": "src/local_ai_hub/http_server.py:4304",
+      "operation_id": "op-26dfb66d8890",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_compress_1"
+      ],
+      "candidate_route_ids": [
+        "post_compress_1"
+      ],
+      "root_dispatch_lines": [
+        4304
+      ],
+      "candidate_dispatch_lines": [
+        3940
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 60,
+      "method": "POST",
+      "path": "/api/config/update",
+      "source_ref": "src/local_ai_hub/http_server.py:3127",
+      "operation_id": "op-ff52947bcad7",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_config_update_1"
+      ],
+      "candidate_route_ids": [
+        "post_config_update_1"
+      ],
+      "root_dispatch_lines": [
+        3127
+      ],
+      "candidate_dispatch_lines": [
+        2894
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 61,
+      "method": "POST",
+      "path": "/api/context_budget",
+      "source_ref": "src/local_ai_hub/http_server.py:5128",
+      "operation_id": "op-1e47e8aabdd0",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_context_budget_1"
+      ],
+      "candidate_route_ids": [
+        "post_context_budget_1"
+      ],
+      "root_dispatch_lines": [
+        5128
+      ],
+      "candidate_dispatch_lines": [
+        4634
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 62,
+      "method": "POST",
+      "path": "/api/control",
+      "source_ref": "src/local_ai_hub/http_server.py:3165",
+      "operation_id": "op-1c75a1cf3cab",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_control_1"
+      ],
+      "candidate_route_ids": [
+        "post_control_1"
+      ],
+      "root_dispatch_lines": [
+        3165
+      ],
+      "candidate_dispatch_lines": [
+        2932
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 63,
+      "method": "POST",
+      "path": "/api/conversations/continue",
+      "source_ref": "src/local_ai_hub/http_server.py:3251",
+      "operation_id": "op-39cb63957f93",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_conversations_continue_1"
+      ],
+      "candidate_route_ids": [
+        "post_conversations_continue_1"
+      ],
+      "root_dispatch_lines": [
+        3251
+      ],
+      "candidate_dispatch_lines": [
+        3015
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 64,
+      "method": "POST",
+      "path": "/api/coord/pubsub_poll",
+      "source_ref": "src/local_ai_hub/http_server.py:5099",
+      "operation_id": "op-db9bf332043e",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_pubsub_poll_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_pubsub_poll_1"
+      ],
+      "root_dispatch_lines": [
+        5099
+      ],
+      "candidate_dispatch_lines": [
+        4605
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 65,
+      "method": "POST",
+      "path": "/api/coord/pubsub_publish",
+      "source_ref": "src/local_ai_hub/http_server.py:5097",
+      "operation_id": "op-746da2e62465",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_pubsub_publish_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_pubsub_publish_1"
+      ],
+      "root_dispatch_lines": [
+        5097
+      ],
+      "candidate_dispatch_lines": [
+        4603
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 66,
+      "method": "POST",
+      "path": "/api/coord/simulate_merge",
+      "source_ref": "src/local_ai_hub/http_server.py:5101",
+      "operation_id": "op-5bd15143db41",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_simulate_merge_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_simulate_merge_1"
+      ],
+      "root_dispatch_lines": [
+        5101
+      ],
+      "candidate_dispatch_lines": [
+        4607
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 67,
+      "method": "POST",
+      "path": "/api/coord/worktree_lease",
+      "source_ref": "src/local_ai_hub/http_server.py:5066",
+      "operation_id": "op-2d8f98fca770",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_worktree_lease_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_worktree_lease_1"
+      ],
+      "root_dispatch_lines": [
+        5066
+      ],
+      "candidate_dispatch_lines": [
+        4572
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 68,
+      "method": "POST",
+      "path": "/api/coord/worktree_prune",
+      "source_ref": "src/local_ai_hub/http_server.py:5072",
+      "operation_id": "op-a4b060cb7fe2",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_worktree_prune_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_worktree_prune_1"
+      ],
+      "root_dispatch_lines": [
+        5072
+      ],
+      "candidate_dispatch_lines": [
+        4578
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 69,
+      "method": "POST",
+      "path": "/api/coord/worktree_release",
+      "source_ref": "src/local_ai_hub/http_server.py:5068",
+      "operation_id": "op-b1fcb8539149",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_worktree_release_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_worktree_release_1"
+      ],
+      "root_dispatch_lines": [
+        5068
+      ],
+      "candidate_dispatch_lines": [
+        4574
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 70,
+      "method": "POST",
+      "path": "/api/coord/worktrees",
+      "source_ref": "src/local_ai_hub/http_server.py:5070",
+      "operation_id": "op-2d46ce218564",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_worktrees_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_worktrees_1"
+      ],
+      "root_dispatch_lines": [
+        5070
+      ],
+      "candidate_dispatch_lines": [
+        4576
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 71,
+      "method": "POST",
+      "path": "/api/cross_project_graph",
+      "source_ref": "src/local_ai_hub/http_server.py:4569",
+      "operation_id": "op-a61cf80dee38",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_cross_project_graph_1"
+      ],
+      "candidate_route_ids": [
+        "post_cross_project_graph_1"
+      ],
+      "root_dispatch_lines": [
+        4569
+      ],
+      "candidate_dispatch_lines": [
+        4205
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 72,
+      "method": "POST",
+      "path": "/api/cross_project_impact",
+      "source_ref": "src/local_ai_hub/http_server.py:4589",
+      "operation_id": "op-d9106a2518d1",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_cross_project_impact_1"
+      ],
+      "candidate_route_ids": [
+        "post_cross_project_impact_1"
+      ],
+      "root_dispatch_lines": [
+        4589
+      ],
+      "candidate_dispatch_lines": [
+        4225
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 73,
+      "method": "POST",
+      "path": "/api/cross_project_symbols",
+      "source_ref": "src/local_ai_hub/http_server.py:4578",
+      "operation_id": "op-c7dc72b3b4cb",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_cross_project_symbols_1"
+      ],
+      "candidate_route_ids": [
+        "post_cross_project_symbols_1"
+      ],
+      "root_dispatch_lines": [
+        4578
+      ],
+      "candidate_dispatch_lines": [
+        4214
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 74,
+      "method": "POST",
+      "path": "/api/cross_repo_contract",
+      "source_ref": "src/local_ai_hub/http_server.py:4396",
+      "operation_id": "op-740fe3ca36c6",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_cross_repo_contract_1"
+      ],
+      "candidate_route_ids": [
+        "post_cross_repo_contract_1"
+      ],
+      "root_dispatch_lines": [
+        4396
+      ],
+      "candidate_dispatch_lines": [
+        4032
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 75,
+      "method": "POST",
+      "path": "/api/daemon",
+      "source_ref": "src/local_ai_hub/http_server.py:5075",
+      "operation_id": "op-cc07453de85d",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_daemon_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_daemon_1"
+      ],
+      "root_dispatch_lines": [
+        5075
+      ],
+      "candidate_dispatch_lines": [
+        4581
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 76,
+      "method": "POST",
+      "path": "/api/db/query",
+      "source_ref": "src/local_ai_hub/http_server.py:4969",
+      "operation_id": "op-6de9fa7594c4",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_db_query_1"
+      ],
+      "candidate_route_ids": [
+        "post_db_query_1"
+      ],
+      "root_dispatch_lines": [
+        4969
+      ],
+      "candidate_dispatch_lines": [
+        4494
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 77,
+      "method": "POST",
+      "path": "/api/dead_code",
+      "source_ref": "src/local_ai_hub/http_server.py:4558",
+      "operation_id": "op-84a3e66061f9",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_dead_code_1"
+      ],
+      "candidate_route_ids": [
+        "post_dead_code_1"
+      ],
+      "root_dispatch_lines": [
+        4558
+      ],
+      "candidate_dispatch_lines": [
+        4194
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 78,
+      "method": "POST",
+      "path": "/api/delegate",
+      "source_ref": "src/local_ai_hub/http_server.py:3246",
+      "operation_id": "op-d5d8bbdc9bea",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_delegate_1"
+      ],
+      "candidate_route_ids": [
+        "post_delegate_1"
+      ],
+      "root_dispatch_lines": [
+        3246
+      ],
+      "candidate_dispatch_lines": [
+        3013
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 79,
+      "method": "POST",
+      "path": "/api/delegate/batch",
+      "source_ref": "src/local_ai_hub/http_server.py:4294",
+      "operation_id": "op-35a099bc5a33",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_delegate_batch_1"
+      ],
+      "candidate_route_ids": [
+        "post_delegate_batch_1"
+      ],
+      "root_dispatch_lines": [
+        4294
+      ],
+      "candidate_dispatch_lines": [
+        3930
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 80,
+      "method": "POST",
+      "path": "/api/delegate/repo",
+      "source_ref": "src/local_ai_hub/http_server.py:4288",
+      "operation_id": "op-5ec20d3d74e7",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_delegate_repo_1"
+      ],
+      "candidate_route_ids": [
+        "post_delegate_repo_1"
+      ],
+      "root_dispatch_lines": [
+        4288
+      ],
+      "candidate_dispatch_lines": [
+        3924
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 81,
+      "method": "POST",
+      "path": "/api/dependency_slice",
+      "source_ref": "src/local_ai_hub/http_server.py:5120",
+      "operation_id": "op-901e8a63f516",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_dependency_slice_1"
+      ],
+      "candidate_route_ids": [
+        "post_dependency_slice_1"
+      ],
+      "root_dispatch_lines": [
+        5120
+      ],
+      "candidate_dispatch_lines": [
+        4626
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 82,
+      "method": "POST",
+      "path": "/api/diff_hunk_stage",
+      "source_ref": "src/local_ai_hub/http_server.py:5144",
+      "operation_id": "op-5e6a1ef0ea54",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_diff_hunk_stage_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_diff_hunk_stage_1"
+      ],
+      "root_dispatch_lines": [
+        5144
+      ],
+      "candidate_dispatch_lines": [
+        4650
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 83,
+      "method": "POST",
+      "path": "/api/doctor",
+      "source_ref": "src/local_ai_hub/http_server.py:4497",
+      "operation_id": "op-5bbbe6a2bd65",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_doctor_1"
+      ],
+      "candidate_route_ids": [
+        "post_doctor_1"
+      ],
+      "root_dispatch_lines": [
+        4497
+      ],
+      "candidate_dispatch_lines": [
+        4133
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 84,
+      "method": "POST",
+      "path": "/api/embed",
+      "source_ref": "src/local_ai_hub/http_server.py:5153",
+      "operation_id": "op-a3c592c8f3ad",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_embed_1",
+        "post_chat_1"
+      ],
+      "candidate_route_ids": [
+        "post_embed_1",
+        "post_chat_1"
+      ],
+      "root_dispatch_lines": [
+        4950,
+        5153
+      ],
+      "candidate_dispatch_lines": [
+        4475,
+        4659
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 85,
+      "method": "POST",
+      "path": "/api/env_compat",
+      "source_ref": "src/local_ai_hub/http_server.py:5095",
+      "operation_id": "op-1a14a23ae176",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_env_compat_1"
+      ],
+      "candidate_route_ids": [
+        "post_env_compat_1"
+      ],
+      "root_dispatch_lines": [
+        5095
+      ],
+      "candidate_dispatch_lines": [
+        4601
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 86,
+      "method": "POST",
+      "path": "/api/eval_drift",
+      "source_ref": "src/local_ai_hub/http_server.py:5107",
+      "operation_id": "op-c2184b2f0781",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_eval_drift_1"
+      ],
+      "candidate_route_ids": [
+        "post_eval_drift_1"
+      ],
+      "root_dispatch_lines": [
+        5107
+      ],
+      "candidate_dispatch_lines": [
+        4613
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 87,
+      "method": "POST",
+      "path": "/api/eval_suite",
+      "source_ref": "src/local_ai_hub/http_server.py:5103",
+      "operation_id": "op-e751ff19cc34",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_eval_suite_1"
+      ],
+      "candidate_route_ids": [
+        "post_eval_suite_1"
+      ],
+      "root_dispatch_lines": [
+        5103
+      ],
+      "candidate_dispatch_lines": [
+        4609
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 88,
+      "method": "POST",
+      "path": "/api/evaluation",
+      "source_ref": "src/local_ai_hub/http_server.py:4625",
+      "operation_id": "op-948b0c8e50c7",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_evaluation_1"
+      ],
+      "candidate_route_ids": [
+        "post_evaluation_1"
+      ],
+      "root_dispatch_lines": [
+        4625
+      ],
+      "candidate_dispatch_lines": [
+        4261
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 89,
+      "method": "POST",
+      "path": "/api/evidence/get",
+      "source_ref": "src/local_ai_hub/http_server.py:4924",
+      "operation_id": "op-6469ce742fd0",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_evidence_get_1"
+      ],
+      "candidate_route_ids": [
+        "post_evidence_get_1"
+      ],
+      "root_dispatch_lines": [
+        4924
+      ],
+      "candidate_dispatch_lines": [
+        4453
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 90,
+      "method": "POST",
+      "path": "/api/evidence/verify",
+      "source_ref": "src/local_ai_hub/http_server.py:4921",
+      "operation_id": "op-44b829747b5f",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_evidence_verify_1"
+      ],
+      "candidate_route_ids": [
+        "post_evidence_verify_1"
+      ],
+      "root_dispatch_lines": [
+        4921
+      ],
+      "candidate_dispatch_lines": [
+        4450
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 91,
+      "method": "POST",
+      "path": "/api/explain_query",
+      "source_ref": "src/local_ai_hub/http_server.py:5093",
+      "operation_id": "op-dea06e3a4d18",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_explain_query_1"
+      ],
+      "candidate_route_ids": [
+        "post_explain_query_1"
+      ],
+      "root_dispatch_lines": [
+        5093
+      ],
+      "candidate_dispatch_lines": [
+        4599
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 92,
+      "method": "POST",
+      "path": "/api/flaky_detect",
+      "source_ref": "src/local_ai_hub/http_server.py:5146",
+      "operation_id": "op-deaa744d68a0",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_flaky_detect_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_flaky_detect_1"
+      ],
+      "root_dispatch_lines": [
+        5146
+      ],
+      "candidate_dispatch_lines": [
+        4652
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 93,
+      "method": "POST",
+      "path": "/api/generate",
+      "source_ref": "src/local_ai_hub/http_server.py:5153",
+      "operation_id": "op-2ea8e56e70e5",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_chat_1"
+      ],
+      "candidate_route_ids": [
+        "post_chat_1"
+      ],
+      "root_dispatch_lines": [
+        5153
+      ],
+      "candidate_dispatch_lines": [
+        4659
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 94,
+      "method": "POST",
+      "path": "/api/generate_dataset",
+      "source_ref": "src/local_ai_hub/http_server.py:5062",
+      "operation_id": "op-00e4ede83cfe",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_generate_dataset_1"
+      ],
+      "candidate_route_ids": [
+        "post_generate_dataset_1"
+      ],
+      "root_dispatch_lines": [
+        5062
+      ],
+      "candidate_dispatch_lines": [
+        4568
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 95,
+      "method": "POST",
+      "path": "/api/generate_mocks",
+      "source_ref": "src/local_ai_hub/http_server.py:4446",
+      "operation_id": "op-73c0c5f94ac3",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_generate_mocks_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_generate_mocks_1"
+      ],
+      "root_dispatch_lines": [
+        4446
+      ],
+      "candidate_dispatch_lines": [
+        4082
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 96,
+      "method": "POST",
+      "path": "/api/generate_tests",
+      "source_ref": "src/local_ai_hub/http_server.py:4306",
+      "operation_id": "op-38bfd0cee347",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_generate_tests_1"
+      ],
+      "candidate_route_ids": [
+        "post_generate_tests_1"
+      ],
+      "root_dispatch_lines": [
+        4306
+      ],
+      "candidate_dispatch_lines": [
+        3942
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 97,
+      "method": "POST",
+      "path": "/api/generate_tests_for_diff",
+      "source_ref": "src/local_ai_hub/http_server.py:4387",
+      "operation_id": "op-febc0aae1158",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_generate_tests_for_diff_1"
+      ],
+      "candidate_route_ids": [
+        "post_generate_tests_for_diff_1"
+      ],
+      "root_dispatch_lines": [
+        4387
+      ],
+      "candidate_dispatch_lines": [
+        4023
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 98,
+      "method": "POST",
+      "path": "/api/generate_types",
+      "source_ref": "src/local_ai_hub/http_server.py:5111",
+      "operation_id": "op-f66eee9c31b7",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_generate_types_1"
+      ],
+      "candidate_route_ids": [
+        "post_generate_types_1"
+      ],
+      "root_dispatch_lines": [
+        5111
+      ],
+      "candidate_dispatch_lines": [
+        4617
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 99,
+      "method": "POST",
+      "path": "/api/git/diff",
+      "source_ref": "src/local_ai_hub/http_server.py:4359",
+      "operation_id": "op-3631e7d6a1f4",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_git_diff_1"
+      ],
+      "candidate_route_ids": [
+        "post_git_diff_1"
+      ],
+      "root_dispatch_lines": [
+        4359
+      ],
+      "candidate_dispatch_lines": [
+        3995
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 100,
+      "method": "POST",
+      "path": "/api/git/history_search",
+      "source_ref": "src/local_ai_hub/http_server.py:4369",
+      "operation_id": "op-f94556281c61",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_git_history_search_1"
+      ],
+      "candidate_route_ids": [
+        "post_git_history_search_1"
+      ],
+      "root_dispatch_lines": [
+        4369
+      ],
+      "candidate_dispatch_lines": [
+        4005
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 101,
+      "method": "POST",
+      "path": "/api/git/status",
+      "source_ref": "src/local_ai_hub/http_server.py:4341",
+      "operation_id": "op-32774709009e",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_git_status_1"
+      ],
+      "candidate_route_ids": [
+        "post_git_status_1"
+      ],
+      "root_dispatch_lines": [
+        4341
+      ],
+      "candidate_dispatch_lines": [
+        3977
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 102,
+      "method": "POST",
+      "path": "/api/git/synthesize_commit",
+      "source_ref": "src/local_ai_hub/http_server.py:4404",
+      "operation_id": "op-99533a46fb0e",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_git_synthesize_commit_1"
+      ],
+      "candidate_route_ids": [
+        "post_git_synthesize_commit_1"
+      ],
+      "root_dispatch_lines": [
+        4404
+      ],
+      "candidate_dispatch_lines": [
+        4040
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 103,
+      "method": "POST",
+      "path": "/api/hotspots",
+      "source_ref": "src/local_ai_hub/http_server.py:4378",
+      "operation_id": "op-bb85f8393333",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_hotspots_1"
+      ],
+      "candidate_route_ids": [
+        "post_hotspots_1"
+      ],
+      "root_dispatch_lines": [
+        4378
+      ],
+      "candidate_dispatch_lines": [
+        4014
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 104,
+      "method": "POST",
+      "path": "/api/http_probe",
+      "source_ref": "src/local_ai_hub/http_server.py:5085",
+      "operation_id": "op-d41695049046",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_http_probe_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_http_probe_1"
+      ],
+      "root_dispatch_lines": [
+        5085
+      ],
+      "candidate_dispatch_lines": [
+        4591
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 105,
+      "method": "POST",
+      "path": "/api/ingest_diagram",
+      "source_ref": "src/local_ai_hub/http_server.py:5132",
+      "operation_id": "op-c1b3ec726062",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_ingest_diagram_1"
+      ],
+      "candidate_route_ids": [
+        "post_ingest_diagram_1"
+      ],
+      "root_dispatch_lines": [
+        5132
+      ],
+      "candidate_dispatch_lines": [
+        4638
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 106,
+      "method": "POST",
+      "path": "/api/ingest_document",
+      "source_ref": "src/local_ai_hub/http_server.py:5130",
+      "operation_id": "op-978d9f801445",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_ingest_document_1"
+      ],
+      "candidate_route_ids": [
+        "post_ingest_document_1"
+      ],
+      "root_dispatch_lines": [
+        5130
+      ],
+      "candidate_dispatch_lines": [
+        4636
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 107,
+      "method": "POST",
+      "path": "/api/leases/claim",
+      "source_ref": "src/local_ai_hub/http_server.py:4926",
+      "operation_id": "op-17f5543afb5b",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_leases_claim_1"
+      ],
+      "candidate_route_ids": [
+        "post_leases_claim_1"
+      ],
+      "root_dispatch_lines": [
+        4926
+      ],
+      "candidate_dispatch_lines": [
+        4455
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 108,
+      "method": "POST",
+      "path": "/api/leases/claim_batch",
+      "source_ref": "src/local_ai_hub/http_server.py:4926",
+      "operation_id": "op-cf5ba5179dc2",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_leases_claim_1"
+      ],
+      "candidate_route_ids": [
+        "post_leases_claim_1"
+      ],
+      "root_dispatch_lines": [
+        4926
+      ],
+      "candidate_dispatch_lines": [
+        4455
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 109,
+      "method": "POST",
+      "path": "/api/leases/release",
+      "source_ref": "src/local_ai_hub/http_server.py:4931",
+      "operation_id": "op-4d2be6d29bd6",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_leases_release_1"
+      ],
+      "candidate_route_ids": [
+        "post_leases_release_1"
+      ],
+      "root_dispatch_lines": [
+        4931
+      ],
+      "candidate_dispatch_lines": [
+        4458
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 110,
+      "method": "POST",
+      "path": "/api/leases/renew",
+      "source_ref": "src/local_ai_hub/http_server.py:4933",
+      "operation_id": "op-f15fb6fced56",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_leases_renew_1"
+      ],
+      "candidate_route_ids": [
+        "post_leases_renew_1"
+      ],
+      "root_dispatch_lines": [
+        4933
+      ],
+      "candidate_dispatch_lines": [
+        4460
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 111,
+      "method": "POST",
+      "path": "/api/lint_fix",
+      "source_ref": "src/local_ai_hub/http_server.py:5083",
+      "operation_id": "op-269146ecc176",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_lint_fix_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_lint_fix_1"
+      ],
+      "root_dispatch_lines": [
+        5083
+      ],
+      "candidate_dispatch_lines": [
+        4589
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 112,
+      "method": "POST",
+      "path": "/api/maintenance/optimize_db",
+      "source_ref": "src/local_ai_hub/http_server.py:4487",
+      "operation_id": "op-8974a873ebe3",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_maintenance_optimize_db_1"
+      ],
+      "candidate_route_ids": [
+        "post_maintenance_optimize_db_1"
+      ],
+      "root_dispatch_lines": [
+        4487
+      ],
+      "candidate_dispatch_lines": [
+        4123
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 113,
+      "method": "POST",
+      "path": "/api/maintenance/purge_cache",
+      "source_ref": "src/local_ai_hub/http_server.py:4490",
+      "operation_id": "op-0d0d6f0e1bd8",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_maintenance_purge_cache_1"
+      ],
+      "candidate_route_ids": [
+        "post_maintenance_purge_cache_1"
+      ],
+      "root_dispatch_lines": [
+        4490
+      ],
+      "candidate_dispatch_lines": [
+        4126
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 114,
+      "method": "POST",
+      "path": "/api/maintenance/resolve_errors",
+      "source_ref": "src/local_ai_hub/http_server.py:4494",
+      "operation_id": "op-b5d302dc5a8c",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_maintenance_resolve_errors_1"
+      ],
+      "candidate_route_ids": [
+        "post_maintenance_resolve_errors_1"
+      ],
+      "root_dispatch_lines": [
+        4494
+      ],
+      "candidate_dispatch_lines": [
+        4130
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 115,
+      "method": "POST",
+      "path": "/api/memory/delete",
+      "source_ref": "src/local_ai_hub/http_server.py:4944",
+      "operation_id": "op-26b47beb3268",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_memory_delete_1"
+      ],
+      "candidate_route_ids": [
+        "post_memory_delete_1"
+      ],
+      "root_dispatch_lines": [
+        4944
+      ],
+      "candidate_dispatch_lines": [
+        4471
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 116,
+      "method": "POST",
+      "path": "/api/memory/get",
+      "source_ref": "src/local_ai_hub/http_server.py:4940",
+      "operation_id": "op-4b6bcb3a0737",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_memory_get_1"
+      ],
+      "candidate_route_ids": [
+        "post_memory_get_1"
+      ],
+      "root_dispatch_lines": [
+        4940
+      ],
+      "candidate_dispatch_lines": [
+        4467
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 117,
+      "method": "POST",
+      "path": "/api/memory/put",
+      "source_ref": "src/local_ai_hub/http_server.py:4935",
+      "operation_id": "op-44a091a9353f",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_memory_put_1"
+      ],
+      "candidate_route_ids": [
+        "post_memory_put_1"
+      ],
+      "root_dispatch_lines": [
+        4935
+      ],
+      "candidate_dispatch_lines": [
+        4462
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 118,
+      "method": "POST",
+      "path": "/api/memory/search",
+      "source_ref": "src/local_ai_hub/http_server.py:4942",
+      "operation_id": "op-30f4c47cd58f",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_memory_search_1"
+      ],
+      "candidate_route_ids": [
+        "post_memory_search_1"
+      ],
+      "root_dispatch_lines": [
+        4942
+      ],
+      "candidate_dispatch_lines": [
+        4469
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 119,
+      "method": "POST",
+      "path": "/api/migration_drift",
+      "source_ref": "src/local_ai_hub/http_server.py:5122",
+      "operation_id": "op-1277593392e4",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_migration_drift_1"
+      ],
+      "candidate_route_ids": [
+        "post_migration_drift_1"
+      ],
+      "root_dispatch_lines": [
+        5122
+      ],
+      "candidate_dispatch_lines": [
+        4628
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 120,
+      "method": "POST",
+      "path": "/api/mock_server",
+      "source_ref": "src/local_ai_hub/http_server.py:5134",
+      "operation_id": "op-0a6603998a98",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_mock_server_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_mock_server_1"
+      ],
+      "root_dispatch_lines": [
+        5134
+      ],
+      "candidate_dispatch_lines": [
+        4640
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 121,
+      "method": "POST",
+      "path": "/api/models/manage",
+      "source_ref": "src/local_ai_hub/http_server.py:4973",
+      "operation_id": "op-5b6baefe1fcd",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_models_manage_1"
+      ],
+      "candidate_route_ids": [
+        "post_models_manage_1"
+      ],
+      "root_dispatch_lines": [
+        4973
+      ],
+      "candidate_dispatch_lines": [
+        4498
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 122,
+      "method": "POST",
+      "path": "/api/mutation_test",
+      "source_ref": "src/local_ai_hub/http_server.py:4984",
+      "operation_id": "op-d9b5db63f294",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_mutation_test_1"
+      ],
+      "candidate_route_ids": [
+        "post_mutation_test_1"
+      ],
+      "root_dispatch_lines": [
+        4984
+      ],
+      "candidate_dispatch_lines": [
+        4509
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 123,
+      "method": "POST",
+      "path": "/api/package_audit",
+      "source_ref": "src/local_ai_hub/http_server.py:5124",
+      "operation_id": "op-e8ce01cbee0c",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_package_audit_1"
+      ],
+      "candidate_route_ids": [
+        "post_package_audit_1"
+      ],
+      "root_dispatch_lines": [
+        5124
+      ],
+      "candidate_dispatch_lines": [
+        4630
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 124,
+      "method": "POST",
+      "path": "/api/patch/validate",
+      "source_ref": "src/local_ai_hub/http_server.py:4309",
+      "operation_id": "op-032c78505fe5",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_patch_validate_1"
+      ],
+      "candidate_route_ids": [
+        "post_patch_validate_1"
+      ],
+      "root_dispatch_lines": [
+        4309
+      ],
+      "candidate_dispatch_lines": [
+        3945
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 125,
+      "method": "POST",
+      "path": "/api/preprocess",
+      "source_ref": "src/local_ai_hub/http_server.py:4556",
+      "operation_id": "op-4318c2dfdc9c",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_preprocess_1"
+      ],
+      "candidate_route_ids": [
+        "post_preprocess_1"
+      ],
+      "root_dispatch_lines": [
+        4556
+      ],
+      "candidate_dispatch_lines": [
+        4192
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 126,
+      "method": "POST",
+      "path": "/api/profile_digest",
+      "source_ref": "src/local_ai_hub/http_server.py:5064",
+      "operation_id": "op-b69ecb59bf9f",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_profile_digest_1"
+      ],
+      "candidate_route_ids": [
+        "post_profile_digest_1"
+      ],
+      "root_dispatch_lines": [
+        5064
+      ],
+      "candidate_dispatch_lines": [
+        4570
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 127,
+      "method": "POST",
+      "path": "/api/prompt_eval",
+      "source_ref": "src/local_ai_hub/http_server.py:5105",
+      "operation_id": "op-a17e3fe5aab8",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_prompt_eval_1"
+      ],
+      "candidate_route_ids": [
+        "post_prompt_eval_1"
+      ],
+      "root_dispatch_lines": [
+        5105
+      ],
+      "candidate_dispatch_lines": [
+        4611
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 128,
+      "method": "POST",
+      "path": "/api/pubsub_poll",
+      "source_ref": "src/local_ai_hub/http_server.py:5099",
+      "operation_id": "op-45194de0be98",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_pubsub_poll_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_pubsub_poll_1"
+      ],
+      "root_dispatch_lines": [
+        5099
+      ],
+      "candidate_dispatch_lines": [
+        4605
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 129,
+      "method": "POST",
+      "path": "/api/pubsub_publish",
+      "source_ref": "src/local_ai_hub/http_server.py:5097",
+      "operation_id": "op-71510df745f6",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_pubsub_publish_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_pubsub_publish_1"
+      ],
+      "root_dispatch_lines": [
+        5097
+      ],
+      "candidate_dispatch_lines": [
+        4603
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 130,
+      "method": "POST",
+      "path": "/api/query/expand",
+      "source_ref": "src/local_ai_hub/http_server.py:4312",
+      "operation_id": "op-f2e4b1cd8a58",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_query_expand_1"
+      ],
+      "candidate_route_ids": [
+        "post_query_expand_1"
+      ],
+      "root_dispatch_lines": [
+        4312
+      ],
+      "candidate_dispatch_lines": [
+        3948
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 131,
+      "method": "POST",
+      "path": "/api/rag/docset/index",
+      "source_ref": "src/local_ai_hub/http_server.py:5026",
+      "operation_id": "op-8b5c15226eaf",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_rag_docset_index_1"
+      ],
+      "candidate_route_ids": [
+        "post_rag_docset_index_1"
+      ],
+      "root_dispatch_lines": [
+        5026
+      ],
+      "candidate_dispatch_lines": [
+        4551
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 132,
+      "method": "POST",
+      "path": "/api/rag/docset/search",
+      "source_ref": "src/local_ai_hub/http_server.py:5030",
+      "operation_id": "op-ec2aed3d6a86",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_rag_docset_search_1"
+      ],
+      "candidate_route_ids": [
+        "post_rag_docset_search_1"
+      ],
+      "root_dispatch_lines": [
+        5030
+      ],
+      "candidate_dispatch_lines": [
+        4555
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 133,
+      "method": "POST",
+      "path": "/api/rag/docset_index",
+      "source_ref": "src/local_ai_hub/http_server.py:5026",
+      "operation_id": "op-0256dae8b556",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_rag_docset_index_1"
+      ],
+      "candidate_route_ids": [
+        "post_rag_docset_index_1"
+      ],
+      "root_dispatch_lines": [
+        5026
+      ],
+      "candidate_dispatch_lines": [
+        4551
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 134,
+      "method": "POST",
+      "path": "/api/rag/docset_search",
+      "source_ref": "src/local_ai_hub/http_server.py:5030",
+      "operation_id": "op-52814b6f73d0",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_rag_docset_search_1"
+      ],
+      "candidate_route_ids": [
+        "post_rag_docset_search_1"
+      ],
+      "root_dispatch_lines": [
+        5030
+      ],
+      "candidate_dispatch_lines": [
+        4555
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 135,
+      "method": "POST",
+      "path": "/api/rag/index",
+      "source_ref": "src/local_ai_hub/http_server.py:4958",
+      "operation_id": "op-461b823e9a3a",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_rag_index_1"
+      ],
+      "candidate_route_ids": [
+        "post_rag_index_1"
+      ],
+      "root_dispatch_lines": [
+        4958
+      ],
+      "candidate_dispatch_lines": [
+        4483
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 136,
+      "method": "POST",
+      "path": "/api/rag/ingest_diagram",
+      "source_ref": "src/local_ai_hub/http_server.py:5132",
+      "operation_id": "op-2c5367726108",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_ingest_diagram_1"
+      ],
+      "candidate_route_ids": [
+        "post_ingest_diagram_1"
+      ],
+      "root_dispatch_lines": [
+        5132
+      ],
+      "candidate_dispatch_lines": [
+        4638
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 137,
+      "method": "POST",
+      "path": "/api/rag/ingest_document",
+      "source_ref": "src/local_ai_hub/http_server.py:5130",
+      "operation_id": "op-4a5d02312e02",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_ingest_document_1"
+      ],
+      "candidate_route_ids": [
+        "post_ingest_document_1"
+      ],
+      "root_dispatch_lines": [
+        5130
+      ],
+      "candidate_dispatch_lines": [
+        4636
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 138,
+      "method": "POST",
+      "path": "/api/rag/search",
+      "source_ref": "src/local_ai_hub/http_server.py:4960",
+      "operation_id": "op-0d17f1f3c8b3",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_rag_search_1"
+      ],
+      "candidate_route_ids": [
+        "post_rag_search_1"
+      ],
+      "root_dispatch_lines": [
+        4960
+      ],
+      "candidate_dispatch_lines": [
+        4485
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 139,
+      "method": "POST",
+      "path": "/api/reachability_dead_code",
+      "source_ref": "src/local_ai_hub/http_server.py:4977",
+      "operation_id": "op-dfa1005e19d2",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_reachability_dead_code_1"
+      ],
+      "candidate_route_ids": [
+        "post_reachability_dead_code_1"
+      ],
+      "root_dispatch_lines": [
+        4977
+      ],
+      "candidate_dispatch_lines": [
+        4502
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 140,
+      "method": "POST",
+      "path": "/api/reason",
+      "source_ref": "src/local_ai_hub/http_server.py:4300",
+      "operation_id": "op-751b82cfcb27",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_reason_1"
+      ],
+      "candidate_route_ids": [
+        "post_reason_1"
+      ],
+      "root_dispatch_lines": [
+        4300
+      ],
+      "candidate_dispatch_lines": [
+        3936
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 141,
+      "method": "POST",
+      "path": "/api/refactor_impact",
+      "source_ref": "src/local_ai_hub/http_server.py:4323",
+      "operation_id": "op-32240eb7fe8c",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_refactor_impact_1"
+      ],
+      "candidate_route_ids": [
+        "post_refactor_impact_1"
+      ],
+      "root_dispatch_lines": [
+        4323
+      ],
+      "candidate_dispatch_lines": [
+        3959
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 142,
+      "method": "POST",
+      "path": "/api/repo/affected_tests",
+      "source_ref": "src/local_ai_hub/http_server.py:4420",
+      "operation_id": "op-4d9d7656cce3",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_affected_tests_1"
+      ],
+      "candidate_route_ids": [
+        "post_affected_tests_1"
+      ],
+      "root_dispatch_lines": [
+        4420
+      ],
+      "candidate_dispatch_lines": [
+        4056
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 143,
+      "method": "POST",
+      "path": "/api/repo/api_spec",
+      "source_ref": "src/local_ai_hub/http_server.py:5118",
+      "operation_id": "op-25f1bcf44587",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_api_spec_1"
+      ],
+      "candidate_route_ids": [
+        "post_api_spec_1"
+      ],
+      "root_dispatch_lines": [
+        5118
+      ],
+      "candidate_dispatch_lines": [
+        4624
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 144,
+      "method": "POST",
+      "path": "/api/repo/batch_replace",
+      "source_ref": "src/local_ai_hub/http_server.py:4481",
+      "operation_id": "op-751f0b413fb2",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_batch_replace_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_batch_replace_1"
+      ],
+      "root_dispatch_lines": [
+        4481
+      ],
+      "candidate_dispatch_lines": [
+        4117
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 145,
+      "method": "POST",
+      "path": "/api/repo/briefing",
+      "source_ref": "src/local_ai_hub/http_server.py:4646",
+      "operation_id": "op-2901610d221a",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_briefing_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_briefing_1"
+      ],
+      "root_dispatch_lines": [
+        4646
+      ],
+      "candidate_dispatch_lines": [
+        4282
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 146,
+      "method": "POST",
+      "path": "/api/repo/call_graph_diff",
+      "source_ref": "src/local_ai_hub/http_server.py:4600",
+      "operation_id": "op-90212203ef29",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_call_graph_diff_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_call_graph_diff_1"
+      ],
+      "root_dispatch_lines": [
+        4600
+      ],
+      "candidate_dispatch_lines": [
+        4236
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 147,
+      "method": "POST",
+      "path": "/api/repo/callers",
+      "source_ref": "src/local_ai_hub/http_server.py:5087",
+      "operation_id": "op-5b7380bc03a3",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_callers_1"
+      ],
+      "candidate_route_ids": [
+        "post_callers_1"
+      ],
+      "root_dispatch_lines": [
+        5087
+      ],
+      "candidate_dispatch_lines": [
+        4593
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 148,
+      "method": "POST",
+      "path": "/api/repo/circular_dependencies",
+      "source_ref": "src/local_ai_hub/http_server.py:5109",
+      "operation_id": "op-a30452be984f",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_circular_dependencies_1"
+      ],
+      "candidate_route_ids": [
+        "post_circular_dependencies_1"
+      ],
+      "root_dispatch_lines": [
+        5109
+      ],
+      "candidate_dispatch_lines": [
+        4615
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 149,
+      "method": "POST",
+      "path": "/api/repo/code-index",
+      "source_ref": "src/local_ai_hub/http_server.py:4631",
+      "operation_id": "op-142c5f32371e",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_code_index_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_code_index_1"
+      ],
+      "root_dispatch_lines": [
+        4631
+      ],
+      "candidate_dispatch_lines": [
+        4267
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 150,
+      "method": "POST",
+      "path": "/api/repo/code_invariants",
+      "source_ref": "src/local_ai_hub/http_server.py:5060",
+      "operation_id": "op-656c9e199f19",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_code_invariants_1"
+      ],
+      "candidate_route_ids": [
+        "post_code_invariants_1"
+      ],
+      "root_dispatch_lines": [
+        5060
+      ],
+      "candidate_dispatch_lines": [
+        4566
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 151,
+      "method": "POST",
+      "path": "/api/repo/complexity",
+      "source_ref": "src/local_ai_hub/http_server.py:5113",
+      "operation_id": "op-431b8d6ed7e5",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_complexity_1"
+      ],
+      "candidate_route_ids": [
+        "post_complexity_1"
+      ],
+      "root_dispatch_lines": [
+        5113
+      ],
+      "candidate_dispatch_lines": [
+        4619
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 152,
+      "method": "POST",
+      "path": "/api/repo/context_budget",
+      "source_ref": "src/local_ai_hub/http_server.py:5128",
+      "operation_id": "op-2db8b276c10d",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_context_budget_1"
+      ],
+      "candidate_route_ids": [
+        "post_context_budget_1"
+      ],
+      "root_dispatch_lines": [
+        5128
+      ],
+      "candidate_dispatch_lines": [
+        4634
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 153,
+      "method": "POST",
+      "path": "/api/repo/cross_repo_contract",
+      "source_ref": "src/local_ai_hub/http_server.py:4396",
+      "operation_id": "op-71aa24ce17e3",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_cross_repo_contract_1"
+      ],
+      "candidate_route_ids": [
+        "post_cross_repo_contract_1"
+      ],
+      "root_dispatch_lines": [
+        4396
+      ],
+      "candidate_dispatch_lines": [
+        4032
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 154,
+      "method": "POST",
+      "path": "/api/repo/dead_code",
+      "source_ref": "src/local_ai_hub/http_server.py:4558",
+      "operation_id": "op-4317da7ae74f",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_dead_code_1"
+      ],
+      "candidate_route_ids": [
+        "post_dead_code_1"
+      ],
+      "root_dispatch_lines": [
+        4558
+      ],
+      "candidate_dispatch_lines": [
+        4194
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 155,
+      "method": "POST",
+      "path": "/api/repo/dependency_slice",
+      "source_ref": "src/local_ai_hub/http_server.py:5120",
+      "operation_id": "op-c2de646aa066",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_dependency_slice_1"
+      ],
+      "candidate_route_ids": [
+        "post_dependency_slice_1"
+      ],
+      "root_dispatch_lines": [
+        5120
+      ],
+      "candidate_dispatch_lines": [
+        4626
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 156,
+      "method": "POST",
+      "path": "/api/repo/deterministic",
+      "source_ref": "src/local_ai_hub/http_server.py:4657",
+      "operation_id": "op-9d5f3c4fdff0",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_deterministic_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_deterministic_1"
+      ],
+      "root_dispatch_lines": [
+        4657
+      ],
+      "candidate_dispatch_lines": [
+        4293
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 157,
+      "method": "POST",
+      "path": "/api/repo/diagnose",
+      "source_ref": "src/local_ai_hub/http_server.py:4641",
+      "operation_id": "op-4a46069bdec3",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_diagnose_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_diagnose_1"
+      ],
+      "root_dispatch_lines": [
+        4641
+      ],
+      "candidate_dispatch_lines": [
+        4277
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 158,
+      "method": "POST",
+      "path": "/api/repo/env_compat",
+      "source_ref": "src/local_ai_hub/http_server.py:5095",
+      "operation_id": "op-01f8620e3ade",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_env_compat_1"
+      ],
+      "candidate_route_ids": [
+        "post_env_compat_1"
+      ],
+      "root_dispatch_lines": [
+        5095
+      ],
+      "candidate_dispatch_lines": [
+        4601
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 159,
+      "method": "POST",
+      "path": "/api/repo/explain_query",
+      "source_ref": "src/local_ai_hub/http_server.py:5093",
+      "operation_id": "op-3be355584f66",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_explain_query_1"
+      ],
+      "candidate_route_ids": [
+        "post_explain_query_1"
+      ],
+      "root_dispatch_lines": [
+        5093
+      ],
+      "candidate_dispatch_lines": [
+        4599
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 160,
+      "method": "POST",
+      "path": "/api/repo/generate_dataset",
+      "source_ref": "src/local_ai_hub/http_server.py:5062",
+      "operation_id": "op-3719d2cc84e0",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_generate_dataset_1"
+      ],
+      "candidate_route_ids": [
+        "post_generate_dataset_1"
+      ],
+      "root_dispatch_lines": [
+        5062
+      ],
+      "candidate_dispatch_lines": [
+        4568
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 161,
+      "method": "POST",
+      "path": "/api/repo/generate_tests_for_diff",
+      "source_ref": "src/local_ai_hub/http_server.py:4387",
+      "operation_id": "op-f98bc953cbe1",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_generate_tests_for_diff_1"
+      ],
+      "candidate_route_ids": [
+        "post_generate_tests_for_diff_1"
+      ],
+      "root_dispatch_lines": [
+        4387
+      ],
+      "candidate_dispatch_lines": [
+        4023
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 162,
+      "method": "POST",
+      "path": "/api/repo/generate_types",
+      "source_ref": "src/local_ai_hub/http_server.py:5111",
+      "operation_id": "op-6bc8a3978734",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_generate_types_1"
+      ],
+      "candidate_route_ids": [
+        "post_generate_types_1"
+      ],
+      "root_dispatch_lines": [
+        5111
+      ],
+      "candidate_dispatch_lines": [
+        4617
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 163,
+      "method": "POST",
+      "path": "/api/repo/hotspots",
+      "source_ref": "src/local_ai_hub/http_server.py:4378",
+      "operation_id": "op-8f1284076a73",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_hotspots_1"
+      ],
+      "candidate_route_ids": [
+        "post_hotspots_1"
+      ],
+      "root_dispatch_lines": [
+        4378
+      ],
+      "candidate_dispatch_lines": [
+        4014
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 164,
+      "method": "POST",
+      "path": "/api/repo/impact",
+      "source_ref": "src/local_ai_hub/http_server.py:4659",
+      "operation_id": "op-fa743531dea7",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_impact_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_impact_1"
+      ],
+      "root_dispatch_lines": [
+        4659
+      ],
+      "candidate_dispatch_lines": [
+        4295
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 165,
+      "method": "POST",
+      "path": "/api/repo/investigate",
+      "source_ref": "src/local_ai_hub/http_server.py:4633",
+      "operation_id": "op-165f8f13c2d9",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_investigate_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_investigate_1"
+      ],
+      "root_dispatch_lines": [
+        4633
+      ],
+      "candidate_dispatch_lines": [
+        4269
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 166,
+      "method": "POST",
+      "path": "/api/repo/map",
+      "source_ref": "src/local_ai_hub/http_server.py:4629",
+      "operation_id": "op-818aacd7413b",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_map_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_map_1"
+      ],
+      "root_dispatch_lines": [
+        4629
+      ],
+      "candidate_dispatch_lines": [
+        4265
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 167,
+      "method": "POST",
+      "path": "/api/repo/migration_drift",
+      "source_ref": "src/local_ai_hub/http_server.py:5122",
+      "operation_id": "op-526633e15c34",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_migration_drift_1"
+      ],
+      "candidate_route_ids": [
+        "post_migration_drift_1"
+      ],
+      "root_dispatch_lines": [
+        5122
+      ],
+      "candidate_dispatch_lines": [
+        4628
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 168,
+      "method": "POST",
+      "path": "/api/repo/mutation_test",
+      "source_ref": "src/local_ai_hub/http_server.py:4984",
+      "operation_id": "op-1a92aa96c72c",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_mutation_test_1"
+      ],
+      "candidate_route_ids": [
+        "post_mutation_test_1"
+      ],
+      "root_dispatch_lines": [
+        4984
+      ],
+      "candidate_dispatch_lines": [
+        4509
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 169,
+      "method": "POST",
+      "path": "/api/repo/package_audit",
+      "source_ref": "src/local_ai_hub/http_server.py:5124",
+      "operation_id": "op-7f4df4971c79",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_package_audit_1"
+      ],
+      "candidate_route_ids": [
+        "post_package_audit_1"
+      ],
+      "root_dispatch_lines": [
+        5124
+      ],
+      "candidate_dispatch_lines": [
+        4630
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 170,
+      "method": "POST",
+      "path": "/api/repo/profile",
+      "source_ref": "src/local_ai_hub/http_server.py:4627",
+      "operation_id": "op-207799541073",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_profile_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_profile_1"
+      ],
+      "root_dispatch_lines": [
+        4627
+      ],
+      "candidate_dispatch_lines": [
+        4263
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 171,
+      "method": "POST",
+      "path": "/api/repo/profile_digest",
+      "source_ref": "src/local_ai_hub/http_server.py:5064",
+      "operation_id": "op-3908ce63a73b",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_profile_digest_1"
+      ],
+      "candidate_route_ids": [
+        "post_profile_digest_1"
+      ],
+      "root_dispatch_lines": [
+        5064
+      ],
+      "candidate_dispatch_lines": [
+        4570
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 172,
+      "method": "POST",
+      "path": "/api/repo/reachability_dead_code",
+      "source_ref": "src/local_ai_hub/http_server.py:4977",
+      "operation_id": "op-0e330665cdc0",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_reachability_dead_code_1"
+      ],
+      "candidate_route_ids": [
+        "post_reachability_dead_code_1"
+      ],
+      "root_dispatch_lines": [
+        4977
+      ],
+      "candidate_dispatch_lines": [
+        4502
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 173,
+      "method": "POST",
+      "path": "/api/repo/schema_inspect",
+      "source_ref": "src/local_ai_hub/http_server.py:5091",
+      "operation_id": "op-fb0030056179",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_schema_inspect_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_schema_inspect_1"
+      ],
+      "root_dispatch_lines": [
+        5091
+      ],
+      "candidate_dispatch_lines": [
+        4597
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 174,
+      "method": "POST",
+      "path": "/api/repo/secret_scan",
+      "source_ref": "src/local_ai_hub/http_server.py:5089",
+      "operation_id": "op-8c93b8bf6227",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_secret_scan_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_secret_scan_1"
+      ],
+      "root_dispatch_lines": [
+        5089
+      ],
+      "candidate_dispatch_lines": [
+        4595
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 175,
+      "method": "POST",
+      "path": "/api/repo/skeletonize",
+      "source_ref": "src/local_ai_hub/http_server.py:4999",
+      "operation_id": "op-37d6251d6d16",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_skeletonize_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_skeletonize_1"
+      ],
+      "root_dispatch_lines": [
+        4999
+      ],
+      "candidate_dispatch_lines": [
+        4524
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 176,
+      "method": "POST",
+      "path": "/api/repo/split_changes",
+      "source_ref": "src/local_ai_hub/http_server.py:5018",
+      "operation_id": "op-3c7e123e15dc",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_split_changes_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_split_changes_1"
+      ],
+      "root_dispatch_lines": [
+        5018
+      ],
+      "candidate_dispatch_lines": [
+        4543
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 177,
+      "method": "POST",
+      "path": "/api/repo/state",
+      "source_ref": "src/local_ai_hub/http_server.py:4348",
+      "operation_id": "op-013ed2437667",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_state_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_state_1"
+      ],
+      "root_dispatch_lines": [
+        4348
+      ],
+      "candidate_dispatch_lines": [
+        3984
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 178,
+      "method": "POST",
+      "path": "/api/repo/structural_search",
+      "source_ref": "src/local_ai_hub/http_server.py:5126",
+      "operation_id": "op-476e8fff5822",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_structural_search_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_structural_search_1"
+      ],
+      "root_dispatch_lines": [
+        5126
+      ],
+      "candidate_dispatch_lines": [
+        4632
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 179,
+      "method": "POST",
+      "path": "/api/repo/synthesize_rules",
+      "source_ref": "src/local_ai_hub/http_server.py:5022",
+      "operation_id": "op-0c2641994a62",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_synthesize_rules_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_synthesize_rules_1"
+      ],
+      "root_dispatch_lines": [
+        5022
+      ],
+      "candidate_dispatch_lines": [
+        4547
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 180,
+      "method": "POST",
+      "path": "/api/repo/topology",
+      "source_ref": "src/local_ai_hub/http_server.py:4428",
+      "operation_id": "op-ad2b9b07bba6",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_topology_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_topology_1"
+      ],
+      "root_dispatch_lines": [
+        4428
+      ],
+      "candidate_dispatch_lines": [
+        4064
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 181,
+      "method": "POST",
+      "path": "/api/repo/type_stubs",
+      "source_ref": "src/local_ai_hub/http_server.py:4992",
+      "operation_id": "op-19e807602695",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_type_stubs_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_type_stubs_1"
+      ],
+      "root_dispatch_lines": [
+        4992
+      ],
+      "candidate_dispatch_lines": [
+        4517
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 182,
+      "method": "POST",
+      "path": "/api/repo_state",
+      "source_ref": "src/local_ai_hub/http_server.py:4348",
+      "operation_id": "op-e39aca83008f",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_state_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_state_1"
+      ],
+      "root_dispatch_lines": [
+        4348
+      ],
+      "candidate_dispatch_lines": [
+        3984
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 183,
+      "method": "POST",
+      "path": "/api/rerank",
+      "source_ref": "src/local_ai_hub/http_server.py:4955",
+      "operation_id": "op-fce52e024a61",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_rerank_1"
+      ],
+      "candidate_route_ids": [
+        "post_rerank_1"
+      ],
+      "root_dispatch_lines": [
+        4955
+      ],
+      "candidate_dispatch_lines": [
+        4480
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 184,
+      "method": "POST",
+      "path": "/api/resolve_imports",
+      "source_ref": "src/local_ai_hub/http_server.py:4332",
+      "operation_id": "op-709bba7ad8f5",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_resolve_imports_1"
+      ],
+      "candidate_route_ids": [
+        "post_resolve_imports_1"
+      ],
+      "root_dispatch_lines": [
+        4332
+      ],
+      "candidate_dispatch_lines": [
+        3968
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 185,
+      "method": "POST",
+      "path": "/api/review",
+      "source_ref": "src/local_ai_hub/http_server.py:4296",
+      "operation_id": "op-5925b89cf9bc",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_review_1"
+      ],
+      "candidate_route_ids": [
+        "post_review_1"
+      ],
+      "root_dispatch_lines": [
+        4296
+      ],
+      "candidate_dispatch_lines": [
+        3932
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 186,
+      "method": "POST",
+      "path": "/api/review/diff",
+      "source_ref": "src/local_ai_hub/http_server.py:4298",
+      "operation_id": "op-4d46d5b43f08",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_review_diff_1"
+      ],
+      "candidate_route_ids": [
+        "post_review_diff_1"
+      ],
+      "root_dispatch_lines": [
+        4298
+      ],
+      "candidate_dispatch_lines": [
+        3934
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 187,
+      "method": "POST",
+      "path": "/api/route",
+      "source_ref": "src/local_ai_hub/http_server.py:4292",
+      "operation_id": "op-683311644cc7",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_route_1"
+      ],
+      "candidate_route_ids": [
+        "post_route_1"
+      ],
+      "root_dispatch_lines": [
+        4292
+      ],
+      "candidate_dispatch_lines": [
+        3928
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 188,
+      "method": "POST",
+      "path": "/api/scaffold",
+      "source_ref": "src/local_ai_hub/http_server.py:4967",
+      "operation_id": "op-7685057cf85b",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_scaffold_1"
+      ],
+      "candidate_route_ids": [
+        "post_scaffold_1"
+      ],
+      "root_dispatch_lines": [
+        4967
+      ],
+      "candidate_dispatch_lines": [
+        4492
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 189,
+      "method": "POST",
+      "path": "/api/schema_inspect",
+      "source_ref": "src/local_ai_hub/http_server.py:5091",
+      "operation_id": "op-363f759ed90e",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_schema_inspect_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_schema_inspect_1"
+      ],
+      "root_dispatch_lines": [
+        5091
+      ],
+      "candidate_dispatch_lines": [
+        4597
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 190,
+      "method": "POST",
+      "path": "/api/search",
+      "source_ref": "src/local_ai_hub/http_server.py:4665",
+      "operation_id": "op-1b8b48a627d1",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_search_1"
+      ],
+      "candidate_route_ids": [
+        "post_search_1"
+      ],
+      "root_dispatch_lines": [
+        4665
+      ],
+      "candidate_dispatch_lines": [
+        4301
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 191,
+      "method": "POST",
+      "path": "/api/second-opinion",
+      "source_ref": "src/local_ai_hub/http_server.py:4302",
+      "operation_id": "op-ebb2ebe6e140",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_second_opinion_1"
+      ],
+      "candidate_route_ids": [
+        "post_second_opinion_1"
+      ],
+      "root_dispatch_lines": [
+        4302
+      ],
+      "candidate_dispatch_lines": [
+        3938
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 192,
+      "method": "POST",
+      "path": "/api/secret_scan",
+      "source_ref": "src/local_ai_hub/http_server.py:5089",
+      "operation_id": "op-312f1d620815",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_secret_scan_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_secret_scan_1"
+      ],
+      "root_dispatch_lines": [
+        5089
+      ],
+      "candidate_dispatch_lines": [
+        4595
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 193,
+      "method": "POST",
+      "path": "/api/security_audit",
+      "source_ref": "src/local_ai_hub/http_server.py:4455",
+      "operation_id": "op-81f33acaf3d8",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_security_audit_1"
+      ],
+      "candidate_route_ids": [
+        "post_security_audit_1"
+      ],
+      "root_dispatch_lines": [
+        4455
+      ],
+      "candidate_dispatch_lines": [
+        4091
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 194,
+      "method": "POST",
+      "path": "/api/simulate_merge",
+      "source_ref": "src/local_ai_hub/http_server.py:5101",
+      "operation_id": "op-816ec8ebfcbd",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_simulate_merge_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_simulate_merge_1"
+      ],
+      "root_dispatch_lines": [
+        5101
+      ],
+      "candidate_dispatch_lines": [
+        4607
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 195,
+      "method": "POST",
+      "path": "/api/skeletonize",
+      "source_ref": "src/local_ai_hub/http_server.py:4999",
+      "operation_id": "op-60cde2300308",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_skeletonize_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_skeletonize_1"
+      ],
+      "root_dispatch_lines": [
+        4999
+      ],
+      "candidate_dispatch_lines": [
+        4524
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 196,
+      "method": "POST",
+      "path": "/api/solve/repo",
+      "source_ref": "src/local_ai_hub/http_server.py:4290",
+      "operation_id": "op-2a606207787c",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_solve_repo_1"
+      ],
+      "candidate_route_ids": [
+        "post_solve_repo_1"
+      ],
+      "root_dispatch_lines": [
+        4290
+      ],
+      "candidate_dispatch_lines": [
+        3926
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 197,
+      "method": "POST",
+      "path": "/api/speculative-lint",
+      "source_ref": "src/local_ai_hub/http_server.py:3273",
+      "operation_id": "op-40678850ea99",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_speculative_lint_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_speculative_lint_1"
+      ],
+      "root_dispatch_lines": [
+        3273
+      ],
+      "candidate_dispatch_lines": [
+        3030
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 198,
+      "method": "POST",
+      "path": "/api/speculative_draft",
+      "source_ref": "src/local_ai_hub/http_server.py:4965",
+      "operation_id": "op-93611065d455",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_speculative_draft_1"
+      ],
+      "candidate_route_ids": [
+        "post_speculative_draft_1"
+      ],
+      "root_dispatch_lines": [
+        4965
+      ],
+      "candidate_dispatch_lines": [
+        4490
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 199,
+      "method": "POST",
+      "path": "/api/split_changes",
+      "source_ref": "src/local_ai_hub/http_server.py:5018",
+      "operation_id": "op-509d0959a6a7",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_split_changes_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_split_changes_1"
+      ],
+      "root_dispatch_lines": [
+        5018
+      ],
+      "candidate_dispatch_lines": [
+        4543
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 200,
+      "method": "POST",
+      "path": "/api/structural_search",
+      "source_ref": "src/local_ai_hub/http_server.py:5126",
+      "operation_id": "op-686b764c5e9a",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_structural_search_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_structural_search_1"
+      ],
+      "root_dispatch_lines": [
+        5126
+      ],
+      "candidate_dispatch_lines": [
+        4632
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 201,
+      "method": "POST",
+      "path": "/api/symbol_callgraph",
+      "source_ref": "src/local_ai_hub/http_server.py:4563",
+      "operation_id": "op-e58ad68dbffe",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_symbol_callgraph_1"
+      ],
+      "candidate_route_ids": [
+        "post_symbol_callgraph_1"
+      ],
+      "root_dispatch_lines": [
+        4563
+      ],
+      "candidate_dispatch_lines": [
+        4199
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 202,
+      "method": "POST",
+      "path": "/api/synthesize_rules",
+      "source_ref": "src/local_ai_hub/http_server.py:5022",
+      "operation_id": "op-fb42fa502111",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_synthesize_rules_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_synthesize_rules_1"
+      ],
+      "root_dispatch_lines": [
+        5022
+      ],
+      "candidate_dispatch_lines": [
+        4547
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 203,
+      "method": "POST",
+      "path": "/api/task/eval_drift",
+      "source_ref": "src/local_ai_hub/http_server.py:5107",
+      "operation_id": "op-40f51c7256fd",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_eval_drift_1"
+      ],
+      "candidate_route_ids": [
+        "post_eval_drift_1"
+      ],
+      "root_dispatch_lines": [
+        5107
+      ],
+      "candidate_dispatch_lines": [
+        4613
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 204,
+      "method": "POST",
+      "path": "/api/task/eval_suite",
+      "source_ref": "src/local_ai_hub/http_server.py:5103",
+      "operation_id": "op-3c25b5fcf1cb",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_eval_suite_1"
+      ],
+      "candidate_route_ids": [
+        "post_eval_suite_1"
+      ],
+      "root_dispatch_lines": [
+        5103
+      ],
+      "candidate_dispatch_lines": [
+        4609
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 205,
+      "method": "POST",
+      "path": "/api/task/prompt_eval",
+      "source_ref": "src/local_ai_hub/http_server.py:5105",
+      "operation_id": "op-ee30a1d36abb",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_prompt_eval_1"
+      ],
+      "candidate_route_ids": [
+        "post_prompt_eval_1"
+      ],
+      "root_dispatch_lines": [
+        5105
+      ],
+      "candidate_dispatch_lines": [
+        4611
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 206,
+      "method": "POST",
+      "path": "/api/task/scaffold",
+      "source_ref": "src/local_ai_hub/http_server.py:4967",
+      "operation_id": "op-8e48dce85c3b",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_scaffold_1"
+      ],
+      "candidate_route_ids": [
+        "post_scaffold_1"
+      ],
+      "root_dispatch_lines": [
+        4967
+      ],
+      "candidate_dispatch_lines": [
+        4492
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 207,
+      "method": "POST",
+      "path": "/api/task/speculative_draft",
+      "source_ref": "src/local_ai_hub/http_server.py:4965",
+      "operation_id": "op-63d4015d6f27",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_speculative_draft_1"
+      ],
+      "candidate_route_ids": [
+        "post_speculative_draft_1"
+      ],
+      "root_dispatch_lines": [
+        4965
+      ],
+      "candidate_dispatch_lines": [
+        4490
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 208,
+      "method": "POST",
+      "path": "/api/task/transcribe",
+      "source_ref": "src/local_ai_hub/http_server.py:5039",
+      "operation_id": "op-65970ac00a0a",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_task_transcribe_1"
+      ],
+      "candidate_route_ids": [
+        "post_task_transcribe_1"
+      ],
+      "root_dispatch_lines": [
+        5039
+      ],
+      "candidate_dispatch_lines": [
+        4564
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 209,
+      "method": "POST",
+      "path": "/api/task/vision",
+      "source_ref": "src/local_ai_hub/http_server.py:5016",
+      "operation_id": "op-27447492b0ba",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_task_vision_1"
+      ],
+      "candidate_route_ids": [
+        "post_task_vision_1"
+      ],
+      "root_dispatch_lines": [
+        5016
+      ],
+      "candidate_dispatch_lines": [
+        4541
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 210,
+      "method": "POST",
+      "path": "/api/telemetry/timeline",
+      "source_ref": "src/local_ai_hub/http_server.py:5035",
+      "operation_id": "op-e7c38a4c7425",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_telemetry_timeline_1"
+      ],
+      "candidate_route_ids": [
+        "post_telemetry_timeline_1"
+      ],
+      "root_dispatch_lines": [
+        5035
+      ],
+      "candidate_dispatch_lines": [
+        4560
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 211,
+      "method": "POST",
+      "path": "/api/telemetry/tool-accounting",
+      "source_ref": "src/local_ai_hub/http_server.py:3059",
+      "operation_id": "op-04438ec90d60",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_telemetry_tool_accounting_1"
+      ],
+      "candidate_route_ids": [
+        "post_telemetry_tool_accounting_1"
+      ],
+      "root_dispatch_lines": [
+        3059
+      ],
+      "candidate_dispatch_lines": [
+        2814
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 212,
+      "method": "POST",
+      "path": "/api/test_matrix",
+      "source_ref": "src/local_ai_hub/http_server.py:4413",
+      "operation_id": "op-1321702d7984",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_test_matrix_1"
+      ],
+      "candidate_route_ids": [
+        "post_test_matrix_1"
+      ],
+      "root_dispatch_lines": [
+        4413
+      ],
+      "candidate_dispatch_lines": [
+        4049
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 213,
+      "method": "POST",
+      "path": "/api/topology",
+      "source_ref": "src/local_ai_hub/http_server.py:4428",
+      "operation_id": "op-e0d6f5ff0810",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_topology_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_topology_1"
+      ],
+      "root_dispatch_lines": [
+        4428
+      ],
+      "candidate_dispatch_lines": [
+        4064
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 214,
+      "method": "POST",
+      "path": "/api/transcribe",
+      "source_ref": "src/local_ai_hub/http_server.py:5039",
+      "operation_id": "op-acab25f2f575",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_task_transcribe_1"
+      ],
+      "candidate_route_ids": [
+        "post_task_transcribe_1"
+      ],
+      "root_dispatch_lines": [
+        5039
+      ],
+      "candidate_dispatch_lines": [
+        4564
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 215,
+      "method": "POST",
+      "path": "/api/type_stubs",
+      "source_ref": "src/local_ai_hub/http_server.py:4992",
+      "operation_id": "op-4f3c9609ce03",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_repo_type_stubs_1"
+      ],
+      "candidate_route_ids": [
+        "post_repo_type_stubs_1"
+      ],
+      "root_dispatch_lines": [
+        4992
+      ],
+      "candidate_dispatch_lines": [
+        4517
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 216,
+      "method": "POST",
+      "path": "/api/vision",
+      "source_ref": "src/local_ai_hub/http_server.py:5016",
+      "operation_id": "op-8a27267bb6c5",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_task_vision_1"
+      ],
+      "candidate_route_ids": [
+        "post_task_vision_1"
+      ],
+      "root_dispatch_lines": [
+        5016
+      ],
+      "candidate_dispatch_lines": [
+        4541
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 217,
+      "method": "POST",
+      "path": "/api/vision/review",
+      "source_ref": "src/local_ai_hub/http_server.py:5016",
+      "operation_id": "op-e81bbd33a8df",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_task_vision_1"
+      ],
+      "candidate_route_ids": [
+        "post_task_vision_1"
+      ],
+      "root_dispatch_lines": [
+        5016
+      ],
+      "candidate_dispatch_lines": [
+        4541
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 218,
+      "method": "POST",
+      "path": "/api/webhook_replay",
+      "source_ref": "src/local_ai_hub/http_server.py:5148",
+      "operation_id": "op-bf3e27aea979",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_command_webhook_replay_1"
+      ],
+      "candidate_route_ids": [
+        "post_command_webhook_replay_1"
+      ],
+      "root_dispatch_lines": [
+        5148
+      ],
+      "candidate_dispatch_lines": [
+        4654
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 219,
+      "method": "POST",
+      "path": "/api/work-orders",
+      "source_ref": "src/local_ai_hub/http_server.py:3109",
+      "operation_id": "op-44a15019a847",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_work_orders_1"
+      ],
+      "candidate_route_ids": [
+        "post_work_orders_1"
+      ],
+      "root_dispatch_lines": [
+        3109
+      ],
+      "candidate_dispatch_lines": [
+        2876
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 220,
+      "method": "POST",
+      "path": "/api/worktree_lease",
+      "source_ref": "src/local_ai_hub/http_server.py:5066",
+      "operation_id": "op-5dfe4b99ecbf",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_worktree_lease_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_worktree_lease_1"
+      ],
+      "root_dispatch_lines": [
+        5066
+      ],
+      "candidate_dispatch_lines": [
+        4572
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 221,
+      "method": "POST",
+      "path": "/api/worktree_prune",
+      "source_ref": "src/local_ai_hub/http_server.py:5072",
+      "operation_id": "op-c7fee243b474",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_worktree_prune_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_worktree_prune_1"
+      ],
+      "root_dispatch_lines": [
+        5072
+      ],
+      "candidate_dispatch_lines": [
+        4578
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 222,
+      "method": "POST",
+      "path": "/api/worktree_release",
+      "source_ref": "src/local_ai_hub/http_server.py:5068",
+      "operation_id": "op-6b22f8ac373f",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_worktree_release_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_worktree_release_1"
+      ],
+      "root_dispatch_lines": [
+        5068
+      ],
+      "candidate_dispatch_lines": [
+        4574
+      ],
+      "match_type": "exact"
+    },
+    {
+      "row": 223,
+      "method": "POST",
+      "path": "/api/worktrees",
+      "source_ref": "src/local_ai_hub/http_server.py:5070",
+      "operation_id": "op-421ddf925385",
+      "owner_evidence": "unassigned",
+      "source_handler": "do_POST",
+      "root_route_ids": [
+        "post_coord_worktrees_1"
+      ],
+      "candidate_route_ids": [
+        "post_coord_worktrees_1"
+      ],
+      "root_dispatch_lines": [
+        5070
+      ],
+      "candidate_dispatch_lines": [
+        4576
+      ],
+      "match_type": "exact"
+    }
+  ]
+}

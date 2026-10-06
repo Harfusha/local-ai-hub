@@ -107,15 +107,17 @@ def _memory_matches_request_scope(
         return requested_tenant == record_tenant
     if scope_value == AgentScope.TASK.value:
         if not isinstance(provenance, Mapping):
-            provenance = {}
+            return False
         record_root = str(provenance.get("root") or "").strip()
         record_tenant = str(provenance.get("tenant") or "").strip()
         requested_root = str(root or "").strip()
         requested_tenant = str(tenant or "").strip()
         requested_task_id = str(task_id or "").strip()
-        if not requested_task_id or str(scope_id or "").strip() != requested_task_id:
+        if not all((requested_root, requested_tenant, record_root, record_tenant, requested_task_id)):
             return False
-        if requested_root and record_root and _normalise_scope_root(record_root) != _normalise_scope_root(requested_root):
+        if str(scope_id or "").strip() != requested_task_id:
+            return False
+        if _normalise_scope_root(record_root) != _normalise_scope_root(requested_root):
             return False
         return requested_tenant == record_tenant
     if scope_value == AgentScope.SESSION.value:
@@ -223,9 +225,11 @@ def _context_scope_sql(
         identity_value = str(identity_value or "").strip()
         if scope_value != AgentScope.REPOSITORY.value and not identity_value:
             return
-        if scope_value == AgentScope.REPOSITORY.value and not root:
+        if scope_value == AgentScope.REPOSITORY.value and not (root and tenant):
             return
-        if scope_value == AgentScope.TASK.value and not root:
+        if scope_value == AgentScope.SESSION.value and not tenant:
+            return
+        if scope_value == AgentScope.TASK.value and not (root and tenant):
             return
         conditions = ["scope = ?"]
         identity_params: list[Any] = [scope_value]
@@ -863,11 +867,13 @@ class MemoryStore:
                             record_id=existing_record_id,
                         ) is not None:
                             raise ValueError("memory record was deleted and cannot be replayed")
-                        self.state_store.append_in_transaction(
+                        appended = self.state_store.append_in_transaction(
                             con,
                             existing_event,
                             strict_idempotency=False,
                         )
+                        if appended.error is not None:
+                            raise RuntimeError(appended.error)
                         existing_record_id = str(existing_event.payload.get("record_id", ""))
                         existing_row = con.execute(
                             """
@@ -904,6 +910,8 @@ class MemoryStore:
                         event,
                         strict_idempotency=False,
                     )
+                    if appended.error is not None:
+                        raise RuntimeError(appended.error)
                     self._save_record_row(con, final_record)
                     con.execute("COMMIT")
                     publish([appended.event])
@@ -1504,7 +1512,22 @@ class MemoryStore:
                 semantic=False,
                 limit=1,
             )
-            return records[0] if records else None
+            record = records[0] if records else None
+            if requested_scope == AgentScope.GLOBAL.value and record is not None:
+                # Direct lookup must provide every stored owner identity. This
+                # does not constrain intentional cross-project GLOBAL context
+                # sharing; tenant opt-in above bypasses only the tenant filter.
+                if str(record.scope_id or "").strip():
+                    return None
+                for identity_key, requested_identity in (
+                    ("root", root), ("repository_id", repository_id),
+                    ("task_id", task_id), ("session_id", session_id),
+                    ("clone_id", clone_id), ("worktree_id", worktree_id),
+                    ("branch", branch),
+                ):
+                    if str(record.provenance.get(identity_key) or "").strip() and not str(requested_identity or "").strip():
+                        return None
+            return record
         self._init_table()
         con = connect_sqlite(self.state_store.db_path)
         try:
@@ -1816,11 +1839,7 @@ class MemoryStore:
             if scope_val != AgentScope.GLOBAL.value:
                 raise ValueError("tenant-agnostic memory lookup is only valid for GLOBAL scope")
         elif tenant:
-            if scope_val == AgentScope.GLOBAL.value or (
-                record_id is not None
-                and scope_val == AgentScope.TASK.value
-                and (repository_id or root)
-            ):
+            if scope_val == AgentScope.GLOBAL.value:
                 sql += (
                     f" AND ({provenance_tenant} IS NULL OR "
                     f"{provenance_tenant} = '' OR {provenance_tenant} = ?)"
@@ -1836,8 +1855,14 @@ class MemoryStore:
         ):
             sql += " AND 0"
         if scope_val == AgentScope.TASK.value:
-            if (tenant and not (root or repository_id)) or (root and not (tenant or repository_id)) or not (task_id_val or scope_id_val):
+            # A task ID (or repository alias) cannot replace either trusted
+            # context identity. The SQL above matches both provenance fields.
+            if not (root and tenant and (task_id_val or scope_id_val)):
                 sql += " AND 0"
+        elif scope_val is None:
+            # Unscoped searches must not recover task rows by key or record ID.
+            sql += " AND scope != ?"
+            params.append(AgentScope.TASK.value)
         if scope_val == AgentScope.SESSION.value and (
             (tenant and not session_id_val)
             or (scope is not None and session_id_val and not tenant)

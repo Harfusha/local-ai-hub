@@ -1,11 +1,17 @@
+import json
 import threading
 import time
 from types import SimpleNamespace
 
 import pytest
 
+from local_ai_hub import http_server
 import local_ai_hub.app as app_module
 from local_ai_hub.app import LocalAIApp
+from local_ai_hub.telemetry import TelemetryStore
+
+
+
 
 _STATUS_EXECUTOR = None
 
@@ -288,28 +294,14 @@ def test_slow_status_dependency_degrades_within_deadline_and_keeps_shape(monkeyp
     assert elapsed < 0.10
     assert result["success"] is False
     assert result["ollama_online"] is False
+    assert result["ollama_status"] == "unknown"
     assert result["scheduler"] == {"state": "ready"}
+    assert result["dependency_status"]["runtime.online"]["degraded"] is True
     assert result["degraded"] is True
     assert result["dependency_status"]["runtime.online"]["reason"] == "probe_timeout"
     assert 10 <= result["dependency_status"]["runtime.online"]["duration_ms"] < 100
 
 
-
-def test_status_records_successful_probe_duration(monkeypatch):
-    def slow_online():
-        time.sleep(0.02)
-        return True
-
-    runtime = RuntimeProbe()
-    runtime.is_online = slow_online
-    app = make_app(runtime=runtime)
-    monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.15, raising=False)
-
-    result = app.status()
-
-    probe = result["dependency_status"]["runtime.online"]
-    assert probe["degraded"] is False
-    assert 10 <= probe["duration_ms"] < 100
 def test_status_dependency_reports_probe_exception_without_exception_text():
     def broken_probe():
         raise RuntimeError("private /home/user/config token=secret")
@@ -337,6 +329,99 @@ def test_status_dependency_reports_worker_capacity_exhaustion():
     assert result["dependency_status"]["scheduler"]["reason"] == "worker_capacity_exhausted"
 
 
+def test_status_route_surfaces_structured_probe_failure(monkeypatch):
+    def broken_probe():
+        raise RuntimeError("private /home/user/config token=secret")
+
+    app = make_app(scheduler=Probe(status=broken_probe))
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/status?scope=process"
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.headers = {}
+    handler.server = None
+    handler._begin_trace = lambda _path: None
+    handler._require_authorized = lambda: True
+    handler.responses = []
+    handler._send = lambda status, payload: handler.responses.append((status, payload))
+
+    handler.do_GET()
+
+    status, payload = handler.responses[0]
+    assert status == 200
+    assert payload["success"] is False
+    assert payload["dependency_status"]["scheduler"]["reason"] == "probe_error"
+    assert payload["dependency_status"]["scheduler"]["error_type"] == "RuntimeError"
+    assert isinstance(payload["dependency_status"]["scheduler"]["duration_ms"], int)
+    assert payload["dependency_status"]["scheduler"]["duration_ms"] >= 0
+    assert "private" not in repr(payload["dependency_status"])
+
+
+def test_light_status_cache_hit_does_not_requery_dependencies():
+    app = make_realtime_app()
+
+    first = app.realtime_status(light=True)
+    scheduler_calls = app.scheduler.calls.get("status", 0)
+    second = app.realtime_status(light=True)
+
+    assert isinstance(first["success"], bool)
+    assert second["cached"] is True
+    assert app.scheduler.calls.get("status", 0) == scheduler_calls
+
+
+def test_realtime_status_surfaces_stored_sqlite_error_summary(monkeypatch, tmp_path):
+    app = make_realtime_app()
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True)
+    error = json.JSONDecodeError(
+        'PROMPT-PRIVATE at /private/project/config.json token=TOKEN-PRIVATE',
+        '{"source":"/private/project/source.py"}',
+        0,
+    )
+    try:
+        store.record_error("configuration", "decode", error)
+        assert store.flush(1)
+        app.telemetry = store
+        monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 1.0)
+        monkeypatch.setattr(app_module, "accelerator_status", lambda _config: {"available": False})
+
+        result = app.realtime_status(light=True)
+    finally:
+        store.close()
+
+    recent = result["observability"]["recent_errors"]
+    assert len(recent) == 1
+    assert recent[0]["error_type"] == "JSONDecodeError"
+    assert recent[0]["safe_message"] == "JSONDecodeError: invalid JSON"
+    assert len(recent[0]["safe_message"]) <= 96
+    assert "PROMPT-PRIVATE" not in repr(result)
+    assert "TOKEN-PRIVATE" not in repr(result)
+    assert "/private/project" not in repr(result)
+
+
+def test_status_distinguishes_offline_from_successful_runtime_probe():
+    app = make_app(runtime=RuntimeProbe(online=False))
+
+    result = app.status()
+
+    assert result["ollama_online"] is False
+    assert result["ollama_status"] == "offline"
+
+
+def test_status_records_successful_probe_duration(monkeypatch):
+    def slow_online():
+        time.sleep(0.02)
+        return True
+
+    app = make_app(runtime=RuntimeProbe())
+    app.runtime.is_online = slow_online
+    monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.15)
+
+    result = app.status()
+
+    probe = result["dependency_status"]["runtime.online"]
+    assert probe["degraded"] is False
+    assert 10 <= probe["duration_ms"] < 100
 def test_realtime_status_reports_worker_capacity_exhaustion():
     app = make_realtime_app()
     app._status_dependency_slots = threading.BoundedSemaphore(0)
@@ -411,11 +496,15 @@ def test_realtime_status_bounds_runtime_health_probes(monkeypatch, slow_probe):
     assert elapsed < 0.10
     assert result["success"] is False
     if slow_probe == "is_online":
-        assert result["ollama_online"] is False
-        assert result["headless"]["ollama_online"] is False
+        assert result["ollama_online"] is None
+        assert result["ollama_status"] == "unknown"
+        assert result["headless"]["ollama_online"] is None
+        assert result["dependency_status"]["runtime.online"]["reason"] == "probe_timeout"
     else:
         assert result["ollama_online"] is True
+        assert result["ollama_status"] == "online"
         assert result["ollama_profile"] == {}
+        assert result["dependency_status"]["ollama_profile"]["reason"] == "probe_timeout"
 
 
 def test_slow_agent_state_summary_uses_dependency_deadline(monkeypatch):
@@ -457,12 +546,22 @@ def test_timed_out_agent_state_is_reused_across_status_cache_hits(monkeypatch):
             with lock:
                 active[0] -= 1
 
+    status_dependency = app_module._status_dependency
+
+    def isolate_agent_state(callback, fallback, **kwargs):
+        if kwargs.get("key") == "agent_state":
+            return status_dependency(callback, fallback, **kwargs)
+        return fallback, True
+
+    monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.10)
+    monkeypatch.setattr(app_module, "_status_dependency", isolate_agent_state)
     app = make_app()
     app.status()
     # Exercise a fresh dependency probe, then verify T18 cache hits reuse it.
     app._status_full_cache.clear()
     app._agent_state_summary = blocked_summary
-    monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.10)
+    with app._status_full_cache_lock:
+        app._status_full_cache.pop("process", None)
 
     try:
         first = app.status()

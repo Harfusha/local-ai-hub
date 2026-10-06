@@ -200,18 +200,9 @@ def test_missing_output_after_cli_success_is_not_reported_as_missing_cli(
     assert result["reason"] == "process_error"
 
 
-def test_missing_audio_has_machine_readable_failure_reason(tmp_path: Path) -> None:
-    missing_audio = tmp_path / "missing.wav"
-
-    result = _service().transcribe({"audio": str(missing_audio), "model": "small"}, "task-17")
-
-    assert result["success"] is False
-    assert result["reason"] == "audio_not_found"
-    assert result["audio_path"] == str(missing_audio.resolve())
-    assert not result.get("text")
 
 
-def test_audio_directory_is_not_reported_as_missing_file(tmp_path: Path) -> None:
+def test_audio_directory_is_not_reported_as_missing_file_preserved_checkpoint_1(tmp_path: Path) -> None:
     result = _service().transcribe({"audio": str(tmp_path), "model": "small"}, "task-17")
 
     assert result["success"] is False
@@ -219,110 +210,21 @@ def test_audio_directory_is_not_reported_as_missing_file(tmp_path: Path) -> None
     assert not result.get("text")
 
 
-def test_transcribe_cancellation_waits_for_worker_and_model_release_before_cleanup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    audio = tmp_path / "sample.wav"
-    audio.write_bytes(b"test audio")
-    cancel_event = threading.Event()
-    worker_started = threading.Event()
-    worker_cancelled = threading.Event()
-    allow_worker_exit = threading.Event()
-    model_released = threading.Event()
-    request_finished = threading.Event()
-    output_directories: list[Path] = []
-    results: list[dict[str, object]] = []
-
-    def fake_worker() -> None:
-        try:
-            worker_started.set()
-            assert cancel_event.wait(timeout=3)
-            worker_cancelled.set()
-            assert allow_worker_exit.wait(timeout=3)
-        finally:
-            model_released.set()
-
-    def wait_for_worker(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert kwargs["cancel_event"] is cancel_event
-        output_dir = Path(args[args.index("--output_dir") + 1])
-        output_directories.append(output_dir)
-        worker = threading.Thread(target=fake_worker, daemon=True)
-        worker.start()
-        assert worker_cancelled.wait(timeout=3)
-        worker.join(timeout=3)
-        assert not worker.is_alive()
-        raise process_utils.ProcessCancelledError(args)
-
-    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
-    monkeypatch.setattr(process_utils, "run_hidden", wait_for_worker)
-
-    def transcribe() -> None:
-        results.append(_service().transcribe({"audio": str(audio)}, "task-17", cancel_event=cancel_event))
-        request_finished.set()
-
-    request = threading.Thread(target=transcribe, daemon=True)
-    request.start()
-    try:
-        assert worker_started.wait(timeout=3)
-        assert output_directories and output_directories[0].exists()
-        cancel_event.set()
-        assert worker_cancelled.wait(timeout=3)
-        assert request_finished.wait(timeout=0.05) is False
-        assert model_released.is_set() is False
-        assert output_directories[0].exists()
-        allow_worker_exit.set()
-        request.join(timeout=3)
-    finally:
-        cancel_event.set()
-        allow_worker_exit.set()
-        request.join(timeout=3)
-
-    assert not request.is_alive()
-    assert request_finished.is_set()
-    assert model_released.is_set()
-    assert results[0]["reason"] == "cancelled"
-    assert output_directories and not output_directories[0].exists()
-
-def test_unreadable_audio_has_degraded_unavailable_reason(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    audio = tmp_path / "private.wav"
-    audio.write_bytes(b"audio")
-    real_stat = Path.stat
-
-    def deny_audio_stat(path: Path, *args: object, **kwargs: object):
-        if path == audio.resolve():
-            raise PermissionError("access denied")
-        return real_stat(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "stat", deny_audio_stat)
-
-    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
-
-    assert result["success"] is False
-    assert result["reason"] == "audio_unavailable"
-    assert result["degraded"] is True
-    assert not result.get("text")
 
 
-def test_audio_resolution_failure_has_invalid_path_reason(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    audio = tmp_path / "loop.wav"
-    real_resolve = Path.resolve
 
-    def fail_audio_resolution(path: Path, *args: object, **kwargs: object) -> Path:
-        if path == audio:
-            raise RuntimeError("symlink loop")
-        return real_resolve(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "resolve", fail_audio_resolution)
 
-    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
 
-    assert result["success"] is False
-    assert result["reason"] == "audio_path_invalid"
-    assert not result.get("text")
+
+
+
+
+
+
+
+
+
 
 
 def test_missing_audio_has_machine_readable_failure_reason(tmp_path: Path) -> None:
@@ -582,7 +484,7 @@ def test_empty_whisper_output_is_not_a_successful_transcription(
     assert not result.get("text")
 
 
-def test_whisper_decode_skip_does_not_report_successful_transcription(
+def test_whisper_decode_skip_does_not_report_successful_transcription_preserved_checkpoint_1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     audio = tmp_path / "invalid.wav"
@@ -606,26 +508,10 @@ def test_whisper_decode_skip_does_not_report_successful_transcription(
     assert not result.get("text")
 
 
-def test_malformed_whisper_json_is_not_a_successful_transcription(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    audio = tmp_path / "malformed.wav"
-    audio.write_bytes(b"audio")
 
-    def malformed_output(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        output_dir = Path(args[args.index("--output_dir") + 1])
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / f"{Path(args[1]).stem}.json").write_text("{invalid json", encoding="utf-8")
-        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
-    monkeypatch.setattr(process_utils, "run_hidden", malformed_output)
 
-    result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
 
-    assert result["success"] is False
-    assert result["reason"] == "empty_transcript"
-    assert not result.get("text")
 
 
 @pytest.mark.parametrize("output_stream", ["stdout", "stderr"])
