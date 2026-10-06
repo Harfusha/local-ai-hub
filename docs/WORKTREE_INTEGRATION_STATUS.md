@@ -13,18 +13,32 @@ Runtime state and caches remain outside version control.
 | Scope | State | Owner / checkout | Evidence / remaining work |
 | --- | --- | --- | --- |
 | Root T03 path-hint regression | integrated, acceptance partial | orchestrator; master | `fbc965f5`; `python -m pytest -q tests/test_mcp_contract_dispatch.py -k test_mcp_repo_search_passes_path_hints_to_client_keyword --tb=short`: 1 passed, 17 deselected. Broader T03 changes still require reconciliation. |
-| T01 inventory | active | Popper the 2nd; t01-coverage-main-verify | Manual merge, checkpoint preservation, commit of unfinished changes; release inventory regeneration follows the final integrated source. |
+| T01 inventory | integrated; unfinished | Popper the 2nd; t01-coverage-main-verify | `b9466d30` merged into master. Worker reported 821 passed, 11 failed; two context follow-up tests passed, nine failures remain. Final inventory regeneration and release acceptance follow source consolidation. |
 | T02 quality baseline | integrated; unfinished | Gibbs the 2nd; t02-quality-baseline-resume | Branch `codex/sync-t02-master-20261006`, head `673d1a0b`, merged into master. Checkpoint `codex/sync-t02-checkpoint-20261006` retains original dirty content. Targeted command in `handoff/T02-sync-integration-20261006.md`: 18 passed, 78 deselected. Runner still uses removed checkpoint/resume CLI flags; real-input baseline and historical intermittent test failure remain unresolved. Nine original untracked artifacts retained unchanged. |
-| T06 safe-command checkout | active | Wegener the 2nd; t06-safe-commands | Merge current master, commit existing dirty content, preserve rollback/fencing safety and record unfinished acceptance. |
+| T06 safe-command checkout | integrated; unfinished | Wegener the 2nd; t06-safe-commands | `dac22b98` merged into master; 166 changed paths against worker's pinned master. Final targeted checks: 48 passed, 5 failed; 27 Python files compiled in memory. Remaining POSIX rollback ctime issue, transaction/attempt fixtures, patch/import acceptance and generic provenance are in `handoff/T06-sync-master-integration-20261006.md`. Original tracked newline bytes are unverified; LF/CRLF variants and exact handoff bytes preserved. |
 | T05 identity / memory | active | Maxwell the 2nd; t05-identity-recovery | Manual merge; retain current master identity isolation and review older task hunks. |
 | T03 contracts | integrated; unfinished | Einstein the 2nd; t03-contracts-resume | `32c5079b` merged into master. Original/dirty refs `codex/checkpoint-t03-original-20261006` and `codex/checkpoint-t03-dirty-20261006` preserve the old state. Focused follow-up: 169 passed, 3 failed. Schema parity, gaming/maintenance dispatch and earlier memory-scope HTTP 404 remain unresolved. Additional original untracked handoffs are being committed separately. |
-| T04 transport / startup | active | Raman the 2nd; t04-integration and t04-lock-recovery | Reconcile both existing dirty variants with master; unfinished work recorded, not discarded. |
+| T04 transport / startup | integrated; unfinished | Raman the 2nd; t04-integration and t04-lock-recovery | Both `8634b913` and `31de8a7a` merged; final merge `5e8424c4` retains both colliding integration documents. Worker checks: 113 passed, 5 failed, 1 skipped; follow-up 98 passed, 6 failed. Schema/fixture and removed-sidecar acceptance remain unresolved. |
 | T26 preprocessing argv | synchronized and integrated; acceptance partial | orchestrator; t26-preprocess-argv-5361 | Original dirty content committed at `e2f7e296`, retained by `codex/checkpoint-t26-dirty-20261006`. The dirty addition was an exact duplicate of the existing test; deduplicated at `9e7df358`. Merge into master has identical final tree and preserves both commits. No new T26 test run in this phase. |
 | T10 exceptions/search checkout | synchronized and integrated; acceptance partial | orchestrator; t10-exceptions-search | Dirty ignore-directory change preserved in `6224ec20` and `codex/checkpoint-t10-exceptions-20261006`. Seven conflict hunks manually resolved: retain `.codegraphcontext`, project policy-aware scanning, scoped accelerator candidates, bounded Python fallback, and counters from current master. Final staged tree exactly matched master; historical T10 changes are preserved in merged ancestry. `git diff --check` passed; no new functional test run. Other T10 worktrees still pending. |
 | T11 recovery-v2 checkout | synchronized and integrated; unfinished | orchestrator; t11-rag-recovery-v2 | `a1169d6c`: all ten original untracked handoff/test files committed after master merge. Archived patches and project-config source copy retained as handoff evidence, not applied to runtime source. Overlay tests and original PARTIAL acceptance remain to verify after consolidated integration. Other T11 dirty worktrees still pending. |
 | Clean checkouts / inactive branch refs | synchronized to intermediate master | orchestrator | 17 clean checkouts fast-forwarded to `9b794d7f`; original history remains in master ancestry. Inactive task refs fast-forwarded with ancestry check and compare-and-swap. Checkpoint refs remain pinned; a brief accidental advancement of two T04 original checkpoint refs was immediately restored to `3658d505` before continuing. Final synchronization will repeat after all merges. |
 | T15 recovery location | missing checkout; investigate | orchestrator | `C:/Users/Adam/.codex/worktrees/t15-recovery` parent still exists, but `.local-ai-hub` is missing and the checkout is no longer registered. This run issued no removal/archive command for it. Recover original handoff content from available archive/refs before closing this item. |
 | Remaining worktrees | pending reconciliation | orchestrator assigns one checkout per worker | Inventory identified 66 registered checkouts. Original tracked/untracked changes and stashes remain preserved; completion requires per-checkout merge and final ancestry/status checks. |
+
+Additional integration on 2026-10-06:
+
+- T02: `d2427a73` commits all nine previously retained ordinary untracked
+  artifacts after master synchronization; integrated. No new test run.
+- T07: `f6f90b34` commits original patch/receipt plus integration note;
+  integrated source is identical to master. Worker checks: 98 passed, 1 failed
+  (strict CodeGraph absence fixture rejects permanent `.codegraphcontext`
+  ignore). Pytest temporary-directory scope deviation recorded in handoff.
+- T09 (`t09-root-current`) and T12 (`4816`) are assigned parallel manual
+  merges of their prepared checkpoints. T03/T05 are committing remaining
+  ordinary untracked material; T08 is reconciling its dirty Agent OS state.
+- Commits preserve unfinished work, not acceptance. Do not tag a release
+  until consolidated tests and outstanding safety findings are resolved.
 
 ## Rules for the remainder
 
