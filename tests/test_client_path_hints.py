@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from local_ai_hub.client import HubClient
 
 
-def _client(tmp_path):
+def _client(tmp_path, port=39123):
     config = tmp_path / "config.toml"
     config.write_text(
-        "[server]\nport=39123\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
+        f"[server]\nport={port}\nstate_dir='" + (tmp_path / "state").as_posix() + "'\n",
         encoding="utf-8",
     )
     return HubClient(config_path=str(config), auto_start=False)
@@ -32,12 +33,12 @@ def test_post_forwards_path_hints_to_search_and_command(tmp_path, monkeypatch):
         (
             "/api/search",
             {"query": "needle", "path_hints": list(hints)},
-            {"timeout": 360.0, "replay_safe": False, "request_id": "search-1"},
+            {"timeout": 360.0, "replay_safe": True, "request_id": "search-1", "tenant": None, "cancel_event": None},
         ),
         (
             "/api/command",
             {"command": "pytest", "path_hints": list(hints)},
-            {"timeout": 360.0, "replay_safe": False, "request_id": "command-1"},
+            {"timeout": 360.0, "replay_safe": False, "request_id": "command-1", "tenant": None, "cancel_event": None},
         ),
     ]
 
@@ -72,6 +73,71 @@ def test_post_does_not_forward_hints_to_other_routes_or_create_paths_alias(tmp_p
     assert calls[0][1]["paths"] == ["src/explicit.py"]
 
 
+def test_post_transmits_path_hints_over_http_and_returns_search_result(tmp_path):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        payloads = []
+        request_ids = []
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            self.payloads.append(json.loads(self.rfile.read(length).decode("utf-8")))
+            self.request_ids.append(self.headers.get("X-LocalAI-Request-ID"))
+            response = json.dumps(
+                {
+                    "success": True,
+                    "results": [
+                        {"path": "templates/element/button.py", "snippet": "owner-result"}
+                    ],
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = _client(tmp_path, port=server.server_port)
+    hints = [
+        {
+            "path": "templates/element",
+            "purpose": "repository_search",
+            "scope": "repository_search",
+        }
+    ]
+    try:
+        result = client.post(
+            "/api/search",
+            {"root": str(tmp_path), "query": "needle"},
+            request_id="t04-path-hints-http",
+            path_hints=hints,
+        )
+    finally:
+        client._drop_connection()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert Handler.payloads == [
+        {"root": str(tmp_path), "query": "needle", "path_hints": hints}
+    ]
+    assert Handler.request_ids == ["t04-path-hints-http"]
+    assert result == {
+        "success": True,
+        "results": [
+            {"path": "templates/element/button.py", "snippet": "owner-result"}
+        ],
+    }
+
+
 def test_post_serializes_path_hint_objects_and_omits_empty_metadata(tmp_path, monkeypatch):
     client = _client(tmp_path)
     calls = []
@@ -95,6 +161,49 @@ def test_post_serializes_path_hint_objects_and_omits_empty_metadata(tmp_path, mo
             "path_hints": [{"path": "src/app.py", "purpose": "implementation", "scope": "repository"}],
         }
     ]
+
+
+def test_search_sends_exact_typed_path_hints_request_body(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    calls = []
+
+    def capture_open(method, path, body, headers, _timeout):
+        calls.append((method, path, body, headers))
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", capture_open)
+    hint = SimpleNamespace(
+        path="src/auth.py",
+        purpose="implementation",
+        scope="repository",
+        evidence_id="evidence-42",
+        provenance="repo-search",
+        repository_revision="rev-abc",
+        config_digest="cfg-123",
+        expires_at="2030-01-01T00:00:00Z",
+    )
+    request_payload = {"root": str(tmp_path), "query": "authorization flow", "top_k": 12}
+    expected_payload = {
+        **request_payload,
+        "path_hints": [{
+            "path": "src/auth.py",
+            "purpose": "implementation",
+            "scope": "repository",
+            "evidence_id": "evidence-42",
+            "provenance": "repo-search",
+            "repository_revision": "rev-abc",
+            "config_digest": "cfg-123",
+            "expires_at": "2030-01-01T00:00:00Z",
+        }],
+    }
+
+    client.post("/api/search", request_payload, path_hints=(hint,))
+
+    assert len(calls) == 1
+    method, path, body, headers = calls[0]
+    assert (method, path) == ("POST", "/api/search")
+    assert body == json.dumps(expected_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    assert all("src/auth.py" not in value for value in headers.values())
 
 
 def test_post_caps_path_hints_and_drops_unlisted_fields(tmp_path, monkeypatch):
