@@ -78,4 +78,8 @@ Initial failures subsequently resolved in affected paths: GIF header parsing, We
 - `tests/test_vision_contracts.py`
 - `tests/test_vision_service.py`
 
-The merge commit is the commit containing this note; final HEAD is reported at handoff. Pinned master ancestry and zero unmerged index entries are checked after committing. Historical receipts remain preserved, not treated as current acceptance.
+Merge commit: `ed26221bccf023e271c779aec63555b5253d3223`, parents `fad072f3416a3a504efe2b43b981586958bcb23f` and `a83e27707cebf94a51418170e6957d8df1a4d44b`. A documentation-only follow-up records these post-commit receipts; final HEAD is reported at handoff.
+
+Post-merge `git merge-base --is-ancestor a83e27707cebf94a51418170e6957d8df1a4d44b HEAD` returned 0. `git ls-files -u` empty. Tracked checkout clean; only preserved generated `.t17-merge-tmp/` untracked. `git diff --check a83e27707cebf94a51418170e6957d8df1a4d44b HEAD` returned 0; 12 changed files versus pinned master.
+
+The broader pre-commit `git diff --cached --check` did fail on inherited master content relative to old branch HEAD, including `.handoff/T12-model-free-root-overlay-20261001/src/local_ai_hub/cache.py:299: trailing whitespace` and many archived/CRLF paths. Its output was excessively large; later check captured and bounded output and scoped comparison to pinned master. Those inherited paths were not changed to silence the check. Historical receipts remain preserved, not treated as current acceptance.
