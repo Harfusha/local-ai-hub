@@ -1,0 +1,75 @@
+{
+  "task": "T05 candidate acceptance and fixes",
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "root_modified": false,
+  "candidate_source_sha256": "784116FF1ADA548979126F9639C4B795016540AF5ED85D1897C6963DFA6AC73E",
+  "candidate_memory_test_sha256": "623B443B72360D5BAB0FAA450DCFCF19AB4AB6B4EAC82A8F7E92ED7E15CF88DB",
+  "candidate_http_identity_test_sha256": "D45C9FEA2A248FD6208DEDA029543D887EF53BF30A0B983672674C221373E2D2",
+  "root_agent_events_sha256": "30AB4485F34A67D8212E6151057E06EF806D40F92073036D8F9F4F4546B44822",
+  "patch": "artifacts/t05-memory-acceptance-v4.patch",
+  "patch_sha256": "0720ED6A73E1B11486BC561F7BD686EB2B3C85B1E414F4C3E5E003BD3A448DF2",
+  "patch_reverse_check": "PASS",
+  "broad_suite": {
+    "http_test_pre_run_hash": "NOT CAPTURED",
+    "source_sha256": "784116FF1ADA548979126F9639C4B795016540AF5ED85D1897C6963DFA6AC73E",
+    "pytest_args": [
+      "-q",
+      "-p",
+      "no:cacheprovider",
+      "--tb=short",
+      "-W",
+      "always::ResourceWarning"
+    ],
+    "command": "python -B -c $py",
+    "result": "9 failed, 45 passed in 38.67s",
+    "root_agent_events_sha256": "30AB4485F34A67D8212E6151057E06EF806D40F92073036D8F9F4F4546B44822",
+    "failed_nodes": [
+      "test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope",
+      "test_unversioned_current_schema_migrates_with_verified_backup_and_restart",
+      "test_historical_schema_version_migrates_and_preserves_legacy_event_versions",
+      "test_migration_backup_verification_failure_preserves_source_bytes_and_retries",
+      "test_migration_ddl_failure_rolls_back_after_backup_and_retry_succeeds",
+      "test_missing_required_projection_schema_fails_closed_and_preserves_wal_and_shm",
+      "test_concurrent_legacy_initializers_accept_completed_migration",
+      "test_migration_backup_timeout_fails_closed_before_database_mutation",
+      "test_memory_record_from_dict_rejects_scalar_evidence_ids"
+    ],
+    "selector_entries": 17,
+    "memory_test_sha256": "3526F259422F89C35F3FC7C03F911F6BEF2DCC6915F1007E13DB82BB63966C00"
+  },
+  "targeted_evidence_shape": {
+    "test_sha256_before_http_fix": "623B443B72360D5BAB0FAA450DCFCF19AB4AB6B4EAC82A8F7E92ED7E15CF88DB",
+    "result": "2 passed in 0.48s after test fixture correction",
+    "selectors": [
+      "test_find_skips_corrupt_rows_without_aborting_scoped_read",
+      "test_memory_record_from_dict_rejects_scalar_evidence_ids"
+    ]
+  },
+  "diagnosis": {
+    "evidence_fixture": "Direct MemoryRecord test initially omitted required scope; fixed; both evidence shape selectors passed targeted run.",
+    "migrations": "Seven selectors fail in injected current root agent_events._classify_schema: unsupported table definition agent_incidents. Verified mismatch backup created and left untouched; no T05 migration edit.",
+    "http": "T05 HTTP test called monkeypatch.undo(), removing sys.modules project_config stub. Following final delete then returned HTTP 400 because _memory_project_identity could not resolve project. Changed only to restore app.agent_memory.delete; selector remains unrun pending T20 slot."
+  },
+  "slot": "HOLD: broad rerun prohibited until root-cause review and new T20 slot; HTTP selector pending assignment.",
+  "http_selector_after_fixture_fix": {
+    "command": "python -B -c $py",
+    "pythonpath": "candidate/src",
+    "bridge": "current root src/local_ai_hub/agent_events.py injected as local_ai_hub.agent_events",
+    "selector": "tests/test_agent_memory_http_identity.py::test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope",
+    "pytest_args": [
+      "-q",
+      "-p",
+      "no:cacheprovider",
+      "--tb=short",
+      "-W",
+      "always::ResourceWarning"
+    ],
+    "exit_code": 0,
+    "result": "1 passed in 5.56s",
+    "active_pytest_after": 0,
+    "agent_memory_sha256": "784116FF1ADA548979126F9639C4B795016540AF5ED85D1897C6963DFA6AC73E",
+    "agent_events_sha256": "30AB4485F34A67D8212E6151057E06EF806D40F92073036D8F9F4F4546B44822"
+  }
+}

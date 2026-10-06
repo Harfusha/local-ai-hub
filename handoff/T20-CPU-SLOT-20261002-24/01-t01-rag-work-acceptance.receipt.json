@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-24",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_rag_work_operation_acceptance.py",
+  "route": "native_fallback_user_authorized",
+  "exit_code": 1,
+  "summary": "1 failed, 12 passed in 2.64s",
+  "input_sha256_before": {
+    "tests/test_rag_work_operation_acceptance.py": "5A32CA2BD3545AF2636CE2BFA653122657D6869D54A46F5B1BE087951325A7D2",
+    "src/local_ai_hub/rag.py": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27"
+  },
+  "input_sha256_after": {
+    "tests/test_rag_work_operation_acceptance.py": "5A32CA2BD3545AF2636CE2BFA653122657D6869D54A46F5B1BE087951325A7D2",
+    "src/local_ai_hub/rag.py": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27"
+  },
+  "inputs_unchanged": true,
+  "owner_manifest_sha256": "57610EC4E0B5BFA5BF1B5A36F44A28EB713144A0881C5CBBECB4F64B590BAE70",
+  "acceptance_scope": "T01 bounded RAG/work operation module only; not full API surface acceptance",
+  "log_path": "C:\\Users\\Adam\\.local-ai-hub\\handoff\\T20-CPU-SLOT-20261002-24\\01-t01-rag-work-acceptance.log",
+  "log_sha256": "CE161C6E33281BC05D7134E1E48A6B59A7A3298A1BC4842BD9AD378B4514822E",
+  "failure": "test_mcp_rag_index_forwards_root_and_workspace: unexpected telemetry tool-accounting backend call"
+}

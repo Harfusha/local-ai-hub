@@ -1,0 +1,43 @@
+--- a/src/local_ai_hub/cache.py
++++ b/src/local_ai_hub/cache.py
+@@ -552,12 +552,13 @@
+                 con.commit()
+         self._safe(op, None)
+ 
+-    def delete(self, key: str) -> None:
+-        def op() -> None:
++    def delete(self, key: str) -> bool:
++        def op() -> bool:
+             with self._lock, closing(self._connect()) as con:
+                 con.execute("DELETE FROM cache_entries WHERE namespace=? AND cache_key=?", (self.namespace, key))
+                 con.commit()
+-        self._safe(op, None)
++            return True
++        return bool(self._safe(op, False))
+ 
+     def _delete_strict(self, key: str) -> None:
+         def op() -> None:
+@@ -711,7 +712,7 @@
+         self.l2.set(key, value)
+         self.l1.set(key, value)
+ 
+-    def delete(self, key: str) -> None:
++    def delete(self, key: str) -> bool:
+         self.l1.delete(key)
+         if self._coordinator is not None:
+             try:
+@@ -725,12 +726,12 @@
+                     generation += 1
+                     self._coordinator.write_redundant_locked(generation, False)
+                     self._l1_generation = generation
+-                return
++                return True
+             except Exception:
+                 self.l1.clear()
+                 self._l1_generation = None
+                 raise
+-        self.l2.delete(key)
++        return self.l2.delete(key) is not False
+ 
+     def clear(self) -> int:
+         self.l1.clear()

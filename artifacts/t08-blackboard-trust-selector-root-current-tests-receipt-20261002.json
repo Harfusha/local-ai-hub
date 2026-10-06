@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "task": "T08",
+  "path": "tests/test_agent_task_memory_adoption.py",
+  "selector": "tests/test_agent_task_memory_adoption.py::test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope",
+  "root_preimage_sha256": "B85E72F40C2EFE491AF08383C81D7FEDF03689096F42F630B7BA3DB71EF92847",
+  "candidate_file_sha256": "58E6ACBDC568F020BE1CF6CD399890AFB1B12F0FB89E85FC56BB776CD6CF221F",
+  "proposed_root_postimage_sha256": "FFE89E25A765C2727A3DA7B4BD5ABD369B1F05936DC8F711D5521B95A31CD467",
+  "patch_path": "artifacts/t08-blackboard-trust-selector-root-current-tests.patch",
+  "patch_sha256": "B031EB1E22AE8DAF2BE03C0879D47C61F3A5D6FD348070026489AABE82ED6794",
+  "patch_scope": "one T08 selector plus BlackboardStore test import; no production source hunks",
+  "test_command": "PYTHONDONTWRITEBYTECODE=1; python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_task_memory_adoption.py::test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope",
+  "test_status": "not run; T04 owns serial test slot",
+  "memory_store_changes": "none in this patch",
+  "candidate_selector_sha256": "4AE2A63DA428081820FCE5F94E314574CF4B80B8C176DE4317F8AF51E750911E"
+}

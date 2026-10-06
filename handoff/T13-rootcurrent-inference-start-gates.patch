@@ -1,0 +1,48 @@
+--- a/src/local_ai_hub/services.py
++++ b/src/local_ai_hub/services.py
+@@ -952,6 +952,15 @@
+                         background=source.startswith("preprocess:"), preserve_explicit_think=False,
+                     )
+                     trace_observer = observer()
++                    # A scheduler may defer this closure until after a mode change.
++                    try:
++                        from .operational_mode import load_operational_mode
++
++                        mode = load_operational_mode(configured_state_dir(self.config, create=False))
++                        if mode.degraded or mode.mode != "active":
++                            return {"success": False, "error": "inference start blocked by operational mode", "error_code": "operational_mode_paused", "mode": mode.mode, "terminal": True, "retryable": False}
++                    except Exception:
++                        return {"success": False, "error": "inference start blocked because operational mode is unavailable", "error_code": "operational_mode_unavailable", "terminal": True, "retryable": False}
+                     if trace_observer is not None:
+                         trace_observer.model_request(payload)
+                         response = self.runtime.request_stream(
+--- a/src/local_ai_hub/preprocess.py
++++ b/src/local_ai_hub/preprocess.py
+@@ -2903,6 +2903,9 @@
+                 role="background", input_tokens=max(1, (len(prompt) + len(system)) // 4),
+                 output_tokens=int(max_tokens), background=True, preserve_explicit_think=False,
+             )
++            # A queued scheduler closure must recheck mode at the runtime handoff.
++            if not self._background_work_allowed():
++                return {"success": False, "preempted": True, "error_code": "operational_mode_paused", "error": "background inference start blocked by operational mode"}
+             response = self.runtime.request_interruptible(
+                 "/api/generate", payload, self.scheduler.foreground_busy,
+                 timeout=float(self.cfg.get("background_request_timeout_seconds", 300)),
+--- a/src/local_ai_hub/background_gpu.py
++++ b/src/local_ai_hub/background_gpu.py
+@@ -341,6 +341,15 @@
+             background=True,
+             preserve_explicit_think=False,
+         )
++        # Executor jobs can sit queued across a gaming/maintenance transition.
++        try:
++            from .operational_mode import load_operational_mode
++
++            mode = load_operational_mode(self.config.get("server", {}).get("state_dir"))
++            if mode.degraded or mode.mode != "active":
++                return {"success": False, "preempted": True, "error_code": "operational_mode_paused", "error": "background inference start blocked by operational mode"}
++        except Exception:
++            return {"success": False, "preempted": True, "error_code": "operational_mode_unavailable", "error": "background inference start blocked because operational mode is unavailable"}
+         response = runtime.request_interruptible(
+             "/api/generate", payload,
+             self._foreground_requested if preemptible else (lambda: False), timeout=self.request_timeout,

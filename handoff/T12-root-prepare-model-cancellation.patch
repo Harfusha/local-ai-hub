@@ -1,0 +1,862 @@
+--- a/src/local_ai_hub/ollama.py
++++ b/src/local_ai_hub/ollama.py
+@@ -16,7 +16,7 @@
+ from urllib.request import Request, urlopen
+ from urllib.parse import urlparse
+ 
+-from .llama_cpp import LlamaCppRouter
++from .llama_cpp import LlamaCppRouter, _cancel_response_on_stop, _open_interruptible_response, _read_response_body, _set_response_timeout, _stop_requested
+ from .llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_backend_selection, llama_cpp_managed_selected
+ from .json_utils import dumps as json_dumps
+ 
+@@ -181,6 +181,21 @@
+         return text
+ 
+ 
++class ModelPreparationCancelled(InterruptedError):
++    """Preparation stopped because no active scheduler caller still needs it."""
++
++    preparation_cancelled = True
++
++
++class ModelPreparationAdmissionRejected(RuntimeError):
++    """A fresh resource check rejected loading after existing models were unloaded."""
++
++    def __init__(self, admission: dict[str, Any], evicted_models: list[str] | None = None):
++        self.admission = dict(admission)
++        self.evicted_models = list(evicted_models or [])
++        super().__init__(str(self.admission.get("reason", "post-unload admission rejected")))
++
++
+ class OllamaRuntime:
+     def __init__(self, config: dict[str, Any], *, managed_name: str = "ollama"):
+         self.config = config
+@@ -214,12 +229,13 @@
+         payload: dict[str, Any] | None = None,
+         timeout: float | None = None,
+         *,
++        should_stop: Any | None = None,
+         deadline: float | None = None,
+     ) -> dict[str, Any]:
+         if payload is not None and endpoint in {"/api/chat", "/api/generate"}:
+-            if deadline is None:
+-                return self.request_stream(endpoint, payload, lambda _chunk: None, timeout)
+-            return self.request_stream(endpoint, payload, lambda _chunk: None, timeout, deadline=deadline)
++            return self.request_stream(
++                endpoint, payload, None, timeout, should_stop=should_stop, deadline=deadline,
++            )
+         if endpoint == "/api/show":
+             router = getattr(self, "llama_cpp", None)
+             describe = getattr(router, "model_capabilities", None)
+@@ -243,6 +259,10 @@
+                     for row in self.llama_cpp.loaded_model_details()
+                 ]}
+             return {"error": "Ollama is not the selected backend and this endpoint is not provided by llama.cpp"}
++        if should_stop is not None or deadline is not None:
++            return self._request_json_interruptible(
++                endpoint, payload, timeout=timeout, should_stop=should_stop, deadline=deadline,
++            )
+         payload = _normalise_keep_alive(payload)
+         body = json_dumps(payload).encode("utf-8") if payload is not None else None
+         headers = {"Content-Type": "application/json"} if body is not None else {}
+@@ -250,8 +270,6 @@
+         retry_delay = max(0.0, float(self.config.get("ollama", {}).get("retry_delay_seconds", 0.6)))
+         total_timeout = max(0.05, float(timeout if timeout is not None else self.timeout))
+         request_deadline = time.monotonic() + total_timeout
+-        if deadline is not None:
+-            request_deadline = min(request_deadline, float(deadline))
+         last_error = "unknown Ollama error"
+         for attempt in range(1, attempts + 1):
+             remaining = request_deadline - time.monotonic()
+@@ -266,7 +284,7 @@
+                         result["_lah_retry_count"] = max(0, attempt - 1)
+                     return result
+             except HTTPError as exc:
+-                raw = exc.read().decode("utf-8", errors="replace")
++                raw = _read_http_error_body(exc)
+                 last_error = f"HTTP {exc.code}: {raw}"
+                 if exc.code < 500 or attempt >= attempts:
+                     return {"error": last_error, "_lah_retry_count": max(0, attempt - 1)}
+@@ -288,6 +306,95 @@
+                 time.sleep(min(retry_delay, remaining))
+         return {"error": last_error, "_lah_retry_count": max(0, attempts - 1), "timed_out": time.monotonic() >= request_deadline}
+ 
++    def _request_json_interruptible(
++        self,
++        endpoint: str,
++        payload: dict[str, Any] | None,
++        *,
++        timeout: float | None,
++        should_stop: Any | None,
++        deadline: float | None,
++    ) -> dict[str, Any]:
++        """Send bounded JSON requests with cancellation and retry handling."""
++        started = time.monotonic()
++        timeout_budget = max(0.05, float(timeout if timeout is not None else self.timeout))
++        request_deadline = started + timeout_budget
++        if deadline is not None:
++            request_deadline = min(request_deadline, float(deadline))
++        if _stop_requested(should_stop):
++            return {"success": False, "preempted": True, "error": "request cancelled before Ollama request", "_lah_provider": "ollama"}
++        if request_deadline <= time.monotonic():
++            return {"error": "Ollama request deadline expired", "timed_out": True, "_lah_provider": "ollama"}
++
++        clean = _normalise_keep_alive(payload)
++        body = json_dumps(clean).encode("utf-8") if clean is not None else None
++        headers = {"Content-Type": "application/json"} if body is not None else {}
++        attempts = max(1, int(self.config.get("ollama", {}).get("request_attempts", 2)))
++        retry_delay = max(0.0, float(self.config.get("ollama", {}).get("retry_delay_seconds", 0.6)))
++        last_error = "unknown Ollama error"
++        attempts_used = 0
++        for attempt in range(1, attempts + 1):
++            attempts_used = attempt
++            if _stop_requested(should_stop):
++                return {"success": False, "preempted": True, "error": "request cancelled during Ollama request", "_lah_retry_count": attempt - 1, "_lah_provider": "ollama"}
++            if time.monotonic() >= request_deadline:
++                return {"error": last_error, "timed_out": True, "_lah_retry_count": attempt - 1, "_lah_provider": "ollama"}
++            req = Request(f"{self.base_url}{endpoint}", data=body, headers=headers)
++            retryable = False
++            try:
++                with _open_interruptible_response(req, request_deadline, should_stop) as response, _cancel_response_on_stop(
++                    response, should_stop, request_deadline,
++                ):
++                    raw = _read_response_body(response, request_deadline, should_stop).decode("utf-8", errors="replace")
++                    status = int(getattr(response, "status", getattr(response, "code", 200)) or 200)
++                if _stop_requested(should_stop):
++                    return {"success": False, "preempted": True, "error": "request cancelled during Ollama request", "_lah_retry_count": attempt - 1, "_lah_provider": "ollama"}
++                if time.monotonic() >= request_deadline:
++                    return {"error": "Ollama request deadline expired", "timed_out": True, "_lah_retry_count": attempt - 1, "_lah_provider": "ollama"}
++                if status >= 400:
++                    last_error = f"HTTP {status}: {raw[:2000]}"
++                    retryable = status >= 500
++                else:
++                    try:
++                        result = json.loads(raw) if raw else {}
++                    except (json.JSONDecodeError, UnicodeError) as exc:
++                        return {"error": f"Invalid Ollama JSON response: {exc}", "_lah_retry_count": attempt - 1, "_lah_provider": "ollama"}
++                    if isinstance(result, dict):
++                        result.setdefault("_lah_retry_count", attempt - 1)
++                        return result
++                    return {"error": "Ollama returned a non-object JSON response", "_lah_retry_count": attempt - 1, "_lah_provider": "ollama"}
++            except HTTPError as exc:
++                last_error = f"HTTP {exc.code}: {_read_http_error_body(exc)}"
++                retryable = exc.code >= 500
++            except URLError as exc:
++                reason = getattr(exc, "reason", exc)
++                last_error = f"Ollama unavailable: {reason}"
++                if isinstance(reason, (socket.timeout, TimeoutError)):
++                    break
++                retryable = True
++            except (socket.timeout, TimeoutError) as exc:
++                last_error = f"Ollama request timed out: {exc}"
++                break
++            except Exception as exc:
++                if _stop_requested(should_stop):
++                    return {"success": False, "preempted": True, "error": "request cancelled during Ollama request", "_lah_retry_count": attempt - 1, "_lah_provider": "ollama"}
++                last_error = f"{type(exc).__name__}: {exc}"
++                if "timeout" in str(exc).lower() or "timed out" in str(exc).lower():
++                    break
++                retryable = True
++
++            if not retryable or attempt >= attempts:
++                break
++            pause_until = min(request_deadline, time.monotonic() + retry_delay)
++            while time.monotonic() < pause_until:
++                if _stop_requested(should_stop):
++                    return {"success": False, "preempted": True, "error": "request cancelled while retrying Ollama request", "_lah_retry_count": attempt, "_lah_provider": "ollama"}
++                time.sleep(min(0.05, max(0.0, pause_until - time.monotonic())))
++
++        if _stop_requested(should_stop):
++            return {"success": False, "preempted": True, "error": "request cancelled during Ollama request", "_lah_retry_count": max(0, attempts_used - 1), "_lah_provider": "ollama"}
++        return {"error": last_error, "_lah_retry_count": max(0, attempts_used - 1), "timed_out": time.monotonic() >= request_deadline, "_lah_provider": "ollama"}
++
+     def request_stream(
+         self,
+         endpoint: str,
+@@ -296,22 +403,32 @@
+         timeout: float | None = None,
+         *,
+         on_thinking: Any | None = None,
++        should_stop: Any | None = None,
+         deadline: float | None = None,
+     ) -> dict[str, Any]:
++        started = time.monotonic()
++        timeout_budget = max(0.05, float(timeout if timeout is not None else self.timeout))
++        request_deadline = started + timeout_budget
++        if deadline is not None:
++            request_deadline = min(request_deadline, float(deadline))
++        total_timeout = max(0.0, request_deadline - started)
++        remaining = request_deadline - time.monotonic()
++        if remaining <= 0:
++            return {"error": "Ollama request deadline expired", "timed_out": True, "_lah_provider": "ollama"}
++        if _stop_requested(should_stop):
++            return {"success": False, "preempted": True, "error": "request cancelled before start", "_lah_provider": "ollama"}
+         llama_router = getattr(self, "llama_cpp", None)
+         llama_selected = not bool(self.config.get("ollama", {}).get("enabled", False))
+-        llama_timeout = timeout
+-        if deadline is not None:
+-            remaining = float(deadline) - time.monotonic()
+-            if remaining <= 0:
+-                provider = "llama.cpp" if llama_selected else "ollama"
+-                return {"error": "Ollama request deadline expired", "timed_out": True, "_lah_provider": provider}
+-            timeout_budget = max(0.05, float(timeout if timeout is not None else self.timeout))
+-            llama_timeout = min(timeout_budget, remaining)
+-        llama_result = llama_router.request_stream(endpoint, payload, on_chunk, timeout=llama_timeout, on_thinking=on_thinking) if llama_selected and llama_router is not None else None
+-        if deadline is not None and time.monotonic() >= float(deadline):
++        llama_result = llama_router.request_stream(
++            endpoint, payload, on_chunk, timeout=remaining, on_thinking=on_thinking,
++            should_stop=should_stop, deadline=request_deadline,
++        ) if llama_selected and llama_router is not None else None
++        if not (isinstance(llama_result, dict) and (llama_result.get("preempted") or llama_result.get("timed_out"))):
+             provider = "llama.cpp" if llama_selected else "ollama"
+-            return {"error": "Ollama request deadline expired", "timed_out": True, "_lah_provider": provider}
++            if _stop_requested(should_stop):
++                return {"success": False, "preempted": True, "error": "request cancelled before backend fallback", "_lah_provider": provider}
++            if time.monotonic() >= request_deadline:
++                return {"error": "request deadline expired before backend fallback", "timed_out": True, "_lah_provider": provider}
+         if llama_result is not None:
+             if "_lah_backend_unavailable" not in llama_result:
+                 if llama_cpp_managed_selected(self.config):
+@@ -320,39 +437,77 @@
+                 return llama_result
+             backend_fallback = str(llama_result.get("_lah_backend_unavailable", "SYCL unavailable"))
+             if llama_selected:
++                if _stop_requested(should_stop):
++                    return {"success": False, "preempted": True, "error": "request cancelled while llama.cpp was unavailable", "_lah_provider": "llama.cpp"}
++                if time.monotonic() >= request_deadline:
++                    return {"error": "request deadline expired while llama.cpp was unavailable", "timed_out": True, "_lah_provider": "llama.cpp"}
+                 return {"error": f"llama.cpp unavailable: {backend_fallback}", "_lah_provider": "llama.cpp"}
+         else:
+             backend_fallback = ""
+             if llama_selected:
++                if _stop_requested(should_stop):
++                    return {"success": False, "preempted": True, "error": "request cancelled while llama.cpp route was unavailable", "_lah_provider": "llama.cpp"}
++                if time.monotonic() >= request_deadline:
++                    return {"error": "request deadline expired while llama.cpp route was unavailable", "timed_out": True, "_lah_provider": "llama.cpp"}
+                 return {"error": "Selected llama.cpp route is unavailable for this model", "_lah_provider": "llama.cpp"}
++        if _stop_requested(should_stop):
++            return {"success": False, "preempted": True, "error": "request cancelled before Ollama backend", "_lah_provider": "ollama"}
++        if time.monotonic() >= request_deadline:
++            return {"error": "request deadline expired before Ollama backend", "timed_out": True, "_lah_provider": "ollama"}
+         clean = dict(_normalise_keep_alive(payload) or {})
+         clean["stream"] = True
+         body = json_dumps(clean).encode("utf-8")
+         headers = {"Content-Type": "application/json"}
+         attempts = max(1, int(self.config.get("ollama", {}).get("request_attempts", 2)))
+         retry_delay = max(0.0, float(self.config.get("ollama", {}).get("retry_delay_seconds", 0.6)))
+-        total_timeout = max(0.05, float(timeout if timeout is not None else self.timeout))
+-        request_deadline = time.monotonic() + total_timeout
+-        if deadline is not None:
+-            request_deadline = min(request_deadline, float(deadline))
+-            total_timeout = max(0.0, request_deadline - time.monotonic())
++        deadline = request_deadline
+         last_error = "unknown Ollama error"
++        timed_out = False
+         for attempt in range(1, attempts + 1):
+             remaining = request_deadline - time.monotonic()
+             if remaining <= 0:
++                timed_out = True
+                 break
+             generated: list[str] = []
+             chat: list[str] = []
+             thinking_parts: list[str] = []
++            emitted_output = False
+             final: dict[str, Any] = {}
+             watchdog = RepetitionWatchdog(max_repeat=3)
+             req = Request(f"{self.base_url}{endpoint}", data=body, headers=headers)
+             try:
+-                with urlopen(req, timeout=max(0.05, remaining)) as response:
+-                    for raw_line in response:
+-                        if time.monotonic() >= request_deadline:
++                if _stop_requested(should_stop):
++                    return {"success": False, "preempted": True, "error": "request cancelled before Ollama request", "_lah_provider": "ollama"}
++                remaining = deadline - time.monotonic()
++                if remaining <= 0:
++                    return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True, "_lah_provider": "ollama"}
++                with _open_interruptible_response(req, deadline, should_stop) as response, _cancel_response_on_stop(response, should_stop, deadline):
++                    response_lines = iter(response)
++                    while True:
++                        remaining = deadline - time.monotonic()
++                        if remaining <= 0:
+                             last_error = f"Ollama request timed out after {total_timeout:g}s"
++                            timed_out = True
+                             break
++                        if _stop_requested(should_stop):
++                            return {"success": False, "preempted": True, "error": "request cancelled during generation", "_lah_provider": "ollama"}
++                        _set_response_timeout(response, remaining)
++                        try:
++                            raw_line = next(response_lines)
++                        except StopIteration:
++                            break
++                        except socket.timeout:
++                            if _stop_requested(should_stop):
++                                return {"success": False, "preempted": True, "error": "request cancelled during generation", "_lah_provider": "ollama"}
++                            last_error = f"Ollama request timed out after {total_timeout:g}s"
++                            timed_out = True
++                            break
++                        if time.monotonic() >= deadline:
++                            last_error = f"Ollama request timed out after {total_timeout:g}s"
++                            timed_out = True
++                            break
++                        if _stop_requested(should_stop):
++                            return {"success": False, "preempted": True, "error": "request cancelled during generation", "_lah_provider": "ollama"}
+                         raw_line = raw_line.strip()
+                         if not raw_line:
+                             continue
+@@ -370,8 +525,10 @@
+                             text = str(delta)
+                             if text:
+                                 generated.append(text)
+-                                try: on_chunk(text)
+-                                except Exception: pass
++                                if on_chunk is not None:
++                                    emitted_output = True
++                                    try: on_chunk(text)
++                                    except Exception: pass
+                                 if watchdog.push(text):
+                                     final["_lah_repetition_loop_detected"] = True
+                                     break
+@@ -380,8 +537,10 @@
+                             text = str(message["content"])
+                             if text:
+                                 chat.append(text)
+-                                try: on_chunk(text)
+-                                except Exception: pass
++                                if on_chunk is not None:
++                                    emitted_output = True
++                                    try: on_chunk(text)
++                                    except Exception: pass
+                                 if watchdog.push(text):
+                                     final["_lah_repetition_loop_detected"] = True
+                                     break
+@@ -397,6 +556,8 @@
+                         final.update(chunk)
+                         if chunk.get("done") is True:
+                             break
++                if timed_out:
++                    return {"error": last_error, "_lah_retry_count": max(0, attempt - 1), "timed_out": True}
+                 if watchdog.loop_detected:
+                     return {
+                         "error": "model output repetition loop detected",
+@@ -424,25 +585,46 @@
+                         final["_lah_backend_fallback"] = backend_fallback
+                     return final
+             except HTTPError as exc:
+-                raw = exc.read().decode("utf-8", errors="replace")
++                raw = _read_http_error_body(exc)
+                 last_error = f"HTTP {exc.code}: {raw}"
+                 if exc.code < 500:
+                     break
+             except URLError as exc:
++                if _stop_requested(should_stop):
++                    return {"success": False, "preempted": True, "error": "request cancelled during generation", "_lah_provider": "ollama"}
+                 last_error = f"Ollama unavailable: {exc.reason}"
+                 if isinstance(getattr(exc, "reason", None), (socket.timeout, TimeoutError)):
++                    timed_out = True
+                     break
+             except (socket.timeout, TimeoutError) as exc:
++                if _stop_requested(should_stop):
++                    return {"success": False, "preempted": True, "error": "request cancelled during generation", "_lah_provider": "ollama"}
++                if time.monotonic() >= deadline:
++                    return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True, "_lah_provider": "ollama"}
+                 last_error = f"Ollama request timed out: {exc}"
++                timed_out = True
+                 break
+             except Exception as exc:
++                if _stop_requested(should_stop):
++                    return {"success": False, "preempted": True, "error": "request cancelled during generation", "_lah_provider": "ollama"}
++                if time.monotonic() >= deadline:
++                    return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True, "_lah_provider": "ollama"}
+                 last_error = f"{type(exc).__name__}: {exc}"
+                 if "timeout" in str(exc).lower() or "timed out" in str(exc).lower():
++                    timed_out = True
+                     break
++            if timed_out:
++                return {"error": last_error, "_lah_retry_count": max(0, attempt - 1), "timed_out": True}
++            if emitted_output:
++                return {
++                    "error": last_error,
++                    "_lah_retry_count": max(0, attempt - 1),
++                    "_lah_partial_response": True,
++                }
+             remaining = request_deadline - time.monotonic()
+             if attempt < attempts and remaining > 0 and retry_delay:
+                 time.sleep(min(retry_delay, remaining))
+-        return {"error": last_error, "_lah_retry_count": max(0, attempts - 1), "timed_out": time.monotonic() >= request_deadline}
++        return {"error": last_error, "_lah_retry_count": max(0, attempts - 1), "timed_out": timed_out or time.monotonic() >= deadline}
+ 
+ 
+     def run_benchmark_scenario(
+@@ -1161,6 +1343,7 @@
+         should_stop: Any,
+         *,
+         timeout: float | None = None,
++        deadline: float | None = None,
+     ) -> dict[str, Any]:
+         """Execute an Ollama streaming request that can yield to foreground work.
+ 
+@@ -1177,14 +1360,30 @@
+         except Exception:
+             pass
+ 
++        started = time.monotonic()
++        timeout_budget = max(0.05, float(timeout if timeout is not None else self.timeout))
++        request_deadline = started + timeout_budget
++        if deadline is not None:
++            request_deadline = min(request_deadline, float(deadline))
++        total_timeout = max(0.0, request_deadline - started)
++        remaining = request_deadline - time.monotonic()
++        if remaining <= 0:
++            return {"error": "Ollama request deadline expired", "timed_out": True, "_lah_provider": "ollama"}
++
+         llama_router = getattr(self, "llama_cpp", None)
+         llama_selected = not bool(self.config.get("ollama", {}).get("enabled", False))
+         llama_result = (
+             llama_router.request_stream(
+-                endpoint, payload, lambda _chunk: None, timeout=timeout, should_stop=should_stop,
++                endpoint, payload, lambda _chunk: None, timeout=remaining, should_stop=should_stop,
++                deadline=request_deadline,
+             )
+             if llama_selected and llama_router is not None else None
+         )
++        if not (isinstance(llama_result, dict) and (llama_result.get("preempted") or llama_result.get("timed_out"))):
++            if _stop_requested(should_stop):
++                return {"success": False, "preempted": True, "error": "background request preempted before backend fallback", "_lah_provider": "llama.cpp" if llama_selected else "ollama"}
++            if time.monotonic() >= request_deadline:
++                return {"error": "Ollama request deadline expired before backend fallback", "timed_out": True, "_lah_provider": "llama.cpp" if llama_selected else "ollama"}
+         if llama_result is not None:
+             if "_lah_backend_unavailable" not in llama_result:
+                 if llama_cpp_managed_selected(self.config):
+@@ -1192,8 +1391,16 @@
+                     llama_result["_lah_provider"] = "llama.cpp-cpu" if device == "none" else "llama.cpp-sycl" if device else "llama.cpp"
+                 return llama_result
+             if llama_selected:
++                if _stop_requested(should_stop):
++                    return {"success": False, "preempted": True, "error": "background request preempted while llama.cpp was unavailable", "_lah_provider": "llama.cpp"}
++                if time.monotonic() >= request_deadline:
++                    return {"error": "Ollama request deadline expired while llama.cpp was unavailable", "timed_out": True, "_lah_provider": "llama.cpp"}
+                 return {"error": f"llama.cpp unavailable: {llama_result['_lah_backend_unavailable']}", "_lah_provider": "llama.cpp"}
+         elif llama_selected:
++            if _stop_requested(should_stop):
++                return {"success": False, "preempted": True, "error": "background request preempted while llama.cpp route was unavailable", "_lah_provider": "llama.cpp"}
++            if time.monotonic() >= request_deadline:
++                return {"error": "Ollama request deadline expired while llama.cpp route was unavailable", "timed_out": True, "_lah_provider": "llama.cpp"}
+             return {"error": "Selected llama.cpp route is unavailable for this model", "_lah_provider": "llama.cpp"}
+ 
+         clean = _normalise_keep_alive(payload) or {}
+@@ -1201,22 +1408,38 @@
+         clean.setdefault("stream", True)
+         body = json_dumps(clean).encode("utf-8")
+         req = Request(f"{self.base_url}{endpoint}", data=body, headers={"Content-Type": "application/json"})
+-        total_timeout = max(0.05, float(timeout if timeout is not None else self.timeout))
+-        deadline = time.monotonic() + total_timeout
++        deadline = request_deadline
+         text_parts: list[str] = []
+         message_parts: list[str] = []
+         final: dict[str, Any] = {}
+         watchdog = RepetitionWatchdog(max_repeat=3)
+         try:
+-            with urlopen(req, timeout=total_timeout) as response:
+-                for raw_line in response:
++            if _stop_requested(should_stop):
++                return {"success": False, "preempted": True, "error": "background request preempted before Ollama request", "_lah_provider": "ollama"}
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True}
++            with _open_interruptible_response(req, deadline, should_stop) as response, _cancel_response_on_stop(response, should_stop, deadline):
++                response_lines = iter(response)
++                while True:
++                    remaining = deadline - time.monotonic()
++                    if remaining <= 0:
++                        return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True}
++                    if _stop_requested(should_stop):
++                        return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "ollama"}
++                    _set_response_timeout(response, remaining)
++                    try:
++                        raw_line = next(response_lines)
++                    except StopIteration:
++                        break
++                    except socket.timeout:
++                        if _stop_requested(should_stop):
++                            return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "ollama"}
++                        return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True}
+                     if time.monotonic() >= deadline:
+                         return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True}
+-                    try:
+-                        if bool(should_stop()):
+-                            return {"success": False, "preempted": True, "error": "background request preempted by foreground work"}
+-                    except Exception:
+-                        pass
++                    if _stop_requested(should_stop):
++                        return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "ollama"}
+                     raw_line = raw_line.strip()
+                     if not raw_line:
+                         continue
+@@ -1246,16 +1469,26 @@
+                     if chunk.get("done") is True:
+                         break
+         except HTTPError as exc:
+-            raw = exc.read().decode("utf-8", errors="replace")
++            raw = _read_http_error_body(exc)
+             return {"error": f"HTTP {exc.code}: {raw}"}
+         except URLError as exc:
++            if _stop_requested(should_stop):
++                return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "ollama"}
++            reason = getattr(exc, "reason", None)
++            if isinstance(reason, (socket.timeout, TimeoutError)):
++                return {"error": f"Ollama request timed out: {reason}", "timed_out": True}
+             return {"error": f"Ollama unavailable: {exc.reason}"}
++        except (socket.timeout, TimeoutError) as exc:
++            if _stop_requested(should_stop):
++                return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "ollama"}
++            if time.monotonic() >= deadline:
++                return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True}
++            return {"error": f"Ollama request timed out: {exc}", "timed_out": True}
+         except Exception as exc:
+-            try:
+-                if bool(should_stop()):
+-                    return {"success": False, "preempted": True, "error": "background request preempted by foreground work"}
+-            except Exception:
+-                pass
++            if _stop_requested(should_stop):
++                return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "ollama"}
++            if time.monotonic() >= deadline:
++                return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True}
+             return {"error": f"{type(exc).__name__}: {exc}"}
+ 
+         if watchdog.loop_detected:
+@@ -1587,12 +1820,35 @@
+         details = self.loaded_model_details()
+         return [d["name"] for d in details if d.get("name")]
+ 
+-    def loaded_model_details(self) -> list[dict[str, Any]]:
++    def loaded_model_details(
++        self,
++        *,
++        should_stop: Any | None = None,
++        deadline: float | None = None,
++        force_refresh: bool = False,
++    ) -> list[dict[str, Any]]:
+         now = time.monotonic()
+-        if now - self._meta_cache_at.get("loaded_details", 0) < 2.0 and "loaded_details" in self._meta_cache:
++        if (
++            not force_refresh
++            and now - self._meta_cache_at.get("loaded_details", 0) < 2.0
++            and "loaded_details" in self._meta_cache
++        ):
+             return list(self._meta_cache.get("loaded_details", []))
+-        result = self.request("/api/ps", timeout=1.0)
++        result = self.request("/api/ps", timeout=1.0, should_stop=should_stop, deadline=deadline)
++        if result.get("preempted") or _stop_requested(should_stop):
++            raise ModelPreparationCancelled("model preparation cancelled while checking loaded models")
++        if deadline is not None and time.monotonic() >= deadline:
++            raise TimeoutError("model preparation deadline expired while checking loaded models")
+         if "error" in result or not isinstance(result, dict):
++            if should_stop is not None or deadline is not None:
++                llama_rows = self.llama_cpp.loaded_model_details(
++                    should_stop=should_stop, deadline=deadline,
++                )
++                if _stop_requested(should_stop):
++                    raise ModelPreparationCancelled("model preparation cancelled while checking adapter models")
++                if deadline is not None and time.monotonic() >= deadline:
++                    raise TimeoutError("model preparation deadline expired while checking adapter models")
++                return llama_rows or list(self._meta_cache.get("loaded_details", []))
+             llama_rows = self.llama_cpp.loaded_model_details()
+             return llama_rows or list(self._meta_cache.get("loaded_details", []))
+         rows: list[dict[str, Any]] = []
+@@ -1623,7 +1879,15 @@
+         self._meta_cache.pop("loaded_details", None)
+         self._meta_cache_at.pop("loaded_details", None)
+ 
+-    def prepare_model(self, model: str, *, unload_others: bool = True) -> list[str]:
++    def prepare_model(
++        self,
++        model: str,
++        *,
++        unload_others: bool = True,
++        post_unload_admission: Any | None = None,
++        should_stop: Any | None = None,
++        deadline: float | None = None,
++    ) -> list[str]:
+         """Ensure ``model`` is resident with the execution policy's context size.
+ 
+         The scheduler treats this as the authoritative model-switch primitive. Keep
+@@ -1633,25 +1897,56 @@
+         model = str(model or "").strip()
+         if not model:
+             raise ValueError("model is required")
++
++        load_timeout = max(0.05, float(self.config.get("llama_cpp", {}).get("model_load_timeout_seconds", 90)))
++        prepare_deadline = time.monotonic() + load_timeout
++        if deadline is not None:
++            prepare_deadline = min(prepare_deadline, float(deadline))
++
++        def stopped() -> bool:
++            return _stop_requested(should_stop)
++
++        def check_active() -> None:
++            if stopped():
++                raise ModelPreparationCancelled("model preparation cancelled")
++            if time.monotonic() >= prepare_deadline:
++                raise TimeoutError("model preparation deadline expired")
++
++        check_active()
+         # llama.cpp loads the configured GGUF in its local server. Avoid also
+         # loading that same model into Ollama when the SYCL endpoint is ready.
+-        if self.llama_cpp.ensure_model(model, timeout=float(self.config.get("llama_cpp", {}).get("model_load_timeout_seconds", 90))):
++        if post_unload_admission is not None and self.llama_cpp.supports_model(model):
++            raise ModelPreparationAdmissionRejected({
++                "state": "rejected", "reason": "post_unload_admission_unsupported_backend",
++                "vram_admission": "rejected", "vram_admission_phase": "post_unload",
++            })
++        if self.llama_cpp.ensure_model(
++            model,
++            timeout=max(0.05, min(load_timeout, prepare_deadline - time.monotonic())),
++            should_stop=stopped,
++            deadline=prepare_deadline,
++        ):
+             return []
++        check_active()
+         if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)) and self.llama_cpp.supports_model(model):
+             raise RuntimeError("configured llama.cpp SYCL model is not available")
+         if not self.ensure_running():
+             raise RuntimeError("Ollama is not available")
++        check_active()
+ 
+         profile = self.model_policy.profile(model)
+-        details = self.loaded_model_details()
++        details = self.loaded_model_details(should_stop=stopped, deadline=prepare_deadline)
++        check_active()
+         evicted: list[str] = []
+         current = next((row for row in details if str(row.get("name", "")) == model), None)
+ 
+         if unload_others:
+             for row in details:
++                check_active()
+                 name = str(row.get("name", "") or "")
+-                if name and name != model and self.unload_model(name):
++                if name and name != model and self.unload_model(name, should_stop=stopped, deadline=prepare_deadline):
+                     evicted.append(name)
++                check_active()
+ 
+         if current is not None and int(current.get("context_length", 0) or 0) >= profile.num_ctx:
+             return evicted
+@@ -1659,12 +1954,38 @@
+         # A runner loaded with a smaller context cannot be safely reused for a larger
+         # request. Explicitly unload it so Ollama recreates the runner with num_ctx.
+         if current is not None:
+-            self.unload_model(model)
++            check_active()
++            if self.unload_model(model, should_stop=stopped, deadline=prepare_deadline):
++                evicted.append(model)
++            check_active()
++
++        if post_unload_admission is not None:
++            check_active()
++            try:
++                admission = post_unload_admission()
++            except Exception as exc:
++                raise ModelPreparationAdmissionRejected({
++                    "state": "rejected", "reason": "post_unload_admission_failed",
++                    "vram_admission": "rejected", "vram_admission_phase": "post_unload",
++                    "failure_type": type(exc).__name__,
++                }, evicted) from exc
++            if not isinstance(admission, dict) or admission.get("state") != "admitted":
++                rejected_admission = dict(admission) if isinstance(admission, dict) else {}
++                rejected_admission["state"] = "rejected"
++                rejected_admission.setdefault("reason", "post_unload_admission_rejected")
++                rejected_admission.setdefault("vram_admission", "rejected")
++                rejected_admission.setdefault("vram_admission_phase", "post_unload")
++                raise ModelPreparationAdmissionRejected(rejected_admission, evicted)
++            check_active()
+ 
+         keep_alive = self.config.get("ollama", {}).get("keep_alive", "24h")
+         if self._is_embedding_model(model):
+             payload = {"model": model, "input": [""], "keep_alive": keep_alive}
+-            result = self.request("/api/embed", payload)
++            result = self.request(
++                "/api/embed", payload,
++                timeout=max(0.05, min(self.timeout, prepare_deadline - time.monotonic())),
++                should_stop=stopped, deadline=prepare_deadline,
++            )
+         else:
+             payload = {
+                 "model": model,
+@@ -1673,7 +1994,15 @@
+                 "keep_alive": keep_alive,
+                 "options": {"num_ctx": profile.num_ctx},
+             }
+-            result = self.request("/api/generate", payload)
++            result = self.request(
++                "/api/generate", payload,
++                timeout=max(0.05, min(self.timeout, prepare_deadline - time.monotonic())),
++                should_stop=stopped, deadline=prepare_deadline,
++            )
++        if result.get("preempted") or stopped():
++            raise ModelPreparationCancelled("model preparation cancelled")
++        if time.monotonic() >= prepare_deadline:
++            raise TimeoutError("model preparation deadline expired")
+         if "error" in result:
+             raise RuntimeError(str(result.get("error", "model load failed")))
+         self._invalidate_loaded_cache()
+@@ -1702,9 +2031,21 @@
+             self._invalidate_loaded_cache()
+         return ok
+ 
+-    def unload_model(self, model: str) -> bool:
+-        if self.llama_cpp.supports_model(model) and self.llama_cpp.ready_for_model(model):
+-            return self.llama_cpp.unload_model(model)
++    def unload_model(
++        self,
++        model: str,
++        *,
++        should_stop: Any | None = None,
++        deadline: float | None = None,
++    ) -> bool:
++        if self.llama_cpp.supports_model(model) and (
++            self.llama_cpp.ready_for_model(model)
++            if should_stop is None and deadline is None
++            else self.llama_cpp.ready_for_model(model, should_stop=should_stop, deadline=deadline)
++        ):
++            if should_stop is None and deadline is None:
++                return self.llama_cpp.unload_model(model)
++            return self.llama_cpp.unload_model(model, should_stop=should_stop, deadline=deadline)
+         if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
+             return False
+         endpoint = "/api/generate"
+@@ -1712,7 +2053,7 @@
+         if self._is_embedding_model(model):
+             payload["input"] = [""]
+             endpoint = "/api/embed"
+-        result = self.request(endpoint, payload)
++        result = self.request(endpoint, payload, should_stop=should_stop, deadline=deadline)
+         ok = "error" not in result
+         if ok:
+             self._invalidate_loaded_cache()
+--- a/tests/test_t12_runtime_scenarios.py
++++ b/tests/test_t12_runtime_scenarios.py
+@@ -4,7 +4,9 @@
+ import time
+ from typing import Any
+ 
+-from local_ai_hub.ollama import OllamaRuntime
++import pytest
++
++from local_ai_hub.ollama import ModelPreparationCancelled, OllamaRuntime
+ from local_ai_hub.tiered_ollama import TieredOllamaRuntime
+ 
+ 
+@@ -56,6 +58,113 @@
+     assert runtime.model_digest("other-model") is None
+ 
+ 
++def test_t12_prepare_model_accepts_scheduler_deadline_and_stop_callback() -> None:
++    runtime = object.__new__(OllamaRuntime)
++    runtime.config = {"llama_cpp": {"model_load_timeout_seconds": 5}}
++    calls: list[dict[str, Any]] = []
++
++    class LlamaRuntime:
++        def supports_model(self, _model: str) -> bool:
++            return True
++
++        def ensure_model(
++            self,
++            model: str,
++            *,
++            timeout: float | None = None,
++            should_stop: Any | None = None,
++            deadline: float | None = None,
++        ) -> bool:
++            calls.append({
++                "model": model,
++                "timeout": timeout,
++                "should_stop": should_stop,
++                "deadline": deadline,
++            })
++            return True
++
++    runtime.llama_cpp = LlamaRuntime()
++    should_stop = lambda: False
++    deadline = time.monotonic() + 2
++
++    assert runtime.prepare_model("reranker-model", should_stop=should_stop, deadline=deadline) == []
++    assert len(calls) == 1
++    assert calls[0]["model"] == "reranker-model"
++    assert callable(calls[0]["should_stop"])
++    assert calls[0]["should_stop"]() is False
++    assert calls[0]["deadline"] == deadline
++    assert 0 < calls[0]["timeout"] <= 2
++
++
++def test_t12_prepare_model_honors_stop_before_model_load() -> None:
++    runtime = object.__new__(OllamaRuntime)
++    runtime.config = {"llama_cpp": {"model_load_timeout_seconds": 5}}
++    calls: list[str] = []
++
++    class LlamaRuntime:
++        def supports_model(self, _model: str) -> bool:
++            return True
++
++        def ensure_model(self, model: str, **_kwargs: Any) -> bool:
++            calls.append(model)
++            return True
++
++    runtime.llama_cpp = LlamaRuntime()
++
++    with pytest.raises(ModelPreparationCancelled):
++        runtime.prepare_model("reranker-model", should_stop=lambda: True)
++
++    assert calls == []
++
++
++def test_t12_prepare_model_forwards_deadline_and_stop_to_embedding_load() -> None:
++    runtime = object.__new__(OllamaRuntime)
++    runtime.config = {
++        "llama_cpp": {"fallback_to_ollama": True, "model_load_timeout_seconds": 5},
++        "ollama": {"keep_alive": "24h"},
++    }
++    runtime.timeout = 10.0
++    runtime.ensure_running = lambda: True
++    runtime.loaded_model_details = lambda **_kwargs: []
++    runtime._is_embedding_model = lambda _model: True
++    runtime._invalidate_loaded_cache = lambda: None
++    calls: list[dict[str, Any]] = []
++
++    class LlamaRuntime:
++        def supports_model(self, _model: str) -> bool:
++            return False
++
++        def ensure_model(self, _model: str, **_kwargs: Any) -> bool:
++            return False
++
++    class Profile:
++        num_ctx = 512
++
++    class Policy:
++        def profile(self, _model: str) -> Profile:
++            return Profile()
++
++    runtime.llama_cpp = LlamaRuntime()
++    runtime.model_policy = Policy()
++
++    def request(endpoint: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
++        calls.append({"endpoint": endpoint, "payload": payload, **kwargs})
++        return {"embeddings": [[0.1]]}
++
++    runtime.request = request
++    should_stop = lambda: False
++    deadline = time.monotonic() + 2
++
++    assert runtime.prepare_model("reranker-model", should_stop=should_stop, deadline=deadline) == []
++    assert len(calls) == 1
++    assert calls[0]["endpoint"] == "/api/embed"
++    assert calls[0]["payload"]["model"] == "reranker-model"
++    assert callable(calls[0]["should_stop"])
++    assert calls[0]["should_stop"]() is False
++    assert calls[0]["deadline"] == deadline
++    assert 0 < calls[0]["timeout"] <= 2
++
++
+ def test_t12_json_format_and_think_are_promoted_to_ollama_request_fields() -> None:
+     runtime = object.__new__(OllamaRuntime)
+     captured: dict[str, Any] = {}

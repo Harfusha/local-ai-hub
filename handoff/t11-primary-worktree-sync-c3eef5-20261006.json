@@ -1,0 +1,124 @@
+{
+  "schema": "t11-owner-sync-packet/v1",
+  "created_at_utc": "2026-10-06T09:29:31Z",
+  "registered_worktree": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "artifact_id": "01a10f91-8669-70f3-b95f-9563c0254bf6",
+    "git_toplevel": "C:/Users/Adam/.codex/worktrees/f678/.local-ai-hub",
+    "cwd_matches_artifact": true,
+    "branch": null,
+    "head_before": "a49addf6465548b9dd3c86a4581392d9426ff8d3",
+    "head_after": "a49addf6465548b9dd3c86a4581392d9426ff8d3",
+    "merge_base_with_master": "a7b0868ac964fd14e160001024e6e0ecaaf4e9db",
+    "master_observed_at_start": "b564e5ba920c3108ba1805da052766bba8d7d05e",
+    "master_rechecked_after_tests": "c3eef5a5e92041df08a20ef7025f6503bc3c6108",
+    "master_latest_commit": "c3eef5a5e perf(context): accelerate canonical etag hashing",
+    "latest_master_commit_paths": [
+      "src/local_ai_hub/agent_context.py",
+      "tests/test_agent_context.py"
+    ],
+    "master_is_ancestor_of_head": false,
+    "rev_list_left_right_master_vs_head": "149 6",
+    "sync_attempt": "git merge --no-edit master",
+    "sync_attempt_result": "exit 1; merge conflicts reported; git merge --abort exit 0 restored original HEAD and tracked worktree",
+    "conflict_paths": [
+      "src/local_ai_hub/app.py",
+      "src/local_ai_hub/embeddings.py",
+      "src/local_ai_hub/project_config.py",
+      "src/local_ai_hub/rag.py",
+      "src/local_ai_hub/repo_tools.py",
+      "tests/test_preprocessing_overhaul.py",
+      "tests/test_project_config.py",
+      "tests/test_rag_fragment_cache.py",
+      "tests/test_rag_hybrid.py",
+      "tests/test_rag_quality_contract.py",
+      "tests/test_rag_read_bounds.py",
+      "tests/test_reranker_cache_identity.py",
+      "tests/test_t11_project_policy_consumers.py",
+      "tests/test_t11_rag_ingestion_contract.py"
+    ],
+    "conflict_ownership": {
+      "t11_owned": [
+        "src/local_ai_hub/embeddings.py",
+        "src/local_ai_hub/rag.py",
+        "tests/test_rag_fragment_cache.py",
+        "tests/test_rag_hybrid.py",
+        "tests/test_rag_quality_contract.py",
+        "tests/test_rag_read_bounds.py",
+        "tests/test_t11_project_policy_consumers.py",
+        "tests/test_t11_rag_ingestion_contract.py"
+      ],
+      "outside_t11_scope": [
+        "src/local_ai_hub/app.py",
+        "src/local_ai_hub/project_config.py",
+        "src/local_ai_hub/repo_tools.py",
+        "tests/test_preprocessing_overhaul.py",
+        "tests/test_project_config.py",
+        "tests/test_reranker_cache_identity.py"
+      ]
+    },
+    "staged_paths_before_and_after": [],
+    "tracked_dirty_paths_before_and_after": [],
+    "inherited_untracked_before_this_packet": [
+      "handoff/t11-acceptance-followup-20261006.json",
+      "handoff/t11-acceptance-update-20261006.json",
+      "handoff/t11-b947-acceptance-packet-20261006.json",
+      "handoff/t11-current-acceptance-20261006.json",
+      "handoff/t11-master-744-continuation-20261006.json",
+      "handoff/t11-master-b947d76f-owned.patch",
+      "handoff/t11-orchestrator-closeout-20261006.json",
+      "handoff/t11-rag-benchmark-receipt-20261006.json",
+      "handoff/t11-restored-worktree-verification-20261006.json",
+      "handoff/t11-sync-master-b564-20261006.json"
+    ],
+    "inherited_untracked_sha256": {
+      "handoff/t11-acceptance-followup-20261006.json": "7CC02116D570BC412EE599742EDAA726EE3C3C951E6F03479E7AD6313DB441AF",
+      "handoff/t11-acceptance-update-20261006.json": "22624F1A2FAE8C5AE82917882D29FFD783CE7C4EE11FDB3720721E3E63CEA5C5",
+      "handoff/t11-b947-acceptance-packet-20261006.json": "DB762392BF9DCF079F269501A23178313DC7D8802BCED2B79BA23318F57D1176",
+      "handoff/t11-current-acceptance-20261006.json": "23C6024EA5B5EDC9695935DDB5BA6E7A3240D19F0BD20E093C96D5297B89AC4E",
+      "handoff/t11-master-744-continuation-20261006.json": "C66FB39AC306F7DC28CCBD4A9BCA3F55E7C7CECFA9712FBC879415565718CF07",
+      "handoff/t11-master-b947d76f-owned.patch": "931BB305760DBEF30CCD23C435990B04421327DB1001747C48109CC667A8200A",
+      "handoff/t11-orchestrator-closeout-20261006.json": "0664F4BA53001B17181402DF373AA9CE038741ED4A385361462CC52ED7941B92",
+      "handoff/t11-rag-benchmark-receipt-20261006.json": "3C1BC05FCEB901BE35C5BD27C9B67D88D7CA7B6983C70D3222A236B329BF3F13",
+      "handoff/t11-restored-worktree-verification-20261006.json": "01306D2C6FE89E74507D7BC2D5DEFE478652E367A5F4633DBD78DBC26600C126",
+      "handoff/t11-sync-master-b564-20261006.json": "78191F285C762D6C7D817AFA710F6B310C784EB663ACBD69B19C4FB06B0F1125"
+    }
+  },
+  "owned_source_changes_in_registered_worktree": [],
+  "owned_patch_artifact": {
+    "path": "handoff/t11-master-b947d76f-owned.patch",
+    "sha256": "931BB305760DBEF30CCD23C435990B04421327DB1001747C48109CC667A8200A",
+    "scope_paths": [
+      "src/local_ai_hub/embeddings.py",
+      "src/local_ai_hub/rag.py",
+      "tests/test_rag_fragment_cache.py",
+      "tests/test_rag_hybrid.py",
+      "tests/test_rag_quality_contract.py",
+      "tests/test_rag_read_bounds.py",
+      "tests/test_t11_project_policy_consumers.py",
+      "tests/test_t11_rag_ingestion_contract.py"
+    ],
+    "applied_to_registered_worktree": false
+  },
+  "tests_on_registered_worktree_head_a49addf": [
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_t11_rag_ingestion_contract.py tests/test_rag_read_bounds.py tests/test_reranker_cache_identity.py tests/test_t11_embedding_space_reindex.py tests/test_t11_project_policy_consumers.py tests/test_embedding_batch_deduplication.py",
+      "result": "failed before collection: tests/test_t11_embedding_space_reindex.py absent; no tests ran",
+      "exit_code": 1
+    },
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_t11_rag_ingestion_contract.py tests/test_rag_read_bounds.py tests/test_reranker_cache_identity.py tests/test_t11_project_policy_consumers.py tests/test_embedding_batch_deduplication.py",
+      "result": "149 passed, 2 skipped in 41.32s; skips: 100k benchmark requires RAG_BENCHMARK=1, live Ollama check requires T11_REAL_OLLAMA=1",
+      "exit_code": 0
+    }
+  ],
+  "active_leases": {
+    "status": "not_verified",
+    "reason": "Local AI Hub is excluded per user instruction; native collaboration list showed only /root active."
+  },
+  "final_state": {
+    "registered_worktree_current_with_master": false,
+    "reason": "The current checkout is 149 master commits behind and 6 unique commits ahead; the attempted merge conflicts in T11 paths and paths owned outside T11.",
+    "safe_next_action": "Do not substitute the separately attached t11-master-b947 worktree. Coordinate ownership for outside-T11 conflicts, then reconcile only T11-owned paths and rerun acceptance tests against the resulting exact registered worktree."
+  }
+}

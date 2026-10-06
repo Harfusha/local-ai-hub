@@ -31,7 +31,18 @@ class DebugTraceStore:
     def __init__(self, config: dict[str, Any]):
         cfg = config.get("debug_traces") or config.get("observability", {}).get("debug_traces", {})
         self.enabled = bool(cfg.get("enabled", True))
-        self.terminal_ttl_seconds = max(1.0, float(cfg.get("terminal_ttl_seconds", config.get("async_jobs", {}).get("result_ttl_seconds", 259200))))
+        self.retention_days: int | None
+        try:
+            self.retention_days = max(1, min(3650, int(cfg["retention_days"]))) if "retention_days" in cfg else None
+        except (TypeError, ValueError, OverflowError):
+            self.retention_days = 3
+        default_ttl = config.get("async_jobs", {}).get("result_ttl_seconds", 259200)
+        terminal_ttl = self.retention_days * 86400 if self.retention_days is not None else default_ttl
+        self.terminal_ttl_seconds = max(1.0, float(cfg.get("terminal_ttl_seconds", terminal_ttl)))
+        if self.retention_days is not None:
+            self.terminal_ttl_seconds = self.retention_days * 86400
+        elif "terminal_ttl_seconds" not in cfg and "result_ttl_seconds" not in config.get("async_jobs", {}):
+            self.retention_days = max(1, min(3650, int(self.terminal_ttl_seconds // 86400)))
         self.max_bytes = max(1024, int(cfg.get("max_bytes", 268435456)))
         self.max_sessions = max(1, int(cfg.get("max_sessions", 1000)))
         self.max_events_per_session = max(2, int(cfg.get("max_events_per_session", 20000)))
@@ -359,7 +370,11 @@ class DebugTraceStore:
                 row = con.execute("SELECT * FROM traces WHERE trace_id=?", (trace_id,)).fetchone()
                 if not row:
                     return {"success": False, "error": "trace not found", "trace_id": trace_id, "terminal": True}
-                events = [dict(event) for event in con.execute("SELECT seq,created_at,event_type,payload_json FROM trace_events WHERE trace_id=? AND seq>? ORDER BY seq ASC", (trace_id, max(0, int(since_seq))))]
+                try:
+                    cursor = min(2**63 - 1, max(0, int(since_seq)))
+                except (TypeError, ValueError, OverflowError):
+                    cursor = 0
+                events = [dict(event) for event in con.execute("SELECT seq,created_at,event_type,payload_json FROM trace_events WHERE trace_id=? AND seq>? ORDER BY seq ASC", (trace_id, cursor))]
                 for event in events:
                     event["payload"] = self._decode(event.pop("payload_json"), {})
                 thinking_rows = con.execute("SELECT payload_json FROM trace_events WHERE trace_id=? AND event_type=? ORDER BY seq ASC", (trace_id, "thinking")).fetchall()
@@ -370,7 +385,7 @@ class DebugTraceStore:
                         thinking_parts.append(str(payload.get("text") or ""))
                 session = self._session(row)
                 session["thinking"] = "".join(thinking_parts)[: self.max_session_text_bytes]
-                return {"success": True, "session": session, "events": events, "next_seq": events[-1]["seq"] if events else max(0, int(since_seq)), "terminal": session["state"] in self.TERMINAL_STATES}
+                return {"success": True, "session": session, "events": events, "next_seq": events[-1]["seq"] if events else cursor, "terminal": session["state"] in self.TERMINAL_STATES}
         except sqlite3.Error:
             return {"success": False, "error": "trace store unavailable", "trace_id": trace_id, "retryable": True}
 
@@ -453,7 +468,7 @@ class DebugTraceStore:
             with closing(self._connect()) as con:
                 counts = {str(state): int(count) for state, count in con.execute("SELECT state,COUNT(*) FROM traces GROUP BY state")}
                 events = int(con.execute("SELECT COUNT(*) FROM trace_events").fetchone()[0])
-            return {"enabled": self.enabled, "counts": counts, "events": events, "bytes": self._file_bytes(), "max_bytes": self.max_bytes, "max_sessions": self.max_sessions}
+            return {"enabled": self.enabled, "counts": counts, "events": events, "bytes": self._file_bytes(), "max_bytes": self.max_bytes, "max_sessions": self.max_sessions, "retention_days": self.retention_days, "terminal_ttl_seconds": int(self.terminal_ttl_seconds)}
         except sqlite3.Error:
             return {"enabled": self.enabled, "error": "trace store unavailable", "retryable": True}
 

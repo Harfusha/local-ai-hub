@@ -1,0 +1,126 @@
+diff --git a/src/local_ai_hub/client.py b/src/local_ai_hub/client.py
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -356,6 +356,13 @@ class HubClient:
+         def remaining() -> float:
+             return max(0.0, deadline - time.monotonic())
+ 
++        def wait_until_ready() -> bool:
++            while remaining() > 0:
++                if self._online(remaining()):
++                    return True
++                time.sleep(min(self.startup_poll, remaining()))
++            return self._online(remaining())
++
+         if self._online(remaining()):
+             return True
+         state_dir = Path(self.config["server"]["state_dir"])
+@@ -371,20 +378,13 @@ class HubClient:
+         state_dir.mkdir(parents=True, exist_ok=True)
+         if bool(self.config.get("headless", {}).get("respect_disabled_marker", True)) and (state_dir / "service.disabled").exists():
+             return False
+-        # Once service.py has claimed this installation, only its supervisor may
+-        # create the hub. supervisor.pid is necessarily absent for a short window
+-        # during a managed restart; treating that window as an invitation for every
+-        # MCP client to spawn its own pythonw tree causes duplicate processes and an
+-        # unpredictable port owner.
+-        if (state_dir / "service.managed").exists():
+-            return False
+         # Managed mode has one supervisor responsible for startup/recovery. During
+         # its cold-start interval MCP clients must not bypass it with direct pythonw
+         # spawns, otherwise every client can create a competing hub tree.
+         try:
+             supervisor_pid = int((state_dir / "supervisor.pid").read_text(encoding="utf-8").strip() or 0)
+             if pid_alive(supervisor_pid):
+-                return False
++                return wait_until_ready()
+         except (OSError, ValueError):
+             pass
+         # A listener can be alive before its health endpoint is ready (cold model/
+@@ -392,7 +392,7 @@ class HubClient:
+         # trees and competing supervisors; let the caller retry its request instead.
+         port = int(self.config.get("server", {}).get("port", 11435))
+         if find_listening_pid(port):
+-            return False
++            return wait_until_ready()
+         lock_path = state_dir / "hub.start.lock"
+         owner = False
+ 
+@@ -441,8 +441,8 @@ class HubClient:
+ 
+         if not owner:
+             return self._online(remaining())
+-        process: subprocess.Popen[Any] | None = None
+         ready = False
++        keep_lock = False
+         try:
+             if self._online(remaining()):
+                 return True
+@@ -452,40 +452,46 @@ class HubClient:
+             env["LOCAL_AI_CONFIG"] = config_path
+             src_dir = str(Path(__file__).resolve().parents[1])
+             env["PYTHONPATH"] = src_dir + (os.pathsep + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
+-            py_exe = sys.executable
+-            if sys.platform == "win32":
+-                pyw_candidate = Path(sys.executable).parent / "pythonw.exe"
+-                if pyw_candidate.exists():
+-                    py_exe = str(pyw_candidate)
+-            cmd = [py_exe, "-m", "local_ai_hub", "--config", config_path]
++            service_script = Path(__file__).resolve().parents[2] / "tools" / "service.py"
++            if not service_script.is_file():
++                return False
+             try:
+                 from .process_utils import hidden_run_kwargs
+-                kwargs = hidden_run_kwargs(detached=True)
++                kwargs = hidden_run_kwargs()
+             except Exception:
+                 kwargs = {}
+-            if sys.platform != "win32":
+-                kwargs["start_new_session"] = True
+             try:
+-                process = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+-            except OSError:
+-                return False
+-            _retain_detached_child(process)
++                completed = subprocess.run(
++                    [sys.executable, str(service_script), "start"],
++                    env=env,
++                    stdin=subprocess.DEVNULL,
++                    stdout=subprocess.DEVNULL,
++                    stderr=subprocess.DEVNULL,
++                    timeout=max(0.1, remaining()),
++                    **kwargs,
++                )
++            except (OSError, subprocess.TimeoutExpired):
++                ready = wait_until_ready()
++                keep_lock = not ready
++                return ready
++            if completed.returncode != 0:
++                ready = wait_until_ready()
++                keep_lock = not ready
++                return ready
+             while remaining() > 0:
+                 if self._online(remaining()):
+                     ready = True
+                     return True
+-                if process.poll() is not None:
+-                    return False
+                 time.sleep(min(self.startup_poll, remaining()))
+             ready = self._online(remaining())
++            keep_lock = not ready
+             return ready
+         finally:
+-            if process is not None and not ready:
+-                _stop_owned_child(process)
+-            try:
+-                lock_path.unlink(missing_ok=True)
+-            except OSError:
+-                pass
++            if not keep_lock:
++                try:
++                    lock_path.unlink(missing_ok=True)
++                except OSError:
++                    pass
+ 
+     @staticmethod
+     def _terminal_preflight(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:

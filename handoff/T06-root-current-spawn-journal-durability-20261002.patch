@@ -1,0 +1,152 @@
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -7460,6 +7460,14 @@
+                     "terminal": True,
+                     "retryable": False,
+                 }
++            launch_worktree_error = self._require_task_worktree(
++                task_id, resolved_cwd, invocation
++            )
++            if launch_worktree_error:
++                raise OSError(
++                    "registered task worktree changed before daemon launch: "
++                    f"{launch_worktree_error}"
++                )
+             process = subprocess.Popen(argv, **kwargs)
+             started_at = time.time()
+             info = {
+@@ -7547,6 +7555,14 @@
+                         raise OSError("unable to persist daemon Job Object ownership before resume")
+                 if not _duplicate_job_handle_into_process(job_handle, process):
+                     raise OSError("unable to anchor named daemon Job Object in daemon process")
++                resume_worktree_error = self._require_task_worktree(
++                    task_id, resolved_cwd, invocation
++                )
++                if resume_worktree_error:
++                    raise OSError(
++                        "registered task worktree changed before daemon resume: "
++                        f"{resume_worktree_error}"
++                    )
+                 if not _resume_suspended_process(process):
+                     raise OSError("unable to resume suspended daemon process")
+             write_fh.close()
+--- a/tests/test_daemon_lifecycle_hardening.py
++++ b/tests/test_daemon_lifecycle_hardening.py
+@@ -279,6 +279,117 @@
+     assert result["policy"]["allowed"] is False
+     assert not launches
+     assert not list((tmp_path / "state" / "daemons").glob("*.log"))
++
++
++def test_spawn_daemon_blocks_worktree_replacement_before_process_launch(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    broker = _broker(tmp_path)
++    foreign_worktree = tmp_path.parent / f"{tmp_path.name}-foreign"
++    foreign_worktree.mkdir()
++    original_require = broker._require_task_worktree
++    checks = 0
++    launches: list[object] = []
++
++    def replace_registration_after_preflight(task_id, cwd, command=None):
++        nonlocal checks
++        checks += 1
++        result = original_require(task_id, cwd, command)
++        if checks == 1:
++            broker.task_store.worktree["worktree_path"] = str(foreign_worktree)
++        return result
++
++    def fail_if_launched(*args: object, **_kwargs: object) -> None:
++        launches.append(args)
++        raise AssertionError("daemon reached process launch after worktree replacement")
++
++    monkeypatch.setattr(broker, "_require_task_worktree", replace_registration_after_preflight)
++    monkeypatch.setattr(commands_module.subprocess, "Popen", fail_if_launched)
++
++    result = broker.spawn_daemon(
++        [sys.executable, "-c", "pass"], str(tmp_path), task_id="daemon-test"
++    )
++
++    assert checks == 2
++    assert result["success"] is False
++    assert "worktree" in result["error"].lower()
++    assert not launches
++
++
++@pytest.mark.skipif(
++    os.name != "nt",
++    reason="suspended-process worktree revalidation is Windows-specific",
++)
++def test_spawn_daemon_revalidates_task_worktree_before_resume(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    broker = _broker(tmp_path)
++    foreign_worktree = tmp_path.parent / f"{tmp_path.name}-foreign"
++    foreign_worktree.mkdir()
++    resume_calls: list[int] = []
++
++    class SuspendedProcess:
++        pid = 43211
++        _local_ai_job_handle = None
++
++        def __init__(self) -> None:
++            self.alive = True
++
++        def poll(self) -> int | None:
++            return None if self.alive else 1
++
++        def kill(self) -> None:
++            self.alive = False
++
++        def wait(self, timeout: float | None = None) -> int:
++            self.alive = False
++            return 1
++
++    process = SuspendedProcess()
++
++    def replace_worktree_after_job_anchor(_handle: object, _child: object) -> bool:
++        broker.task_store.worktree["worktree_path"] = str(foreign_worktree)
++        return True
++
++    def terminate_suspended_job(_handle: object) -> bool:
++        process.alive = False
++        return True
++
++    monkeypatch.setattr(
++        commands_module, "_create_named_daemon_job", lambda _daemon_id: 77
++    )
++    monkeypatch.setattr(commands_module, "assign_process_to_job", lambda *_args: True)
++    monkeypatch.setattr(
++        commands_module,
++        "_duplicate_job_handle_into_process",
++        replace_worktree_after_job_anchor,
++    )
++    monkeypatch.setattr(
++        commands_module,
++        "_resume_suspended_process",
++        lambda child: resume_calls.append(child.pid) or True,
++    )
++    monkeypatch.setattr(
++        commands_module,
++        "process_identity",
++        lambda pid: {"pid": pid, "start_time": "spawned"},
++    )
++    monkeypatch.setattr(
++        commands_module, "terminate_job_object", terminate_suspended_job
++    )
++    monkeypatch.setattr(commands_module, "close_job_object", lambda _handle: True)
++    monkeypatch.setattr(commands_module.subprocess, "Popen", lambda *_args, **_kwargs: process)
++
++    result = broker.spawn_daemon(
++        [sys.executable, "-c", "pass"], str(tmp_path), task_id="daemon-test"
++    )
++
++    assert result["success"] is False
++    assert "worktree" in result["error"].lower()
++    assert "before daemon resume" in result["error"].lower()
++    assert not resume_calls
++    assert not process.alive
++    assert broker._daemons == {}
+ 
+ 
+ def test_spawn_daemon_applies_command_policy_before_process_launch(

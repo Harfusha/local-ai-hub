@@ -1,0 +1,336 @@
+diff --git a/src/local_ai_hub/client.py b/src/local_ai_hub/client.py
+index 3487fd0d644dfea9512c698a01e10b1fe04423eb..d7a288e3cf22ebbde77322cd95ec320981d899e0 100644
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -88,15 +88,53 @@
+         pass
+ 
+ 
+-def _live_start_lock(path: Path, stale_seconds: float) -> bool:
+-    """Return whether a startup lock still belongs to a live, recent process."""
++def _write_start_lock_owner(handle: Any) -> None:
++    handle.seek(0)
++    handle.truncate()
++    handle.write(f"{os.getpid()} {time.time()}".encode("ascii", errors="ignore"))
++    handle.flush()
++
++
++def _acquire_start_lock(path: Path, stale_seconds: float = 20.0) -> Any | None:
++    """Serialize marker recovery; a held OS lock cannot expire during startup."""
++    path.parent.mkdir(parents=True, exist_ok=True)
++    handle = path.open("a+b")
++    locked = False
+     try:
+-        parts = path.read_text(encoding="utf-8").strip().split()
+-        pid = int(parts[0]) if parts else 0
++        if os.name == "nt":
++            import msvcrt
++
++            handle.seek(0)
++            if not handle.read(1):
++                handle.write(b"\0")
++                handle.flush()
++            handle.seek(0)
++            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
++        else:
++            import fcntl
++
++            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
++        locked = True
++        handle.seek(0)
++        marker = handle.read().decode("ascii", errors="ignore").split()
++        try:
++            owner_pid = int(marker[0]) if marker else 0
++        except ValueError:
++            owner_pid = 0
+         age = max(0.0, time.time() - path.stat().st_mtime)
+-        return age <= max(1.0, stale_seconds) and pid_alive(pid)
+-    except (OSError, ValueError):
+-        return False
++        if pid_alive(owner_pid) and age <= max(1.0, stale_seconds):
++            handle.close()
++            return None
++        _write_start_lock_owner(handle)
++        return handle
++    except OSError as exc:
++        handle.close()
++        if not locked and exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
++            return None
++        raise
++    except BaseException:
++        handle.close()
++        raise
+ 
+ 
+ class HubClient:
+@@ -395,49 +433,34 @@
+             return wait_until_ready()
+         lock_path = state_dir / "hub.start.lock"
+         owner = False
+-
+-        # Cross-process startup lock: several CLI agents often connect at once. Only
+-        # one should spawn the singleton; the others wait for its cheap /health.
++        owner_lock = None
++
++        # The OS lock protects startup while held. After a failed bounded attempt,
++        # its PID marker blocks duplicates only for the configured retry cooldown.
+         for _ in range(2):
+-            acquired_lock = False
+             try:
+-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+-                acquired_lock = True
+-                try:
+-                    os.write(fd, f"{os.getpid()} {time.time()}".encode("ascii", errors="ignore"))
+-                finally:
+-                    os.close(fd)
++                owner_lock = _acquire_start_lock(lock_path, self.start_lock_stale)
++            except OSError:
++                continue
++            if owner_lock is not None:
+                 owner = True
+                 break
+-            except FileExistsError:
+-                # Dead/crashed startup owners should never consume the full wait budget.
+-                if not _live_start_lock(lock_path, self.start_lock_stale):
+-                    try:
+-                        lock_path.unlink(missing_ok=True)
+-                    except OSError:
+-                        pass
+-                    continue
+-                lock_deadline = min(deadline, time.monotonic() + self.startup_wait)
+-                while time.monotonic() < lock_deadline:
+-                    if self._online(remaining()):
+-                        return True
+-                    if not _live_start_lock(lock_path, self.start_lock_stale):
+-                        try:
+-                            lock_path.unlink(missing_ok=True)
+-                        except OSError:
+-                            pass
+-                        break
+-                    time.sleep(min(self.startup_poll, max(0.0, lock_deadline - time.monotonic())))
+-                else:
+-                    return self._online(remaining())
+-                continue
+-            except OSError:
+-                if acquired_lock:
+-                    try:
+-                        lock_path.unlink(missing_ok=True)
+-                    except OSError:
+-                        pass
+-                continue
++
++            lock_deadline = min(deadline, time.monotonic() + self.startup_wait)
++            while time.monotonic() < lock_deadline:
++                if self._online(remaining()):
++                    return True
++                try:
++                    owner_lock = _acquire_start_lock(lock_path, self.start_lock_stale)
++                except OSError:
++                    owner_lock = None
++                if owner_lock is not None:
++                    owner = True
++                    break
++                time.sleep(min(self.startup_poll, max(0.0, lock_deadline - time.monotonic())))
++            if owner:
++                break
++            return self._online(remaining())
+ 
+         if not owner:
+             return self._online(remaining())
+@@ -487,11 +510,15 @@
+             keep_lock = not ready
+             return ready
+         finally:
+-            if not keep_lock:
+-                try:
+-                    lock_path.unlink(missing_ok=True)
+-                except OSError:
+-                    pass
++            if owner_lock is not None:
++                if not keep_lock:
++                    try:
++                        owner_lock.seek(0)
++                        owner_lock.truncate()
++                        owner_lock.flush()
++                    except OSError:
++                        pass
++                owner_lock.close()
+ 
+     @staticmethod
+     def _terminal_preflight(path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+diff --git a/tests/test_client_startup_resilience.py b/tests/test_client_startup_resilience.py
+new file mode 100644
+index 0000000..c5fe2e0e9e15e3cc7e16fff8aad9ac6fd40d711d
+--- /dev/null
++++ b/tests/test_client_startup_resilience.py
+@@ -0,0 +1,170 @@
++from __future__ import annotations
++
++import os
++import subprocess
++import sys
++import time
++from types import SimpleNamespace
++from pathlib import Path
++
++import pytest
++
++from local_ai_hub import client as client_module
++from local_ai_hub.client import HubClient
++
++
++def _start_lock_owner(lock: Path, ready: Path) -> subprocess.Popen:
++    source_root = Path(__file__).resolve().parents[1] / "src"
++    env = os.environ.copy()
++    env["PYTHONPATH"] = str(source_root) + os.pathsep + env.get("PYTHONPATH", "")
++    script = (
++        "import time\n"
++        "from pathlib import Path\n"
++        "from local_ai_hub.client import _acquire_start_lock\n"
++        f"handle = _acquire_start_lock(Path({str(lock)!r}))\n"
++        f"Path({str(ready)!r}).write_text('locked' if handle else 'busy')\n"
++        "time.sleep(30)\n"
++    )
++    return subprocess.Popen([sys.executable, "-c", script], env=env)
++
++
++def _client_config(tmp_path: Path) -> Path:
++    config = tmp_path / "config.toml"
++    state = tmp_path / "state"
++    config.write_text(
++        "[server]\nport=11435\nstate_dir='" + state.as_posix() + "'\n"
++        "[client]\nstartup_wait_seconds=1.0\nstartup_poll_seconds=0.01\n"
++        "start_lock_stale_seconds=0.01\n"
++        "[headless]\nrespect_disabled_marker=true\n",
++        encoding="utf-8",
++    )
++    return config
++
++
++def _enable_startup(monkeypatch: pytest.MonkeyPatch) -> None:
++    try:
++        from local_ai_hub import operational_mode
++    except ImportError:
++        return
++    monkeypatch.setattr(
++        operational_mode,
++        "load_operational_mode",
++        lambda _state: SimpleNamespace(mode="active", degraded=False),
++    )
++
++
++def test_startup_lock_survives_stale_mtime_and_recovers_after_owner_exit(tmp_path: Path):
++    lock = tmp_path / "hub.start.lock"
++    ready = tmp_path / "owner-ready"
++    owner = _start_lock_owner(lock, ready)
++    try:
++        deadline = time.monotonic() + 5.0
++        while not ready.exists() and owner.poll() is None and time.monotonic() < deadline:
++            time.sleep(0.01)
++        assert ready.exists() and ready.read_text(encoding="utf-8") == "locked"
++        stale = time.time() - 120.0
++        os.utime(lock, (stale, stale))
++        assert client_module._acquire_start_lock(lock) is None
++    finally:
++        owner.kill()
++        owner.wait(timeout=5)
++
++    recovered = client_module._acquire_start_lock(lock)
++    assert recovered is not None
++    recovered.close()
++
++
++def test_ensure_server_waits_for_live_owner_past_stale_age(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
++    _enable_startup(monkeypatch)
++    config = _client_config(tmp_path)
++    state = tmp_path / "state"
++    state.mkdir()
++    lock = state / "hub.start.lock"
++    ready = tmp_path / "owner-ready"
++    owner = _start_lock_owner(lock, ready)
++    try:
++        deadline = time.monotonic() + 5.0
++        while not ready.exists() and owner.poll() is None and time.monotonic() < deadline:
++            time.sleep(0.01)
++        assert ready.exists() and ready.read_text(encoding="utf-8") == "locked"
++        stale = time.time() - 120.0
++        os.utime(lock, (stale, stale))
++
++        client = HubClient(tenant="test", config_path=str(config))
++        monkeypatch.setattr(client, "_online", lambda *_args: False)
++        monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: 0)
++        monkeypatch.setattr(
++            client_module.subprocess,
++            "Popen",
++            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not spawn")),
++        )
++        monkeypatch.setattr(
++            client_module.subprocess,
++            "run",
++            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not spawn")),
++        )
++        assert client.ensure_server(timeout=0.1) is False
++    finally:
++        owner.kill()
++        owner.wait(timeout=5)
++
++
++def test_failed_owner_metadata_write_releases_startup_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
++    _enable_startup(monkeypatch)
++    config = _client_config(tmp_path)
++    client = HubClient(tenant="test", config_path=str(config))
++    monkeypatch.setattr(client, "_online", lambda *_args: False)
++    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: 0)
++
++    def fail_owner_write(_handle) -> None:
++        raise OSError("write failed")
++
++    with monkeypatch.context() as patcher:
++        patcher.setattr(client_module, "_write_start_lock_owner", fail_owner_write)
++        assert client.ensure_server(timeout=0.1) is False
++
++    lock = tmp_path / "state" / "hub.start.lock"
++    recovered = client_module._acquire_start_lock(lock)
++    assert recovered is not None
++    recovered.close()
++
++
++def test_startup_retry_cooldown_expires_while_owner_client_stays_alive(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++):
++    _enable_startup(monkeypatch)
++    config = _client_config(tmp_path)
++    calls = {"count": 0}
++
++    class Child:
++        pid = os.getpid()
++
++        def poll(self):
++            return None
++
++    def fake_popen(*_args, **_kwargs):
++        calls["count"] += 1
++        return Child()
++
++    def fake_run(*_args, **_kwargs):
++        calls["count"] += 1
++        return subprocess.CompletedProcess([], 1)
++
++    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: 0)
++    monkeypatch.setattr(client_module.subprocess, "Popen", fake_popen)
++    monkeypatch.setattr(client_module.subprocess, "run", fake_run)
++    first = HubClient(tenant="first", config_path=str(config))
++    second = HubClient(tenant="second", config_path=str(config))
++    monkeypatch.setattr(first, "_online", lambda *_args: False)
++    monkeypatch.setattr(second, "_online", lambda *_args: False)
++
++    assert first.ensure_server(timeout=0.1) is False
++    assert calls["count"] == 1
++    assert second.ensure_server(timeout=0.1) is False
++    assert calls["count"] == 1
++
++    lock = tmp_path / "state" / "hub.start.lock"
++    stale = time.time() - 120.0
++    os.utime(lock, (stale, stale))
++    assert second.ensure_server(timeout=0.1) is False
++    assert calls["count"] == 2

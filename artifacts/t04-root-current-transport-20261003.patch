@@ -1,0 +1,358 @@
+diff --git a/src/local_ai_hub/client.py b/src/local_ai_hub/client.py
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -49,6 +49,7 @@
+         headers: Mapping[str, str], timeout: float,
+         operational_action: str | None = None,
+         requires_heavy_work: bool = True,
++        cancel_event: threading.Event | None = None,
+     ) -> bytes: ...
+ 
+     def close(self) -> None: ...
+@@ -57,9 +58,14 @@
+ class _TransportFailure(OSError):
+     """Transport error with evidence whether any request bytes could be sent."""
+ 
+-    def __init__(self, cause: BaseException, *, request_not_sent: bool) -> None:
++    def __init__(self, cause: BaseException, *, request_not_sent: bool, cancelled: bool = False) -> None:
+         super().__init__(str(cause))
+         self.request_not_sent = request_not_sent
++        self.cancelled = cancelled
++
++
++class _SingleflightCancelled(Exception):
++    """A coalesced caller stopped waiting while shared work may still run."""
+ 
+ 
+ _DETACHED_CHILDREN_LOCK = threading.Lock()
+@@ -218,41 +224,88 @@
+             conn.sock.settimeout(timeout)
+         return conn
+ 
+-    def _pooled_open(self, method: str, path: str, body: bytes | None, headers: dict[str, str], timeout: float) -> bytes:
++    def _pooled_open(
++        self,
++        method: str,
++        path: str,
++        body: bytes | None,
++        headers: dict[str, str],
++        timeout: float,
++        *,
++        cancel_event: threading.Event | None = None,
++    ) -> bytes:
++        if cancel_event is not None and cancel_event.is_set():
++            raise _TransportFailure(TimeoutError("request cancelled"), request_not_sent=True, cancelled=True)
+         conn: http.client.HTTPConnection | None = None
+         original_send: Any = None
+         request_send_started = False
+-        connect_refused_before_write = False
++        deadline_expired = threading.Event()
++        request_cancelled = threading.Event()
++        watchdog_stopped = threading.Event()
+         try:
+             conn = self._connection(timeout)
+             original_send = getattr(conn, "send", None)
+ 
++            deadline = time.monotonic() + max(0.0, timeout)
++
++            def close_on_deadline_or_cancel() -> None:
++                while not watchdog_stopped.is_set():
++                    remaining = deadline - time.monotonic()
++                    if remaining <= 0:
++                        deadline_expired.set()
++                        try:
++                            conn.close()
++                        except Exception:
++                            pass
++                        return
++                    if cancel_event is not None and cancel_event.wait(min(0.05, remaining)):
++                        request_cancelled.set()
++                        try:
++                            conn.close()
++                        except Exception:
++                            pass
++                        return
++                    watchdog_stopped.wait(min(0.05, remaining))
++
++            watchdog = threading.Thread(target=close_on_deadline_or_cancel, daemon=True)
++            watchdog.start()
++
+             def tracked_send(data: Any) -> None:
+-                nonlocal connect_refused_before_write, request_send_started
++                nonlocal request_send_started
++                # Connect before marking the request as potentially written. Once sendall
++                # starts, an OSError may follow a partial write, so outcome is uncertain.
+                 if conn.sock is None:
+                     try:
+                         conn.connect()
+-                    except OSError as exc:
+-                        connect_refused_before_write = (
+-                            isinstance(exc, ConnectionRefusedError)
+-                            or getattr(exc, "errno", None) == errno.ECONNREFUSED
+-                        )
++                    except ConnectionRefusedError:
++                        raise
++                    except (OSError, http.client.HTTPException):
+                         raise
+                 request_send_started = True
+                 return original_send(data)
+ 
+             if original_send is not None:
+                 conn.send = tracked_send  # type: ignore[method-assign]
++            else:
++                # A nonstandard transport has no send hook; fail closed once
++                # request() begins because write state cannot be observed.
++                request_send_started = True
+             conn.request(method, path, body=body, headers=headers)
+             response = conn.getresponse()
+             raw = response.read()
++            if request_cancelled.is_set():
++                raise TimeoutError("request cancelled")
++            if deadline_expired.is_set():
++                raise TimeoutError("request deadline exceeded")
+         except (OSError, http.client.HTTPException) as exc:
+             self._drop_connection()
+             raise _TransportFailure(
+                 exc,
+-                request_not_sent=connect_refused_before_write and not request_send_started,
++                request_not_sent=not request_send_started,
++                cancelled=request_cancelled.is_set(),
+             ) from exc
+         finally:
++            watchdog_stopped.set()
+             if conn is not None and original_send is not None:
+                 conn.send = original_send  # type: ignore[method-assign]
+         if bool(getattr(response, "will_close", False)):
+@@ -263,18 +316,45 @@
+         return raw
+ 
+     def _open(
+-        self, method: str, path: str, body: bytes | None,
+-        headers: dict[str, str], timeout: float, *,
++        self,
++        method: str,
++        path: str,
++        body: bytes | None,
++        headers: dict[str, str],
++        timeout: float,
++        *,
+         operational_action: str | None = None,
+         requires_heavy_work: bool = True,
++        cancel_event: threading.Event | None = None,
+     ) -> bytes:
+         transport = self._inprocess_transport
+         if transport is not None:
+-            return transport.open(
+-                method, path, body, headers, timeout,
+-                operational_action=operational_action,
+-                requires_heavy_work=requires_heavy_work,
+-            )
++            if cancel_event is not None and cancel_event.is_set():
++                raise _TransportFailure(TimeoutError("request cancelled"), request_not_sent=True, cancelled=True)
++            open_options: dict[str, Any] = {
++                "operational_action": operational_action,
++                "requires_heavy_work": requires_heavy_work,
++            }
++            if cancel_event is not None:
++                try:
++                    parameters = inspect.signature(transport.open).parameters.values()
++                    supports_cancel = any(
++                        parameter.name == "cancel_event"
++                        or parameter.kind is inspect.Parameter.VAR_KEYWORD
++                        for parameter in parameters
++                    )
++                except (TypeError, ValueError):
++                    supports_cancel = False
++                if supports_cancel:
++                    open_options["cancel_event"] = cancel_event
++            response = transport.open(method, path, body, headers, timeout, **open_options)
++            if cancel_event is not None and cancel_event.is_set():
++                raise _TransportFailure(
++                    TimeoutError("request cancelled"), request_not_sent=False, cancelled=True
++                )
++            return response
++        if cancel_event is not None:
++            return self._pooled_open(method, path, body, headers, timeout, cancel_event=cancel_event)
+         return self._pooled_open(method, path, body, headers, timeout)
+     @staticmethod
+     def _error_response(exc: HTTPError, request_id: str) -> dict[str, Any]:
+@@ -317,6 +397,21 @@
+             result["retried"] = True
+         return result
+ 
++    def _cancelled_response(request_id: str, *, request_not_sent: bool) -> dict[str, Any]:
++        result: dict[str, Any] = {
++            "success": False,
++            "error": "request cancelled",
++            "cancelled": True,
++            "terminal": True,
++            "retryable": False,
++            "request_id": request_id,
++        }
++        if request_not_sent:
++            result.update({"request_not_sent": True, "outcome_unknown": False})
++        else:
++            result["outcome_unknown"] = True
++        return result
++
+     @staticmethod
+     def _transport_failure_response(
+         request_id: str,
+@@ -324,10 +419,10 @@
+         retried: bool = False,
+         prior_send_possible: bool = False,
+     ) -> dict[str, Any]:
+-        if (
+-            not prior_send_possible
+-            and failures
+-            and all(bool(getattr(exc, "request_not_sent", False)) for exc in failures)
++        if not prior_send_possible and failures and all(
++            (isinstance(exc, _TransportFailure) and exc.request_not_sent)
++            or bool(getattr(exc, "request_not_sent", False))
++            for exc in failures
+         ):
+             result = {
+                 "success": False,
+@@ -341,11 +436,18 @@
+             return result
+         return HubClient._uncertain_response(request_id, retried=retried)
+ 
+-    def _singleflight(self, key: str, timeout: float, execute: Any, *, request_id: str = "") -> dict[str, Any]:
++    def _singleflight(
++        self,
++        key: str,
++        timeout: float,
++        execute: Any,
++        *,
++        cancel_event: threading.Event | None = None,
++    ) -> dict[str, Any]:
+         with self._flight_lock:
+             flight = self._flights.get(key)
+             if flight is None:
+-                flight = {"event": threading.Event(), "result": None, "error": None, "request_id": request_id}
++                flight = {"event": threading.Event(), "result": None, "error": None}
+                 self._flights[key] = flight
+                 owner = True
+             else:
+@@ -362,10 +464,15 @@
+             if flight["error"] is not None:
+                 raise flight["error"]
+             return flight["result"]
+-        if not flight["event"].wait(timeout):
+-            error = TimeoutError("coalesced hub request timed out")
+-            error.request_id = flight.get("request_id", request_id)
+-            raise error
++        deadline = time.monotonic() + timeout
++        while True:
++            if cancel_event is not None and cancel_event.is_set():
++                raise _SingleflightCancelled("coalesced hub request cancelled")
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                raise TimeoutError("coalesced hub request timed out")
++            if flight["event"].wait(min(0.05, remaining)):
++                break
+         if flight["error"] is not None:
+             raise flight["error"]
+         result = copy.deepcopy(flight["result"])
+@@ -561,7 +668,9 @@
+         request_id: str | None = None,
+         operational_action: str | None = None,
+         requires_heavy_work: bool = True,
++        cancel_event: threading.Event | None = None,
+     ) -> dict[str, Any]:
++        explicit_request_id = request_id is not None
+         if request_id is not None and not self._valid_request_id(request_id):
+             return {
+                 "success": False,
+@@ -577,6 +686,8 @@
+             return preflight
+         body = json_dumps(clean_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
+         request_id = request_id if request_id is not None else f"req_{uuid.uuid4().hex[:12]}"
++        if cancel_event is not None and cancel_event.is_set():
++            return self._cancelled_response(request_id, request_not_sent=True)
+ 
+         def once(attempt_timeout: float) -> dict[str, Any]:
+             headers = {
+@@ -591,6 +702,7 @@
+                         "POST", path, body, headers, attempt_timeout,
+                         operational_action=operational_action,
+                         requires_heavy_work=requires_heavy_work,
++                        cancel_event=cancel_event,
+                     ).decode("utf-8")
+                 )
+             except (UnicodeDecodeError, json.JSONDecodeError):
+@@ -601,8 +713,11 @@
+ 
+         def execute() -> dict[str, Any]:
+             duplicate_deadline = time.monotonic() + timeout
++            server_reported_in_progress = False
+             try:
+                 while True:
++                    if cancel_event is not None and cancel_event.is_set():
++                        return self._cancelled_response(request_id, request_not_sent=not server_reported_in_progress)
+                     remaining = duplicate_deadline - time.monotonic()
+                     if remaining <= 0:
+                         return {
+@@ -619,19 +734,25 @@
+                         result = self._error_response(exc, request_id)
+                         if not (result.get("in_progress") and result.get("retryable")):
+                             return result
++                        server_reported_in_progress = True
+                         remaining = duplicate_deadline - time.monotonic()
+                         if remaining <= 0:
+                             result["retry_timeout"] = True
+                             return result
+                         retry_after = max(0.01, float(result.get("retry_after_seconds", 0.1) or 0.1))
+-                        time.sleep(min(retry_after, remaining))
++                        delay = min(retry_after, remaining)
++                        if cancel_event is not None:
++                            if cancel_event.wait(delay):
++                                return self._cancelled_response(request_id, request_not_sent=False)
++                        else:
++                            time.sleep(delay)
+             except HTTPError as exc:
+                 return self._error_response(exc, request_id)
+             except (URLError, OSError, http.client.HTTPException) as exc:
+                 self._drop_connection()
++                if getattr(exc, "cancelled", False):
++                    return self._cancelled_response(request_id, request_not_sent=bool(getattr(exc, "request_not_sent", False)) and not server_reported_in_progress)
+                 pre_send_refusal = bool(getattr(exc, "request_not_sent", False))
+-                if self._inprocess_transport is not None and pre_send_refusal:
+-                    return self._transport_failure_response(request_id, exc)
+                 if replay_safe or (self.auto_start and pre_send_refusal):
+                     remaining = duplicate_deadline - time.monotonic()
+                     try:
+@@ -642,6 +763,8 @@
+                     except Exception:
+                         server_ready = False
+                     if server_ready:
++                        if cancel_event is not None and cancel_event.is_set():
++                            return self._cancelled_response(request_id, request_not_sent=pre_send_refusal and not server_reported_in_progress)
+                         remaining = duplicate_deadline - time.monotonic()
+                         if remaining <= 0:
+                             return self._transport_failure_response(
+@@ -655,6 +778,8 @@
+                         except HTTPError as retry_http: return self._error_response(retry_http, request_id)
+                         except (URLError, OSError, http.client.HTTPException) as retry_exc:
+                             self._drop_connection()
++                            if getattr(retry_exc, "cancelled", False):
++                                return self._cancelled_response(request_id, request_not_sent=bool(getattr(retry_exc, "request_not_sent", False)) and not server_reported_in_progress)
+                             return self._transport_failure_response(
+                                 request_id, exc, retry_exc, retried=True,
+                                 prior_send_possible=not pre_send_refusal,
+@@ -671,8 +796,14 @@
+             return execute()
+ 
+         key = f"POST|{self.tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
++        if explicit_request_id:
++            key += f"|explicit-request-id|{request_id}"
++        if cancel_event is not None:
++            key += f"|cancel-event|{id(cancel_event)}"
+         try:
+-            return self._singleflight(key, timeout, execute, request_id=request_id)
++            return self._singleflight(key, timeout, execute, cancel_event=cancel_event)
++        except _SingleflightCancelled:
++            return self._cancelled_response(request_id, request_not_sent=False)
+         except TimeoutError as exc:
+             return {
+                 "success": False,
