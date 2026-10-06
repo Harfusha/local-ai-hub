@@ -278,6 +278,24 @@ must remain fail-closed. Pubsub payload/sequence changes and SDK fixed-action
 payload ordering need the owner's regression receipts. Root is not clean;
 avoid merges across these two paths until attribution/reconciliation is ready.
 
+Subsequently `http_server.py` also changed outside orchestrator ownership:
+an explicit worktree-memory-delete 403 guard was added. Preserve it uncommitted
+pending owner handoff. Observed SHA256s for attribution (not acceptance):
+agent_events.py `226235956A405F6133947C62ECEC76BFE4857B1AF8912B4BC17C4AF98F4441D5`,
+client.py `C65E72B3B72097470C2E9B4365C9EDDCFA6C457B53FBB56734DA03D82A36C98C`,
+http_server.py `9CD9B11276C3AFDE684460C92B591369B53D92E824B39C17814D06203DD3A06E`.
+
+Hub-audit-repairs packet `0e4c62c2` integrated as `5283a418`; its production
+delta only affects async_jobs.py, with no write to the three concurrent dirty
+paths. Historical async dispatch deadlines clear on cancellation/recovery/expiry,
+and due-time selection is inclusive. Fresh root command `python -B -m pytest
+-q -p no:cacheprovider tests/test_async_jobs.py --tb=short --maxfail=3`:
+29 passed in 11.31 seconds. Owner benchmark units and guards passed, but queue
+diagnostic label sanitization and whole paired benchmark acceptance remain open.
+Details: `docs/integration-hub-audit-repairs-20261006.md`. The same existing
+worker now owns the independent 45-stash coverage audit; no stash is applied,
+dropped or claimed covered without evidence.
+
 Untracked inventory of already-integrated checkouts primarily contains retained
 test state: T04 artifacts/t04-sync-pytest-20261006, T08 handoff test-temp,
 T16 resume .merge-checks, T17 vision .t17-merge-tmp and 4816 scratch checkout.
