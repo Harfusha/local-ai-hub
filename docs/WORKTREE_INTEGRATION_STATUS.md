@@ -233,6 +233,27 @@ Ptolemy; historical 55ed Meitner; T16 resume Dewey; T14 path-scan Archimedes.
 
 ## Checkpoints prepared before manual merges
 
+## Additional integrations, 2026-10-06
+
+These integrations preserve unfinished work. None is release acceptance or a
+claim that the corresponding task is done. Historical checkpoints and stashes
+remain preserved. Generated runtime/cache data is not committed.
+
+| Checkout | Integrated result | Actual verification and remaining work |
+| --- | --- | --- |
+| t13-clean-candidate | `f4c03877` | Manual reconciliation of four conflicts; retained capacity/reservation and async tests, plus current language-hint test. `python -B -m pytest -q -p no:cacheprovider tests/test_conversations.py tests/test_mcp_agent_routing.py -k 'start_reserved or conversation_start_at_capacity or reserves_new_conversation or async_job or explicit_language_hint' --tb=short --maxfail=4`: 10 passed, 4 failed, 62 deselected. Async control/wait/submit contracts remain unfinished; no expectations weakened. Details: `handoff/T13-CLEAN-CANDIDATE-SYNC-20261006.md`. |
+| t19-docs-rollout | `2c7ff77a`, merged as `11a10718` | Production `src/` unchanged against pinned master; ordinary untracked documentation and receipts preserved. Worker checks: 108 passed, 4 failed; inventory 14 passed, 1 failed, followed by restored OPTIONS metadata regression 1 passed. Final inventory: 660 rows, no drift. Stale policy assertions and clean-host/runtime acceptance remain open. Details: `handoff/T19-SYNC-20261006-INTEGRATION.md`. |
+| t16-resume-20260926 | `b9b6fa36`, merged as `1d46e653` | Reviewed containment and symlink/reparse-point protection in `_safe_work_target`; retained current master fencing. Worker checks: initial 77 passed, 6 failed, 2 skipped; junction follow-up 1 passed; recovery 17 passed, 1 skipped; AST checks 4 passed. Five policy/legacy lease failures remain. Details: `docs/T16_SYNC_INTEGRATION_20261006.md`. |
+
+### Preservation rule
+
+Commit relevant tracked dirty changes and ordinary untracked source, tests,
+documentation and handoffs even when unfinished. Record outstanding behavior
+and exact check results here or in the checkout's committed integration note.
+Never substitute a stash for reconciliation or silently discard historical
+work. Integration does not authorize release, deletion of checkpoint refs,
+or marking acceptance complete.
+
 On 2026-10-06, 29 additional detached checkouts had their existing tracked
 dirty state committed (576 changed-path occurrences across the checkouts).
 These are preservation checkpoints only. They have not yet all been merged
