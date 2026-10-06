@@ -13,12 +13,15 @@ def production_hub(tmp_path, monkeypatch):
     from local_ai_hub.app import LocalAIApp
     from local_ai_hub.client import HubClient
 
+    monkeypatch.setattr(http_server, "_ACTIVE_TRANSCRIPTIONS", http_server._ActiveTranscriptionRegistry())
+    monkeypatch.setattr(http_server, "_ACTIVE_CONVERSATIONS", http_server._ActiveTranscriptionRegistry())
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     state_dir = tmp_path / "state"
     config = tmp_path / "config.toml"
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
-        f'state_dir = "{state_dir.as_posix()}"\n',
+        f'state_dir = "{state_dir.as_posix()}"\n'
+        '[security]\napi_token = "t13-test-service-token"\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
@@ -192,3 +195,100 @@ def test_competing_continuation_is_retryable_in_progress_through_production_rout
     assert competing["retryable"] is True
     assert competing["in_progress"] is True
     assert completed["success"] is True
+
+
+def test_gaming_cancels_active_conversation_before_unload(production_hub):
+    app, client, _calls = production_hub
+    initial = _start_conversation(client)
+    conversation_id = initial["conversation_id"]
+    generation_started = threading.Event()
+    cancellation_observed = threading.Event()
+    unload_observed = threading.Event()
+    results = []
+
+    def generate(*_args, cancel_event=None, **_kwargs):
+        generation_started.set()
+        if cancel_event is not None and cancel_event.wait(timeout=3.0):
+            cancellation_observed.set()
+            return {
+                "success": False, "cancelled": True, "preempted": True,
+                "reason": "cancelled", "terminal": True, "retryable": False,
+            }
+        return {"success": True, "text": "late answer"}
+
+    class Runtime:
+        config = {"ollama": {"enabled": True}}
+
+        def unload_configured_models(self, **_kwargs):
+            assert cancellation_observed.is_set()
+            unload_observed.set()
+            return {"success": True, "state": "complete", "verified": True}
+
+    app.services._generate = generate
+    app.runtime = Runtime()
+    app.embeddings = None
+    app.reranker = None
+
+    continuation = threading.Thread(target=lambda: results.append(client.post(
+        "/api/conversations/continue",
+        {"conversation_id": conversation_id, "task": "follow up"},
+    )))
+    continuation.start()
+    assert generation_started.wait(timeout=2.0)
+
+    mode_result = client.post("/api/admin/mode", {"mode": "gaming"})
+    continuation.join(timeout=3.0)
+
+    assert not continuation.is_alive()
+    assert results[0]["success"] is False
+    assert results[0]["cancelled"] is True
+    assert mode_result["resources"]["conversation_release"]["state"] == "cancelled"
+    assert cancellation_observed.is_set()
+    assert unload_observed.is_set()
+
+
+def test_gaming_skips_unload_when_conversation_ignores_cancellation(production_hub, monkeypatch):
+    from local_ai_hub import http_server
+
+    app, client, _calls = production_hub
+    initial = _start_conversation(client)
+    conversation_id = initial["conversation_id"]
+    generation_started = threading.Event()
+    finish_generation = threading.Event()
+    unload_calls = []
+    results = []
+    monkeypatch.setattr(http_server, "_GAMING_DRAIN_TIMEOUT_SECONDS", 0.02)
+
+    def generate(*_args, **_kwargs):
+        generation_started.set()
+        finish_generation.wait(timeout=3.0)
+        return {"success": True, "text": "late answer"}
+
+    class Runtime:
+        config = {"ollama": {"enabled": True}}
+
+        def unload_configured_models(self, **_kwargs):
+            unload_calls.append(True)
+            return {"success": True, "state": "complete", "verified": True}
+
+    app.services._generate = generate
+    app.runtime = Runtime()
+    app.embeddings = None
+    app.reranker = None
+
+    continuation = threading.Thread(target=lambda: results.append(client.post(
+        "/api/conversations/continue",
+        {"conversation_id": conversation_id, "task": "follow up"},
+    )))
+    continuation.start()
+    assert generation_started.wait(timeout=2.0)
+
+    mode_result = client.post("/api/admin/mode", {"mode": "gaming"})
+    try:
+        assert mode_result["resources"]["conversation_release"]["state"] == "timed_out"
+        assert mode_result["success"] is False
+        assert unload_calls == []
+    finally:
+        finish_generation.set()
+        continuation.join(timeout=3.0)
+    assert not continuation.is_alive()

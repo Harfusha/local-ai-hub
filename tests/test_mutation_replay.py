@@ -11,6 +11,7 @@ from urllib.error import URLError
 import pytest
 import sqlite3
 from contextlib import closing
+from contextlib import nullcontext
 
 from local_ai_hub import http_server
 from local_ai_hub.agent_events import AgentStateStore, SwarmPubSub
@@ -850,6 +851,7 @@ def test_post_journal_failure_prevents_mutation_dispatch(monkeypatch) -> None:
     app = SimpleNamespace(
         config={},
         recovery=_UnavailableJournal(),
+        async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         work_orchestrator=SimpleNamespace(
             enabled=True,
             submit=lambda _tenant, payload: submitted.append(payload) or {"success": True},
@@ -923,6 +925,7 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
     app = SimpleNamespace(
         config={},
         recovery=journal,
+        async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         work_orchestrator=SimpleNamespace(
             enabled=True,
             submit=lambda _tenant, payload: submitted.append(dict(payload)) or {"success": True, "work_id": payload["work_id"]},
@@ -1222,6 +1225,7 @@ def test_post_rejects_malformed_request_id_before_mutation_dispatch(tmp_path, mo
     app = SimpleNamespace(
         config={"observability": {"exclude_http_paths": ["/api/work-orders"]}},
         recovery=journal,
+        async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         work_orchestrator=SimpleNamespace(
             enabled=True,
             submit=lambda _tenant, payload: submitted.append(payload) or {"success": True},
@@ -1322,6 +1326,7 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
     app = SimpleNamespace(
         config={},
         recovery=journal,
+        async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         rag=SimpleNamespace(
             index=lambda *_args, **_kwargs: failed_publish("rag-index"),
             docset_index=lambda *_args, **_kwargs: failed_publish("rag-docset-index"),

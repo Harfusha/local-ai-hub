@@ -693,7 +693,7 @@ class AsyncJobManager:
         dispatch_not_before = now + delay if delay else 0.0
         mode_snapshot: dict[str, Any] | None = None
         mode_rejection: dict[str, Any] | None = None
-        with self._lock, closing(self._connect()) as con:
+        with self._mode_transition_lock, self._lock, closing(self._connect()) as con:
             if request_id:
                 identified = con.execute(
                     "SELECT job_id,action,request_hash,state,trace_id,task_id,expires_at,created_at,error,artifact_id FROM async_jobs WHERE tenant=? AND json_valid(payload_json) AND json_extract(payload_json,'$.request_id')=? ORDER BY created_at LIMIT 1",
@@ -1112,9 +1112,7 @@ class AsyncJobManager:
 
     def cancel(self, tenant: str, job_id: str) -> dict[str, Any]:
         with self._lock, closing(self._connect()) as con:
-            delayed = self._delayed_dispatch.pop(job_id, None)
-            if delayed is not None:
-                delayed.cancel()
+            con.execute("BEGIN IMMEDIATE")
             row = con.execute("SELECT state,trace_id FROM async_jobs WHERE job_id=? AND tenant=?", (job_id, tenant)).fetchone()
             if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
             state = str(row[0])
@@ -1123,6 +1121,9 @@ class AsyncJobManager:
                 admission = self._admission("accepted", "capacity_available", retryable=False)
                 return {"success": True, "job_id": job_id, "state": "cancelled", "cancel_requested": True, "terminal": True, "retryable": False, "admission": admission, "admission_state": admission["state"]}
             if state in {"done", "failed", "expired", "outcome_unknown"}: return {"success": False, "job_id": job_id, "state": state, "error": "async job is already terminal", "terminal": True, "retryable": False}
+            delayed = self._delayed_dispatch.pop(job_id, None)
+            if delayed is not None:
+                delayed.cancel()
             changed = con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE job_id=? AND cancel_requested=0", (time.time(), job_id)).rowcount
             con.commit()
         self._cleanup_processes(job_id)
@@ -1229,7 +1230,9 @@ class AsyncJobManager:
             workers = list(self._workers)
             dispatchers = list(self._dispatchers)
             delayed = list(self._delayed_dispatch.values())
+            resource_release_workers = list(self._resource_release_workers.values())
             self._delayed_dispatch.clear()
+            self._resource_release_waiters.clear()
         with self._lock, closing(self._connect()) as con:
             con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE state IN ('queued','running')", (time.time(),))
             con.commit()
@@ -1241,7 +1244,7 @@ class AsyncJobManager:
             self._cleanup_processes(job_id)
         deadline = time.monotonic() + 1.5
         current = threading.current_thread()
-        for worker in dispatchers + workers:
+        for worker in dispatchers + workers + resource_release_workers:
             if worker is current or not worker.is_alive():
                 continue
             remaining = deadline - time.monotonic()
