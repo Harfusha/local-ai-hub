@@ -676,13 +676,22 @@ passed; owner GREEN was 50 passed; final owner and root targeted check was 57
 passed. Root command:
 `python -B -m pytest -q -p no:cacheprovider tests/test_agent_verification_input_safety.py tests/test_agent_verification.py::test_verification_receipt_parser_requires_explicit_boolean_passed 'tests/test_agent_verification.py::test_verifier_projection_rolls_back_when_event_projection_write_fails[change]' tests/test_agent_verification.py::test_recorded_change_advances_generation_and_invalidates_existing_receipt --tb=short`.
 
-Five bounded source queues remain. Russell (`hub-audit-repairs`) owns
+Four bounded TaskStore source queues remain. Russell (`hub-audit-repairs`) owns
 `agent_tasks.py`: TTL, terminal listing, repeated completion revalidation,
-and V03-H036 generation checkpoint preservation. Tesla
-(`t17-multimodal-resume`) owns only `agent_memory.py` task provenance. Both
-must reconcile/sync preserved work through master `7729c814` before edits; no
-worker may edit concurrently dirty root `http_server.py` or `async_jobs.py`.
-The T05 scope note is not proof of an observed live leak.
+and V03-H036 generation checkpoint preservation. Tesla's T05 task-provenance
+guard from `agent_memory.py` is integrated as master commit `db07ff06`.
+Focused owner and root test command produced **44 passed**:
+`python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t05_memory_task_scope_guard.py tests/test_agent_memory.py::test_task_memory_find_requires_matching_root_tenant_and_provenance tests/test_agent_memory.py::test_task_lookup_rejects_rootless_and_tenantless_memory tests/test_agent_memory.py::test_get_requires_identity_scope_for_non_global_records`.
+Task lookup now requires both trusted repository root and tenant with matching
+record provenance; `repository_id` cannot substitute. Broader owner check had
+**90 passed / 8 failed**; the owner reports all eight reproduce on original
+pin `7729c814` and concern GLOBAL/repository/session semantics, not the new
+TASK guard. These failures remain an open compatibility triage; no test
+expectations were changed and T05 isn't release-complete. Tesla has a
+read-only follow-up to adjudicate those eight failures; no code/test changes
+authorized in that triage. The static T05 gap did not prove a live
+cross-tenant leak. No worker may edit concurrently dirty root `http_server.py`
+or `async_jobs.py`.
 All original checkpoint refs/stash objects remain preserved.
 
 The tracked/index disposition owner supplied a doc-only follow-up, commit
