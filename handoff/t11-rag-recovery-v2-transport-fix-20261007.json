@@ -1,0 +1,70 @@
+{
+  "schema": "t11-rag-transport-fix-v1",
+  "status": "PARTIAL; transport and live embedding pass; real reranker benchmark not run",
+  "worktree": "C:/Users/Adam/.codex/worktrees/t11-rag-recovery-v2/.local-ai-hub",
+  "branch": "codex/sync-t11-recovery-v2-20261006",
+  "master_base": "22f75d5bb35832d7df2175614e6dbad0e3165ef8",
+  "fix_commit": "5819437c94732c830bc41c021ff764c2e8279902",
+  "fix_parent": "22f75d5bb35832d7df2175614e6dbad0e3165ef8",
+  "patch_id": "1794088f6423247ada3c2afcff9bc5f246395d95",
+  "preserved_t11_commits": [
+    "a9dc167e6e52e35f3e8b34463f44dccab3c89b2c",
+    "ac4c3f511fa75c1204426dcf08797302f9029022"
+  ],
+  "changed_paths": [
+    "src/local_ai_hub/llama_cpp.py",
+    "tests/test_t12_llama_cpp_transport.py"
+  ],
+  "blobs": {
+    "src/local_ai_hub/llama_cpp.py": "0e82495cf1823b1432ab74eb544c0a174c2a6164",
+    "tests/test_t12_llama_cpp_transport.py": "3ab88c76bef9889e4d7f980b57decdf9224d7e99"
+  },
+  "test_environment": {
+    "PYTHONPATH": "C:/Users/Adam/.codex/worktrees/t11-rag-recovery-v2/.local-ai-hub/src"
+  },
+  "root_cause": "HTTPResponse.read1 delegates to response.fp.read1; _InterruptibleSocketReader lacked read1 although _read_response_body uses HTTPResponse.read1.",
+  "validation": [
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t12_llama_cpp_transport.py::LlamaCppInterruptibleTransportTests::test_interruptible_response_body_supports_http_response_read1",
+      "result": "RED before fix: AttributeError: '_InterruptibleSocketReader' object has no attribute 'read1'; GREEN after fix: 1 passed in 0.71s",
+      "exit_code_after_fix": 0
+    },
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t12_llama_cpp_transport.py",
+      "result": "11 passed in 2.88s",
+      "exit_code": 0
+    },
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_t11_rag_ingestion_contract.py tests/test_rag_read_bounds.py tests/test_t11_rag_seed_integrity.py tests/test_t11_project_policy_consumers.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_rag_dedup.py tests/test_reranker_cache_identity.py",
+      "result": "165 passed, 3 skipped in 36.62s",
+      "exit_code": 0
+    },
+    {
+      "command": "python -B -m pytest -s -q --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py::test_t11_live_ollama_rag_ingest_and_reranker_truthfulness",
+      "environment": {
+        "PYTHONPATH": "C:/Users/Adam/.codex/worktrees/t11-rag-recovery-v2/.local-ai-hub/src",
+        "T11_REAL_OLLAMA": "1",
+        "T11_REAL_RERANKER": "unset"
+      },
+      "result": "1 passed in 6.77s; installed qwen3-embedding:0.6b; Ollama embeddings succeeded; top result Credential Rotation Plan; reranker correctly reported degraded heuristic fallback",
+      "exit_code": 0
+    },
+    {
+      "command": "python -B -m pytest -s -q --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py::test_t11_live_ollama_rag_ingest_and_reranker_truthfulness",
+      "environment": {
+        "PYTHONPATH": "C:/Users/Adam/.codex/worktrees/t11-rag-recovery-v2/.local-ai-hub/src",
+        "T11_REAL_OLLAMA": "1",
+        "T11_REAL_RERANKER": "1",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1"
+      },
+      "result": "Interrupted after discovering the selector runs 20 measured reranker inferences; no acceptance result claimed and no model downloaded",
+      "exit_code": null
+    }
+  ],
+  "remaining_gaps": [
+    "Real CrossEncoder quality and latency acceptance remains unverified; its existing selector embeds a 20-sample benchmark and was stopped per task scope.",
+    "No model was installed or pulled.",
+    "Prior acceptance receipt retained unchanged."
+  ]
+}
