@@ -51,6 +51,12 @@ def test_receipt_from_dict_defaults_missing_optional_fields():
     assert receipt.details == {}
 
 
+@pytest.mark.parametrize("value", [None, [], "receipt", 1])
+def test_receipt_from_dict_rejects_non_mapping_top_level(value):
+    with pytest.raises(TypeError, match="mapping"):
+        VerificationReceipt.from_dict(value)
+
+
 def test_receipt_from_dict_accepts_mapping_details_without_aliasing():
     details = UserDict({"count": 1})
     payload = receipt_payload()
