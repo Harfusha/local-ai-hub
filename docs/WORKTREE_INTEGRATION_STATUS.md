@@ -675,3 +675,12 @@ their preserved work to master `f140b96c4d3a451651436136405de7a931faf533`;
 no worker may edit the concurrently dirty root `http_server.py` or
 `async_jobs.py`. The T05 scope note is not proof of an observed live leak.
 All original checkpoint refs/stash objects remain preserved.
+
+The tracked/index disposition owner supplied a doc-only follow-up, commit
+`b7757a77d57374d8ef04971d417f81ac42d1d57a` (parent
+`19ff3fc27268243f7d9a63059b17528eccafca3e`), merged into master. It refines
+three prior conflict classifications: V04-H062, V27-H002, and V27-H010 are
+now master-improved, changing the 533-hunk totals to 332 behavior-preserved,
+80 master-improved, 17 missing, and 104 owner-conflict. Source remains
+unchanged; the seven-hunk missing-integration list is unchanged. This is
+static documentation evidence only, not runtime or release acceptance.
