@@ -46,7 +46,9 @@ finally:
 
 ## Requests and timeouts
 
-Use `get(path, timeout=15.0)` for GET requests and `post(path, payload=None, timeout=360.0, *, request_id=None)` for POST requests. `request(path, payload=None, *, timeout=30.0, replay_safe=False, request_id=None)` exposes the lower-level request path; all options after `*` are keyword-only. Timeouts are capped by the configured `client.max_request_timeout_seconds` value.
+Use `get(path, timeout=15.0)` for GET requests and `post(path, payload=None, timeout=360.0, *, request_id=None, path_hints=None, tenant=None, cancel_event=None)` for POST requests. `request(path, payload=None, *, timeout=30.0, replay_safe=False, request_id=None, operational_action=None, requires_heavy_work=True, tenant=None, cancel_event=None)` exposes the lower-level request path; all options after `*` are keyword-only. Timeouts are capped by the configured `client.max_request_timeout_seconds` value.
+
+`post("/api/search", payload, path_hints=...)` and `post("/api/command", payload, path_hints=...)` accept up to 64 validated hints when payload has no explicit `path`; an explicit `path` removes hints.
 
 The client returns response dictionaries. Transport failures can include `success: false`, `outcome_unknown: true`, and a generated `request_id`: the server may have applied a mutating request before the connection failed. `request()` and `post()` also accept an optional caller-supplied request ID, validated as 1–128 visible ASCII characters without whitespace and sent in `X-LocalAI-Request-ID`. Automatic retries after transport loss are limited to read-only operations the client classifies as replay-safe. Replaying a mutation with the same ID is safe only where server journal coverage is verified. For an uncertain mutation, inspect resulting state before retry unless its coverage row confirms that contract.
 

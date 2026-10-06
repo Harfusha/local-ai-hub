@@ -235,11 +235,6 @@ def _context_scope_sql(
                 identity_params.append(canonical_root)
             else:
                 conditions.append(f"{_CONTEXT_ROOT_SQL} = ''")
-            if tenant:
-                conditions.append(f"{provenance_tenant} = ?")
-                identity_params.append(tenant)
-            else:
-                conditions.append(f"({provenance_tenant} IS NULL OR {provenance_tenant} = '')")
         else:
             conditions.append("scope_id = ?")
             identity_params.append(identity_value)
@@ -1055,22 +1050,6 @@ class MemoryStore:
     ) -> MemoryRecord:
         if target_scope == AgentScope.GLOBAL and approver != "user":
             raise ApprovalRequiredError("global promotion requires user approval")
-        current = self.get(
-            record_id,
-            scope=scope,
-            scope_id=scope_id,
-            root=root,
-            repository_id=repository_id,
-            tenant=tenant,
-            task_id=task_id,
-            session_id=session_id,
-            clone_id=clone_id,
-            worktree_id=worktree_id,
-            branch=branch,
-        )
-        if not current:
-            raise KeyError(f"Memory record {record_id} not found")
-
         current = self.get(
             record_id,
             scope=scope,
@@ -2601,8 +2580,7 @@ class MemoryStore:
                 actor=actor,
             )
 
-            def _commit_group() -> list[AgentEvent]:
-                con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+            def _commit_group(con: Any) -> list[AgentEvent]:
                 published: list[AgentEvent] = []
                 try:
                     con.execute("BEGIN IMMEDIATE")
@@ -2678,15 +2656,15 @@ class MemoryStore:
                     except Exception:
                         pass
                     raise
-                finally:
-                    con.close()
-
-            with self.state_store._append_publish_lock:
-                persisted_events = retry_busy(
-                    _commit_group, retries=5, base_delay_seconds=0.02
-                )
-                for persisted in persisted_events:
-                    self.state_store._publish(persisted)
+            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+            try:
+                with self.state_store.ordered_event_publication(con) as publish_committed:
+                    persisted_events = retry_busy(
+                        lambda: _commit_group(con), retries=5, base_delay_seconds=0.02
+                    )
+                    publish_committed(persisted_events)
+            finally:
+                con.close()
             total_compacted += len(grp_records)
             created_records.append(digest_record.to_dict())
 

@@ -247,6 +247,35 @@ remain preserved. Generated runtime/cache data is not committed.
 
 ### Preservation rule
 
+T15 command-config `fdbf3ec3` is integrated as `fcbb1d6f`. Active runtime is
+identical to owner's pinned master; 44 original source/test/tool/handoff files
+are preserved, including benchmark source-pin and fixture tools. Fresh root:
+`python -B -m pytest -q -p no:cacheprovider
+tests/test_command_cache_singleflight_contract.py tests/test_project_command_broker.py
+--tb=short --maxfail=3`: 29 passed in 5.77 seconds. Owner's three remaining
+coalesced-cache/affected-test result contract failures are still open. Twenty-one
+historical runtime receipt JSONs remain preserved on disk and enumerated in
+`docs/integration/T15-COMMAND-CONFIG-SYNC-20261006.md`; not current evidence.
+
+069d `06204d01` is centrally reconciled against `fcbb1d6f`; original checkpoint
+`57ee7a49` preserves 187 tracked plus 295 ordinary untracked source, test,
+tool and historical handoff files. Manual conflicts retain current optional
+Serena/standalone CodeGraph guidance, synthesis scope caveat, duplicate-safe
+historical actor-idempotency test names and structural allowlisting of mandatory
+CodeGraph ignore markers. Repository memory tenant filtering remains applied
+once in the common scope clause (only redundant application removed); trusted
+promotion scope check remains. Ordered receipt/memory publication retained.
+
+Fresh root checks: `python -B -m pytest -q -p no:cacheprovider
+tests/test_t10_like_suffix_escape.py tests/test_telemetry_privacy.py
+tests/test_agent_receipt_completion_t09.py tests/test_agent_task_memory_adoption.py
+tests/test_sync_codegraph_scan_ignore.py --tb=short --maxfail=4`: 40 passed in
+23.78 seconds. `python -B -m pytest -q -p no:cacheprovider tests/test_agent_tasks.py
+-k 'idempotency' --tb=short --maxfail=3`: 6 passed, 38 deselected in 1.00 second.
+Owner's memory promotion fixture and legacy AGENTS text failures remain open;
+no source/runtime/provider/release completion inferred. Details:
+`handoff/SYNC-069D-20261006.md`.
+
 T17 vision-refactor packet `04bbeb19` is integrated as `0aebfbd9`.
 Reviewed preservation of process safety, cancellation/preflight checks, bounded
 prompt/output, evidence-grounded DOM facts and current T14 retrieval. Fresh
