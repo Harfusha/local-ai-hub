@@ -257,10 +257,19 @@ tests/test_context_pack_live_benchmark.py --tb=short --maxfail=3`: 15 passed in
 Details: `handoff/LIVE-CONTEXT-BENCHMARK-SYNC-20261006.md`.
 
 T14 path-scan returned committed merge `13713fc4`, checkpoint `3b35d5d4`,
-pinned master `896fbedb`. Its checkout is clean; root integration is pending
-review of the scoped-candidate safety and bounded retrieval changes. Worker
-reports 83 passing targeted checks, with two unchanged affected-test failures
-and an obsolete CodeGraph-string audit remaining. This result is not done.
+pinned master `896fbedb`; root integration is `340b56a6`. Reviewed root-scoped
+normalization, exclusion precedence, bounded candidate consumption, preservation
+of current project configuration and no broad scan for targeted empty packs.
+Worker reports 83 passing targeted checks with its documented temp/Git ceiling
+environment. Fresh root command `python -B -m pytest -q -p no:cacheprovider
+tests/test_context_delivery.py tests/test_context_path_hints_skip_unbounded_scan.py
+tests/test_repo_tools_path_hints.py tests/test_t10_repo_search_path_hints.py
+tests/test_project_path_hints.py --tb=short --maxfail=3`: 82 passed, 1 failed in
+29.59 seconds. Failure: `test_context_pack_expands_only_bounded_hint_directory_with_exclusions`,
+missing `evidence` key. Two unchanged affected-test failures and the obsolete
+CodeGraph-string audit remain from owner checks. Candidate consumption is
+bounded, but the initial `indexed_paths(root)` call and physical filesystem
+traversal cost still need end-to-end performance verification. Not done.
 
 Commit relevant tracked dirty changes and ordinary untracked source, tests,
 documentation and handoffs even when unfinished. Record outstanding behavior
