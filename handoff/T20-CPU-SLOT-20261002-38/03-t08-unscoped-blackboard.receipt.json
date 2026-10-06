@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-38",
+  "owner": "T20",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "status": "PASS",
+  "selector": "tests/test_agent_task_memory_adoption.py::test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope",
+  "attempts": [
+    {
+      "attempt": 1,
+      "exit_code": 4,
+      "result": "NO_TESTS_COLLECTED",
+      "detail": "wrong cwd C:\\; no tests ran"
+    },
+    {
+      "attempt": 2,
+      "exit_code": 0,
+      "result": "PASS",
+      "summary": "1 passed in 0.95s",
+      "cwd": "C:\\Users\\Adam\\.local-ai-hub"
+    }
+  ],
+  "input_sha256_before": {
+    "src/local_ai_hub/agent_context.py": "01B647D7EB685C2849DBE960F47B364849B1C130A3F567E875DD82173E1786C1",
+    "src/local_ai_hub/agent_tasks.py": "79487FCE9F8A477A9DE888A6C7FEF77C3526F9B63151EF69FF0CE2019502BA45",
+    "src/local_ai_hub/agent_memory.py": "3CEE6327E4EC692B171405C3A7E27A603A76355C3C6B2D0C35C5129849A7D187",
+    "tests/test_agent_task_memory_adoption.py": "E7263E6DFE3516F52E7FEE7157F2B466A2F99F8EFAB68E3F42E6913CCC7D2792"
+  },
+  "input_sha256_after": {
+    "src/local_ai_hub/agent_context.py": "01B647D7EB685C2849DBE960F47B364849B1C130A3F567E875DD82173E1786C1",
+    "src/local_ai_hub/agent_tasks.py": "79487FCE9F8A477A9DE888A6C7FEF77C3526F9B63151EF69FF0CE2019502BA45",
+    "src/local_ai_hub/agent_memory.py": "3CEE6327E4EC692B171405C3A7E27A603A76355C3C6B2D0C35C5129849A7D187",
+    "tests/test_agent_task_memory_adoption.py": "E7263E6DFE3516F52E7FEE7157F2B466A2F99F8EFAB68E3F42E6913CCC7D2792"
+  },
+  "input_hashes_unchanged": true,
+  "log_path": "handoff/T20-CPU-SLOT-20261002-38/02-t08-unscoped-blackboard-root-cwd.log",
+  "log_sha256": "85C90C29AFF53BD090E2C453ED1DC58C476E14803063014CE53739F7B97796CC",
+  "preflight_path": "handoff/T20-CPU-SLOT-20261002-38/00-preflight.json",
+  "preflight_sha256": "1D93F51B979CD82A69CED5949D6D7522123C4F6456E4C78E3973A7D385E3F297",
+  "patch_sha256": {
+    "t08-sessionid-tenant-fail-closed-root-current.patch": "3DFC339DD765108A6FA3EB06BF90C0DC6FB5CDD55FE24CA03513DF43310D726C",
+    "t08-sessionid-tenant-isolation-root-current.patch": "30162DFD051AD79B7BA0FB381DBA736FB2FFC8B8E79A41B004E87850F503E18F"
+  },
+  "scope": "Single existing T08 selector; no broader T08 acceptance inferred."
+}
