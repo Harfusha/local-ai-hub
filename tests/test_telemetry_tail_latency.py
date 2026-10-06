@@ -24,6 +24,20 @@ def test_report_exposes_http_action_and_cache_layer_tail_percentiles(tmp_path):
     assert layers["miss"]["p99_duration_ms"] == 1_000.0
 
 
+def test_p50_latency_uses_median_for_even_sample_count(tmp_path):
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True)
+    try:
+        for duration_ms in (10, 20, 30, 40):
+            store.record_http(action="/median", success=True, duration_ms=duration_ms)
+        assert store.flush(1)
+        report = store.report(1)
+    finally:
+        store.close()
+
+    action = next(item for item in report["http_tail_latency"]["by_action"] if item["action"] == "/median")
+    assert action["p50_duration_ms"] == 25.0
+
+
 def test_dashboard_has_http_tail_latency_target():
     assert 'id="httpTail"' in DASHBOARD_HTML
 

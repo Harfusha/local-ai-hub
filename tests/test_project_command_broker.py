@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from local_ai_hub import project_config
 from local_ai_hub.cache import stable_hash
 from local_ai_hub.commands import CommandBroker, CommandInvocation
-from local_ai_hub import project_config
 from local_ai_hub.project_config import CommandDefinition
 from local_ai_hub.repo_state import RepoStateTracker
 
@@ -54,6 +54,8 @@ def test_ordinary_command_cache_key_omits_empty_project_context(tmp_path: Path, 
             "env": {},
             "python": sys.version_info[:3],
             "tool": "tool",
+            "tenant": broker._tenant_identity("agent"),
+            "timeout_seconds": 60,
             "policy": {
                 "blocking": False,
                 "allow_read": True,
@@ -66,11 +68,13 @@ def test_ordinary_command_cache_key_omits_empty_project_context(tmp_path: Path, 
         }
     )
     tokens = broker._tokens(command)
-    assert broker._attempt_key(command, cwd) == stable_hash(
+    assert broker._attempt_key(command, cwd, tenant="agent", timeout=60) == stable_hash(
         {
             "command": " ".join(tokens) if tokens else command.strip(),
             "cwd": str(Path(cwd).resolve()),
             "tool": "tool",
+            "tenant": broker._tenant_identity("agent"),
+            "timeout_seconds": 60,
             "policy": {
                 "blocking": False,
                 "allow_read": True,
@@ -82,6 +86,7 @@ def test_ordinary_command_cache_key_omits_empty_project_context(tmp_path: Path, 
             },
         }
     )
+
 
 
 def _write_project_command(root: Path, *, argv: tuple[str, ...] | None = None) -> None:
@@ -165,6 +170,8 @@ def test_project_command_environment_values_change_cache_context(
     monkeypatch.setenv("T15_HOST_TOKEN", "second-secret")
     second = broker._resolve_project_command("check", str(tmp_path))
 
+    assert second.environment["T15_CHILD_TOKEN"] == "second-secret"
+    assert second.environment["T15_PROJECT_TOKEN"] == "second-secret"
     assert first.cache_context != second.cache_context
     assert first.cache_context == stable_hash(
         {

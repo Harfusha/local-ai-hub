@@ -194,3 +194,133 @@ def test_stream_ttft_uses_first_visible_chunk_and_backend_token_metrics(tmp_path
     assert result["whitespace_token_estimate"] is None
     assert result["token_count_method"] == "backend_eval_count"
     assert result["tokens_per_second"] == 10.0
+
+
+def test_run_t12_case_reports_live_metrics_and_persists_no_prompt_or_output(tmp_path: Path) -> None:
+    prompt_secret = "private t12 prompt marker"
+    generated_json = '{"answer":"42"}'
+
+    class Runtime:
+        def generate_stream(self, model, prompt, options=None):
+            assert model == "qwen2.5-coder:7b"
+            assert prompt == prompt_secret
+            assert options["num_predict"] == 8
+            time.sleep(0.3)
+            yield {
+                "response": generated_json,
+                "load_duration": 5_000_000,
+                "prompt_eval_count": 6,
+            }
+
+    class Scheduler:
+        def submit(self, model, tenant, source, execute, **kwargs):
+            result = execute()
+            result["_lah_scheduler_queue_wait_ms"] = 12.5
+            return result
+
+    class VramSampler:
+        samples = iter(({"available": True, "vram_used_mb": 100.0}, {"available": True, "vram_used_mb": 110.0}))
+
+        def sample_vram(self):
+            return next(self.samples)
+
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=Runtime(),
+        scheduler=Scheduler(),
+        vram_balancer=VramSampler(),
+        config={"models": {"reasoning": "qwen2.5-coder:7b"}, "_hardware": "test-gpu"},
+    )
+
+    result = runner.run_t12_case(
+        task="reason",
+        model="qwen2.5-coder:7b",
+        prompt=prompt_secret,
+        num_tokens=8,
+        expected={"answer": "42"},
+        evidence_paths=["docs/source.md"],
+    )
+
+    assert result["success"] is True
+    assert result["queue_wait_ms"] == 12.5
+    assert result["ttft_ms"] >= 0.0
+    assert result["load_duration_ms"] == 5.0
+    assert result["model_load_event"] is True
+    assert result["model_reuse_event"] is False
+    assert result["prefill_tokens"] == 6
+    assert result["peak_vram_bytes"] == 110 * 1024 * 1024
+    assert result["peak_vram_scope"] == "sampled_during_inference"
+    assert result["quality_score_pct"] == 100.0
+    assert result["quality_evaluator_id"] == "model_quality.evaluate_case:t12.v1"
+    assert result["routed_profile"] == "reasoning"
+    assert "output_text" not in result
+
+    persisted = (tmp_path / "benchmarks.json").read_text(encoding="utf-8")
+    assert prompt_secret not in persisted
+    assert generated_json not in persisted
+
+
+def test_run_t12_case_omits_unobserved_live_metrics(tmp_path: Path) -> None:
+    class Runtime:
+        def generate(self, model, prompt, options=None):
+            return {"response": '{"answer":"42"}'}
+
+    class Scheduler:
+        def submit(self, model, tenant, source, execute, **kwargs):
+            return execute()
+
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=Runtime(),
+        scheduler=Scheduler(),
+    )
+
+    result = runner.run_t12_case(
+        task="reason",
+        model="qwen2.5-coder:7b",
+        prompt="Return structured JSON.",
+        num_tokens=8,
+        expected={"answer": "42"},
+        evidence_paths=[],
+    )
+
+    assert result["success"] is True
+    assert result["quality_score_pct"] == 100.0
+    assert "queue_wait_ms" not in result
+    assert "ttft_ms" not in result
+    assert "load_duration_ms" not in result
+    assert "model_load_event" not in result
+    assert "model_reuse_event" not in result
+    assert "prefill_tokens" not in result
+    assert "peak_vram_bytes" not in result
+
+
+def test_run_t12_case_reports_model_reuse_only_from_zero_backend_load(tmp_path: Path) -> None:
+    class Runtime:
+        def generate(self, model, prompt, options=None):
+            return {"response": '{"answer":"42"}', "load_duration": 0}
+
+    class Scheduler:
+        def submit(self, model, tenant, source, execute, **kwargs):
+            return execute()
+
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=Runtime(),
+        scheduler=Scheduler(),
+        config={"models": {"fast_code": "qwen2.5-coder:1.5b"}},
+    )
+
+    result = runner.run_t12_case(
+        task="compress",
+        model="qwen2.5-coder:1.5b",
+        prompt="Return structured JSON.",
+        num_tokens=8,
+        expected={"answer": "42"},
+        evidence_paths=[],
+    )
+
+    assert result["load_duration_ms"] == 0.0
+    assert result["model_load_event"] is False
+    assert result["model_reuse_event"] is True
+    assert result["routed_profile"] == "fast_code"
