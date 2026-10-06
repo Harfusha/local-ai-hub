@@ -58,6 +58,24 @@ Further preservation:
   preserve conservative graph completeness and master lazy indexing.
   Broker/process-control/test conflicts remain; not integrated or accepted.
 
+- T09 `31c6214d` integrated: production source identical to consolidated
+  master; original receipt test and 24 handoff files preserved. Worker reports
+  final 98 passed, broader 121 passed / 4 failed. Runtime manifest records
+  781 excluded files. Cleanup tests created fixture worktrees; scope deviation
+  explicitly recorded in `handoff/t09-sync-integration-20261006.md`.
+- Live context benchmark: original two untracked files checkpoint-committed
+  at `deaa4005` on `codex/sync-live-context-benchmark-20261006`, pinned by
+  `codex/checkpoint-live-context-benchmark-dirty-20261006`. Source reconciliation
+  against the newer master benchmark is still pending; not integrated.
+- Active independent merge owners: T08 Socrates; T12 Kant (`4816`);
+  T13 Nietzsche (`t13-operational-mode`); T14 Schrodinger
+  (`t14-context-budget-recovery`); historical `fefe` Ohm. The orchestrator
+  handed the partially resolved `fefe` merge to Ohm and no longer edits it.
+- All 45 historical stash snapshots remain untouched. Inspection confirms
+  missing T11 handoff files remain recoverable in stash `4b54e7af`'s third
+  parent. Their restoration/integration and missing-checkout inventory remain
+  pending; do not drop any stash until content coverage is verified.
+
 ## Rules for the remainder
 
 - Preserve each original HEAD and dirty tracked content in a checkpoint ref
