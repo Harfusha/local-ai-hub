@@ -2703,6 +2703,16 @@ class Handler(BaseHTTPRequestHandler):
         self._audit_admin_result(status)
         if status >= 400:
             data = normalize_transport_error(status, data)
+        response_request_id = self.headers.get("X-LocalAI-Request-ID", "")
+        if (
+            isinstance(data, dict)
+            and "request_id" not in data
+            and isinstance(response_request_id, str)
+            and 1 <= len(response_request_id) <= 128
+            and response_request_id.isascii()
+            and all(0x21 <= ord(char) <= 0x7E for char in response_request_id)
+        ):
+            data = {**data, "request_id": response_request_id}
         request_id = getattr(self, "_journal_request_id", None)
         if request_id and isinstance(data, dict):
             data = dict(data)
