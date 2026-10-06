@@ -192,6 +192,54 @@ class TieredOllamaRuntime:
     def stop_managed_server(self) -> bool:
         return bool(self.smart.stop_managed_server())
 
+    def unload_managed_models(self, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+        """Unload Hub-owned sidecar models and verify absence within a deadline."""
+        timeout = min(30.0, max(0.05, float(timeout_seconds)))
+        deadline = time.monotonic() + timeout
+        unloaded: list[str] = []
+        remaining: list[str] = []
+
+        def loaded_names() -> list[str]:
+            budget = max(0.001, min(1.0, deadline - time.monotonic()))
+            status = self.smart.request("/api/ps", timeout=budget)
+            if not isinstance(status, dict) or "error" in status:
+                error = status.get("error", "invalid loaded-model status") if isinstance(status, dict) else "invalid loaded-model status"
+                raise RuntimeError(f"loaded-model status unavailable: {error}")
+            rows = status.get("models")
+            if not isinstance(rows, list):
+                raise RuntimeError("loaded-model status omitted models")
+            names: list[str] = []
+            for row in rows:
+                if not isinstance(row, dict) or not str(row.get("name", row.get("model", ""))).strip():
+                    raise RuntimeError("incomplete loaded-model status")
+                names.append(str(row.get("name", row.get("model", ""))))
+            remaining[:] = names
+            return names
+
+        with self._lock:
+            try:
+                names = loaded_names()
+                unknown = [name for name in names if name not in self._hub_models]
+                if unknown:
+                    raise RuntimeError(f"refusing to unload externally managed model: {unknown[0]}")
+                for model in names:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("managed model unload deadline exceeded")
+                    if not self.smart.unload_model(model):
+                        raise RuntimeError(f"cannot unload {model}")
+                    unloaded.append(model)
+                while True:
+                    remaining = loaded_names()
+                    if not remaining:
+                        return {"success": True, "unloaded": unloaded, "remaining": [], "terminal": True, "retryable": False}
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("managed models remained loaded after deadline")
+                    time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+            except TimeoutError as exc:
+                return {"success": False, "unloaded": unloaded, "remaining": remaining, "error": str(exc), "terminal": False, "retryable": True}
+            except Exception as exc:
+                return {"success": False, "unloaded": unloaded, "remaining": remaining, "error": str(exc), "terminal": True, "retryable": False}
+
     def generate(self, model: str, prompt: str, **kwargs: Any) -> dict[str, Any]:
         payload = {"model": model, "prompt": prompt, "stream": False, **kwargs}
         return self.request("/api/generate", payload)

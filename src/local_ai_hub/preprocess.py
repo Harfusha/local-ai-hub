@@ -246,6 +246,13 @@ class ProjectPreprocessor:
         ``None`` means another loop already owns this project. Callers should simply
         retry later; this is contention, not a foreground-yield or an error.
         """
+        from .operational_mode import load_operational_mode, mode_allows
+
+        try:
+            if not mode_allows(load_operational_mode(self.state_dir), "preprocess"):
+                return None
+        except Exception:
+            return None
         root = str(row.get("root", ""))
         lock = self._project_step_lock(root)
         if not lock.acquire(blocking=False):
@@ -2736,6 +2743,13 @@ class ProjectPreprocessor:
             con.commit()
 
     def _run_background_generate(self, model: str, prompt: str, system: str, schema: dict[str, Any], max_tokens: int, source: str) -> dict[str, Any]:
+        from .operational_mode import blocked_operation, load_operational_mode, mode_allows
+
+        state_dir = getattr(self, "state_dir", None)
+        if state_dir is not None:
+            mode = load_operational_mode(state_dir)
+            if not mode_allows(mode, "preprocess"):
+                return blocked_operation(mode, "preprocess")
         if self._gpu_yield():
             return {"success": False, "preempted": True, "error": "foreground work pending"}
 

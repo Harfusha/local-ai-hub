@@ -833,6 +833,13 @@ class LocalAIServices:
         use_cache: bool = True,
         format: Any = None,
     ) -> dict[str, Any]:
+        from .operational_mode import blocked_operation, load_operational_mode, mode_allows
+
+        state_dir = self.config.get("server", {}).get("state_dir")
+        if state_dir:
+            mode = load_operational_mode(state_dir)
+            if not mode_allows(mode, "inference"):
+                return blocked_operation(mode, "inference")
         saving = self.config.get("token_saving", {})
         resilience = self.config.get("resilience", {})
         max_tokens = max(64, min(int(max_tokens), int(saving.get("max_local_output_tokens", 8192))))
@@ -5343,10 +5350,18 @@ class LocalAIServices:
         }
 
     def preprocess(self, args: dict[str, Any]) -> dict[str, Any]:
-        if self.preprocessor is None:
-            return {"success": False, "error": "project preprocessor unavailable"}
         action = str(args.get("action", "status")).strip().lower().replace("-", "_")
         root = str(args.get("root", "."))
+        if action in {"start", "register", "preprocess", "refresh", "force_refresh", "resume"}:
+            from .operational_mode import blocked_operation, load_operational_mode, mode_allows
+
+            state_dir = self.config.get("server", {}).get("state_dir")
+            if state_dir:
+                mode = load_operational_mode(state_dir)
+                if not mode_allows(mode, "preprocess"):
+                    return blocked_operation(mode, "preprocess")
+        if self.preprocessor is None:
+            return {"success": False, "error": "project preprocessor unavailable"}
         if action in {"start", "register", "preprocess"}:
             return self.preprocessor.register(
                 root, source="agent",
