@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "source_root": "C:\\Users\\Adam\\.codex\\worktrees\\t04-integration\\.local-ai-hub",
+  "source_branch": "codex/t04-integration-2b33602",
+  "source_base_commit": "3658d5056354849ddf17883ed04f807f16cc44c1",
+  "integration_root": "C:\\Users\\Adam\\.local-ai-hub",
+  "integration_base_commit": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+  "integration_base": "current root working tree contents; no root files modified",
+  "scope": "stream_events fallback timeout for HubClient instances missing constructor state, plus complete focused test fixture; preserves path_hints, request_id and operational-mode edits",
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t04-integration\\.local-ai-hub\\artifacts\\t04-sse-stream-timeout\\sse-stream-timeout.patch",
+  "patch_sha256": "d27fe02048ec5630d22159a66def776b07e73efd159cff8132801bc952ffa8a4",
+  "validation": {
+    "repro_command": "python -m pytest -q tests/test_sse_events_stream.py::test_client_stream_events_parsing",
+    "repro_result": "1 failed before fix: AttributeError max_request_timeout",
+    "focused_command": "python -m pytest -q tests/test_sse_events_stream.py tests/test_client_transport.py tests/test_client_path_hints.py tests/test_client_operational_mode_autostart.py",
+    "focused_result": "37 passed in 4.25s",
+    "root_apply_check": "PASS against current root worktree; check only, no files applied"
+  },
+  "files": [
+    {
+      "path": "src/local_ai_hub/client.py",
+      "base_blob": "3516fab570653b244c6a28937d9d58b6fe74cc64",
+      "target_blob": "662f0487769212ab766e0887f4dcae3f0e56804a",
+      "change": "use 1800-second fallback cap when max_request_timeout is absent"
+    },
+    {
+      "path": "tests/test_sse_events_stream.py",
+      "base_blob": "e964d158f5075495bd0121a2e4de31890557f4f4",
+      "target_blob": "8b8c4d4daac8089b8fd9de669ad75a52ce9ab119",
+      "change": "initialize tenant and agent on __new__ test instance while leaving max_request_timeout absent"
+    }
+  ]
+}

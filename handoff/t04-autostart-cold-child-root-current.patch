@@ -1,0 +1,26 @@
+diff --git a/tests/test_t04_real_child_startup_acceptance.py b/tests/test_t04_real_child_startup_acceptance.py
+--- a/tests/test_t04_real_child_startup_acceptance.py
++++ b/tests/test_t04_real_child_startup_acceptance.py
+@@ -21,10 +21,21 @@
+     config_path.write_text(
+         f'[server]\nbind = "127.0.0.1"\nport = {port}\nstate_dir = "{state_dir.as_posix()}"\n'
+         "[client]\nstartup_wait_seconds = 15\nstartup_poll_seconds = 0.05\nhealth_timeout_seconds = 0.25\n"
+-        "[code_intelligence]\nenabled = false\n",
++        "[ollama]\nenabled = false\n"
++        "[smart_ollama]\nenabled = false\n"
++        "[llama_cpp]\nmode = \"off\"\n"
++        "[code_intelligence]\nenabled = false\nserena_enabled = false\npreprocess_serena = false\n"
++        "[preprocessing]\nenabled = false\n",
+         encoding="utf-8",
+     )
+     client = HubClient(tenant="t04-real-child", config_path=str(config_path), auto_start=True)
++    assert client.config["llama_cpp"]["mode"] == "off"
++    assert client.config["ollama"]["enabled"] is False
++    assert client.config["smart_ollama"]["enabled"] is False
++    assert client.config["code_intelligence"]["enabled"] is False
++    assert client.config["code_intelligence"]["serena_enabled"] is False
++    assert client.config["code_intelligence"]["preprocess_serena"] is False
++    assert client.config["preprocessing"]["enabled"] is False
+     with client_module._DETACHED_CHILDREN_LOCK:
+         existing_child_ids = {id(child) for child in client_module._DETACHED_CHILDREN}
+ 
