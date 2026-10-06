@@ -126,7 +126,13 @@ def test_process_utils_git_worktree_lifecycle(tmp_path: Path):
     assert wt_target.is_dir()
     assert (wt_target / "README.md").exists()
 
-    rel_res = remove_git_worktree(repo, wt_target, delete_branch=True, branch_name="feat-branch")
+    rel_res = remove_git_worktree(
+        repo,
+        wt_target,
+        delete_branch=True,
+        branch_name="feat-branch",
+        worktree_id=lease_res["worktree_id"],
+    )
     assert rel_res["success"] is True
     assert not wt_target.exists()
 
@@ -278,10 +284,20 @@ def test_incident_webhooks(tmp_path: Path):
     assert "http://127.0.0.1:9999/hook" not in incidents.webhook_urls
 
 
-def test_audio_transcription_service(tmp_path: Path):
+def test_audio_transcription_service(tmp_path: Path, monkeypatch):
     from unittest.mock import MagicMock
+    from types import SimpleNamespace
+
     dummy_audio = tmp_path / "voice.wav"
     dummy_audio.write_bytes(b"RIFFdummywaveheader12345678")
+    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper")
+    monkeypatch.setattr(
+        "local_ai_hub.process_utils.run_hidden",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout='{"text":"transcribed audio"}',
+        ),
+    )
 
     srv = LocalAIServices(
         config={
@@ -299,3 +315,4 @@ def test_audio_transcription_service(tmp_path: Path):
     res = srv.transcribe({"audio_path": str(dummy_audio)}, tenant="test")
     assert res["success"] is True
     assert "audio_path" in res
+    assert res["text"] == "transcribed audio"
