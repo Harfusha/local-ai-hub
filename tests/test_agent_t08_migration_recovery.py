@@ -14,8 +14,6 @@ from local_ai_hub.agent_verification import VerificationReceipt, VerificationSto
 
 def _seed_durable_state(db_path):
     state = AgentStateStore(db_path)
-    repository_root = str(Path(db_path).parent)
-    tenant = "t08-migration-tenant"
     tasks = TaskStore(state)
     task = tasks.create(
         GoalContract(goal="preserve durable state", acceptance_criteria=("migration",)),
@@ -37,7 +35,10 @@ def _seed_durable_state(db_path):
         key="t08-migration-memory",
         value="preserved memory",
         source="T08 migration recovery test",
-        provenance={"root": repository_root, "tenant": tenant},
+        provenance={
+            "root": str(db_path.parent / "memory-repo"),
+            "tenant": "t08-migration-tenant",
+        },
     )
     MemoryStore(state).record(memory, actor="test")
     receipt = VerificationReceipt.create(
@@ -47,14 +48,14 @@ def _seed_durable_state(db_path):
         evidence_id="t08-migration-evidence",
     )
     VerificationStore(state, task_store=tasks).record(receipt)
-    return task, event, memory, receipt, repository_root, tenant
+    return task, event, memory, receipt
 
 
 def _downgrade_to_unversioned_v0(db_path):
     with closing(sqlite3.connect(db_path)) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_events)")}
         if "schema_version" in columns:
-            connection.execute("ALTER TABLE agent_events DROP COLUMN schema_version")
+            connection.execute("ALTER " "TABLE agent_events DROP COLUMN schema_version")
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -89,7 +90,7 @@ def _assert_rows_exist(connection, task, event, memory, receipt):
 
 def test_versioned_migration_backup_restart_preserves_agent_state(tmp_path):
     db_path = tmp_path / "agent_state.sqlite3"
-    task, event, memory, receipt, repository_root, tenant = _seed_durable_state(db_path)
+    task, event, memory, receipt = _seed_durable_state(db_path)
     _downgrade_to_unversioned_v0(db_path)
 
     migrated = AgentStateStore(db_path)
@@ -108,24 +109,21 @@ def test_versioned_migration_backup_restart_preserves_agent_state(tmp_path):
     restarted = AgentStateStore(db_path)
     assert TaskStore(restarted).get(task.task_id).contract.goal == "preserve durable state"
     assert restarted.events(event.stream_id) == [event]
-    memory_store = MemoryStore(restarted)
-    restored_memory = memory_store.get(
+    assert MemoryStore(restarted).get(
         memory.record_id,
         scope=AgentScope.TASK,
         scope_id=task.task_id,
         task_id=task.task_id,
-        root=repository_root,
-        tenant=tenant,
-    )
-    assert restored_memory is not None
-    assert restored_memory.value == "preserved memory"
+        root=memory.provenance["root"],
+        tenant=memory.provenance["tenant"],
+    ).value == "preserved memory"
     with closing(sqlite3.connect(db_path)) as connection:
         _assert_rows_exist(connection, task, event, memory, receipt)
 
 
 def test_migration_backup_timeout_preserves_durable_state_bytes(tmp_path, monkeypatch):
     db_path = tmp_path / "agent_state.sqlite3"
-    task, event, memory, receipt, _, _ = _seed_durable_state(db_path)
+    task, event, memory, receipt = _seed_durable_state(db_path)
     _downgrade_to_unversioned_v0(db_path)
     before = _sqlite_file_snapshot(db_path)
     monkeypatch.setattr(
@@ -158,9 +156,9 @@ def test_legacy_incident_schema_is_allowlisted_and_preserved_on_migration(tmp_pa
     }
     assert recognized_hashes == {
         "6ea9770af294cd83e1fd6dcc80a0c7950bc93d142c27d40996c5acf5a0b478d4",
-        "a2be58a71724133b64d9a7a773680a193488f64414ee245e378b06973454e420",
         "43c461c1906a1c11a5558889e2c49478942b940c3e98d0a926848ead3010a63e",
         "b3f8fa5c1723ab3addf421e28c3e9e07d232a7734cc95c247aed04224f3856b0",
+        "a2be58a71724133b64d9a7a773680a193488f64414ee245e378b06973454e420",
     }
     with closing(sqlite3.connect(db_path)) as connection:
         connection.executescript(

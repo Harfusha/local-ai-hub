@@ -25,6 +25,8 @@ def _init_git_repo(repo_dir: Path) -> None:
     subprocess.run(["git", "config", "user.email", "test@agent.local"], cwd=repo_dir, capture_output=True, check=True)
 
 
+from local_ai_hub import trace_context
+
 def test_git_diff_and_history_search(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -213,8 +215,10 @@ def test_curate_training_dataset(tmp_path: Path):
     contract = GoalContract(goal="curate test", acceptance_criteria=(), scope=AgentScope.TASK)
     ctx = ScopeContext(repository_id="repo1", branch="main", task_id="t-curate")
     tenant_token = trace_context.set_context(tenant="tenant-a")
-    task = task_store.create(contract, ctx, actor="agent1", repo_root=str(tmp_path))
-    trace_context.reset_context(tenant_token)
+    try:
+        task = task_store.create(contract, ctx, actor="agent1", repo_root=str(tmp_path))
+    finally:
+        trace_context.reset_context(tenant_token)
     task_id = task.task_id
 
     # Append verification receipt and transition
@@ -223,9 +227,7 @@ def test_curate_training_dataset(tmp_path: Path):
     task_store.complete(task_id, actor="agent1", reason="done", idempotency_key="comp_1")
 
     out_file = tmp_path / "dataset.jsonl"
-    cur_res = task_store.curate_training_dataset(
-        str(out_file), min_receipts=1, format="jsonl", repo_root=tmp_path, tenant="tenant-a"
-    )
+    cur_res = task_store.curate_training_dataset(str(out_file), min_receipts=1, format="jsonl", repo_root=tmp_path, tenant="tenant-a")
     assert cur_res["success"] is True
     assert cur_res["dataset_count"] == 1
     assert out_file.is_file()

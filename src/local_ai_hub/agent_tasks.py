@@ -3,11 +3,13 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import json
-import inspect
-import hashlib
 import sqlite3
+import hashlib
+import inspect
+import math
 import threading
 import time
+import unicodedata
 import uuid
 from contextlib import closing
 from dataclasses import dataclass, field, replace
@@ -18,6 +20,9 @@ from typing import Any, Mapping
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_identity import AgentScope, ScopeContext
 from .sqlite_support import connect_sqlite, retry_busy
+
+MAX_TASK_QUERY_SCAN_ROWS = 10_000
+
 
 MAX_TRAINING_DATASET_BYTES = 16 * 1024 * 1024
 
@@ -83,12 +88,14 @@ class GoalContract:
     constraints: tuple[str, ...] = ()
     risk_profile: str = "normal"
     slo_profile: dict[str, Any] = field(default_factory=dict)
+    description: str = ""
 
     def __post_init__(self) -> None:
         goal = str(self.goal or "").strip()
         if not goal:
             raise ValueError("task contract requires goal")
         object.__setattr__(self, "goal", goal)
+        object.__setattr__(self, "description", str(self.description or "").strip())
         if not isinstance(self.scope, AgentScope):
             object.__setattr__(self, "scope", AgentScope.parse(self.scope))
         if not isinstance(self.acceptance_criteria, tuple):
@@ -102,6 +109,7 @@ class GoalContract:
         scope_val = self.scope.value if isinstance(self.scope, AgentScope) else (getattr(self.scope, "value", None) or str(self.scope))
         return {
             "goal": self.goal,
+            "description": self.description,
             "acceptance_criteria": list(self.acceptance_criteria),
             "scope": scope_val,
             "non_goals": list(self.non_goals),
@@ -112,22 +120,19 @@ class GoalContract:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> GoalContract:
-        goal_val = str(
-            data.get("goal")
-            or data.get("title")
-            or data.get("description")
-            or data.get("summary")
-            or data.get("intent")
-            or data.get("task")
-            or data.get("name")
-            or ""
-        ).strip()
+        explicit_goal = next(
+            (data.get(key) for key in ("goal", "title", "summary", "intent", "task", "name") if data.get(key)),
+            None,
+        )
+        goal_val = str(explicit_goal or data.get("description") or "").strip()
+        description = str(data.get("description") or "").strip() if explicit_goal else ""
         if not goal_val:
             crit = data.get("acceptance_criteria")
             if crit and isinstance(crit, (list, tuple)) and len(crit) > 0:
                 goal_val = f"Complete task: {crit[0]}"
         return cls(
             goal=goal_val,
+            description=description,
             acceptance_criteria=tuple(data.get("acceptance_criteria") or ()),
             scope=AgentScope.parse(data.get("scope", AgentScope.TASK.value)),
             non_goals=tuple(data.get("non_goals") or ()),
@@ -216,6 +221,14 @@ class TaskState:
         }
 
 
+class TaskList(list[TaskState]):
+    """List-compatible task page with an explicit bounded-query truncation signal."""
+
+    def __init__(self, tasks: list[TaskState] | tuple[TaskState, ...] = (), *, query_truncated: bool = False) -> None:
+        super().__init__(tasks)
+        self.query_truncated = bool(query_truncated)
+
+
 def _validate_checkpoint_memory_context(
     current_state_data: Mapping[str, Any],
     requested_state_data: Mapping[str, Any],
@@ -246,53 +259,12 @@ def _validate_checkpoint_memory_context(
             raise ValueError("Cannot checkpoint: worktree repo_root is server-managed and cannot be modified")
 
 
-def _canonical_repository_root(value: Any) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        raise ValueError("repo_root is required")
-    path = Path(raw).expanduser()
-    if not path.is_absolute():
-        raise ValueError("repo_root must be absolute")
-    try:
-        canonical = path.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise ValueError("repo_root must resolve to an existing directory") from exc
-    if not canonical.is_dir():
-        raise ValueError("repo_root must resolve to an existing directory")
-    return str(canonical)
 
 
-def _tenant_scope_key(tenant: Any) -> str:
-    value = str(tenant or "").strip()
-    if not value:
-        raise ValueError("authenticated tenant is required")
-    return hashlib.sha256(f"agent-task-memory-tenant\\0{value}".encode("utf-8")).hexdigest()
 
 
-def _task_scope_values(task: "TaskState") -> tuple[str, str]:
-    state_data = task.checkpoint.state_data
-    scope = state_data.get("_agent_task_scope")
-    if not isinstance(scope, Mapping) or scope.get("version") != 1:
-        return "", ""
-    root = scope.get("repo_root")
-    tenant_key = scope.get("tenant_key")
-    try:
-        canonical_root = _canonical_repository_root(root)
-    except ValueError:
-        return "", ""
-    key = str(tenant_key or "").strip().lower()
-    if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
-        return "", ""
-    return canonical_root, key
 
 
-def _task_matches_scope(
-    task: "TaskState", repo_root: str, tenant_key: str, task_id: str | None = None
-) -> bool:
-    if task_id and task.task_id != task_id:
-        return False
-    task_root, task_tenant_key = _task_scope_values(task)
-    return task_root == repo_root and task_tenant_key == tenant_key
 
 
 def _preserve_checkpoint_memory_state(
@@ -331,6 +303,51 @@ def _preserve_checkpoint_memory_state(
     )
 
 
+def _canonical_repository_root(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("repo_root is required")
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValueError("repo_root must be absolute")
+    try:
+        canonical = path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("repo_root must resolve to an existing directory") from exc
+    if not canonical.is_dir():
+        raise ValueError("repo_root must resolve to an existing directory")
+    return str(canonical)
+
+def _tenant_scope_key(tenant: Any) -> str:
+    value = str(tenant or "").strip()
+    if not value:
+        raise ValueError("authenticated tenant is required")
+    return hashlib.sha256(f"agent-task-memory-tenant\\0{value}".encode("utf-8")).hexdigest()
+
+def _task_scope_values(task: "TaskState") -> tuple[str, str]:
+    state_data = task.checkpoint.state_data
+    scope = state_data.get("_agent_task_scope")
+    if not isinstance(scope, Mapping) or scope.get("version") != 1:
+        return "", ""
+    root = scope.get("repo_root")
+    tenant_key = scope.get("tenant_key")
+    try:
+        canonical_root = _canonical_repository_root(root)
+    except ValueError:
+        return "", ""
+    key = str(tenant_key or "").strip().lower()
+    if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+        return "", ""
+    return canonical_root, key
+
+def _task_matches_scope(
+    task: "TaskState", repo_root: str, tenant_key: str, task_id: str | None = None
+) -> bool:
+    if task_id and task.task_id != task_id:
+        return False
+    task_root, task_tenant_key = _task_scope_values(task)
+    return task_root == repo_root and task_tenant_key == tenant_key
+
 class TaskStore:
     def __init__(
         self,
@@ -349,6 +366,12 @@ class TaskStore:
         self._lock = threading.RLock()
         self._initialized = False
         self._init_projection_table()
+
+
+
+
+
+
 
     def set_policy_engine(self, policy_engine: Any) -> None:
         self.policy_engine = policy_engine
@@ -779,134 +802,7 @@ class TaskStore:
                     f"Cannot transition to COMPLETED: volatile memory '{record_id}' lacks current-source check"
                 )
 
-    def validate_completion(self, task_id: str) -> TaskState:
-        """Validate persisted completion gates without changing task state."""
-        task = self.get(task_id)
-        if task is None:
-            raise KeyError(f"Task {task_id} not found")
-        self._verify_completion(task)
-        return task
 
-    def _verify_completion(self, task: TaskState) -> None:
-        self._validate_memory_audit(task)
-        if not task.contract.acceptance_criteria:
-            return
-
-        state_data = task.checkpoint.state_data
-        worktree = state_data.get("worktree")
-        repo_root = worktree.get("repo_root") if isinstance(worktree, Mapping) else None
-        if not isinstance(repo_root, (str, Path)) or not str(repo_root).strip():
-            repo_root = state_data.get("repo_root")
-        if not isinstance(repo_root, (str, Path)) or not str(repo_root).strip():
-            context_repo_root = task.context.repository_id
-            if isinstance(context_repo_root, (str, Path)) and str(context_repo_root).strip():
-                try:
-                    if Path(context_repo_root).expanduser().is_dir():
-                        repo_root = context_repo_root
-                except (OSError, TypeError, ValueError):
-                    pass
-        has_repo_root = isinstance(repo_root, (str, Path)) and bool(str(repo_root).strip())
-        repository_revision = str(state_data.get("repository_revision", "") or "").strip()
-        mutation_generation = state_data.get("mutation_generation", 0)
-        if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int) or mutation_generation < 0:
-            raise CompletionGateError(
-                "Cannot transition to COMPLETED: task mutation_generation is invalid"
-            )
-
-        if has_repo_root:
-            try:
-                from .project_config import resolve_project_context
-
-                project = resolve_project_context(repo_root, Path(self.state_store.db_path).parent)
-                settings = project.settings
-                verification_rules = settings.verification_rules
-                configured_criteria = tuple(settings.commands)
-                if not isinstance(verification_rules, Mapping) or not isinstance(settings.commands, Mapping):
-                    raise ValueError("project verification settings are invalid")
-            except Exception as exc:
-                raise CompletionGateError(
-                    "Cannot transition to COMPLETED: project verification config could not be resolved"
-                ) from exc
-        else:
-            verification_rules = {}
-            configured_criteria = ()
-        acceptance = set(task.contract.acceptance_criteria)
-        active_rules = any(str(key).strip() in acceptance for key in verification_rules)
-
-        verifier = getattr(self, "verification_store", None)
-        if verifier is None:
-            try:
-                from .agent_verification import VerificationStore
-
-                verifier = VerificationStore(self.state_store, task_store=self)
-                self.verification_store = verifier
-            except Exception as exc:
-                raise CompletionGateError(
-                    "Cannot transition to COMPLETED: verification evaluator is unavailable"
-                ) from exc
-
-        completion = getattr(verifier, "completion", None)
-        if not callable(completion):
-            raise CompletionGateError(
-                "Cannot transition to COMPLETED: verification evaluator has no completion method"
-            )
-        try:
-            parameters = inspect.signature(completion).parameters
-            supports_kwargs = any(
-                parameter.kind is inspect.Parameter.VAR_KEYWORD
-                for parameter in parameters.values()
-            )
-            supports_project_rules = {
-                "current_revision",
-                "current_mutation_generation",
-                "verification_rules",
-                "configured_criteria",
-            }.issubset(parameters)
-            if supports_project_rules:
-                if active_rules and not repository_revision:
-                    raise CompletionGateError(
-                        "Cannot transition to COMPLETED: trusted repository_revision is unavailable"
-                    )
-                result = completion(
-                    task.task_id,
-                    current_revision=repository_revision,
-                    current_mutation_generation=mutation_generation,
-                    verification_rules=verification_rules,
-                    configured_criteria=configured_criteria,
-                )
-            else:
-                if active_rules:
-                    raise CompletionGateError(
-                        "Cannot transition to COMPLETED: verification evaluator does not support project rules"
-                    )
-                legacy_kwargs = {}
-                if repository_revision and ("current_revision" in parameters or supports_kwargs):
-                    legacy_kwargs["current_revision"] = repository_revision
-                result = completion(task.task_id, **legacy_kwargs)
-        except CompletionGateError:
-            raise
-        except Exception as exc:
-            raise CompletionGateError(
-                f"Cannot transition to COMPLETED: verification evaluator failed ({type(exc).__name__})"
-            ) from exc
-
-        complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
-        if complete is not True:
-            unsatisfied = (
-                result.get("unsatisfied_criteria", ())
-                if isinstance(result, Mapping)
-                else getattr(result, "unsatisfied_criteria", ())
-            )
-            stale = result.get("stale_criteria", ()) if isinstance(result, Mapping) else getattr(result, "stale_criteria", ())
-            details = []
-            if unsatisfied:
-                details.append(f"unsatisfied={tuple(unsatisfied)}")
-            if stale:
-                details.append(f"stale={tuple(stale)}")
-            suffix = f" ({'; '.join(details)})" if details else ""
-            raise CompletionGateError(
-                f"Cannot transition to COMPLETED: verification evaluator rejected completion{suffix}"
-            )
 
     def _db_path_available(self) -> bool:
         """Return whether the projection database path is usable.
@@ -924,6 +820,7 @@ class TaskStore:
             return bool(path.name)
         except (RecursionError, OSError, ValueError, TypeError):
             return False
+
 
     def _init_projection_table(self) -> None:
         if self._initialized or not self._db_path_available():
@@ -986,6 +883,7 @@ class TaskStore:
                         ON agent_tasks_projection (status, updated_at DESC);
                         """
                     )
+                    self._backfill_task_search_index(con)
                     con.commit()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
@@ -1000,6 +898,7 @@ class TaskStore:
         idempotency_key: str = "",
         auto_worktree: bool = False,
         repo_root: str = "",
+        repository_revision: str = "",
     ) -> TaskState:
         t_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
         now = time.time()
@@ -1008,18 +907,31 @@ class TaskStore:
         canonical_root = _canonical_repository_root(repo_root) if repo_root else ""
         try:
             from .trace_context import current as current_trace_context
-
             authenticated_tenant = str(current_trace_context().get("tenant", "") or "").strip()
         except Exception:
             authenticated_tenant = ""
         if canonical_root:
             initial_sd["repo_root"] = canonical_root
+        if repository_revision:
+            initial_sd["repository_revision"] = str(repository_revision).strip()
 
         if auto_worktree:
             try:
                 from .process_utils import create_git_worktree
                 r_root = repo_root or context.repository_id or "."
-                wt_res = create_git_worktree(r_root, branch_name=f"hub/task-{t_id}")
+                if context.repository_id and Path(r_root).expanduser().resolve(strict=False) != Path(context.repository_id).expanduser().resolve(strict=False):
+                    raise ValueError("task worktree repository does not match task context")
+                worktree_ttl = 24 * 60 * 60.0
+                worktree_expiry = now + worktree_ttl
+                wt_res = create_git_worktree(
+                    r_root,
+                    branch_name=f"hub/task-{t_id}",
+                    task_id=t_id,
+                    owner=actor,
+                    created_at=now,
+                    ttl_seconds=worktree_ttl,
+                    expires_at=worktree_expiry,
+                )
                 if wt_res.get("success"):
                     initial_sd["worktree"] = wt_res
                     if not canonical_root and wt_res.get("repo_root"):
@@ -1085,21 +997,169 @@ class TaskStore:
             return None
         return self._row_to_state(row)
 
-    def list_tasks(self, status: TaskStatus | None = None, limit: int = 100, include_stale: bool = False) -> list[TaskState]:
+    @staticmethod
+    def _normalize_search_text(value: Any) -> str:
+        return unicodedata.normalize("NFKC", str(value or "")).casefold()
+
+    @staticmethod
+    def _collect_search_values(value: Any, fields: list[str]) -> None:
+        if isinstance(value, Mapping):
+            for item in value.values():
+                TaskStore._collect_search_values(item, fields)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                TaskStore._collect_search_values(item, fields)
+        elif value is not None:
+            text = str(value).strip()
+            if text:
+                fields.append(text)
+
+    @staticmethod
+    def _searchable_task_fields(
+        task_id: str,
+        contract: Mapping[str, Any],
+        checkpoint: Mapping[str, Any],
+        context: Mapping[str, Any] | None = None,
+        owner: str = "",
+    ) -> tuple[str, ...]:
+        fields = [str(task_id)]
+        if owner:
+            fields.append(str(owner))
+        for source in (contract, context or {}, checkpoint):
+            TaskStore._collect_search_values(source, fields)
+        return tuple(fields)
+
+    @classmethod
+    def _search_grams(cls, values: Any) -> set[str]:
+        if isinstance(values, str):
+            values = (values,)
+        grams: set[str] = set()
+        for value in values:
+            normalized = cls._normalize_search_text(value)
+            grams.update(normalized[index:index + 3] for index in range(max(0, len(normalized) - 2)))
+        return grams
+
+    @classmethod
+    def _write_task_search_index(
+        cls,
+        con: sqlite3.Connection,
+        task_id: str,
+        fields: tuple[str, ...],
+    ) -> None:
+        con.execute("DELETE FROM agent_task_search_grams WHERE task_id = ?", (task_id,))
+        con.execute(
+            "INSERT OR REPLACE INTO agent_task_search_documents(task_id, fields) VALUES (?, ?)",
+            (task_id, json_dumps(list(fields))),
+        )
+        con.executemany(
+            "INSERT INTO agent_task_search_grams(task_id, gram) VALUES (?, ?)",
+            ((task_id, gram) for gram in sorted(cls._search_grams(fields))),
+        )
+
+    @classmethod
+    def _backfill_task_search_index(cls, con: sqlite3.Connection) -> None:
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS agent_task_search_documents "
+            "(task_id TEXT PRIMARY KEY, fields TEXT NOT NULL)"
+        )
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS agent_task_search_grams "
+            "(task_id TEXT NOT NULL, gram TEXT NOT NULL, PRIMARY KEY(task_id, gram))"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_task_search_grams_gram "
+            "ON agent_task_search_grams(gram, task_id)"
+        )
+        rows = con.execute(
+            "SELECT task_id, owner, contract, context, checkpoint FROM agent_tasks_projection"
+        ).fetchall()
+        for task_id, owner, contract_raw, context_raw, checkpoint_raw in rows:
+            contract = json.loads(contract_raw or "{}")
+            context = json.loads(context_raw or "{}")
+            checkpoint = json.loads(checkpoint_raw or "{}")
+            fields = cls._searchable_task_fields(task_id, contract, checkpoint, context, owner)
+            expected = cls._search_grams(fields)
+            document = con.execute(
+                "SELECT fields FROM agent_task_search_documents WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            existing = {
+                str(row[0]) for row in con.execute(
+                    "SELECT gram FROM agent_task_search_grams WHERE task_id = ?", (task_id,)
+                ).fetchall()
+            }
+            if not document or document[0] != json_dumps(list(fields)) or existing != expected:
+                cls._write_task_search_index(con, task_id, fields)
+        con.execute(
+            "DELETE FROM agent_task_search_documents WHERE task_id NOT IN "
+            "(SELECT task_id FROM agent_tasks_projection)"
+        )
+        con.execute(
+            "DELETE FROM agent_task_search_grams WHERE task_id NOT IN "
+            "(SELECT task_id FROM agent_tasks_projection)"
+        )
+
+    @classmethod
+    def _refresh_task_search_index(cls, con: sqlite3.Connection, task_id: str) -> None:
+        row = con.execute(
+            "SELECT owner, contract, context, checkpoint FROM agent_tasks_projection WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            con.execute("DELETE FROM agent_task_search_documents WHERE task_id = ?", (task_id,))
+            con.execute("DELETE FROM agent_task_search_grams WHERE task_id = ?", (task_id,))
+            return
+        owner = row[0]
+        contract, context, checkpoint = (json.loads(value or "{}") for value in row[1:])
+        fields = cls._searchable_task_fields(task_id, contract, checkpoint, context, owner)
+        cls._write_task_search_index(con, task_id, fields)
+
+    def list_tasks(
+        self,
+        status: TaskStatus | None = None,
+        limit: int = 100,
+        include_stale: bool = False,
+        query: str | None = None,
+    ) -> TaskList:
         if not self._db_path_available():
-            return []
+            return TaskList()
         self._init_projection_table()
         now = time.time()
-        def _fetch_tasks() -> list[Any]:
+        normalized_query = self._normalize_search_text(query or "")
+        query_terms = [term for term in normalized_query.split() if term]
+        page_size = max(1, int(limit))
+
+        def matches_query(row: tuple[Any, ...]) -> bool:
+            contract_data = json.loads(row[4] or "{}")
+            context_data = json.loads(row[5] or "{}")
+            checkpoint_data = json.loads(row[6] or "{}")
+            fields = self._searchable_task_fields(
+                row[0], contract_data, checkpoint_data, context_data, row[2]
+            )
+            normalized_fields = tuple(self._normalize_search_text(value) for value in fields)
+            return all(any(term in value for value in normalized_fields) for term in query_terms)
+
+        def _fetch_tasks() -> tuple[list[Any], bool]:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
                 where_clauses: list[str] = []
                 params: list[Any] = []
                 if status is not None:
                     where_clauses.append("status = ?")
                     params.append(status.value)
-                if not include_stale:
+                if not query_terms and not include_stale:
                     where_clauses.append("NOT (heartbeat_expires_at > 0 AND heartbeat_expires_at < ?)")
                     params.append(now)
+                scan_where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+                scan_params = list(params)
+                query_grams = sorted(self._search_grams(query_terms))
+                if query_grams:
+                    placeholders = ", ".join("?" for _ in query_grams)
+                    where_clauses.append(
+                        "task_id IN (SELECT task_id FROM agent_task_search_grams "
+                        f"WHERE gram IN ({placeholders}) GROUP BY task_id "
+                        "HAVING COUNT(DISTINCT gram) = ?)"
+                    )
+                    params.extend(query_grams)
+                    params.append(len(query_grams))
                 where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
                 sql = f"""
                     SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
@@ -1107,17 +1167,45 @@ class TaskStore:
                     FROM agent_tasks_projection
                     {where_sql}
                     ORDER BY updated_at DESC
-                    LIMIT ?
                 """
-                params.append(max(1, int(limit)))
-                cur = con.execute(sql, tuple(params))
-                return cur.fetchall()
+                if not query_terms:
+                    cur = con.execute(sql + " LIMIT ?", (*params, page_size))
+                    return cur.fetchall(), False
 
-        rows = retry_busy(_fetch_tasks, retries=5, base_delay_seconds=0.02)
+                scan_count = con.execute(
+                    f"SELECT COUNT(1) FROM agent_tasks_projection {scan_where_sql}", scan_params
+                ).fetchone()
+                cur = con.execute(sql + " LIMIT ?", (*params, MAX_TASK_QUERY_SCAN_ROWS + 1))
+                candidates = cur.fetchmany(MAX_TASK_QUERY_SCAN_ROWS + 1)
+                query_truncated = (
+                    len(candidates) > MAX_TASK_QUERY_SCAN_ROWS
+                    or bool(scan_count and int(scan_count[0]) > MAX_TASK_QUERY_SCAN_ROWS)
+                )
+                matched: list[Any] = []
+                terminal_statuses = {
+                    TaskStatus.COMPLETED.value,
+                    TaskStatus.CANCELLED.value,
+                    TaskStatus.FAILED.value,
+                    TaskStatus.ABANDONED.value,
+                }
+                for row in candidates[:MAX_TASK_QUERY_SCAN_ROWS]:
+                    heartbeat_expires_at = float(row[8] or 0.0)
+                    if (
+                        not include_stale
+                        and heartbeat_expires_at > 0
+                        and heartbeat_expires_at < now
+                        and row[1] not in terminal_statuses
+                    ):
+                        continue
+                    if matches_query(row):
+                        matched.append(row)
+                        if len(matched) >= page_size:
+                            return matched, False
+                return matched, query_truncated
+
+        rows, query_truncated = retry_busy(_fetch_tasks, retries=5, base_delay_seconds=0.02)
         tasks = [self._row_to_state(row) for row in rows]
-        if not include_stale:
-            tasks = [t for t in tasks if not t.is_stale]
-        return tasks[:max(1, int(limit))]
+        return TaskList(tasks[:page_size], query_truncated=query_truncated)
 
     def count(self, status: TaskStatus | None = None) -> int:
         if not self._db_path_available():
@@ -1171,7 +1259,6 @@ class TaskStore:
                 except Exception:
                     pass
                 raise
-
         state = self._run_ordered_task_write(_write)
         if state is None:
             raise KeyError(f"Task {task_id} not found")
@@ -1257,6 +1344,182 @@ class TaskStore:
             verification_receipts=updated_receipts,
         )
         return updated, appended.event if not appended.duplicate else None
+
+    def validate_completion(self, task_id: str) -> TaskState:
+        """Validate persisted completion gates without changing task state."""
+        task = self.get(task_id)
+        if task is None:
+            raise KeyError(f"Task {task_id} not found")
+        self._verify_completion(task)
+        return task
+
+    def _verify_completion(self, task: TaskState, *, current_revision: str = "") -> None:
+        memory_audit_validator = getattr(self, "_validate_memory_audit", None)
+        if callable(memory_audit_validator):
+            memory_audit_validator(task)
+        if not task.contract.acceptance_criteria:
+            return
+
+        state_data = task.checkpoint.state_data
+        try:
+            from .verification_rules import (
+                _task_created_state_data,
+                _task_project_root,
+                project_command_environment_sha256,
+            )
+
+            initial_state_data = _task_created_state_data(self, task.task_id)
+            repo_root = _task_project_root(task, initial_state_data)
+        except Exception as exc:
+            raise CompletionGateError(
+                "Cannot transition to COMPLETED: trusted task project root is unavailable"
+            ) from exc
+        has_repo_root = isinstance(repo_root, (str, Path)) and bool(str(repo_root).strip())
+        repository_revision = str(
+            current_revision or state_data.get("repository_revision", "") or ""
+        ).strip()
+        mutation_generation = state_data.get("mutation_generation", 0)
+        if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int) or mutation_generation < 0:
+            raise CompletionGateError(
+                "Cannot transition to COMPLETED: task mutation_generation is invalid"
+            )
+
+        configured_commands: Mapping[str, Any] = {}
+        configured_environment_sha256: Mapping[str, str] = {}
+        project_config_digest = ""
+        if has_repo_root:
+            try:
+                from .project_config import resolve_project_context
+
+                project = resolve_project_context(repo_root, Path(self.state_store.db_path).parent)
+                settings = project.settings
+                verification_rules = settings.verification_rules
+                configured_criteria = tuple(settings.commands)
+                configured_commands = settings.commands
+                configured_environment_sha256 = {
+                    name: project_command_environment_sha256(settings, name)
+                    for name in settings.commands
+                }
+                project_config_digest = project.config_digest
+                if not isinstance(verification_rules, Mapping) or not isinstance(settings.commands, Mapping):
+                    raise ValueError("project verification settings are invalid")
+            except Exception as exc:
+                raise CompletionGateError(
+                    "Cannot transition to COMPLETED: project verification config could not be resolved"
+                ) from exc
+        else:
+            verification_rules = {}
+            configured_criteria = ()
+        acceptance = set(task.contract.acceptance_criteria)
+        active_rules = any(str(key).strip() in acceptance for key in verification_rules)
+
+        verifier = getattr(self, "verification_store", None)
+        if verifier is None:
+            try:
+                from .agent_verification import VerificationStore
+
+                verifier = VerificationStore(self.state_store, task_store=self)
+                self.verification_store = verifier
+            except Exception as exc:
+                raise CompletionGateError(
+                    "Cannot transition to COMPLETED: verification evaluator is unavailable"
+                ) from exc
+
+        completion = getattr(verifier, "completion", None)
+        if not callable(completion):
+            raise CompletionGateError(
+                "Cannot transition to COMPLETED: verification evaluator has no completion method"
+            )
+        try:
+            parameters = inspect.signature(completion).parameters
+            supports_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+            supports_project_rules = {
+                "current_revision",
+                "current_mutation_generation",
+                "verification_rules",
+                "configured_criteria",
+            }.issubset(parameters)
+            supports_project_binding = supports_kwargs or {
+                "configured_commands",
+                "project_config_digest",
+                "configured_environment_sha256",
+                "project_root",
+            }.issubset(parameters)
+            if supports_project_rules:
+                if active_rules and not repository_revision:
+                    raise CompletionGateError(
+                        "Cannot transition to COMPLETED: trusted repository_revision is unavailable"
+                    )
+                if active_rules and not supports_project_binding:
+                    raise CompletionGateError(
+                        "Cannot transition to COMPLETED: verification evaluator does not bind project commands"
+                    )
+                project_binding_kwargs = (
+                    {
+                        "configured_commands": configured_commands,
+                        "project_config_digest": project_config_digest,
+                        "configured_environment_sha256": configured_environment_sha256,
+                        "project_root": repo_root,
+                    }
+                    if supports_project_binding
+                    else {}
+                )
+                result = completion(
+                    task.task_id,
+                    current_revision=repository_revision,
+                    current_mutation_generation=mutation_generation,
+                    verification_rules=verification_rules,
+                    configured_criteria=configured_criteria,
+                    **project_binding_kwargs,
+                )
+            else:
+                if active_rules:
+                    raise CompletionGateError(
+                        "Cannot transition to COMPLETED: verification evaluator does not support project rules"
+                    )
+                legacy_kwargs = {}
+                if repository_revision and ("current_revision" in parameters or supports_kwargs):
+                    legacy_kwargs["current_revision"] = repository_revision
+                result = completion(task.task_id, **legacy_kwargs)
+        except CompletionGateError:
+            raise
+        except Exception as exc:
+            receipt_ids = ", ".join(
+                f"'{receipt_id}' for '{criterion}'"
+                for criterion, receipt_id in task.verification_receipts.items()
+            ) or "required criteria"
+            raise CompletionGateError(
+                f"Cannot transition to COMPLETED: verification storage could not validate {receipt_ids}: {exc}"
+            ) from exc
+
+        complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
+        if complete is not True:
+            unsatisfied = (
+                result.get("unsatisfied_criteria", ())
+                if isinstance(result, Mapping)
+                else getattr(result, "unsatisfied_criteria", ())
+            )
+            stale = result.get("stale_criteria", ()) if isinstance(result, Mapping) else getattr(result, "stale_criteria", ())
+            details = []
+            if unsatisfied:
+                details.append(f"unsatisfied={tuple(unsatisfied)}")
+            if stale:
+                details.append(f"stale={tuple(stale)}")
+            suffix = f" ({'; '.join(details)})" if details else ""
+            invalid = [
+                f"criterion '{criterion}' receipt '{task.verification_receipts.get(criterion, 'missing')}': missing, failed, spoofed, wrong owner, or wrong evidence type"
+                for criterion in unsatisfied
+            ]
+            invalid.extend(
+                f"criterion '{criterion}' receipt '{task.verification_receipts.get(criterion, 'missing')}': expired or stale revision/mutation generation"
+                for criterion in stale
+            )
+            raise CompletionGateError(
+                "Cannot transition to COMPLETED: " + ("; ".join(invalid) or f"verification evaluator rejected completion{suffix}")
+            )
 
     def transition(
         self,
@@ -1799,19 +2062,110 @@ class TaskStore:
         )
         return self._commit_update(current, updated, event)
 
-    def cleanup_worktree(self, task_id: str, delete_branch: bool = True) -> dict[str, Any]:
+    def cleanup_worktree(
+        self,
+        task_id: str,
+        delete_branch: bool = True,
+        *,
+        actor: str = "http-default",
+    ) -> dict[str, Any]:
         task = self.get(task_id)
         if not task:
             return {"success": False, "error": f"Task {task_id} not found"}
         wt = task.checkpoint.state_data.get("worktree")
         if not isinstance(wt, dict) or not wt.get("worktree_path"):
             return {"success": True, "had_worktree": False}
+        actor_value = str(actor or "").strip()
+        if not actor_value or actor_value.lower() in {"http-default", "system", "admin", "*"}:
+            return {"success": False, "error": "cleanup requires a non-reserved owner actor"}
+        if actor_value != task.owner:
+            return {"success": False, "error": "cleanup actor does not own task"}
+
         try:
-            from .process_utils import remove_git_worktree
-            r_root = wt.get("repo_root", ".")
-            w_path = wt.get("worktree_path")
-            rm_res = remove_git_worktree(r_root, w_path, delete_branch=delete_branch)
-            return {"success": True, "had_worktree": True, "cleanup": rm_res}
+            from .process_utils import get_git_worktree_ownership, remove_git_worktree
+
+            task_id_value = str(wt.get("task_id", ""))
+            owner_value = str(wt.get("owner", ""))
+            repo_value = Path(str(wt.get("repo_root", ""))).expanduser().resolve(strict=False)
+            worktree_id = str(wt.get("worktree_id", ""))
+            branch = str(wt.get("branch", ""))
+            worktree_path = Path(str(wt.get("worktree_path", ""))).expanduser()
+            if not task_id_value or task_id_value != task.task_id:
+                return {"success": False, "error": "worktree task identity mismatch"}
+            if not owner_value or owner_value != task.owner:
+                return {"success": False, "error": "worktree owner identity mismatch"}
+            if not worktree_id or not branch or worktree_path.is_symlink():
+                return {"success": False, "error": "worktree ownership metadata is incomplete"}
+            expected_repo = Path(task.context.repository_id or ".").expanduser().resolve(strict=False)
+            if repo_value != expected_repo:
+                return {"success": False, "error": "worktree repository does not match task context"}
+            created_at = float(wt["created_at"])
+            ttl_seconds = float(wt["ttl_seconds"])
+            expires_at = float(wt["expires_at"])
+            if (
+                not math.isfinite(created_at)
+                or not math.isfinite(ttl_seconds)
+                or not math.isfinite(expires_at)
+                or ttl_seconds < 60.0
+                or ttl_seconds > 30 * 24 * 60 * 60.0
+                or abs(expires_at - (created_at + ttl_seconds)) > 0.001
+            ):
+                return {"success": False, "error": "worktree lifetime metadata is inconsistent"}
+
+            if wt.get("cleanup_success") and not worktree_path.exists():
+                return {"success": True, "had_worktree": True, "already_cleaned": True}
+            ownership = get_git_worktree_ownership(repo_value, worktree_path)
+            if ownership is None:
+                return {"success": False, "error": "live worktree ownership marker is missing"}
+            expected_fields = (
+                "worktree_id",
+                "task_id",
+                "owner",
+                "repo_root",
+                "worktree_path",
+                "branch",
+                "created_at",
+                "ttl_seconds",
+                "expires_at",
+            )
+            if any(ownership.get(field) != wt.get(field) for field in expected_fields):
+                return {"success": False, "error": "worktree ownership metadata was tampered"}
+
+            rm_res = remove_git_worktree(
+                repo_value,
+                worktree_path,
+                delete_branch=delete_branch,
+                branch_name=branch,
+                worktree_id=worktree_id,
+                expected_metadata=wt,
+            )
+            if not rm_res.get("success"):
+                return {"success": False, "had_worktree": True, "cleanup": rm_res, "error": rm_res.get("error", "cleanup failed")}
+
+            cleaned_at = time.time()
+            cleaned_wt = {**wt, "cleanup_success": True, "cleaned_at": cleaned_at}
+            state_data = {**task.checkpoint.state_data, "worktree": cleaned_wt}
+            updated_checkpoint = TaskCheckpoint(
+                phase=task.checkpoint.phase,
+                next_action=task.checkpoint.next_action,
+                affected_paths=task.checkpoint.affected_paths,
+                evidence_ids=task.checkpoint.evidence_ids,
+                blockers=task.checkpoint.blockers,
+                state_data=state_data,
+            )
+            updated = self.checkpoint(
+                task_id,
+                updated_checkpoint,
+                actor=actor_value,
+                idempotency_key=f"cleanup_{task_id}_{worktree_id}",
+            )
+            return {
+                "success": True,
+                "had_worktree": True,
+                "cleanup": rm_res,
+                "cleaned_at": cleaned_at,
+                "task": updated.to_dict(),
+            }
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
@@ -1950,6 +2304,7 @@ class TaskStore:
                         state.updated_at,
                     ),
                 )
+                self._refresh_task_search_index(con, state.task_id)
                 con.execute("COMMIT")
             except Exception:
                 try:
@@ -1975,7 +2330,10 @@ class TaskStore:
             "task_id": state.context.task_id,
             "session_id": state.context.session_id,
         })
-        def _write(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
+        published: list[AgentEvent] = []
+
+        def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
+            published.clear()
             try:
                 con.execute("BEGIN IMMEDIATE")
                 existing = con.execute(
@@ -2021,7 +2379,7 @@ class TaskStore:
                         state.updated_at,
                     ),
                 )
-                pending_events: list[AgentEvent] = []
+                self._refresh_task_search_index(con, state.task_id)
                 if not existing:
                     appended = self.state_store.append_in_transaction(
                         con, event, strict_idempotency=True
@@ -2031,17 +2389,18 @@ class TaskStore:
                     if appended.duplicate:
                         raise RuntimeError("task projection/event idempotency mismatch")
                     if appended.event:
-                        pending_events.append(appended.event)
+                        published.append(appended.event)
                 con.execute("COMMIT")
-                return state, pending_events
+                return state, published
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-
-        return self._run_ordered_task_write(_write, timeout_seconds=0.25)
+        return self._run_ordered_task_write(
+            _do_commit, timeout_seconds=0.25
+        )
 
     def _commit_update(
         self,
@@ -2100,8 +2459,10 @@ class TaskStore:
             current.heartbeat_expires_at,
             current.updated_at,
         )
-        def _write(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
-            pending_events: list[AgentEvent] = []
+        published: list[AgentEvent] = []
+
+        def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
+            published.clear()
             try:
                 con.execute("BEGIN IMMEDIATE")
                 if event.idempotency_key:
@@ -2129,8 +2490,9 @@ class TaskStore:
                         ).fetchone()
                         if not current_row:
                             raise RuntimeError("task event exists without its durable projection")
+                        replayed = self._row_to_state(current_row)
                         con.execute("COMMIT")
-                        return self._row_to_state(current_row), pending_events
+                        return replayed, []
 
                 con.execute(
                     """
@@ -2147,6 +2509,7 @@ class TaskStore:
                     raise ConcurrentTaskUpdateError(
                         f"Task {current.task_id} changed during transition; reload and retry"
                     )
+                self._refresh_task_search_index(con, updated.task_id)
                 appended = self.state_store.append_in_transaction(
                     con, event, strict_idempotency=True
                 )
@@ -2155,17 +2518,18 @@ class TaskStore:
                 if appended.duplicate:
                     raise RuntimeError("task projection/event idempotency mismatch")
                 if appended.event:
-                    pending_events.append(appended.event)
+                    published.append(appended.event)
                 con.execute("COMMIT")
-                return updated, pending_events
+                return updated, published
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-
-        return self._run_ordered_task_write(_write, timeout_seconds=0.25)
+        return self._run_ordered_task_write(
+            _do_commit, timeout_seconds=0.25
+        )
 
     def _row_to_state(self, row: tuple[Any, ...]) -> TaskState:
         (
@@ -2183,12 +2547,16 @@ class TaskStore:
         ) = row
         contract_data = json.loads(contract_raw)
         if not str(contract_data.get("goal", "")).strip():
-            # V4 rejects empty goals for new contracts, but older persisted
-            # projections may still contain one. Keep those tasks loadable and
-            # make the missing intent explicit instead of returning blank
-            # task context or failing the entire Agent OS startup.
             contract_data = dict(contract_data)
-            contract_data["goal"] = f"Legacy task contract: {task_id}"
+            legacy_title = str(contract_data.get("title", "")).strip()
+            if legacy_title:
+                contract_data["goal"] = legacy_title
+            else:
+                # V4 rejects empty goals for new contracts, but older persisted
+                # projections may still contain one. Keep those tasks loadable and
+                # make the missing intent explicit instead of returning blank
+                # task context or failing the entire Agent OS startup.
+                contract_data["goal"] = f"Legacy task contract: {task_id}"
         contract = GoalContract.from_dict(contract_data)
         ctx_data = json.loads(context_raw)
         context = ScopeContext(
@@ -2292,4 +2660,3 @@ class TaskStore:
             "output_path": str(out_file),
             "format": format,
         }
-

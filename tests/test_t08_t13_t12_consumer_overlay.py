@@ -15,9 +15,9 @@ def test_t13_async_job_tracks_actual_t12_service_until_drain(tmp_path: Path):
     t13_root = Path(os.environ.get("T08_T13_WORKTREE", ""))
     t12_root = Path(os.environ.get("T08_T12_WORKTREE", ""))
     candidate_root = Path(__file__).resolve().parents[1]
-    if not (t13_root / "src/local_ai_hub/app.py").is_file():
+    if not os.environ.get("T08_T13_WORKTREE") or not (t13_root / "src/local_ai_hub/app.py").is_file():
         pytest.skip("set T08_T13_WORKTREE to existing T13 candidate")
-    if not (t12_root / "src/local_ai_hub/services.py").is_file():
+    if not os.environ.get("T08_T12_WORKTREE") or not (t12_root / "src/local_ai_hub/services.py").is_file():
         pytest.skip("set T08_T12_WORKTREE to existing T12 candidate")
 
     overlay_package = tmp_path / "overlay" / "local_ai_hub"
@@ -123,6 +123,14 @@ def test_t13_async_job_tracks_actual_t12_service_until_drain(tmp_path: Path):
         app.embeddings = None
         app.reranker = None
         app.debug_traces = None
+        class Telemetry:
+            @staticmethod
+            def record_system(*_args, **_kwargs):
+                return None
+            @staticmethod
+            def record_error(*_args, **_kwargs):
+                return None
+        app.telemetry = Telemetry()
         class Recovery:
             @staticmethod
             def fingerprint_payload(_payload):

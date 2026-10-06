@@ -414,6 +414,26 @@ def test_t08_store_writers_publish_same_stream_in_commit_order(tmp_path, monkeyp
     assert len(seqs) >= 2
     state_store.unsubscribe(subscriber)
 
+def test_ordered_event_publication_rejects_committed_row_content_mismatch(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    state_store = AgentStateStore(db_path)
+    state_store._ensure_schema()
+    with closing(connect_sqlite(db_path, isolation_level=None)) as con:
+        con.execute("BEGIN IMMEDIATE")
+        result = state_store.append_in_transaction(
+            con, AgentEvent.create("task:publication-row", "task.created", {"n": 1})
+        )
+        con.execute("COMMIT")
+    subscriber = state_store.subscribe()
+    forged = replace(result.event, payload={"n": 2})
+
+    with closing(connect_sqlite(db_path, isolation_level=None)) as con:
+        with state_store.ordered_event_publication(con) as publish_committed:
+            with pytest.raises(RuntimeError, match="event is not committed"):
+                publish_committed([forged])
+
+    assert subscriber.empty()
+    state_store.unsubscribe(subscriber)
 
 @pytest.mark.parametrize("batch_kind", ("duplicate", "out_of_order"))
 def test_ordered_event_publication_rejects_duplicate_or_out_of_order_batch(
@@ -442,7 +462,6 @@ def test_ordered_event_publication_rejects_duplicate_or_out_of_order_batch(
     assert subscriber.empty()
     state_store.unsubscribe(subscriber)
 
-
 def test_ordered_event_publication_rejects_publish_after_scope_closes(tmp_path):
     db_path = tmp_path / "agent_state.sqlite3"
     state_store = AgentStateStore(db_path)
@@ -458,28 +477,6 @@ def test_ordered_event_publication_rejects_publish_after_scope_closes(tmp_path):
 
         with pytest.raises(RuntimeError, match="scope is closed"):
             publish_committed([result.event])
-
-    assert subscriber.empty()
-    state_store.unsubscribe(subscriber)
-
-
-def test_ordered_event_publication_rejects_committed_row_content_mismatch(tmp_path):
-    db_path = tmp_path / "agent_state.sqlite3"
-    state_store = AgentStateStore(db_path)
-    state_store._ensure_schema()
-    with closing(connect_sqlite(db_path, isolation_level=None)) as con:
-        con.execute("BEGIN IMMEDIATE")
-        result = state_store.append_in_transaction(
-            con, AgentEvent.create("task:publication-row", "task.created", {"n": 1})
-        )
-        con.execute("COMMIT")
-    subscriber = state_store.subscribe()
-    forged = replace(result.event, payload={"n": 2})
-
-    with closing(connect_sqlite(db_path, isolation_level=None)) as con:
-        with state_store.ordered_event_publication(con) as publish_committed:
-            with pytest.raises(RuntimeError, match="event is not committed"):
-                publish_committed([forged])
 
     assert subscriber.empty()
     state_store.unsubscribe(subscriber)

@@ -92,8 +92,9 @@ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(
     )
     app.agent_tasks.checkpoint(t.task_id, chk, actor="agent", idempotency_key="chk-1")
 
-    # Persist matching command evidence before recording the trusted receipt.
+    # Record trusted command proof
     command_id = "cmd-resume-tests"
+    repository_revision = "rev-1"
     proof = {
         "kind": "work_command_verification",
         "passed": True,
@@ -102,26 +103,20 @@ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(
         "criterion": "suite_passed",
         "command_id": command_id,
         "exit_code": 0,
-        "repository_revision": revision,
+        "repository_revision": repository_revision,
         "mutation_generation": 0,
         "result": {"success": True, "exit_code": 0},
     }
     evidence_id = app.artifacts.put_json(proof, t.owner, "command_verification")
-    receipt_identity = {}
-    if "owner" in VerificationReceipt.__dataclass_fields__:
-        receipt_identity = {
-            "owner": t.owner,
-            "mutation_generation": 0,
-            "evidence_type": "test",
-        }
     rcpt = VerificationReceipt.create(
         task_id=t.task_id,
         criterion="suite_passed",
         passed=True,
         evidence_id=evidence_id,
         command_id=command_id,
-        repository_revision=revision,
-        **receipt_identity,
+        owner=t.owner,
+        repository_revision=repository_revision,
+        evidence_type="test",
     )
     app.agent_verification.record(rcpt)
 
@@ -204,8 +199,9 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path, monkeypatch: pytest.Mon
     with pytest.raises(CompletionGateError):
         app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="premature", actor="agent", idempotency_key="g-fail")
 
-    # Persist matching command evidence before recording the trusted test receipt.
-    test_command_id = "cmd-gate-tests"
+    # Record trusted test proof
+    test_command_id = "cmd-tests"
+    repository_revision = "rev-1"
     test_proof = {
         "kind": "work_command_verification",
         "passed": True,
@@ -214,26 +210,15 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path, monkeypatch: pytest.Mon
         "criterion": "tests_pass",
         "command_id": test_command_id,
         "exit_code": 0,
-        "repository_revision": revision,
+        "repository_revision": repository_revision,
         "mutation_generation": 0,
         "result": {"success": True, "exit_code": 0},
     }
     test_evidence = app.artifacts.put_json(test_proof, t.owner, "command_verification")
-    test_receipt_identity = {}
-    if "owner" in VerificationReceipt.__dataclass_fields__:
-        test_receipt_identity = {
-            "owner": t.owner,
-            "mutation_generation": 0,
-            "evidence_type": "test",
-        }
     r1 = VerificationReceipt.create(
-        task_id=t.task_id,
-        criterion="tests_pass",
-        passed=True,
-        evidence_id=test_evidence,
-        command_id=test_command_id,
-        repository_revision=revision,
-        **test_receipt_identity,
+        task_id=t.task_id, criterion="tests_pass", passed=True, evidence_id=test_evidence,
+        command_id=test_command_id, owner=t.owner,
+        repository_revision=repository_revision, mutation_generation=0, evidence_type="test",
     )
     app.agent_verification.record(r1)
 
@@ -241,31 +226,21 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path, monkeypatch: pytest.Mon
     with pytest.raises(CompletionGateError):
         app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="still missing", actor="agent", idempotency_key="g-fail2")
 
-    # Persist matching source-review evidence before recording its receipt.
+    # Record trusted review proof
     review_proof = {
         "kind": "work_source_review",
         "passed": True,
         "task_id": t.task_id,
         "owner": t.owner,
-        "repository_revision": revision,
+        "repository_revision": repository_revision,
         "mutation_generation": 0,
         "criteria": ["lint_pass"],
     }
     review_evidence = app.artifacts.put_json(review_proof, t.owner, "source_review")
-    review_receipt_identity = {}
-    if "owner" in VerificationReceipt.__dataclass_fields__:
-        review_receipt_identity = {
-            "owner": t.owner,
-            "mutation_generation": 0,
-            "evidence_type": "source_review",
-        }
     r2 = VerificationReceipt.create(
-        task_id=t.task_id,
-        criterion="lint_pass",
-        passed=True,
-        evidence_id=review_evidence,
-        repository_revision=revision,
-        **review_receipt_identity,
+        task_id=t.task_id, criterion="lint_pass", passed=True, evidence_id=review_evidence,
+        owner=t.owner, repository_revision=repository_revision,
+        mutation_generation=0, evidence_type="source_review",
     )
     app.agent_verification.record(r2)
 

@@ -21,6 +21,20 @@ def _capture(store: IncidentStore, root: Path, tenant: str, *, error: str = "sam
     )
 
 
+def test_scoped_negative_knowledge_returns_no_rows_for_non_positive_limit(tmp_path: Path):
+    store = IncidentStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
+    root = tmp_path / "repo"
+    root.mkdir()
+    _capture(store, root, "tenant-alpha")
+
+    assert store.find_negative_knowledge(
+        "failure", limit=0, root=str(root), tenant="tenant-alpha"
+    ) == []
+    assert store.find_negative_knowledge(
+        "failure", limit=-1, root=str(root), tenant="tenant-alpha"
+    ) == []
+
+
 def test_scoped_negative_knowledge_requires_exact_repository_and_tenant(tmp_path: Path):
     store = IncidentStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
     root_a = tmp_path / "repo-a"
@@ -107,7 +121,6 @@ def test_get_preserves_hashed_incident_scope_provenance(tmp_path: Path):
     assert str(root) not in repr(loaded.to_dict())
     assert "tenant-alpha" not in repr(loaded.to_dict())
 
-
 def test_scoped_incident_attempts_do_not_aggregate_across_repository_or_tenant(tmp_path: Path):
     store = IncidentStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
     root_a = tmp_path / "repo-a"
@@ -126,13 +139,3 @@ def test_scoped_incident_attempts_do_not_aggregate_across_repository_or_tenant(t
     assert other_repository.attempts == 1
     assert other_tenant.incident_id != first.incident_id
     assert other_tenant.attempts == 1
-
-
-def test_scoped_negative_knowledge_returns_no_rows_for_non_positive_limit(tmp_path: Path):
-    store = IncidentStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
-    root = tmp_path / "repo"
-    root.mkdir()
-    _capture(store, root, "tenant-alpha")
-
-    assert store.find_negative_knowledge("scope", limit=0, root=str(root), tenant="tenant-alpha") == []
-    assert store.find_negative_knowledge("scope", limit=-1, root=str(root), tenant="tenant-alpha") == []

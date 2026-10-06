@@ -472,4 +472,3 @@ def test_add_verification_receipt_wrapper_rolls_back_when_event_append_fails(tmp
     assert state_store.event_page(stream_id)["events"] == before
     assert subscriber.empty()
     state_store.unsubscribe(subscriber)
-

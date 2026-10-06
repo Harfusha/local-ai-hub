@@ -12,7 +12,14 @@ import pytest
 from local_ai_hub.agent_blackboard import BlackboardStore
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
-from local_ai_hub.agent_memory import AgentScope, MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
+from local_ai_hub.agent_memory import (
+    AgentScope,
+    MemoryKind,
+    MemoryRecord,
+    MemoryStatus,
+    MemoryStore,
+    _memory_event_stream_id,
+)
 from local_ai_hub.agent_tasks import (
     GoalContract,
     ScopeContext,
@@ -322,11 +329,16 @@ def test_committed_task_completion_survives_restart_before_publish(tmp_path, mon
         if key in supported:
             receipt_kwargs[key] = value
     verifications.record(VerificationReceipt.create(task_id, "tests", **receipt_kwargs))
-    project_config = ModuleType("local_ai_hub.project_config")
-    project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
-        settings=SimpleNamespace(verification_rules={}, commands={})
+    from local_ai_hub import project_config
+
+    monkeypatch.setattr(
+        project_config,
+        "resolve_project_context",
+        lambda root, state_dir: SimpleNamespace(
+            settings=SimpleNamespace(verification_rules={}, commands={}),
+            config_digest="cfg-test",
+        ),
     )
-    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
     tasks.transition(
         task_id,
         TaskStatus.ACTIVE,
@@ -393,6 +405,7 @@ def test_committed_memory_record_survives_restart_before_publish(tmp_path, monke
         scope_id="task-restart-memory",
         key="durable-fact",
         value={"value": 42},
+        provenance={"root": str(tmp_path), "tenant": "tenant-a"},
     )
 
     monkeypatch.setattr(state_store, "_publish", _interrupt_before_publish)
@@ -401,11 +414,17 @@ def test_committed_memory_record_survives_restart_before_publish(tmp_path, monke
 
     restarted_store = AgentStateStore(db_path)
     restarted_memory = MemoryStore(restarted_store)
-    saved = restarted_memory.get(record.record_id)
+    saved = restarted_memory.get(
+        record.record_id,
+        task_id="task-restart-memory",
+        root=str(tmp_path),
+        tenant="tenant-a",
+    )
     assert saved is not None and saved.value == {"value": 42}
-    assert [event.kind for event in restarted_store.events("memory:task:durable-fact")] == [
-        "memory.recorded"
-    ]
+    stream_id = _memory_event_stream_id(
+        AgentScope.TASK, "task-restart-memory", "durable-fact"
+    )
+    assert [event.kind for event in restarted_store.events(stream_id)] == ["memory.recorded"]
 
 
 def test_committed_receipt_and_task_projection_survive_restart_before_publish(
@@ -704,6 +723,7 @@ def test_committed_compaction_group_survives_restart_before_publish(tmp_path, mo
                 scope_id="task-restart-compact",
                 key=f"source-{index}",
                 value={"index": index},
+                provenance={"root": str(tmp_path), "tenant": "tenant-a"},
             )
         )
 
@@ -716,22 +736,31 @@ def test_committed_compaction_group_survives_restart_before_publish(tmp_path, mo
     active = restarted_memory.find(
         scope=AgentScope.TASK,
         scope_id="task-restart-compact",
+        task_id="task-restart-compact",
+        root=str(tmp_path),
+        tenant="tenant-a",
         status=MemoryStatus.ACTIVE,
     )
     superseded = restarted_memory.find(
         scope=AgentScope.TASK,
         scope_id="task-restart-compact",
+        task_id="task-restart-compact",
+        root=str(tmp_path),
+        tenant="tenant-a",
         status=MemoryStatus.SUPERSEDED,
     )
     assert len(active) == 1 and active[0].key.startswith("compacted_fact_")
-    assert len(superseded) == 2
+    assert active[0].scope_id == "task-restart-compact"
+    assert active[0].provenance == {"root": str(tmp_path), "tenant": "tenant-a"}
+    assert {item.key for item in superseded} == {"source-0", "source-1"}
+    assert all(item.status is MemoryStatus.SUPERSEDED for item in superseded)
     assert all(item.supersedes_record_id == active[0].record_id for item in superseded)
     with closing(sqlite3.connect(db_path)) as con:
         assert con.execute(
             "SELECT COUNT(*) FROM agent_entity_relations WHERE relation = 'compacted_into'"
         ).fetchone()[0] == 2
     compact_events = restarted_store.events(
-        f"memory:{active[0].scope.value}:{active[0].key}"
+        _memory_event_stream_id(active[0].scope, active[0].scope_id, active[0].key)
     )
     assert any(event.kind == "memory.compacted" for event in compact_events)
     assert restarted_memory.compact(min_records=2)["compacted_groups"] == 0
@@ -748,6 +777,7 @@ def test_compaction_preserves_scope_identity_and_never_merges_tasks(tmp_path):
                     scope_id=task_id,
                     key=f"{task_id}-fact-{index}",
                     value={"index": index},
+                    provenance={"root": str(tmp_path), "tenant": "tenant-a"},
                 )
             )
 
@@ -760,6 +790,9 @@ def test_compaction_preserves_scope_identity_and_never_merges_tasks(tmp_path):
         scoped = memory.find(
             scope=AgentScope.TASK,
             scope_id=task_id,
+            task_id=task_id,
+            root=str(tmp_path),
+            tenant="tenant-a",
             status=MemoryStatus.ACTIVE,
         )
         assert len(scoped) == 1
@@ -786,6 +819,11 @@ def test_compaction_digest_keys_are_unique_across_provenance_groups(tmp_path):
     assert compacted["compacted_groups"] == 2
     digests = compacted["created_records"]
     assert len({record["key"] for record in digests}) == 2
+    assert {record["scope_id"] for record in digests} == {"task-same-scope-id"}
+    assert {record["provenance"]["root"] for record in digests} == {
+        "C:/repo/one",
+        "C:/repo/two",
+    }
     assert {record["provenance"]["root"] for record in digests} == {
         "C:/repo/one",
         "C:/repo/two",
@@ -835,10 +873,12 @@ def test_committed_memory_expiration_survives_restart_before_publish(tmp_path, m
     restarted_store = AgentStateStore(db_path)
     restarted_memory = MemoryStore(restarted_store)
     assert restarted_memory.get(record.record_id) is None
-    assert [event.kind for event in restarted_store.events("memory:task:expires")] == [
-        "memory.recorded",
-        "memory.expired",
-    ]
+    assert [
+        event.kind
+        for event in restarted_store.events(
+            _memory_event_stream_id(record.scope, record.scope_id, record.key)
+        )
+    ] == ["memory.recorded", "memory.expired"]
 
 
 def test_committed_memory_revision_staleness_survives_restart_before_publish(
@@ -856,6 +896,7 @@ def test_committed_memory_revision_staleness_survives_restart_before_publish(
             status=MemoryStatus.CONFIRMED,
             provenance={
                 "root": str(tmp_path),
+                "tenant": "tenant-a",
                 "repository_revision": "rev-1",
                 "path_refs": ["src/parser.py"],
             },
@@ -868,9 +909,16 @@ def test_committed_memory_revision_staleness_survives_restart_before_publish(
 
     restarted_store = AgentStateStore(db_path)
     restarted_memory = MemoryStore(restarted_store)
-    stale = restarted_memory.get(record.record_id)
+    stale = restarted_memory.get(
+        record.record_id,
+        scope=AgentScope.REPOSITORY,
+        root=str(tmp_path),
+        tenant="tenant-a",
+    )
     assert stale is not None and stale.status is MemoryStatus.STALE
-    events = restarted_store.events("memory:repository:parser")
+    events = restarted_store.events(
+        _memory_event_stream_id(record.scope, record.scope_id, record.key)
+    )
     assert [event.kind for event in events] == ["memory.recorded", "memory.staled"]
 
 
@@ -885,16 +933,31 @@ def test_committed_memory_quarantine_survives_restart_before_publish(tmp_path, m
             scope_id="task-restart-quarantine",
             key="conflict",
             value={"answer": "old"},
+            provenance={"root": str(tmp_path), "tenant": "tenant-a"},
         )
     )
 
     monkeypatch.setattr(state_store, "_publish", _interrupt_before_publish)
     with pytest.raises(SystemExit, match="after commit"):
-        memory.quarantine(record.record_id, "conflicting evidence", actor="test")
+        memory.quarantine(
+            record.record_id,
+            "conflicting evidence",
+            actor="test",
+            task_id="task-restart-quarantine",
+            root=str(tmp_path),
+            tenant="tenant-a",
+        )
 
     restarted_store = AgentStateStore(db_path)
     restarted_memory = MemoryStore(restarted_store)
-    quarantined = restarted_memory.get(record.record_id)
+    quarantined = restarted_memory.get(
+        record.record_id,
+        task_id="task-restart-quarantine",
+        root=str(tmp_path),
+        tenant="tenant-a",
+    )
     assert quarantined is not None and quarantined.status is MemoryStatus.QUARANTINED
-    events = restarted_store.events("memory:task:conflict")
+    events = restarted_store.events(
+        _memory_event_stream_id(record.scope, record.scope_id, record.key)
+    )
     assert [event.kind for event in events] == ["memory.recorded", "memory.quarantined"]

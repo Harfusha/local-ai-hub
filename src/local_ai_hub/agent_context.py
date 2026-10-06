@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from .json_utils import dumps as json_dumps
-
 import hashlib
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -16,6 +15,14 @@ from typing import Any, Collection, Mapping
 
 from .agent_events import AgentStateStore
 from .agent_memory import MemoryStatus, MemoryStore
+from .context_identity import (
+    ContextPathHint,
+    combine_settings_digests,
+    context_path_hints_identity,
+    normalize_context_root,
+)
+from .json_utils import backend_name as json_backend_name
+from .json_utils import dumps as json_dumps
 from .sqlite_support import connect_sqlite, retry_busy
 
 
@@ -40,6 +47,9 @@ class ContextRequest:
     repo_revision: str = ""
     since_hash: str = ""
     coordination_id: str = ""
+    settings_digest: str | None = None
+    path_hints: tuple[ContextPathHint, ...] = ()
+    identity: str = ""
 
 
 @dataclass(frozen=True)
@@ -75,6 +85,35 @@ class ContextElement:
         }
 
 
+def _orjson_canonical_value(value: Any, ancestors: set[int] | None = None) -> bool:
+    """Return whether orjson preserves stdlib JSON spelling for this value tree."""
+    value_type = type(value)
+    if value is None or value_type in (str, bool):
+        return True
+    if value_type is int:
+        return -(1 << 63) <= value < (1 << 64)
+    if value_type is float:
+        return math.isfinite(value) and "e" not in repr(value).lower()
+    if value_type not in (dict, list, tuple):
+        return False
+
+    if ancestors is None:
+        ancestors = set()
+    identity = id(value)
+    if identity in ancestors:
+        return False
+    ancestors.add(identity)
+    try:
+        if value_type is dict:
+            return all(
+                type(key) is str and _orjson_canonical_value(item, ancestors)
+                for key, item in value.items()
+            )
+        return all(_orjson_canonical_value(item, ancestors) for item in value)
+    finally:
+        ancestors.remove(identity)
+
+
 @dataclass(frozen=True)
 class CompiledContext:
     elements: list[ContextElement]
@@ -89,6 +128,7 @@ class CompiledContext:
     warnings: tuple[dict[str, Any], ...] = ()
     delta_from: str = ""
     unchanged: bool = False
+    request_identity_digest: str = ""
 
     def text(self) -> str:
         return "\n\n".join(el.content for el in self.elements)
@@ -97,17 +137,39 @@ class CompiledContext:
         h = hashlib.sha1(usedforsecurity=False)
         h.update(self.phase.encode("utf-8"))
         h.update(self.repo_revision.encode("utf-8"))
-        request_identity_digest = getattr(self, "request_identity_digest", "")
-        h.update(request_identity_digest.encode("ascii", errors="ignore"))
-        encoder = json.JSONEncoder(
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
+        h.update(self.request_identity_digest.encode("ascii", errors="ignore"))
         for el in self.elements:
-            for chunk in encoder.iterencode(el.to_dict(compact=False)):
-                h.update(chunk.encode("utf-8", errors="replace"))
+            element_data = el.to_dict(compact=False)
+            if (
+                len(el.content) >= 768
+                and json_backend_name() == "orjson"
+                and _orjson_canonical_value(element_data)
+            ):
+                try:
+                    serialized = json_dumps(
+                        element_data,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    serialized = json.dumps(
+                        element_data,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    )
+            else:
+                serialized = json.dumps(
+                    element_data,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                )
+            h.update(serialized.encode("utf-8", errors="replace"))
         return h.hexdigest()[:12]
 
     def to_dict(self, compact: bool = False) -> dict[str, Any]:
@@ -213,7 +275,7 @@ class ContextCompiler:
         self.config = dict(config or {})
         self._lock = threading.RLock()
         self._initialized = False
-        self._context_history: dict[str, tuple[ContextElement, ...]] = {}
+        self._context_history: dict[str, tuple[str, tuple[ContextElement, ...]]] = {}
         self._init_table()
 
     def _init_table(self) -> None:
@@ -415,18 +477,36 @@ class ContextCompiler:
         return retry_busy(_do_get, retries=5, base_delay_seconds=0.02)
 
     def _preload_config(self, request: ContextRequest) -> dict[str, Any]:
+        return self._preload_settings(request.preload_profile)
+
+    def _preload_settings(self, preload_profile: str) -> dict[str, Any]:
         context_config = self.config.get("context", {})
         raw = context_config.get("preloads", {}) if isinstance(context_config, Mapping) else {}
         if not isinstance(raw, Mapping):
             return {}
         settings = dict(raw)
-        profile = request.preload_profile.strip()
+        profile = str(preload_profile or "").strip()
         profiles = raw.get("profiles", {})
         if profile and isinstance(profiles, Mapping) and isinstance(profiles.get(profile), Mapping):
             settings.update(profiles[profile])
         elif profile and isinstance(raw.get(profile), Mapping):
             settings.update(raw[profile])
         return settings
+
+    def settings_digest_for_profile(self, preload_profile: str = "") -> str:
+        profile = str(preload_profile or "").strip()[:120]
+        payload = {
+            "preload_profile": profile,
+            "effective_preload_settings": self._preload_settings(profile),
+        }
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return hashlib.sha256(canonical.encode("utf-8", errors="replace")).hexdigest()[:32]
 
     @staticmethod
     def _warning(code: str, message: str, **details: Any) -> dict[str, Any]:
@@ -531,30 +611,36 @@ class ContextCompiler:
                         include_kinds=tuple(str(kind) for kind in memory_kinds),
                         limit=max_memory,
                     )
-                except TypeError:
-                    records = find_for_context(root=request.root, task_id=request.task_id, limit=max_memory)
-                records = [
-                    record
-                    for record in records
-                    if _memory_record_matches_tenant(
-                        record, request.tenant
-                    )
-                ]
-                for record in records[:max_memory]:
-                    content = f"[{record.kind.value.upper()}] {record.key}: {record.value}"
-                    evidence_ids = tuple(record.evidence_ids)
-                    elements.append((
-                        86,
-                        ContextElement(
-                            element_id=f"preload_memory_{record.record_id}",
-                            source_kind="preload_memory",
-                            content=content,
-                            estimated_tokens=_estimate_tokens(content),
-                            reason="configured memory-kind preload",
-                            confidence=record.confidence,
-                            freshness=record.updated_at,
-                            provenance={"record_id": record.record_id, "evidence_ids": evidence_ids},
-                        ),
+                    iterator = iter(records)
+                    memory_elements: list[tuple[int, ContextElement]] = []
+                    for _ in range(max_memory):
+                        try:
+                            record = next(iterator)
+                        except StopIteration:
+                            break
+                        if not _memory_record_matches_tenant(record, request.tenant or request.session_id):
+                            continue
+                        content = f"[{record.kind.value.upper()}] {record.key}: {record.value}"
+                        evidence_ids = tuple(record.evidence_ids)
+                        memory_elements.append((
+                            86,
+                            ContextElement(
+                                element_id=f"preload_memory_{record.record_id}",
+                                source_kind="preload_memory",
+                                content=content,
+                                estimated_tokens=_estimate_tokens(content),
+                                reason="configured memory-kind preload",
+                                confidence=record.confidence,
+                                freshness=record.updated_at,
+                                provenance={"record_id": record.record_id, "evidence_ids": evidence_ids},
+                            ),
+                        ))
+                    elements.extend(memory_elements)
+                except Exception as exc:
+                    warnings.append(self._warning(
+                        "memory_preload_unavailable",
+                        "scoped memory preload unavailable",
+                        error=type(exc).__name__,
                     ))
         return elements
 
@@ -605,6 +691,36 @@ class ContextCompiler:
             request.changed_paths,
             request.root,
         )
+        settings_digest = combine_settings_digests(
+            request.settings_digest,
+            self.settings_digest_for_profile(request.preload_profile),
+        )
+        path_hints = context_path_hints_identity(request.path_hints)
+        identity_inputs = {
+            "task_id": request.task_id,
+            "root": normalize_context_root(request.root),
+            "tenant": request.tenant,
+            "identity": request.identity,
+            "clone_id": request.clone_id,
+            "worktree_id": request.worktree_id,
+            "branch": request.branch,
+            "repository_id": request.repository_id,
+            "session_id": request.session_id,
+            "repo_revision": effective_revision,
+            "phase": request.phase,
+            "focus": request.focus,
+            "preload_profile": request.preload_profile,
+            "include_kinds": request.include_kinds,
+            "changed_paths": changed_paths,
+            "token_budget": request.token_budget,
+            "include_diagnostics": request.include_diagnostics,
+            "settings_digest": settings_digest,
+            "path_hints": path_hints,
+        }
+        identity_canonical = json.dumps(
+            identity_inputs, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+        )
+        request_identity_digest = hashlib.sha256(identity_canonical.encode("utf-8", "replace")).hexdigest()[:32]
         if changed_paths:
             if self.memory_store is not None and request.root and effective_revision:
                 mark_stale = getattr(self.memory_store, "mark_stale_for_revision", None)
@@ -734,17 +850,25 @@ class ContextCompiler:
             context_tenant = request.tenant
             find_for_context = getattr(self.memory_store, "find_for_context", None)
             if callable(find_for_context):
-                records = find_for_context(
-                    root=request.root,
-                    task_id=request.task_id,
-                    tenant=context_tenant,
-                    session_id=request.session_id,
-                    clone_id=request.clone_id,
-                    worktree_id=request.worktree_id,
-                    branch=request.branch,
-                    coordination_id=request.coordination_id,
-                    limit=20,
-                )
+                try:
+                    records = find_for_context(
+                        root=request.root,
+                        task_id=request.task_id,
+                        tenant=context_tenant,
+                        session_id=request.session_id,
+                        clone_id=request.clone_id,
+                        worktree_id=request.worktree_id,
+                        branch=request.branch,
+                        coordination_id=request.coordination_id,
+                        limit=20,
+                    )
+                except Exception as exc:
+                    records = []
+                    warnings.append(self._warning(
+                        "memory_context_unavailable",
+                        "scoped memory context unavailable",
+                        error=type(exc).__name__,
+                    ))
             else:
                 # A generic store cannot guarantee SQL-side status/scope/root
                 # filtering before its limit. Omit memory rather than allowing
@@ -1019,6 +1143,7 @@ class ContextCompiler:
             repo_revision=effective_revision,
             stale=not self.state_store.enabled,
             warnings=tuple(warnings[:32]),
+            request_identity_digest=request_identity_digest,
         )
         current_etag = compiled.etag()
         if request.since_hash:
@@ -1034,7 +1159,12 @@ class ContextCompiler:
                     unchanged=True,
                 )
             else:
-                previous = self._context_history.get(request.since_hash)
+                previous_record = self._context_history.get(request.since_hash)
+                previous = (
+                    previous_record[1]
+                    if previous_record is not None and previous_record[0] == request_identity_digest
+                    else None
+                )
                 if previous is not None:
                     previous_by_id = {element.element_id: element.content for element in previous}
                     delta_elements = [
@@ -1052,7 +1182,7 @@ class ContextCompiler:
                     )
                 else:
                     compiled = replace(compiled, delta_from=request.since_hash)
-        self._context_history[current_etag] = tuple(final_elements)
+        self._context_history[current_etag] = (request_identity_digest, tuple(final_elements))
         if len(self._context_history) > 32:
             oldest = next(iter(self._context_history))
             self._context_history.pop(oldest, None)

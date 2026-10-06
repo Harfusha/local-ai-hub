@@ -301,7 +301,7 @@ class IncidentStore:
                                 con.execute("ALTER" + " TABLE agent_incidents ADD COLUMN incident_id TEXT NOT NULL DEFAULT ''")
                                 con.execute("UPDATE agent_incidents SET incident_id = 'legacy-' || rowid WHERE incident_id = ''")
                             for column, definition in missing_columns:
-                                con.execute(f"ALTER" + f" TABLE agent_incidents ADD COLUMN {column} {definition}")
+                                con.execute("ALTER" + f" TABLE agent_incidents ADD COLUMN {column} {definition}")
                         con.execute(
                             """
                             CREATE TABLE IF NOT EXISTS agent_incidents (
@@ -947,11 +947,13 @@ class IncidentStore:
         tenant_key = _incident_scope_key("tenant", tenant)
         if not repository_key or not tenant_key:
             return []
+        scoped = True
+        scope_sql = "WHERE repository_key = ? AND tenant_key = ?"
         scope_params = (repository_key, tenant_key)
         con = connect_sqlite(self.state_store.db_path)
         try:
             cur = con.execute(
-                """
+                f"""
                 WITH ranked AS (
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, root_cause, verified_fix, confidence,
