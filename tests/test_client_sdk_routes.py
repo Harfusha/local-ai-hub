@@ -102,11 +102,13 @@ def test_verification_sdk_methods_forward_root_through_allowed_http_route(root_s
         "sdk-root-verification",
         "receipt accepted",
         passed=False,
+        repository_revision="rev-sdk-test",
         root=root,
     )
     completion = client.verify_completion("sdk-root-verification", root=root)
 
     assert receipt.get("success") is True
+    assert receipt["receipt"]["repository_revision"] == "rev-sdk-test"
     assert completion.get("success") is True
     rejected = client.verify_receipt(
         "sdk-root-verification",
