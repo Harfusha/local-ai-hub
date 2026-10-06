@@ -4,10 +4,10 @@ from .json_utils import dumps as json_dumps
 
 import json
 import os
-import hashlib
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -17,22 +17,33 @@ from urllib.request import Request, urlopen
 from .config import load_config
 from .ollama import OllamaRuntime
 from .llama_cpp_runtime import llama_cpp_managed_selected
-from .process_utils import find_listening_pid, pid_alive, terminate_tree, hidden_run_kwargs
+from .process_utils import (
+    close_pidfd,
+    find_listening_pid,
+    hidden_run_kwargs,
+    open_pidfd,
+    pid_alive,
+    process_owner_record,
+    process_owner_state,
+    terminate_owned_process,
+    terminate_process_handle,
+)
 
 
-def atomic_json(path: Path, data: dict[str, Any]) -> None:
+def atomic_json(path: Path, data: dict[str, Any]) -> bool:
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         tmp.write_text(json_dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         for attempt in range(4):
             try:
                 os.replace(tmp, path)
-                break
+                return True
             except OSError:
                 if attempt < 3:
                     time.sleep(0.02)
+        return False
     except Exception:
-        pass
+        return False
 
 
 class Supervisor:
@@ -43,82 +54,220 @@ class Supervisor:
         self.state_dir = Path(self.config["server"]["state_dir"])
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.pid_path = self.state_dir / "supervisor.pid"
+        self.owner_path = self.state_dir / "supervisor.owner.json"
         self.lock_path = self.state_dir / "supervisor.lock"
+        self.lock_guard_path = self.state_dir / "supervisor.lock.guard"
         self.status_path = self.state_dir / "supervisor.status.json"
+        self.hub_pid_path = self.state_dir / "hub.pid"
+        self.hub_owner_path = self.state_dir / "hub.owner.json"
         self.disabled_path = self.state_dir / "service.disabled"
         self.log_path = self.state_dir / "supervisor.log"
         self.runtime = OllamaRuntime(self.config)
         self.child: subprocess.Popen[Any] | None = None
+        self.child_owner: dict[str, Any] | None = None
+        self.child_pidfd: int | None = None
+        self.child_ready = False
         self.stopping = False
         self.started_at = time.time()
         self.restarts = 0
         self.spawns = 0
         self.crashes: list[float] = []
-        self._mutex_handle: int | None = None
+        self._lock_fd: int | None = None
+        self._log_lock = threading.RLock()
 
     def log(self, message: str) -> None:
         try:
-            if self.log_path.exists() and self.log_path.stat().st_size > 1_000_000:
-                for idx in range(2, 0, -1):
-                    src = self.log_path.with_name(f"supervisor.log.{idx}")
-                    dst = self.log_path.with_name(f"supervisor.log.{idx + 1}")
-                    if src.exists(): src.replace(dst)
-                self.log_path.replace(self.log_path.with_name("supervisor.log.1"))
-            with self.log_path.open("a", encoding="utf-8") as fh:
-                fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+            self._append_bounded_log(
+                self.log_path,
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} {str(message)[:4096]}\n",
+            )
         except OSError:
             pass
+
+    def _append_bounded_log(self, path: Path, line: str, *, max_bytes: int = 1_000_000, backups: int = 3) -> None:
+        encoded = line.encode("utf-8", errors="replace")
+        if len(encoded) > max_bytes:
+            encoded = encoded[: max_bytes - 1] + b"\n"
+        with self._log_lock:
+            try:
+                current_size = path.stat().st_size
+            except FileNotFoundError:
+                current_size = 0
+            if current_size + len(encoded) > max_bytes:
+                path.with_name(f"{path.name}.{backups}").unlink(missing_ok=True)
+                for index in range(backups - 1, 0, -1):
+                    source = path.with_name(f"{path.name}.{index}")
+                    if source.exists():
+                        source.replace(path.with_name(f"{path.name}.{index + 1}"))
+                if path.exists():
+                    path.replace(path.with_name(f"{path.name}.1"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("ab") as log_file:
+                log_file.write(encoded)
+
+    def _drain_hub_stderr(self, stream: Any) -> None:
+        stderr_path = self.state_dir / "logs" / "hub_stderr.log"
+        try:
+            while True:
+                chunk = stream.readline(8192)
+                if not chunk:
+                    break
+                self._append_bounded_log(stderr_path, chunk.decode("utf-8", errors="replace"))
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _read_owner(path: Path) -> dict[str, Any] | None:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else None
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def _remove_stale_owner(self, pid_path: Path, owner_path: Path, role: str) -> None:
+        if self._lock_fd is None:
+            return
+        owner = self._read_owner(owner_path)
+        if owner is None or process_owner_state(owner, self.state_dir, role) != "stale":
+            return
+        try:
+            current_owner = owner_path.read_text(encoding="utf-8")
+            current_pid = pid_path.read_text(encoding="utf-8").strip()
+            if current_owner == json_dumps(owner, ensure_ascii=False, separators=(",", ":")) and current_pid == str(owner.get("pid", "")):
+                pid_path.unlink(missing_ok=True)
+                owner_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _lock_guard(self) -> bool:
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0)
+        try:
+            fd = os.open(self.lock_guard_path, flags, 0o600)
+        except OSError:
+            return False
+        try:
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")
+                os.fsync(fd)
+            os.lseek(fd, 0, os.SEEK_SET)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, ImportError):
+            os.close(fd)
+            return False
+        self._lock_fd = fd
+        return True
+
+    def _unlock_guard(self) -> None:
+        fd = self._lock_fd
+        self._lock_fd = None
+        if fd is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        except (OSError, ImportError):
+            pass
+        finally:
+            os.close(fd)
 
     def acquire(self) -> bool:
-        if os.name == "nt":
-            try:
-                import ctypes
-                resolved_state = str(self.state_dir.resolve()).lower().encode("utf-8")
-                name_hash = hashlib.sha1(resolved_state, usedforsecurity=False).hexdigest()[:16]
-                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-                handle = kernel32.CreateMutexW(None, True, f"Local\\LocalAIHubSupervisor-{name_hash}")
-                err = ctypes.get_last_error()
-                if not handle or err == 183:  # ERROR_ALREADY_EXISTS
-                    if handle:
-                        kernel32.CloseHandle(handle)
-                    return False
-                self._mutex_handle = int(handle)
-                self.lock_path.write_text(str(os.getpid()), encoding="utf-8")
-                return True
-            except Exception:
-                # Fall back to the portable lock-file path below.
-                pass
-        for _ in range(2):
-            try:
-                fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, str(os.getpid()).encode("ascii")); os.close(fd)
-                return True
-            except FileExistsError:
+        owner = process_owner_record(os.getpid(), self.state_dir, "supervisor")
+        if owner is None or not self._lock_guard():
+            return False
+        acquired = False
+        published_lock = False
+        try:
+            if self.lock_path.exists():
+                raw = self.lock_path.read_text(encoding="utf-8")
+                legacy_pid = 0
+                legacy_format = False
                 try:
-                    pid = int(self.lock_path.read_text(encoding="utf-8").strip() or 0)
-                    if pid_alive(pid):
+                    existing = json.loads(raw)
+                except (ValueError, TypeError):
+                    legacy_format = True
+                    try:
+                        legacy_pid = int(raw.strip() or 0)
+                    except ValueError:
                         return False
-                    self.lock_path.unlink(missing_ok=True)
-                except Exception:
+                    if legacy_pid and pid_alive(legacy_pid):
+                        return False
+                    existing = None
+                state = process_owner_state(existing, self.state_dir, "supervisor")
+                legacy_stale = legacy_format and (legacy_pid == 0 or not pid_alive(legacy_pid))
+                if state == "owned" or (state == "unknown" and not legacy_stale):
                     return False
-        return False
+                # The OS guard serializes this stale-owner check and replacement.
+                self.lock_path.unlink(missing_ok=True)
+            if not atomic_json(self.lock_path, owner):
+                return False
+            published_lock = True
+            if not atomic_json(self.owner_path, owner):
+                return False
+            self.pid_path.write_text(str(os.getpid()), encoding="utf-8")
+            acquired = True
+            return True
+        except (OSError, ValueError, TypeError):
+            return False
+        finally:
+            if not acquired:
+                if published_lock:
+                    try:
+                        if self._read_owner(self.lock_path) == owner:
+                            self.lock_path.unlink(missing_ok=True)
+                        if self._read_owner(self.owner_path) == owner:
+                            self.owner_path.unlink(missing_ok=True)
+                        if self.pid_path.read_text(encoding="utf-8").strip() == str(owner["pid"]):
+                            self.pid_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                self._unlock_guard()
 
     def release_lock(self) -> None:
-        if self._mutex_handle and os.name == "nt":
-            try:
-                import ctypes
-                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-                kernel32.ReleaseMutex(self._mutex_handle)
-                kernel32.CloseHandle(self._mutex_handle)
-            except Exception:
-                pass
-            self._mutex_handle = None
         try:
-            self.lock_path.unlink(missing_ok=True)
-        except OSError:
+            owner = json.loads(self.lock_path.read_text(encoding="utf-8"))
+            if process_owner_state(owner, self.state_dir, "supervisor") == "owned" and int(owner.get("pid", 0)) == os.getpid():
+                self.lock_path.unlink(missing_ok=True)
+        except (OSError, ValueError, TypeError):
             pass
+        try:
+            owner = self._read_owner(self.owner_path)
+            if owner and int(owner.get("pid", 0)) == os.getpid() and process_owner_state(owner, self.state_dir, "supervisor") == "owned":
+                self.pid_path.unlink(missing_ok=True)
+                self.owner_path.unlink(missing_ok=True)
+        except (OSError, TypeError, ValueError):
+            pass
+        self._unlock_guard()
+
+    def _owned_hub_child(self) -> bool:
+        child = self.child
+        owner = self.child_owner
+        if child is None or owner is None:
+            return False
+        try:
+            if child.poll() is not None or int(owner.get("pid", 0)) != int(child.pid):
+                return False
+        except (OSError, TypeError, ValueError, AttributeError):
+            return False
+        return process_owner_state(owner, self.state_dir, "hub") == "owned"
 
     def hub_online(self) -> bool:
+        if not self.child_ready or not self._owned_hub_child():
+            return False
         server = self.config["server"]
         bind = str(server.get("bind", "127.0.0.1"))
         host = str(server.get("client_host", "")).strip() or ("127.0.0.1" if bind in {"0.0.0.0", "::", "[::]"} else bind)
@@ -127,9 +276,12 @@ class Supervisor:
         if token:
             headers["X-LocalAI-Token"] = token
         try:
-            timeout = max(0.5, float(self.cfg.get("health_probe_timeout_seconds", 2.0)))
+            timeout = max(0.1, min(5.0, float(self.cfg.get("health_probe_timeout_seconds", 2.0))))
             with urlopen(Request(f"http://{host}:{int(server.get('port', 11435))}/health", headers=headers), timeout=timeout) as response:
-                return response.status == 200
+                if response.status != 200:
+                    return False
+            listener_pid = find_listening_pid(int(server.get("port", 11435)))
+            return listener_pid == int(self.child.pid)
         except HTTPError as exc:
             # Admission-control 503 means the process is alive and intentionally
             # shedding load. Recycling it here would amplify overload into restart churn.
@@ -137,36 +289,62 @@ class Supervisor:
         except Exception:
             return False
 
+    def hub_ready(self) -> bool:
+        if not self._owned_hub_child():
+            return False
+        server = self.config["server"]
+        bind = str(server.get("bind", "127.0.0.1"))
+        host = str(server.get("client_host", "")).strip() or (
+            "127.0.0.1" if bind in {"0.0.0.0", "::", "[::]"} else bind
+        )
+        headers: dict[str, str] = {}
+        security = self.config.get("security", {})
+        token = str(security.get("api_token", "") or "")
+        if token:
+            headers["X-LocalAI-Token"] = token
+        try:
+            timeout = max(0.1, min(3.0, float(self.cfg.get("readiness_probe_timeout_seconds", 1.0))))
+            with urlopen(Request(f"http://{host}:{int(server.get('port', 11435))}/ready", headers=headers), timeout=timeout) as response:
+                if response.status != 200:
+                    return False
+                payload = json.loads(response.read().decode("utf-8"))
+                if not isinstance(payload, dict) or payload.get("ready") is not True:
+                    return False
+            listener_pid = find_listening_pid(int(server.get("port", 11435)))
+            return listener_pid == int(self.child.pid)
+        except Exception:
+            return False
+
     def write_status(self, state: str, error: str = "", ollama_online: bool | None = None) -> None:
         hub_pid = 0
-        p = self.state_dir / "hub.pid"
-        port_owner = find_listening_pid(int(self.config.get("server", {}).get("port", 11435)))
-        if port_owner and int(port_owner) != os.getpid():
-            # Windows launchers can wrap pythonw. Report process owning public port.
-            hub_pid = int(port_owner)
-            try:
-                p.write_text(str(hub_pid), encoding="utf-8")
-            except OSError:
-                pass
-        elif self.child is not None and self.child.poll() is None:
-            hub_pid = int(self.child.pid)
-            try:
-                p.write_text(str(hub_pid), encoding="utf-8")
-            except OSError:
-                pass
+        supervisor_owner = process_owner_record(os.getpid(), self.state_dir, "supervisor")
+        if supervisor_owner:
+            atomic_json(self.owner_path, supervisor_owner)
+            self.pid_path.write_text(str(os.getpid()), encoding="utf-8")
+        hub_owner = self.child_owner
+        if self.child is not None and self.child.poll() is None:
+            if hub_owner is None:
+                hub_owner = process_owner_record(int(self.child.pid), self.state_dir, "hub")
+                self.child_owner = hub_owner
+            if hub_owner and process_owner_state(hub_owner, self.state_dir, "hub") == "owned":
+                hub_pid = int(hub_owner["pid"])
+        if not hub_pid:
+            existing_hub_owner = self._read_owner(self.hub_owner_path)
+            if existing_hub_owner and process_owner_state(existing_hub_owner, self.state_dir, "hub") == "owned":
+                hub_owner = existing_hub_owner
+                hub_pid = int(existing_hub_owner["pid"])
+        if hub_pid and hub_owner:
+            atomic_json(self.hub_owner_path, hub_owner)
+            self.hub_pid_path.write_text(str(hub_pid), encoding="utf-8")
         else:
-            try:
-                candidate = int(p.read_text(encoding="utf-8").strip() or 0)
-                if pid_alive(candidate):
-                    hub_pid = candidate
-                else:
-                    p.unlink(missing_ok=True)
-            except Exception:
-                pass
+            self._remove_stale_owner(self.hub_pid_path, self.hub_owner_path, "hub")
         atomic_json(self.status_path, {
             "state": state,
             "pid": os.getpid(),
             "hub_pid": hub_pid,
+            "supervisor_owner": supervisor_owner,
+            "hub_owner": hub_owner if hub_pid else None,
+            "hub_ready": self.hub_ready() if state != "stopping" else False,
             "heartbeat": time.time(),
             "started_at": self.started_at,
             "restarts": self.restarts,
@@ -186,71 +364,78 @@ class Supervisor:
                 py_exe = str(pyw_candidate)
         logs_dir = self.state_dir / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
-        stderr_target: Any = subprocess.DEVNULL
-        try:
-            stderr_target = (logs_dir / "hub_stderr.log").open("a", encoding="utf-8", errors="replace")
-        except Exception:
-            stderr_target = subprocess.DEVNULL
         kwargs: dict[str, Any] = {
-            "env": env, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": stderr_target,
+            "env": env, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.PIPE,
             **hidden_run_kwargs(detached=True),
         }
         if os.name != "nt":
             kwargs["start_new_session"] = True
-        try:
-            return subprocess.Popen([py_exe, "-X", "utf8", "-m", "local_ai_hub.http_server"], **kwargs)
-        finally:
-            if hasattr(stderr_target, "close"):
-                try:
-                    stderr_target.close()
-                except Exception:
-                    pass
+        return subprocess.Popen([py_exe, "-X", "utf8", "-m", "local_ai_hub.http_server"], **kwargs)
 
-    def terminate_child(self) -> None:
-        target_pids: set[int] = set()
+    def _persist_hub_owner(self, owner: dict[str, Any]) -> bool:
+        if not atomic_json(self.hub_owner_path, owner):
+            return False
+        temp_pid = self.hub_pid_path.with_suffix(self.hub_pid_path.suffix + ".tmp")
+        try:
+            temp_pid.write_text(str(owner["pid"]), encoding="utf-8")
+            os.replace(temp_pid, self.hub_pid_path)
+            return True
+        except OSError:
+            try:
+                temp_pid.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False
+
+    def _start_child(self) -> subprocess.Popen[Any]:
+        self.child_ready = False
+        child = self.spawn_hub()
+        self.child = child
+        # Open pidfd before any poll/wait can reap a fast-exiting child.
+        self.child_pidfd = open_pidfd(int(child.pid))
+        owner = process_owner_record(int(child.pid), self.state_dir, "hub")
+        self.child_owner = owner
+        if owner is None or not self._persist_hub_owner(owner):
+            stopped = terminate_process_handle(child, self.child_pidfd, grace_seconds=2.0)
+            if stopped:
+                close_pidfd(self.child_pidfd)
+                self.child_pidfd = None
+                self.child = None
+                self.child_owner = None
+                self._remove_stale_owner(self.hub_pid_path, self.hub_owner_path, "hub")
+            else:
+                self.log("hub child tracking failed; retained-handle termination unavailable")
+            raise RuntimeError("could not persist hub process owner after spawn")
+        stderr_stream = getattr(child, "stderr", None)
+        if stderr_stream is not None:
+            threading.Thread(target=self._drain_hub_stderr, args=(stderr_stream,), daemon=True).start()
+        return child
+
+    def terminate_child(self) -> bool:
         child = self.child
         if child is not None and child.poll() is None:
-            target_pids.add(int(child.pid))
-
-        # Also reap port owner and hub.pid if child is not tracking it or port is still held
-        port = int(self.config.get("server", {}).get("port", 11435))
-        try:
-            port_owner = find_listening_pid(port)
-            if port_owner and int(port_owner) != os.getpid():
-                target_pids.add(int(port_owner))
-        except Exception:
-            pass
-
-        pid_file = self.state_dir / "hub.pid"
-        if pid_file.exists():
-            try:
-                candidate = int(pid_file.read_text(encoding="utf-8").strip() or 0)
-                if candidate and candidate != os.getpid() and pid_alive(candidate):
-                    target_pids.add(candidate)
-            except Exception:
-                pass
-
-        for pid in target_pids:
-            try:
-                terminate_tree(pid, grace_seconds=5.0)
-            except Exception:
-                pass
-
+            if not terminate_process_handle(child, self.child_pidfd, grace_seconds=5.0):
+                self.log("hub child not signaled; safe retained process handle unavailable")
+                return False
+        elif child is None:
+            owner = self._read_owner(self.hub_owner_path)
+            if owner and process_owner_state(owner, self.state_dir, "hub") == "owned":
+                if not terminate_owned_process(owner, self.state_dir, "hub", grace_seconds=5.0):
+                    self.log("hub owner not signaled; safe platform process handle unavailable")
+                    return False
         if child is not None:
             try:
                 child.wait(timeout=2.0)
-            except Exception:
-                try:
-                    child.kill()
-                    child.wait(timeout=1.0)
-                except Exception:
-                    pass
+            except (OSError, subprocess.TimeoutExpired):
+                if child.poll() is None:
+                    return False
+            close_pidfd(self.child_pidfd)
+            self.child_pidfd = None
             self.child = None
-
-        try:
-            pid_file.unlink(missing_ok=True)
-        except OSError:
-            pass
+            self.child_owner = None
+            self.child_ready = False
+        self._remove_stale_owner(self.hub_pid_path, self.hub_owner_path, "hub")
+        return True
 
     def run(self) -> int:
         if bool(self.cfg.get("respect_disabled_marker", True)) and self.disabled_path.exists():
@@ -260,15 +445,18 @@ class Supervisor:
         if bool(self.cfg.get("respect_disabled_marker", True)) and self.disabled_path.exists():
             self.release_lock(); return 0
         self.pid_path.write_text(str(os.getpid()), encoding="utf-8")
+        supervisor_owner = process_owner_record(os.getpid(), self.state_dir, "supervisor")
+        if supervisor_owner:
+            atomic_json(self.owner_path, supervisor_owner)
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 signal.signal(sig, lambda *_: setattr(self, "stopping", True))
             except Exception:
                 pass
 
-        interval = max(0.5, float(self.cfg.get("health_check_interval_seconds", 2.0)))
-        unhealthy_grace = max(interval, float(self.cfg.get("unhealthy_grace_seconds", 20.0)))
-        startup_grace = max(unhealthy_grace, float(self.cfg.get("startup_grace_seconds", 120.0)))
+        interval = min(30.0, max(0.5, float(self.cfg.get("health_check_interval_seconds", 2.0))))
+        unhealthy_grace = min(300.0, max(interval, float(self.cfg.get("unhealthy_grace_seconds", 20.0))))
+        startup_grace = min(300.0, max(unhealthy_grace, float(self.cfg.get("startup_grace_seconds", 120.0))))
         initial_backoff = max(0.25, float(self.cfg.get("restart_backoff_initial_seconds", 1.0)))
         max_backoff = max(initial_backoff, float(self.cfg.get("restart_backoff_max_seconds", 30.0)))
         rapid_window = max(10.0, float(self.cfg.get("rapid_crash_window_seconds", 60.0)))
@@ -290,12 +478,15 @@ class Supervisor:
                         owner = None
                     if owner and int(owner) != os.getpid():
                         self.log(f"reaping stale hub listener pid {int(owner)} before managed start")
-                        self.terminate_child()
+                        if not self.terminate_child():
+                            self.log("hub listener retained; safe termination unavailable")
+                            time.sleep(interval)
+                            continue
                 now = time.time()
                 manage_ollama = bool(self.cfg.get("manage_ollama", True))
                 manage_llama_cpp = llama_cpp_managed_selected(self.config)
                 ollama_online = self.runtime.ensure_running() if manage_ollama or manage_llama_cpp else None
-                if self.hub_online():
+                if self.child_ready and self.hub_online():
                     unhealthy_since = 0.0
                     backoff = initial_backoff
                     self.write_status("running", ollama_online=ollama_online)
@@ -310,7 +501,11 @@ class Supervisor:
                     continue
                 if self.child is not None and self.child.poll() is None:
                     self.log("hub unhealthy beyond grace; recycling")
-                    self.terminate_child()
+                    if not self.terminate_child():
+                        self.write_status("degraded", "safe hub termination unavailable", ollama_online=ollama_online)
+                        time.sleep(backoff)
+                        backoff = min(max_backoff, backoff * 2)
+                        continue
 
                 self.crashes = [t for t in self.crashes if now - t <= rapid_window]
                 if len(self.crashes) >= rapid_limit:
@@ -320,7 +515,7 @@ class Supervisor:
                     continue
                 try:
                     is_restart = self.spawns > 0
-                    self.child = self.spawn_hub()
+                    self._start_child()
                     self.spawns += 1
                     if is_restart:
                         self.restarts += 1
@@ -335,25 +530,27 @@ class Supervisor:
                 # unhealthy grace; that creates a self-sustaining restart storm.
                 deadline = time.time() + startup_grace
                 while not self.stopping and time.time() < deadline:
-                    if self.hub_online():
+                    if self.hub_ready():
+                        self.child_ready = True
                         break
                     if self.child is not None and self.child.poll() is not None:
                         break
                     time.sleep(0.25)
-                if not self.hub_online():
+                if not self.child_ready or not self.hub_online():
                     self.log("hub failed startup health check; recycling after backoff")
-                    self.terminate_child()
+                    if not self.terminate_child():
+                        self.write_status("degraded", "safe hub termination unavailable", ollama_online=ollama_online)
+                        time.sleep(backoff)
+                        backoff = min(max_backoff, backoff * 2)
+                        continue
                     unhealthy_since = 0.0
                     self.write_status("degraded", "hub failed health check", ollama_online=ollama_online)
                     time.sleep(backoff)
                     backoff = min(max_backoff, backoff * 2)
         finally:
             self.write_status("stopping", ollama_online=False)
-            self.terminate_child()
-            try:
-                self.pid_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if not self.terminate_child():
+                self.log("shutdown left hub running; safe termination unavailable")
             self.release_lock()
             self.log("supervisor stopped")
         return 0

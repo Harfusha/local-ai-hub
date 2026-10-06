@@ -70,11 +70,15 @@ def test_remote_bind_fails_closed_without_token():
     from local_ai_hub.http_server import validate_network_security
     import pytest
     validate_network_security({"server": {"bind": "127.0.0.1"}, "security": {}})
-    with pytest.raises(RuntimeError):
-        validate_network_security({"server": {"bind": "0.0.0.0"}, "security": {"allow_remote": False, "api_token": ""}})
-    with pytest.raises(RuntimeError):
-        validate_network_security({"server": {"bind": "0.0.0.0"}, "security": {"allow_remote": True, "api_token": "short"}})
-    validate_network_security({"server": {"bind": "0.0.0.0"}, "security": {"allow_remote": True, "api_token": "0123456789abcdef"}})
+    for bind, security in (
+        ("0.0.0.0", {"allow_remote": False, "api_token": ""}),
+        ("0.0.0.0", {"allow_remote": True, "api_token": "0123456789abcdef"}),
+        ("localhost", {}),
+        ("::1", {}),
+        ("127.0.0.1", {"allow_remote": True}),
+    ):
+        with pytest.raises(RuntimeError, match="bind must be 127.0.0.1"):
+            validate_network_security({"server": {"bind": bind}, "security": security})
 
 
 def test_telemetry_summary_cache_is_reachable(tmp_path: Path):
