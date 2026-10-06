@@ -1,0 +1,32 @@
+{
+  "task": "T05 FTS cleanup rollback masking selector",
+  "date": "2026-10-02",
+  "selector": "tests/test_agent_memory_t08_rollback_masking.py::test_delete_preserves_primary_fts_error_when_rollback_also_fails",
+  "verified_run": {
+    "command": "python -c launcher: sys.path.insert(0, overlay_src); import local_ai_hub; assert Path(local_ai_hub.__file__).is_relative_to(overlay_src); pytest.main(['-q', selector])",
+    "cwd": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+    "overlay_src": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-fts-rollback-overlay-applypatch-20261002-v2\\src",
+    "module_file": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-fts-rollback-overlay-applypatch-20261002-v2\\src\\local_ai_hub\\__init__.py",
+    "module_path_assertion": "passed",
+    "exit_code": 0,
+    "wall_duration_seconds": 0.819,
+    "pytest_duration_seconds": 0.23,
+    "summary": "1 passed",
+    "hashes_sha256": {
+      "overlay_agent_memory.py": "BFF7481D7F2620164B366D8CC52FA2208EEF4846B3945BCE6A6E93E44ADF7158",
+      "overlay_package_init.py": "945D7DE874D7CEB14D8F723083C6C4353E0CA8241D325B8F61FD36DB738DBA4E",
+      "t08_selector_test.py": "555A16A3FA67E1244C75C6EE1289E46C95960131B251B5FA9821888547B5D726",
+      "t08_tests_conftest.py": "87014908FF4546E9B0B541607E71182DD578DF1B5BFBCEB9623A446813688FFC",
+      "t08_agent_memory.py": "8FD845109C5DD9105EE0AEF74C80337AEB9AD1D9A934996EBBA09382D13E72B5"
+    }
+  },
+  "prior_invalid_attempt": {
+    "exit_code": 1,
+    "failure": "T08 tests/conftest.py prepended T08 src to sys.path[0], so T05 overlay import was not verified; this was not treated as patch verdict.",
+    "test_rerun_authorized": "one bounded corrected retry"
+  },
+  "patch_sha256": "1F9CA4876671700A7123DC1ACDCFF53530E4547F931D60F4EB403BFD71D0B3DB",
+  "slot": "released to T20 after the verified run",
+  "worktree_changes": ["this receipt only"],
+  "root_or_t08_mutations": []
+}

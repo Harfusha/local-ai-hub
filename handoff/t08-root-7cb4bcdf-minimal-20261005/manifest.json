@@ -1,0 +1,77 @@
+{
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "base_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "patch_sha256": "67fa823d978ecbc73cdace2804b3ddf5094b1905a7c04a5511f6b468154385eb",
+  "patch_bytes": 7946,
+  "path_receipts": [
+    {
+      "path": "src/local_ai_hub/agent_memory.py",
+      "pre_sha256": "eacdc6309f1840e58705ca8ccc44b91bb177655b14752f6df2d1fed74baab65a",
+      "post_sha256": "4e3d29a815d7bd32cae2dc63408b6c33a9967ba28e0793ab9a23e4485b204acb",
+      "changed": true,
+      "hunks": [
+        "@@ -968,6 +968,8 @@",
+        "@@ -981,6 +983,8 @@",
+        "@@ -1641,7 +1645,8 @@"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/app.py",
+      "pre_sha256": "e991d4eb414bb75838273bea0a29f3af56379fa5bd8af1d8b81fd1955bd3cc4c",
+      "post_sha256": "5fd43593a6555f902aa83628fec0cbd9e9b67aadb0a2ffccd746bf6c24f0afc9",
+      "changed": true,
+      "hunks": [
+        "@@ -1232,7 +1232,17 @@"
+      ]
+    },
+    {
+      "path": "tests/test_agent_memory.py",
+      "pre_sha256": "db078b447bc3afe285140f094d61c766aa83eabb579fde6909ab1dc186d6b2c2",
+      "post_sha256": "98cd817eef6c875abdf835dfb69044255f73b3cbdff74a67ce2198f13be0b928",
+      "changed": true,
+      "hunks": [
+        "@@ -1277,3 +1277,39 @@"
+      ]
+    },
+    {
+      "path": "tests/test_agent_state_operations.py",
+      "pre_sha256": "4fb1d8deb84b4f6d59bebb86c46778739de17069d91768a31f698bd0f3cb5eef",
+      "post_sha256": "84482296cc1dd2693b17b8b826d3d4f09a26ff8fb1330bb8e8c2e83b2dc8f29f",
+      "changed": true,
+      "hunks": [
+        "@@ -527,3 +527,52 @@"
+      ]
+    },
+    {
+      "path": "tests/test_agent_state_transport.py",
+      "pre_sha256": "11d9b32790201e5c629d6553e8b81b2c6be6d827b2ce7d3a84b32c41a4ba24ce",
+      "post_sha256": "11d9b32790201e5c629d6553e8b81b2c6be6d827b2ce7d3a84b32c41a4ba24ce",
+      "changed": false,
+      "hunks": []
+    }
+  ],
+  "owned_hunks": [
+    "promote scope/scope_id signature and forwarding",
+    "repository lookup uses provenance identity without forced empty scope_id",
+    "export default global/repository lookup; explicit record contexts retained",
+    "two promotion/lookup tests",
+    "two export identity/roundtrip tests"
+  ],
+  "unchanged_reason": {
+    "tests/test_agent_state_transport.py": "memo fixture already uses root str(tmp_path)"
+  },
+  "validation": {
+    "command": "python -B run_focused.py",
+    "cwd": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub\\handoff\\t08-root-7cb4bcdf-minimal-20261005\\validation",
+    "source_assertions": [
+      "local_ai_hub.agent_memory.__file__",
+      "local_ai_hub.app.__file__"
+    ],
+    "red": "4 failed in 12.29s",
+    "green": "4 passed in 10.56s",
+    "excluded_receipts": "Earlier pytest runs inherited parent configuration; excluded.",
+    "root_apply_check_exit": 0,
+    "root_apply_check_error": ""
+  },
+  "integration": "not applied; root unchanged; original candidate source unchanged"
+}

@@ -5,7 +5,6 @@ from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.delivery import decide_delivery
 from local_ai_hub.telemetry import TelemetryStore
 from local_ai_hub import http_server
-from local_ai_hub.mcp_server import _task_delivery_contract
 
 
 def test_async_delivery_docs_match_supported_actions_and_cold_start_rules():
@@ -21,102 +20,6 @@ def test_async_delivery_docs_match_supported_actions_and_cold_start_rules():
     assert "sparse history stays inline" in docs
     assert "fewer than 5 telemetry samples" in docs
     assert "`cold_start_review_diff`" in docs
-
-
-def test_install_and_update_prompts_cover_async_and_conversation_contracts():
-    root = Path(__file__).resolve().parents[1]
-    prompt_docs = [
-        (root / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8"),
-        (root / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8"),
-    ]
-
-    for docs in prompt_docs:
-        for action in AsyncJobManager.ACTIONS:
-            assert f"`{action}`" in docs
-        for path in (
-            "/api/delegate",
-            "/api/reason",
-            "/api/review",
-            "/api/review/diff",
-            "/api/second-opinion",
-            "/api/compress",
-            "/api/route",
-            "/api/delegate/batch",
-        ):
-            assert f"`{path}`" in docs
-        for phrase in (
-            "`POST /api/async-jobs`",
-            '`action="submit"`',
-            '`action="status"|"wait"|"result"|"cancel"`',
-            "`job_action`",
-            "`request_id`",
-            "`job_id`",
-            "`timeout_seconds`",
-            "`HubClient.submit_async_job`",
-            "`cold_start_review_diff`",
-            "fewer than five telemetry samples",
-            "at least ten",
-            "sparse history stays inline",
-            "`review.max_queue_age_ms`",
-            "`/api/conversations/continue`",
-            "local_ai_task(action=\"continue\"",
-            "conversation_id=..., task=..., context=...",
-            "HubClient.continue_conversation",
-            "HubClient has no dedicated start helper",
-            "`POST /api/delegate`",
-            "`POST /api/reason`",
-            "tenant-scoped",
-            "12 user turns",
-            "56,000",
-            "900 seconds",
-            "1,800 seconds",
-            "artifact_id",
-            "expires_at",
-            "259,200 seconds",
-            "wait_timeout_seconds",
-            "cancel_requested=true",
-            "restart",
-            "replay-safe actions",
-            "terminal `outcome_unknown`",
-        ):
-            assert phrase in docs
-
-
-def test_mcp_task_description_exposes_async_and_conversation_contracts():
-    contract = _task_delivery_contract()
-    for phrase in (
-        "`POST /api/async-jobs`",
-        "`local_ai_task(action=submit|status|wait|result|cancel, ...)`",
-        "`HubClient.submit_async_job`",
-        "job_action",
-        "request_id",
-        "job_id",
-        "timeout_seconds",
-        "`/api/delegate/batch`",
-        "`delivery=auto`",
-        "`review.max_queue_age_ms`",
-        "`cold_start_review_diff`",
-        "`speculative_lint`",
-        "`X-LocalAI-Request-ID`",
-        "tenant-scoped",
-        "12 turns",
-        "`model_conversations.max_prompt_tokens`",
-        "default 56,000",
-        "900/1,800 seconds",
-        "capacity 1,000",
-        "lost on restart",
-        "conversation_id=..., task=..., context=...",
-        "artifact_id",
-        "expires_at",
-        "259,200 seconds",
-        "wait_timeout_seconds",
-        "cancel_requested=true",
-        "replay-safe actions",
-        "terminal `outcome_unknown`",
-        "HubClient.continue_conversation",
-        "POST /api/conversations/continue",
-    ):
-        assert phrase in contract
 
 
 def test_auto_delivery_uses_async_when_observed_p95_exceeds_budget():

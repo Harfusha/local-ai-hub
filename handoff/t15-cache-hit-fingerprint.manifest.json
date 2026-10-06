@@ -1,0 +1,68 @@
+{
+  "task": "T15 command cache-hit fingerprint latency fix",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "candidate_worktree": "C:\\Users\\Adam\\.codex\\worktrees\\fefe\\.local-ai-hub",
+  "root_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+  "root_commands_blob_before_apply_check": "dedfa173bda244c7d6cf7ba11a09deed38a3de7a",
+  "root_commands_blob_after_apply_check": "dedfa173bda244c7d6cf7ba11a09deed38a3de7a",
+  "candidate_blobs": {
+    "src/local_ai_hub/commands.py": "b03a2db26c94bfc1f5890f3aebb07a2c9dab61c0",
+    "tests/test_command_performance_acceptance.py": "691ade2610f52aebe3304eeeee7045a1ba10d68d"
+  },
+  "scope": [
+    "src/local_ai_hub/commands.py",
+    "tests/test_command_performance_acceptance.py"
+  ],
+  "change": "Remove only the forced RepoStateTracker.invalidate from successful result-cache hit revalidation. Keep the second _key lookup; the configured tracker TTL still refreshes expired fingerprints and changed revisions select a new cache key.",
+  "validation": {
+    "red": "New regression failed before production edit: repo_state.invalidations was 1, expected 0.",
+    "green_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_command_performance_acceptance.py tests/test_command_singleflight_revision.py tests/test_command_concurrency_contract.py::test_repository_revision_change_during_flight_uses_distinct_execution",
+    "green_result": "6 passed in 24.28s",
+    "report": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t15-command-performance-after-cache-hit-fix-20260929.json",
+    "report_sha256": "7dfb91c06927444c6f7aac477e46a080ce58c7753c59df097fbbed81b99348e0"
+  },
+  "benchmark": {
+    "shell_pairs": 30,
+    "structured_argv_pairs": 30,
+    "output_exit_revision_parity": true,
+    "shell_cold_p50_p95_ms": [
+      153.152,
+      179.95443
+    ],
+    "shell_warm_p50_p95_ms": [
+      3.3931,
+      4.09655
+    ],
+    "argv_cold_p50_p95_ms": [
+      150.0908,
+      188.169625
+    ],
+    "argv_warm_p50_p95_ms": [
+      3.5539,
+      4.252945
+    ],
+    "cold_fingerprint_p50_p95_ms": [
+      0.2035,
+      0.3637
+    ],
+    "warm_fingerprint_p50_p95_ms": [
+      0.189,
+      0.3129
+    ]
+  },
+  "patch": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\fefe\\.local-ai-hub\\handoff\\REJECTED-t15-cache-hit-fingerprint.patch",
+    "sha256": "f5aae1a13425f3a6498c2d53fa19c21e114d59f290fb6eaea2e13592987805a4",
+    "git_apply_check_exit_code": 0
+  },
+  "root_modified": false,
+  "limitations": "The 30-pair latency numbers are a performance-only experiment and are not acceptance evidence. Production source has been restored to explicit invalidation. Root was not modified.",
+  "supplemental_validation": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_command_timeout_cache_contract.py",
+    "result": "2 passed in 0.29s",
+    "test_blob": "644ee4e28164f62056e16fad6ee17222aefb3c2c",
+    "note": "T15 candidate fixture accepts added fingerprint kwargs. Root test fixture differs and is excluded from this narrow cache-hit patch."
+  },
+  "status": "REJECTED_NOT_FOR_INTEGRATION",
+  "acceptance_status": "Rejected: full concurrency contract exposed stale cached output after an immediate source edit when the forced tracker invalidation was removed."
+}

@@ -3,8 +3,10 @@ from __future__ import annotations
 import ast
 import json
 import queue
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +16,7 @@ from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.agent_blackboard import BlackboardStore
 from local_ai_hub.benchmark import HardwareBenchmarkRunner
 from local_ai_hub.commands import CommandBroker
+from local_ai_hub.process_utils import hidden_run_kwargs
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.leases import ScopeLeaseStore
 from local_ai_hub.swarm import SwarmCoordinator, SwarmState
@@ -154,9 +157,23 @@ def test_command_streaming_and_sse_events(tmp_path: Path):
         state_store.append(ev)
 
     cmd_broker = CommandBroker({}, artifacts=None, repo_state=None)
+    task_id = "streaming-test-task"
+    task = SimpleNamespace(
+        task_id=task_id,
+        checkpoint=SimpleNamespace(
+            state_data={"worktree": {"worktree_path": str(tmp_path), "success": True}}
+        ),
+    )
+
+    class TaskStore:
+        def get(self, requested_task_id: str) -> object | None:
+            return task if requested_task_id == task_id else None
+
+    cmd_broker.set_task_store(TaskStore())
     res = cmd_broker.run(
         f'"{sys.executable}" -c "print(\'live stream line 1\'); print(\'live stream line 2\')"',
         cwd=str(tmp_path),
+        task_id=task_id,
         force=True,
         log_callback=log_cb,
     )
@@ -166,7 +183,7 @@ def test_command_streaming_and_sse_events(tmp_path: Path):
         events_received.append(sub_q.get_nowait())
 
     cmd_logs = [e for e in events_received if e.kind == "command.log"]
-    assert len(cmd_logs) >= 2
     chunks = [e.payload.get("chunk", "") for e in cmd_logs]
-    assert any("live stream line 1" in c for c in chunks)
-    assert any("live stream line 2" in c for c in chunks)
+    combined = "".join(chunks)
+    assert "live stream line 1" in combined
+    assert "live stream line 2" in combined

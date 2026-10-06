@@ -1,0 +1,13 @@
+diff --git a/src/local_ai_hub/agent_memory.py b/src/local_ai_hub/agent_memory.py
+--- a/src/local_ai_hub/agent_memory.py
++++ b/src/local_ai_hub/agent_memory.py
+@@ -129,5 +129,5 @@
+     if left_root and _normalise_scope_root(left_root) != _normalise_scope_root(right_root):
+         return False
+-    for field in ("repository_id", "tenant", "task_id", "session_id", "clone_id", "worktree_id", "branch"):
+-        left_value = str(left_provenance.get(field) or "")
+-        right_value = str(right_provenance.get(field) or "")
++    for identity_key in ("repository_id", "tenant", "task_id", "session_id", "clone_id", "worktree_id", "branch"):
++        left_value = str(left_provenance.get(identity_key) or "")
++        right_value = str(right_provenance.get(identity_key) or "")
+         if bool(left_value) != bool(right_value) or (left_value and left_value != right_value):

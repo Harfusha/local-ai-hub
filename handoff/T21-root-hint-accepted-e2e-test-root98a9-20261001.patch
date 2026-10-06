@@ -1,0 +1,71 @@
+diff --git a/tests/test_t21_root_path_hint_worktree_chain.py b/tests/test_t21_root_path_hint_worktree_chain.py
+index 7362bc3..55826a4 100644
+--- a/tests/test_t21_root_path_hint_worktree_chain.py
++++ b/tests/test_t21_root_path_hint_worktree_chain.py
+@@ -25,7 +25,7 @@ root_source = Path(os.environ["T21_ROOT_SOURCE"]).resolve()
+ sys.path.insert(0, str(root_source))
+ import local_ai_hub
+ assert Path(local_ai_hub.__file__).resolve().is_relative_to(root_source), local_ai_hub.__file__
+-from local_ai_hub import http_server, mcp_server
++from local_ai_hub import http_server, mcp_server, project_config
+ from local_ai_hub.app import LocalAIApp
+ from local_ai_hub.client import HubClient
+ from local_ai_hub.project_config import resolve_project_config
+@@ -109,8 +109,10 @@ client = HubClient(tenant="t21-root-worktree-path-hints", config_path=str(config
+ mcp_server.CLIENT = client
+ wire_payloads = []
+ service_hints = []
++accepted_hints = []
+ original_open = client._pooled_open
+ original_search = app.services.repo_search
++original_validate_hint = project_config.validate_path_hint
+ 
+ def capture_open(method, path, body, headers, timeout):
+     if path == "/api/search" and body is not None:
+@@ -121,8 +123,15 @@ def capture_search(*args, **kwargs):
+     service_hints.append(kwargs.get("path_hints"))
+     return original_search(*args, **kwargs)
+ 
++def capture_validate_hint(root, hint, **kwargs):
++    resolved = original_validate_hint(root, hint, **kwargs)
++    if resolved is not None:
++        accepted_hints.append((hint.path, hint.scope))
++    return resolved
++
+ client._pooled_open = capture_open
+ app.services.repo_search = capture_search
++project_config.validate_path_hint = capture_validate_hint
+ 
+ async def call_tool(arguments):
+     result = await mcp_server.mcp.call_tool("local_ai_repo", arguments)
+@@ -131,7 +140,7 @@ async def call_tool(arguments):
+     return json.loads(text_content.text)
+ 
+ try:
+-    hint = {"path": "templates/element", "purpose": "repository_search", "scope": "repository_search"}
++    hint = {"path": "templates/element", "purpose": "repository_search", "scope": "repo_search"}
+     result = asyncio.run(call_tool({
+         "action": "search", "root": str(worktree), "query": token, "path_hints": [hint]
+     }))
+@@ -144,11 +153,12 @@ try:
+     assert "templates/element/.local-ai-hub/hard.py" not in paths, paths
+     assert wire_payloads[-1]["path_hints"] == [hint], wire_payloads[-1]
+     assert service_hints[-1] == [hint], service_hints[-1]
++    assert ("templates/element", "repo_search") in accepted_hints, accepted_hints
+ 
+     requests_before_invalid = len(wire_payloads)
+     invalid = asyncio.run(call_tool({
+         "action": "search", "root": str(worktree), "query": token,
+-        "path_hints": [{"path": "../outside.py", "purpose": "repository_search", "scope": "repository_search"}],
++        "path_hints": [{"path": "../outside.py", "purpose": "repository_search", "scope": "repo_search"}],
+     }))
+     assert invalid.get("success") is False, invalid
+     assert invalid.get("status_code") == 400, invalid
+@@ -158,6 +168,7 @@ try:
+         "import_origin": str(Path(local_ai_hub.__file__).resolve()),
+         "active_sources": list(resolution.active_sources),
+         "valid_paths": sorted(paths),
++        "accepted_hints": accepted_hints,
+         "wire_requests": len(wire_payloads),
+         "service_hint_calls": len(service_hints),
+     }))

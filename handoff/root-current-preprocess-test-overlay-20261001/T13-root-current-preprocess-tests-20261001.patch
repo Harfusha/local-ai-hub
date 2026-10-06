@@ -1,0 +1,128 @@
+--- a/tests/test_preprocess_operational_mode.py
++++ b/tests/test_preprocess_operational_mode.py
+@@ -6,6 +6,11 @@
+ from types import SimpleNamespace
+ 
+ from local_ai_hub.preprocess import ProjectPreprocessor
++import pytest
++from local_ai_hub import preprocess as preprocess_module
++from local_ai_hub.code_index import CodeIndex
++from local_ai_hub.operational_mode import set_operational_mode
++from local_ai_hub.repo_tools import RepositoryTools
+ 
+ 
+ def _preprocessor(state_dir: Path) -> ProjectPreprocessor:
+@@ -192,3 +197,113 @@
+     assert len(observer.unscheduled) == 2
+     assert observer.stops == observer.joins == 1
+     assert pre._dirty_paths == {}
++
++class _Noop:
++    def __getattr__(self, name):
++        return lambda *args, **kwargs: None
++
++
++class _Rag:
++    index_reset = False
++
++    @staticmethod
++    def workspace_id(_root):
++        return "workspace"
++
++
++class _StopOnWait:
++    def __init__(self, stop_event):
++        self.stop_event = stop_event
++        self.timeouts = []
++
++    def wait(self, timeout=None):
++        self.timeouts.append(timeout)
++        self.stop_event.set()
++        return True
++
++    def clear(self):
++        pass
++
++    def set(self):
++        self.stop_event.set()
++
++
++def _config(tmp_path: Path):
++    config_path = tmp_path / "config.toml"
++    state_dir = tmp_path / "state"
++    config_path.write_text(
++        f'[server]\nstate_dir="{state_dir.as_posix()}"\n'
++        '[hardware]\nprofile="cpu"\n'
++        '[preprocessing]\nenabled=false\nfs_watcher_enabled=false\n',
++        encoding="utf-8",
++    )
++    from local_ai_hub.config import load_config
++
++    return load_config(str(config_path)), state_dir
++
++
++def test_mode_pause_blocks_next_preprocessing_step(tmp_path, monkeypatch):
++    config, state_dir = _config(tmp_path)
++    repo = tmp_path / "repo"
++    repo.mkdir()
++    tools = RepositoryTools(config)
++    pre = ProjectPreprocessor(
++        config, _Noop(), _Rag(), _Noop(), _Noop(), tools, code_index=CodeIndex(config, tools)
++    )
++    called = []
++    monkeypatch.setattr(pre, "_step", lambda row: called.append(row) or True)
++    try:
++        set_operational_mode(state_dir, "gaming")
++        result = pre._run_project_step({"root": str(repo.resolve())})
++        assert result is False
++        assert called == []
++        assert pre.status()["paused"] is True
++    finally:
++        pre.close()
++
++
++@pytest.mark.parametrize("mode", ["gaming", "maintenance"])
++@pytest.mark.parametrize("worker", ["_cpu_loop", "_gpu_loop"])
++def test_restricted_mode_pauses_background_worker_with_bounded_recheck(tmp_path, monkeypatch, mode, worker):
++    config, state_dir = _config(tmp_path)
++    config["preprocessing"]["poll_seconds"] = 30
++    repo = tmp_path / "repo"
++    repo.mkdir()
++    tools = RepositoryTools(config)
++    pre = ProjectPreprocessor(
++        config, _Noop(), _Rag(), _Noop(), _Noop(), tools, code_index=CodeIndex(config, tools)
++    )
++    calls = []
++    monkeypatch.setattr(pre, "_next_cpu_project", lambda: calls.append("cpu") or None)
++    pre._cpu_wakeup = _StopOnWait(pre._stop)
++    pre._gpu_wakeup = _StopOnWait(pre._stop)
++    monkeypatch.setattr(preprocess_module, "set_current_thread_priority", lambda *_args: None)
++    try:
++        set_operational_mode(state_dir, mode)
++
++        getattr(pre, worker)()
++
++        wakeup = pre._cpu_wakeup if worker == "_cpu_loop" else pre._gpu_wakeup
++        assert wakeup.timeouts == [pytest.approx(0.1)]
++        assert calls == []
++    finally:
++        pre.close()
++
++
++@pytest.mark.parametrize("mode", ["gaming", "maintenance"])
++def test_cooperative_preprocess_yields_observe_restricted_mode(tmp_path, monkeypatch, mode):
++    config, state_dir = _config(tmp_path)
++    repo = tmp_path / "repo"
++    repo.mkdir()
++    tools = RepositoryTools(config)
++    pre = ProjectPreprocessor(
++        config, _Noop(), _Rag(), _Noop(), _Noop(), tools, code_index=CodeIndex(config, tools)
++    )
++    pre.cpu_runs_during_foreground = True
++    try:
++        set_operational_mode(state_dir, mode)
++
++        assert pre._yield() is True
++        assert pre._gpu_yield() is True
++    finally:
++        pre.close()

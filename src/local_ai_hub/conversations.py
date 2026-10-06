@@ -131,4 +131,3 @@ class ConversationStore:
         ]
         for conversation_id in stale:
             self._items.pop(conversation_id, None)
-

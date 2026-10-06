@@ -1,0 +1,64 @@
+--- a/tests/test_project_config.py
++++ b/tests/test_project_config.py
+@@ -1538,3 +1538,61 @@
+         phase="search",
+         soft_ignored=True,
+     )
++
++
++def test_project_config_precedence_covers_primary_linked_common_and_worktree_layers(
++    tmp_path: Path, monkeypatch
++) -> None:
++    primary = tmp_path / "primary"
++    linked = tmp_path / "linked"
++    common = tmp_path / "common.git"
++    primary.mkdir()
++    linked.mkdir()
++    (common / "info").mkdir(parents=True)
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: common)
++    monkeypatch.setattr(
++        project_config, "_git_primary_worktree_root", lambda _root, _common: primary
++    )
++
++    (primary / ".local-ai.toml").write_text(
++        'exclude_paths = ["primary/**"]\n'
++        'pinned_context = ["PRIMARY.md"]\n'
++        '[commands]\nbuild = "cargo build"\ntest = "primary-test"\n',
++        encoding="utf-8",
++    )
++    (linked / ".local-ai.toml").write_text(
++        'exclude_paths = ["repo/**"]\n'
++        'pinned_context = ["REPO.md"]\n'
++        '[commands]\ntest = "repo-test"\n',
++        encoding="utf-8",
++    )
++    (common / "info" / "local-ai.toml").write_text(
++        'exclude_paths = ["common/**"]\n'
++        'pinned_context = ["COMMON.md"]\n'
++        '[commands]\nlint = "ruff check ."\n',
++        encoding="utf-8",
++    )
++    (linked / ".local-ai.worktree.toml").write_text(
++        'exclude_paths = ["worktree/**"]\n'
++        'pinned_context = ["WORKTREE.md"]\n'
++        '[commands]\ntest = "worktree-test"\n',
++        encoding="utf-8",
++    )
++
++    result = project_config.resolve_project_config(linked)
++
++    assert result.error_codes == ()
++    assert result.active_sources == (
++        "defaults",
++        "primary_project",
++        "project",
++        "git_common",
++        "worktree",
++    )
++    assert result.settings.exclude_paths == ("worktree/**",)
++    assert result.settings.pinned_context == ("WORKTREE.md",)
++    assert result.settings.commands == {
++        "build": "cargo build",
++        "lint": "ruff check .",
++        "test": "worktree-test",
++    }

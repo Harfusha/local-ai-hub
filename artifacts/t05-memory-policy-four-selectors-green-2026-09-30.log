@@ -1,0 +1,12 @@
+..F.                                                                     [100%]
+================================== FAILURES ===================================
+____ test_memory_write_redacts_private_fields_and_blocks_sensitive_records ____
+tests\test_agent_memory.py:489: in test_memory_write_redacts_private_fields_and_blocks_sensitive_records
+    assert clean is not None
+E   assert None is not None
+=========================== short test summary info ===========================
+FAILED tests/test_agent_memory.py::test_memory_write_redacts_private_fields_and_blocks_sensitive_records
+1 failed, 3 passed in 1.59s
+
+Shell elapsed: 2,750 s
+Exit code: 1

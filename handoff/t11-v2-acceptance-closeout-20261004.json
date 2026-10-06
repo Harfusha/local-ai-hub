@@ -1,0 +1,94 @@
+{
+  "benchmarks_run_this_turn": false,
+  "candidate": {
+    "head": "8c945bdeb5f92270613e53b307b6f646a4f0e21b",
+    "inherited_untracked_paths": [
+      "?? handoff/t11-root-consumer-matrix-20261001.md",
+      "?? handoff/t11-root-consumer-matrix-tests-red.patch",
+      "?? handoff/t11-root-current-rag-ignore-dirs.patch",
+      "?? handoff/t11-root-worktree-rag-phase-test.patch",
+      "?? tests/test_t11_root_consumer_overlay.py"
+    ],
+    "own_code_changes_this_turn": [],
+    "own_handoff_change": "this closeout receipt only",
+    "tracked_diff": "clean; git diff --stat HEAD empty",
+    "tracked_source_head_blobs": {
+      "src/local_ai_hub/embeddings.py": {
+        "head_blob": "e51a2dca5e171915b16d18923aa2123647d6130e",
+        "same_as_head": true,
+        "working_clean_blob": "e51a2dca5e171915b16d18923aa2123647d6130e"
+      },
+      "src/local_ai_hub/rag.py": {
+        "head_blob": "90df48981565ab2184f6e51cc5dc3aba1a168e12",
+        "same_as_head": true,
+        "working_clean_blob": "90df48981565ab2184f6e51cc5dc3aba1a168e12"
+      },
+      "src/local_ai_hub/reranker.py": {
+        "head_blob": "f5e7eb0299fe7897c3d3aeb04cca610f2c5a92aa",
+        "same_as_head": true,
+        "working_clean_blob": "f5e7eb0299fe7897c3d3aeb04cca610f2c5a92aa"
+      }
+    },
+    "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\t11-rag-recovery-v2\\.local-ai-hub"
+  },
+  "commit_created": false,
+  "date": "2026-10-04",
+  "documented_overlay_results": {
+    "commands": [
+      "python -B -m pytest -q -x -p no:cacheprovider --noconftest -c pyproject.toml -o pythonpath=C:/Users/Adam/.local-ai-hub/src tests/test_t11_root_consumer_overlay.py::test_000_overlay_imports_actual_root_rag_source",
+      "python -B -m pytest -q -x -p no:cacheprovider --noconftest -c pyproject.toml -o pythonpath=C:/Users/Adam/.local-ai-hub/src tests/test_t11_root_consumer_overlay.py -k \"not explicit_index_path_cannot_resurrect_rag_ignored_directory\"",
+      "python -B -m pytest -q -x -p no:cacheprovider --noconftest -c pyproject.toml -o pythonpath=C:/Users/Adam/.local-ai-hub/src tests/test_t11_root_consumer_overlay.py::test_000_overlay_imports_actual_root_rag_source tests/test_t11_root_consumer_overlay.py::test_explicit_index_path_cannot_resurrect_rag_ignored_directory"
+    ],
+    "exit_codes_and_timings": "not recorded in existing markdown receipt",
+    "focused_consumer_cases": "8 PASS: extensions, size, worktree phase, config digest",
+    "hard_ignore_explicit_path": "FAIL: index_paths_step retained generated/keep.py after rag.ignore_dirs=[\"generated\"]",
+    "receipt_path": "handoff/t11-root-consumer-matrix-20261001.md",
+    "receipt_sha256": "79B7927516798955B1975419B188A0D9C5F52CA9F62E152F6A68F99BB3B558F2",
+    "source_assertion": "PASS, imported rag.py from root source"
+  },
+  "existing_artifacts": {
+    "handoff/t11-root-consumer-matrix-20261001.md": {
+      "sha256": "79B7927516798955B1975419B188A0D9C5F52CA9F62E152F6A68F99BB3B558F2"
+    },
+    "handoff/t11-root-consumer-matrix-tests-red.patch": {
+      "recorded_sha256": "1D2D043647E1380D0552629F7DF4D95FD9F68967EFC7F2204C803B487CD90C36",
+      "sha256": "1D2D043647E1380D0552629F7DF4D95FD9F68967EFC7F2204C803B487CD90C36"
+    },
+    "handoff/t11-root-current-rag-ignore-dirs.patch": {
+      "recorded_sha256": "88421F8B79064961C6C72A7100241B95BE17F1E7E53383C6E2056D96B62D3DDA",
+      "sha256": "88421F8B79064961C6C72A7100241B95BE17F1E7E53383C6E2056D96B62D3DDA"
+    },
+    "handoff/t11-root-worktree-rag-phase-test.patch": {
+      "recorded_sha256": "25E8E04F43EF86662218BAF7B3E0DAE539526CC05048C622C9C07B03DB3F8A99",
+      "sha256": "25E8E04F43EF86662218BAF7B3E0DAE539526CC05048C622C9C07B03DB3F8A99"
+    },
+    "tests/test_t11_root_consumer_overlay.py": {
+      "sha256": "61E4FE7823411AA60455CF99785CB99AD266F34EEBA329733EA3A32B5CE53B59"
+    }
+  },
+  "historical_81_suite": {
+    "hash_bound_receipt_in_v2": "not found in this worktree handoff",
+    "result": "81 passed, historical report only"
+  },
+  "historical_root_context": {
+    "current_root_apply_or_test": "NOT RUN; no T20 GO",
+    "root": "C:\\Users\\Adam\\.local-ai-hub",
+    "root_head_in_2026_10_01_receipt": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "root_writes_this_turn": false
+  },
+  "next_root_selector_after_t20_release": "python -B -m pytest -q -p no:cacheprovider --tb=short -c pyproject.toml tests/test_t11_rag_project_policy.py::test_rag_index_paths_respects_hard_ignored_directory_with_force_include tests/test_t11_rag_project_policy.py::test_rag_ingestion_applies_custom_extension_and_project_size_policy tests/test_t11_rag_worktree_policy.py tests/test_rag_read_bounds.py tests/test_t11_embedding_space_reindex.py::test_full_index_reembeds_unchanged_files_when_embedding_space_changes tests/test_t11_embedding_space_reindex.py::test_full_index_reembeds_unchanged_files_after_embedding_config_change tests/test_t11_rag_seed_integrity.py::test_legacy_chunks_schema_without_embedding_space_is_rebuilt tests/test_t11_rag_seed_integrity.py::test_parent_seed_reuses_only_matching_file_cache_and_never_rag_hash tests/test_t11_rag_seed_integrity.py::test_parent_seed_rejects_same_size_dirty_child_and_stale_source_text tests/test_t11_rag_seed_integrity.py::test_parent_seed_invalidates_previously_inherited_state_for_dirty_child",
+  "root_patch_preflight": {
+    "current_root_result": "NOT VERIFIED; do not reuse stale root HEAD claim",
+    "diagnostic_ignore_patch": "do not apply separately",
+    "recorded_result": "PASS against root snapshot in 2026-10-01 handoff"
+  },
+  "schema": "t11-v2-acceptance-closeout-v1",
+  "status": "PARTIAL; root-consumer acceptance blocked by documented explicit hard-ignore failure and T20-owned post-fix selector",
+  "tests_run_this_turn": false,
+  "unverified": [
+    "Post-fix hard-ignore selector has not run; T20 owns it.",
+    "The 81-test suite and large benchmarks were not rerun, per existing handoff.",
+    "No current-root patch application or root integration performed.",
+    "Existing root preflight was against historical root HEAD, not proven current."
+  ]
+}
