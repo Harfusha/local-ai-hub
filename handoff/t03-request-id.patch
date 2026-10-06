@@ -1,0 +1,42 @@
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -808,6 +808,13 @@
+                             self._debug_observer_token = set_observer(DebugTraceObserver(trace_store, self._debug_trace_id))
+         except Exception:
+             pass
++
++    def _ensure_trace_request_id(self) -> str:
++        request_id = getattr(self, "_trace_request_id", None)
++        if not request_id:
++            request_id = self.headers.get("X-LocalAI-Request-ID") or uuid.uuid4().hex
++            self._trace_request_id = request_id
++        return request_id
+ 
+     @classmethod
+     def _safe_debug_trace_request(cls, payload: Any) -> dict[str, Any]:
+@@ -2225,7 +2232,7 @@
+         self._begin_trace(path)
+         if getattr(APP, "recovery", None) is not None:
+             try:
+-                request_id = RecoveryJournal.validate_request_id(getattr(self, "_trace_request_id", ""))
++                request_id = RecoveryJournal.validate_request_id(self._ensure_trace_request_id())
+             except (TypeError, ValueError) as exc:
+                 self._journal_finished = True
+                 self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+diff --git a/tests/test_http_request_id_fallback.py b/tests/test_http_request_id_fallback.py
+new file mode 100644
+index 0000000..24076a9
+--- /dev/null
++++ b/tests/test_http_request_id_fallback.py
+@@ -0,0 +1,10 @@
++from types import SimpleNamespace
++
++from local_ai_hub.http_server import Handler
++
++
++def test_trace_request_id_falls_back_to_valid_client_header():
++    handler = SimpleNamespace(headers={"X-LocalAI-Request-ID": "req_2ac7b6cb636c"})
++
++    assert Handler._ensure_trace_request_id(handler) == "req_2ac7b6cb636c"
++    assert handler._trace_request_id == "req_2ac7b6cb636c"

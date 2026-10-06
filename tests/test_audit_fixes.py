@@ -114,6 +114,7 @@ def test_async_jobs_retry_state():
 
 def test_daemon_pruning_on_capacity():
     broker = CommandBroker({"commands": {"enabled": True}})
+    broker.authorize_auxiliary_action = lambda *_args, **_kwargs: {"allowed": True}
     for i in range(60):
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 0
@@ -122,6 +123,8 @@ def test_daemon_pruning_on_capacity():
             "daemon_id": f"d_{i}",
             "process": mock_proc,
             "pid": 1000 + i,
+            "task_id": "daemon-pruning-test",
+            "process_tree_stopped": True,
             "name": f"d_{i}",
             "command": "echo 1",
             "cwd": ".",
@@ -131,7 +134,7 @@ def test_daemon_pruning_on_capacity():
             "stopped_at": 200.0 + i,
         }
     
-    res = broker.stop_daemon("d_59")
+    res = broker.stop_daemon("d_59", task_id="daemon-pruning-test")
     assert res["success"]
     assert len(broker._daemons) <= 50
 

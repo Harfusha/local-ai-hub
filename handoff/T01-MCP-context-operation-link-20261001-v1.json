@@ -1,0 +1,16 @@
+{
+  "root_preimage_sha256": {
+    "tools/surface_inventory.py": "013b4de9ec58d53686e149ecdb84b7f1f839977a2d486e7f0ef06a3e32806273",
+    "tests/test_surface_inventory.py": "66827335d8db78407ed47ece55063f2165793ac6e61b08ae0c5a0cea4360712e"
+  },
+  "candidate_sha256": {
+    "tools/surface_inventory.py": "836e2c899c7c4e6a5fe4d316ca3c61757e2da342db82c8587beaf37d090dddfe",
+    "tests/test_surface_inventory.py": "1137c5ac9c4727278bae4bf8cacc761aded01af83dfbc56ab4040dffc464f759"
+  },
+  "patch": "C:\\Users\\Adam\\.codex\\worktrees\\t01-coverage-main-verify\\.local-ai-hub\\handoff\\T01-MCP-context-operation-link-20261001-v1.patch",
+  "patch_sha256": "e758d61c5dd737d772b1dff930dc2c399b6da1fd7ef3ada0808329a2b20c920f",
+  "test": "tests/test_surface_inventory.py::test_behavioral_links_only_reference_inventoried_operations",
+  "result": "1 passed in 8.98s; fail-first before removing the deliberate skip",
+  "root_modified": false,
+  "coverage_document_modified": false
+}

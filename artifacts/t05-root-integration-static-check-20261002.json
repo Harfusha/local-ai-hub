@@ -1,0 +1,338 @@
+{
+  "task": "T05 tenant context isolation root integration static checkpoint",
+  "date": "2026-10-02",
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "owned_paths": [
+    "src/local_ai_hub/agent_memory.py",
+    "tests/test_agent_memory.py",
+    "tests/test_agent_memory_context_tenant_isolation.py"
+  ],
+  "patch": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-tenant-context-strictness-root.patch",
+    "sha256": "04E9CF21A85D6B9CC54313E83B2CF35862E69A24FD4034F3AA81431410343BBF",
+    "apply_check_before_integration": "PASS"
+  },
+  "candidate_postimage_sha256": {
+    "src/local_ai_hub/agent_memory.py": "8E6FB8B30424204362DF64477DEB753D040667CD76B1DD3DED7D4BCC2C56A93C",
+    "tests/test_agent_memory.py": "90D1BA43E8DE383DCC2E984C8F3489ED510FCFA367AB56162208E8CF7AE24621",
+    "tests/test_agent_memory_context_tenant_isolation.py": "CF7804BE5FFAF142C18111D1FDAFD6649C4837DA0D889EC9891D2CB959428BE6"
+  },
+  "root_preimage_sha256": {
+    "src/local_ai_hub/agent_memory.py": "38A9A86C3E9C6EF90BAF1CF7F2CE12DB32DA8D1DDCDB4288512942C39FEBEA73",
+    "tests/test_agent_memory.py": "4C15BC64C5D67735DA1C061CD392D29E9F40F63B8AC0FF683070334474649F3E",
+    "tests/test_agent_memory_context_tenant_isolation.py": "543635DE7B54021666935766E8C49E67A80B3C3BE2D907DD47E249903AE8A6BB"
+  },
+  "root_current_sha256": {
+    "src/local_ai_hub/agent_memory.py": "2168D2442E271F26EDD10DF5EBBA19C011E4C66ADAE3C4C204DDCE725BF79018",
+    "tests/test_agent_memory.py": "4E94E9EF95EAD1A22FEB7C97059EB1688D3627B3BA255241A80D5726826AA5DB",
+    "tests/test_agent_memory_context_tenant_isolation.py": "5059595157C5A142BE8BE684EA5839297C1C20629B7DBE5CBE4E0897D4CE2AF0"
+  },
+  "integration_source": "T20 reports applying only the T05-owned three-path patch after matching preimages and scope. This task independently verified current root file SHA-256 values match the reported postimages.",
+  "static_checks": {
+    "root_ast_parse": "PASS (3 files)",
+    "root_git_diff_check": "PASS",
+    "root_current_hashes_match_t20_report": "PASS",
+    "root_patch_reverse_check": "PASS: git -C C:\\Users\\Adam\\.local-ai-hub apply --reverse --check C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-tenant-context-strictness-root.patch",
+    "root_patch_reverse_check_meaning": "All three owned patch hunks are present in current root; no patch content was written by this check."
+  },
+  "runtime_acceptance": {
+    "candidate_t05_selectors": "11/11 PASS; previously recorded",
+    "candidate_http_identity_selector": "1/1 PASS; previously recorded",
+    "root_tests": "NOT RUN",
+    "slot_owner": "T02; no tests or benchmarks until explicit release",
+    "candidate_11_selector_batch": {
+      "outer_command": "PowerShell `$code=@'...'@; python -B -c \"$code\"",
+      "pytest_call": "pytest.main(['-q','-p','no:cacheprovider','--tb=short', *selectors])",
+      "candidate_import": "asserted candidate/src/local_ai_hub package path; imported receipt-pinned root agent_events.py SHA 09B31135FF2493F2B8E236074DBF7FB2C9CC274BC2DD5841ECDDD07F974ADA5A",
+      "selectors": [
+        "tests/test_agent_memory.py::test_legacy_unscoped_lookup_rejects_nonempty_task_and_session_context",
+        "tests/test_agent_memory.py::test_memory_find_enforces_root_repository_and_tenant_identity",
+        "tests/test_agent_memory.py::test_find_for_context_enforces_repository_tenant_and_task_identity",
+        "tests/test_agent_memory.py::test_find_filters_global_and_repository_rows_by_tenant_and_root",
+        "tests/test_agent_memory_context_tenant_isolation.py::test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_global",
+        "tests/test_agent_memory_context_tenant_isolation.py::test_find_for_context_without_tenant_returns_only_tenantless_global",
+        "tests/test_agent_memory_context_tenant_isolation.py::test_context_compiler_filters_foreign_tenant_before_returning_memory",
+        "tests/test_agent_memory_http_identity.py::test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries",
+        "tests/test_agent_memory.py::test_global_memory_delete_ignores_transport_tenant_but_keeps_scope",
+        "tests/test_agent_memory.py::test_scoped_memory_delete_requires_matching_tenant",
+        "tests/test_memory_delete_identity_contract.py::test_repository_memory_delete_requires_matching_root_and_tenant"
+      ],
+      "result": "11 passed in 13.11s; exit 0"
+    },
+    "candidate_focused_http_selector": {
+      "selector": "tests/test_agent_memory_http_identity.py::test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries",
+      "pytest_call": "pytest.main(['-q','-p','no:cacheprovider','--tb=short', selector])",
+      "result": "1 passed in 6.08s; exit 0"
+    },
+    "planned_root_command_after_T02_release": {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_memory.py::test_legacy_unscoped_lookup_rejects_nonempty_task_and_session_context tests/test_agent_memory.py::test_memory_find_enforces_root_repository_and_tenant_identity tests/test_agent_memory.py::test_find_for_context_enforces_repository_tenant_and_task_identity tests/test_agent_memory.py::test_find_filters_global_and_repository_rows_by_tenant_and_root tests/test_agent_memory_context_tenant_isolation.py::test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_global tests/test_agent_memory_context_tenant_isolation.py::test_find_for_context_without_tenant_returns_only_tenantless_global tests/test_agent_memory_context_tenant_isolation.py::test_context_compiler_filters_foreign_tenant_before_returning_memory tests/test_agent_memory_http_identity.py::test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries tests/test_agent_memory.py::test_global_memory_delete_ignores_transport_tenant_but_keeps_scope tests/test_agent_memory.py::test_scoped_memory_delete_requires_matching_tenant tests/test_memory_delete_identity_contract.py::test_repository_memory_delete_requires_matching_root_and_tenant",
+      "selectors": [
+        "tests/test_agent_memory.py::test_legacy_unscoped_lookup_rejects_nonempty_task_and_session_context",
+        "tests/test_agent_memory.py::test_memory_find_enforces_root_repository_and_tenant_identity",
+        "tests/test_agent_memory.py::test_find_for_context_enforces_repository_tenant_and_task_identity",
+        "tests/test_agent_memory.py::test_find_filters_global_and_repository_rows_by_tenant_and_root",
+        "tests/test_agent_memory_context_tenant_isolation.py::test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_global",
+        "tests/test_agent_memory_context_tenant_isolation.py::test_find_for_context_without_tenant_returns_only_tenantless_global",
+        "tests/test_agent_memory_context_tenant_isolation.py::test_context_compiler_filters_foreign_tenant_before_returning_memory",
+        "tests/test_agent_memory_http_identity.py::test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries",
+        "tests/test_agent_memory.py::test_global_memory_delete_ignores_transport_tenant_but_keeps_scope",
+        "tests/test_agent_memory.py::test_scoped_memory_delete_requires_matching_tenant",
+        "tests/test_memory_delete_identity_contract.py::test_repository_memory_delete_requires_matching_root_and_tenant"
+      ],
+      "gate": "Run only after T02 explicitly releases sole serial test/benchmark slot.",
+      "current_result": "NOT RUN"
+    }
+  },
+  "remaining_acceptance": [
+    "Run authorized root selectors after T02 releases serial slot",
+    "Complete remaining T05 memory, identity, privacy, delete, migration, cache-recovery, and reopen acceptance",
+    "Preserve T08 and T20 ownership boundaries"
+  ],
+  "source_only_preflight": {
+    "performed_at": "2026-10-02 Europe/Prague",
+    "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+    "patch_sha256": "04E9CF21A85D6B9CC54313E83B2CF35862E69A24FD4034F3AA81431410343BBF",
+    "root_current_sha256": {
+      "src/local_ai_hub/agent_memory.py": "2168D2442E271F26EDD10DF5EBBA19C011E4C66ADAE3C4C204DDCE725BF79018",
+      "tests/test_agent_memory.py": "4E94E9EF95EAD1A22FEB7C97059EB1688D3627B3BA255241A80D5726826AA5DB",
+      "tests/test_agent_memory_context_tenant_isolation.py": "5059595157C5A142BE8BE684EA5839297C1C20629B7DBE5CBE4E0897D4CE2AF0"
+    },
+    "candidate_current_sha256": {
+      "src/local_ai_hub/agent_memory.py": "8E6FB8B30424204362DF64477DEB753D040667CD76B1DD3DED7D4BCC2C56A93C",
+      "tests/test_agent_memory.py": "90D1BA43E8DE383DCC2E984C8F3489ED510FCFA367AB56162208E8CF7AE24621",
+      "tests/test_agent_memory_context_tenant_isolation.py": "CF7804BE5FFAF142C18111D1FDAFD6649C4837DA0D889EC9891D2CB959428BE6"
+    },
+    "root_head_blob_sha256": {
+      "src/local_ai_hub/agent_memory.py": "A4A4C0434BC74F106F758254CCD25CB2CBF0417CB54A8E51CA6BAD5C29DCAD5E",
+      "tests/test_agent_memory.py": "922FDEB6D871C2B20CCD74A704668C167D5062A1DBF25CC4C4E99425F706C1DF",
+      "tests/test_agent_memory_context_tenant_isolation.py": null
+    },
+    "candidate_head_blob_sha256": {
+      "src/local_ai_hub/agent_memory.py": "8BA1E69FC5D999CEF0F42C2EFB98BDCAE0029C273E37A4F3FAA969371CBA5F29",
+      "tests/test_agent_memory.py": "922FDEB6D871C2B20CCD74A704668C167D5062A1DBF25CC4C4E99425F706C1DF",
+      "tests/test_agent_memory_context_tenant_isolation.py": null
+    },
+    "baseline_divergence": [
+      "agent_memory.py HEAD blobs differ between root and candidate; root apply-check/reverse-check uses current-root patch and current dirty tree, not candidate HEAD equivalence.",
+      "test_agent_memory.py HEAD blobs match exactly; working-tree postimages differ after T05 hunks.",
+      "context tenant-isolation test is untracked in both trees; candidate/root current hashes differ due root integration context."
+    ],
+    "patch_preimage_evidence": {
+      "root_preimage_sha256": {
+        "src/local_ai_hub/agent_memory.py": "38A9A86C3E9C6EF90BAF1CF7F2CE12DB32DA8D1DDCDB4288512942C39FEBEA73",
+        "tests/test_agent_memory.py": "4C15BC64C5D67735DA1C061CD392D29E9F40F63B8AC0FF683070334474649F3E",
+        "tests/test_agent_memory_context_tenant_isolation.py": "543635DE7B54021666935766E8C49E67A80B3C3BE2D907DD47E249903AE8A6BB"
+      },
+      "candidate_preimage_sha256": {
+        "src/local_ai_hub/agent_memory.py": "784116FF1ADA548979126F9639C4B795016540AF5ED85D1897C6963DFA6AC73E",
+        "tests/test_agent_memory.py": "623B443B72360D5BAB0FAA450DCFCF19AB4AB6B4EAC82A8F7E92ED7E15CF88DB",
+        "tests/test_agent_memory_context_tenant_isolation.py": "CA15902E2EA8D40A3E454C4BB2E2EDDD58F4BAD6DB3E7D49ACD744A986C79B5B"
+      },
+      "root_current_postimage_matches_T20_report": true,
+      "candidate_postimage_matches_T05_receipt": true,
+      "root_apply_reverse_check": "PASS; patch hunks present; check made no writes"
+    },
+    "selector_preflight": {
+      "candidate_exact_selectors_present": "11/11 by AST function-definition inspection",
+      "root_exact_selectors_present": "9/11; no tests executed",
+      "root_missing_exact_selectors": [
+        "tests/test_agent_memory.py::test_find_for_context_enforces_repository_tenant_and_task_identity",
+        "tests/test_agent_memory.py::test_scoped_memory_delete_requires_matching_tenant"
+      ],
+      "root_equivalent_or_replacement_selectors": [
+        "tests/test_agent_memory_context_tenant_isolation.py::test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_global (covers repository, task, GLOBAL current/foreign tenants)",
+        "tests/test_agent_memory.py::test_scoped_memory_delete_still_enforces_tenant (checks wrong-tenant rejection; does not check missing-tenant rejection)",
+        "tests/test_agent_memory.py::test_memory_correction_lineage_and_delete_survive_reopen (adds root reopen coverage in place of candidate-only context selector)"
+      ],
+      "root_selector_command_requires_adjustment_before_allocation": true,
+      "root_post_patch_exact_selector_plan": [
+        "tests/test_agent_memory.py::test_legacy_unscoped_lookup_rejects_nonempty_task_and_session_context",
+        "tests/test_agent_memory.py::test_memory_find_enforces_root_repository_and_tenant_identity",
+        "tests/test_agent_memory.py::test_memory_correction_lineage_and_delete_survive_reopen",
+        "tests/test_agent_memory.py::test_find_filters_global_and_repository_rows_by_tenant_and_root",
+        "tests/test_agent_memory_context_tenant_isolation.py::test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_global",
+        "tests/test_agent_memory_context_tenant_isolation.py::test_find_for_context_without_tenant_returns_only_tenantless_global",
+        "tests/test_agent_memory_context_tenant_isolation.py::test_context_compiler_filters_foreign_tenant_before_returning_memory",
+        "tests/test_agent_memory_http_identity.py::test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries",
+        "tests/test_agent_memory.py::test_global_memory_delete_ignores_transport_tenant_but_keeps_scope",
+        "tests/test_agent_memory.py::test_scoped_memory_delete_still_enforces_tenant",
+        "tests/test_memory_delete_identity_contract.py::test_repository_memory_delete_requires_matching_root_and_tenant"
+      ],
+      "root_post_patch_selector_count": 11,
+      "root_post_patch_gate": "Preimage/patch pins matched; patch applied; postimage and AST selector presence verified. Run the 11-selector batch once, then the new selector once, serially.",
+      "root_post_patch_command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_memory.py::test_legacy_unscoped_lookup_rejects_nonempty_task_and_session_context tests/test_agent_memory.py::test_memory_find_enforces_root_repository_and_tenant_identity tests/test_agent_memory.py::test_memory_correction_lineage_and_delete_survive_reopen tests/test_agent_memory.py::test_find_filters_global_and_repository_rows_by_tenant_and_root tests/test_agent_memory_context_tenant_isolation.py::test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_global tests/test_agent_memory_context_tenant_isolation.py::test_find_for_context_without_tenant_returns_only_tenantless_global tests/test_agent_memory_context_tenant_isolation.py::test_context_compiler_filters_foreign_tenant_before_returning_memory tests/test_agent_memory_http_identity.py::test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries tests/test_agent_memory.py::test_global_memory_delete_ignores_transport_tenant_but_keeps_scope tests/test_agent_memory.py::test_scoped_memory_delete_still_enforces_tenant tests/test_memory_delete_identity_contract.py::test_repository_memory_delete_requires_matching_root_and_tenant",
+      "new_selector_run_separately": "tests/test_agent_memory.py::test_scoped_memory_delete_requires_matching_tenant",
+      "root_post_patch_selector_count_including_new_separate_run": 12,
+      "new_selector_command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_memory.py::test_scoped_memory_delete_requires_matching_tenant"
+    },
+    "test_gate": "No tests run. T02 physical slot free, explicit T20 allocation still required.",
+    "source_gap_audit": {
+      "root_agent_memory_delete": "Current root source includes identity-scoped record deletion followed by relation, embedding, and optional FTS cleanup before COMMIT.",
+      "candidate_agent_memory_delete": "Current candidate source includes same cleanup sequence after positive rowcount.",
+      "fts_cleanup_patch": "artifacts/t05-memory-delete-fts-cleanup-20261002.patch is stale against current candidate context (apply-check fails at line 1971); its intended cleanup statements are already present in current candidate and root source. Do not apply stale patch.",
+      "remaining_runtime_gaps": [
+        "Fresh root execution of adjusted 11-selector acceptance batch",
+        "Current postimage privacy/corrupt-row, migration, cache-recovery, reopen and FTS rollback-mask acceptance receipts",
+        "T08 task/resume adoption and event/cursor integration remain T08-owned"
+      ],
+      "test_owner_boundary": "T05 owns MemoryStore behavior and scoped-delete regression. T08 owns rollback-masking test implementation; avoid duplicating its test."
+    },
+    "slot_state": "T20 confirms T11 still owns slot11; earlier T11 release note was stale. T05 is next as slot12, not assigned yet. Keep patch unapplied; no tests until explicit T20 grant."
+  },
+  "scoped_delete_missing_tenant_test_handoff": {
+    "owner": "T05",
+    "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-root-scoped-delete-missing-tenant-test.patch",
+    "patch_sha256": "5A27FE291C66A37B5C60E49CFC7FFEF98431EDAA7C655AB87CA70AA4613AF623",
+    "changed_path": "tests/test_agent_memory.py",
+    "change_scope": "one AST-extracted top-level test function only; no imports/source/runtime changes",
+    "candidate_source_sha256": "90D1BA43E8DE383DCC2E984C8F3489ED510FCFA367AB56162208E8CF7AE24621",
+    "extracted_function": "test_scoped_memory_delete_requires_matching_tenant",
+    "extracted_function_sha256": "2630A3C52B7DC3015D66D30B00B28ADDD30BA54DB2951B70780AF8109239519E",
+    "root_preimage_sha256": "4E94E9EF95EAD1A22FEB7C97059EB1688D3627B3BA255241A80D5726826AA5DB",
+    "expected_root_postimage_sha256": "36317D9C62AA9EADA01E672276EFC75BF704DA7D26DBA31F0C24BBB890B98D5C",
+    "validation": {
+      "candidate_ast_function_extraction": "PASS; extracted exactly candidate AST lines 692-730",
+      "root_apply_check": "PASS: git -C C:\\Users\\Adam\\.local-ai-hub apply --check --whitespace=error <patch>",
+      "root_apply_stat": "one file; 41 insertions",
+      "root_modified": "false",
+      "tests_run": "false",
+      "postimage_sha256": "36317D9C62AA9EADA01E672276EFC75BF704DA7D26DBA31F0C24BBB890B98D5C",
+      "root_ast_function_match": "PASS",
+      "root_selector_ast_presence": "12/12 including added selector",
+      "actual_postimage_sha256": "36317D9C62AA9EADA01E672276EFC75BF704DA7D26DBA31F0C24BBB890B98D5C",
+      "applied": "true",
+      "test": "NOT RUN; root source pin mismatch on pre-test guard"
+    },
+    "slot": "T05 queued as slot12 after T11; waiting explicit T20 allocation",
+    "actual_root_postimage_sha256": "36317D9C62AA9EADA01E672276EFC75BF704DA7D26DBA31F0C24BBB890B98D5C",
+    "candidate_ast_function_sha256": "5B8878E7EF3AA6AAEE1B17F4904A1F224230B4B5D61EB0FB65336CEDE1E6E2C5",
+    "root_ast_function_sha256": "5B8878E7EF3AA6AAEE1B17F4904A1F224230B4B5D61EB0FB65336CEDE1E6E2C5",
+    "candidate_root_ast_function_match": "PASS",
+    "patch_application": "Applied after exact root preimage and patch SHA matched T20 gate; one test-only hunk.",
+    "tests_run": "pending slot12 runs"
+  },
+  "acceptance_status_snapshot": {
+    "date": "2026-10-02 Europe/Prague",
+    "owner": "T05",
+    "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+    "candidate_source_test_sha256": {
+      "src/local_ai_hub/agent_memory.py": "8E6FB8B30424204362DF64477DEB753D040667CD76B1DD3DED7D4BCC2C56A93C",
+      "tests/test_agent_memory.py": "90D1BA43E8DE383DCC2E984C8F3489ED510FCFA367AB56162208E8CF7AE24621",
+      "tests/test_agent_memory_context_tenant_isolation.py": "CF7804BE5FFAF142C18111D1FDAFD6649C4837DA0D889EC9891D2CB959428BE6"
+    },
+    "historical_candidate_receipts": {
+      "tenant_scope_delete_selectors": "11 passed in 13.11s; command called pytest.main(['-q','-p','no:cacheprovider','--tb=short', *selectors]); candidate import asserted and pinned root agent_events provider injected",
+      "http_identity_selector": "1 passed in 6.08s; same pinned bridge harness",
+      "root_receipt": "No fresh root run for current postimages"
+    },
+    "root_pins": {
+      "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+      "src/local_ai_hub/agent_memory.py": "2168D2442E271F26EDD10DF5EBBA19C011E4C66ADAE3C4C204DDCE725BF79018",
+      "tests/test_agent_memory.py": "4E94E9EF95EAD1A22FEB7C97059EB1688D3627B3BA255241A80D5726826AA5DB",
+      "tests/test_agent_memory_context_tenant_isolation.py": "5059595157C5A142BE8BE684EA5839297C1C20629B7DBE5CBE4E0897D4CE2AF0"
+    },
+    "pending_root_change": {
+      "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-root-scoped-delete-missing-tenant-test.patch",
+      "patch_sha256": "5A27FE291C66A37B5C60E49CFC7FFEF98431EDAA7C655AB87CA70AA4613AF623",
+      "preimage_sha256": "4E94E9EF95EAD1A22FEB7C97059EB1688D3627B3BA255241A80D5726826AA5DB",
+      "expected_postimage_sha256": "36317D9C62AA9EADA01E672276EFC75BF704DA7D26DBA31F0C24BBB890B98D5C",
+      "apply_check": "PASS",
+      "applied": "true",
+      "actual_postimage_sha256": "36317D9C62AA9EADA01E672276EFC75BF704DA7D26DBA31F0C24BBB890B98D5C"
+    },
+    "t20_queue_status": "T20 latest update: T11 owns slot11; T05 queued slot12; Hub success=false/version=null; validation queue held. No test or native fallback until explicit slot allocation.",
+    "next_step": "Run the single adjusted root batch, then the single new scoped-delete selector. No retries; save logs/results and release slot12.",
+    "scope_note": "T08 task/resume/event/cursor work remains T08-owned. T05 candidate/source dirt preserved.",
+    "root_selector_run_plan": {
+      "batch_count": 11,
+      "new_selector_separate": "tests/test_agent_memory.py::test_scoped_memory_delete_requires_matching_tenant",
+      "run_count": 2,
+      "slot": "T20-CPU-SLOT-20261002-12"
+    }
+  },
+  "slot12_result": {
+    "slot": "T20-CPU-SLOT-20261002-12",
+    "status": "STOPPED_BEFORE_TESTS_ROOT_SOURCE_HASH_MISMATCH",
+    "initial_pins_before_patch": {
+      "root_HEAD": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+      "root_agent_memory_sha256": "2168D2442E271F26EDD10DF5EBBA19C011E4C66ADAE3C4C204DDCE725BF79018",
+      "root_test_agent_memory_preimage_sha256": "4E94E9EF95EAD1A22FEB7C97059EB1688D3627B3BA255241A80D5726826AA5DB",
+      "patch_sha256": "5A27FE291C66A37B5C60E49CFC7FFEF98431EDAA7C655AB87CA70AA4613AF623",
+      "result": "all matched; patch apply-check passed"
+    },
+    "applied_change": {
+      "path": "tests/test_agent_memory.py",
+      "scope": "single AST-extracted scoped delete missing-tenant regression test",
+      "postimage_sha256": "36317D9C62AA9EADA01E672276EFC75BF704DA7D26DBA31F0C24BBB890B98D5C",
+      "applied_after_exact_preimage_check": true
+    },
+    "pre_test_recheck": {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short <11 adjusted root tenant selectors>",
+      "guard_result": "ABORTED before pytest invocation",
+      "expected_agent_memory_sha256": "2168D2442E271F26EDD10DF5EBBA19C011E4C66ADAE3C4C204DDCE725BF79018",
+      "actual_agent_memory_sha256": "5D2A02FC7FD63191600C53B95FE1A050935191155BF6047FE264810BC6C43066",
+      "other_current_root_pins": {
+        "HEAD": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+        "tests/test_agent_memory.py": "36317D9C62AA9EADA01E672276EFC75BF704DA7D26DBA31F0C24BBB890B98D5C",
+        "tests/test_agent_memory_context_tenant_isolation.py": "5059595157C5A142BE8BE684EA5839297C1C20629B7DBE5CBE4E0897D4CE2AF0"
+      },
+      "process_check": "no matching active pytest/benchmark process returned",
+      "test_result": "NOT RUN; no log created; no retry per T20 instruction"
+    },
+    "root_status": "agent_memory.py and test_agent_memory.py remain dirty; no changes outside the authorized test-only patch were made in this turn.",
+    "action": "Stop acceptance pending T20 review/re-pin of current root agent_memory.py; release slot12 without test run."
+  },
+  "source_drift_evidence": {
+    "expected_agent_memory_sha256_at_T05_preapply_gate": "2168D2442E271F26EDD10DF5EBBA19C011E4C66ADAE3C4C204DDCE725BF79018",
+    "observed_agent_memory_sha256_before_pytest_guard": "5D2A02FC7FD63191600C53B95FE1A050935191155BF6047FE264810BC6C43066",
+    "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "git_status": " M src/local_ai_hub/agent_memory.py",
+    "git_diff_numstat": "540 additions, 213 deletions relative to HEAD; file was already dirty at T05 start/pre-apply pin",
+    "file_length_bytes": 99350,
+    "file_creation_time_utc": "2026-10-02T05:53:13.1115673Z",
+    "file_last_write_time_utc": "2026-10-02T07:22:14.5764304Z",
+    "filesystem_owner": "ADAMPC\\Adam (file owner; does not identify writing process)",
+    "attribution": "This T05 turn only wrote tests/test_agent_memory.py via the hash-pinned one-hunk patch and updated the candidate checkpoint. No command in this T05 turn wrote src/local_ai_hub/agent_memory.py. Exact external writer is unknown from filesystem/Git metadata.",
+    "process_check": "No active pytest/benchmark process returned.",
+    "test_batch": "Guard exited 1 before pytest because source SHA mismatched. No selector executed; no log exists; no retry.",
+    "patch_state": "The scoped-delete test-only hunk had already been applied after exact initial root HEAD/source/test and patch pins matched. Preserve it; do not revert or reapply.",
+    "slot": "T20-CPU-SLOT-20261002-12 halted and released to T20; await fresh source pin and new explicit allocation before tests.",
+    "observations": [
+      {
+        "sha256": "2168D2442E271F26EDD10DF5EBBA19C011E4C66ADAE3C4C204DDCE725BF79018",
+        "when": "T05 initial slot12 pin check, before test patch application"
+      },
+      {
+        "sha256": "5D2A02FC7FD63191600C53B95FE1A050935191155BF6047FE264810BC6C43066",
+        "last_write_time_utc": "2026-10-02T07:22:14.5764304Z",
+        "when": "T05 pre-pytest source guard; test run aborted before pytest"
+      },
+      {
+        "sha256": "DB7BBDC5EC0BB8282AFDD94DE96645DC7A8355DD9972F53D249A371EDAA1864F",
+        "last_write_time_utc": "2026-10-02T07:27:35.6696191Z",
+        "git_status": " M src/local_ai_hub/agent_memory.py",
+        "git_diff_numstat": "538 additions, 214 deletions",
+        "filesystem_owner": "ADAMPC\\Adam"
+      }
+    ],
+    "cross_worktree_hashes_current_observation": {
+      "T05": "8E6FB8B30424204362DF64477DEB753D040667CD76B1DD3DED7D4BCC2C56A93C",
+      "T08": "BFC91D7958654D6BD0669E1C92C391C6E93A9A42D1E134A44A8E04868F4C9E70",
+      "T21": "2D164F02FB5591BDBC2EDD510C357C574B2F30E4BCA1EE6F49D579DAA3E21C74"
+    },
+    "T08_provenance_request": "Sent to T08 twice; response pending. Latest T08 commentary described overlay-only work, but no explicit attribution confirmation received.",
+    "pin_policy": "Do not replace existing expected root source hash 2168D244...; wait for explicit owner/provenance reconciliation and fresh T20 allocation."
+  },
+  "root_current_handoff": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t05-identity-recovery\\.local-ai-hub\\artifacts\\t05-root-current-handoff-20261002.json",
+    "sha256": "AC906A873C746F2BA8BADE8707F234CFD741B12007DE989AF0FE3DF43180CE36",
+    "root_agent_memory_current_sha256_at_handoff": "3CEE6327E4EC692B171405C3A7E27A603A76355C3C6B2D0C35C5129849A7D187",
+    "root_context_scope_ast_matches_T05": "true",
+    "T08_provenance": "preparation manifest pinned root agent_memory.py at 2168D244...; owner boundary says T05 validates integrated memory reads without editing owner hunks; no explicit response on later root hash drift yet",
+    "tests_run": false,
+    "root_source_modified_by_T05_this_turn": false
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "root_worktree_status": "dirty; only listed preimages included",
+  "candidate": "C:\\Users\\Adam\\.codex\\worktrees\\t02-quality-baseline-resume\\.local-ai-hub",
+  "candidate_head": "ad974c54e150d5f2c9bdada8179bc02457147549",
+  "patch": "artifacts/t02-repeat-runner-root-current-v2.patch",
+  "patch_sha256": "B34AFC13B3AAFC59515FDE047736D0FBBE3A971A05623D5E0937A18D46F270CC",
+  "root_preimage": {
+    "tools/repeat_t02_pytest.py": {
+      "state": "present",
+      "sha256": "A03844C4BC7229264207BFE468306D536FDD7E48D0F4BA6D66F52032C424554D",
+      "status": "?? tools/repeat_t02_pytest.py"
+    },
+    "tests/test_t02_repeat_pytest.py": {
+      "state": "present",
+      "sha256": "313705E05A5AF220A0B5A6A8FAFEAB3218EE6CCB8AD4711C20662F7866FD5917",
+      "status": "?? tests/test_t02_repeat_pytest.py"
+    },
+    "docs/T02-quality-performance-baseline-contract.md": {
+      "state": "present",
+      "sha256": "6C8AEED6A0168BB3FF5338248EA695766BFA0290E6E9776C6674996F991E1EF8",
+      "status": "?? docs/T02-quality-performance-baseline-contract.md"
+    },
+    "docs/T02-real-input-quality-evidence-plan.md": {
+      "state": "absent",
+      "sha256": null,
+      "status": "absent"
+    },
+    "handoff/T02-remaining-acceptance.md": {
+      "state": "absent",
+      "sha256": null,
+      "status": "absent"
+    },
+    "handoff/T02-instability-source-handoff-20261002.md": {
+      "state": "absent",
+      "sha256": null,
+      "status": "absent"
+    }
+  },
+  "candidate_files": {
+    "tools/repeat_t02_pytest.py": "E92108DDB0A4D09E2B854166D311530A5D2CCF61ED39F844F0422FEA552BEB87",
+    "tests/test_t02_repeat_pytest.py": "F8FC4AD4EAF985D48C7DCC0F1A78CD5D58F56899E17A9CDA78425EE187EEDC7D",
+    "docs/T02-quality-performance-baseline-contract.md": "4A22A9456FCC58D7E5E6C62E292188F991AD54E3304DA4CAFF770D0637FC8888",
+    "docs/T02-real-input-quality-evidence-plan.md": "B5E862F7FDAFC92C785FE497F3A99160F3FD738C68F69B64938CC278E9DD90DB",
+    "handoff/T02-remaining-acceptance.md": "B7E50A75A9C32CC41D5E2BAF798588564492D765F7B606ECEA7230F4BFF6A139",
+    "handoff/T02-instability-source-handoff-20261002.md": "F550714B2FFBB329FDA9FDC1DFBB1BFA1B3180F8AED76A89E561FBA864A1A08A"
+  },
+  "apply_check": {
+    "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check C:\\Users\\Adam\\.codex\\worktrees\\t02-quality-baseline-resume\\.local-ai-hub\\artifacts\\t02-repeat-runner-root-current-v2.patch",
+    "exit_code": 0,
+    "status": "PASS",
+    "output": ""
+  },
+  "root_target_status_after_apply_check": "?? docs/T02-quality-performance-baseline-contract.md;?? tests/test_t02_repeat_pytest.py;?? tools/repeat_t02_pytest.py",
+  "root_modified_by_check": false,
+  "authorized_pytest_command": "python -B -W error::ResourceWarning -m pytest -q -p no:cacheprovider --tb=short tests/test_t02_repeat_pytest.py",
+  "authorized_pytest_result": "exit 0; 3 passed in 0.09s",
+  "tests_or_benchmark_performed_by_packet": "no benchmark; no 25-run replay; no root test",
+  "created_utc": "2026-10-04"
+}

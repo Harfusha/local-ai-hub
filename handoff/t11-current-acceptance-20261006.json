@@ -1,0 +1,86 @@
+{
+  "schema": "t11-current-acceptance-v1",
+  "date": "2026-10-06",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\f678\\.local-ai-hub",
+    "requested_master_base": "b947d76fdfb7ed592b72e55587d5c83cfa352c35",
+    "original_t11_worktree_head": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "restored_snapshot_head": "a49addf6465548b9dd3c86a4581392d9426ff8d3",
+    "restored_snapshot_parent": "3c7da92aa6a267c2a18af0555d927f0e67d4c476",
+    "worktree_state": "clean tracked tree; handoff receipts and patch are untracked evidence only",
+    "source_edits_during_this_continuation": false,
+    "root_edits": false,
+    "embedding_space_isolation_changed": false,
+    "services_py_or_context_pack_changed": false
+  },
+  "t11_owned_paths_vs_master": [
+    {"path":"src/local_ai_hub/rag.py","base_blob_sha256":"4834A29FD9D1BF41B02A7BA68C8197F55A3D85F6DBAA7FB374F8A7B5A024EB99","candidate_blob_sha256":"BDC94FFE14252A7CB18460E1E1B5C513134F66C451FA1CD3DF90B21FCCB09EE7","candidate_worktree_raw_sha256":"31E3C78E191D8A635CBE924E1FF5DFB99C2E0A143177B2047DEA8BA7E8233610","status":"modified"},
+    {"path":"src/local_ai_hub/embeddings.py","base_blob_sha256":"20D0279F99C3A28A4A9B129587C3FAA5DA10D5AC1743F2C142EFC90195B2CA30","candidate_blob_sha256":"48D4A4F271201ACB0FEAB1C7F29A7911A0309688DFFDE56971D9F30859A0D2C7","candidate_worktree_raw_sha256":"2360FB9E4E9DDA72DC633A5E4F33ECBAB2EC3E8A26DC728F61114ACC2496D170","status":"modified"},
+    {"path":"src/local_ai_hub/reranker.py","base_blob_sha256":"1F09F9D4F78912FD4A0C0B1D218382B87BF56A6CC162FA4B0A8DB042B3467E0A","candidate_blob_sha256":"1F09F9D4F78912FD4A0C0B1D218382B87BF56A6CC162FA4B0A8DB042B3467E0A","candidate_worktree_raw_sha256":"EE8B660C9FA261EA34FB63587F8EAAF6119B83B544A4053D22669EF8D9C5C562","status":"same blob; worktree line-ending-filter hash differs"},
+    {"path":"tests/test_rag_fragment_cache.py","base_blob_sha256":"F88D022A1025EA4FFDD540574D21088C6566E622870161847A660387E5FBD6BC","candidate_blob_sha256":"7688E154C1E4576D786E62A80DB0CF1EB404204FAC264B3126D56F0835EDE26C","candidate_worktree_raw_sha256":"A7BD3335691AA7C291D4F42A600A2C7D790475F5770D534D9033FF6620A22002","status":"modified"},
+    {"path":"tests/test_rag_hybrid.py","base_blob_sha256":"335154C70DA138C9B50D0C7DA2DEA6718B5C3F521B8E5814912AA85134414FDC","candidate_blob_sha256":"CA14B2DF15B2E7DB1C7268B9CD5A4C1C57C2E9074BCEDDDEC15F6D26E729AAA8","candidate_worktree_raw_sha256":"C557FB16DDD671A29931EE82381EBA4FF94A671744EA649FE876587DE065E895","status":"modified"},
+    {"path":"tests/test_rag_quality_contract.py","base_blob_sha256":"1B7898D7067DD6C059D684D7F63B1C5996AC12548D66432035C9A10BDE553797","candidate_blob_sha256":"E8362B4AA3B717FC6FAAA3E4C88696C9F8AC9E412859E334B440D949ED08F8C6","candidate_worktree_raw_sha256":"EF90FC86269D89FFDB6E5CC508BF54917D4A6ED2243447E85DE372B94D5CF3E9","status":"modified"},
+    {"path":"tests/test_t11_rag_ingestion_contract.py","base_blob_sha256":"36072CC8BDF057075D4D5E18D0A93C3724F3DA6688FBA53FB0EC4DBBDAFF5513","candidate_blob_sha256":"FCCEB549E0F9E79994ED7D24A59166F9CC79A26B5A84FD723BD2BE4CD0BC83C0","candidate_worktree_raw_sha256":"EA71A6F259DC5DF02924526DF9FD4523D859286B8BAA3ED296AA1FD3FB4A73A7","status":"modified"},
+    {"path":"tests/test_t11_rag_seed_integrity.py","base_blob_sha256":"5A9F68F9D5347CA363FCE655480BFF2E58C2033FB7BDFD608D074441CFCE74C0","candidate_blob_sha256":"5A9F68F9D5347CA363FCE655480BFF2E58C2033FB7BDFD608D074441CFCE74C0","candidate_worktree_raw_sha256":"943AED3FC4CC11FCEC48A99500D1967E869B0276F6AF600736254CA375AB0E02","status":"same blob; worktree line-ending-filter hash differs"},
+    {"path":"tests/test_t11_project_policy_consumers.py","base_blob_sha256":"B01E3F105E90309B28793A282627B63E05D3E83528E5B9994138495F11686A38","candidate_blob_sha256":"A514C1642EAE940490EAACEE91FEBE1913C0E9C2DAEC759C5BCB37827B1AAA89","candidate_worktree_raw_sha256":"8424BE786DB9B33AA2FFE12E45CBAE83C76213A2D41EFA2CD544793861F28392","status":"modified"},
+    {"path":"tests/test_rag_read_bounds.py","base_blob_sha256":"2BBF937680E59368F654E3E0869FB19B01EE3D27CD4004264808968915707D87","candidate_blob_sha256":"699D0D3B7C19C5176A70126E75F3E897C238CDBE2894B3D906E74381AA70BE3A","candidate_worktree_raw_sha256":"EDCF8AD9AE88C2F370D9206588489D28BA8AE1AE9E5F092A20947D0842B2BA01","status":"modified"}
+  ],
+  "deliverable_patch": {
+    "path":"handoff/t11-master-b947d76f-owned.patch",
+    "sha256":"931BB305760DBEF30CCD23C435990B04421327DB1001747C48109CC667A8200A",
+    "bytes":179023,
+    "paths_modified":8,
+    "diff_stat":"1519 insertions, 1096 deletions",
+    "diff_check":"PASS",
+    "apply_stat":"PASS; patch is a master-based proposal only, not applied"
+  },
+  "validation": [
+    {
+      "kind":"offline_full_candidate",
+      "command":"python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_rag_fragment_cache.py tests/test_rag_hybrid.py tests/test_rag_quality_contract.py tests/test_t11_rag_ingestion_contract.py tests/test_rag_read_bounds.py tests/test_t11_rag_seed_integrity.py tests/test_t11_project_policy_consumers.py tests/test_embedding_cache.py tests/test_embedding_batch_deduplication.py tests/test_rag_dedup.py tests/test_storage_service_reliability.py",
+      "result":"185 passed, 3 skipped in 53.44s",
+      "exit_code":0
+    },
+    {
+      "kind":"offline_reranker_identity",
+      "command":"python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_reranker_cache_identity.py",
+      "result":"8 passed in 0.39s",
+      "exit_code":0,
+      "test_file_worktree_raw_sha256":"32160E2B0F963DDDF6FBC3A15838E1532EF696424AB011581C4BF3AEEAD27C0B"
+    },
+    {
+      "kind":"live_embedding_ingest",
+      "command":"Remove-Item Env:T11_REAL_RERANKER -ErrorAction SilentlyContinue; $env:T11_REAL_OLLAMA='1'; python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_t11_rag_ingestion_contract.py::test_t11_live_ollama_rag_ingest_and_reranker_truthfulness",
+      "result":"1 passed in 7.57s; real embedding path; reranker disabled",
+      "exit_code":0
+    },
+    {
+      "kind":"bounded_retrieval_performance_current_snapshot",
+      "command":"$env:RAG_BENCHMARK='1'; $env:RAG_BENCHMARK_RECEIPT='handoff/t11-rag-benchmark-receipt-20261006.json'; python -B -m pytest -s -q --tb=short -p no:cacheprovider tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline",
+      "result":"1 passed in 43.42s",
+      "exit_code":0,
+      "receipt_path":"handoff/t11-rag-benchmark-receipt-20261006.json",
+      "receipt_sha256":"3C1BC05FCEB901BE35C5BD27C9B67D88D7CA7B6983C70D3222A236B329BF3F13",
+      "bound_candidate_blob_sha256":{"src/local_ai_hub/rag.py":"BDC94FFE14252A7CB18460E1E1B5C513134F66C451FA1CD3DF90B21FCCB09EE7","tests/test_rag_quality_contract.py":"E8362B4AA3B717FC6FAAA3E4C88696C9F8AC9E412859E334B440D949ED08F8C6"},
+      "corpus_rows":100000,
+      "samples":20,
+      "limits":{"p95_ms":750,"traced_memory_mib":16},
+      "metrics":{"batch_512":{"median_ms":252.181,"p95_ms":277.811,"traced_memory_mib":2.455},"batch_2048":{"median_ms":337.116,"p95_ms":381.006,"traced_memory_mib":9.869},"batch_4096":{"median_ms":312.072,"p95_ms":407.544,"traced_memory_mib":13.210},"batch_8192":{"median_ms":294.916,"p95_ms":314.785,"traced_memory_mib":13.210}},
+      "complexity_probes":12,
+      "all_rows_scored_once":true
+    },
+    {
+      "kind":"synthetic_ingestion_seed_performance_current_snapshot",
+      "command":"$env:T11_RAG_BENCHMARK='1'; python -B -m pytest -s -q --tb=short -p no:cacheprovider tests/test_t11_rag_seed_integrity.py::test_t11_ingestion_batch_benchmark",
+      "result":"1 passed in 4.46s",
+      "exit_code":0,
+      "metrics":{"files":128,"seed_files_per_second":473.22,"explicit_ingest_files_per_second":210.56,"integrated_profile_files_per_second":47.56,"integrated_steps":22,"integrated_max_embed_batch":6,"synthetic_embedder":true}
+    }
+  ],
+  "open_gaps": [
+    "Live CrossEncoder result from the earlier run remains unresolved; that unknown run was not repeated.",
+    "Synthetic paired-golden quality only; no live reranker relevance/quality receipt.",
+    "Patch awaits owner-directed integration; root and shared worktree remain unmodified."
+  ],
+  "status":"PARTIAL; current bounded retrieval and ingestion performance gates pass; offline and live-embedding ingestion pass; CrossEncoder quality remains unresolved"
+}

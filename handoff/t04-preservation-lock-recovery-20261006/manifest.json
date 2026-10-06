@@ -1,0 +1,1413 @@
+{
+  "checkout": "lock-recovery",
+  "master_start_revision": "fbc965f568105e1a8d3dc03ae4c9da5531a9617e",
+  "synchronized_master_revision": "f8ba97fe9eafa38810dbbbc3c4184800da7bafcd",
+  "head_before_preservation": "1394012aea4f2099dce0d48fb37a5eb2a78b6f6e",
+  "archive": "original-bytes.zip",
+  "archive_sha256": "1a71b6e207532723da9b20ed312003beffff68aaa39427d5c9a54c13a52d6a30",
+  "preserved": [
+    {
+      "path": "handoff/client-suite-overlay/pytest.ini",
+      "bytes": 10,
+      "sha256": "578fc1cd12d8d642df8eff41d71d5119626e9f88f21fafadba6b1092ac840a93"
+    },
+    {
+      "path": "handoff/client-suite-overlay/src/local_ai_hub/__init__.py",
+      "bytes": 77,
+      "sha256": "f8d189e7bc3c5330f28aeb9c8adcd306e4fc5431c9ec4ab207caf1ea1a3f8dbd"
+    },
+    {
+      "path": "handoff/client-suite-overlay/src/local_ai_hub/client.py",
+      "bytes": 58624,
+      "sha256": "2d97ac2022a6e53ad07d415b4f3e089cf18b0829f040747ea2ec58349bcf8c5b"
+    },
+    {
+      "path": "handoff/client-suite-overlay/tests/test_client_operational_mode_autostart.py",
+      "bytes": 5599,
+      "sha256": "334028d5bfbdcdd4af4ce63e431c47a24d03c8601d378414be35f1f83f87a984"
+    },
+    {
+      "path": "handoff/client-suite-overlay/tests/test_client_startup_resilience.py",
+      "bytes": 6161,
+      "sha256": "d015e2a5d488b380372571d4d1898a4c36dbff4082263b3f515e869d8ca456a9"
+    },
+    {
+      "path": "handoff/client-suite-overlay/tests/test_client_startup_transport_fallback.py",
+      "bytes": 3412,
+      "sha256": "875049d101f542338a345783fc04eb749c0a02036e1106dcf7cd9f77ef6e75ec"
+    },
+    {
+      "path": "handoff/client-suite-overlay/tools/service.py",
+      "bytes": 34,
+      "sha256": "9d9e340105d5275126d38a653c8f1d54554489c40ab9f74f408a9f374a1a96cf"
+    },
+    {
+      "path": "handoff/t04-startup-lock-os-acceptance-2026-10-03.md",
+      "bytes": 1662,
+      "sha256": "a75b8d135bc3b2ae542107da03a529dd57e6ea02c9c38b3a03549e70d8f71fb0"
+    },
+    {
+      "path": "handoff/t04-startup-resilience-root-current.patch",
+      "bytes": 12969,
+      "sha256": "8d440787702b3fe6ee97ece819b1f062bdaa41df9299fe27ba60db9005760a52"
+    }
+  ],
+  "excluded_preserved_in_place": [
+    {
+      "path": ".serena/.gitignore",
+      "reason": "pre-existing Git ignore policy; retained in place"
+    },
+    {
+      "path": ".serena/cache/python/document_symbols.pkl",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": ".serena/cache/python/raw_document_symbols.pkl",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": ".serena/project.local.yml",
+      "reason": "pre-existing Git ignore policy; retained in place"
+    },
+    {
+      "path": ".serena/project.yml",
+      "reason": "pre-existing Git ignore policy; retained in place"
+    },
+    {
+      "path": "handoff/client-suite-overlay/src/local_ai_hub/__pycache__/__init__.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "handoff/client-suite-overlay/src/local_ai_hub/__pycache__/client.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/__init__.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/accelerators.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/adoption_metrics.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/agent_blackboard.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/agent_consistency.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/agent_context.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/agent_events.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/agent_identity.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/agent_incidents.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/agent_learning.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/agent_memory.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/agent_policy.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/agent_routing.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/agent_tasks.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/agent_verification.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/app.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/artifacts.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/async_jobs.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/autotune.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/background_gpu.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/benchmark.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/browser_bridge.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/budget.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/cache.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/client.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/code_index.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/commands.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/compact.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/config.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/context_ledger.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/conversations.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/dashboard.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/debug_traces.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/delivery.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/deterministic.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/diff_parsers.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/doctor_support.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/embeddings.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/evidence.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/evidence_contract.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/external_tools.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/features.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/frontend_review.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/generator.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/gpu_monitor.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/hardware.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/http_server.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/json_utils.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/learning.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/leases.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/llama_cpp.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/llama_cpp_runtime.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/logging_setup.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/mcp_server.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/memory.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/model_policy.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/model_quality.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/normalizer.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/ollama.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/ollama_subagents.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/performance_probe.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/pipeline.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/planner.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/preprocess.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/priority_gate.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/process_utils.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/projection.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/prompt_contracts.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/rag.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/repo_state.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/repo_tools.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/reranker.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/resilience.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/response_budget.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/response_protocol.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/retrieval.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/router.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/routing.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/scheduler.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/semantic_cache.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/semantic_quality.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/services.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/speculative_lint.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/sqlite_support.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/state_paths.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/supervisor.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/swarm.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/task_context.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/telemetry.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/tiered_ollama.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/token_accounting.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/token_economy.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/token_router.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/tool_agent.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/trace_context.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/treesitter_parser.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/vision_contracts.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/vram_balancer.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/work_orchestrator.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "src/local_ai_hub/__pycache__/worktrees.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/conftest.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_action_aliases.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_adaptive_retrieval.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_adoption_metrics.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_affected_tests.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_blackboard_crdt.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_consistency.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_context.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_event_drop_metrics.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_events.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_identity.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_incidents.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_learning.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_memory.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_os_enhancements.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_policy.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_routing.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_state_e2e.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_state_operations.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_state_reliability.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_state_transport.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_task_cas.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_tasks.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_agent_verification.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_all_advanced_improvements.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_all_categories_expanded.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_architectural_extensions.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_artifact_json_pagination_contract.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_ast_compaction.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_ast_refactor_and_format.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_async_coordination_reliability.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_async_job_reliability_contract.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_async_jobs.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_async_jobs_tasks.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_async_review_sla.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_audit_enhancements.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_audit_fixes.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_audit_round2_enhancements.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_auto_fix_repair_loop.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_auto_negative_knowledge.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_autotune.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_auxiliary_action_policy.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_batch_delegate.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_benchmark_suite.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_breaking_changes_diff.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_browser_artifact_atomicity.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_browser_bridge.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_browser_bridge_runtime.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_cache_decision_telemetry.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_call_graph_diff.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_canonical_root.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_client_preflight.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_client_startup_resilience.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_client_transport.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_cloud_model_accelerators.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_codegraph_package_policy.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_command_remediation.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_command_rollback.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_command_streaming.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_command_suppression.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_command_terse_output.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_command_timeout_cache_contract.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_command_transport.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_command_unblocked.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_commit_synthesis_receipts.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_completion_model_routing.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_config_hardware.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_context_backend_budget.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_context_deduplication.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_context_delivery.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_context_knapsack.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_context_ledger.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_conversation_continue_route_contract.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_conversations.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_cross_repo_federation.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_cross_worktree_hash.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_cython_experiment.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_daemon_lifecycle_hardening.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_dashboard_custom_modals.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_dashboard_operational_surfaces.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_dashboard_polling_quality.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_dashboard_vision_review.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_debug_trace_request_summary.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_debug_traces.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_deeper_hardening.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_delivery_policy.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_delta_context.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_doctor_support.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_embedding_batch_deduplication.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_embedding_cache.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_evaluation_records.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_evidence_contract.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_external_tools.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_feature_expansion.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_feature_foundation.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_feature_suite.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_feature_surface_parity.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_features.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_find_listening_pid.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_frontend_coder_context.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_frontend_repair_loop.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_frontend_review.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_frontend_review_e2e.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_generate_mocks_and_multi_lang.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_generation_cache_keys.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_generator.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_git_incremental_cache.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_gpu_monitor.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_hardening.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_http_admission.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_http_phase_telemetry.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_http_telemetry_outcomes.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_http_tool_accounting_rejections.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_http_vision_routes.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_hubctl_ports.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_hubctl_start.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_identity_contracts.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_incident_regression_watchdog.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_integrated_acceleration.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_json_serialization_contract.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_json_utils.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_lease_atomic_deadlock.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_llama_cpp_routing.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_llama_cpp_runtime.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_local_model_availability.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_logging_setup.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_mcp_agent_routing.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_mcp_compact_transport.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_mcp_nested_compaction_contract.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_mcp_response_budget.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_memory_compaction.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_memory_http_validation.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_migration_3_to_4.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_missing_and_high_value_features.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_model_policy_repetition.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_model_policy_sampling_floor.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_model_quality.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_model_residency.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_model_routing.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_mutation_replay.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_new_capabilities_and_hardening.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_ollama_ownership.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_ollama_subagents.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_ollama_tracing.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_performance.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_performance_probe.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_php_js_ts_support.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_pipeline.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_planner.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_preprocessed_metrics_and_sessions.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_preprocessing_overhaul.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_preprocessor_and_deterministic.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_prewarm_reliability.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_process_utils.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_production_readiness_repairs.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_projection_extra_fields.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_prompt_contracts.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_provider_diagnostics.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_rag_dedup.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_rag_fragment_cache.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_rag_hybrid.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_rag_quality_contract.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_regressions.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_release_contract.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_release_hardening.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_release_runtime.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_reliability_core.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_reliability_extended.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_reliability_integration.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_reliability_runtime.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_repetition_watchdog_streaming.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_repo_cache_outcomes.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_repo_tools.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_repo_topology.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_reranker_cache_identity.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_resilience_defaults.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_resource_backpressure.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_response_budget.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_response_delta.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_review_consensus.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_review_diff_chunking.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_rollout_controls.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_root_family_budget.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_router.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_routing.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_runtime_hardening.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_security_boundaries.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_semantic_quality.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_service_startup.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_setup.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_slot_rebalance_and_stuck_fixes.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_speculative_draft_and_split.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_speculative_lint.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_sqlite_optimize.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_sqlite_resilience.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_sse_events_stream.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_status_snapshot_quality.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_storage_service_reliability.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_stuck_preprocessing_and_dashboard_fixes.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_surface_and_packaging.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_surface_benchmarks.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_surface_inventory.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_swarm_orchestrator.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_t04_public_api_contracts.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_t17_auxiliary_formats.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_task_context_task_integration.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_telemetry_cohorts.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_telemetry_contract.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_telemetry_self_accounting.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_telemetry_tail_latency.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_terse_local_output.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_tiered_ollama_runtime.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_token_accounting.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_token_economy_tools.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_token_efficiency.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_transcription_contract.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_uncovered_domains.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_unified_task_context.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_unified_task_context_transport.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_vision_artifacts.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_vision_contracts.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_vision_service.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_vram_balancer.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_weak_spots_hardened.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_work_orchestrator.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tests/__pycache__/test_worktree_discovery.cpython-313-pytest-9.0.2.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tools/__pycache__/__init__.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tools/__pycache__/benchmark_surfaces.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tools/__pycache__/clean.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tools/__pycache__/release_check.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tools/__pycache__/setup.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    },
+    {
+      "path": "tools/__pycache__/surface_inventory.cpython-313.pyc",
+      "reason": "runtime/cache/dependency directory"
+    }
+  ]
+}
