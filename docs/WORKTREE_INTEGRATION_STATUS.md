@@ -510,3 +510,20 @@ root edits in `client.py` and `http_server.py`; these edits were not overwritten
 or included in an orchestrator commit. The existing temporary checkout
 `lah_wt_worktree_e64978b4714c` is assigned to the browser reconciliation worker
 to preserve and merge its render-performance dirty source and regression test.
+
+#### Concurrent root source preservation, not acceptance
+
+Following the user's explicit request to commit unfinished dirty work, the
+orchestrator preserves the observed concurrent root edits in a separate WIP
+commit without editing their source. Changed paths: `agent_events.py`, `client.py`,
+and `http_server.py` under `src/local_ai_hub/`. Their original editing owner is
+still unconfirmed; this commit establishes preservation, not approval or test
+acceptance. Later concurrent writes remain untouched and must be reconciled.
+
+Observed issues needing review after synchronization: the Windows backup ACL
+setup swallows all exceptions, potentially defeating fail-closed confidentiality;
+the memory GET scope block currently contains an empty `if`, and explicit/query
+tenant handling must not bypass authenticated identity. The SDK fixed-action
+payload ordering and worktree-delete denial also need targeted verification.
+No test result is claimed for this unfinished source snapshot. `agent_state.sqlite`
+remains outside Git. No source hunk was rewritten to create this preservation.
