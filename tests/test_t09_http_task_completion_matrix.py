@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import subprocess
 from pathlib import Path
 import threading
 import urllib.error
@@ -11,10 +12,12 @@ import pytest
 
 from local_ai_hub import http_server
 from local_ai_hub.agent_identity import ScopeContext
-from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint
+from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint
 from local_ai_hub.agent_verification import VerificationReceipt, criterion_evidence_type
 from local_ai_hub.app import LocalAIApp
+from local_ai_hub.commands import CommandInvocation
 from local_ai_hub.project_config import resolve_project_context
+from local_ai_hub.verification_rules import project_command_environment_sha256
 
 
 def _record_command(
@@ -28,6 +31,7 @@ def _record_command(
     revision: str,
     command_id: str,
     project_config_digest: str,
+    project_root: Path,
 ) -> tuple[str, bool]:
     command_text = {
         "test": "python -m pytest -q tests/test_contract.py",
@@ -36,6 +40,17 @@ def _record_command(
     command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
     project_environment_sha256 = hashlib.sha256(b"{}").hexdigest()
     configured_command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
+    if criterion in {"test", "lint"}:
+        resolved = app.commands._resolve_project_command(criterion, str(project_root))
+        configured = resolved.configured_command
+        if isinstance(configured, CommandInvocation):
+            configured_text = json.dumps(
+                {"argv": configured.argv, "cwd": configured.cwd, "shell": configured.shell},
+                sort_keys=True, separators=(",", ":"),
+            )
+            configured_command_sha256 = hashlib.sha256(configured_text.encode("utf-8")).hexdigest()
+            command_text = subprocess.list2cmdline(resolved.command.argv)
+            command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
     caller_arguments_sha256 = hashlib.sha256(b"[]").hexdigest()
     execution_binding = hashlib.sha256(
         json.dumps(
@@ -170,7 +185,8 @@ def test_task_completion_http_receipt_and_memory_matrix(
         "\n[agent_state]\nenabled = true\n",
         encoding="utf-8",
     )
-    project_config_digest = resolve_project_context(project_root, state_dir).config_digest
+    project_context = resolve_project_context(project_root, state_dir)
+    project_config_digest = project_context.config_digest
 
     app = LocalAIApp(str(config_path))
     memory_context = changes.get("memory_context")
@@ -201,11 +217,13 @@ def test_task_completion_http_receipt_and_memory_matrix(
             repo_root=str(project_root),
         )
     memory_audit = changes.get("memory_audit")
-    if memory_audit is not None:
+    if memory_context is not None or memory_audit is not None:
         task = app.agent_tasks.get(task_id)
         assert task is not None
         state_data = dict(task.checkpoint.state_data)
-        state_data["memory_audit"] = memory_audit
+        state_data["repository_revision"] = revision
+        if memory_audit is not None:
+            state_data["memory_audit"] = memory_audit
         app.agent_tasks.checkpoint(
             task_id,
             TaskCheckpoint(
@@ -231,6 +249,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
         revision=test_revision,
         command_id=f"cmd-{case}-test",
         project_config_digest=project_config_digest,
+        project_root=project_root,
     )
     expected_receipt_recorded = not bool(changes.get("expect_record_rejected"))
     assert test_receipt_recorded is expected_receipt_recorded, case
@@ -248,7 +267,43 @@ def test_task_completion_http_receipt_and_memory_matrix(
             revision=revision,
             command_id=f"cmd-{case}-lint",
             project_config_digest=project_config_digest,
+            project_root=project_root,
         )
+
+    if memory_context is not None:
+        before_validation = app.agent_tasks.get(task_id)
+        before_events = app.agent_state.events(f"task:{task_id}")
+        try:
+            app.agent_tasks.validate_completion(task_id)
+            memory_gate_complete = True
+        except CompletionGateError:
+            memory_gate_complete = False
+        assert memory_gate_complete is expected_success, case
+        assert app.agent_tasks.get(task_id) == before_validation
+        assert app.agent_state.events(f"task:{task_id}") == before_events
+
+    preflight = app.agent_verification.completion(
+        task_id,
+        current_revision=revision,
+        current_mutation_generation=0,
+        verification_rules=project_context.settings.verification_rules,
+        configured_criteria=tuple(project_context.settings.commands),
+        configured_commands=project_context.settings.commands,
+        project_config_digest=project_config_digest,
+        configured_environment_sha256={
+            name: project_command_environment_sha256(project_context.settings, name)
+            for name in project_context.settings.commands
+        },
+        project_root=project_root,
+    )
+    memory_gate_only_failures = {
+        "used-volatile-without-source",
+        "unused-memory-without-reason",
+        "skipped-memory-without-reason",
+    }
+    assert preflight.complete is (expected_success or case in memory_gate_only_failures), (
+        case, preflight.unsatisfied_criteria, preflight.stale_criteria,
+    )
 
     monkeypatch.setattr(
         http_server,
