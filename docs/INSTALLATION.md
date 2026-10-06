@@ -15,7 +15,7 @@ The bootstrap delegates to `tools/setup.py`, creates the user installation/state
 
 When `[ollama].enabled = false` (the default), setup and the supervisor do not install or start Ollama. Use `llama_cpp.mode = "on"` for the managed local server, `"auto"` for an existing loopback endpoint, or `"off"` for no llama.cpp backend. Enable Ollama only when that is the selected provider.
 
-Useful flags: `--profile cpu|integrated|low|balanced|high|max`, `--skip-token-economy`, `--skip-companion-skills`, `--skip-model-pull`, `--skip-tools`, `--skip-agent-config`, and `--skip-service`. Rerunning setup preserves an existing installed configuration unless `--config` is explicitly supplied.
+Useful flags: `--profile cpu|integrated|low|balanced|high|max`, `--skip-token-economy`, `--skip-companion-skills`, `--skip-model-pull`, `--skip-tools`, `--skip-agent-config`, and `--skip-service`. `--skip-service` skips Task Scheduler registration, but setup still restarts the Hub as a user process with `hubctl`; it does not suppress Hub startup. Rerunning setup preserves an existing installed configuration unless `--config` is explicitly supplied.
 
 See [TOKEN_ECONOMY.md](TOKEN_ECONOMY.md) for full details on token optimization.
 
@@ -26,19 +26,19 @@ For LLM generation on an Intel iGPU, install and configure the llama.cpp SYCL ro
 On a supported Intel Core Ultra system, `--profile auto` can select `integrated`. Setup installs `requirements-openvino.txt` only when the active model configuration requests an OpenVINO embedding/reranker backend, or detected Intel NPU/iGPU policy enables it, including an Intel GPU selected by the `integrated` profile, subject to `features.install_openvino_dependencies`, `openvino.enabled`, and `openvino.auto_install`. `features.install_openvino_dependencies` permits that conditional install; it is not an unconditional install switch. NVIDIA-only systems keep SentenceTransformers/Torch retrieval and do not need OpenVINO. The OpenVINO runtime and vendor NPU/GPU drivers are separate concerns: if the driver does not expose `NPU`/`GPU`, Local AI Hub reports that state and falls back to CPU instead of failing startup. Use `python tools/doctor.py` to see the detected hardware, OpenVINO devices and active/fallback backend.
 
 Use `--profile integrated` to force the conservative shared-memory profile on a machine whose firmware/driver metadata prevents reliable auto-detection.
- 
-## Optional: CodeGraphContext for Repository Optimization
- 
-CodeGraphContext was decoupled from the core Local AI Hub runtime to keep Hub lightweight, fast, and free of heavy graph database dependencies.
- 
-For complex or large codebases with deep call hierarchies, installing CodeGraphContext directly in the target repository or environment is recommended as an optional optimization tool:
- 
+
+## Optional standalone tool: CodeGraphContext
+
+CodeGraphContext and KuzuDB are not Hub dependencies or backends; both are separate from Local AI Hub. Any CodeGraphContext installation or MCP setup below is optional standalone tooling outside Hub.
+
+For users who independently choose standalone CodeGraphContext for deep call-graph analysis, install it directly in the target repository or environment. This is separate from Hub installation:
+
 - **Benefits**: Deep call graphs, caller/callee tracing, blast-radius impact analysis, and dead code detection.
 - **Standalone installation**:
   ```bash
-  pip install "codegraphcontext[gcf]==0.6.8"
+  pip install "codegraphcontext[gcf]==0.6.13"
   ```
-- **Direct Agent MCP configuration** (e.g. in `.cursor/mcp.json`, `claude_desktop_config.json`, or Codex configuration):
+- **Standalone Agent MCP configuration** (e.g. in `.cursor/mcp.json`, `claude_desktop_config.json`, or Codex configuration). This connects an agent directly to CodeGraphContext; it does not configure Local AI Hub:
   ```json
   {
     "mcpServers": {
@@ -49,11 +49,11 @@ For complex or large codebases with deep call hierarchies, installing CodeGraphC
     }
   }
   ```
-- **Fallback Behavior**: Local AI Hub gracefully falls back to built-in AST code-indexing and symbol analysis when CodeGraphContext is absent, so repositories can adopt it independently without affecting core Hub operations.
- 
+- **Local AI Hub analysis**: Built-in AST indexing and symbol analysis remain available independently. CodeGraphContext is not a Hub backend and does not trigger a Hub fallback path.
+
 ## Python package
 
-For development/package installation use `pip install .` or `pip install ".[token-economy]"`. CLI tools `tokcount`, `trim-run`, `repo-map`, and `local-ai-hub` are registered automatically. `local-ai-hub --config /path/config.toml` starts the service.
+For development/package installation use `pip install .` or `pip install ".[token-economy]"`. CLI tools `tokcount`, `trim-run`, `repo-map`, and `local-ai-hub` are registered automatically. `local-ai-hub --config /path/config.toml` starts the service. See [Python SDK](PYTHON_SDK.md) for the `HubClient` API.
 
 ## Verification
 

@@ -125,14 +125,12 @@ def test_hotspots_cache(mock_repo: Path, tmp_path: Path):
     assert res2.get("cached") is True
 
 
-def test_codegraph_disabled_skips_in_preprocess(mock_repo: Path, tmp_path: Path):
+def test_preprocessing_has_no_codegraph_phase(mock_repo: Path, tmp_path: Path):
     state_dir = tmp_path / "state"
     config = {
         "server": {"state_dir": str(state_dir)},
         "code_intelligence": {
             "enabled": True,
-            "codegraph_enabled": False,
-            "preprocess_codegraph": False,
         },
         "preprocessing": {
             "enabled": True,
@@ -171,10 +169,66 @@ def test_codegraph_disabled_skips_in_preprocess(mock_repo: Path, tmp_path: Path)
     stepped = pre._step({"root": str(mock_repo), "workspace": "test", "phase": "serena"})
     assert stepped is True
 
-    # Next phase should be lexical directly (codegraph completely bypassed)
+    # Next phase should be lexical directly; no retired intermediate phase remains.
     with pre._db_lock, closing(pre._connect()) as con:
         row = con.execute("SELECT phase FROM projects WHERE root=?", (str(mock_repo),)).fetchone()
         assert row["phase"] == "lexical"
+
+
+def test_idle_diagnostics_launches_quoted_unicode_command_as_argv(
+    mock_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import subprocess
+    import sys
+
+    state_dir = tmp_path / "state"
+    config = {
+        "server": {"state_dir": str(state_dir)},
+        "preprocessing": {"enabled": True, "idle_diagnostics_enabled": True},
+    }
+    command_arg = "space and Unicode: café 東京"
+    command = (
+        f'"{sys.executable}" -c "import sys; print(sys.argv[1])" '
+        f'"{command_arg}"'
+    )
+
+    class MockServices:
+        def repo_profile(self, root):
+            return {"validation_commands": [{"command": command}]}
+
+    class MockScheduler:
+        def background_allowed(self):
+            return True
+
+        def foreground_busy(self):
+            return False
+
+    pre = ProjectPreprocessor(
+        config, services=MockServices(), rag=None, scheduler=MockScheduler(),
+        runtime=None, repo_tools=RepositoryTools(config), code_index=None,
+    )
+    pre._init_db()
+
+    launched: dict[str, object] = {}
+    real_popen = subprocess.Popen
+
+    def record_popen(args, **kwargs):
+        launched["args"] = args
+        launched["shell"] = kwargs.get("shell", False)
+        return real_popen(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", record_popen)
+    assert pre._step_diagnostics({"root": str(mock_repo)}) is True
+
+    assert launched["shell"] is False
+    assert isinstance(launched["args"], list)
+    with closing(pre._connect()) as con:
+        row = con.execute(
+            "SELECT exit_code, stdout_preview FROM diagnostic_baselines WHERE root=?",
+            (str(mock_repo),),
+        ).fetchone()
+    assert row["exit_code"] == 0
+    assert command_arg in row["stdout_preview"]
 
 
 def test_idle_diagnostics_baseline(mock_repo: Path, tmp_path: Path):
@@ -254,16 +308,18 @@ def test_worktree_cache_inheritance(mock_repo: Path, tmp_path: Path):
     p_root = pre._root(str(parent_repo))
     w_root = pre._root(str(worktree_repo))
 
+    real_hash = pre.repo_tools._hash_file_only(parent_repo / "foo.py")
+
     # Seed parent data
     with pre._db_lock, closing(pre._connect()) as con:
         con.execute(
             """INSERT INTO file_refs(root, path, content_hash, size, mtime_ns, needs_hash, card_key, rag_hash, generation, last_accessed_at, updated_at)
                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (p_root, "foo.py", "hash_foo_123", (parent_repo / "foo.py").stat().st_size, 1000, 0, "card_foo", "rag_foo", 1, 10.0, 10.0),
+            (p_root, "foo.py", real_hash, (parent_repo / "foo.py").stat().st_size, 1000, 0, "card_foo", "rag_foo", 1, 10.0, 10.0),
         )
         con.execute(
             "INSERT INTO source_index(root, path, content_hash, text, updated_at) VALUES(?, ?, ?, ?, ?)",
-            (p_root, "foo.py", "hash_foo_123", "def hello(): pass", 10.0),
+            (p_root, "foo.py", real_hash, "def hello(): pass", 10.0),
         )
         con.commit()
 
@@ -286,7 +342,7 @@ def test_worktree_cache_inheritance(mock_repo: Path, tmp_path: Path):
     with pre._db_lock, closing(pre._connect()) as con:
         row = con.execute("SELECT content_hash, card_key FROM file_refs WHERE root=? AND path='foo.py'", (w_root,)).fetchone()
         assert row is not None
-        assert row["content_hash"] == "hash_foo_123"
+        assert row["content_hash"] == real_hash
         assert row["card_key"] == "card_foo"
 
     with closing(det._connect()) as con:

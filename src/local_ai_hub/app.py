@@ -12,7 +12,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from . import __version__
 from .artifacts import ArtifactStore
@@ -348,6 +348,16 @@ class LocalAIApp:
             lease_store=self.leases,
             blackboard=self.agent_blackboard,
         )
+        self.agent_task_memory_context = ContextCompiler(
+            self.agent_state,
+            task_store=self.agent_tasks,
+            memory_store=self.agent_memory,
+        )
+        self.agent_tasks.set_memory_adoption(
+            memory_store=self.agent_memory,
+            context_compiler=self.agent_task_memory_context,
+            incident_store=self.agent_incidents,
+        )
         self.agent_routing = RoutingEngine(cfg=self.config, state_store=self.agent_state)
         self.agent_learning = LearningStore(self.agent_state)
         self.services = LocalAIServices(
@@ -362,10 +372,14 @@ class LocalAIApp:
             verification_store=self.agent_verification,
             telemetry=self.telemetry,
         )
+        self.services.inference_admission = self.async_jobs.inference_admission
         self.speculative_lint = SpeculativeLintQueue(self.async_jobs, self.config)
         self.commands = CommandBroker(self.config, self.artifacts, self.repo_state)
         self.commands.set_incident_store(self.agent_incidents)
         self.commands.set_verification_store(self.agent_verification)
+        self.agent_verification.set_command_execution_record_lookup(
+            getattr(self.commands, "get_command_execution_record", None)
+        )
         self.commands.set_policy_engine(self.agent_policy)
         self.commands.set_task_store(self.agent_tasks)
         self.commands.set_error_distiller(self.services.distill_command_error)
@@ -398,6 +412,7 @@ class LocalAIApp:
         self.work_orchestrator = WorkOrchestrator(self.config, state_dir, self.services, self.commands, self.leases, self.artifacts, telemetry=self.telemetry)
         self.projector = AgentProjector(self.config)
         self.vram_balancer = VRAMBalancer(self.config)
+        self.runtime.vram_balancer = self.vram_balancer
         self.services.set_vram_balancer(self.vram_balancer)
         self.benchmark_runner = HardwareBenchmarkRunner(
             state_dir / "benchmarks.json",
@@ -522,26 +537,62 @@ class LocalAIApp:
         self._watchdog_thread.start()
 
     def _execute_async_task(self, action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
+        with self.async_jobs.inference_admission(action) as rejection:
+            if rejection is not None:
+                return rejection
+            return self._execute_async_task_admitted(action, payload, tenant)
+
+    def _execute_async_task_admitted(self, action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
         async_payload = dict(payload)
         async_payload["priority"] = 1
+        for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
+            async_payload.pop(untrusted_context, None)
         if action == "delegate":
             return self.services.delegate(async_payload, tenant)
         if action == "reason":
-            return self.services.reason({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1}, tenant)
+            reason_payload = dict(async_payload)
+            reason_payload.update({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1})
+            return self.services.reason(reason_payload, tenant)
         if action == "review":
-            return self.services.review({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1}, tenant)
+            review_payload = dict(async_payload)
+            review_payload.update({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1})
+            return self.services.review(review_payload, tenant)
         if action == "review_diff":
             review_payload = dict(async_payload)
             review_payload["_async_job"] = True
             return self.services.review_diff(review_payload, tenant)
         if action == "second_opinion":
-            return self.services.second_opinion({"question": async_payload.get("task", ""), "candidate": async_payload.get("candidate", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1100), "priority": 1}, tenant)
+            opinion_payload = dict(async_payload)
+            opinion_payload.update({"question": async_payload.get("task", ""), "candidate": async_payload.get("candidate", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1100), "priority": 1})
+            return self.services.second_opinion(opinion_payload, tenant)
         if action == "compress":
-            return self.services.compress({"text": async_payload.get("context", ""), "instruction": async_payload.get("task", "Compress while preserving facts."), "target_tokens": async_payload.get("max_tokens", 650), "priority": 1}, tenant)
+            compress_payload = dict(async_payload)
+            compress_payload.update({"text": async_payload.get("context", ""), "instruction": async_payload.get("task", "Compress while preserving facts."), "target_tokens": async_payload.get("max_tokens", 650), "priority": 1})
+            return self.services.compress(compress_payload, tenant)
         if action == "route":
-            return self.services.route_context({"text": async_payload.get("context", ""), "query": async_payload.get("task", "")}, tenant)
+            route_payload = dict(async_payload)
+            route_payload.update({"text": async_payload.get("context", ""), "query": async_payload.get("task", "")})
+            return self.services.route_context(route_payload, tenant)
         if action == "batch":
-            return self.services.batch_delegate({"tasks": async_payload.get("tasks", []), "priority": 1}, tenant)
+            raw_tasks = async_payload.get("tasks")
+            if not isinstance(raw_tasks, list) or not raw_tasks:
+                return {"success": False, "error": "tasks must be a non-empty array", "terminal": True, "retryable": False}
+            inherited_context = {key: async_payload[key] for key in ("root", "cwd") if key in async_payload}
+            tasks = []
+            for raw_task in raw_tasks:
+                task_payload = dict(raw_task) if isinstance(raw_task, dict) else {"task": str(raw_task)}
+                for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
+                    task_payload.pop(untrusted_context, None)
+                child_has_workspace = any(
+                    str(task_payload.get(key) or "").strip()
+                    for key in ("root", "cwd")
+                )
+                if not child_has_workspace:
+                    for key, value in inherited_context.items():
+                        if str(value or "").strip():
+                            task_payload[key] = value
+                tasks.append(task_payload)
+            return self.services.batch_delegate({"tasks": tasks, "priority": 1}, tenant)
         if action == "speculative_lint":
             return self.services.speculative_lint(async_payload, tenant)
         return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}
@@ -831,6 +882,7 @@ class LocalAIApp:
 
             def read(key, callback, fallback):
                 nonlocal degraded
+                probe_started = time.monotonic()
                 pending = pending_dependencies.pop(key, None)
                 if pending is None:
                     diagnostic: dict[str, Any] = {}
@@ -842,16 +894,19 @@ class LocalAIApp:
                 dependency_status[key] = {
                     "degraded": not healthy,
                     "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                    "duration_ms": max(0, int((time.monotonic() - probe_started) * 1000)),
                     **diagnostic,
                 }
                 return value
 
             runtime_diagnostic: dict[str, Any] = {}
+            runtime_probe_started = time.monotonic()
             online, runtime_healthy = dependency("runtime.online", self.runtime.is_online, False, runtime_diagnostic)
             degraded = degraded or not runtime_healthy
             dependency_status["runtime.online"] = {
                 "degraded": not runtime_healthy,
                 "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
+                "duration_ms": max(0, int((time.monotonic() - runtime_probe_started) * 1000)),
                 **runtime_diagnostic,
             }
             version = read("runtime.version", self.runtime.version, None) if online else None
@@ -1144,7 +1199,14 @@ class LocalAIApp:
         if cleanup_pending:
             self._bundle_import_recovery["cleanup_pending"] = True
 
-    def export_bundle(self, root: str = "", *, agent_state_record_ids: list[str] | None = None) -> bytes:
+    def export_bundle(
+        self,
+        root: str = "",
+        *,
+        tenant: str | None = None,
+        agent_state_record_ids: list[str] | None = None,
+        agent_state_contexts: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> bytes:
         """Export portable precomputed project state into a bounded ZIP bundle."""
         import hashlib
         from contextlib import closing
@@ -1156,7 +1218,31 @@ class LocalAIApp:
             for rid in agent_state_record_ids:
                 rec = None
                 if getattr(self, "agent_memory", None):
-                    rec = self.agent_memory.get(rid)
+                    supplied_context = (agent_state_contexts or {}).get(rid, {})
+                    lookup_context = {
+                        key: supplied_context[key]
+                        for key in (
+                            "scope", "scope_id", "root", "repository_id", "tenant",
+                            "task_id", "session_id", "clone_id", "worktree_id", "branch",
+                        )
+                        if key in supplied_context
+                    }
+                    lookup_context.setdefault("root", root or None)
+                    lookup_context.setdefault("tenant", tenant)
+                    scope_value = getattr(lookup_context.get("scope"), "value", lookup_context.get("scope"))
+                    if scope_value in ("repo", "repository") and not str(lookup_context.get("root") or "").strip():
+                        raise BundleValidationError("repository memory requires provenance root")
+                    if rid in (agent_state_contexts or {}):
+                        rec = self.agent_memory.get(rid, **lookup_context)
+                    else:
+                        rec = self.agent_memory.get(
+                            rid, scope=AgentScope.GLOBAL, tenant=tenant,
+                        )
+                        if rec is None and root and tenant:
+                            rec = self.agent_memory.get(
+                                rid, scope=AgentScope.REPOSITORY,
+                                root=root, tenant=tenant,
+                            )
                 if rec is not None:
                     scope_val = getattr(rec.scope, "value", rec.scope)
                     status_val = getattr(rec.status, "value", rec.status)
@@ -1396,11 +1482,11 @@ class LocalAIApp:
                 "completed_phases": [],
                 "updated_at": time.time(),
             }
-            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
             atomic_write(payload_path, raw_bundle)
             manifest["status"] = "incomplete"
             manifest["updated_at"] = time.time()
-            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
             return manifest
 
         def staging_failure(root_path: str | None, exc: Exception) -> dict[str, Any]:
@@ -1435,7 +1521,7 @@ class LocalAIApp:
             manifest["status"] = "incomplete"
             manifest["updated_at"] = time.time()
             journal_path = Path(self.config["server"]["state_dir"]) / "bundle-imports" / f"{manifest['import_id']}.json"
-            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
         def finish_import_intent(manifest: dict[str, Any]) -> bool:
             manifest["status"] = "complete"
@@ -1443,7 +1529,7 @@ class LocalAIApp:
             journal_dir = Path(self.config["server"]["state_dir"]) / "bundle-imports"
             journal_path = journal_dir / f"{manifest['import_id']}.json"
             payload_path = journal_dir / f"{manifest['import_id']}.bundle"
-            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
             try:
                 payload_path.unlink(missing_ok=True)
                 journal_path.unlink(missing_ok=True)
@@ -1665,7 +1751,9 @@ class LocalAIApp:
             if not isinstance(tbl_rows, list) or len(tbl_rows) > max_rows or any(not isinstance(row, dict) for row in tbl_rows):
                 return {"success": False, "error": f"invalid or oversized bundle table: {name}"}
         if any(
-            "embedding" in row and row["embedding"] is not None and not isinstance(row["embedding"], str)
+            "embedding" in row
+            and row["embedding"] is not None
+            and not isinstance(row["embedding"], (str, bytes, bytearray, memoryview))
             for row in tables.get("rag_chunks", [])
         ):
             return {"success": False, "error": "invalid RAG chunk embedding"}

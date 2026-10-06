@@ -122,8 +122,17 @@ class RecoveryJournal:
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=5.0)
 
-    def _create_schema(self) -> None:
+    def _create_schema(self) -> bool:
         with closing(self._connect()) as con:
+            existing = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "requests" in existing:
+                columns = {str(row[1]) for row in con.execute("PRAGMA table_info(requests)")}
+                expected = {
+                    "request_id", "tenant", "identity", "action", "payload_fingerprint", "state",
+                    "created_at", "updated_at", "detail", "status_code", "response_json",
+                }
+                if columns != expected:
+                    return False
             initialize_wal(con)
             con.execute("""CREATE TABLE IF NOT EXISTS requests (
                 request_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, identity TEXT NOT NULL DEFAULT '',
@@ -131,16 +140,19 @@ class RecoveryJournal:
                 created_at REAL NOT NULL, updated_at REAL NOT NULL, detail TEXT NOT NULL DEFAULT '',
                 status_code INTEGER NOT NULL DEFAULT 0, response_json TEXT NOT NULL DEFAULT ''
             )""")
-            columns = {str(row[1]) for row in con.execute("PRAGMA table_info(requests)")}
-            if "identity" not in columns:
-                con.execute("ALTER TABLE requests ADD COLUMN identity TEXT NOT NULL DEFAULT ''")
-            if "payload_fingerprint" not in columns:
-                con.execute("ALTER TABLE requests ADD COLUMN payload_fingerprint TEXT NOT NULL DEFAULT ''")
             con.execute("CREATE INDEX IF NOT EXISTS idx_recovery_state ON requests(state, updated_at)"); con.commit()
+        return True
 
     def _init_db(self) -> None:
         try:
-            self._create_schema()
+            if not self._create_schema():
+                # Never reinterpret or rewrite outcomes from an unsupported journal schema.
+                self._journal_unavailable = True
+                try:
+                    self._journal_unavailable_marker.touch(exist_ok=True)
+                except OSError:
+                    pass
+                return
             with closing(self._connect()) as con:
                 if not quick_sanity_check(con): raise sqlite3.DatabaseError("recovery sanity check failed")
         except sqlite3.DatabaseError as exc:

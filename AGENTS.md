@@ -19,7 +19,7 @@ Recipes (guidance, not gates):
 
 Delegation is the default for any task with useful bounded independent work.
 
-- Model routing is profile-aware: integrated uses qwen2.5-coder:0.5b preprocessing, qwen2.5-coder:1.5b quick, qwen2.5-coder:3b involved, qwen2.5-coder:7b hard reasoning and qwen3-vl:4b vision; balanced uses qwen2.5-coder:1.5b preprocessing, qwen2.5-coder:3b fast, qwen2.5-coder:7b ordinary/hard work and qwen3.5:9b only for extreme reasoning/vision; high uses 1.5b/3b/7b/9b; max uses 1.5b/3b/9b throughout its heavy routes. Keep deterministic simple tasks enabled for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression.
+- Model routing is profile-aware: integrated uses qwen2.5-coder:0.5b preprocessing, qwen2.5-coder:1.5b quick, qwen2.5-coder:3b involved, qwen2.5-coder:7b hard reasoning and qwen3-vl:4b vision; balanced uses qwen2.5-coder:1.5b preprocessing, qwen2.5-coder:3b fast, qwen2.5-coder:7b ordinary/involved work and qwen3.5:9b for hardest reasoning and vision; high uses qwen2.5-coder:1.5b preprocessing, qwen2.5-coder:3b quick, qwen2.5-coder:7b involved, qwen3.5:9b ordinary and hardest reasoning, and qwen3.5:9b vision; max uses qwen2.5-coder:1.5b preprocessing, qwen2.5-coder:3b quick, and qwen3.5:9b for involved, ordinary and hardest reasoning, and qwen3.5:9b vision. Keep deterministic simple tasks enabled for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression.
 - Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
 - Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
@@ -45,13 +45,22 @@ Cheapest path for repository evidence: deterministic -> code_index/search -> sem
  do not repeat the same hub action with the same root/query while repository state is unchanged.
 
 Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result; `in_progress=true` means another owner is doing identical work, so never duplicate it; `retryable`/429/503 means back off and do independent work; `degraded`/`stale` means verify only the affected path/slice; a non-retryable failure permits one cheaper/native fallback. Never turn a transient result into larger timeouts, force refreshes, or polling loops.
+Before native fallback, require `terminal=true` and `retryable=false`. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the operation.
 
 Route test/lint/typecheck/build/read-only commands through `local_ai_command` before running them natively. If it returns `in_progress=true`, do not launch a duplicate command. Before an expensive `solve`/model call, search coordination memos for reusable findings. For overlapping multi-agent edits use `local_ai_coord` leases and store concise reusable discoveries as memos.
  After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
 
 Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and compression, `local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos.
 
-Local model policy is profile-aware: integrated reserves qwen2.5-coder:0.5b for preprocessing, qwen2.5-coder:1.5b for quick work, qwen2.5-coder:3b for involved work, qwen2.5-coder:7b for hard reasoning and qwen3-vl:4b for vision; balanced reserves qwen2.5-coder:1.5b for preprocessing, qwen2.5-coder:3b for fast work, qwen2.5-coder:7b for ordinary/hard work and qwen3.5:9b for extreme reasoning/vision; high raises reasoning/general/vision to 9b; max raises heavy/general/reasoning/vision to 9b. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
+Local model routing starts from `[hardware].profile="auto"`; hardware detection or an explicit profile selects a role map, then user overrides apply. In order `background_code/fast_code/heavy_code/reasoning/general/vision`: integrated=`qwen2.5-coder:0.5b/qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen2.5-coder:1.5b/qwen3-vl:4b`; balanced=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen2.5-coder:7b/qwen3.5:9b`; high=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`; max=`qwen2.5-coder:1.5b/qwen2.5-coder:3b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`. Ordinary reasoning uses `heavy_code`; only heavy reasoning uses `reasoning`. These are routing targets, not proof that models are installed; model pulls remain opt-in. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
+MCP response economy:
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
+
 <!-- END LOCAL AI HUB TOOL POLICY -->
 
 <!-- BEGIN TOKEN ECONOMY POLICY -->
@@ -62,7 +71,7 @@ Local model policy is profile-aware: integrated reserves qwen2.5-coder:0.5b for 
 - Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
 - Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
 - Surgical edits: Prefer targeted block replacements over rewriting entire files.
-- Local model delegation follows the active profile: integrated uses qwen2.5-coder:0.5b preprocessing, qwen2.5-coder:1.5b quick, qwen2.5-coder:3b involved, qwen2.5-coder:7b hard and qwen3-vl:4b vision; balanced uses qwen2.5-coder:1.5b preprocessing, qwen2.5-coder:3b fast, qwen2.5-coder:7b ordinary/hard and qwen3.5:9b extreme/vision. Use `local_ai_task` only for bounded semantic work after deterministic evidence.
+- Local model delegation follows the active hardware profile and configured role tiers; do not assume a named model is installed. Use `local_ai_task` only for bounded semantic work after deterministic evidence.
 <!-- END TOKEN ECONOMY POLICY -->
 
 ## Architecture rules

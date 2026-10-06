@@ -94,6 +94,129 @@ def test_client_coalesces_simultaneous_identical_requests(tmp_path, monkeypatch)
     assert sorted(bool(item.get("coalesced")) for item in results) == [False, True]
 
 
+def test_coalesced_get_returns_server_visible_owner_request_id(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    owner_opened = threading.Event()
+    waiter_joined = threading.Event()
+    release_owner = threading.Event()
+    sent_ids = []
+    caller_ids = []
+    original_singleflight = client._singleflight
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_id = headers["X-LocalAI-Request-ID"]
+        sent_ids.append(request_id)
+        owner_opened.set()
+        assert release_owner.wait(2)
+        return json.dumps({"success": True, "request_id": request_id}).encode("utf-8")
+
+    def observed_singleflight(key, timeout, execute, *, request_id=None, cancel_event=None):
+        caller_ids.append(request_id)
+        with client._flight_lock:
+            is_waiter = key in client._flights
+        if is_waiter:
+            waiter_joined.set()
+        return original_singleflight(
+            key,
+            timeout,
+            execute,
+            request_id=request_id,
+            cancel_event=cancel_event,
+        )
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+    monkeypatch.setattr(client, "_singleflight", observed_singleflight)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        owner = pool.submit(client.get, "/health")
+        assert owner_opened.wait(1)
+        waiter = pool.submit(client.get, "/health")
+        assert waiter_joined.wait(1)
+        release_owner.set()
+        owner_result = owner.result(timeout=1)
+        waiter_result = waiter.result(timeout=1)
+
+    assert len(sent_ids) == 1
+    assert len(caller_ids) == 2 and caller_ids[0] != caller_ids[1]
+    assert owner_result["request_id"] == waiter_result["request_id"] == sent_ids[0]
+    assert waiter_result["coalesced"] is True
+
+
+def test_get_reuses_request_id_after_autostart_retry(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    client.auto_start = True
+    start_timeouts = []
+    sent_ids = []
+
+    def ensure_server(*, timeout):
+        start_timeouts.append(timeout)
+        return True
+
+    def open_request(_method, _path, _body, headers, _timeout, **_kwargs):
+        request_id = headers["X-LocalAI-Request-ID"]
+        sent_ids.append(request_id)
+        if len(sent_ids) == 1:
+            raise URLError("connection refused")
+        return json.dumps({"success": True, "request_id": request_id}).encode("utf-8")
+
+    monkeypatch.setattr(client, "ensure_server", ensure_server)
+    monkeypatch.setattr(client, "_open", open_request)
+
+    result = client.get("/health", timeout=1)
+
+    assert result["success"] is True
+    assert len(start_timeouts) == 1 and start_timeouts[0] > 0
+    assert len(sent_ids) == 2 and sent_ids[0] == sent_ids[1]
+    assert result["request_id"] == sent_ids[0]
+
+
+def test_coalesced_replay_safe_post_timeout_returns_owner_request_id(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    request_started = threading.Event()
+    release_request = threading.Event()
+    sent_ids = []
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        request_id = headers["X-LocalAI-Request-ID"]
+        sent_ids.append(request_id)
+        request_started.set()
+        assert release_request.wait(1)
+        return json.dumps({"success": True, "request_id": request_id}).encode("utf-8")
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        owner = pool.submit(client.post, "/api/repo/complexity", {}, timeout=1)
+        assert request_started.wait(1)
+        try:
+            waiter = client.post("/api/repo/complexity", {}, timeout=0.2)
+        finally:
+            release_request.set()
+        owner_result = owner.result(timeout=1)
+
+    assert owner_result["success"] is True
+    assert waiter["success"] is False
+    assert waiter["retry_timeout"] is True
+    assert waiter["request_id"] == sent_ids[0]
+    assert len(sent_ids) == 1
+
+
+def test_get_passes_request_id_through_singleflight(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    observed_ids = []
+
+    def pooled_open(_method, _path, _body, headers, _timeout):
+        observed_ids.append(headers["X-LocalAI-Request-ID"])
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_pooled_open", pooled_open)
+
+    result = client.get("/health")
+
+    assert result["success"] is True
+    assert len(observed_ids) == 1
+    assert observed_ids[0].startswith("req_")
+
+
 def test_singleflight_removes_completed_flight_before_signaling(tmp_path, monkeypatch):
     client = _client(tmp_path)
     native_event = threading.Event
