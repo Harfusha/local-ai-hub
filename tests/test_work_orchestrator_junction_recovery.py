@@ -15,7 +15,7 @@ def test_rollback_refuses_junction_target(tmp_path: Path):
     outside_dir = tmp_path / "outside"
     outside_dir.mkdir()
     outside = outside_dir / "a.txt"
-    outside.write_text("outside baseline\n", encoding="utf-8")
+    outside.write_bytes(b"outside baseline\n")
     junction = root / "linked"
     if os.name == "nt":
         subprocess.run(
@@ -24,3 +24,9 @@ def test_rollback_refuses_junction_target(tmp_path: Path):
         )
     else:
         junction.symlink_to(outside_dir, target_is_directory=True)
+    journal = [_JournalEntry("linked/a.txt", True, b"original\n")]
+    with pytest.raises(ValueError, match="symlink|reparse|escape"):
+        WorkOrchestrator._rollback(root, journal)
+    with pytest.raises(ValueError, match="symlink|reparse|escape"):
+        object.__new__(WorkOrchestrator)._snapshot(root, ["linked/a.txt"])
+    assert outside.read_bytes() == b"outside baseline\n"

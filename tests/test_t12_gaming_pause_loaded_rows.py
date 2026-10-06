@@ -229,7 +229,18 @@ def test_gaming_unloads_both_enabled_backends(
             llama_queries += 1
             return [{"name": "llama-model:Q4_K_M"}] if llama_queries == 1 else []
 
-        def unload_model(self, model, *, should_stop=None, deadline=None):
+        def loaded_model_inventory(self, *, should_stop=None, deadline=None, force_refresh=False):
+            nonlocal llama_queries
+            llama_queries += 1
+            return {
+                "complete": True,
+                "models": [{"name": "llama-model:Q4_K_M", "endpoint_url": "http://127.0.0.1:12438"}] if llama_queries == 1 else [],
+                "errors": {},
+                "endpoint_status": {"llama-model": "complete"},
+                "endpoints": {"http://127.0.0.1:12438": "complete"},
+            }
+
+        def unload_model(self, model, *, endpoint_url=None, should_stop=None, deadline=None):
             llama_unloads.append(model)
             return True
 
@@ -285,7 +296,18 @@ def test_gaming_unload_continues_other_backend_after_partial_failure(
             llama_queries += 1
             return [{"name": "llama-model:latest"}] if llama_queries == 1 else []
 
-        def unload_model(self, model, *, should_stop=None, deadline=None):
+        def loaded_model_inventory(self, *, should_stop=None, deadline=None, force_refresh=False):
+            nonlocal llama_queries
+            llama_queries += 1
+            return {
+                "complete": True,
+                "models": [{"name": "llama-model:latest", "endpoint_url": "http://127.0.0.1:12438"}] if llama_queries == 1 else [],
+                "errors": {},
+                "endpoint_status": {"llama-model": "complete"},
+                "endpoints": {"http://127.0.0.1:12438": "complete"},
+            }
+
+        def unload_model(self, model, *, endpoint_url=None, should_stop=None, deadline=None):
             llama_unloads.append(model)
             return True
 
@@ -376,7 +398,20 @@ def test_gaming_post_unload_inventory_timeout_stays_unverified(
                 return [{"name": "llama-model:latest"}]
             raise TimeoutError("post-unload inventory timed out")
 
-        def unload_model(self, model, *, should_stop=None, deadline=None):
+        def loaded_model_inventory(self, *, should_stop=None, deadline=None, force_refresh=False):
+            nonlocal llama_queries
+            llama_queries += 1
+            if llama_queries == 1:
+                return {
+                    "complete": True,
+                    "models": [{"name": "llama-model:latest", "endpoint_url": "http://127.0.0.1:12438"}],
+                    "errors": {},
+                    "endpoint_status": {"llama-model": "complete"},
+                    "endpoints": {"http://127.0.0.1:12438": "complete"},
+                }
+            raise TimeoutError("post-unload inventory timed out")
+
+        def unload_model(self, model, *, endpoint_url=None, should_stop=None, deadline=None):
             return True
 
     def request(endpoint, payload=None, **_kwargs):

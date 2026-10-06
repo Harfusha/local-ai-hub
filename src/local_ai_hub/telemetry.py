@@ -224,6 +224,16 @@ def _safe_error_message(value: Any) -> str:
     return f"{safe_type}: {reason}"[:96]
 
 
+_SAFE_ERROR_CODE_MESSAGES = {
+    "local_backend_transport": "local backend transport failure",
+    "local_model_error": "local model inference failed",
+    "model_request_timeout": "model request timed out",
+    "circuit_open": "model circuit open",
+    "http_request_failed": "HTTP request failed",
+    "http_stream_failed": "HTTP stream failed",
+}
+
+
 def _error_fingerprint(error_type: str, component: str, operation: str, error_code: str = "") -> str:
     # Fingerprint only sanitized classification labels, never free-form error text.
     labels = (_safe_error_metadata(value) for value in (error_type, component, operation, error_code))
@@ -705,23 +715,26 @@ class TelemetryStore:
             oldest = int(self._live_events[0].get("seq", 0)) if self._live_events else cursor
         return {"success": True, "cursor": cursor, "oldest": oldest, "events": events}
 
-    def _enqueue(self, kind: str, payload: dict[str, Any]) -> None:
+    def _enqueue(self, kind: str, payload: dict[str, Any]) -> bool:
         if not self.enabled:
-            return
-        self._publish_live(kind, payload)
+            return False
         # Reserve the queue sequence before publishing the item.  The writer
         # thread may consume a freshly queued item immediately; incrementing
         # afterwards lets flush() observe processed >= queued and return before
         # the item is actually visible in SQLite.
         with self._stats_lock:
             self._stats["queued"] += 1
-        try:
-            self._queue.put_nowait((kind, payload))
-        except queue.Full:
-            # Observability must never become a back-pressure source for foreground work.
-            with self._stats_lock:
+            try:
+                self._queue.put_nowait((kind, payload))
+            except queue.Full:
+                # Observability must never become a back-pressure source for foreground work.
                 self._stats["queued"] -= 1
                 self._stats["dropped"] += 1
+                return False
+            # Keep accepted queue order aligned with the live feed. The writer can
+            # dequeue now, but cannot publish completion stats until this lock releases.
+            self._publish_live(kind, payload)
+            return True
 
     def record_live(self, kind: str = "live", **event: Any) -> None:
         if not self.enabled:
@@ -854,12 +867,12 @@ class TelemetryStore:
             "decision_grade": history.get("decision_grade", {}),
         }
 
-    def record(self, **event: Any) -> None:
+    def record(self, **event: Any) -> bool:
         ctx = current_trace_context()
         for key in ("request_id", "trace_id", "agent", "tenant"):
             if not event.get(key) and ctx.get(key):
                 event[key] = ctx[key]
-        self._enqueue("event", self._clean_event(event))
+        return self._enqueue("event", self._clean_event(event))
 
     def record_http(self, **event: Any) -> None:
         event["event_type"] = "http"
@@ -869,7 +882,7 @@ class TelemetryStore:
         event["event_type"] = "stage"
         self.record(**event)
 
-    def record_tool_accounting(self, event: dict[str, Any]) -> None:
+    def record_tool_accounting(self, event: dict[str, Any]) -> bool:
         """Record one agent-visible MCP call without storing arguments or output.
 
         Signed net deltas are stored independently from inference context reduction.
@@ -877,10 +890,10 @@ class TelemetryStore:
         dashboard can explain the accounting without double counting.
         """
         if not isinstance(event, dict):
-            return
+            raise TypeError("tool accounting event must be an object")
         tool_name = event.get("tool")
         if isinstance(tool_name, str) and tool_name[:160] == "local_ai_telemetry":
-            return
+            return False
         breakdown = event.get("savings_breakdown") if isinstance(event.get("savings_breakdown"), dict) else {}
         clean_breakdown_json = _clean_savings_breakdown(breakdown)
         clean_breakdown = json.loads(clean_breakdown_json) if clean_breakdown_json else {}
@@ -890,7 +903,7 @@ class TelemetryStore:
         output_source = _clean_savings_source(event.get("output_savings_source", ""))
         gross_input = max(0, int(event.get("gross_input_tokens_avoided_est", 0) or 0))
         gross_output = max(0, int(event.get("gross_output_tokens_avoided_est", 0) or 0))
-        self.record(
+        accepted = self.record(
             event_type="tool_accounting",
             tenant=str(event.get("tenant", ""))[:160],
             agent=str(event.get("agent", ""))[:80],
@@ -917,10 +930,11 @@ class TelemetryStore:
             output_savings_source=output_source,
             savings_breakdown_json=json_dumps(clean_breakdown, separators=(",", ":"), sort_keys=True),
         )
+        return accepted
 
-    def record_system(self, action: str, *, success: bool = True, duration_ms: float = 0.0, **event: Any) -> None:
+    def record_system(self, action: str, *, success: bool = True, duration_ms: float = 0.0, **event: Any) -> bool:
         event.update({"event_type": "system", "action": action, "success": success, "duration_ms": duration_ms})
-        self.record(**event)
+        return self.record(**event)
 
     def record_error(
         self,
@@ -931,6 +945,8 @@ class TelemetryStore:
         request_id: str = "",
         tenant: str = "",
         agent: str = "",
+        error_type_override: str = "",
+        error_code_override: str = "",
         retryable: bool = False,
         recovered: bool = False,
     ) -> str:
@@ -940,15 +956,19 @@ class TelemetryStore:
         request_id = request_id or str(ctx.get("request_id") or "")
         tenant = tenant or str(ctx.get("tenant") or "")
         agent = agent or str(ctx.get("agent") or "")
-        error_type = type(error).__name__ if isinstance(error, BaseException) else "Error"
+        error_type = error_type_override or (type(error).__name__ if isinstance(error, BaseException) else "Error")
         safe_request_id = _safe_error_metadata(request_id, 96)
         safe_tenant = _safe_error_metadata(tenant, 160)
         safe_agent = _safe_error_metadata(agent, 80)
         safe_component = _safe_error_metadata(component, 120)
         safe_operation = _safe_error_metadata(operation, 160)
         safe_error_type = _safe_error_metadata(error_type, 120)
-        safe_error_code = _safe_error_code(error)
-        message = _safe_error_message(error)
+        safe_error_code = error_code_override if error_code_override in _SAFE_ERROR_CODE_MESSAGES else _safe_error_code(error)
+        message = (
+            f"{safe_error_type}: {_SAFE_ERROR_CODE_MESSAGES[error_code_override]}"
+            if error_code_override in _SAFE_ERROR_CODE_MESSAGES
+            else _safe_error_message(error)
+        )[:96]
         fp = _error_fingerprint(safe_error_type, safe_component, safe_operation, safe_error_code)
         payload = {
             "created_at": time.time(), "request_id": safe_request_id, "tenant": safe_tenant, "agent": safe_agent,

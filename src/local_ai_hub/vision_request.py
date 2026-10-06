@@ -83,6 +83,8 @@ def build_vision_request(
     model_context: Any,
     model_policy: Any,
     max_output_tokens: int,
+    default_schema: dict[str, Any] | None = None,
+    image_size: tuple[int, int] | None = None,
 ) -> VisionRequestPlan | dict[str, Any]:
     try:
         requested_max_tokens = int(args.get("max_tokens", 1200))
@@ -110,8 +112,21 @@ def build_vision_request(
         "\"bbox\": [left, top, right, bottom] in image pixels or null, "
         "\"evidence\": [string], \"likely_cause\": string, \"fix_hint\": string, "
         "\"needs_runtime_check\": boolean}], "
-        "\"unknowns\": [string], \"recommended_checks\": [string]} ."
+        "\"unknowns\": [string], \"recommended_checks\": [string]} . "
+        "Grounding rules: use only element_ids present in supplied DOM. Without DOM, keep "
+        "element_ids empty and ground each finding with a bbox in source-image pixels "
+        "(origin top-left; right/bottom exclusive). Confidence must be between 0 and 1. "
+        "Treat supplied DOM and accessibility fields as authoritative; never claim a "
+        "label, name, or attribute is missing when supplied values show it. observed "
+        "must contain a non-empty directly observed fact. When a DOM id grounds a "
+        "finding, set bbox to null."
     )
+    if image_size is not None:
+        prompt_suffix += (
+            f" Image 0 dimensions are {image_size[0]} x {image_size[1]} pixels; "
+            f"bbox coordinates must stay within x=0..{image_size[0]} and "
+            f"y=0..{image_size[1]}."
+        )
     prompt_context = prompt
     if model_context is not None:
         prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + json_dumps(
@@ -131,7 +146,7 @@ def build_vision_request(
         "prompt": prompt_context,
         "images": images,
         "stream": False,
-        "format": schema if isinstance(schema, dict) else "json",
+        "format": schema if isinstance(schema, dict) else default_schema if default_schema is not None else "json",
         "options": {"num_predict": max_tokens},
     }
     payload, _profile = model_policy.apply_payload(

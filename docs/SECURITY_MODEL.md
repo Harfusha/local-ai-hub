@@ -12,10 +12,10 @@ Workspace memos are intentionally shared by canonical workspace and memo key. Re
 
 Configure `api_token` when HTTP data/control routes need token authentication, including on loopback. The current token is one shared API secret; per-token permissions and principal namespaces are not implemented.
 
-Root-derived principal/effective-tenant scoping applies to the specified root-scoped memory/task paths only. It does not prove hostile-user isolation for every caller sharing this state directory. Use a separate Hub instance and state directory per trust domain until every private state surface has a confirmed identity-binding contract.
+`HubClient` preflights the specified root-scoped memory/task paths using configured allowed roots, a principal, and an HMAC-derived tenant. The HTTP server's `_tenant` still uses caller-provided labels outside token-bound browser routes; client preflight is not server authorization. Operational-mode and scoped admin-action-token code are present. Full HTTP root isolation remains unverified. Use a separate Hub instance and state directory per trust domain until every private state surface has a confirmed identity-binding contract.
 
 Repository paths, RAG/index databases and exported bundles may contain sensitive source-derived information. Telemetry intentionally excludes prompts, source and model output, but operational logs can still contain paths and error metadata.
 
-The command broker is allowlist/fail-closed and is not a general shell sandbox. The dashboard uses the same policy. External Serena processes are constrained by project roots, timeouts, bounded sessions and process-tree termination.
+The command broker is allowlist/fail-closed and is not a general shell sandbox. The dashboard uses the same policy. Hub-managed Serena processes are constrained by project roots, timeouts, bounded sessions and process-tree termination. CodeGraphContext is standalone external CLI/MCP tooling and follows its own process and security controls.
 
 Report vulnerabilities according to `SECURITY.md`.

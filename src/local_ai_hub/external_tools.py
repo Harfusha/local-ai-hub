@@ -298,6 +298,10 @@ class MCPStdioClient:
         self._stderr = deque(maxlen=80)
         if not proc:
             return
+
+        # A request timeout has no remaining budget for process-tree teardown.
+        # Detach state now, then reap in the background so cleanup cannot extend
+        # the caller's explicit deadline.
         if deadline is not None and time.monotonic() >= deadline:
             threading.Thread(
                 target=self._cleanup_process,
@@ -539,6 +543,8 @@ class ExternalCodeIntelligence:
     @contextmanager
     def _backend_operation(self, backend: str, root: str, timeout: float | None = None):
         """Serialize operations for one embedded database, with bounded lock wait."""
+        if backend != "serena":
+            raise ValueError(f"unknown code-intelligence backend: {backend}")
         key = (backend, root)
         with self._operation_lock_guard:
             operation_lock = self._operation_locks.get(key)
@@ -610,7 +616,15 @@ class ExternalCodeIntelligence:
             "project root is missing",
         ))
 
-    def _record_failure(self, backend: str, exc: Exception, *, operation: str, root: str | None = None) -> None:
+    def _record_failure(
+        self,
+        backend: str,
+        exc: Exception,
+        *,
+        operation: str,
+        root: str | None = None,
+        emit_telemetry: bool = True,
+    ) -> None:
         message = str(exc)
         health = self._backend_health[backend]
         key = (backend, root or "")
@@ -633,9 +647,19 @@ class ExternalCodeIntelligence:
         self._failures[backend] = sum(value for (name, _root), value in self._root_failures.items() if name == backend)
         if self._root_failures[key] >= self.failure_threshold:
             self._root_cooldown_until[key] = time.monotonic() + self.cooldown_seconds
-        if self.telemetry is not None:
+        if emit_telemetry and self.telemetry is not None:
             try:
                 self.telemetry.record_error("code_intelligence", f"{backend}:{operation}", exc, retryable=True, recovered=False)
+            except Exception:
+                pass
+
+    def _record_failure_recovery(self, backend: str, exc: Exception, *, operation: str, recovered: bool) -> None:
+        if self.telemetry is not None:
+            try:
+                self.telemetry.record_error(
+                    "code_intelligence", f"{backend}:{operation}", exc,
+                    retryable=True, recovered=recovered,
+                )
             except Exception:
                 pass
 
@@ -687,7 +711,7 @@ class ExternalCodeIntelligence:
         return installed == version
 
     def _repair_backend(self, backend: str, *, reason: str) -> bool:
-        if backend not in self._repair_locks or not self._backend_enabled(backend):
+        if backend != "serena" or not self._backend_enabled(backend):
             return False
         setup_cfg = self.config.get("setup", {})
         if not bool(setup_cfg.get("install_optional_tools", True)):
@@ -874,9 +898,11 @@ class ExternalCodeIntelligence:
     def index(self, backend: str, root: str) -> dict[str, Any]:
         backend = backend.strip().lower()
         root = self._root(root)
+        if backend != "serena":
+            return {"success": False, "backend": backend, "unavailable": True, "error": f"unsupported backend: {backend}"}
         if not self.enabled:
             return {"success": False, "skipped": True, "backend": backend, "reason": "code intelligence disabled"}
-        if backend in self._repair_locks and self._backend_enabled(backend):
+        if self._backend_enabled(backend):
             self.backend_available(backend)
         if not self._allowed(backend, root):
             return {"success": False, "skipped": True, "backend": backend, "reason": "circuit cooldown"}
@@ -1066,16 +1092,25 @@ class ExternalCodeIntelligence:
             return {"backend": "serena", "action": action, **self._trim(result)}
         except MCPSoftTimeoutError as exc:
             self.query_failures += 1
+            self._record_failure("serena", exc, operation=action, root=root, emit_telemetry=False)
             if self.code_index is not None:
-                return self._fallback_code_index(root, action, query, path, limit, reason="serena_soft_timeout")
+                fallback = self._fallback_code_index(root, action, query, path, limit, reason="serena_soft_timeout")
+                self._record_failure_recovery("serena", exc, operation=action, recovered=bool(fallback.get("success")))
+                return fallback
+            self._record_failure_recovery("serena", exc, operation=action, recovered=False)
             return {"success": False, "backend": "serena", "error": str(exc), "error_type": "MCPSoftTimeoutError", "fallback_used": False, "degraded_reason": "serena_soft_timeout"}
         except Exception as exc:
-            self._record_failure("serena", exc, operation=action, root=root)
+            self._record_failure("serena", exc, operation=action, root=root, emit_telemetry=False)
             if not _retrying and self._recover_backend("serena", root, exc):
-                return self._query_serena_locked(root, action, query, path, limit, timeout=timeout, soft_timeout=soft_timeout, _retrying=True)
+                recovered = self._query_serena_locked(root, action, query, path, limit, timeout=timeout, soft_timeout=soft_timeout, _retrying=True)
+                self._record_failure_recovery("serena", exc, operation=action, recovered=bool(recovered.get("success")))
+                return recovered
             self.query_failures += 1
             if self.code_index is not None:
-                return self._fallback_code_index(root, action, query, path, limit, reason=f"serena_error:{type(exc).__name__}")
+                fallback = self._fallback_code_index(root, action, query, path, limit, reason=f"serena_error:{type(exc).__name__}")
+                self._record_failure_recovery("serena", exc, operation=action, recovered=bool(fallback.get("success")))
+                return fallback
+            self._record_failure_recovery("serena", exc, operation=action, recovered=False)
             return {"success": False, "backend": "serena", "error": str(exc), "error_type": type(exc).__name__}
 
     def query(self, root: str, query: str, *, backend: str = "auto", action: str = "search", path: str = "", limit: int = 20, timeout: float | None = None, soft_timeout: float | None = None) -> dict[str, Any]:
@@ -1133,7 +1168,8 @@ class ExternalCodeIntelligence:
                 client = sessions.pop(key, None)
                 self._session_access["serena"].pop(key, None)
                 if client is not None:
-                    clients.append(client); removed["serena"] += 1
+                    clients.append(client)
+                    removed["serena"] += 1
             failure_keys = [key for key in self._root_failures if key[0] == "serena" and (resolved_root is None or key[1] == resolved_root)]
             for key in failure_keys:
                 self._root_failures.pop(key, None)

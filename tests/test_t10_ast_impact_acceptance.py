@@ -251,4 +251,4 @@ def test_impact_chunks_large_changed_path_sets_and_caps_graph_queries(tmp_path: 
 
 def test_code_index_maps_cpp_and_keeps_tsx_on_typescript() -> None:
     assert CodeIndex._lang("src/runner.cpp") == "cpp"
-    assert CodeIndex._lang("src/runner.tsx") == "typescript"
+    assert CodeIndex._lang("src/runner.tsx") == "typescript"

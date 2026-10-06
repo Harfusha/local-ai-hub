@@ -1,5 +1,22 @@
 from __future__ import annotations
 
+from urllib.error import URLError
+
+
+def test_mcp_main_enters_stdio_without_eager_hub_autostart(monkeypatch) -> None:
+    from local_ai_hub import mcp_server
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        mcp_server.CLIENT,
+        "ensure_server",
+        lambda **_kwargs: calls.append("start"),
+    )
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: calls.append("stdio"))
+
+    mcp_server.main()
+
+    assert calls == ["stdio"]
 from local_ai_hub import client as client_module
 
 

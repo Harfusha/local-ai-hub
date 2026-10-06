@@ -71,13 +71,13 @@ def test_context_pack_selection_matches_original_tokenizer_at_budget_edges():
     tools = RepositoryTools({})
     for case_index, texts in enumerate((
         ("a" * 75, "b" * 147, "c" * 9),
-        ("?????????" * 35, "??????" * 61, "???" * 8),
-        ("", "????" * 4, "plain text"),
+        ("é漢😀" * 35, "λ🧪" * 61, "終" * 8),
+        ("", "🙂" * 4, "plain text"),
         (),
     )):
         results = [
             {
-                "path": f"src/module_{case_index}_{index}_??.py",
+                "path": f"src/module_{case_index}_{index}_é.py",
                 "start_line": 1,
                 "end_line": 2,
                 "score": float(len(texts) - index),

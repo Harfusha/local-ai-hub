@@ -22,6 +22,7 @@ import platform
 import random
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import socket
@@ -36,8 +37,21 @@ from typing import Any, Callable
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+if __package__:
+    from tools.t02_queue_diagnostics import admission_failure_code, cancellation_failure_code
+else:  # Direct script execution puts tools/, not the repository root, on sys.path.
+    from t02_queue_diagnostics import admission_failure_code, cancellation_failure_code
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_SOURCE = (_REPO_ROOT / "src").resolve()
+sys.path[:] = [
+    entry
+    for entry in sys.path
+    if Path(entry or os.getcwd()).resolve() != _REPO_SOURCE
+]
+sys.path.insert(0, str(_REPO_SOURCE))
+_SOURCE_ROOT = _REPO_SOURCE
 _FULL_FILE_SIZES = {100, 10_000, 100_000}
 _FULL_RAG_SIZES = {10_000, 100_000}
 _MAX_CONCURRENCY = 256
@@ -75,6 +89,21 @@ _REQUIRED_COMPARISON_STAGES = {
     "hub_rag_batch_index", "hub_rag_search", "hub_rag_fixture_relevance",
     "hub_queue_admission", "hub_rag_chunking", "parent_worktree_seed",
 }
+_QUEUE_ERROR_TYPES = frozenset({"Exception", "OSError", "RuntimeError", "TimeoutError", "ValueError"})
+_QUEUE_STATES = frozenset({
+    "queued", "running", "done", "failed", "cancelled", "expired",
+    "outcome_unknown", "rejected", "conflict",
+})
+_QUEUE_REASONS = frozenset({
+    "capacity_available", "resource_pressure", "queue_limit",
+    "duplicate_active_job", "idempotent_request_replay",
+})
+_QUEUE_PRESSURE_LEVELS = frozenset({"nominal", "moderate", "high", "critical"})
+
+
+def _safe_queue_label(value: object, allowed: frozenset[str]) -> str:
+    return value if isinstance(value, str) and value in allowed else "unknown"
+
 _REQUIRED_LIGHT_SAMPLE_STAGES = {
     "transport", "hub_health", "hub_validation", "hub_queue_admission",
 }
@@ -2429,21 +2458,54 @@ def _synthetic_source(index: int) -> str:
     return source
 
 
-def _build_synthetic_repo(root: Path, file_count: int, rag_chunks: int) -> tuple[list[Path], Path, Path]:
+_SYNTHETIC_INPUT_GENERATOR_VERSION = 1
+
+
+def _synthetic_input_provenance(input_seed: int, fingerprint: str) -> dict[str, int | str]:
+    if type(input_seed) is not int or input_seed < 0:
+        raise ValueError("synthetic input seed must be a non-negative integer")
+    if (
+        not isinstance(fingerprint, str)
+        or len(fingerprint) != 64
+        or any(character not in "0123456789abcdef" for character in fingerprint)
+    ):
+        raise ValueError("synthetic input fingerprint must be a lowercase SHA-256 hex digest")
+    return {
+        "synthetic_input_generator_version": _SYNTHETIC_INPUT_GENERATOR_VERSION,
+        "synthetic_input_seed": input_seed,
+        "synthetic_input_fingerprint": fingerprint,
+    }
+
+
+def _build_synthetic_repo(
+    root: Path, file_count: int, rag_chunks: int, *, input_seed: int = 0,
+) -> tuple[list[Path], Path, Path, str]:
+    if type(input_seed) is not int or input_seed < 0:
+        raise ValueError("input_seed must be a non-negative integer")
     source_root = root / "repo" / "src"
     test_root = root / "repo" / "tests"
     source_root.mkdir(parents=True, exist_ok=True)
     test_root.mkdir(parents=True, exist_ok=True)
     files: list[Path] = []
+    fingerprint = hashlib.sha256()
     for index in range(file_count):
         path = source_root / f"module_{index:06d}.py"
-        path.write_text(_synthetic_source(index), encoding="utf-8")
+        source = _synthetic_source(index)
+        if input_seed:
+            source = f"{source}\nINPUT_SEED = {input_seed}\n"
+        path.write_text(source, encoding="utf-8")
+        fingerprint.update(path.relative_to(root).as_posix().encode("utf-8"))
+        fingerprint.update(b"\0")
+        fingerprint.update(source.encode("utf-8"))
+        fingerprint.update(b"\0")
         files.append(path)
     test_path = test_root / "test_graph_target.py"
-    test_path.write_text(
-        "from src.module_000000 import graph_target\n\ndef test_graph_target_returns_value():\n    assert graph_target() == 1\n",
-        encoding="utf-8",
-    )
+    test_source = "from src.module_000000 import graph_target\n\ndef test_graph_target_returns_value():\n    assert graph_target() == 1\n"
+    test_path.write_text(test_source, encoding="utf-8")
+    fingerprint.update(test_path.relative_to(root).as_posix().encode("utf-8"))
+    fingerprint.update(b"\0")
+    fingerprint.update(test_source.encode("utf-8"))
+    fingerprint.update(b"\0")
     corpus_path = root / "synthetic-rag.jsonl"
     with corpus_path.open("w", encoding="utf-8", newline="\n") as stream:
         for index in range(rag_chunks):
@@ -2453,8 +2515,10 @@ def _build_synthetic_repo(root: Path, file_count: int, rag_chunks: int) -> tuple
                 "text": f"synthetic {'needle' if relevant else 'filler'} chunk {index}",
                 "relevant": relevant,
             }
-            stream.write(json.dumps(chunk, separators=(",", ":")) + "\n")
-    return files, test_path, corpus_path
+            line = json.dumps(chunk, separators=(",", ":")) + "\n"
+            stream.write(line)
+            fingerprint.update(line.encode("utf-8"))
+    return files, test_path, corpus_path, fingerprint.hexdigest()
 
 
 def _ast_index(files: list[Path]) -> dict[str, str]:
@@ -2527,21 +2591,17 @@ def _revision() -> str | None:
 
 
 def _implementation_fingerprint() -> str:
-    tracked_runtime = (
-        "src/local_ai_hub/app.py",
-        "src/local_ai_hub/http_server.py",
-        "src/local_ai_hub/services.py",
-        "src/local_ai_hub/code_index.py",
-        "src/local_ai_hub/rag.py",
-        "src/local_ai_hub/async_jobs.py",
-        "src/local_ai_hub/repo_tools.py",
-        "src/local_ai_hub/benchmark.py",
-        "tools/benchmark_surfaces.py",
-    )
+    package_root = _REPO_ROOT / "src" / "local_ai_hub"
+    tracked_runtime = {
+        path.relative_to(_REPO_ROOT).as_posix()
+        for path in package_root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    } if package_root.is_dir() else set()
+    tracked_runtime.update({"pyproject.toml", "tools/benchmark_surfaces.py"})
     digest = hashlib.sha256()
-    for relative in tracked_runtime:
+    for relative in sorted(tracked_runtime):
         source_path = _REPO_ROOT / relative
-        digest.update(Path(relative).name.encode("utf-8"))
+        digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         try:
             digest.update(hashlib.sha256(source_path.read_bytes()).digest())
@@ -2797,6 +2857,7 @@ def run_benchmark(
     scratch_dir: Path | str | None = None,
     file_count: int = 100,
     rag_chunks: int = 1_000,
+    input_seed: int = 0,
     repetitions: int = 3,
     light_repetitions: int | None = None,
     comparison_repetitions: int | None = None,
@@ -2804,12 +2865,15 @@ def run_benchmark(
     full: bool = False,
     inference_runner: Any = None,
     include_inference: bool = False,
+    include_t12_matrix: bool = False,
     include_quality_goldens: bool | None = None,
     speech_fixture: Path | str | None = None,
     speech_expected_text: str | None = None,
     baseline_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run synthetic stages and persist samples, aggregates, and optional comparison."""
+    if type(input_seed) is not int or input_seed < 0:
+        raise ValueError("input_seed must be a non-negative integer")
     if file_count < 1 or rag_chunks < 1 or repetitions < 1:
         raise ValueError("file_count, rag_chunks, and repetitions must be positive")
     light_repetitions = repetitions if light_repetitions is None else light_repetitions
@@ -2830,6 +2894,8 @@ def run_benchmark(
         raise ValueError("full benchmark sizes must use the documented file and RAG matrices")
     if include_inference and inference_runner is None:
         raise ValueError("inference opt-in requires an explicit benchmark runner")
+    if include_t12_matrix and inference_runner is None:
+        raise ValueError("T12 profile matrix requires an explicit benchmark runner")
     if include_quality_goldens is None:
         include_quality_goldens = include_inference
     if include_quality_goldens and not include_inference:
@@ -2856,12 +2922,19 @@ def run_benchmark(
     server_thread: threading.Thread | None = None
     http_server_module: Any = None
     previous_http_app: Any = None
+    record: dict[str, Any] | None = None
+    record_path: Path | None = None
     try:
         synthetic: dict[str, Any] = {}
 
         def setup_synthetic_inputs() -> dict[str, int]:
-            files, test_path, corpus_path = _build_synthetic_repo(scratch, file_count, rag_chunks)
-            synthetic.update(files=files, test_path=test_path, corpus_path=corpus_path)
+            files, test_path, corpus_path, fingerprint = _build_synthetic_repo(
+                scratch, file_count, rag_chunks, input_seed=input_seed,
+            )
+            synthetic.update(
+                files=files, test_path=test_path, corpus_path=corpus_path,
+                input_fingerprint=fingerprint,
+            )
             return {"file_count": len(files), "rag_chunk_count": rag_chunks}
 
         stages["synthetic_setup"] = _measure_stage("synthetic_fixture_generation", setup_synthetic_inputs, 1)
@@ -2871,6 +2944,11 @@ def run_benchmark(
 
         from local_ai_hub import http_server as http_server_module
         from local_ai_hub.app import LocalAIApp
+        runtime_source_root = Path(http_server_module.__file__).resolve().parents[1]
+        if runtime_source_root != _SOURCE_ROOT:
+            raise RuntimeError(
+                f"benchmark runtime source mismatch: expected {_SOURCE_ROOT}, got {runtime_source_root}"
+            )
 
         app_state_dir = scratch / "hub-state"
         app_config_path = scratch / "hub-config.toml"
@@ -2890,6 +2968,8 @@ def run_benchmark(
             + "enabled = false\n\n"
             + "[observability]\n"
             + "enabled = false\n\n"
+            + "[resilience]\nwatchdog_enabled = false\n\n"
+            + "[debug_traces]\nenabled = false\n\n"
             + _benchmark_inference_config(inference_runner),
             encoding="utf-8",
         )
@@ -4286,10 +4366,11 @@ def run_benchmark(
                 definition="Unpaired direct LocalAIApp RAGStore._chunks calls on one synthetic source file because corpus lacks enough distinct cases; no sample identities asserted.",
             )
 
-        def queue_admission_attempt(sample_id: str) -> tuple[float, str | None, str | None, dict[str, Any] | None]:
+        def queue_admission_attempt(sample_id: str) -> tuple[float, str | None, str | None, dict[str, Any] | None, str | None]:
             queued_at = time.perf_counter()
             error_type: str | None = None
             error_reason: str | None = None
+            error_code: str | None = None
             submitted: Any = None
             cancelled: Any = None
             try:
@@ -4305,8 +4386,10 @@ def run_benchmark(
                 ):
                     cancelled = app.async_jobs.cancel("benchmark", str(submitted["job_id"]))
                     error_reason = _queue_admission_error_reason(submitted, cancelled)
+                    error_code = cancellation_failure_code(cancelled)
                 else:
                     error_reason = _queue_admission_error_reason(submitted)
+                    error_code = admission_failure_code(submitted)
                 if error_reason is not None:
                     error_type = "RuntimeError"
             except Exception as exc:
@@ -4344,7 +4427,7 @@ def run_benchmark(
                     error_reason=error_reason,
                     diagnostic_error_types=diagnostic_error_types,
                 )
-            return elapsed_ms, error_type, error_reason, diagnostic
+            return elapsed_ms, error_type, error_reason, diagnostic, error_code
 
         queue_samples: list[float] = []
         queue_cold_samples: list[float] = []
@@ -4357,6 +4440,7 @@ def run_benchmark(
             "definition": "Each async job uses delayed dispatch and immediate cancellation; queue returns to empty per sample. Worker service is excluded.",
         })
         queue_error_types: set[str] = set()
+        queue_error_codes: set[str] = set()
         queue_error_reasons: dict[str, int] = {}
         queue_error_count = 0
         queue_measurements: dict[str, Any] = {}
@@ -4368,6 +4452,7 @@ def run_benchmark(
             level_samples: list[float] = []
             level_errors = 0
             level_error_reasons: dict[str, int] = {}
+            level_codes: set[str] = set()
             level_batch_seconds = 0.0
             for repetition_index in range(light_repetitions):
                 batch_started = time.perf_counter()
@@ -4382,11 +4467,14 @@ def run_benchmark(
                 total_batch_seconds += batch_seconds
                 total_admissions += level
                 regime = "cold" if repetition_index == 0 else "warm"
-                for sample_id, (elapsed_ms, error_type, error_reason, diagnostic) in zip(sample_ids, outcomes):
+                for sample_id, (elapsed_ms, error_type, error_reason, diagnostic, error_code) in zip(sample_ids, outcomes):
                     level_samples.append(elapsed_ms)
                     queue_samples.append(elapsed_ms)
                     (queue_cold_samples if repetition_index == 0 else queue_warm_samples).append(elapsed_ms)
                     queue_sample_ids_by_regime[regime].append(sample_id)
+                    if error_code:
+                        level_codes.add(error_code)
+                        queue_error_codes.add(error_code)
                     if error_type:
                         level_errors += 1
                         queue_error_count += 1
@@ -4399,6 +4487,7 @@ def run_benchmark(
             queue_measurements[str(level)] = {
                 **summarize_samples(level_samples),
                 "error_count": level_errors,
+                "error_codes": sorted(level_codes),
                 "error_rate_pct": round(level_errors * 100.0 / max(1, len(level_samples)), 3),
                 "error_reasons": dict(sorted(level_error_reasons.items())),
                 "concurrent_admissions_per_second": round(level * light_repetitions / level_batch_seconds, 3) if level_batch_seconds else None,
@@ -4423,6 +4512,7 @@ def run_benchmark(
             "error_count": queue_error_count,
             "error_rate_pct": round(queue_error_count * 100.0 / max(1, len(queue_samples)), 3),
             "error_types": sorted(queue_error_types),
+            "error_codes": sorted(queue_error_codes),
             "error_reasons": dict(sorted(queue_error_reasons.items())),
             "failed_sample_count": queue_error_count,
             "failed_samples": queue_failure_diagnostics,
@@ -4502,6 +4592,15 @@ def run_benchmark(
             if len(inference_model_digests) == comparison_repetitions and len(set(inference_model_digests)) == 1:
                 inference_model_digest = f"sha256:{inference_model_digests[0]}"
 
+        t12_acceptance = None
+        if include_t12_matrix:
+            t12_acceptance = _run_t12_matrix(
+                inference_runner,
+                repetitions=comparison_repetitions,
+                concurrency_limit=max(concurrency),
+                live_hardware=True,
+            )
+
         inference_model = None
         if include_inference:
             model_config = getattr(inference_runner, "config", {})
@@ -4513,8 +4612,14 @@ def run_benchmark(
             "file_count": file_count, "rag_chunks": rag_chunks, "repetitions": repetitions,
             "light_repetitions": light_repetitions, "comparison_repetitions": comparison_repetitions,
             "concurrency": list(concurrency), "full": full, "inference": include_inference,
+            "t12_matrix": include_t12_matrix,
             "inference_model": inference_model,
-            "hub_app": {"prewarm_enabled": False, "observability_enabled": False},
+            "hub_app": {
+                "prewarm_enabled": False,
+                "observability_enabled": False,
+                "watchdog_enabled": False,
+                "debug_traces_enabled": False,
+            },
             "context_mode": "fast",
             "code_index_cache_policy": "distinct cold keys and preseeded fixed warm key",
         }
@@ -4528,6 +4633,10 @@ def run_benchmark(
                     recorded_rag_chunk_count = sum(1 for _ in corpus_file)
             except OSError:
                 pass
+        input_provenance = _synthetic_input_provenance(
+            input_seed,
+            synthetic["input_fingerprint"],
+        )
         machine = {
             "system": platform.system(), "release": platform.release(), "machine": platform.machine(),
             "processor": platform.processor() or None, "cpu_count": os.cpu_count(),
@@ -4535,14 +4644,20 @@ def run_benchmark(
         }
         metadata = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "benchmark_scope": "hub_app_synthetic_repo_plus_hardware_inference" if include_inference else "hub_app_synthetic_repo",
+            "benchmark_scope": (
+                "hub_app_synthetic_repo_plus_t12_profile_matrix" if include_t12_matrix else
+                "hub_app_synthetic_repo_plus_hardware_inference" if include_inference else
+                "hub_app_synthetic_repo"
+            ),
             "cold_warm_policy": "Explicit cold query keys and preseeded warm keys for cached Hub routes; uncached operations use fresh calls; no OS cache flush.",
             "revision": _revision(),
             "implementation_fingerprint": _implementation_fingerprint(),
+            "runtime_source_root": str(runtime_source_root),
             "workload_fingerprint": _stable_fingerprint({
                 "benchmark_scope": "hub_app_synthetic_repo_plus_hardware_inference" if include_inference else "hub_app_synthetic_repo",
                 "synthetic_file_count": recorded_file_count,
                 "rag_chunk_count": recorded_rag_chunk_count,
+                **input_provenance,
                 "repetitions": repetitions,
                 "stage_repetitions": {"light": light_repetitions, "comparison": comparison_repetitions},
                 "concurrency": list(concurrency),
@@ -4557,11 +4672,14 @@ def run_benchmark(
             "full": full,
             "synthetic_file_count": recorded_file_count,
             "rag_chunk_count": recorded_rag_chunk_count,
+            **input_provenance,
             "repetitions": repetitions,
             "stage_repetitions": {"light": light_repetitions, "comparison": comparison_repetitions},
             "concurrency": list(concurrency),
             "prewarm_enabled": False,
             "observability_enabled": False,
+            "watchdog_enabled": False,
+            "debug_traces_enabled": False,
             "http_response_body_bytes_scope": "HTTP response body bytes only; excludes HTTP headers, transfer framing, and transport bytes. Internal operations have no HTTP body.",
             "whitespace_token_estimate": "Whitespace split count from HTTP response bodies; not model tokenization.",
             "matrix_aggregation": "not_performed_single_case_record",
@@ -4571,6 +4689,8 @@ def run_benchmark(
                 for name in sorted(_REQUIRED_GOLDEN_OPERATIONS)
             },
             "inference": "requested" if include_inference else "skipped_not_requested",
+            "t12_matrix": "requested" if include_t12_matrix else "skipped_not_requested",
+            "t12_acceptance_status": t12_acceptance.get("status") if t12_acceptance is not None else "not_requested",
             "inference_model": inference_model,
             "inference_model_digest": inference_model_digest,
             "quality_goldens": bool(include_quality_goldens),
@@ -4603,6 +4723,7 @@ def run_benchmark(
         success = (
             not failed_stages
             and all(item.get("passed") is True for item in golden.values() if isinstance(item.get("passed"), bool))
+            and (t12_acceptance is None or t12_acceptance.get("accepted") is True)
         )
         supported_golden = {
             name: item["passed"] for name, item in golden.items()
@@ -4629,18 +4750,10 @@ def run_benchmark(
             "failed_stages": failed_stages,
             "total_duration_ms": round((time.perf_counter() - started) * 1000.0, 3),
         }
-        if baseline_record is not None:
-            record["comparison"] = compare_records(baseline_record, record)
-        record_name = f"surface-benchmark-{time.time_ns()}.json"
-        record_path = output_dir / record_name
-        temporary_path = output_dir / f".{record_name}.tmp"
-        try:
-            temporary_path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            os.replace(temporary_path, record_path)
-        finally:
-            temporary_path.unlink(missing_ok=True)
-        return {**record, "record_path": str(record_path)}
+        if t12_acceptance is not None:
+            record["t12_acceptance"] = t12_acceptance
     finally:
+        cleanup_errors: list[str] = []
         benchmark_thread_groups = _benchmark_owned_thread_groups(app)
         related_threads = (server_thread,) if isinstance(server_thread, threading.Thread) else ()
         try:
@@ -4648,14 +4761,22 @@ def run_benchmark(
                 try:
                     if server_thread is not None and server_thread.is_alive():
                         server.shutdown()
+                except Exception as exc:
+                    cleanup_errors.append(f"server_shutdown:{type(exc).__name__}")
                 finally:
-                    server.server_close()
+                    try:
+                        server.server_close()
+                    except Exception as exc:
+                        cleanup_errors.append(f"server_close:{type(exc).__name__}")
                     if server_thread is not None and server_thread.is_alive():
                         server_thread.join(timeout=2)
         finally:
             try:
                 if app is not None:
-                    app.close()
+                    try:
+                        app.close()
+                    except Exception as exc:
+                        cleanup_errors.append(f"app_close:{type(exc).__name__}")
             finally:
                 try:
                     if http_server_module is not None:
@@ -4665,22 +4786,46 @@ def run_benchmark(
                         owned_scratch, app, benchmark_thread_groups, related_threads, server,
                     )
 
+    assert record is not None
+    if cleanup_errors:
+        record["success"] = False
+        record["failed_stages"].append("cleanup")
+        record["cleanup"] = {"status": "incomplete", "errors": cleanup_errors}
+    record["total_duration_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+    if baseline_record is not None:
+        record["comparison"] = compare_records(baseline_record, record)
+    record_name = f"surface-benchmark-{time.time_ns()}.json"
+    record_path = output_dir / record_name
+    temporary_path = output_dir / f".{record_name}.tmp"
+    try:
+        temporary_path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(temporary_path, record_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return {**record, "record_path": str(record_path)}
+
 
 def run_benchmark_matrix(
     *,
     state_dir: Path | str,
     scratch_dir: Path | str | None = None,
+    input_seed: int = 0,
     light_repetitions: int | None = None,
     comparison_repetitions: int | None = None,
     concurrency: tuple[int, ...] | None = None,
     inference_runner: Any = None,
     include_inference: bool = False,
+    include_t12_matrix: bool = False,
     include_quality_goldens: bool | None = None,
     speech_fixture: Path | str | None = None,
     speech_expected_text: str | None = None,
     baseline_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run and persist all six documented synthetic size pairs as one matrix record."""
+    if type(input_seed) is not int or input_seed < 0:
+        raise ValueError("input_seed must be a non-negative integer")
+    if include_t12_matrix and inference_runner is None:
+        raise ValueError("T12 profile matrix requires an explicit benchmark runner")
     if include_quality_goldens is None:
         include_quality_goldens = include_inference
     speech_identity = _speech_golden_identity(speech_fixture, speech_expected_text)
@@ -4701,6 +4846,7 @@ def run_benchmark_matrix(
             scratch_dir=scratch_dir,
             file_count=file_count,
             rag_chunks=rag_chunk_count,
+            input_seed=input_seed,
             repetitions=max(1, comparison_repetitions),
             light_repetitions=light_repetitions,
             comparison_repetitions=comparison_repetitions,
@@ -4708,6 +4854,7 @@ def run_benchmark_matrix(
             full=True,
             inference_runner=inference_runner,
             include_inference=include_inference,
+            include_t12_matrix=include_t12_matrix,
             include_quality_goldens=include_quality_goldens,
             speech_fixture=speech_fixture,
             speech_expected_text=speech_expected_text,
@@ -4747,6 +4894,9 @@ def run_benchmark_matrix(
             "golden_operations": metadata.get("golden_operations", {}),
             "recorded_file_count": recorded_key[0] if recorded_key else None,
             "recorded_rag_chunk_count": recorded_key[1] if recorded_key else None,
+            "synthetic_input_generator_version": metadata.get("synthetic_input_generator_version"),
+            "synthetic_input_seed": metadata.get("synthetic_input_seed"),
+            "synthetic_input_fingerprint": metadata.get("synthetic_input_fingerprint"),
         })
 
     matrix_metadata: dict[str, Any] = {
@@ -4757,6 +4907,8 @@ def run_benchmark_matrix(
         "rag_chunk_sizes": sorted(_FULL_RAG_SIZES),
         "stage_repetitions": {"light": light_repetitions, "comparison": comparison_repetitions},
         "concurrency": list(concurrency),
+        "synthetic_input_generator_version": _SYNTHETIC_INPUT_GENERATOR_VERSION,
+        "synthetic_input_seed": input_seed,
         "completed_matrix": completed_matrix,
         "matrix_aggregation": "complete_six_case_cross_product",
         "inference": "requested" if include_inference else "skipped_not_requested",
@@ -4847,30 +4999,160 @@ def _collect_concurrent_results(futures: list[Any], *, timeout_seconds: float) -
     return [future.result() for future in futures]
 
 
+def _stream_metadata(value: Any) -> dict[str, Any]:
+    if isinstance(value, bytes):
+        payload = value
+    elif isinstance(value, str):
+        payload = value.encode("utf-8", errors="replace")
+    else:
+        payload = b""
+    return {
+        "byte_count": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def _emit_cli_status(status: str, error: str, **details: Any) -> None:
+    payload = {
+        "success": False,
+        "status": status,
+        "error": error,
+        "record_complete": False,
+        **details,
+    }
+    print(json.dumps(payload, separators=(",", ":")), flush=True)
+
+
+class _BenchmarkArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        _emit_cli_status(
+            "failed",
+            "invalid_cli_arguments",
+            error_detail=message,
+            return_code=2,
+        )
+        super().error(message)
+
+
+def _is_cancel_return_code(return_code: int) -> bool:
+    return return_code in {130, -2, 3221225786, -1073741510}
+
+
 def _run_cli_worker(command: list[str], *, timeout_seconds: float) -> int:
     try:
         completed = subprocess.run(
             command, capture_output=True, text=True, timeout=timeout_seconds, check=False,
         )
-    except subprocess.TimeoutExpired:
-        print(json.dumps({
-            "success": False, "status": "incomplete", "error": "benchmark_timeout",
-            "timeout_seconds": timeout_seconds,
-        }, separators=(",", ":")))
+    except subprocess.TimeoutExpired as exc:
+        _emit_cli_status(
+            "incomplete",
+            "benchmark_timeout",
+            timeout_seconds=timeout_seconds,
+            return_code=124,
+            stdout=_stream_metadata(exc.stdout),
+            stderr=_stream_metadata(exc.stderr),
+        )
         return 124
-    if completed.stdout:
-        sys.stdout.write(completed.stdout)
-    if completed.stderr:
-        sys.stderr.write(completed.stderr)
-    return completed.returncode
+    except KeyboardInterrupt:
+        _emit_cli_status(
+            "cancelled",
+            "benchmark_cancelled",
+            timeout_seconds=timeout_seconds,
+            return_code=130,
+        )
+        return 130
+    except Exception as exc:
+        _emit_cli_status(
+            "failed",
+            "benchmark_worker_launch_failed",
+            error_type=type(exc).__name__,
+            return_code=126,
+        )
+        return 126
+
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    try:
+        result = json.loads(stdout)
+    except (TypeError, json.JSONDecodeError):
+        result = None
+
+    record_path_valid = (
+        isinstance(result, dict)
+        and isinstance(result.get("record_path"), str)
+        and bool(result["record_path"].strip())
+    )
+    if completed.returncode == 0:
+        if not record_path_valid:
+            _emit_cli_status(
+                "incomplete",
+                "benchmark_worker_missing_or_invalid_record",
+                return_code=1,
+                stdout=_stream_metadata(stdout),
+                stderr=_stream_metadata(stderr),
+            )
+            if stderr:
+                sys.stderr.write(stderr)
+            return 1
+        if result.get("success") is not True:
+            result["success"] = False
+            if result.get("status") not in {"incomplete", "cancelled", "failed"}:
+                result["status"] = "failed"
+            result.setdefault("error", "benchmark_worker_reported_failure")
+            result["worker_return_code"] = 0
+            sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
+            if stderr:
+                sys.stderr.write(stderr)
+            return 1
+        if stderr:
+            sys.stderr.write(stderr)
+        sys.stdout.write(stdout)
+        return 0
+
+    cancelled = _is_cancel_return_code(completed.returncode)
+    if record_path_valid:
+        if cancelled:
+            result["success"] = False
+            result["status"] = "cancelled"
+            result.setdefault("error", "benchmark_cancelled")
+        elif result.get("success") is not True:
+            result["success"] = False
+            if result.get("status") not in {"incomplete", "cancelled", "failed"}:
+                result["status"] = "failed"
+            result.setdefault("error", "benchmark_worker_reported_failure")
+        else:
+            comparison = result.get("comparison")
+            comparison_status = comparison.get("status") if isinstance(comparison, dict) else None
+            if comparison_status in {"regression", "incomparable", "inconclusive"}:
+                result["status"] = f"completed_{comparison_status}"
+            else:
+                result["success"] = False
+                result["status"] = "failed"
+                result.setdefault("error", "benchmark_worker_nonzero_exit")
+        result["worker_return_code"] = completed.returncode
+        sys.stdout.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
+    else:
+        _emit_cli_status(
+            "cancelled" if cancelled else "failed",
+            "benchmark_cancelled" if cancelled else "benchmark_worker_failed",
+            return_code=completed.returncode,
+            stdout=_stream_metadata(stdout),
+            stderr=_stream_metadata(stderr),
+        )
+    if stderr:
+        sys.stderr.write(stderr)
+    if cancelled:
+        return 130
+    return completed.returncode if 0 < completed.returncode < 256 else 1
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _BenchmarkArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, required=True, help="configured state directory; must be outside the repository")
     parser.add_argument("--scratch-dir", type=Path, help="optional external scratch directory; otherwise a temporary directory is used")
     parser.add_argument("--files", type=int)
     parser.add_argument("--rag-chunks", type=int)
+    parser.add_argument("--input-seed", type=int, default=0, help="deterministic synthetic input seed")
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--light-repetitions", type=int, help="transport/queue samples; plan-grade target is 1000")
     parser.add_argument("--comparison-repetitions", type=int, help="heavier independent samples per record; plan-grade target is 30")
@@ -4878,7 +5160,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--full", action="store_true", help="allow documented large synthetic size matrix")
     parser.add_argument("--full-matrix", action="store_true", help="run all six documented repository/RAG size pairs with plan-grade defaults")
     parser.add_argument("--inference", action="store_true", help="explicitly run model inference and code/vision quality goldens")
-    parser.add_argument("--config", type=Path, help="Hub config required by --inference")
+    parser.add_argument("--t12-matrix", action="store_true", help="explicitly run T12 profile, quality, and scenario measurements")
+    parser.add_argument("--config", type=Path, help="Hub config required by --inference or --t12-matrix")
     parser.add_argument("--speech-fixture", type=Path, help="known local audio fixture for the speech golden; requires --inference")
     parser.add_argument("--speech-expected-text", help="expected transcript for --speech-fixture; not saved in the benchmark record")
     parser.add_argument("--compare-with", type=Path, help="compare against a previous benchmark JSON record")
@@ -4906,9 +5189,9 @@ def main(argv: list[str] | None = None) -> int:
             baseline_record = json.loads(args.compare_with.read_text(encoding="utf-8"))
             if not isinstance(baseline_record, dict):
                 raise ValueError("baseline record must contain a JSON object")
-        if args.inference:
+        if args.inference or args.t12_matrix:
             if args.config is None:
-                raise ValueError("--inference requires --config")
+                raise ValueError("--inference and --t12-matrix require --config")
             from local_ai_hub.app import LocalAIApp
 
             app = LocalAIApp(str(args.config))
@@ -4922,11 +5205,13 @@ def main(argv: list[str] | None = None) -> int:
             result = run_benchmark_matrix(
                 state_dir=args.state_dir,
                 scratch_dir=args.scratch_dir,
+                input_seed=args.input_seed,
                 light_repetitions=args.light_repetitions,
                 comparison_repetitions=args.comparison_repetitions,
                 concurrency=tuple(args.concurrency) if args.concurrency else None,
                 inference_runner=inference_runner,
                 include_inference=args.inference,
+                include_t12_matrix=args.t12_matrix,
                 include_quality_goldens=args.inference,
                 speech_fixture=args.speech_fixture,
                 speech_expected_text=args.speech_expected_text,
@@ -4935,12 +5220,14 @@ def main(argv: list[str] | None = None) -> int:
         else:
             result = run_benchmark(
                 state_dir=args.state_dir, scratch_dir=args.scratch_dir,
+                input_seed=args.input_seed,
                 file_count=100 if args.files is None else args.files,
                 rag_chunks=1_000 if args.rag_chunks is None else args.rag_chunks,
                 repetitions=args.repetitions,
                 light_repetitions=args.light_repetitions, comparison_repetitions=args.comparison_repetitions,
                 concurrency=tuple(args.concurrency) if args.concurrency else (1, 4), full=args.full,
                 inference_runner=inference_runner, include_inference=args.inference,
+                include_t12_matrix=args.t12_matrix,
                 include_quality_goldens=args.inference,
                 speech_fixture=args.speech_fixture,
                 speech_expected_text=args.speech_expected_text,

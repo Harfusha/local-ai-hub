@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from contextlib import closing
+import json
 import os
+import subprocess
 import sqlite3
+import sys
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -72,6 +77,223 @@ def test_workspace_memo_expected_version_rejects_stale_overwrite(tmp_path):
     assert current["value"] == "second"
     assert current["tenant"] == "identity-b"
     assert current["version"] == 2
+
+
+def test_workspace_memo_expected_version_serializes_across_processes(tmp_path):
+    state_dir = tmp_path / "state"
+    root = tmp_path / "repo"
+    root.mkdir()
+    store = WorkspaceMemoryStore(state_dir)
+    assert store.put(str(root), "decision", "initial", "identity-base", expected_version=0)["version"] == 1
+
+    barrier = tmp_path / "release-writers"
+    ready_paths = [tmp_path / f"writer-{index}-ready" for index in range(2)]
+    write_script = (
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        "source_dir, state_dir, root, barrier_path, ready_path, tenant, value = sys.argv[1:]\n"
+        "sys.path.insert(0, source_dir)\n"
+        "ready = Path(ready_path)\n"
+        "ready.touch()\n"
+        "deadline = time.monotonic() + 20\n"
+        "while not Path(barrier_path).exists():\n"
+        "    if time.monotonic() >= deadline:\n"
+        "        raise TimeoutError('parent did not release memo writers')\n"
+        "    time.sleep(0.01)\n"
+        "import local_ai_hub.memory as loaded_module\n"
+        "assert Path(loaded_module.__file__).resolve().is_relative_to(Path(source_dir).resolve())\n"
+        "result = loaded_module.WorkspaceMemoryStore(Path(state_dir)).put(root, 'decision', value, tenant, expected_version=1)\n"
+        "print(json.dumps(result, sort_keys=True))\n"
+    )
+    source_dir = os.environ.get("T05_ROOT_SOURCE_DIR", str(Path(__file__).resolve().parents[1] / "src"))
+    worker_values = [("identity-a", "writer-a"), ("identity-b", "writer-b")]
+    workers = []
+    outputs = []
+    try:
+        for index, (tenant, value) in enumerate(worker_values):
+            workers.append(subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    write_script,
+                    source_dir,
+                    str(state_dir),
+                    str(root),
+                    str(barrier),
+                    str(ready_paths[index]),
+                    tenant,
+                    value,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ))
+
+        deadline = time.monotonic() + 15
+        while not all(path.exists() for path in ready_paths):
+            if any(worker.poll() is not None for worker in workers) or time.monotonic() >= deadline:
+                barrier.touch()
+                details = [worker.communicate(timeout=5) for worker in workers]
+                raise AssertionError(f"memo writers failed to rendezvous: {details!r}")
+            time.sleep(0.01)
+        barrier.touch()
+        outputs = [worker.communicate(timeout=20) for worker in workers]
+        assert [worker.returncode for worker in workers] == [0, 0], outputs
+    finally:
+        barrier.touch()
+        for worker in workers:
+            if worker.poll() is None:
+                worker.kill()
+                worker.communicate(timeout=5)
+
+    results = [json.loads(stdout) for stdout, _stderr in outputs]
+    assert sum(result["success"] is True for result in results) == 1
+    assert sum(result.get("version_conflict") is True for result in results) == 1
+    conflict = next(result for result in results if result.get("version_conflict") is True)
+    winner = next(result for result in results if result["success"] is True)
+    assert conflict["current_version"] == 2
+    assert winner["version"] == 2
+    current = store.get(str(root), "decision")
+    assert current["version"] == 2
+    assert current["value"] in {"writer-a", "writer-b"}
+
+
+def test_worktree_memory_idempotency_isolated_by_scope_id(tmp_path):
+    store = MemoryStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
+    worktree_a = tmp_path / "worktree-a"
+    worktree_b = tmp_path / "worktree-b"
+    worktree_a.mkdir()
+    worktree_b.mkdir()
+
+    first = MemoryRecord.create(
+        kind=MemoryKind.DECISION,
+        scope=AgentScope.WORKTREE,
+        scope_id="worktree-a",
+        key="decision",
+        value="worktree A decision",
+        status=MemoryStatus.CONFIRMED,
+        source="user",
+        provenance={"root": str(worktree_a), "repository_id": "repo-shared", "worktree_id": "worktree-a"},
+    )
+    second = MemoryRecord.create(
+        kind=MemoryKind.DECISION,
+        scope=AgentScope.WORKTREE,
+        scope_id="worktree-b",
+        key="decision",
+        value="worktree B decision",
+        status=MemoryStatus.CONFIRMED,
+        source="user",
+        provenance={"root": str(worktree_b), "repository_id": "repo-shared", "worktree_id": "worktree-b"},
+    )
+
+    recorded_a = store.record(first, actor="user", idempotency_key="same-request")
+    recorded_b = store.record(second, actor="user", idempotency_key="same-request")
+
+    assert recorded_a.record_id == first.record_id
+    assert recorded_b.record_id == second.record_id
+    assert recorded_b.scope_id == "worktree-b"
+    assert recorded_b.value == "worktree B decision"
+
+
+def test_worktree_memory_idempotency_stream_key_is_unambiguous(tmp_path):
+    store = MemoryStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
+    first = MemoryRecord.create(
+        kind=MemoryKind.DECISION,
+        scope=AgentScope.WORKTREE,
+        scope_id="a:b",
+        key="c",
+        value="scope delimiter pair",
+        status=MemoryStatus.CONFIRMED,
+        source="user",
+    )
+    second = MemoryRecord.create(
+        kind=MemoryKind.DECISION,
+        scope=AgentScope.WORKTREE,
+        scope_id="a",
+        key="b:c",
+        value="key delimiter pair",
+        status=MemoryStatus.CONFIRMED,
+        source="user",
+    )
+
+    recorded_first = store.record(first, actor="user", idempotency_key="same-request")
+    recorded_second = store.record(second, actor="user", idempotency_key="same-request")
+
+    assert recorded_first.record_id == first.record_id
+    assert recorded_second.record_id == second.record_id
+    assert recorded_second.record_id != recorded_first.record_id
+    assert store.get(first.record_id, scope=AgentScope.WORKTREE, scope_id="a:b").value == "scope delimiter pair"
+    assert store.get(second.record_id, scope=AgentScope.WORKTREE, scope_id="a").value == "key delimiter pair"
+
+
+def test_memory_delete_requires_matching_scope_identity(tmp_path):
+    store = MemoryStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    record = MemoryRecord.create(
+        kind=MemoryKind.DECISION,
+        scope=AgentScope.WORKTREE,
+        scope_id="worktree-delete",
+        key="decision",
+        value="remove exact record",
+        status=MemoryStatus.CONFIRMED,
+        source="user",
+        provenance={"root": str(worktree), "repository_id": "repo-shared", "worktree_id": "worktree-delete"},
+    )
+    store.record(record, actor="user")
+    related = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope=AgentScope.WORKTREE,
+            scope_id="worktree-delete",
+            key="related",
+            value="retain relation on denied deletion",
+            source="user",
+        ),
+        actor="user",
+    )
+    store.record_relation(record.record_id, "relates_to", related.record_id)
+    relations_before_denied_delete = store.find_relations(source_entity=record.record_id)
+    assert any(relation["relation"] == "relates_to" for relation in relations_before_denied_delete)
+
+    assert store.delete(record.record_id) is False
+    assert store.delete(
+        record.record_id,
+        scope=AgentScope.WORKTREE,
+        scope_id="another-worktree",
+    ) is False
+    assert store.get(
+        record.record_id,
+        scope=AgentScope.WORKTREE,
+        scope_id="worktree-delete",
+    ).value == "remove exact record"
+    assert store.find_relations(source_entity=record.record_id) == relations_before_denied_delete
+
+    assert store.delete(
+        record.record_id,
+        scope=AgentScope.WORKTREE,
+        scope_id="worktree-delete",
+    ) is True
+    assert store.get(
+        record.record_id,
+        scope=AgentScope.WORKTREE,
+        scope_id="worktree-delete",
+    ) is None
+    assert store.find_relations(source_entity=record.record_id) == []
+
+    legacy = store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope=AgentScope.SESSION,
+            key="legacy-unscoped",
+            value="must remain without verified scope id",
+            source="user",
+        ),
+        actor="user",
+    )
+    assert store.delete(legacy.record_id, scope=AgentScope.SESSION) is False
+    assert store.get(legacy.record_id) is not None
 
 
 def test_workspace_memo_version_does_not_reset_after_delete_and_recreate(tmp_path):

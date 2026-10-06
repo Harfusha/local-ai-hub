@@ -351,12 +351,24 @@ class TaskStore:
         self.state_store = state_store
         self.default_heartbeat_ttl = float(default_heartbeat_ttl)
         self.policy_engine = policy_engine
+        self.verification_store: Any | None = None
         self.memory_store: Any | None = None
         self.memory_context_compiler: Any | None = None
         self.incident_store: Any | None = None
         self._lock = threading.RLock()
         self._initialized = False
         self._init_projection_table()
+
+
+
+
+
+
+    def set_policy_engine(self, policy_engine: Any) -> None:
+        self.policy_engine = policy_engine
+
+    def set_verification_store(self, verification_store: Any) -> None:
+        self.verification_store = verification_store
 
     def set_memory_adoption(
         self,
@@ -403,6 +415,19 @@ class TaskStore:
             trace_tenant = str(current_trace_context().get("tenant", "") or "").strip()
             tenant = trace_tenant
             root = str(root_override or context.repository_id or "").strip()
+            coordination_id = ""
+            if root:
+                try:
+                    from .project_config import resolve_project_context
+
+                    project = resolve_project_context(
+                        root, Path(self.state_store.db_path).parent
+                    )
+                    coordination_id = str(project.coordination_id or "").strip()
+                except Exception:
+                    # Failed or unavailable identity resolution keeps task
+                    # adoption scoped to this physical worktree.
+                    coordination_id = ""
             tenant_key = hashlib.sha256(
                 f"agent-task-memory-tenant\\0{tenant}".encode("utf-8")
             ).hexdigest() if tenant else ""
@@ -428,6 +453,7 @@ class TaskStore:
                 worktree_id=context.worktree_id,
                 branch=context.branch,
                 repository_id=context.repository_id,
+                coordination_id=coordination_id,
             )
             started = time.monotonic()
             compiled = compiler.compile(request)
@@ -767,11 +793,8 @@ class TaskStore:
                     f"Cannot transition to COMPLETED: volatile memory '{record_id}' lacks current-source check"
                 )
 
-    def set_verification_store(self, verification_store: Any) -> None:
-        self.verification_store = verification_store
 
-    def set_policy_engine(self, policy_engine: Any) -> None:
-        self.policy_engine = policy_engine
+
 
     def _db_path_available(self) -> bool:
         """Return whether the projection database path is usable.
@@ -790,25 +813,6 @@ class TaskStore:
         except (RecursionError, OSError, ValueError, TypeError):
             return False
 
-    def _run_ordered_task_write(
-        self,
-        write: Any,
-        *,
-        timeout_seconds: float | None = None,
-    ) -> Any:
-        connection_options: dict[str, Any] = {"isolation_level": None}
-        if timeout_seconds is not None:
-            connection_options["timeout_seconds"] = timeout_seconds
-        con = connect_sqlite(self.state_store.db_path, **connection_options)
-        try:
-            with self.state_store.ordered_event_publication(con) as publish_committed:
-                result, events = retry_busy(
-                    lambda: write(con), retries=5, base_delay_seconds=0.02
-                )
-                publish_committed(events)
-                return result
-        finally:
-            con.close()
 
     def _init_projection_table(self) -> None:
         if self._initialized or not self._db_path_available():
@@ -819,6 +823,23 @@ class TaskStore:
             self.state_store._ensure_schema()
             def _setup() -> None:
                 with closing(connect_sqlite(self.state_store.db_path)) as con:
+                    from .sqlite_support import validate_durable_schema
+
+                    validate_durable_schema(
+                        con,
+                        self.state_store.db_path,
+                        {
+                            "agent_tasks_projection": [
+                                ("task_id", "TEXT", 0, 1), ("status", "TEXT", 1, 0),
+                                ("owner", "TEXT", 1, 0), ("lease_id", "TEXT", 1, 0),
+                                ("contract", "TEXT", 1, 0), ("context", "TEXT", 1, 0),
+                                ("checkpoint", "TEXT", 1, 0), ("receipts", "TEXT", 1, 0),
+                                ("heartbeat_expires_at", "REAL", 1, 0),
+                                ("created_at", "REAL", 1, 0), ("updated_at", "REAL", 1, 0),
+                            ],
+                        },
+                        required_if_event_kinds={"agent_tasks_projection": ("task.%",)},
+                    )
                     con.execute(
                         """
                         CREATE TABLE IF NOT EXISTS agent_tasks_projection (
@@ -1191,6 +1212,26 @@ class TaskStore:
                 return int(row[0]) if row else 0
 
         return retry_busy(_fetch_count, retries=5, base_delay_seconds=0.02)
+
+    def _run_ordered_task_write(
+        self,
+        write: Any,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Any:
+        connection_options: dict[str, Any] = {"isolation_level": None}
+        if timeout_seconds is not None:
+            connection_options["timeout_seconds"] = timeout_seconds
+        con = connect_sqlite(self.state_store.db_path, **connection_options)
+        try:
+            with self.state_store.ordered_event_publication(con) as publish_committed:
+                result, events = retry_busy(
+                    lambda: write(con), retries=5, base_delay_seconds=0.02
+                )
+                publish_committed(events)
+                return result
+        finally:
+            con.close()
 
     def add_verification_receipt(self, task_id: str, criterion: str, receipt_id: str) -> TaskState:
         if not self._db_path_available():
@@ -1917,7 +1958,7 @@ class TaskStore:
             raise KeyError(f"Task {task_id} not found")
         resume_key = idempotency_key or f"resume_{task_id}_{int(time.time())}"
         if current.status == TaskStatus.ACTIVE and idempotency_key:
-            return self.transition(
+            return self._replay_same_status_transition(
                 task_id,
                 TaskStatus.ACTIVE,
                 reason="resumed from checkpoint",
@@ -2088,7 +2129,11 @@ class TaskStore:
                 delete_branch=delete_branch,
                 branch_name=branch,
                 worktree_id=worktree_id,
-                expected_metadata=wt,
+                expected_task_id=task_id,
+                expected_owner=str(wt.get("owner", "")),
+                expected_created_at=created_at,
+                expected_ttl_seconds=ttl_seconds,
+                expected_expires_at=expires_at,
             )
             if not rm_res.get("success"):
                 return {"success": False, "had_worktree": True, "cleanup": rm_res, "error": rm_res.get("error", "cleanup failed")}

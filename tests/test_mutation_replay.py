@@ -11,6 +11,7 @@ from urllib.error import URLError
 import pytest
 import sqlite3
 from contextlib import closing
+from contextlib import nullcontext
 
 from local_ai_hub import http_server
 from local_ai_hub.agent_events import AgentStateStore, SwarmPubSub
@@ -321,8 +322,10 @@ def test_wait_for_requires_identity_and_payload_fingerprint(tmp_path) -> None:
         "req-wait-identity", "tenant", "/api/work-orders", timeout_seconds=0,
         identity="agent-a", payload_fingerprint="different",
     )
-    assert identity_mismatch == {"state": "conflict"}
-    assert payload_mismatch == {"state": "conflict"}
+    assert identity_mismatch["state"] == "conflict"
+    assert payload_mismatch["state"] == "conflict"
+    assert identity_mismatch["error"]
+    assert payload_mismatch["error"]
 
 
 def test_trusted_lookup_metadata_never_returns_stored_response(tmp_path) -> None:
@@ -337,6 +340,112 @@ def test_trusted_lookup_metadata_never_returns_stored_response(tmp_path) -> None
 
     assert metadata["state"] == "done"
     assert "response" not in metadata
+
+
+def test_debug_trace_reconciliation_uses_trusted_journal_metadata(tmp_path, monkeypatch) -> None:
+    journal = RecoveryJournal(tmp_path)
+    journal.begin(
+        "req-trace-reconcile",
+        "tenant",
+        "/api/work-orders",
+        identity="agent-a",
+        payload={"action": "submit"},
+    )
+    journal.finish("req-trace-reconcile", True, response={"success": True})
+    reconciled: list[tuple[str, dict[str, Any]]] = []
+    trace_store = SimpleNamespace(
+        reconcile_terminal=lambda trace_id, **kwargs: reconciled.append((trace_id, kwargs))
+    )
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(recovery=journal, debug_traces=trace_store),
+    )
+    trace = {
+        "trace_id": "trace-1",
+        "request_id": "req-trace-reconcile",
+        "tenant": "tenant",
+        "agent": "agent-a",
+        "action": "/api/work-orders",
+        "state": "running",
+    }
+
+    result = http_server.Handler._reconcile_debug_trace(None, trace)
+
+    assert result["state"] == "done"
+    assert reconciled == [("trace-1", {"state": "done", "response": None, "error": ""})]
+
+
+@pytest.mark.parametrize(
+    ("action", "field", "value"),
+    [
+        ("wait", "timeout_seconds", "1"),
+        ("wait", "timeout_seconds", -1),
+        ("wait", "timeout_seconds", 91),
+        ("wait", "timeout_seconds", True),
+        ("wait", "timeout_seconds", float("nan")),
+        ("get", "max_output_tokens", 1.5),
+        ("get", "max_output_tokens", -1),
+        ("get", "max_output_tokens", 4097),
+        ("submit", "max_output_tokens", True),
+    ],
+)
+def test_work_order_numeric_controls_are_validated_before_dispatch(action, field, value) -> None:
+    payload = {"action": action}
+    if action == "submit":
+        payload.update({"root": ".", "task": "bounded numeric validation"})
+    else:
+        payload["work_id"] = "work-1"
+    payload[field] = value
+
+    with pytest.raises(http_server.RequestBodyError):
+        http_server.Handler._validate_payload("/api/work-orders", payload)
+
+
+def test_invalid_work_order_body_is_rejected_before_mutation_dispatch(monkeypatch) -> None:
+    payload = {
+        "action": "submit", "root": ".", "task": "bounded numeric validation",
+        "max_output_tokens": True,
+    }
+    submitted: list[dict[str, Any]] = []
+    app = SimpleNamespace(
+        config={},
+        recovery=SimpleNamespace(
+            fingerprint_payload=lambda _payload: "fingerprint",
+            begin=lambda *_args, **_kwargs: {"claimed": True, "state": "running"},
+            finish=lambda *_args, **_kwargs: None,
+        ),
+        work_orchestrator=SimpleNamespace(
+            enabled=True,
+            submit=lambda _tenant, request: submitted.append(dict(request)) or {"success": True},
+        ),
+    )
+    responses: list[tuple[int, dict[str, Any]]] = []
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(
+        http_server.Handler,
+        "_begin_trace",
+        lambda self, _path: setattr(self, "_trace_request_id", "req-invalid"),
+    )
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
+    monkeypatch.setattr(
+        http_server.Handler,
+        "_send",
+        lambda self, status, data: responses.append((status, data)),
+    )
+    handler = object.__new__(http_server.Handler)
+    handler.path = "/api/work-orders"
+    handler.headers = {"Content-Type": "application/json"}
+
+    http_server.Handler.do_POST(handler)
+
+    assert submitted == []
+    assert responses[0][0] == 400
+    assert responses[0][1]["terminal"] is True
+    assert responses[0][1]["retryable"] is False
 
 
 @pytest.mark.parametrize(
@@ -742,6 +851,7 @@ def test_post_journal_failure_prevents_mutation_dispatch(monkeypatch) -> None:
     app = SimpleNamespace(
         config={},
         recovery=_UnavailableJournal(),
+        async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         work_orchestrator=SimpleNamespace(
             enabled=True,
             submit=lambda _tenant, payload: submitted.append(payload) or {"success": True},
@@ -767,6 +877,46 @@ def test_post_journal_failure_prevents_mutation_dispatch(monkeypatch) -> None:
     assert responses[0][1]["outcome_unknown"] is False
 
 
+def test_post_work_order_disabled_gate_prevents_dispatch(tmp_path, monkeypatch) -> None:
+    journal = RecoveryJournal(tmp_path)
+    payload = {"action": "submit", "work_id": "work-disabled"}
+    submitted: list[dict[str, Any]] = []
+    app = SimpleNamespace(
+        config={},
+        recovery=journal,
+        work_orchestrator=SimpleNamespace(
+            enabled=False,
+            submit=lambda _tenant, request: submitted.append(dict(request)) or {"success": True},
+        ),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-disabled"))
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
+    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
+    responses: list[tuple[int, dict[str, Any]]] = []
+
+    def respond(self, status: int, data: dict[str, Any]) -> None:
+        if not getattr(self, "_journal_finished", False):
+            journal.finish("req-disabled", status < 400, status_code=status, response=data)
+            self._journal_finished = True
+        responses.append((status, data))
+
+    monkeypatch.setattr(http_server.Handler, "_send", respond)
+    handler = object.__new__(http_server.Handler)
+    handler.path = "/api/work-orders"
+    handler.headers = {"Content-Type": "application/json"}
+
+    http_server.Handler.do_POST(handler)
+
+    assert submitted == []
+    assert responses[0][0] == 403
+    assert responses[0][1]["terminal"] is True
+    assert responses[0][1]["error"] == "work orchestrator is disabled"
+
+
 def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkeypatch) -> None:
     journal = RecoveryJournal(tmp_path)
     payload_box: dict[str, dict[str, Any]] = {"value": {"action": "submit", "work_id": "work-1"}}
@@ -775,6 +925,7 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
     app = SimpleNamespace(
         config={},
         recovery=journal,
+        async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         work_orchestrator=SimpleNamespace(
             enabled=True,
             submit=lambda _tenant, payload: submitted.append(dict(payload)) or {"success": True, "work_id": payload["work_id"]},
@@ -828,6 +979,50 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
     assert original["response"] == responses[0][1]
     assert changed == {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
 
+
+def test_http_retry_rejects_changed_identity_before_dispatch(tmp_path, monkeypatch) -> None:
+    journal = RecoveryJournal(tmp_path)
+    identity_box = {"value": "agent-a"}
+    payload = {"action": "submit", "work_id": "work-1"}
+    submitted: list[dict[str, Any]] = []
+    app = SimpleNamespace(
+        config={},
+        recovery=journal,
+        work_orchestrator=SimpleNamespace(
+            enabled=True,
+            submit=lambda _tenant, request: submitted.append(dict(request)) or {"success": True},
+        ),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-identity"))
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: identity_box["value"])
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: dict(payload))
+    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
+    responses: list[tuple[int, dict[str, Any]]] = []
+
+    def respond(self, status: int, data: dict[str, Any]) -> None:
+        if not getattr(self, "_journal_finished", False):
+            journal.finish("req-identity", status < 400, status_code=status, response=data)
+            self._journal_finished = True
+        responses.append((status, data))
+
+    monkeypatch.setattr(http_server.Handler, "_send", respond)
+
+    def request() -> None:
+        handler = object.__new__(http_server.Handler)
+        handler.path = "/api/work-orders"
+        handler.headers = {"Content-Type": "application/json"}
+        http_server.Handler.do_POST(handler)
+
+    request()
+    identity_box["value"] = "agent-b"
+    request()
+
+    assert submitted == [payload]
+    assert [status for status, _data in responses] == [200, 409]
+    assert "different identity" in responses[1][1]["error"]
 
 def test_http_retry_from_two_live_clients_dispatches_once(tmp_path, monkeypatch) -> None:
     from http.client import HTTPConnection
@@ -1030,6 +1225,7 @@ def test_post_rejects_malformed_request_id_before_mutation_dispatch(tmp_path, mo
     app = SimpleNamespace(
         config={"observability": {"exclude_http_paths": ["/api/work-orders"]}},
         recovery=journal,
+        async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         work_orchestrator=SimpleNamespace(
             enabled=True,
             submit=lambda _tenant, payload: submitted.append(payload) or {"success": True},
@@ -1130,6 +1326,7 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
     app = SimpleNamespace(
         config={},
         recovery=journal,
+        async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         rag=SimpleNamespace(
             index=lambda *_args, **_kwargs: failed_publish("rag-index"),
             docset_index=lambda *_args, **_kwargs: failed_publish("rag-docset-index"),

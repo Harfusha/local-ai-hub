@@ -7,6 +7,7 @@ import os
 import shlex
 from pathlib import Path
 import json
+import sqlite3
 import re
 import threading
 import time
@@ -89,9 +90,10 @@ class VerificationReceipt:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "passed", self.passed is True)
+        if isinstance(self.mutation_generation, bool) or not isinstance(self.mutation_generation, int) or self.mutation_generation < 0:
+            raise ValueError("verification receipt mutation_generation must be a non-negative integer")
         object.__setattr__(self, "owner", str(self.owner or "").strip())
         object.__setattr__(self, "repository_revision", str(self.repository_revision or "").strip())
-        object.__setattr__(self, "mutation_generation", int(self.mutation_generation))
         evidence_type = str(self.evidence_type or "").strip().lower()
         if evidence_type not in {"test", "benchmark", "source_review"}:
             raise ValueError("verification receipt has unsupported evidence_type")
@@ -198,6 +200,36 @@ class VerificationReceipt:
             passed=data.get("passed") is True,
             details=dict(data.get("details") or {}),
         )
+
+
+_RECEIPT_METADATA_KEY = "__agent_os_receipt_metadata_v1__"
+
+
+def _receipt_details_for_storage(receipt: VerificationReceipt) -> dict[str, Any]:
+    if not (receipt.owner or receipt.mutation_generation is not None or receipt.evidence_type):
+        return dict(receipt.details)
+    return {
+        _RECEIPT_METADATA_KEY: {
+            "details": dict(receipt.details),
+            "owner": receipt.owner,
+            "mutation_generation": receipt.mutation_generation,
+            "evidence_type": receipt.evidence_type,
+        }
+    }
+
+
+def _receipt_details_from_storage(raw: str) -> tuple[dict[str, Any], str, int | None, str]:
+    details = json.loads(raw) if raw else {}
+    metadata = details.get(_RECEIPT_METADATA_KEY) if isinstance(details, Mapping) else None
+    if not isinstance(metadata, Mapping):
+        return dict(details or {}), "", None, ""
+    generation = metadata.get("mutation_generation")
+    return (
+        dict(metadata.get("details") or {}),
+        str(metadata.get("owner", "") or ""),
+        generation,
+        str(metadata.get("evidence_type", "") or ""),
+    )
 
 
 @dataclass(frozen=True)
@@ -596,10 +628,6 @@ def _receipt_evidence_matches(
     evidence_store: Any | None = None,
 ) -> bool:
     """Re-read and bind positive receipts to complete, tenant-scoped proof artifacts."""
-    if evidence_store is not None and str(receipt.evidence_id).startswith("E"):
-        ev = evidence_store.get(receipt.evidence_id, verify=False)
-        if isinstance(ev, Mapping) and ev.get("success") is True:
-            return True
     if artifact_store is None or not expected_owner or receipt.owner != expected_owner:
         return False
     if require_repository_revision and not receipt.repository_revision.strip():
@@ -751,7 +779,7 @@ def _receipt_evidence_matches(
             ).hexdigest()
             if proof.get("project_execution_binding_sha256") != expected_binding:
                 return False
-        if require_execution_provenance and receipt.command_id and trusted_repository_root:
+        if require_execution_provenance and receipt.command_id:
             if (
                 not callable(command_execution_record_lookup)
                 or not trusted_tenant
@@ -871,6 +899,42 @@ class VerificationStore:
             def _setup() -> None:
                 con = connect_sqlite(self.state_store.db_path)
                 try:
+                    from .sqlite_support import validate_durable_schema
+
+                    validate_durable_schema(
+                        con,
+                        self.state_store.db_path,
+                        {
+                            "agent_verification_receipts": [
+                                ("receipt_id", "TEXT", 0, 1), ("task_id", "TEXT", 1, 0),
+                                ("criterion", "TEXT", 1, 0), ("change_intent_id", "TEXT", 1, 0),
+                                ("evidence_id", "TEXT", 1, 0), ("command_id", "TEXT", 1, 0),
+                                ("repository_revision", "TEXT", 1, 0), ("observed_at", "REAL", 1, 0),
+                                ("expires_at", "REAL", 0, 0), ("passed", "INTEGER", 1, 0),
+                                ("details", "TEXT", 1, 0),
+                            ],
+                            "agent_change_intents": [
+                                ("change_id", "TEXT", 0, 1), ("task_id", "TEXT", 1, 0),
+                                ("affected_paths", "TEXT", 1, 0), ("affected_symbols", "TEXT", 1, 0),
+                                ("expected_impact", "TEXT", 1, 0),
+                                ("rollback_description", "TEXT", 1, 0), ("created_at", "REAL", 1, 0),
+                            ],
+                            "agent_outcomes": [
+                                ("outcome_id", "TEXT", 0, 1), ("change_id", "TEXT", 1, 0),
+                                ("task_id", "TEXT", 1, 0), ("kind", "TEXT", 1, 0),
+                                ("actor", "TEXT", 1, 0), ("details", "TEXT", 1, 0),
+                                ("created_at", "REAL", 1, 0),
+                            ],
+                        },
+                        complete_groups=(
+                            ("agent_verification_receipts", "agent_change_intents", "agent_outcomes"),
+                        ),
+                        required_if_event_kinds={
+                            "agent_verification_receipts": ("verification.%",),
+                            "agent_change_intents": ("change.%",),
+                            "agent_outcomes": ("outcome.%",),
+                        },
+                    )
                     with con:
                         con.execute(
                             """
@@ -964,21 +1028,6 @@ class VerificationStore:
                 finally:
                     con.close()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
-            # Older Hub versions accepted empty task/criterion values and
-            # polluted task context with unusable verification entries.  They
-            # are not valid evidence and are safe to remove from disposable
-            # derived Agent OS state during schema initialization.
-            def _prune_invalid() -> None:
-                con = connect_sqlite(self.state_store.db_path, isolation_level=None)
-                try:
-                    con.execute(
-                        "DELETE FROM agent_verification_receipts "
-                        "WHERE trim(task_id) = '' OR trim(criterion) = ''"
-                    )
-                finally:
-                    con.close()
-
-            retry_busy(_prune_invalid, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
     def _same_task_database(self) -> bool:
@@ -1276,20 +1325,28 @@ class VerificationStore:
             idempotency_key=f"chg_{change.change_id}",
             actor="agent",
         )
-        def _do_save() -> None:
-            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        expected = (
+            change.task_id,
+            json_dumps(list(change.affected_paths)),
+            json_dumps(list(change.affected_symbols)),
+            change.expected_impact,
+            change.rollback_description,
+            change.created_at,
+        )
+        def _do_save(con: Any) -> list[AgentEvent]:
+            published: list[AgentEvent] = []
             try:
                 con.execute("BEGIN IMMEDIATE")
-                append_in_tx = getattr(self.state_store, "append_in_transaction", None)
-                if callable(append_in_tx):
-                    persisted = append_in_tx(con, event, strict_idempotency=True)
-                    if persisted.error or persisted.event is None:
-                        raise RuntimeError(persisted.error or "change event could not be stored")
-                else:
-                    self.state_store.append(event)
+                appended = self.state_store.append_in_transaction(
+                    con, event, strict_idempotency=True
+                )
+                if appended.error or appended.event is None:
+                    raise RuntimeError(appended.error or "change intent append returned no persisted event")
+                if not appended.duplicate and appended.event:
+                    published.append(appended.event)
                 con.execute(
                     """
-                    INSERT INTO agent_change_intents (
+                    INSERT OR IGNORE INTO agent_change_intents (
                         change_id, task_id, affected_paths, affected_symbols,
                         expected_impact, rollback_description, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1304,17 +1361,30 @@ class VerificationStore:
                         change.created_at,
                     ),
                 )
+                saved = con.execute(
+                    "SELECT task_id, affected_paths, affected_symbols, expected_impact, rollback_description, created_at "
+                    "FROM agent_change_intents WHERE change_id = ?",
+                    (change.change_id,),
+                ).fetchone()
+                if not saved or tuple(saved) != expected:
+                    raise ValueError("change_id already belongs to different change intent")
                 con.execute("COMMIT")
+                return published
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-            finally:
-                con.close()
-
-        retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+        con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        try:
+            with self.state_store.ordered_event_publication(con) as publish_committed:
+                published = retry_busy(
+                    lambda: _do_save(con), retries=5, base_delay_seconds=0.02
+                )
+                publish_committed(published)
+        finally:
+            con.close()
         if self.task_store is not None and change.task_id:
             try:
                 task = self.task_store.get(change.task_id)
@@ -1348,20 +1418,28 @@ class VerificationStore:
             idempotency_key=f"outc_{outcome.outcome_id}",
             actor=outcome.actor,
         )
-        def _do_save() -> None:
-            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        expected = (
+            outcome.change_id,
+            outcome.task_id,
+            outcome.kind,
+            outcome.actor,
+            json_dumps(outcome.details),
+            outcome.created_at,
+        )
+        def _do_save(con: Any) -> list[AgentEvent]:
+            published: list[AgentEvent] = []
             try:
                 con.execute("BEGIN IMMEDIATE")
-                append_in_tx = getattr(self.state_store, "append_in_transaction", None)
-                if callable(append_in_tx):
-                    persisted = append_in_tx(con, event, strict_idempotency=True)
-                    if persisted.error or persisted.event is None:
-                        raise RuntimeError(persisted.error or "outcome event could not be stored")
-                else:
-                    self.state_store.append(event)
+                appended = self.state_store.append_in_transaction(
+                    con, event, strict_idempotency=True
+                )
+                if appended.error or appended.event is None:
+                    raise RuntimeError(appended.error or "verification outcome append returned no persisted event")
+                if not appended.duplicate and appended.event:
+                    published.append(appended.event)
                 con.execute(
                     """
-                    INSERT INTO agent_outcomes (
+                    INSERT OR IGNORE INTO agent_outcomes (
                         outcome_id, change_id, task_id, kind, actor, details, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -1375,17 +1453,30 @@ class VerificationStore:
                         outcome.created_at,
                     ),
                 )
+                saved = con.execute(
+                    "SELECT change_id, task_id, kind, actor, details, created_at "
+                    "FROM agent_outcomes WHERE outcome_id = ?",
+                    (outcome.outcome_id,),
+                ).fetchone()
+                if not saved or tuple(saved) != expected:
+                    raise ValueError("outcome_id already belongs to different outcome")
                 con.execute("COMMIT")
+                return published
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-            finally:
-                con.close()
-
-        retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+        con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        try:
+            with self.state_store.ordered_event_publication(con) as publish_committed:
+                published = retry_busy(
+                    lambda: _do_save(con), retries=5, base_delay_seconds=0.02
+                )
+                publish_committed(published)
+        finally:
+            con.close()
         return outcome
 
     def completion(
@@ -1426,6 +1517,7 @@ class VerificationStore:
         current_time = float(time.time() if now is None else now)
         task_state = None
         required_criteria: list[str] = []
+        task_missing = False
         if self.task_store is not None:
             task_state = self.task_store.get(task_id)
             if task_state:

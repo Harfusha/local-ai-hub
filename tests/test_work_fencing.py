@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import multiprocessing
+import json
 import os
+import subprocess
+import sys
 import time
 from contextlib import closing
 from pathlib import Path
@@ -29,6 +32,7 @@ def _claim_overlapping_path(db_path: str, root: str, owner: str, start, results)
         results.put((owner, "busy", 0))
     else:
         results.put((owner, "acquired", lease.fencing_token))
+
 
 def _record_race_order(order, lock) -> int:
     with lock:
@@ -72,6 +76,7 @@ def _claim_successor_during_guard(
         attempting.set()
         results.put(("successor", "failed", type(exc).__name__, str(exc)))
 
+
 def test_cross_process_contenders_get_one_overlapping_writer(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
@@ -104,6 +109,7 @@ def test_cross_process_contenders_get_one_overlapping_writer(tmp_path: Path) -> 
     assert all(worker.exitcode == 0 for worker in workers)
     assert sorted(result[1] for result in outcomes) == ["acquired", "busy"]
     assert len({result[2] for result in outcomes if result[1] == "acquired"}) == 1
+
 
 def test_cross_process_successor_cannot_supersede_writer_inside_commit_guard(
     tmp_path: Path,
@@ -159,6 +165,7 @@ def test_cross_process_successor_cannot_supersede_writer_inside_commit_guard(
     assert successor_result[3] > writer_result[3]
     assert writer_result[4] < successor_result[4]
     assert (root / "artifact.txt").read_text(encoding="utf-8") == "successor\n"
+
 
 def test_disjoint_paths_can_coexist_but_overlapping_paths_cannot(tmp_path: Path) -> None:
     root = tmp_path / "repo"
@@ -274,6 +281,30 @@ def test_rooted_scope_resolves_symlink_alias_to_same_path(tmp_path: Path) -> Non
     assert normalize_paths(["alias/file.py"], root=root) == normalize_paths(
         ["real/file.py"], root=root
     )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction reparse points are platform-specific")
+def test_rooted_scope_resolves_junction_alias_to_same_path(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    real = root / "real"
+    real.mkdir(parents=True)
+    (real / "file.py").write_text("", encoding="utf-8")
+    alias = root / "junction"
+    created = subprocess.run(
+        ["cmd.exe", "/c", "mklink", "/J", str(alias), str(real)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {created.stderr or created.stdout}")
+    try:
+        assert alias.is_junction()
+        assert normalize_paths(["junction/file.py"], root=root) == normalize_paths(
+            ["real/file.py"], root=root
+        )
+    finally:
+        alias.rmdir()
 
 
 def test_expiry_reacquire_fences_stale_write_and_commit_without_side_effects(tmp_path: Path) -> None:

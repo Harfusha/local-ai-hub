@@ -12,7 +12,7 @@ from local_ai_hub.app import LocalAIApp
 from local_ai_hub import http_server
 
 
-def _post(url: str, payload: dict, *, origin: str = "chrome-extension://fixture", tenant: str = "tenant-a", token: str | None = None) -> dict:
+def _post(url: str, payload: dict, *, origin: str = "chrome-extension://fixture", tenant: str = "tenant-a", token: str | None = "test-api-token", request_id: str | None = None) -> dict:
     headers = {
         "Content-Type": "application/json",
         "Origin": origin,
@@ -20,6 +20,8 @@ def _post(url: str, payload: dict, *, origin: str = "chrome-extension://fixture"
     }
     if token:
         headers["X-LocalAI-Token"] = token
+    if request_id:
+        headers["X-LocalAI-Request-ID"] = request_id
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -43,8 +45,11 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
                 'bind = "127.0.0.1"',
                 'port = 11498',
                 f'state_dir = "{state_dir.as_posix()}"',
+                '[security]',
+                'api_token = "test-api-token"',
                 '[browser_bridge]',
                 'enabled = true',
+                'tenant = "tenant-a"',
                 'allowed_origins = ["chrome-extension://fixture"]',
                 'max_payload_bytes = 200000',
             ]
@@ -93,7 +98,11 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
             tenant="tenant-b",
         )
         assert cross_tenant["success"] is False
-        assert cross_tenant["error_code"] in {"capability_tenant_mismatch", "capability_replayed"}
+        assert cross_tenant["error_code"] in {
+            "capability_tenant_mismatch",
+            "capability_replayed",
+            "tenant_binding_mismatch",
+        }
 
         capability = _post(
             f"{base}/api/browser/capability",
@@ -187,14 +196,15 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
             review = _post(
                 f"{base}/api/vision/review",
                 {"bundle_artifact_id": captured["bundle_artifact_id"], "prompt": "Review checkout"},
+                request_id="t17-vision-review-route",
             )
         finally:
             app.services.vision = original_vision
-        review.pop("request_id", None)
         assert review == {
             "success": True,
             "bundle_artifact_id": captured["bundle_artifact_id"],
             "tenant": "tenant-a",
+            "request_id": "t17-vision-review-route",
         }
     finally:
         server.shutdown()
@@ -382,11 +392,15 @@ def test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin
                 f"{base}/api/vision/review",
                 {"bundle_artifact_id": "tenant-a:frontend-review-bundle", "prompt": "Review"},
                 origin="chrome-extension://token-only", token=token,
+                request_id="t17-token-vision-review-route",
             )
         finally:
             app.services.vision = original_vision
-        review.pop("request_id", None)
-        assert review == {"success": True, "tenant": "tenant-a"}
+        assert review == {
+            "success": True,
+            "tenant": "tenant-a",
+            "request_id": "t17-token-vision-review-route",
+        }
         denied = _post(
             f"{base}/api/vision/review",
             {"bundle_artifact_id": "tenant-a:frontend-review-bundle", "prompt": "Review"},

@@ -74,6 +74,7 @@ def test_repo_search_prioritizes_request_and_config_hints_without_narrowing(tmp_
     ]
     assert result["preprocessed_hit"] is True
     assert "secret/button.php" not in {item["path"] for item in result["results"]}
+
     configured = services.repo_search(
         str(tmp_path), "button", top_k=2, scope="task"
     )
@@ -143,7 +144,17 @@ def test_repo_search_hints_cannot_restore_excluded_or_outside_results(tmp_path: 
         },
     )
 
-    result = services.repo_search(str(tmp_path), "needle", top_k=5)
+    result = services.repo_search(
+        str(tmp_path),
+        "needle",
+        top_k=5,
+        path_hints=[
+            PathHint("secret/blocked.php", "repository_search", "task"),
+            PathHint("src/quarantined.php", "repository_search", "task"),
+            PathHint("../outside.php", "repository_search", "task"),
+        ],
+        scope="task",
+    )
 
     assert [item["path"] for item in result["results"]] == ["src/allowed.php"]
 

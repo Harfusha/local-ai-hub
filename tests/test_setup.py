@@ -5,6 +5,7 @@ import json
 import sys
 import subprocess
 import os
+import tomllib
 import pytest
 from pathlib import Path
 
@@ -22,6 +23,62 @@ def test_run_resolves_windows_batch_executables(tmp_path, monkeypatch):
     monkeypatch.setenv('PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
     result = setup.run(['hub-test-command'], capture=True)
     assert result.stdout.strip() == 'batch-ok'
+
+
+def test_setup_skip_service_does_not_restart_hub(tmp_path, monkeypatch):
+    config_source = tmp_path / "config.toml"
+    config_source.write_text("[hardware]\nprofile = \"auto\"\n", encoding="utf-8")
+    install_dir = tmp_path / "install"
+    config = {
+        "setup": {
+            "install_agent_configs": False,
+            "install_optional_tools": False,
+            "install_service": True,
+        },
+        "hardware": {"profile": "cpu"},
+        "_hardware": {"gpus": [], "npus": [], "profile": "cpu", "os": "Windows", "arch": "AMD64"},
+        "features": {
+            "rag": False,
+            "reranker": False,
+            "install_local_nlp_dependencies": False,
+            "install_openvino_dependencies": False,
+            "pull_models_during_setup": False,
+        },
+        "models": {"embedding_backend": "none", "reranker_backend": "none"},
+        "code_intelligence": {"serena_enabled": False},
+        "headless": {"enabled": True},
+        "ollama": {"enabled": False},
+        "llama_cpp": {"mode": "off"},
+        "tools": {},
+    }
+    commands = []
+
+    monkeypatch.setattr(setup, "select_config_source", lambda _path: (config_source, config, install_dir))
+
+    def copy_install_tree(destination, _source):
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "config.toml").write_text("[hardware]\nprofile = \"auto\"\n", encoding="utf-8")
+
+    monkeypatch.setattr(setup, "copy_install_tree", copy_install_tree)
+    monkeypatch.setattr(setup, "load_hub_config", lambda _path: config)
+    monkeypatch.setattr(setup, "ensure_venv", lambda _path: tmp_path / "python.exe")
+    monkeypatch.setattr(setup, "install_requirements", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "ensure_ollama_for_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "ensure_llama_cpp_for_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "run", lambda command, **_kwargs: commands.append([str(part) for part in command]))
+    monkeypatch.setattr(sys, "argv", [
+        "setup.py", "--config", str(config_source), "--profile", "cpu", "--skip-service",
+        "--skip-tools", "--skip-agent-config", "--skip-token-economy", "--skip-model-pull",
+        "--skip-local-nlp-preload", "--skip-ollama-install", "--skip-companion-skills",
+    ])
+
+    assert setup.main() == 0
+    assert not any(
+        command[-1:] == ["restart"] and any(part.endswith("tools/hubctl.py") or part.endswith("tools\\hubctl.py") for part in command)
+        for command in commands
+    )
 
 
 def test_token_economy_launchers_and_trim_run_allowlist(tmp_path, monkeypatch):
@@ -106,6 +163,24 @@ def test_global_policy_has_explicit_read_only_and_fallback_contract() -> None:
         assert phrase in policy
 
 
+@pytest.mark.parametrize("relative_path", ["AGENTS.md", "docs/INSTALL_PROMPT.md", "docs/UPDATE_PROMPT.md"])
+def test_instruction_policy_blocks_match_generated_policy_sources(relative_path: str) -> None:
+    text = (ROOT / relative_path).read_text(encoding="utf-8")
+    expected_agent = setup.generate_global_policy({})
+    expected_token = setup.generate_token_economy_policy({})
+
+    def block(begin: str, end: str) -> str:
+        start = text.find(begin)
+        assert start >= 0, f"{relative_path} missing {begin}"
+        assert text.find(begin, start + len(begin)) < 0, f"{relative_path} repeats {begin}"
+        finish = text.find(end, start + len(begin))
+        assert finish >= 0, f"{relative_path} missing {end}"
+        return text[start:finish + len(end)]
+
+    assert block(setup.GLOBAL_POLICY_BEGIN, setup.GLOBAL_POLICY_END) == expected_agent
+    assert block(setup.TOKEN_ECONOMY_POLICY_BEGIN, setup.TOKEN_ECONOMY_POLICY_END) == expected_token
+
+
 def test_direct_serena_is_explicit_opt_in(tmp_path: Path):
     cfg = {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True}}
     entries = setup.build_mcp_entries(tmp_path, tmp_path / "python", tmp_path / "serena", "codex", cfg)
@@ -155,17 +230,69 @@ def test_config_mergers_preserve_user_content(tmp_path: Path):
     json_path = tmp_path / "settings.json"
     json_path.write_text(json.dumps({"other": 1, "mcpServers": {"user": {"command": "keep"}}}), encoding="utf-8")
     setup.json_mcp_merge(json_path, {"local-ai": {"command": "python", "args": ["hub.py"]}}, False)
+    json_first = json_path.read_text(encoding="utf-8")
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data["other"] == 1
     assert data["mcpServers"]["user"]["command"] == "keep"
     assert data["mcpServers"]["local-ai"]["command"] == "python"
+    setup.json_mcp_merge(json_path, {"local-ai": {"command": "python", "args": ["hub.py"]}}, False)
+    assert json_path.read_text(encoding="utf-8") == json_first
 
     toml_path = tmp_path / "config.toml"
-    toml_path.write_text('[model]\nprovider="x"\n\n[mcp_servers.local-ai]\ncommand="user-managed"\n', encoding="utf-8")
+    toml_path.write_text(
+        '[model]\nprovider="x"\n\n[mcp_servers.foreign]\ncommand="keep"\n\n'
+        '[mcp_servers.local-ai]\ncommand="user-managed"\n',
+        encoding="utf-8",
+    )
     setup.codex_mcp_merge(toml_path, {"local-ai": {"command": "should-not-overwrite", "args": []}}, False)
-    text = toml_path.read_text(encoding="utf-8")
-    assert 'command="user-managed"' in text
-    assert "should-not-overwrite" not in text
+    toml_first = toml_path.read_text(encoding="utf-8")
+    data = tomllib.loads(toml_first)
+    assert data["model"]["provider"] == "x"
+    assert data["mcp_servers"]["foreign"]["command"] == "keep"
+    assert data["mcp_servers"]["local-ai"]["command"] == "user-managed"
+    assert "should-not-overwrite" not in toml_first
+    setup.codex_mcp_merge(toml_path, {"local-ai": {"command": "should-not-overwrite", "args": []}}, False)
+    assert toml_path.read_text(encoding="utf-8") == toml_first
+
+
+@pytest.mark.parametrize(
+    ("host", "manifest_format", "entry_agent"),
+    [
+        ("codex", "toml", "codex"),
+        ("claude", "json", "claude"),
+        ("gemini", "json", "gemini"),
+        ("antigravity", "antigravity", "gemini"),
+        ("cursor", "json", "cursor"),
+        ("windsurf", "json", "windsurf"),
+        ("copilot", "vscode", "copilot"),
+        ("generic", "json", "generic"),
+        ("vscode", "vscode", "generic"),
+    ],
+)
+def test_supported_host_mcp_manifests_parse(tmp_path: Path, host: str, manifest_format: str, entry_agent: str):
+    path = tmp_path / f"{host}.{'toml' if manifest_format == 'toml' else 'json'}"
+    install_dir = tmp_path / "install"
+    hub_python = tmp_path / "python"
+    cfg = {"code_intelligence": {"direct_agent_mcp": False}}
+    entries = setup.build_mcp_entries(install_dir, hub_python, None, entry_agent, cfg)
+
+    if manifest_format == "toml":
+        setup.codex_mcp_merge(path, entries, False)
+        manifest = tomllib.loads(path.read_text(encoding="utf-8"))["mcp_servers"]
+    elif manifest_format == "antigravity":
+        setup.sync_antigravity_mcp_config(path, install_dir, hub_python, None, cfg, False)
+        manifest = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+    elif manifest_format == "vscode":
+        setup.vscode_mcp_merge(path, entries, False)
+        manifest = json.loads(path.read_text(encoding="utf-8"))["servers"]
+    else:
+        setup.json_mcp_merge(path, entries, False)
+        manifest = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+
+    assert manifest["local-ai"]["env"]["LOCAL_AI_AGENT"] == entry_agent
+    if manifest_format == "vscode":
+        assert manifest["local-ai"]["type"] == "stdio"
+    assert manifest["local-ai"]["command"] == str(hub_python)
 
 
 def test_ollama_setup_skips_exclusive_llama_cpp_configuration(monkeypatch, tmp_path: Path, capsys):
@@ -315,6 +442,52 @@ def test_setup_clean_checkout_bootstraps_from_example_config(tmp_path: Path, mon
     assert selected == example.resolve()
     assert selected_install == install.resolve()
     assert cfg["hardware"]["profile"] == "cpu"
+
+
+def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    install = tmp_path / "installed"
+    source.mkdir()
+    install.mkdir()
+    config_text = (
+        f'[setup]\ninstall_dir="{install.as_posix()}"\n'
+        "install_agent_configs=false\ninstall_optional_tools=false\n"
+        "[server]\nauto_start_ollama=false\n"
+        "[features]\ninstall_local_nlp_dependencies=false\n"
+        "install_openvino_dependencies=false\npull_models_during_setup=false\n"
+    )
+    source_config = source / "config.toml"
+    source_config.write_text(config_text, encoding="utf-8")
+    (install / "config.toml").write_text(config_text, encoding="utf-8")
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source)
+    monkeypatch.setattr(setup, "copy_install_tree", lambda *_args: None)
+    monkeypatch.setattr(setup, "ensure_venv", lambda _venv: tmp_path / "python.exe")
+    monkeypatch.setattr(setup, "install_requirements", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(setup, "ensure_ollama_for_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "ensure_llama_cpp_for_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    commands = []
+    monkeypatch.setattr(setup, "run", lambda command, **_kwargs: commands.append(command))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "setup.py", "--profile", "cpu", "--skip-service", "--skip-model-pull",
+            "--skip-tools", "--skip-agent-config", "--skip-ollama-install",
+            "--skip-local-nlp-preload", "--skip-token-economy", "--skip-companion-skills",
+        ],
+    )
+
+    assert setup.main() == 0
+    assert sum(
+        len(command) >= 2 and Path(command[-2]).name == "hubctl.py" and command[-1] == "restart"
+        for command in commands
+    ) == 1
+    assert not any(
+        len(command) >= 2 and Path(command[-2]).name == "service.py" and command[-1] == "install"
+        for command in commands
+    )
 
 
 def test_copy_install_tree_copies_only_current_package_roots(tmp_path: Path, monkeypatch):

@@ -1,5 +1,7 @@
 # Local AI Hub Release Acceptance Matrix
 
+Historical snapshot: statuses, hashes, and receipts below belong to their recorded revisions. Merge reconciliation does not refresh acceptance or verify the installed runtime.
+
 **Goal:** Complete the existing T01–T21 master plan, integrate only owned and verified changes, and ship a functional release without claiming unverified acceptance.
 
 **Architecture:** Existing task chats and assigned worktrees remain the source of ownership. The root checkout is the integration target; immutable owner packets must identify base, paths, hashes, tests, and actual results. Missing worktrees are blockers, not permission to use another task's checkout.

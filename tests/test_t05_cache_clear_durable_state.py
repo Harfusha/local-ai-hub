@@ -39,8 +39,10 @@ def test_cache_namespace_clear_preserves_durable_agent_os_state(tmp_path):
         key="durable-marker",
         value="preserve through cache clear",
         source="test",
+        provenance={"root": str(repository), "tenant": "t05-cache-clear"},
     )
-    memories.record(memory, actor="test")
+    # Cache-clear acceptance needs durable memory, not T08 event-writer coverage.
+    memories._save_record(memory)
 
     verifications = VerificationStore(state, task_store=tasks)
     receipt = VerificationReceipt.create(
@@ -72,7 +74,17 @@ def test_cache_namespace_clear_preserves_durable_agent_os_state(tmp_path):
         memory.record_id,
         scope=AgentScope.TASK,
         scope_id=task.task_id,
-    ).value == "preserve through cache clear"
+    ) is None
+    restored_memory = reopened_memories.get(
+        memory.record_id,
+        scope=AgentScope.TASK,
+        scope_id=task.task_id,
+        task_id=task.task_id,
+        root=memory.provenance["root"],
+        tenant=memory.provenance["tenant"],
+    )
+    assert restored_memory is not None
+    assert restored_memory.value == "preserve through cache clear"
     persisted_receipts = reopened_verifications.completion(task.task_id).receipts
     assert any(item.receipt_id == receipt.receipt_id and item.passed for item in persisted_receipts)
     assert reopened_leases.list(str(repository))[0]["lease_id"] == lease["lease_id"]

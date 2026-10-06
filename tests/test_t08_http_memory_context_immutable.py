@@ -33,9 +33,13 @@ def _public_task_client(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(http_server.Handler, "_begin_trace", begin_trace)
 
-    def post(payload: dict, request_id: str) -> tuple[int, dict]:
+    def post(
+        payload: dict,
+        request_id: str,
+        path: str = "/api/agent-state/tasks",
+    ) -> tuple[int, dict]:
         handler = object.__new__(http_server.Handler)
-        handler.path = "/api/agent-state/tasks"
+        handler.path = path
         handler.command = "POST"
         handler.headers = {"Content-Type": "application/json", "Idempotency-Key": request_id}
         handler._payload = payload
@@ -197,6 +201,35 @@ def test_http_task_checkpoint_cannot_replace_server_memory_context(tmp_path: Pat
         assert response["task"]["checkpoint"]["state_data"]["memory_context"] == authoritative
         status, completed = post({"action": "complete", "task_id": task_id}, "http-complete-with-memory-reason")
         assert status == 200 and completed["success"] is True, completed
+    finally:
+        app.close()
+
+
+def test_memory_delete_route_passes_verified_repository_identity(tmp_path: Path, monkeypatch):
+    app, root, post = _public_task_client(tmp_path, monkeypatch)
+    record = app.agent_memory.record(MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.REPOSITORY,
+        scope_id=str(root),
+        key="http-delete-memory",
+        value="delete through scoped route",
+        provenance={"root": str(root), "tenant": "tenant-a"},
+    ))
+
+    try:
+        status, result = post(
+            {
+                "action": "delete",
+                "record_id": record.record_id,
+                "scope": "repository",
+                "root": str(root),
+            },
+            "http-delete-memory",
+            path="/api/agent-state/memory",
+        )
+
+        assert status == 200 and result["deleted"] is True, result
+        assert app.agent_memory.get(record.record_id) is None
     finally:
         app.close()
 
