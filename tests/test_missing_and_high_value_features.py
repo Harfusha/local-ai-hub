@@ -278,10 +278,11 @@ def test_incident_webhooks(tmp_path: Path):
     assert "http://127.0.0.1:9999/hook" not in incidents.webhook_urls
 
 
-def test_audio_transcription_service(tmp_path: Path):
+def test_audio_transcription_service_without_whisper_is_not_false_success(tmp_path: Path, monkeypatch):
     from unittest.mock import MagicMock
     dummy_audio = tmp_path / "voice.wav"
     dummy_audio.write_bytes(b"RIFFdummywaveheader12345678")
+    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: None)
 
     srv = LocalAIServices(
         config={
@@ -297,5 +298,7 @@ def test_audio_transcription_service(tmp_path: Path):
         deterministic=None,
     )
     res = srv.transcribe({"audio_path": str(dummy_audio)}, tenant="test")
-    assert res["success"] is True
-    assert "audio_path" in res
+    assert res["success"] is False
+    assert res["reason"] == "cli_missing"
+    assert res["degraded"] is True
+    assert not res.get("text")

@@ -5,6 +5,7 @@ import subprocess
 from unittest.mock import MagicMock
 from local_ai_hub import deterministic as deterministic_module
 from local_ai_hub.deterministic import DeterministicEngine
+from local_ai_hub.commands import CommandBroker
 from local_ai_hub.services import LocalAIServices
 from local_ai_hub.token_accounting import finalize_tool_accounting
 
@@ -127,6 +128,7 @@ def test_speculative_draft_service(tmp_path: Path) -> None:
     assert res["model"] == "qwen2.5-coder:7b"
     assert "def calculate" in res["draft"]
     assert res["verification"]["syntax_valid"] is True
+    assert res["validated"] is False
     services.affected_tests.assert_not_called()
     services.commands.run.assert_not_called()
 
@@ -148,3 +150,88 @@ def test_speculative_draft_service(tmp_path: Path) -> None:
     assert services.commands.run.call_args.args[2] == "test-tenant"
     assert verified["verification"]["tests_passed"] is True
     assert verified["verification"]["test_summary"] == "tests passed"
+    assert verified["validated"] is True
+
+
+def test_speculative_draft_failures_never_run_or_claim_validation(tmp_path: Path) -> None:
+    cases = (
+        ({"success": False, "error": "provider unavailable"}, False, False),
+        ({"response": "def answer(:\n    return 42\n"}, True, False),
+    )
+    for index, (generation, expected_success, expected_syntax_valid) in enumerate(cases):
+        case_root = tmp_path / str(index)
+        services = LocalAIServices(
+            config={"server": {"state_dir": str(case_root)}, "models": {"fast_code": "fast"}},
+            runtime=MagicMock(),
+            scheduler=MagicMock(),
+            embeddings=MagicMock(),
+            artifacts=MagicMock(),
+            telemetry=MagicMock(),
+            repo_tools=MagicMock(),
+            deterministic=None,
+        )
+        services._generate = MagicMock(return_value=generation)
+        services.commands = MagicMock()
+        services.affected_tests = MagicMock(
+            return_value={"suggested_command": "pytest -q"}
+        )
+
+        result = services.speculative_draft(
+            {
+                "task": "write answer function",
+                "file": "answer.py",
+                "root": str(case_root),
+                "verify_tests": True,
+            },
+            tenant="test",
+        )
+
+        assert result["success"] is expected_success
+        assert result["verification"]["syntax_valid"] is expected_syntax_valid
+        assert result["validated"] is False
+        services.affected_tests.assert_not_called()
+        services.commands.run.assert_not_called()
+
+
+def test_speculative_draft_broker_rejects_unpermitted_validation(tmp_path: Path) -> None:
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "models": {"fast_code": "qwen2.5-coder:7b"},
+        "commands": {"enabled": True, "policy_blocking": True, "allow_validation": False},
+    }
+    services = LocalAIServices(
+        config=config,
+        runtime=MagicMock(),
+        scheduler=MagicMock(),
+        embeddings=MagicMock(),
+        artifacts=MagicMock(),
+        telemetry=MagicMock(),
+        repo_tools=MagicMock(),
+        deterministic=None,
+    )
+    broker = CommandBroker(config)
+    services.commands = broker
+    services._generate = MagicMock(return_value={
+        "response": "def calculate():\n    return 42\n",
+        "duration_ms": 20.0,
+    })
+    services.affected_tests = MagicMock(
+        return_value={"suggested_command": "pytest --version"}
+    )
+    classification = broker.classify("pytest --version")
+    assert classification["class"] == "validation"
+    assert classification["allowed"] is False
+
+    result = services.speculative_draft(
+        {
+            "task": "write calculate function",
+            "file": "calc.py",
+            "root": str(tmp_path),
+            "verify_tests": True,
+        },
+        tenant="test",
+    )
+
+    assert result["verification"]["tests_passed"] is False
+    assert result["validated"] is False
+    assert broker.blocked == 1

@@ -123,13 +123,15 @@ assert.match(page.document_state_token, /^state:sha256:[0-9a-f]{64}$/);
   const webCryptoPage = await webCryptoContext.captureCurrentTab();
 assert.equal(webCryptoPage.document_state_token, page.document_state_token);
 
-async function runBackground({timeout = null, hubTimeout = null, stageTimeout = false, finalPostTimeout = null, queryTimeout = false, getTimeout = false, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false, mutateDocumentAfterScreenshot = false, missingUrl = false, emptyUrl = false, token = ""} = {}) {
+async function runBackground({timeout = null, hubTimeout = null, stageTimeout = false, finalPostTimeout = null, dropFirstCommitResponse = false, disconnectAfterStage = false, queryTimeout = false, getTimeout = false, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false, mutateDocumentAfterScreenshot = false, missingUrl = false, emptyUrl = false, token = ""} = {}) {
   let activeId = closed ? null : 7;
   const posts = [];
   const committedPosts = [];
   const serverStaged = new Set();
+  const committedResults = new Map();
   let delayedStageResponses = 0;
   let artifactCommits = 0;
+  let commitAttempts = 0;
   let aborted = false;
   const currentTab = {id: 7, windowId: 3};
   if (!missingUrl) currentTab.url = emptyUrl ? "" : page.url;
@@ -145,6 +147,9 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
         get: async () => { if (getTimeout) return new Promise(() => {}); return {...currentTab}; },
         query: async () => { if (queryTimeout) return new Promise(() => {}); if (permission) throw new Error("permission denied"); return activeId === null ? [] : [{id: activeId, windowId: 3}]; },
         sendMessage: async (tabId, message) => {
+          if (disconnectAfterStage && message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && serverStaged.size > 0) {
+            throw new Error("The message port closed before a response was received.");
+          }
           if (message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && navigateAfterScreenshot) {
             return {...page, url: "https://fixture.test/other", target_origin: "https://fixture.test", document_token: "document:new", document_state_token: "state:new"};
           }
@@ -166,7 +171,13 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
     fetch: async (_url, options) => {
       const body = JSON.parse(options.body);
       const path = new URL(_url).pathname;
-      if (hubTimeout || (finalPostTimeout && path.endsWith("/commit")) || (stageTimeout && path.endsWith("/stage"))) {
+      if (finalPostTimeout && path.endsWith("/commit")) {
+        commitAttempts += 1;
+        if (commitAttempts > 1) {
+          return {ok: true, status: 200, json: async () => ({success: false, error_code: "timeout"})};
+        }
+      }
+      if (hubTimeout || (finalPostTimeout && path.endsWith("/commit") && commitAttempts === 1) || (stageTimeout && path.endsWith("/stage"))) {
         if (path.endsWith("/stage")) serverStaged.add(body.request_id);
         return new Promise((_, reject) => {
           if (stageTimeout && path.endsWith("/stage")) {
@@ -190,9 +201,16 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
         value = {success: true, staged: true, request_id: body.request_id};
       } else if (path.endsWith("/commit")) {
         committedPosts.push(body);
-        artifactCommits += 1;
-        serverStaged.delete(body.request_id);
-        value = {success: true, bundle_artifact_id: "bundle"};
+        value = committedResults.get(body.request_id);
+        if (!value) {
+          artifactCommits += 1;
+          serverStaged.delete(body.request_id);
+          value = {success: true, bundle_artifact_id: "bundle", request_id: body.request_id};
+          committedResults.set(body.request_id, value);
+        }
+        if (dropFirstCommitResponse && committedPosts.length === 1) {
+          throw new TypeError("Failed to fetch");
+        }
       } else if (path.endsWith("/abandon")) {
         serverStaged.delete(body.request_id);
         value = {success: true, abandoned: true, request_id: body.request_id};
@@ -237,9 +255,15 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
   assert.equal(hubTimeoutResult.posts.length, 0);
   assert.equal(hubTimeoutResult.aborted, true);
   const finalPostTimeoutResult = await runBackground({finalPostTimeout: 5});
-  assert.equal(finalPostTimeoutResult.result.error_code, "timeout");
+  assert.equal(finalPostTimeoutResult.result.error_code, "commit_outcome_unknown");
   assert.equal(finalPostTimeoutResult.aborted, true);
   assert.equal(finalPostTimeoutResult.committedPosts.some((post) => post.screenshot), false);
+  assert.equal(finalPostTimeoutResult.serverStaged.size, 1);
+  const droppedCommitResponse = await runBackground({dropFirstCommitResponse: true});
+  assert.equal(droppedCommitResponse.result.success, true);
+  assert.equal(droppedCommitResponse.committedPosts.length, 2);
+  assert.equal(droppedCommitResponse.artifactCommits, 1);
+  assert.equal(droppedCommitResponse.serverStaged.size, 0);
   const delayedStage = await runBackground({stageTimeout: true});
   assert.equal(delayedStage.result.error_code, "timeout");
   assert.equal(delayedStage.aborted, true);
@@ -265,6 +289,11 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
   assert.equal(navigated.result.error_code, "target_changed");
   assert.equal(navigated.posts.at(-1).capture_error, "target_changed");
   assert.equal(navigated.posts.some((post) => post.screenshot), false);
+  const disconnected = await runBackground({disconnectAfterStage: true});
+  assert.equal(disconnected.result.error_code, "target_changed");
+  assert.equal(disconnected.serverStaged.size, 0);
+  assert.equal(disconnected.committedPosts.length, 0);
+  assert.equal(disconnected.artifactCommits, 0);
   const mutated = await runBackground({mutateDocumentAfterScreenshot: true});
   assert.equal(captureContext.history.state.step, 2);
   assert.match(captureContext.document.documentElement.outerHTML, /DOM changed after screenshot/);
@@ -273,15 +302,22 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
   assert.equal(mutated.posts.some((post) => post.screenshot), false);
   for (const options of [{missingUrl: true}, {emptyUrl: true}]) {
     const missingOrEmpty = await runBackground(options);
-    assert.equal(missingOrEmpty.result.error_code, "target_changed");
-    assert.equal(missingOrEmpty.posts.at(-1).capture_error, "target_changed");
+    assert.equal(missingOrEmpty.result.error_code, "permission_denied");
+    assert.equal(missingOrEmpty.posts.length, 0);
+    assert.equal(missingOrEmpty.serverStaged.size, 0);
+    assert.equal(missingOrEmpty.artifactCommits, 0);
     assert.equal(missingOrEmpty.posts.some((post) => post.screenshot), false);
   }
   assert.equal((await runBackground({closed: true})).result.error_code, "closed_tab");
-  assert.equal((await runBackground({permission: true})).result.error_code, "permission_denied");
+  const permissionDenied = await runBackground({permission: true});
+  assert.equal(permissionDenied.result.error_code, "permission_denied");
+  assert.equal(permissionDenied.posts.length, 0);
+  assert.equal(permissionDenied.serverStaged.size, 0);
+  assert.equal(permissionDenied.committedPosts.length, 0);
+  assert.equal(permissionDenied.artifactCommits, 0);
   const tokenRun = await runBackground({token: "0123456789abcdef"});
   assert.equal(tokenRun.result.success, true);
-  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "timeout", "screenshot-timeout", "hub-timeout", "final-post-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token"]}));
+  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "permission-denied-no-capture", "timeout", "screenshot-timeout", "hub-timeout", "final-post-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "disconnect-after-stage", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token"]}));
 }
 
 runFixture().catch((error) => { console.error(error); process.exitCode = 1; });

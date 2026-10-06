@@ -5,6 +5,7 @@ import pytest
 from local_ai_hub.vision_contracts import (
     FrontendReviewBundle,
     build_coder_packet,
+    image_dimensions,
     parse_vision_result,
 )
 
@@ -30,6 +31,20 @@ def test_bundle_rejects_missing_screenshot() -> None:
         FrontendReviewBundle.from_payload(
             {"schema_version": "1", "source": "upload", "prompt": "Review"}
         )
+
+
+def test_image_dimensions_read_png_and_jpeg_headers() -> None:
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0dIHDR" + (640).to_bytes(4, "big") + (360).to_bytes(4, "big")
+    jpeg = (
+        b"\xff\xd8\xff\xc0\x00\x11\x08"
+        + (360).to_bytes(2, "big")
+        + (640).to_bytes(2, "big")
+        + b"\x03\x01\x11\x00\x02\x11\x00\x03\x11\x00"
+    )
+
+    assert image_dimensions(png) == (640, 360)
+    assert image_dimensions(jpeg) == (640, 360)
+    assert image_dimensions(b"unsupported") is None
 
 
 @pytest.mark.parametrize("redaction", ["content", "semantic", "pii", ""])
@@ -78,7 +93,7 @@ def test_bundle_forwards_network_runtime_artifact_id() -> None:
     assert bundle.network_artifact_id == "network-1"
 
 
-def test_vision_result_accepts_fenced_json_and_clamps_confidence() -> None:
+def test_vision_result_rejects_confidence_outside_contract() -> None:
     result = parse_vision_result(
         "```json\n"
         '{"summary":"bad CTA","findings":[{"id":"f1",'
@@ -87,12 +102,200 @@ def test_vision_result_accepts_fenced_json_and_clamps_confidence() -> None:
         "\n```"
     )
 
-    assert result.findings[0].finding_id == "f1"
-    assert result.findings[0].confidence == 1.0
+    assert result.terminal is True
+    assert "confidence" in result.error["message"]
+
+
+def test_grounded_vision_rejects_dom_ids_absent_from_supplied_dom() -> None:
+    result = parse_vision_result(
+        '{"summary":"button issue","findings":[{"id":"f1",'
+        '"severity":"high","category":"interaction","problem":"button missing",'
+        '"confidence":0.7,"element_ids":["submit-button"],'
+        '"bbox":[1,1,10,10],"evidence":["<button>Submit</button>"]}]}',
+        valid_element_ids=set(),
+        image_size=(640, 360),
+    )
+
+    assert result.terminal is True
+    assert "element_ids" in result.error["message"]
+
+
+def test_grounded_vision_rejects_observation_fact_with_value_absent_from_dom() -> None:
+    result = parse_vision_result(
+        '{"summary":"button issue","findings":[{"id":"f1",'
+        '"severity":"high","category":"interaction",'
+        '"problem":"button label is wrong",'
+        '"observed":"button text appears consistent",'
+        '"hypothesized":"the label may be stale",'
+        '"uncertainty":[],"confidence":0.7,'
+        '"element_ids":["button-1"],"bbox":null,"evidence":["button-1"],'
+        '"observation_facts":[{"source":"dom","element_id":"button-1",'
+        '"field":"text","value":"Continue"}]}]}',
+        require_observation_fields=True,
+        valid_element_ids={"button-1"},
+        observation_sources={"dom": {"button-1": {"text": "Cancel", "tag": "button"}}},
+        image_size=(640, 360),
+    )
+
+    assert result.terminal is True
+    assert "value does not match" in result.error["message"]
+
+
+def test_grounded_vision_accepts_observation_fact_matching_cited_dom() -> None:
+    observation_sources = {
+        "dom": {"button-1": {"text": "Continue", "tag": "button"}}
+    }
+    result = parse_vision_result(
+        '{"summary":"button issue","findings":[{"id":"f1",'
+        '"severity":"high","category":"interaction",'
+        '"problem":"button label is clear",'
+        '"observed":"button text is Continue",'
+        '"hypothesized":"label matches expected action",'
+        '"uncertainty":[],"confidence":0.7,'
+        '"element_ids":["button-1"],"bbox":null,"evidence":["button-1"],'
+        '"observation_facts":[{"source":"dom","element_id":"button-1",'
+        '"field":"text","value":"Continue"}]}]}',
+        require_observation_fields=True,
+        valid_element_ids={"button-1"},
+        observation_sources=observation_sources,
+        image_size=(640, 360),
+    )
+
+    assert result.terminal is False
+    assert result.observation_sources == observation_sources
+    assert result.findings[0].evidence == ("dom:button-1",)
+    assert result.findings[0].observation_facts[0].value == "Continue"
+
+
+def test_grounded_vision_rejects_problem_contradicted_by_observation_fact() -> None:
+    result = parse_vision_result(
+        '{"summary":"button mismatch","findings":[{"id":"f1",'
+        '"severity":"low","category":"interaction",'
+        '"problem":"Button text does not match the expected value of \'Continue\'.",'
+        '"observed":"The exact button text is \'Continue\'.",'
+        '"hypothesized":"The label may be incorrect.","uncertainty":[],"confidence":0.7,'
+        '"element_ids":["button-1"],"bbox":null,"evidence":["button-1"],'
+        '"observation_facts":[{"source":"dom","element_id":"button-1",'
+        '"field":"text","value":"Continue"}]}]}',
+        require_observation_fields=True,
+        valid_element_ids={"button-1"},
+        observation_sources={"dom": {"button-1": {"text": "Continue"}}},
+        image_size=(800, 450),
+    )
+
+    assert result.terminal is True
+    assert "problem contradicts supplied observation fact" in result.error["message"]
+
+
+def test_grounded_vision_accepts_explicit_mismatch_against_different_dom_value() -> None:
+    result = parse_vision_result(
+        '{"summary":"button mismatch","findings":[{"id":"f1",'
+        '"severity":"low","category":"interaction",'
+        '"problem":"Button text does not match the expected value of \'Continue\'.",'
+        '"observed":"The exact button text is \'Cancel\'.",'
+        '"hypothesized":"The label may be incorrect.","uncertainty":[],"confidence":0.7,'
+        '"element_ids":["button-1"],"bbox":null,"evidence":["button-1"],'
+        '"observation_facts":[{"source":"dom","element_id":"button-1",'
+        '"field":"text","value":"Cancel"}]}]}',
+        require_observation_fields=True,
+        valid_element_ids={"button-1"},
+        observation_sources={"dom": {"button-1": {"text": "Cancel"}}},
+        image_size=(800, 450),
+    )
+
+    assert result.terminal is False
+    assert result.findings[0].observation_facts[0].value == "Cancel"
+
+
+def test_grounded_vision_requires_observation_fact_for_dom_finding() -> None:
+    result = parse_vision_result(
+        '{"summary":"button issue","findings":[{"id":"f1",'
+        '"severity":"high","category":"interaction",'
+        '"problem":"button label is clear",'
+        '"observed":"button text is Continue",'
+        '"hypothesized":"label matches expected action",'
+        '"uncertainty":[],"confidence":0.7,'
+        '"element_ids":["button-1"],"bbox":null,"evidence":["button-1"]}]}',
+        require_observation_fields=True,
+        valid_element_ids={"button-1"},
+        observation_sources={"dom": {"button-1": {"text": "Continue"}}},
+        image_size=(640, 360),
+    )
+
+    assert result.terminal is True
+    assert "observation_facts" in result.error["message"]
+
+
+def test_grounded_vision_rejects_bbox_outside_supplied_image() -> None:
+    result = parse_vision_result(
+        '{"summary":"button issue","findings":[{"id":"f1",'
+        '"severity":"high","category":"interaction","problem":"button issue",'
+        '"confidence":0.7,"bbox":[489,316,652,360],'
+        '"evidence":["image region"]}]}',
+        valid_element_ids=set(),
+        image_size=(640, 360),
+    )
+
+    assert result.terminal is True
+    assert "bbox" in result.error["message"]
+
+
+def test_grounded_image_only_finding_requires_valid_region_anchor() -> None:
+    result = parse_vision_result(
+        '{"summary":"button issue","findings":[{"id":"f1",'
+        '"severity":"medium","category":"interaction","problem":"low contrast",'
+        '"confidence":0.7,"bbox":[10,20,80,50],"evidence":["image region"]}]}',
+        valid_element_ids=set(),
+        image_size=(640, 360),
+    )
+
+    assert result.terminal is False
+    assert result.findings[0].bbox == (10.0, 20.0, 80.0, 50.0)
+    assert result.findings[0].evidence == ("image:0:10,20,80,50",)
+
+
+def test_grounded_image_only_finding_rejects_dom_markup_as_evidence() -> None:
+    result = parse_vision_result(
+        '{"summary":"button issue","findings":[{"id":"f1",'
+        '"severity":"medium","category":"interaction","problem":"submit control",'
+        '"confidence":0.7,"bbox":[10,20,80,50],'
+        '"evidence":["<button>Submit</button>"]}]}',
+        valid_element_ids=set(),
+        image_size=(640, 360),
+    )
+
+    assert result.terminal is True
+    assert "DOM evidence" in result.error["message"]
+
+
+def test_grounded_vision_accepts_ids_from_supplied_dom() -> None:
+    result = parse_vision_result(
+        '{"summary":"button issue","findings":[{"id":"f1",'
+        '"severity":"medium","category":"interaction","problem":"button label unclear",'
+        '"confidence":0.7,"element_ids":["button-1"],'
+        '"evidence":["<button id=button-1>Continue</button>"]}]}',
+        valid_element_ids={"button-1"},
+    )
+
+    assert result.terminal is False
+    assert result.findings[0].element_ids == ("button-1",)
+    assert result.findings[0].evidence == ("dom:button-1",)
 
 
 def test_vision_result_rejects_empty_findings_without_summary() -> None:
     result = parse_vision_result('{"findings":[]}')
+
+    assert result.terminal is True
+    assert result.error["code"] == "malformed_vision_output"
+    assert "summary" in result.error["message"]
+
+
+def test_vision_result_rejects_whitespace_summary_with_findings() -> None:
+    result = parse_vision_result(
+        '{"summary":"  ","findings":[{"id":"f1",'
+        '"severity":"medium","category":"layout","problem":"overlap",'
+        '"confidence":0.7,"evidence":["visible overlap"]}]}'
+    )
 
     assert result.terminal is True
     assert result.error["code"] == "malformed_vision_output"
@@ -113,7 +316,7 @@ def test_vision_result_rejects_findings_without_image_or_dom_evidence() -> None:
 
 def test_dom_vision_result_preserves_observation_hypothesis_uncertainty() -> None:
     result = parse_vision_result(
-        '{"findings":[{"id":"f1","severity":"high","category":"layout",'
+        '{"summary":"CTA is hidden.","findings":[{"id":"f1","severity":"high","category":"layout",'
         '"problem":"CTA hidden","observed":"display is none",'
         '"hypothesized":"hydration rule hides CTA",'
         '"uncertainty":["runtime state not captured"],"confidence":0.8,'
@@ -168,6 +371,23 @@ def test_dom_vision_result_rejects_non_string_observation_fields(field: str) -> 
     assert field in result.error["message"]
 
 
+@pytest.mark.parametrize("field", ["observed", "hypothesized"])
+def test_dom_vision_result_rejects_whitespace_only_observation_fields(
+    field: str,
+) -> None:
+    result = parse_vision_result(
+        '{"findings":[{"id":"f1","severity":"high","category":"layout",'
+        '"problem":"CTA hidden","observed":"display is none",'
+        '"hypothesized":"hydration rule hides CTA",'
+        '"uncertainty":[],"confidence":0.8,'
+        '"' + field + '":"  \\t "}]}',
+        require_observation_fields=True,
+    )
+
+    assert result.terminal is True
+    assert f"{field} must be a non-empty string" in result.error["message"]
+
+
 @pytest.mark.parametrize("missing", ["id", "problem", "confidence"])
 def test_vision_result_rejects_missing_required_finding_fields(missing: str) -> None:
     finding = {
@@ -186,14 +406,15 @@ def test_vision_result_rejects_missing_required_finding_fields(missing: str) -> 
     assert result.error["code"] == "malformed_vision_output"
 
 
-def test_vision_result_clamps_confidence_at_zero() -> None:
+def test_vision_result_rejects_confidence_below_zero() -> None:
     result = parse_vision_result(
         '{"summary":"bad","findings":[{"id":"f1","severity":"low",'
         '"category":"layout","problem":"bad","confidence":-0.5,'
         '"evidence":["visible layout issue"]}]}'
     )
 
-    assert result.findings[0].confidence == 0.0
+    assert result.terminal is True
+    assert "confidence" in result.error["message"]
 
 
 @pytest.mark.parametrize("confidence", ["NaN", "Infinity", "-Infinity"])
@@ -447,3 +668,38 @@ def test_coder_packet_reports_falsey_non_mapping_runtime_as_terminal_failure(
 
     assert packet["terminal"] is True
     assert packet["error"]["code"] == "malformed_coder_context"
+
+
+def test_grounded_vision_rejects_live_output_missing_hypothesized() -> None:
+    payload = {
+        "summary": "button label review",
+        "findings": [{
+            "id": "f1",
+            "severity": "low",
+            "category": "interaction",
+            "problem": "Button may show an incorrect label.",
+            "observed": "Button text is Continue.",
+            "uncertainty": [],
+            "confidence": 0.7,
+            "element_ids": ["button-1"],
+            "bbox": None,
+            "evidence": ["DOM text: Continue"],
+            "observation_facts": [{
+                "source": "dom",
+                "element_id": "button-1",
+                "field": "text",
+                "value": "Continue",
+            }],
+        }],
+    }
+
+    result = parse_vision_result(
+        json.dumps(payload),
+        require_observation_fields=True,
+        valid_element_ids={"button-1"},
+        observation_sources={"dom": {"button-1": {"text": "Continue"}}},
+        image_size=(800, 450),
+    )
+
+    assert result.terminal is True
+    assert "hypothesized" in result.error["message"]
