@@ -4,7 +4,9 @@ from .json_utils import dumps as json_dumps
 
 import base64
 import copy
+import fnmatch
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -3603,7 +3605,10 @@ class LocalAIServices:
         if not isinstance(request, ConsistencyRequest):
             raise TypeError("guarded context request must be ConsistencyRequest")
         if mode == "full":
-            base = self._hybrid_context(request.root, request.query, request.tenant, request.workspace or None, request.token_budget)
+            base = self._hybrid_context(
+                request.root, request.query, request.tenant, request.workspace or None, request.token_budget,
+                focus=request.focus, changed_paths=request.changed_paths,
+            )
         else:
             base = self.fast_context(request.root, request.query, request.token_budget)
         if not isinstance(base, dict):
@@ -3777,7 +3782,11 @@ class LocalAIServices:
             }
         return packed
 
-    def _hybrid_context(self, root: str, query: str, tenant: str, workspace: str | None, max_tokens: int) -> dict[str, Any]:
+    def _hybrid_context(
+        self, root: str, query: str, tenant: str, workspace: str | None, max_tokens: int, *,
+        path_hints: Any = (), exclude_paths: Any = (), force_include_paths: Any = (),
+        focus: Any = (), changed_paths: Any = (),
+    ) -> dict[str, Any]:
         resolved_root = Path(root).expanduser().resolve(strict=False)
         if not resolved_root.is_dir():
             return {
@@ -3824,8 +3833,16 @@ class LocalAIServices:
         rag_revision = self.rag.revision(tenant, workspace or self.rag.workspace_id(root)) if self.rag is not None else None
         result = self._repo_cached(
             "hybrid-context", root,
-            {"query": query, "workspace": workspace, "max_tokens": max_tokens, "rag_revision": rag_revision},
-            lambda: self._hybrid_context_uncached(root, query, tenant, workspace, max_tokens),
+            {
+                "query": query, "workspace": workspace, "max_tokens": max_tokens, "rag_revision": rag_revision,
+                "path_hints": path_hints, "exclude_paths": exclude_paths,
+                "force_include_paths": force_include_paths, "focus": focus, "changed_paths": changed_paths,
+            },
+            lambda: self._hybrid_context_uncached(
+                root, query, tenant, workspace, max_tokens, path_hints=path_hints,
+                exclude_paths=exclude_paths, force_include_paths=force_include_paths,
+                focus=focus, changed_paths=changed_paths,
+            ),
         )
         if isinstance(result, dict): result.setdefault("context_source", "hybrid")
         return result
@@ -3840,7 +3857,11 @@ class LocalAIServices:
             scores[item] = scores.get(item, 0.0) + 1.0 / (k + rank + 1)
         return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
-    def _hybrid_context_uncached(self, root: str, query: str, tenant: str, workspace: str | None, max_tokens: int) -> dict[str, Any]:
+    def _hybrid_context_uncached(
+        self, root: str, query: str, tenant: str, workspace: str | None, max_tokens: int, *,
+        path_hints: Any = (), exclude_paths: Any = (), force_include_paths: Any = (),
+        focus: Any = (), changed_paths: Any = (),
+    ) -> dict[str, Any]:
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
@@ -3852,23 +3873,42 @@ class LocalAIServices:
                 target_workspace = candidate
 
         search_cfg = self.config.get("search", {})
+        candidate_limit = max(1, min(int(search_cfg.get("context_candidate_limit", 64)), 256))
         semantic_fraction = max(0.0, min(float(search_cfg.get("semantic_fraction", 0.35)), 0.7))
         lexical_tokens = max_tokens if not target_workspace else max(512, int(max_tokens * (1.0 - semantic_fraction)))
         # Local AI: preprocessed deterministic/semantic cards narrow the lexical scan to likely files.
-        # This is an optimization hint only; if cards are absent or select nothing,
-        # the full lexical search remains the correctness fallback.
+        # Cards optimize unscoped retrieval; explicit path controls stay bounded.
         candidate_paths: list[str] = []
+        explicit_paths: list[str] = []
+        excluded_paths: list[str] = []
+        forced_paths: list[str] = []
+        focus_terms: list[str] = []
+
+        def values(raw: Any, limit: int = 64) -> list[str]:
+            if isinstance(raw, str):
+                raw = (raw,)
+            if not isinstance(raw, (tuple, list, set)):
+                return []
+            return [str(item).strip().replace("\\", "/") for item in list(raw)[:limit] if str(item).strip()]
+
+        explicit_paths.extend(values(path_hints))
+        excluded_paths.extend(values(exclude_paths))
+        forced_paths.extend(values(force_include_paths))
+        focus_terms.extend(token.lower() for item in values(focus) for token in re.findall(r"[\w.-]+", item.lower()))
+        has_path_controls = bool(explicit_paths or excluded_paths or forced_paths or focus_terms or changed_paths)
         # Prioritize files explicitly named in the query/task (e.g. AGENTS.md, src/main.py)
         root_path = Path(root)
         for token in query.split():
             clean_tok = token.strip("`'\"(),:;[]{}*")
             if clean_tok and ("." in clean_tok or "/" in clean_tok or "\\" in clean_tok):
-                try:
-                    rel_p = clean_tok.replace("\\", "/").lstrip("./")
-                    if (root_path / rel_p).exists() and rel_p not in candidate_paths:
-                        candidate_paths.append(rel_p)
-                except Exception:
-                    pass
+                explicit_paths.append(clean_tok.replace("\\", "/"))
+
+        explicit_paths.extend(forced_paths)
+        index_available = any((
+            callable(getattr(self.deterministic, "related_paths", None)),
+            callable(getattr(self.code_index, "related_paths", None)),
+            callable(getattr(self.preprocessor, "candidate_paths", None)),
+        ))
         if self.deterministic is not None:
             try: candidate_paths.extend(self.deterministic.related_paths(root, query, limit=28))
             except Exception: pass
@@ -3880,14 +3920,93 @@ class LocalAIServices:
         if self.preprocessor is not None:
             try:
                 for p in self.preprocessor.candidate_paths(
-                    root, query, limit=max(12, int(self.config.get("preprocessing", {}).get("lookup_file_cards", 5)) * 4)
+                    root, query,
+                    limit=min(candidate_limit * 2, max(12, int(self.config.get("preprocessing", {}).get("lookup_file_cards", 5)) * 4)),
                 ):
                     if p not in candidate_paths: candidate_paths.append(p)
             except Exception:
                 # Keep already-resolved deterministic/code-index candidates. One
                 # optional preprocessing failure must not force a full repository scan.
                 pass
-        if candidate_paths:
+
+        resolved_root = root_path.expanduser().resolve(strict=False)
+        ranked: dict[str, tuple[int, int]] = {}
+        raw_candidates = [*candidate_paths[: candidate_limit * 3], *explicit_paths[:64]]
+
+        def normalized_relative(raw: Any) -> str:
+            candidate = Path(str(raw).strip().replace("\\", "/"))
+            candidate = (candidate if candidate.is_absolute() else resolved_root / candidate).resolve(strict=False)
+            try:
+                return candidate.relative_to(resolved_root).as_posix().lower()
+            except ValueError:
+                return ""
+
+        forced_keys = {key for key in (normalized_relative(item) for item in forced_paths) if key}
+        changed_set = {key for key in (normalized_relative(item) for item in changed_paths) if key}
+        excluded_patterns = [pattern.strip("./").lower() for pattern in excluded_paths]
+
+        def add_candidate(raw: Any, source_rank: int) -> None:
+            value = str(raw).strip().replace("\\", "/")
+            if not value:
+                return
+            candidate = Path(value)
+            candidate = (candidate if candidate.is_absolute() else resolved_root / candidate).resolve(strict=False)
+            try:
+                relative = candidate.relative_to(resolved_root).as_posix()
+            except ValueError:
+                return
+            if not candidate.is_file():
+                return
+            key = relative.lower()
+            if any(
+                fnmatch.fnmatchcase(key, pattern)
+                or key == pattern.rstrip("/")
+                or key.startswith(pattern.rstrip("/") + "/")
+                for pattern in excluded_patterns
+            ) and key not in forced_keys:
+                return
+            score = source_rank
+            if key in forced_keys:
+                score += 10000
+            if key in changed_set:
+                score += 1000
+            if any(term in key for term in focus_terms):
+                score += 100
+            if any(hint.lower().strip("./") == key or key.startswith(hint.lower().strip("./").rstrip("/") + "/") for hint in explicit_paths):
+                score += 500
+            ranked[relative] = max(ranked.get(relative, (-1, -1)), (score, -source_rank))
+
+        for position, candidate in enumerate(raw_candidates):
+            add_candidate(candidate, candidate_limit - min(position, candidate_limit))
+
+        fallback_degraded = False
+        if has_path_controls and not ranked and not index_available:
+            scan_limit = max(1, min(int(search_cfg.get("context_fallback_scan_limit", 128)), 512))
+            try:
+                for candidate in itertools.islice(self.repo_tools.iter_files(str(resolved_root)), scan_limit):
+                    add_candidate(candidate, 0)
+                fallback_degraded = True
+            except Exception:
+                fallback_degraded = True
+
+        if has_path_controls:
+            candidate_paths = [
+                path for path, _score in sorted(ranked.items(), key=lambda item: (-item[1][0], item[0]))
+            ][:candidate_limit]
+            if not candidate_paths:
+                lexical = {
+                    "success": True, "root": str(resolved_root), "query": query, "context": "",
+                    "evidence": [], "estimated_tokens": 0, "scanned_files": 0, "targeted": True,
+                }
+            else:
+                lexical = self.repo_tools.context_pack_paths(
+                    root, query, candidate_paths, max_tokens=lexical_tokens,
+                    top_k=int(search_cfg.get("context_top_k", 14)),
+                )
+            if fallback_degraded:
+                lexical["degraded"] = True
+                lexical["degraded_reason"] = "bounded_path_candidate_fallback"
+        elif candidate_paths:
             candidate_paths = list(dict.fromkeys(candidate_paths))
             lexical = self.repo_tools.context_pack_paths(
                 root, query, candidate_paths, max_tokens=lexical_tokens,
@@ -3955,12 +4074,16 @@ class LocalAIServices:
                     })
                     if remaining <= 0:
                         break
-        return {
+        result = {
             "success": True, "root": lexical["root"], "query": query, "context": context,
             "evidence": evidence, "estimated_tokens": estimate_tokens(context),
             "scanned_files": lexical.get("scanned_files", 0), "semantic_used": semantic_used,
             "context_budget_tokens": max_tokens,
         }
+        if lexical.get("degraded"):
+            result["degraded"] = True
+            result["degraded_reason"] = str(lexical.get("degraded_reason", ""))[:120]
+        return result
 
     def delegate_repo(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         if str(args.get("profile", "")).strip():
@@ -3979,7 +4102,13 @@ class LocalAIServices:
                 max_context_tokens = int(workflow.get("heavy_repo_context_tokens", 4200))
             else:
                 max_context_tokens = int(workflow.get("fast_repo_context_tokens", 2200))
-        packed = self._hybrid_context(root, task, tenant, args.get("workspace"), max_context_tokens)
+        packed = self._hybrid_context(
+            root, task, tenant, args.get("workspace"), max_context_tokens,
+            path_hints=args.get("path_hints", ()),
+            exclude_paths=args.get("exclude_paths", args.get("excludes", ())),
+            force_include_paths=args.get("force_include_paths", args.get("force_include", ())),
+            focus=args.get("focus", ()), changed_paths=args.get("changed_paths", ()),
+        )
         if not packed.get("success"):
             return packed
         payload = {

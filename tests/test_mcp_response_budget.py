@@ -76,6 +76,57 @@ def test_context_projection_keeps_actual_context_text_after_budget() -> None:
     assert result["evidence_ids"] == ["E1"]
 
 
+def test_context_projection_budget_rejection_keeps_bounded_identity_and_citation() -> None:
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set(
+        {"max_response_tokens": 220, "response_profile": "compact", "reuse_key": "ctx-citation", "tool": "local_ai_repo"}
+    )
+    try:
+        result = mcp_server._context_pack_projection(
+            {
+                "success": True,
+                "guarded": True,
+                "adaptive_context_pack": {
+                    "context_id": "ctx-123",
+                    "repo_revision": "rev-7",
+                    "changed_paths": [f"src/components/context-budget/evidence-{index:02d}.py" for index in range(32)],
+                    "evidence": [
+                        {
+                            "evidence_id": "E123",
+                            "path": "src/main.py",
+                            "start_line": 4,
+                            "end_line": 6,
+                            "source": "deterministic",
+                            "content": "private detail " * 500,
+                        }
+                        for _ in range(12)
+                    ],
+                    "warnings": [
+                        {"code": "scope_drift", "message": "large warning " * 500}
+                        for _ in range(12)
+                    ],
+                },
+            }
+        )
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert json_tokens(result) <= 220
+    assert result["response_budget"]["original_tokens"] > 220
+    assert result["response_budget"]["requested_tokens"] == 220
+    assert result["response_budget"]["returned_tokens"] == json_tokens(result)
+    assert result["context_id"] == "ctx-123"
+    assert result["repo_revision"] == "rev-7"
+    assert result["evidence_ids"] == ["E123"]
+    assert result["adaptive_context_pack"]["evidence"][0] == {
+        "evidence_id": "E123",
+        "path": "src/main.py",
+        "start_line": 4,
+        "end_line": 6,
+        "source": "deterministic",
+    }
+    assert "content" not in repr(result["adaptive_context_pack"])
+
+
 def test_mcp_compact_applies_aggregate_budget(monkeypatch) -> None:
     monkeypatch.setattr(mcp_server, "_REUSE_DIGESTS", mcp_server.OrderedDict())
     value = {

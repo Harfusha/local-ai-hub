@@ -107,3 +107,185 @@ def test_budget_response_keeps_guarded_repository_context_pointer() -> None:
     assert result["context_id"] == "ctx-1"
     assert result["context"]
     assert result["context_pack"]
+
+
+def test_budget_rejection_keeps_bounded_adaptive_context_identity_and_citation() -> None:
+    pack = {
+        "context_id": "ctx-123",
+        "repo_revision": "rev-7",
+        "evidence": [
+            {
+                "evidence_id": "E123",
+                "path": "src/main.py",
+                "start_line": 4,
+                "end_line": 6,
+                "source": "deterministic",
+                "content": "private detail " * 500,
+            }
+            for _ in range(12)
+        ],
+        "warnings": [{"code": "scope_drift", "message": "large warning " * 500} for _ in range(12)],
+    }
+
+    result = budget_response(
+        {"success": True, "adaptive_context_pack": pack},
+        max_tokens=128,
+        protected_keys=("success", "adaptive_context_pack"),
+    )
+
+    assert json_tokens(result) <= 128
+    assert result["response_budget"]["requested_tokens"] == 128
+    assert result["response_budget"]["returned_tokens"] == json_tokens(result)
+    bounded = result["adaptive_context_pack"]
+    assert bounded["context_id"] == "ctx-123"
+    assert bounded["repo_revision"] == "rev-7"
+    assert bounded["evidence"][0] == {
+        "evidence_id": "E123",
+        "path": "src/main.py",
+        "start_line": 4,
+        "end_line": 6,
+        "source": "deterministic",
+    }
+    assert "content" not in repr(bounded)
+
+
+def test_budget_rejection_keeps_bounded_legacy_context_pack_citation() -> None:
+    result = budget_response(
+        {
+            "success": True,
+            "context_pack": {
+                "context_id": "legacy-ctx",
+                "repo_revision": "rev-8",
+                "evidence": [
+                    {
+                        "evidence_id": "E8",
+                        "path": "src/legacy.py",
+                        "start_line": 8,
+                        "end_line": 9,
+                        "source": "deterministic",
+                        "content": "private detail " * 500,
+                    }
+                    for _ in range(10)
+                ],
+            },
+        },
+        max_tokens=128,
+        protected_keys=("success", "context_pack"),
+    )
+
+    assert json_tokens(result) <= 128
+    assert result["response_budget"]["requested_tokens"] == 128
+    assert result["response_budget"]["returned_tokens"] == json_tokens(result)
+    assert result["context_pack"]["context_id"] == "legacy-ctx"
+    assert result["context_pack"]["evidence"][0] == {
+        "evidence_id": "E8",
+        "path": "src/legacy.py",
+        "start_line": 8,
+        "end_line": 9,
+        "source": "deterministic",
+    }
+    assert "content" not in repr(result["context_pack"])
+
+def test_budget_rejection_uses_first_complete_citation() -> None:
+    result = budget_response(
+        {
+            "success": True,
+            "adaptive_context_pack": {
+                "context_id": "ctx-123",
+                "repo_revision": "rev-7",
+                "evidence": [
+                    {"evidence_id": "E-incomplete"},
+                    {
+                        "evidence_id": "E-complete",
+                        "path": "src/later.py",
+                        "start_line": 20,
+                        "end_line": 24,
+                        "source": "deterministic",
+                        "content": "private detail " * 500,
+                    },
+                ],
+            },
+        },
+        max_tokens=128,
+        protected_keys=("success", "adaptive_context_pack"),
+    )
+
+    assert json_tokens(result) <= 128
+    assert result["response_budget"]["original_tokens"] > 128
+    assert result["adaptive_context_pack"]["evidence"][0] == {
+        "evidence_id": "E-complete",
+        "path": "src/later.py",
+        "start_line": 20,
+        "end_line": 24,
+        "source": "deterministic",
+    }
+
+
+def test_budget_rejection_uses_later_complete_legacy_citation() -> None:
+    result = budget_response(
+        {
+            "success": True,
+            "context_pack": {
+                "context_id": "legacy-ctx",
+                "repo_revision": "rev-legacy",
+                "evidence": [
+                    {"evidence_id": "E-incomplete"},
+                    {
+                        "evidence_id": "E-legacy-complete",
+                        "path": "src/legacy-later.py",
+                        "start_line": 30,
+                        "end_line": 35,
+                        "source": "deterministic",
+                        "content": "private detail " * 500,
+                    },
+                ],
+            },
+        },
+        max_tokens=220,
+        protected_keys=("success", "context_pack"),
+    )
+
+    assert json_tokens(result) <= 220
+    assert result["response_budget"]["original_tokens"] > 220
+    assert result["context_pack"]["evidence"][0] == {
+        "evidence_id": "E-legacy-complete",
+        "path": "src/legacy-later.py",
+        "start_line": 30,
+        "end_line": 35,
+        "source": "deterministic",
+    }
+
+
+def test_budget_rejection_preserves_bounded_error_and_retryability() -> None:
+    result = budget_response(
+        {
+            "success": False,
+            "status_code": 503,
+            "terminal": True,
+            "retryable": True,
+            "error": "context backend unavailable",
+            "adaptive_context_pack": {
+                "context_id": "ctx-error",
+                "repo_revision": "rev-error",
+                "evidence": [{
+                    "evidence_id": "E-error",
+                    "path": "src/context.py",
+                    "start_line": 7,
+                    "end_line": 9,
+                    "source": "deterministic",
+                    "content": "private backend detail " * 500,
+                }],
+            },
+        },
+        max_tokens=128,
+        protected_keys=("success", "status_code", "terminal", "retryable", "error", "adaptive_context_pack"),
+    )
+
+    assert json_tokens(result) <= 128
+    assert result["success"] is False
+    assert result["status_code"] == 503
+    assert result["terminal"] is True
+    assert result["retryable"] is True
+    assert result["error"] == "context backend unavailable"
+    assert result["adaptive_context_pack"]["context_id"] == "ctx-error"
+    assert "content" not in repr(result["adaptive_context_pack"])
