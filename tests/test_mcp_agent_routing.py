@@ -616,6 +616,39 @@ def test_local_ai_task_vision_forwards_frontend_review_context(monkeypatch) -> N
     assert captured["json_schema"] == {"type": "object"}
 
 
+@pytest.mark.parametrize(
+    ("language", "expected_language"),
+    [("cs", "cs"), (" AUTO ", None)],
+)
+def test_local_ai_task_transcribe_forwards_only_explicit_language_hint(
+    monkeypatch, language: str, expected_language: str | None
+) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, "payload": payload, "kwargs": kwargs})
+        return {"success": True, "text": "recognized"}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+
+    result = local_ai_mcp.local_ai_task(
+        action="transcribe",
+        task="transcribe this recording",
+        candidate="recording.wav",
+        model="base",
+        language=language,
+    )
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/task/transcribe"
+    assert captured["payload"]["audio_path"] == "recording.wav"
+    assert captured["payload"]["model"] == "base"
+    if expected_language is None:
+        assert "language" not in captured["payload"]
+    else:
+        assert captured["payload"]["language"] == expected_language
+
+
 def test_local_ai_task_forwards_continue_with_opaque_conversation_id(monkeypatch) -> None:
     captured = {}
 

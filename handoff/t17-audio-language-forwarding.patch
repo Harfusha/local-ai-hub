@@ -1,0 +1,62 @@
+diff --git a/src/local_ai_hub/mcp_server.py b/src/local_ai_hub/mcp_server.py
+index a6dd122..89f1c16 100644
+--- a/src/local_ai_hub/mcp_server.py
++++ b/src/local_ai_hub/mcp_server.py
+@@ -1496,9 +1496,14 @@
+                 payload[name] = value
+         return _compact(CLIENT.post("/api/task/vision", payload, timeout=_timeout("model")), "delegate")
+     if action == "transcribe":
+-        return _compact(CLIENT.post("/api/task/transcribe", {
+-            "audio_path": candidate or context or task or prompt, "model": model,
+-        }, timeout=_timeout("long")), "delegate")
++        transcribe_payload = {
++            "audio_path": candidate or context or task or prompt,
++            "model": model,
++        }
++        language_hint = str(language or "").strip()
++        if language_hint and language_hint.casefold() != "auto":
++            transcribe_payload["language"] = language_hint
++        return _compact(CLIENT.post("/api/task/transcribe", transcribe_payload, timeout=_timeout("long")), "delegate")
+     if action == "eval_suite":
+         eval_payload: dict[str, Any] = {"suite_name": task or prompt or "default"}
+         if model:
+diff --git a/tests/test_mcp_agent_routing.py b/tests/test_mcp_agent_routing.py
+index ce041ee..d933635 100644
+--- a/tests/test_mcp_agent_routing.py
++++ b/tests/test_mcp_agent_routing.py
+@@ -657,3 +657,35 @@
+     assert result["success"] is False
+     assert result["unsupported"] is True
+     assert "absolute" in result["error"]
++
++@pytest.mark.parametrize(
++    ("language", "expected_language"),
++    [("cs", "cs"), (" AUTO ", None)],
++)
++def test_local_ai_task_transcribe_forwards_only_explicit_language_hint(
++    monkeypatch, language: str, expected_language: str | None
++) -> None:
++    captured = {}
++
++    def fake_post(path, payload, **kwargs):
++        captured.update({"path": path, "payload": payload, "kwargs": kwargs})
++        return {"success": True, "text": "recognized"}
++
++    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
++
++    result = local_ai_mcp.local_ai_task(
++        action="transcribe",
++        task="transcribe this recording",
++        candidate="recording.wav",
++        model="base",
++        language=language,
++    )
++
++    assert result["success"] is True
++    assert captured["path"] == "/api/task/transcribe"
++    assert captured["payload"]["audio_path"] == "recording.wav"
++    assert captured["payload"]["model"] == "base"
++    if expected_language is None:
++        assert "language" not in captured["payload"]
++    else:
++        assert captured["payload"]["language"] == expected_language

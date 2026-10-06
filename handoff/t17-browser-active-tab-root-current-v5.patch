@@ -1,0 +1,27 @@
+diff --git a/browser_bridge/background.js b/browser_bridge/background.js
+--- a/browser_bridge/background.js
++++ b/browser_bridge/background.js
+@@ -125,6 +125,7 @@
+     if (active.id !== tab.id || active.windowId !== tab.windowId) return {status: "tab_mismatch"};
+     try {
+       const current = await timed(Promise.resolve().then(() => chrome.tabs.get(tab.id)), CAPTURE_TIMEOUT_MS);
++      if (!current || typeof current.url !== "string" || !current.url) return {status: "permission_denied"};
+       return {status: "ok", tab: current};
+     } catch (error) {
+       if (isTimeout(error)) return {status: "timeout"};
+diff --git a/tests/fixtures/browser_bridge/current_tab_harness.js b/tests/fixtures/browser_bridge/current_tab_harness.js
+--- a/tests/fixtures/browser_bridge/current_tab_harness.js
++++ b/tests/fixtures/browser_bridge/current_tab_harness.js
+@@ -302,8 +302,10 @@
+   assert.equal(mutated.posts.some((post) => post.screenshot), false);
+   for (const options of [{missingUrl: true}, {emptyUrl: true}]) {
+     const missingOrEmpty = await runBackground(options);
+-    assert.equal(missingOrEmpty.result.error_code, "target_changed");
+-    assert.equal(missingOrEmpty.posts.at(-1).capture_error, "target_changed");
++    assert.equal(missingOrEmpty.result.error_code, "permission_denied");
++    assert.equal(missingOrEmpty.posts.length, 0);
++    assert.equal(missingOrEmpty.serverStaged.size, 0);
++    assert.equal(missingOrEmpty.artifactCommits, 0);
+     assert.equal(missingOrEmpty.posts.some((post) => post.screenshot), false);
+   }
+   assert.equal((await runBackground({closed: true})).result.error_code, "closed_tab");

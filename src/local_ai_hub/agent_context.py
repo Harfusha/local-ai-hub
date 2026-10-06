@@ -46,6 +46,7 @@ class ContextRequest:
     preload_profile: str = ""
     repo_revision: str = ""
     since_hash: str = ""
+    scoped_task_only: bool = False
     coordination_id: str = ""
     settings_digest: str | None = None
     path_hints: tuple[ContextPathHint, ...] = ()
@@ -1039,8 +1040,11 @@ class ContextCompiler:
         if getattr(self, "blackboard", None) is not None:
             boards_to_check: list[str] = []
             if request.task_id:
-                boards_to_check.extend([request.task_id, f"task:{request.task_id}", f"swarm:{request.task_id}"])
-            boards_to_check.append("global")
+                boards_to_check.extend([request.task_id, f"task:{request.task_id}"])
+                if not request.scoped_task_only:
+                    boards_to_check.append(f"swarm:{request.task_id}")
+            if not request.scoped_task_only:
+                boards_to_check.append("global")
             for b_id in boards_to_check:
                 try:
                     res = self.blackboard.get(b_id)

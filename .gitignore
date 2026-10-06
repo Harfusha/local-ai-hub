@@ -41,6 +41,7 @@ build/
 htmlcov/
 
 # Logs / temporary files
+/.t18-sync-tmp/
 *.log
 *.tmp
 *.bak
@@ -71,5 +72,7 @@ config.runtime.toml
 /.sync-t01-runtime/
 # T14 reconciliation-only pytest runtime; keep out of committed source handoff.
 /.t14-sync-runtime-20261006/
+# T13 targeted integration checks: local runtime artifacts, never source handoff.
+/.sync-validation-t13-*/
 # Owned temporary state from targeted 069d manual merge checks.
 /.sync-069d-runtime/

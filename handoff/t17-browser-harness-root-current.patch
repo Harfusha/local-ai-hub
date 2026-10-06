@@ -1,0 +1,76 @@
+--- a/tests/fixtures/browser_bridge/current_tab_harness.js
++++ b/tests/fixtures/browser_bridge/current_tab_harness.js
+@@ -123,7 +123,7 @@
+   const webCryptoPage = await webCryptoContext.captureCurrentTab();
+ assert.equal(webCryptoPage.document_state_token, page.document_state_token);
+ 
+-async function runBackground({timeout = null, hubTimeout = null, stageTimeout = false, finalPostTimeout = null, dropFirstCommitResponse = false, queryTimeout = false, getTimeout = false, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false, mutateDocumentAfterScreenshot = false, missingUrl = false, emptyUrl = false, token = ""} = {}) {
++async function runBackground({timeout = null, hubTimeout = null, stageTimeout = false, finalPostTimeout = null, dropFirstCommitResponse = false, disconnectAfterStage = false, queryTimeout = false, getTimeout = false, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false, mutateDocumentAfterScreenshot = false, missingUrl = false, emptyUrl = false, token = ""} = {}) {
+   let activeId = closed ? null : 7;
+   const posts = [];
+   const committedPosts = [];
+@@ -147,6 +147,9 @@
+         get: async () => { if (getTimeout) return new Promise(() => {}); return {...currentTab}; },
+         query: async () => { if (queryTimeout) return new Promise(() => {}); if (permission) throw new Error("permission denied"); return activeId === null ? [] : [{id: activeId, windowId: 3}]; },
+         sendMessage: async (tabId, message) => {
++          if (disconnectAfterStage && message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && serverStaged.size > 0) {
++            throw new Error("The message port closed before a response was received.");
++          }
+           if (message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && navigateAfterScreenshot) {
+             return {...page, url: "https://fixture.test/other", target_origin: "https://fixture.test", document_token: "document:new", document_state_token: "state:new"};
+           }
+@@ -285,6 +288,11 @@
+   assert.equal(navigated.result.error_code, "target_changed");
+   assert.equal(navigated.posts.at(-1).capture_error, "target_changed");
+   assert.equal(navigated.posts.some((post) => post.screenshot), false);
++  const disconnected = await runBackground({disconnectAfterStage: true});
++  assert.equal(disconnected.result.error_code, "target_changed");
++  assert.equal(disconnected.serverStaged.size, 0);
++  assert.equal(disconnected.committedPosts.length, 0);
++  assert.equal(disconnected.artifactCommits, 0);
+   const mutated = await runBackground({mutateDocumentAfterScreenshot: true});
+   assert.equal(captureContext.history.state.step, 2);
+   assert.match(captureContext.document.documentElement.outerHTML, /DOM changed after screenshot/);
+@@ -301,7 +309,12 @@
+-  assert.equal((await runBackground({permission: true})).result.error_code, "permission_denied");
++  const permissionDenied = await runBackground({permission: true});
++  assert.equal(permissionDenied.result.error_code, "permission_denied");
++  assert.equal(permissionDenied.posts.length, 0);
++  assert.equal(permissionDenied.serverStaged.size, 0);
++  assert.equal(permissionDenied.committedPosts.length, 0);
++  assert.equal(permissionDenied.artifactCommits, 0);
+   const tokenRun = await runBackground({token: "0123456789abcdef"});
+   assert.equal(tokenRun.result.success, true);
+-  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "timeout", "screenshot-timeout", "hub-timeout", "final-post-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token"]}));
++  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "permission-denied-no-capture", "timeout", "screenshot-timeout", "hub-timeout", "final-post-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "disconnect-after-stage", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token"]}));
+ }
+ 
+ runFixture().catch((error) => { console.error(error); process.exitCode = 1; });
+--- a/tests/test_browser_bridge_runtime.py
++++ b/tests/test_browser_bridge_runtime.py
+@@ -23,4 +23,4 @@
+     )
+     evidence = json.loads(result.stdout)
+     assert evidence["success"] is True
+-    assert evidence["cases"] == ["success", "timeout", "screenshot-timeout", "hub-timeout", "final-post-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token"]
++    assert evidence["cases"] == ["success", "permission-denied-no-capture", "timeout", "screenshot-timeout", "hub-timeout", "final-post-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "disconnect-after-stage", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token"]
+--- a/tests/test_http_vision_routes.py
++++ b/tests/test_http_vision_routes.py
+@@ -224,12 +224,17 @@ def test_browser_stage_commit_and_abandon_http_lifecycle(tmp_path: Path) -> None:
+         assert staged["staged"] is True
+         assert "bundle_artifact_id" not in staged
+ 
+         request = {key: payload[key] for key in ("capability", "origin", "tab_id", "window_id", "request_id")}
+         committed = _post(f"{base}/api/browser/capture/commit", request)
++        artifacts_after_commit = app.artifacts.list(limit=100)
+         replay = _post(f"{base}/api/browser/capture/commit", request)
+         assert committed["success"] is True
+         assert committed["bundle_artifact_id"]
+         assert replay == committed
++        assert committed["bundle_artifact_id"] in {item["artifact_id"] for item in artifacts_after_commit}
++        stored_bundle = app.artifacts.get(committed["bundle_artifact_id"])
++        assert stored_bundle["success"] is True
++        assert app.artifacts.list(limit=100) == artifacts_after_commit
+ 
+         abandoned_capability = _post(
+             f"{base}/api/browser/capability",

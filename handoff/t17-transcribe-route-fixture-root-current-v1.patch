@@ -1,0 +1,12 @@
+diff --git a/tests/test_transcription_contract.py b/tests/test_transcription_contract.py
+--- a/tests/test_transcription_contract.py
++++ b/tests/test_transcription_contract.py
+@@ -453,7 +453,7 @@
+     monkeypatch.setattr(
+         app.services,
+         "transcribe",
+-        lambda payload, tenant: {
++        lambda payload, tenant, **_kwargs: {
+             "success": False,
+             "model": payload.get("model"),
+             "language": payload.get("language"),

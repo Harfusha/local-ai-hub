@@ -1,0 +1,45 @@
+diff --git a/src/local_ai_hub/services.py b/src/local_ai_hub/services.py
+--- a/src/local_ai_hub/services.py
++++ b/src/local_ai_hub/services.py
+@@ -2512,8 +2512,12 @@
+                 def is_audio_decode_skip(value: str) -> bool:
+                     return any(
+                         line.startswith("Skipping ") and " due to RuntimeError:" in line
+                         for line in value.splitlines()
+                     )
+ 
+-                if is_audio_decode_skip(str(proc.stdout or "")) or is_audio_decode_skip(transcript):
++                if (
++                    is_audio_decode_skip(str(proc.stdout or ""))
++                    or is_audio_decode_skip(str(proc.stderr or ""))
++                    or is_audio_decode_skip(transcript)
++                ):
+                     return {
+diff --git a/tests/test_transcription_contract.py b/tests/test_transcription_contract.py
+--- a/tests/test_transcription_contract.py
++++ b/tests/test_transcription_contract.py
+@@ -422,0 +423,24 @@
++
++
++def test_whisper_decode_skip_stderr_does_not_report_successful_transcription(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    audio = tmp_path / "invalid.wav"
++    audio.write_bytes(b"not a RIFF WAV file")
++    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
++
++    def whisper_skip(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
++        output_dir = Path(args[args.index("--output_dir") + 1])
++        output_dir.mkdir(parents=True, exist_ok=True)
++        (output_dir / f"{audio.stem}.json").write_text(
++            json.dumps({"text": "transcript that must be discarded"}), encoding="utf-8"
++        )
++        notice = f"Skipping {audio} due to RuntimeError: Failed to load audio: invalid data"
++        return subprocess.CompletedProcess(args, 0, stdout="", stderr=notice)
++
++    monkeypatch.setattr(process_utils, "run_hidden", whisper_skip)
++    result = _service().transcribe({"audio": str(audio), "model": "base"}, "task-17")
++
++    assert result["success"] is False
++    assert result["reason"] == "invalid_audio"
++    assert not result.get("text")

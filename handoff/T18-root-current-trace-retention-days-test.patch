@@ -1,0 +1,34 @@
+diff --git a/tests/test_debug_traces.py b/tests/test_debug_traces.py
+--- a/tests/test_debug_traces.py
++++ b/tests/test_debug_traces.py
+@@ -1,7 +1,9 @@
+ from __future__ import annotations
+ 
+ import json
++import sqlite3
+ import time
++from contextlib import closing
+ 
+ import pytest
+ 
+@@ -43,6 +45,20 @@
+     assert store.max_session_text_bytes == 64 * 1024 * 1024
+ 
+ 
++
++def test_trace_retention_days_override_terminal_ttl_and_are_reported(tmp_path):
++    store = DebugTraceStore(_config(tmp_path, terminal_ttl_seconds=10, retention_days=2))
++    trace_id = store.start(kind="api_request", tenant="tenant")
++    store.finish(trace_id, state="done", response={"ok": True})
++
++    with closing(sqlite3.connect(store.path)) as con:
++        updated_at, expires_at = con.execute(
++            "SELECT updated_at,expires_at FROM traces WHERE trace_id=?", (trace_id,)
++        ).fetchone()
++
++    assert expires_at - updated_at >= 2 * 86400 - 1
++    assert store.stats()["retention_days"] == 2
++
+ def test_trace_detail_preserves_ordered_full_debug_content(tmp_path):
+     store = DebugTraceStore(_config(tmp_path))
+     trace_id = store.start(kind="async_job", tenant="tenant", agent="codex", action="reason")

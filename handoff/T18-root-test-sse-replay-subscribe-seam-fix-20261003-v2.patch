@@ -1,0 +1,21 @@
+diff --git a/tests/test_sse_events_stream.py b/tests/test_sse_events_stream.py
+--- a/tests/test_sse_events_stream.py
++++ b/tests/test_sse_events_stream.py
+@@ -111,12 +111,13 @@ def test_sse_stream_does_not_lose_event_between_replay_and_subscribe(tmp_path: Path, monkeypatch):
+     store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+     store.append(AgentEvent.create("task-1", "task.created", {"step": 1}, "k1"))
+     original_event_page = store.event_page
+ 
+-    def event_page_after_subscribe(*args, **kwargs):
+-        store.append(AgentEvent.create("task-1", "task.updated", {"step": 2}, "k2"))
+-        return original_event_page(*args, **kwargs)
++    def event_page_then_publish(*args, **kwargs):
++        replay = original_event_page(*args, **kwargs)
++        store.append(AgentEvent.create("task-1", "task.updated", {"step": 2}, "k2"))
++        return replay
+ 
+-    monkeypatch.setattr(store, "event_page", event_page_after_subscribe)
++    monkeypatch.setattr(store, "event_page", event_page_then_publish)
+ 
+     class DummyApp:
+         agent_state = store

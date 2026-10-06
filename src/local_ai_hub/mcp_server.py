@@ -68,6 +68,7 @@ from local_ai_hub.operation_contracts import (
 from local_ai_hub.state_paths import configured_state_dir
 from local_ai_hub.semantic_quality import assess_semantic_result
 from local_ai_hub.evidence_contract import evidence_meta
+from local_ai_hub.telemetry import _safe_error_metadata
 from local_ai_hub.operational_mode import (
     OperationalModeSnapshot,
     load_operational_mode,
@@ -460,6 +461,39 @@ def _semantic_handoff_contract(enabled: bool, status_enabled: bool = True) -> st
     )
 
 
+def _async_job_lifecycle_contract(*, include_mcp_tool: bool = True) -> str:
+    contract = (
+        " Async status, wait, result, and cancel work with model execution disabled; wait defaults to 90 seconds and is capped by async_jobs.wait_max_seconds and the client transport budget. A timed-out wait returns current state with wait_timeout_seconds and does not cancel the job; call result after completion instead of polling."
+        " Compact lifecycle responses preserve job_id, state, artifact_id (empty until available), and expires_at (Unix timestamp seconds). Terminal job state expires at expires_at; async_jobs.result_ttl_seconds defaults to 259,200 seconds (72 hours), and artifact-store TTL must cover it."
+        " Queued cancellation immediately returns terminal cancelled. Running cancellation returns running with cancel_requested=true as acknowledgement; worker completion supplies final state."
+        " Direct HTTP lifecycle requests use `POST /api/async-jobs`: submit sends action=submit, job_action, and optional stable request_id; controls send action=status|wait|result|cancel with job_id, and wait also sends timeout_seconds."
+    )
+    if include_mcp_tool:
+        contract += (
+            " MCP exposes `local_ai_task(action=submit|status|wait|result|cancel, ...)`;"
+            " `HubClient.submit_async_job`, `async_job_status`, `wait_async_job`, `async_job_result`, and `cancel_async_job` call the same HTTP path."
+        )
+    else:
+        contract += (
+            " MCP and HubClient retain status, wait, result, and cancel controls when model execution is disabled."
+        )
+    return contract + (
+        " Recovery may replay only explicitly replay-safe actions with a stable request_id and remaining attempts;"
+        " command-backed and unclassified actions become terminal `outcome_unknown`."
+    )
+
+
+def _task_delivery_contract() -> str:
+    return (
+        " Delivery: `sync` is default; `async` submits immediately on mapped HTTP routes; `auto` needs a positive `latency_budget_ms` and at least ten endpoint observations with p95 above budget, while sparse history stays inline."
+        " HTTP delivery maps `/api/delegate`, `/api/reason`, `/api/review`, `/api/review/diff`, `/api/second-opinion`, `/api/compress`, `/api/route`, and `/api/delegate/batch` to durable actions."
+        " For `delivery=auto` on `/api/review/diff`, a positive `review.max_queue_age_ms` exceeded by queue age returns a terminal 503 before cold-start handling; otherwise positive budget with fewer than five samples selects async as `cold_start_review_diff`."
+        " Direct `submit` job_action accepts `batch`, `compress`, `delegate`, `reason`, `review`, `review_diff`, `route`, `second_opinion`, or `speculative_lint`; body `request_id` is the idempotency key and `X-LocalAI-Request-ID` is a separate journal ID."
+        f"{_async_job_lifecycle_contract()}"
+        " Start synchronously with HTTP POST `/api/delegate` or `/api/reason` or MCP `local_ai_task(action=delegate|explore|reason, conversation=true, delivery=sync)`; continue via HTTP `POST /api/conversations/continue` (`conversation_id`, `task`, optional `context`) or MCP `local_ai_task(action=continue, conversation_id=..., task=..., context=...)`."
+        " `HubClient` has no dedicated start helper; use `HubClient.post` for `/api/delegate` or `/api/reason`. `HubClient.continue_conversation(conversation_id, prompt, context=...)` sends `conversation_id`, maps `prompt` to `task`, and includes optional `context`."
+        " Conversation IDs are tenant-scoped; model settings stay pinned and only one turn runs at a time. Defaults: 12 turns, prompt limit from `model_conversations.max_prompt_tokens` (fallback `token_saving.max_local_input_tokens`, default 56,000), idle/active TTLs of 900/1,800 seconds, and capacity 1,000. State is process-memory only and lost on restart."
+    )
 def _desc_task() -> str:
     local_enabled = FEATURES.tasks and FEATURES.has_any_model()
     if not local_enabled:
@@ -983,6 +1017,82 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
     return _normalize_deterministic(account_projection(raw_value, compacted))
 
 
+_TELEMETRY_DETAIL_LABELS = {
+    "status": frozenset({"complete", "incomplete"}),
+    "omitted_sections": frozenset({"decision_grade_lists", "pending_events", "writer_failures"}),
+}
+_TELEMETRY_HOTSPOT_LABELS = {
+    "type": frozenset({"reliability", "latency", "efficiency", "quality", "observability"}),
+    "signal": frozenset({
+        "inference_failure_rate", "queue_wait", "low_cache_hit_rate",
+        "frequent_model_fallbacks", "frequent_ollama_retries", "telemetry_queue_drops",
+    }),
+}
+_TELEMETRY_SENSITIVE_TEXT_FIELD_RE = re.compile(
+    r"(?i)(error|message|exception|reason|prompt|source|body|payload|content|token|secret|password|authorization|note|raw)"
+)
+
+
+def _sanitize_telemetry_payload(value: Any, *, field: str = "", context: str = "") -> Any:
+    """Preserve metrics and known labels while removing untrusted diagnostic text."""
+    if field in {"detail", "queue", "hotspots", "decision_grade"}:
+        context = field
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitize_telemetry_payload(item, field=str(key), context=context)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_telemetry_payload(item, field=field, context=context) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    if _TELEMETRY_SENSITIVE_TEXT_FIELD_RE.search(field):
+        return "Error details omitted"
+    if context == "detail":
+        if field == "omitted_sections":
+            return value if value in _TELEMETRY_DETAIL_LABELS["omitted_sections"] else "Error details omitted"
+        return value if value in _TELEMETRY_DETAIL_LABELS.get(field, frozenset()) else "Error details omitted"
+    if context == "queue":
+        return "Error details omitted"
+    if context == "hotspots":
+        return value if value in _TELEMETRY_HOTSPOT_LABELS.get(field, frozenset()) else "Error details omitted"
+    if context == "decision_grade":
+        if field in {"action", "component", "error_type", "operation", "route", "signal", "type"}:
+            return _safe_error_metadata(value)
+        return "Error details omitted"
+    if context == "error_fingerprints" and field in {"component", "error_type", "operation"}:
+        return _safe_error_metadata(value)
+    if context == "by_operation" and field in {"action", "event_type"}:
+        return _safe_error_metadata(value)
+    if context == "window" and field == "scope":
+        return value if value in {"window", "process"} else "Error details omitted"
+    return _safe_error_metadata(value)
+
+
+def _telemetry_failure(value: Any) -> dict[str, Any]:
+    if isinstance(value, BaseException):
+        retryable = isinstance(value, (TimeoutError, ConnectionError, OSError))
+        status_code = 503 if retryable else 500
+        terminal = not retryable
+    else:
+        status = value if isinstance(value, dict) else {}
+        supplied_status = status.get("status_code")
+        status_code = supplied_status if type(supplied_status) is int and 100 <= supplied_status <= 599 else 500
+        retryable = status.get("retryable") if type(status.get("retryable")) is bool else status_code >= 500
+        terminal = status.get("terminal") if type(status.get("terminal")) is bool else not retryable
+    result: dict[str, Any] = {
+        "success": False,
+        "status_code": status_code,
+        "terminal": terminal,
+        "retryable": retryable,
+        "error": "Telemetry report failed; details omitted",
+    }
+    if isinstance(value, dict):
+        for key in ("degraded", "stale"):
+            if type(value.get(key)) is bool:
+                result[key] = value[key]
+    return result
 def _preserve_contract_state(raw: Any, projected: Any) -> Any:
     """Restore bounded result-state fields after projection and compaction."""
     state_keys = {
@@ -1025,17 +1135,17 @@ def _telemetry_status_projection(value: Any) -> dict[str, Any]:
     )
     projected: dict[str, Any] = {
         "success": envelope_success and bool(report.get("success", True)),
-        "window": report.get("window") if isinstance(report.get("window"), dict) else {},
-        "summary": {key: summary[key] for key in keep_summary if key in summary},
-        "queue": report.get("queue") if isinstance(report.get("queue"), dict) else summary.get("queue", {}),
-        "hotspots": list(report.get("hotspots") or [])[:12],
-        "by_operation": list(report.get("by_operation") or [])[:20],
-        "error_fingerprints": list(report.get("error_fingerprints") or [])[:12],
-        "detail": report.get("detail") if isinstance(report.get("detail"), dict) else {},
-        "decision_grade": report.get("decision_grade") if isinstance(report.get("decision_grade"), dict) else {},
+        "window": _sanitize_telemetry_payload(report.get("window") if isinstance(report.get("window"), dict) else {}, field="window"),
+        "summary": _sanitize_telemetry_payload({key: summary[key] for key in keep_summary if key in summary}, field="summary"),
+        "queue": _sanitize_telemetry_payload(report.get("queue") if isinstance(report.get("queue"), dict) else summary.get("queue", {}), field="queue"),
+        "hotspots": _sanitize_telemetry_payload(list(report.get("hotspots") or [])[:12], field="hotspots"),
+        "by_operation": _sanitize_telemetry_payload(list(report.get("by_operation") or [])[:20], field="by_operation"),
+        "error_fingerprints": _sanitize_telemetry_payload(list(report.get("error_fingerprints") or [])[:12], field="error_fingerprints"),
+        "detail": _sanitize_telemetry_payload(report.get("detail") if isinstance(report.get("detail"), dict) else {}, field="detail"),
+        "decision_grade": _sanitize_telemetry_payload(report.get("decision_grade") if isinstance(report.get("decision_grade"), dict) else {}, field="decision_grade"),
     }
     if value.get("error") or report.get("error"):
-        projected["error"] = value.get("error") or report.get("error")
+        projected.update(_telemetry_failure(value if value.get("error") else report))
     return projected
 
 
@@ -1554,8 +1664,15 @@ def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", s
     if detail == "agent_state":
         return _compact(CLIENT.status(detail="agent_state"), "status")
     if detail == "telemetry":
-        report = CLIENT.get(f"/api/telemetry/report?days=30&scope={scope}")
-        projected = _preserve_contract_state(report, _telemetry_status_projection(report))
+        try:
+            report = CLIENT.get(f"/api/telemetry/report?days=30&scope={scope}")
+        except Exception as exc:
+            return _compact(_telemetry_failure(exc), "status")
+        projected = _telemetry_status_projection(report)
+        safe_state = _sanitize_telemetry_payload(report)
+        if isinstance(safe_state, dict) and "error" in projected:
+            safe_state["error"] = projected["error"]
+        projected = _preserve_contract_state(safe_state, projected)
         return _compact(projected, "status")
     if detail == "full":
         status = CLIENT.get(f"/api/status?scope={scope}")

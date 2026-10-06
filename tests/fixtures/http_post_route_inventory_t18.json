@@ -1,0 +1,3848 @@
+{
+  "schema_version": 1,
+  "preimages": {
+    "root": {
+      "head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+      "sha256": "c97aa26a4d84be35fe7bfa1a18fdbb5ae9a5ba393f73d541d38e3f2dcb33d93d",
+      "do_POST_lines": [
+        2769,
+        5183
+      ],
+      "do_POST_line_count": 2415
+    },
+    "candidate": {
+      "head": "a1b04bb3bf88dc26a4d17409baf4ae6e2845018f",
+      "sha256": "771d62ea4c5809255e985f40cf46e59a8093af2f5381813e49a1c74bdfaa93f0",
+      "do_POST_lines": [
+        2720,
+        4689
+      ],
+      "do_POST_line_count": 1970
+    }
+  },
+  "method_envelopes": {
+    "OPTIONS": {
+      "root": {
+        "preimage_lines": [
+          2055,
+          2071
+        ],
+        "selection": "/api/browser/ prefix OR exact /api/vision/review",
+        "order": "APP readiness; path selection; host/origin validation; 204"
+      },
+      "candidate": {
+        "preimage_lines": [
+          2051,
+          2067
+        ],
+        "selection": "/api/browser/ prefix OR exact /api/vision/review",
+        "order": "APP readiness; path selection; host/origin validation; 204"
+      },
+      "changed_by_T18": false
+    },
+    "GET": {
+      "root": {
+        "preimage_lines": [
+          2073,
+          2671
+        ],
+        "parameter_prefixes": [
+          "/api/agent-state/swarm/ at 2338",
+          "/api/debug-traces/ at 2411"
+        ],
+        "order": "/health before APP; auth/public-shell and loopback /api/mode checks; mode gate; tracing; route branches; 404"
+      },
+      "candidate": {
+        "preimage_lines": [
+          2069,
+          2718
+        ],
+        "parameter_prefixes": [
+          "/api/agent-state/swarm/ at 2367",
+          "/api/debug-traces/ at 2439"
+        ],
+        "order": "/health before APP; tracing; auth/public-shell and loopback /api/mode checks; route branches; 404"
+      },
+      "changed_by_T18": false
+    },
+    "POST": {
+      "root": {
+        "preimage_lines": [
+          2769,
+          5183
+        ],
+        "order": [
+          "APP readiness",
+          "parse URL path",
+          "authorization",
+          "begin trace",
+          "request-id validation",
+          "early /api/admin/mode handler",
+          "content-type",
+          "/api/bundle/import mode check/content-type/raw body/recovery/handler fast path",
+          "JSON parse and payload validation",
+          "operational-mode gate",
+          "early telemetry-accounting recovery/handler",
+          "generic recovery claim",
+          "conversation trace pre-dispatch",
+          "remaining recovery journal replay/running/conflict/begin checks",
+          "ordered static route branches",
+          "404"
+        ],
+        "route_selectors": 160,
+        "distinct_path_literals": 224,
+        "special": "/api/embed has two ordered branch matches; bundle import selector precedes its raw ZIP handler"
+      },
+      "candidate": {
+        "preimage_lines": [
+          2720,
+          4689
+        ],
+        "order": [
+          "APP readiness",
+          "parse URL path",
+          "begin trace",
+          "authorization",
+          "content-type and selector",
+          "/api/bundle/import raw ZIP fast path before JSON and operational-mode gates",
+          "JSON parse and payload validation",
+          "operational-mode gate",
+          "early admin/mode and telemetry handlers",
+          "conversation trace pre-dispatch",
+          "recovery journal lookup/wait/conflict/begin",
+          "ordered static route branches",
+          "404"
+        ],
+        "route_selectors": 160,
+        "distinct_path_literals": 224,
+        "special": "/api/embed has two ordered branch matches; conversation pre-dispatch stays payload-dependent and inline"
+      },
+      "registry_scope": "POST exact paths and exact alias sets only. Auth, mode, body, idempotency, handler body, _async_delivery, nested action selection, and 404 catch-all stay outside registry edits."
+    }
+  },
+  "dynamic_post_pre_dispatch": {
+    "line_candidate": 2837,
+    "line_root": 3088,
+    "condition": "/api/conversations/continue OR (/api/delegate or /api/reason when payload.conversation is truthy)",
+    "preserve_inline": true
+  },
+  "post_route_rules": [
+    {
+      "line": 2785,
+      "paths": [
+        "/api/admin/mode"
+      ],
+      "route_id": "post_admin_mode_1"
+    },
+    {
+      "line": 3022,
+      "paths": [
+        "/api/bundle/import"
+      ],
+      "route_id": "post_bundle_import_1"
+    },
+    {
+      "line": 3059,
+      "paths": [
+        "/api/telemetry/tool-accounting"
+      ],
+      "route_id": "post_telemetry_tool_accounting_1"
+    },
+    {
+      "line": 3109,
+      "paths": [
+        "/api/work-orders"
+      ],
+      "route_id": "post_work_orders_1"
+    },
+    {
+      "line": 3127,
+      "paths": [
+        "/api/config/update"
+      ],
+      "route_id": "post_config_update_1"
+    },
+    {
+      "line": 3165,
+      "paths": [
+        "/api/control"
+      ],
+      "route_id": "post_control_1"
+    },
+    {
+      "line": 3191,
+      "paths": [
+        "/api/browser/capability"
+      ],
+      "route_id": "post_browser_capability_1"
+    },
+    {
+      "line": 3210,
+      "paths": [
+        "/api/browser/capture/stage",
+        "/api/browser/capture/commit",
+        "/api/browser/capture/abandon"
+      ],
+      "route_id": "post_browser_capture_abandon_1"
+    },
+    {
+      "line": 3228,
+      "paths": [
+        "/api/browser/capture"
+      ],
+      "route_id": "post_browser_capture_1"
+    },
+    {
+      "line": 3246,
+      "paths": [
+        "/api/delegate"
+      ],
+      "route_id": "post_delegate_1"
+    },
+    {
+      "line": 3251,
+      "paths": [
+        "/api/conversations/continue"
+      ],
+      "route_id": "post_conversations_continue_1"
+    },
+    {
+      "line": 3254,
+      "paths": [
+        "/api/async-jobs"
+      ],
+      "route_id": "post_async_jobs_1"
+    },
+    {
+      "line": 3273,
+      "paths": [
+        "/api/speculative-lint",
+        "/api/command/speculative-lint"
+      ],
+      "route_id": "post_command_speculative_lint_1"
+    },
+    {
+      "line": 3286,
+      "paths": [
+        "/api/agent-state/tasks"
+      ],
+      "route_id": "post_agent_state_tasks_1"
+    },
+    {
+      "line": 3548,
+      "paths": [
+        "/api/agent-state/memory"
+      ],
+      "route_id": "post_agent_state_memory_1"
+    },
+    {
+      "line": 3895,
+      "paths": [
+        "/api/agent-state/incidents"
+      ],
+      "route_id": "post_agent_state_incidents_1"
+    },
+    {
+      "line": 3974,
+      "paths": [
+        "/api/agent-state/verification"
+      ],
+      "route_id": "post_agent_state_verification_1"
+    },
+    {
+      "line": 4028,
+      "paths": [
+        "/api/agent-state/context"
+      ],
+      "route_id": "post_agent_state_context_1"
+    },
+    {
+      "line": 4166,
+      "paths": [
+        "/api/agent-state/learning"
+      ],
+      "route_id": "post_agent_state_learning_1"
+    },
+    {
+      "line": 4216,
+      "paths": [
+        "/api/agent-state/cleanup"
+      ],
+      "route_id": "post_agent_state_cleanup_1"
+    },
+    {
+      "line": 4222,
+      "paths": [
+        "/api/agent-state/blackboard"
+      ],
+      "route_id": "post_agent_state_blackboard_1"
+    },
+    {
+      "line": 4252,
+      "paths": [
+        "/api/agent-state/swarm/dispatch"
+      ],
+      "route_id": "post_agent_state_swarm_dispatch_1"
+    },
+    {
+      "line": 4264,
+      "paths": [
+        "/api/agent-state/swarm/step"
+      ],
+      "route_id": "post_agent_state_swarm_step_1"
+    },
+    {
+      "line": 4273,
+      "paths": [
+        "/api/agent-state/swarm/cancel"
+      ],
+      "route_id": "post_agent_state_swarm_cancel_1"
+    },
+    {
+      "line": 4280,
+      "paths": [
+        "/api/benchmark/run"
+      ],
+      "route_id": "post_benchmark_run_1"
+    },
+    {
+      "line": 4288,
+      "paths": [
+        "/api/delegate/repo"
+      ],
+      "route_id": "post_delegate_repo_1"
+    },
+    {
+      "line": 4290,
+      "paths": [
+        "/api/solve/repo"
+      ],
+      "route_id": "post_solve_repo_1"
+    },
+    {
+      "line": 4292,
+      "paths": [
+        "/api/route"
+      ],
+      "route_id": "post_route_1"
+    },
+    {
+      "line": 4294,
+      "paths": [
+        "/api/delegate/batch"
+      ],
+      "route_id": "post_delegate_batch_1"
+    },
+    {
+      "line": 4296,
+      "paths": [
+        "/api/review"
+      ],
+      "route_id": "post_review_1"
+    },
+    {
+      "line": 4298,
+      "paths": [
+        "/api/review/diff"
+      ],
+      "route_id": "post_review_diff_1"
+    },
+    {
+      "line": 4300,
+      "paths": [
+        "/api/reason"
+      ],
+      "route_id": "post_reason_1"
+    },
+    {
+      "line": 4302,
+      "paths": [
+        "/api/second-opinion"
+      ],
+      "route_id": "post_second_opinion_1"
+    },
+    {
+      "line": 4304,
+      "paths": [
+        "/api/compress"
+      ],
+      "route_id": "post_compress_1"
+    },
+    {
+      "line": 4306,
+      "paths": [
+        "/api/generate_tests"
+      ],
+      "route_id": "post_generate_tests_1"
+    },
+    {
+      "line": 4309,
+      "paths": [
+        "/api/patch/validate"
+      ],
+      "route_id": "post_patch_validate_1"
+    },
+    {
+      "line": 4312,
+      "paths": [
+        "/api/query/expand"
+      ],
+      "route_id": "post_query_expand_1"
+    },
+    {
+      "line": 4316,
+      "paths": [
+        "/api/audit_dependencies"
+      ],
+      "route_id": "post_audit_dependencies_1"
+    },
+    {
+      "line": 4323,
+      "paths": [
+        "/api/refactor_impact"
+      ],
+      "route_id": "post_refactor_impact_1"
+    },
+    {
+      "line": 4332,
+      "paths": [
+        "/api/resolve_imports"
+      ],
+      "route_id": "post_resolve_imports_1"
+    },
+    {
+      "line": 4341,
+      "paths": [
+        "/api/git/status"
+      ],
+      "route_id": "post_git_status_1"
+    },
+    {
+      "line": 4348,
+      "paths": [
+        "/api/repo/state",
+        "/api/repo_state"
+      ],
+      "route_id": "post_repo_state_1"
+    },
+    {
+      "line": 4359,
+      "paths": [
+        "/api/git/diff"
+      ],
+      "route_id": "post_git_diff_1"
+    },
+    {
+      "line": 4369,
+      "paths": [
+        "/api/git/history_search"
+      ],
+      "route_id": "post_git_history_search_1"
+    },
+    {
+      "line": 4378,
+      "paths": [
+        "/api/repo/hotspots",
+        "/api/hotspots"
+      ],
+      "route_id": "post_hotspots_1"
+    },
+    {
+      "line": 4387,
+      "paths": [
+        "/api/repo/generate_tests_for_diff",
+        "/api/generate_tests_for_diff"
+      ],
+      "route_id": "post_generate_tests_for_diff_1"
+    },
+    {
+      "line": 4396,
+      "paths": [
+        "/api/repo/cross_repo_contract",
+        "/api/cross_repo_contract"
+      ],
+      "route_id": "post_cross_repo_contract_1"
+    },
+    {
+      "line": 4404,
+      "paths": [
+        "/api/git/synthesize_commit"
+      ],
+      "route_id": "post_git_synthesize_commit_1"
+    },
+    {
+      "line": 4413,
+      "paths": [
+        "/api/test_matrix"
+      ],
+      "route_id": "post_test_matrix_1"
+    },
+    {
+      "line": 4420,
+      "paths": [
+        "/api/repo/affected_tests",
+        "/api/affected_tests"
+      ],
+      "route_id": "post_affected_tests_1"
+    },
+    {
+      "line": 4428,
+      "paths": [
+        "/api/repo/topology",
+        "/api/topology"
+      ],
+      "route_id": "post_repo_topology_1"
+    },
+    {
+      "line": 4435,
+      "paths": [
+        "/api/code/ast_rename",
+        "/api/ast_rename"
+      ],
+      "route_id": "post_ast_rename_1"
+    },
+    {
+      "line": 4446,
+      "paths": [
+        "/api/code/generate_mocks",
+        "/api/generate_mocks"
+      ],
+      "route_id": "post_code_generate_mocks_1"
+    },
+    {
+      "line": 4455,
+      "paths": [
+        "/api/security_audit"
+      ],
+      "route_id": "post_security_audit_1"
+    },
+    {
+      "line": 4463,
+      "paths": [
+        "/api/code-intelligence/query"
+      ],
+      "route_id": "post_code_intelligence_query_1"
+    },
+    {
+      "line": 4473,
+      "paths": [
+        "/api/code/ast_outline"
+      ],
+      "route_id": "post_code_ast_outline_1"
+    },
+    {
+      "line": 4481,
+      "paths": [
+        "/api/code/batch_replace",
+        "/api/repo/batch_replace"
+      ],
+      "route_id": "post_code_batch_replace_1"
+    },
+    {
+      "line": 4487,
+      "paths": [
+        "/api/maintenance/optimize_db"
+      ],
+      "route_id": "post_maintenance_optimize_db_1"
+    },
+    {
+      "line": 4490,
+      "paths": [
+        "/api/maintenance/purge_cache"
+      ],
+      "route_id": "post_maintenance_purge_cache_1"
+    },
+    {
+      "line": 4494,
+      "paths": [
+        "/api/maintenance/resolve_errors"
+      ],
+      "route_id": "post_maintenance_resolve_errors_1"
+    },
+    {
+      "line": 4497,
+      "paths": [
+        "/api/doctor"
+      ],
+      "route_id": "post_doctor_1"
+    },
+    {
+      "line": 4500,
+      "paths": [
+        "/api/code/symbol"
+      ],
+      "route_id": "post_code_symbol_1"
+    },
+    {
+      "line": 4505,
+      "paths": [
+        "/api/code/find_symbol"
+      ],
+      "route_id": "post_code_find_symbol_1"
+    },
+    {
+      "line": 4515,
+      "paths": [
+        "/api/code/find_declaration"
+      ],
+      "route_id": "post_code_find_declaration_1"
+    },
+    {
+      "line": 4521,
+      "paths": [
+        "/api/code/find_implementations"
+      ],
+      "route_id": "post_code_find_implementations_1"
+    },
+    {
+      "line": 4527,
+      "paths": [
+        "/api/code/find_referencing_symbols"
+      ],
+      "route_id": "post_code_find_referencing_symbols_1"
+    },
+    {
+      "line": 4533,
+      "paths": [
+        "/api/code/symbols_overview"
+      ],
+      "route_id": "post_code_symbols_overview_1"
+    },
+    {
+      "line": 4539,
+      "paths": [
+        "/api/code/diagnostics"
+      ],
+      "route_id": "post_code_diagnostics_1"
+    },
+    {
+      "line": 4544,
+      "paths": [
+        "/api/code-intelligence/control"
+      ],
+      "route_id": "post_code_intelligence_control_1"
+    },
+    {
+      "line": 4553,
+      "paths": [
+        "/api/complete"
+      ],
+      "route_id": "post_complete_1"
+    },
+    {
+      "line": 4556,
+      "paths": [
+        "/api/preprocess"
+      ],
+      "route_id": "post_preprocess_1"
+    },
+    {
+      "line": 4558,
+      "paths": [
+        "/api/repo/dead_code",
+        "/api/dead_code"
+      ],
+      "route_id": "post_dead_code_1"
+    },
+    {
+      "line": 4563,
+      "paths": [
+        "/api/symbol_callgraph"
+      ],
+      "route_id": "post_symbol_callgraph_1"
+    },
+    {
+      "line": 4569,
+      "paths": [
+        "/api/cross_project_graph"
+      ],
+      "route_id": "post_cross_project_graph_1"
+    },
+    {
+      "line": 4578,
+      "paths": [
+        "/api/cross_project_symbols"
+      ],
+      "route_id": "post_cross_project_symbols_1"
+    },
+    {
+      "line": 4589,
+      "paths": [
+        "/api/cross_project_impact"
+      ],
+      "route_id": "post_cross_project_impact_1"
+    },
+    {
+      "line": 4600,
+      "paths": [
+        "/api/repo/call_graph_diff"
+      ],
+      "route_id": "post_repo_call_graph_diff_1"
+    },
+    {
+      "line": 4608,
+      "paths": [
+        "/api/bundle/export"
+      ],
+      "route_id": "post_bundle_export_1"
+    },
+    {
+      "line": 4623,
+      "paths": [
+        "/api/benchmark"
+      ],
+      "route_id": "post_benchmark_1"
+    },
+    {
+      "line": 4625,
+      "paths": [
+        "/api/evaluation"
+      ],
+      "route_id": "post_evaluation_1"
+    },
+    {
+      "line": 4627,
+      "paths": [
+        "/api/repo/profile"
+      ],
+      "route_id": "post_repo_profile_1"
+    },
+    {
+      "line": 4629,
+      "paths": [
+        "/api/repo/map"
+      ],
+      "route_id": "post_repo_map_1"
+    },
+    {
+      "line": 4631,
+      "paths": [
+        "/api/repo/code-index"
+      ],
+      "route_id": "post_repo_code_index_1"
+    },
+    {
+      "line": 4633,
+      "paths": [
+        "/api/repo/investigate"
+      ],
+      "route_id": "post_repo_investigate_1"
+    },
+    {
+      "line": 4641,
+      "paths": [
+        "/api/repo/diagnose"
+      ],
+      "route_id": "post_repo_diagnose_1"
+    },
+    {
+      "line": 4646,
+      "paths": [
+        "/api/repo/briefing"
+      ],
+      "route_id": "post_repo_briefing_1"
+    },
+    {
+      "line": 4648,
+      "paths": [
+        "/api/command/preflight"
+      ],
+      "route_id": "post_command_preflight_1"
+    },
+    {
+      "line": 4657,
+      "paths": [
+        "/api/repo/deterministic"
+      ],
+      "route_id": "post_repo_deterministic_1"
+    },
+    {
+      "line": 4659,
+      "paths": [
+        "/api/repo/impact"
+      ],
+      "route_id": "post_repo_impact_1"
+    },
+    {
+      "line": 4665,
+      "paths": [
+        "/api/search"
+      ],
+      "route_id": "post_search_1"
+    },
+    {
+      "line": 4914,
+      "paths": [
+        "/api/artifact/get"
+      ],
+      "route_id": "post_artifact_get_1"
+    },
+    {
+      "line": 4919,
+      "paths": [
+        "/api/artifact/list"
+      ],
+      "route_id": "post_artifact_list_1"
+    },
+    {
+      "line": 4921,
+      "paths": [
+        "/api/evidence/verify"
+      ],
+      "route_id": "post_evidence_verify_1"
+    },
+    {
+      "line": 4924,
+      "paths": [
+        "/api/evidence/get"
+      ],
+      "route_id": "post_evidence_get_1"
+    },
+    {
+      "line": 4926,
+      "paths": [
+        "/api/leases/claim",
+        "/api/leases/claim_batch"
+      ],
+      "route_id": "post_leases_claim_1"
+    },
+    {
+      "line": 4931,
+      "paths": [
+        "/api/leases/release"
+      ],
+      "route_id": "post_leases_release_1"
+    },
+    {
+      "line": 4933,
+      "paths": [
+        "/api/leases/renew"
+      ],
+      "route_id": "post_leases_renew_1"
+    },
+    {
+      "line": 4935,
+      "paths": [
+        "/api/memory/put"
+      ],
+      "route_id": "post_memory_put_1"
+    },
+    {
+      "line": 4940,
+      "paths": [
+        "/api/memory/get"
+      ],
+      "route_id": "post_memory_get_1"
+    },
+    {
+      "line": 4942,
+      "paths": [
+        "/api/memory/search"
+      ],
+      "route_id": "post_memory_search_1"
+    },
+    {
+      "line": 4944,
+      "paths": [
+        "/api/memory/delete"
+      ],
+      "route_id": "post_memory_delete_1"
+    },
+    {
+      "line": 4946,
+      "paths": [
+        "/api/command"
+      ],
+      "route_id": "post_command_1"
+    },
+    {
+      "line": 4950,
+      "paths": [
+        "/api/embed"
+      ],
+      "route_id": "post_embed_1"
+    },
+    {
+      "line": 4955,
+      "paths": [
+        "/api/rerank"
+      ],
+      "route_id": "post_rerank_1"
+    },
+    {
+      "line": 4958,
+      "paths": [
+        "/api/rag/index"
+      ],
+      "route_id": "post_rag_index_1"
+    },
+    {
+      "line": 4960,
+      "paths": [
+        "/api/rag/search"
+      ],
+      "route_id": "post_rag_search_1"
+    },
+    {
+      "line": 4965,
+      "paths": [
+        "/api/task/speculative_draft",
+        "/api/speculative_draft"
+      ],
+      "route_id": "post_speculative_draft_1"
+    },
+    {
+      "line": 4967,
+      "paths": [
+        "/api/task/scaffold",
+        "/api/scaffold"
+      ],
+      "route_id": "post_scaffold_1"
+    },
+    {
+      "line": 4969,
+      "paths": [
+        "/api/db/query"
+      ],
+      "route_id": "post_db_query_1"
+    },
+    {
+      "line": 4973,
+      "paths": [
+        "/api/models/manage"
+      ],
+      "route_id": "post_models_manage_1"
+    },
+    {
+      "line": 4977,
+      "paths": [
+        "/api/repo/reachability_dead_code",
+        "/api/reachability_dead_code"
+      ],
+      "route_id": "post_reachability_dead_code_1"
+    },
+    {
+      "line": 4984,
+      "paths": [
+        "/api/repo/mutation_test",
+        "/api/mutation_test"
+      ],
+      "route_id": "post_mutation_test_1"
+    },
+    {
+      "line": 4992,
+      "paths": [
+        "/api/repo/type_stubs",
+        "/api/type_stubs"
+      ],
+      "route_id": "post_repo_type_stubs_1"
+    },
+    {
+      "line": 4999,
+      "paths": [
+        "/api/repo/skeletonize",
+        "/api/skeletonize"
+      ],
+      "route_id": "post_repo_skeletonize_1"
+    },
+    {
+      "line": 5006,
+      "paths": [
+        "/api/agent-state/events/delta"
+      ],
+      "route_id": "post_agent_state_events_delta_1"
+    },
+    {
+      "line": 5016,
+      "paths": [
+        "/api/task/vision",
+        "/api/vision",
+        "/api/vision/review"
+      ],
+      "route_id": "post_task_vision_1"
+    },
+    {
+      "line": 5018,
+      "paths": [
+        "/api/repo/split_changes",
+        "/api/split_changes"
+      ],
+      "route_id": "post_repo_split_changes_1"
+    },
+    {
+      "line": 5022,
+      "paths": [
+        "/api/repo/synthesize_rules",
+        "/api/synthesize_rules"
+      ],
+      "route_id": "post_repo_synthesize_rules_1"
+    },
+    {
+      "line": 5026,
+      "paths": [
+        "/api/rag/docset/index",
+        "/api/rag/docset_index"
+      ],
+      "route_id": "post_rag_docset_index_1"
+    },
+    {
+      "line": 5030,
+      "paths": [
+        "/api/rag/docset/search",
+        "/api/rag/docset_search"
+      ],
+      "route_id": "post_rag_docset_search_1"
+    },
+    {
+      "line": 5035,
+      "paths": [
+        "/api/telemetry/timeline"
+      ],
+      "route_id": "post_telemetry_timeline_1"
+    },
+    {
+      "line": 5039,
+      "paths": [
+        "/api/task/transcribe",
+        "/api/transcribe"
+      ],
+      "route_id": "post_task_transcribe_1"
+    },
+    {
+      "line": 5060,
+      "paths": [
+        "/api/repo/code_invariants",
+        "/api/code_invariants"
+      ],
+      "route_id": "post_code_invariants_1"
+    },
+    {
+      "line": 5062,
+      "paths": [
+        "/api/repo/generate_dataset",
+        "/api/generate_dataset"
+      ],
+      "route_id": "post_generate_dataset_1"
+    },
+    {
+      "line": 5064,
+      "paths": [
+        "/api/repo/profile_digest",
+        "/api/profile_digest"
+      ],
+      "route_id": "post_profile_digest_1"
+    },
+    {
+      "line": 5066,
+      "paths": [
+        "/api/coord/worktree_lease",
+        "/api/worktree_lease"
+      ],
+      "route_id": "post_coord_worktree_lease_1"
+    },
+    {
+      "line": 5068,
+      "paths": [
+        "/api/coord/worktree_release",
+        "/api/worktree_release"
+      ],
+      "route_id": "post_coord_worktree_release_1"
+    },
+    {
+      "line": 5070,
+      "paths": [
+        "/api/coord/worktrees",
+        "/api/worktrees"
+      ],
+      "route_id": "post_coord_worktrees_1"
+    },
+    {
+      "line": 5072,
+      "paths": [
+        "/api/coord/worktree_prune",
+        "/api/worktree_prune"
+      ],
+      "route_id": "post_coord_worktree_prune_1"
+    },
+    {
+      "line": 5075,
+      "paths": [
+        "/api/command/daemon",
+        "/api/daemon"
+      ],
+      "route_id": "post_command_daemon_1"
+    },
+    {
+      "line": 5083,
+      "paths": [
+        "/api/command/lint_fix",
+        "/api/lint_fix"
+      ],
+      "route_id": "post_command_lint_fix_1"
+    },
+    {
+      "line": 5085,
+      "paths": [
+        "/api/command/http_probe",
+        "/api/http_probe"
+      ],
+      "route_id": "post_command_http_probe_1"
+    },
+    {
+      "line": 5087,
+      "paths": [
+        "/api/repo/callers",
+        "/api/callers"
+      ],
+      "route_id": "post_callers_1"
+    },
+    {
+      "line": 5089,
+      "paths": [
+        "/api/repo/secret_scan",
+        "/api/secret_scan"
+      ],
+      "route_id": "post_repo_secret_scan_1"
+    },
+    {
+      "line": 5091,
+      "paths": [
+        "/api/repo/schema_inspect",
+        "/api/schema_inspect"
+      ],
+      "route_id": "post_repo_schema_inspect_1"
+    },
+    {
+      "line": 5093,
+      "paths": [
+        "/api/repo/explain_query",
+        "/api/explain_query"
+      ],
+      "route_id": "post_explain_query_1"
+    },
+    {
+      "line": 5095,
+      "paths": [
+        "/api/repo/env_compat",
+        "/api/env_compat"
+      ],
+      "route_id": "post_env_compat_1"
+    },
+    {
+      "line": 5097,
+      "paths": [
+        "/api/coord/pubsub_publish",
+        "/api/pubsub_publish"
+      ],
+      "route_id": "post_coord_pubsub_publish_1"
+    },
+    {
+      "line": 5099,
+      "paths": [
+        "/api/coord/pubsub_poll",
+        "/api/pubsub_poll"
+      ],
+      "route_id": "post_coord_pubsub_poll_1"
+    },
+    {
+      "line": 5101,
+      "paths": [
+        "/api/coord/simulate_merge",
+        "/api/simulate_merge"
+      ],
+      "route_id": "post_coord_simulate_merge_1"
+    },
+    {
+      "line": 5103,
+      "paths": [
+        "/api/task/eval_suite",
+        "/api/eval_suite"
+      ],
+      "route_id": "post_eval_suite_1"
+    },
+    {
+      "line": 5105,
+      "paths": [
+        "/api/task/prompt_eval",
+        "/api/prompt_eval"
+      ],
+      "route_id": "post_prompt_eval_1"
+    },
+    {
+      "line": 5107,
+      "paths": [
+        "/api/task/eval_drift",
+        "/api/eval_drift"
+      ],
+      "route_id": "post_eval_drift_1"
+    },
+    {
+      "line": 5109,
+      "paths": [
+        "/api/repo/circular_dependencies",
+        "/api/circular_dependencies"
+      ],
+      "route_id": "post_circular_dependencies_1"
+    },
+    {
+      "line": 5111,
+      "paths": [
+        "/api/repo/generate_types",
+        "/api/generate_types"
+      ],
+      "route_id": "post_generate_types_1"
+    },
+    {
+      "line": 5113,
+      "paths": [
+        "/api/repo/complexity",
+        "/api/complexity"
+      ],
+      "route_id": "post_complexity_1"
+    },
+    {
+      "line": 5118,
+      "paths": [
+        "/api/repo/api_spec",
+        "/api/api_spec"
+      ],
+      "route_id": "post_api_spec_1"
+    },
+    {
+      "line": 5120,
+      "paths": [
+        "/api/repo/dependency_slice",
+        "/api/dependency_slice"
+      ],
+      "route_id": "post_dependency_slice_1"
+    },
+    {
+      "line": 5122,
+      "paths": [
+        "/api/repo/migration_drift",
+        "/api/migration_drift"
+      ],
+      "route_id": "post_migration_drift_1"
+    },
+    {
+      "line": 5124,
+      "paths": [
+        "/api/repo/package_audit",
+        "/api/package_audit"
+      ],
+      "route_id": "post_package_audit_1"
+    },
+    {
+      "line": 5126,
+      "paths": [
+        "/api/repo/structural_search",
+        "/api/structural_search"
+      ],
+      "route_id": "post_repo_structural_search_1"
+    },
+    {
+      "line": 5128,
+      "paths": [
+        "/api/repo/context_budget",
+        "/api/context_budget"
+      ],
+      "route_id": "post_context_budget_1"
+    },
+    {
+      "line": 5130,
+      "paths": [
+        "/api/rag/ingest_document",
+        "/api/ingest_document"
+      ],
+      "route_id": "post_ingest_document_1"
+    },
+    {
+      "line": 5132,
+      "paths": [
+        "/api/rag/ingest_diagram",
+        "/api/ingest_diagram"
+      ],
+      "route_id": "post_ingest_diagram_1"
+    },
+    {
+      "line": 5134,
+      "paths": [
+        "/api/command/mock_server",
+        "/api/mock_server"
+      ],
+      "route_id": "post_command_mock_server_1"
+    },
+    {
+      "line": 5144,
+      "paths": [
+        "/api/command/diff_hunk_stage",
+        "/api/diff_hunk_stage"
+      ],
+      "route_id": "post_command_diff_hunk_stage_1"
+    },
+    {
+      "line": 5146,
+      "paths": [
+        "/api/command/flaky_detect",
+        "/api/flaky_detect"
+      ],
+      "route_id": "post_command_flaky_detect_1"
+    },
+    {
+      "line": 5148,
+      "paths": [
+        "/api/command/webhook_replay",
+        "/api/webhook_replay"
+      ],
+      "route_id": "post_command_webhook_replay_1"
+    },
+    {
+      "line": 5153,
+      "paths": [
+        "/api/generate",
+        "/api/chat",
+        "/api/embed"
+      ],
+      "route_id": "post_chat_1"
+    }
+  ],
+  "candidate_post_route_rules": [
+    {
+      "line": 2729,
+      "paths": [
+        "/api/bundle/import"
+      ],
+      "route_id": "post_bundle_import_1"
+    },
+    {
+      "line": 2749,
+      "paths": [
+        "/api/admin/mode"
+      ],
+      "route_id": "post_admin_mode_1"
+    },
+    {
+      "line": 2814,
+      "paths": [
+        "/api/telemetry/tool-accounting"
+      ],
+      "route_id": "post_telemetry_tool_accounting_1"
+    },
+    {
+      "line": 2876,
+      "paths": [
+        "/api/work-orders"
+      ],
+      "route_id": "post_work_orders_1"
+    },
+    {
+      "line": 2894,
+      "paths": [
+        "/api/config/update"
+      ],
+      "route_id": "post_config_update_1"
+    },
+    {
+      "line": 2932,
+      "paths": [
+        "/api/control"
+      ],
+      "route_id": "post_control_1"
+    },
+    {
+      "line": 2958,
+      "paths": [
+        "/api/browser/capability"
+      ],
+      "route_id": "post_browser_capability_1"
+    },
+    {
+      "line": 2977,
+      "paths": [
+        "/api/browser/capture/stage",
+        "/api/browser/capture/commit",
+        "/api/browser/capture/abandon"
+      ],
+      "route_id": "post_browser_capture_abandon_1"
+    },
+    {
+      "line": 2995,
+      "paths": [
+        "/api/browser/capture"
+      ],
+      "route_id": "post_browser_capture_1"
+    },
+    {
+      "line": 3013,
+      "paths": [
+        "/api/delegate"
+      ],
+      "route_id": "post_delegate_1"
+    },
+    {
+      "line": 3015,
+      "paths": [
+        "/api/conversations/continue"
+      ],
+      "route_id": "post_conversations_continue_1"
+    },
+    {
+      "line": 3017,
+      "paths": [
+        "/api/async-jobs"
+      ],
+      "route_id": "post_async_jobs_1"
+    },
+    {
+      "line": 3030,
+      "paths": [
+        "/api/speculative-lint",
+        "/api/command/speculative-lint"
+      ],
+      "route_id": "post_command_speculative_lint_1"
+    },
+    {
+      "line": 3043,
+      "paths": [
+        "/api/agent-state/tasks"
+      ],
+      "route_id": "post_agent_state_tasks_1"
+    },
+    {
+      "line": 3248,
+      "paths": [
+        "/api/agent-state/memory"
+      ],
+      "route_id": "post_agent_state_memory_1"
+    },
+    {
+      "line": 3531,
+      "paths": [
+        "/api/agent-state/incidents"
+      ],
+      "route_id": "post_agent_state_incidents_1"
+    },
+    {
+      "line": 3610,
+      "paths": [
+        "/api/agent-state/verification"
+      ],
+      "route_id": "post_agent_state_verification_1"
+    },
+    {
+      "line": 3664,
+      "paths": [
+        "/api/agent-state/context"
+      ],
+      "route_id": "post_agent_state_context_1"
+    },
+    {
+      "line": 3802,
+      "paths": [
+        "/api/agent-state/learning"
+      ],
+      "route_id": "post_agent_state_learning_1"
+    },
+    {
+      "line": 3852,
+      "paths": [
+        "/api/agent-state/cleanup"
+      ],
+      "route_id": "post_agent_state_cleanup_1"
+    },
+    {
+      "line": 3858,
+      "paths": [
+        "/api/agent-state/blackboard"
+      ],
+      "route_id": "post_agent_state_blackboard_1"
+    },
+    {
+      "line": 3888,
+      "paths": [
+        "/api/agent-state/swarm/dispatch"
+      ],
+      "route_id": "post_agent_state_swarm_dispatch_1"
+    },
+    {
+      "line": 3900,
+      "paths": [
+        "/api/agent-state/swarm/step"
+      ],
+      "route_id": "post_agent_state_swarm_step_1"
+    },
+    {
+      "line": 3909,
+      "paths": [
+        "/api/agent-state/swarm/cancel"
+      ],
+      "route_id": "post_agent_state_swarm_cancel_1"
+    },
+    {
+      "line": 3916,
+      "paths": [
+        "/api/benchmark/run"
+      ],
+      "route_id": "post_benchmark_run_1"
+    },
+    {
+      "line": 3924,
+      "paths": [
+        "/api/delegate/repo"
+      ],
+      "route_id": "post_delegate_repo_1"
+    },
+    {
+      "line": 3926,
+      "paths": [
+        "/api/solve/repo"
+      ],
+      "route_id": "post_solve_repo_1"
+    },
+    {
+      "line": 3928,
+      "paths": [
+        "/api/route"
+      ],
+      "route_id": "post_route_1"
+    },
+    {
+      "line": 3930,
+      "paths": [
+        "/api/delegate/batch"
+      ],
+      "route_id": "post_delegate_batch_1"
+    },
+    {
+      "line": 3932,
+      "paths": [
+        "/api/review"
+      ],
+      "route_id": "post_review_1"
+    },
+    {
+      "line": 3934,
+      "paths": [
+        "/api/review/diff"
+      ],
+      "route_id": "post_review_diff_1"
+    },
+    {
+      "line": 3936,
+      "paths": [
+        "/api/reason"
+      ],
+      "route_id": "post_reason_1"
+    },
+    {
+      "line": 3938,
+      "paths": [
+        "/api/second-opinion"
+      ],
+      "route_id": "post_second_opinion_1"
+    },
+    {
+      "line": 3940,
+      "paths": [
+        "/api/compress"
+      ],
+      "route_id": "post_compress_1"
+    },
+    {
+      "line": 3942,
+      "paths": [
+        "/api/generate_tests"
+      ],
+      "route_id": "post_generate_tests_1"
+    },
+    {
+      "line": 3945,
+      "paths": [
+        "/api/patch/validate"
+      ],
+      "route_id": "post_patch_validate_1"
+    },
+    {
+      "line": 3948,
+      "paths": [
+        "/api/query/expand"
+      ],
+      "route_id": "post_query_expand_1"
+    },
+    {
+      "line": 3952,
+      "paths": [
+        "/api/audit_dependencies"
+      ],
+      "route_id": "post_audit_dependencies_1"
+    },
+    {
+      "line": 3959,
+      "paths": [
+        "/api/refactor_impact"
+      ],
+      "route_id": "post_refactor_impact_1"
+    },
+    {
+      "line": 3968,
+      "paths": [
+        "/api/resolve_imports"
+      ],
+      "route_id": "post_resolve_imports_1"
+    },
+    {
+      "line": 3977,
+      "paths": [
+        "/api/git/status"
+      ],
+      "route_id": "post_git_status_1"
+    },
+    {
+      "line": 3984,
+      "paths": [
+        "/api/repo/state",
+        "/api/repo_state"
+      ],
+      "route_id": "post_repo_state_1"
+    },
+    {
+      "line": 3995,
+      "paths": [
+        "/api/git/diff"
+      ],
+      "route_id": "post_git_diff_1"
+    },
+    {
+      "line": 4005,
+      "paths": [
+        "/api/git/history_search"
+      ],
+      "route_id": "post_git_history_search_1"
+    },
+    {
+      "line": 4014,
+      "paths": [
+        "/api/repo/hotspots",
+        "/api/hotspots"
+      ],
+      "route_id": "post_hotspots_1"
+    },
+    {
+      "line": 4023,
+      "paths": [
+        "/api/repo/generate_tests_for_diff",
+        "/api/generate_tests_for_diff"
+      ],
+      "route_id": "post_generate_tests_for_diff_1"
+    },
+    {
+      "line": 4032,
+      "paths": [
+        "/api/repo/cross_repo_contract",
+        "/api/cross_repo_contract"
+      ],
+      "route_id": "post_cross_repo_contract_1"
+    },
+    {
+      "line": 4040,
+      "paths": [
+        "/api/git/synthesize_commit"
+      ],
+      "route_id": "post_git_synthesize_commit_1"
+    },
+    {
+      "line": 4049,
+      "paths": [
+        "/api/test_matrix"
+      ],
+      "route_id": "post_test_matrix_1"
+    },
+    {
+      "line": 4056,
+      "paths": [
+        "/api/repo/affected_tests",
+        "/api/affected_tests"
+      ],
+      "route_id": "post_affected_tests_1"
+    },
+    {
+      "line": 4064,
+      "paths": [
+        "/api/repo/topology",
+        "/api/topology"
+      ],
+      "route_id": "post_repo_topology_1"
+    },
+    {
+      "line": 4071,
+      "paths": [
+        "/api/code/ast_rename",
+        "/api/ast_rename"
+      ],
+      "route_id": "post_ast_rename_1"
+    },
+    {
+      "line": 4082,
+      "paths": [
+        "/api/code/generate_mocks",
+        "/api/generate_mocks"
+      ],
+      "route_id": "post_code_generate_mocks_1"
+    },
+    {
+      "line": 4091,
+      "paths": [
+        "/api/security_audit"
+      ],
+      "route_id": "post_security_audit_1"
+    },
+    {
+      "line": 4099,
+      "paths": [
+        "/api/code-intelligence/query"
+      ],
+      "route_id": "post_code_intelligence_query_1"
+    },
+    {
+      "line": 4109,
+      "paths": [
+        "/api/code/ast_outline"
+      ],
+      "route_id": "post_code_ast_outline_1"
+    },
+    {
+      "line": 4117,
+      "paths": [
+        "/api/code/batch_replace",
+        "/api/repo/batch_replace"
+      ],
+      "route_id": "post_code_batch_replace_1"
+    },
+    {
+      "line": 4123,
+      "paths": [
+        "/api/maintenance/optimize_db"
+      ],
+      "route_id": "post_maintenance_optimize_db_1"
+    },
+    {
+      "line": 4126,
+      "paths": [
+        "/api/maintenance/purge_cache"
+      ],
+      "route_id": "post_maintenance_purge_cache_1"
+    },
+    {
+      "line": 4130,
+      "paths": [
+        "/api/maintenance/resolve_errors"
+      ],
+      "route_id": "post_maintenance_resolve_errors_1"
+    },
+    {
+      "line": 4133,
+      "paths": [
+        "/api/doctor"
+      ],
+      "route_id": "post_doctor_1"
+    },
+    {
+      "line": 4136,
+      "paths": [
+        "/api/code/symbol"
+      ],
+      "route_id": "post_code_symbol_1"
+    },
+    {
+      "line": 4141,
+      "paths": [
+        "/api/code/find_symbol"
+      ],
+      "route_id": "post_code_find_symbol_1"
+    },
+    {
+      "line": 4151,
+      "paths": [
+        "/api/code/find_declaration"
+      ],
+      "route_id": "post_code_find_declaration_1"
+    },
+    {
+      "line": 4157,
+      "paths": [
+        "/api/code/find_implementations"
+      ],
+      "route_id": "post_code_find_implementations_1"
+    },
+    {
+      "line": 4163,
+      "paths": [
+        "/api/code/find_referencing_symbols"
+      ],
+      "route_id": "post_code_find_referencing_symbols_1"
+    },
+    {
+      "line": 4169,
+      "paths": [
+        "/api/code/symbols_overview"
+      ],
+      "route_id": "post_code_symbols_overview_1"
+    },
+    {
+      "line": 4175,
+      "paths": [
+        "/api/code/diagnostics"
+      ],
+      "route_id": "post_code_diagnostics_1"
+    },
+    {
+      "line": 4180,
+      "paths": [
+        "/api/code-intelligence/control"
+      ],
+      "route_id": "post_code_intelligence_control_1"
+    },
+    {
+      "line": 4189,
+      "paths": [
+        "/api/complete"
+      ],
+      "route_id": "post_complete_1"
+    },
+    {
+      "line": 4192,
+      "paths": [
+        "/api/preprocess"
+      ],
+      "route_id": "post_preprocess_1"
+    },
+    {
+      "line": 4194,
+      "paths": [
+        "/api/repo/dead_code",
+        "/api/dead_code"
+      ],
+      "route_id": "post_dead_code_1"
+    },
+    {
+      "line": 4199,
+      "paths": [
+        "/api/symbol_callgraph"
+      ],
+      "route_id": "post_symbol_callgraph_1"
+    },
+    {
+      "line": 4205,
+      "paths": [
+        "/api/cross_project_graph"
+      ],
+      "route_id": "post_cross_project_graph_1"
+    },
+    {
+      "line": 4214,
+      "paths": [
+        "/api/cross_project_symbols"
+      ],
+      "route_id": "post_cross_project_symbols_1"
+    },
+    {
+      "line": 4225,
+      "paths": [
+        "/api/cross_project_impact"
+      ],
+      "route_id": "post_cross_project_impact_1"
+    },
+    {
+      "line": 4236,
+      "paths": [
+        "/api/repo/call_graph_diff"
+      ],
+      "route_id": "post_repo_call_graph_diff_1"
+    },
+    {
+      "line": 4244,
+      "paths": [
+        "/api/bundle/export"
+      ],
+      "route_id": "post_bundle_export_1"
+    },
+    {
+      "line": 4259,
+      "paths": [
+        "/api/benchmark"
+      ],
+      "route_id": "post_benchmark_1"
+    },
+    {
+      "line": 4261,
+      "paths": [
+        "/api/evaluation"
+      ],
+      "route_id": "post_evaluation_1"
+    },
+    {
+      "line": 4263,
+      "paths": [
+        "/api/repo/profile"
+      ],
+      "route_id": "post_repo_profile_1"
+    },
+    {
+      "line": 4265,
+      "paths": [
+        "/api/repo/map"
+      ],
+      "route_id": "post_repo_map_1"
+    },
+    {
+      "line": 4267,
+      "paths": [
+        "/api/repo/code-index"
+      ],
+      "route_id": "post_repo_code_index_1"
+    },
+    {
+      "line": 4269,
+      "paths": [
+        "/api/repo/investigate"
+      ],
+      "route_id": "post_repo_investigate_1"
+    },
+    {
+      "line": 4277,
+      "paths": [
+        "/api/repo/diagnose"
+      ],
+      "route_id": "post_repo_diagnose_1"
+    },
+    {
+      "line": 4282,
+      "paths": [
+        "/api/repo/briefing"
+      ],
+      "route_id": "post_repo_briefing_1"
+    },
+    {
+      "line": 4284,
+      "paths": [
+        "/api/command/preflight"
+      ],
+      "route_id": "post_command_preflight_1"
+    },
+    {
+      "line": 4293,
+      "paths": [
+        "/api/repo/deterministic"
+      ],
+      "route_id": "post_repo_deterministic_1"
+    },
+    {
+      "line": 4295,
+      "paths": [
+        "/api/repo/impact"
+      ],
+      "route_id": "post_repo_impact_1"
+    },
+    {
+      "line": 4301,
+      "paths": [
+        "/api/search"
+      ],
+      "route_id": "post_search_1"
+    },
+    {
+      "line": 4443,
+      "paths": [
+        "/api/artifact/get"
+      ],
+      "route_id": "post_artifact_get_1"
+    },
+    {
+      "line": 4448,
+      "paths": [
+        "/api/artifact/list"
+      ],
+      "route_id": "post_artifact_list_1"
+    },
+    {
+      "line": 4450,
+      "paths": [
+        "/api/evidence/verify"
+      ],
+      "route_id": "post_evidence_verify_1"
+    },
+    {
+      "line": 4453,
+      "paths": [
+        "/api/evidence/get"
+      ],
+      "route_id": "post_evidence_get_1"
+    },
+    {
+      "line": 4455,
+      "paths": [
+        "/api/leases/claim",
+        "/api/leases/claim_batch"
+      ],
+      "route_id": "post_leases_claim_1"
+    },
+    {
+      "line": 4458,
+      "paths": [
+        "/api/leases/release"
+      ],
+      "route_id": "post_leases_release_1"
+    },
+    {
+      "line": 4460,
+      "paths": [
+        "/api/leases/renew"
+      ],
+      "route_id": "post_leases_renew_1"
+    },
+    {
+      "line": 4462,
+      "paths": [
+        "/api/memory/put"
+      ],
+      "route_id": "post_memory_put_1"
+    },
+    {
+      "line": 4467,
+      "paths": [
+        "/api/memory/get"
+      ],
+      "route_id": "post_memory_get_1"
+    },
+    {
+      "line": 4469,
+      "paths": [
+        "/api/memory/search"
+      ],
+      "route_id": "post_memory_search_1"
+    },
+    {
+      "line": 4471,
+      "paths": [
+        "/api/memory/delete"
+      ],
+      "route_id": "post_memory_delete_1"
+    },
+    {
+      "line": 4473,
+      "paths": [
+        "/api/command"
+      ],
+      "route_id": "post_command_1"
+    },
+    {
+      "line": 4475,
+      "paths": [
+        "/api/embed"
+      ],
+      "route_id": "post_embed_1"
+    },
+    {
+      "line": 4480,
+      "paths": [
+        "/api/rerank"
+      ],
+      "route_id": "post_rerank_1"
+    },
+    {
+      "line": 4483,
+      "paths": [
+        "/api/rag/index"
+      ],
+      "route_id": "post_rag_index_1"
+    },
+    {
+      "line": 4485,
+      "paths": [
+        "/api/rag/search"
+      ],
+      "route_id": "post_rag_search_1"
+    },
+    {
+      "line": 4490,
+      "paths": [
+        "/api/task/speculative_draft",
+        "/api/speculative_draft"
+      ],
+      "route_id": "post_speculative_draft_1"
+    },
+    {
+      "line": 4492,
+      "paths": [
+        "/api/task/scaffold",
+        "/api/scaffold"
+      ],
+      "route_id": "post_scaffold_1"
+    },
+    {
+      "line": 4494,
+      "paths": [
+        "/api/db/query"
+      ],
+      "route_id": "post_db_query_1"
+    },
+    {
+      "line": 4498,
+      "paths": [
+        "/api/models/manage"
+      ],
+      "route_id": "post_models_manage_1"
+    },
+    {
+      "line": 4502,
+      "paths": [
+        "/api/repo/reachability_dead_code",
+        "/api/reachability_dead_code"
+      ],
+      "route_id": "post_reachability_dead_code_1"
+    },
+    {
+      "line": 4509,
+      "paths": [
+        "/api/repo/mutation_test",
+        "/api/mutation_test"
+      ],
+      "route_id": "post_mutation_test_1"
+    },
+    {
+      "line": 4517,
+      "paths": [
+        "/api/repo/type_stubs",
+        "/api/type_stubs"
+      ],
+      "route_id": "post_repo_type_stubs_1"
+    },
+    {
+      "line": 4524,
+      "paths": [
+        "/api/repo/skeletonize",
+        "/api/skeletonize"
+      ],
+      "route_id": "post_repo_skeletonize_1"
+    },
+    {
+      "line": 4531,
+      "paths": [
+        "/api/agent-state/events/delta"
+      ],
+      "route_id": "post_agent_state_events_delta_1"
+    },
+    {
+      "line": 4541,
+      "paths": [
+        "/api/task/vision",
+        "/api/vision",
+        "/api/vision/review"
+      ],
+      "route_id": "post_task_vision_1"
+    },
+    {
+      "line": 4543,
+      "paths": [
+        "/api/repo/split_changes",
+        "/api/split_changes"
+      ],
+      "route_id": "post_repo_split_changes_1"
+    },
+    {
+      "line": 4547,
+      "paths": [
+        "/api/repo/synthesize_rules",
+        "/api/synthesize_rules"
+      ],
+      "route_id": "post_repo_synthesize_rules_1"
+    },
+    {
+      "line": 4551,
+      "paths": [
+        "/api/rag/docset/index",
+        "/api/rag/docset_index"
+      ],
+      "route_id": "post_rag_docset_index_1"
+    },
+    {
+      "line": 4555,
+      "paths": [
+        "/api/rag/docset/search",
+        "/api/rag/docset_search"
+      ],
+      "route_id": "post_rag_docset_search_1"
+    },
+    {
+      "line": 4560,
+      "paths": [
+        "/api/telemetry/timeline"
+      ],
+      "route_id": "post_telemetry_timeline_1"
+    },
+    {
+      "line": 4564,
+      "paths": [
+        "/api/task/transcribe",
+        "/api/transcribe"
+      ],
+      "route_id": "post_task_transcribe_1"
+    },
+    {
+      "line": 4566,
+      "paths": [
+        "/api/repo/code_invariants",
+        "/api/code_invariants"
+      ],
+      "route_id": "post_code_invariants_1"
+    },
+    {
+      "line": 4568,
+      "paths": [
+        "/api/repo/generate_dataset",
+        "/api/generate_dataset"
+      ],
+      "route_id": "post_generate_dataset_1"
+    },
+    {
+      "line": 4570,
+      "paths": [
+        "/api/repo/profile_digest",
+        "/api/profile_digest"
+      ],
+      "route_id": "post_profile_digest_1"
+    },
+    {
+      "line": 4572,
+      "paths": [
+        "/api/coord/worktree_lease",
+        "/api/worktree_lease"
+      ],
+      "route_id": "post_coord_worktree_lease_1"
+    },
+    {
+      "line": 4574,
+      "paths": [
+        "/api/coord/worktree_release",
+        "/api/worktree_release"
+      ],
+      "route_id": "post_coord_worktree_release_1"
+    },
+    {
+      "line": 4576,
+      "paths": [
+        "/api/coord/worktrees",
+        "/api/worktrees"
+      ],
+      "route_id": "post_coord_worktrees_1"
+    },
+    {
+      "line": 4578,
+      "paths": [
+        "/api/coord/worktree_prune",
+        "/api/worktree_prune"
+      ],
+      "route_id": "post_coord_worktree_prune_1"
+    },
+    {
+      "line": 4581,
+      "paths": [
+        "/api/command/daemon",
+        "/api/daemon"
+      ],
+      "route_id": "post_command_daemon_1"
+    },
+    {
+      "line": 4589,
+      "paths": [
+        "/api/command/lint_fix",
+        "/api/lint_fix"
+      ],
+      "route_id": "post_command_lint_fix_1"
+    },
+    {
+      "line": 4591,
+      "paths": [
+        "/api/command/http_probe",
+        "/api/http_probe"
+      ],
+      "route_id": "post_command_http_probe_1"
+    },
+    {
+      "line": 4593,
+      "paths": [
+        "/api/repo/callers",
+        "/api/callers"
+      ],
+      "route_id": "post_callers_1"
+    },
+    {
+      "line": 4595,
+      "paths": [
+        "/api/repo/secret_scan",
+        "/api/secret_scan"
+      ],
+      "route_id": "post_repo_secret_scan_1"
+    },
+    {
+      "line": 4597,
+      "paths": [
+        "/api/repo/schema_inspect",
+        "/api/schema_inspect"
+      ],
+      "route_id": "post_repo_schema_inspect_1"
+    },
+    {
+      "line": 4599,
+      "paths": [
+        "/api/repo/explain_query",
+        "/api/explain_query"
+      ],
+      "route_id": "post_explain_query_1"
+    },
+    {
+      "line": 4601,
+      "paths": [
+        "/api/repo/env_compat",
+        "/api/env_compat"
+      ],
+      "route_id": "post_env_compat_1"
+    },
+    {
+      "line": 4603,
+      "paths": [
+        "/api/coord/pubsub_publish",
+        "/api/pubsub_publish"
+      ],
+      "route_id": "post_coord_pubsub_publish_1"
+    },
+    {
+      "line": 4605,
+      "paths": [
+        "/api/coord/pubsub_poll",
+        "/api/pubsub_poll"
+      ],
+      "route_id": "post_coord_pubsub_poll_1"
+    },
+    {
+      "line": 4607,
+      "paths": [
+        "/api/coord/simulate_merge",
+        "/api/simulate_merge"
+      ],
+      "route_id": "post_coord_simulate_merge_1"
+    },
+    {
+      "line": 4609,
+      "paths": [
+        "/api/task/eval_suite",
+        "/api/eval_suite"
+      ],
+      "route_id": "post_eval_suite_1"
+    },
+    {
+      "line": 4611,
+      "paths": [
+        "/api/task/prompt_eval",
+        "/api/prompt_eval"
+      ],
+      "route_id": "post_prompt_eval_1"
+    },
+    {
+      "line": 4613,
+      "paths": [
+        "/api/task/eval_drift",
+        "/api/eval_drift"
+      ],
+      "route_id": "post_eval_drift_1"
+    },
+    {
+      "line": 4615,
+      "paths": [
+        "/api/repo/circular_dependencies",
+        "/api/circular_dependencies"
+      ],
+      "route_id": "post_circular_dependencies_1"
+    },
+    {
+      "line": 4617,
+      "paths": [
+        "/api/repo/generate_types",
+        "/api/generate_types"
+      ],
+      "route_id": "post_generate_types_1"
+    },
+    {
+      "line": 4619,
+      "paths": [
+        "/api/repo/complexity",
+        "/api/complexity"
+      ],
+      "route_id": "post_complexity_1"
+    },
+    {
+      "line": 4624,
+      "paths": [
+        "/api/repo/api_spec",
+        "/api/api_spec"
+      ],
+      "route_id": "post_api_spec_1"
+    },
+    {
+      "line": 4626,
+      "paths": [
+        "/api/repo/dependency_slice",
+        "/api/dependency_slice"
+      ],
+      "route_id": "post_dependency_slice_1"
+    },
+    {
+      "line": 4628,
+      "paths": [
+        "/api/repo/migration_drift",
+        "/api/migration_drift"
+      ],
+      "route_id": "post_migration_drift_1"
+    },
+    {
+      "line": 4630,
+      "paths": [
+        "/api/repo/package_audit",
+        "/api/package_audit"
+      ],
+      "route_id": "post_package_audit_1"
+    },
+    {
+      "line": 4632,
+      "paths": [
+        "/api/repo/structural_search",
+        "/api/structural_search"
+      ],
+      "route_id": "post_repo_structural_search_1"
+    },
+    {
+      "line": 4634,
+      "paths": [
+        "/api/repo/context_budget",
+        "/api/context_budget"
+      ],
+      "route_id": "post_context_budget_1"
+    },
+    {
+      "line": 4636,
+      "paths": [
+        "/api/rag/ingest_document",
+        "/api/ingest_document"
+      ],
+      "route_id": "post_ingest_document_1"
+    },
+    {
+      "line": 4638,
+      "paths": [
+        "/api/rag/ingest_diagram",
+        "/api/ingest_diagram"
+      ],
+      "route_id": "post_ingest_diagram_1"
+    },
+    {
+      "line": 4640,
+      "paths": [
+        "/api/command/mock_server",
+        "/api/mock_server"
+      ],
+      "route_id": "post_command_mock_server_1"
+    },
+    {
+      "line": 4650,
+      "paths": [
+        "/api/command/diff_hunk_stage",
+        "/api/diff_hunk_stage"
+      ],
+      "route_id": "post_command_diff_hunk_stage_1"
+    },
+    {
+      "line": 4652,
+      "paths": [
+        "/api/command/flaky_detect",
+        "/api/flaky_detect"
+      ],
+      "route_id": "post_command_flaky_detect_1"
+    },
+    {
+      "line": 4654,
+      "paths": [
+        "/api/command/webhook_replay",
+        "/api/webhook_replay"
+      ],
+      "route_id": "post_command_webhook_replay_1"
+    },
+    {
+      "line": 4659,
+      "paths": [
+        "/api/generate",
+        "/api/chat",
+        "/api/embed"
+      ],
+      "route_id": "post_chat_1"
+    }
+  ],
+  "post_path_match_cases": [
+    {
+      "path": "/api/admin/mode",
+      "route_ids": [
+        "post_admin_mode_1"
+      ]
+    },
+    {
+      "path": "/api/affected_tests",
+      "route_ids": [
+        "post_affected_tests_1"
+      ]
+    },
+    {
+      "path": "/api/agent-state/blackboard",
+      "route_ids": [
+        "post_agent_state_blackboard_1"
+      ]
+    },
+    {
+      "path": "/api/agent-state/cleanup",
+      "route_ids": [
+        "post_agent_state_cleanup_1"
+      ]
+    },
+    {
+      "path": "/api/agent-state/context",
+      "route_ids": [
+        "post_agent_state_context_1"
+      ]
+    },
+    {
+      "path": "/api/agent-state/events/delta",
+      "route_ids": [
+        "post_agent_state_events_delta_1"
+      ]
+    },
+    {
+      "path": "/api/agent-state/incidents",
+      "route_ids": [
+        "post_agent_state_incidents_1"
+      ]
+    },
+    {
+      "path": "/api/agent-state/learning",
+      "route_ids": [
+        "post_agent_state_learning_1"
+      ]
+    },
+    {
+      "path": "/api/agent-state/memory",
+      "route_ids": [
+        "post_agent_state_memory_1"
+      ]
+    },
+    {
+      "path": "/api/agent-state/swarm/cancel",
+      "route_ids": [
+        "post_agent_state_swarm_cancel_1"
+      ]
+    },
+    {
+      "path": "/api/agent-state/swarm/dispatch",
+      "route_ids": [
+        "post_agent_state_swarm_dispatch_1"
+      ]
+    },
+    {
+      "path": "/api/agent-state/swarm/step",
+      "route_ids": [
+        "post_agent_state_swarm_step_1"
+      ]
+    },
+    {
+      "path": "/api/agent-state/tasks",
+      "route_ids": [
+        "post_agent_state_tasks_1"
+      ]
+    },
+    {
+      "path": "/api/agent-state/verification",
+      "route_ids": [
+        "post_agent_state_verification_1"
+      ]
+    },
+    {
+      "path": "/api/api_spec",
+      "route_ids": [
+        "post_api_spec_1"
+      ]
+    },
+    {
+      "path": "/api/artifact/get",
+      "route_ids": [
+        "post_artifact_get_1"
+      ]
+    },
+    {
+      "path": "/api/artifact/list",
+      "route_ids": [
+        "post_artifact_list_1"
+      ]
+    },
+    {
+      "path": "/api/ast_rename",
+      "route_ids": [
+        "post_ast_rename_1"
+      ]
+    },
+    {
+      "path": "/api/async-jobs",
+      "route_ids": [
+        "post_async_jobs_1"
+      ]
+    },
+    {
+      "path": "/api/audit_dependencies",
+      "route_ids": [
+        "post_audit_dependencies_1"
+      ]
+    },
+    {
+      "path": "/api/benchmark",
+      "route_ids": [
+        "post_benchmark_1"
+      ]
+    },
+    {
+      "path": "/api/benchmark/run",
+      "route_ids": [
+        "post_benchmark_run_1"
+      ]
+    },
+    {
+      "path": "/api/browser/capability",
+      "route_ids": [
+        "post_browser_capability_1"
+      ]
+    },
+    {
+      "path": "/api/browser/capture",
+      "route_ids": [
+        "post_browser_capture_1"
+      ]
+    },
+    {
+      "path": "/api/browser/capture/abandon",
+      "route_ids": [
+        "post_browser_capture_abandon_1"
+      ]
+    },
+    {
+      "path": "/api/browser/capture/commit",
+      "route_ids": [
+        "post_browser_capture_abandon_1"
+      ]
+    },
+    {
+      "path": "/api/browser/capture/stage",
+      "route_ids": [
+        "post_browser_capture_abandon_1"
+      ]
+    },
+    {
+      "path": "/api/bundle/export",
+      "route_ids": [
+        "post_bundle_export_1"
+      ]
+    },
+    {
+      "path": "/api/bundle/import",
+      "route_ids": [
+        "post_bundle_import_1"
+      ]
+    },
+    {
+      "path": "/api/callers",
+      "route_ids": [
+        "post_callers_1"
+      ]
+    },
+    {
+      "path": "/api/chat",
+      "route_ids": [
+        "post_chat_1"
+      ]
+    },
+    {
+      "path": "/api/circular_dependencies",
+      "route_ids": [
+        "post_circular_dependencies_1"
+      ]
+    },
+    {
+      "path": "/api/code-intelligence/control",
+      "route_ids": [
+        "post_code_intelligence_control_1"
+      ]
+    },
+    {
+      "path": "/api/code-intelligence/query",
+      "route_ids": [
+        "post_code_intelligence_query_1"
+      ]
+    },
+    {
+      "path": "/api/code/ast_outline",
+      "route_ids": [
+        "post_code_ast_outline_1"
+      ]
+    },
+    {
+      "path": "/api/code/ast_rename",
+      "route_ids": [
+        "post_ast_rename_1"
+      ]
+    },
+    {
+      "path": "/api/code/batch_replace",
+      "route_ids": [
+        "post_code_batch_replace_1"
+      ]
+    },
+    {
+      "path": "/api/code/diagnostics",
+      "route_ids": [
+        "post_code_diagnostics_1"
+      ]
+    },
+    {
+      "path": "/api/code/find_declaration",
+      "route_ids": [
+        "post_code_find_declaration_1"
+      ]
+    },
+    {
+      "path": "/api/code/find_implementations",
+      "route_ids": [
+        "post_code_find_implementations_1"
+      ]
+    },
+    {
+      "path": "/api/code/find_referencing_symbols",
+      "route_ids": [
+        "post_code_find_referencing_symbols_1"
+      ]
+    },
+    {
+      "path": "/api/code/find_symbol",
+      "route_ids": [
+        "post_code_find_symbol_1"
+      ]
+    },
+    {
+      "path": "/api/code/generate_mocks",
+      "route_ids": [
+        "post_code_generate_mocks_1"
+      ]
+    },
+    {
+      "path": "/api/code/symbol",
+      "route_ids": [
+        "post_code_symbol_1"
+      ]
+    },
+    {
+      "path": "/api/code/symbols_overview",
+      "route_ids": [
+        "post_code_symbols_overview_1"
+      ]
+    },
+    {
+      "path": "/api/code_invariants",
+      "route_ids": [
+        "post_code_invariants_1"
+      ]
+    },
+    {
+      "path": "/api/command",
+      "route_ids": [
+        "post_command_1"
+      ]
+    },
+    {
+      "path": "/api/command/daemon",
+      "route_ids": [
+        "post_command_daemon_1"
+      ]
+    },
+    {
+      "path": "/api/command/diff_hunk_stage",
+      "route_ids": [
+        "post_command_diff_hunk_stage_1"
+      ]
+    },
+    {
+      "path": "/api/command/flaky_detect",
+      "route_ids": [
+        "post_command_flaky_detect_1"
+      ]
+    },
+    {
+      "path": "/api/command/http_probe",
+      "route_ids": [
+        "post_command_http_probe_1"
+      ]
+    },
+    {
+      "path": "/api/command/lint_fix",
+      "route_ids": [
+        "post_command_lint_fix_1"
+      ]
+    },
+    {
+      "path": "/api/command/mock_server",
+      "route_ids": [
+        "post_command_mock_server_1"
+      ]
+    },
+    {
+      "path": "/api/command/preflight",
+      "route_ids": [
+        "post_command_preflight_1"
+      ]
+    },
+    {
+      "path": "/api/command/speculative-lint",
+      "route_ids": [
+        "post_command_speculative_lint_1"
+      ]
+    },
+    {
+      "path": "/api/command/webhook_replay",
+      "route_ids": [
+        "post_command_webhook_replay_1"
+      ]
+    },
+    {
+      "path": "/api/complete",
+      "route_ids": [
+        "post_complete_1"
+      ]
+    },
+    {
+      "path": "/api/complexity",
+      "route_ids": [
+        "post_complexity_1"
+      ]
+    },
+    {
+      "path": "/api/compress",
+      "route_ids": [
+        "post_compress_1"
+      ]
+    },
+    {
+      "path": "/api/config/update",
+      "route_ids": [
+        "post_config_update_1"
+      ]
+    },
+    {
+      "path": "/api/context_budget",
+      "route_ids": [
+        "post_context_budget_1"
+      ]
+    },
+    {
+      "path": "/api/control",
+      "route_ids": [
+        "post_control_1"
+      ]
+    },
+    {
+      "path": "/api/conversations/continue",
+      "route_ids": [
+        "post_conversations_continue_1"
+      ]
+    },
+    {
+      "path": "/api/coord/pubsub_poll",
+      "route_ids": [
+        "post_coord_pubsub_poll_1"
+      ]
+    },
+    {
+      "path": "/api/coord/pubsub_publish",
+      "route_ids": [
+        "post_coord_pubsub_publish_1"
+      ]
+    },
+    {
+      "path": "/api/coord/simulate_merge",
+      "route_ids": [
+        "post_coord_simulate_merge_1"
+      ]
+    },
+    {
+      "path": "/api/coord/worktree_lease",
+      "route_ids": [
+        "post_coord_worktree_lease_1"
+      ]
+    },
+    {
+      "path": "/api/coord/worktree_prune",
+      "route_ids": [
+        "post_coord_worktree_prune_1"
+      ]
+    },
+    {
+      "path": "/api/coord/worktree_release",
+      "route_ids": [
+        "post_coord_worktree_release_1"
+      ]
+    },
+    {
+      "path": "/api/coord/worktrees",
+      "route_ids": [
+        "post_coord_worktrees_1"
+      ]
+    },
+    {
+      "path": "/api/cross_project_graph",
+      "route_ids": [
+        "post_cross_project_graph_1"
+      ]
+    },
+    {
+      "path": "/api/cross_project_impact",
+      "route_ids": [
+        "post_cross_project_impact_1"
+      ]
+    },
+    {
+      "path": "/api/cross_project_symbols",
+      "route_ids": [
+        "post_cross_project_symbols_1"
+      ]
+    },
+    {
+      "path": "/api/cross_repo_contract",
+      "route_ids": [
+        "post_cross_repo_contract_1"
+      ]
+    },
+    {
+      "path": "/api/daemon",
+      "route_ids": [
+        "post_command_daemon_1"
+      ]
+    },
+    {
+      "path": "/api/db/query",
+      "route_ids": [
+        "post_db_query_1"
+      ]
+    },
+    {
+      "path": "/api/dead_code",
+      "route_ids": [
+        "post_dead_code_1"
+      ]
+    },
+    {
+      "path": "/api/delegate",
+      "route_ids": [
+        "post_delegate_1"
+      ]
+    },
+    {
+      "path": "/api/delegate/batch",
+      "route_ids": [
+        "post_delegate_batch_1"
+      ]
+    },
+    {
+      "path": "/api/delegate/repo",
+      "route_ids": [
+        "post_delegate_repo_1"
+      ]
+    },
+    {
+      "path": "/api/dependency_slice",
+      "route_ids": [
+        "post_dependency_slice_1"
+      ]
+    },
+    {
+      "path": "/api/diff_hunk_stage",
+      "route_ids": [
+        "post_command_diff_hunk_stage_1"
+      ]
+    },
+    {
+      "path": "/api/doctor",
+      "route_ids": [
+        "post_doctor_1"
+      ]
+    },
+    {
+      "path": "/api/embed",
+      "route_ids": [
+        "post_embed_1",
+        "post_chat_1"
+      ]
+    },
+    {
+      "path": "/api/env_compat",
+      "route_ids": [
+        "post_env_compat_1"
+      ]
+    },
+    {
+      "path": "/api/eval_drift",
+      "route_ids": [
+        "post_eval_drift_1"
+      ]
+    },
+    {
+      "path": "/api/eval_suite",
+      "route_ids": [
+        "post_eval_suite_1"
+      ]
+    },
+    {
+      "path": "/api/evaluation",
+      "route_ids": [
+        "post_evaluation_1"
+      ]
+    },
+    {
+      "path": "/api/evidence/get",
+      "route_ids": [
+        "post_evidence_get_1"
+      ]
+    },
+    {
+      "path": "/api/evidence/verify",
+      "route_ids": [
+        "post_evidence_verify_1"
+      ]
+    },
+    {
+      "path": "/api/explain_query",
+      "route_ids": [
+        "post_explain_query_1"
+      ]
+    },
+    {
+      "path": "/api/flaky_detect",
+      "route_ids": [
+        "post_command_flaky_detect_1"
+      ]
+    },
+    {
+      "path": "/api/generate",
+      "route_ids": [
+        "post_chat_1"
+      ]
+    },
+    {
+      "path": "/api/generate_dataset",
+      "route_ids": [
+        "post_generate_dataset_1"
+      ]
+    },
+    {
+      "path": "/api/generate_mocks",
+      "route_ids": [
+        "post_code_generate_mocks_1"
+      ]
+    },
+    {
+      "path": "/api/generate_tests",
+      "route_ids": [
+        "post_generate_tests_1"
+      ]
+    },
+    {
+      "path": "/api/generate_tests_for_diff",
+      "route_ids": [
+        "post_generate_tests_for_diff_1"
+      ]
+    },
+    {
+      "path": "/api/generate_types",
+      "route_ids": [
+        "post_generate_types_1"
+      ]
+    },
+    {
+      "path": "/api/git/diff",
+      "route_ids": [
+        "post_git_diff_1"
+      ]
+    },
+    {
+      "path": "/api/git/history_search",
+      "route_ids": [
+        "post_git_history_search_1"
+      ]
+    },
+    {
+      "path": "/api/git/status",
+      "route_ids": [
+        "post_git_status_1"
+      ]
+    },
+    {
+      "path": "/api/git/synthesize_commit",
+      "route_ids": [
+        "post_git_synthesize_commit_1"
+      ]
+    },
+    {
+      "path": "/api/hotspots",
+      "route_ids": [
+        "post_hotspots_1"
+      ]
+    },
+    {
+      "path": "/api/http_probe",
+      "route_ids": [
+        "post_command_http_probe_1"
+      ]
+    },
+    {
+      "path": "/api/ingest_diagram",
+      "route_ids": [
+        "post_ingest_diagram_1"
+      ]
+    },
+    {
+      "path": "/api/ingest_document",
+      "route_ids": [
+        "post_ingest_document_1"
+      ]
+    },
+    {
+      "path": "/api/leases/claim",
+      "route_ids": [
+        "post_leases_claim_1"
+      ]
+    },
+    {
+      "path": "/api/leases/claim_batch",
+      "route_ids": [
+        "post_leases_claim_1"
+      ]
+    },
+    {
+      "path": "/api/leases/release",
+      "route_ids": [
+        "post_leases_release_1"
+      ]
+    },
+    {
+      "path": "/api/leases/renew",
+      "route_ids": [
+        "post_leases_renew_1"
+      ]
+    },
+    {
+      "path": "/api/lint_fix",
+      "route_ids": [
+        "post_command_lint_fix_1"
+      ]
+    },
+    {
+      "path": "/api/maintenance/optimize_db",
+      "route_ids": [
+        "post_maintenance_optimize_db_1"
+      ]
+    },
+    {
+      "path": "/api/maintenance/purge_cache",
+      "route_ids": [
+        "post_maintenance_purge_cache_1"
+      ]
+    },
+    {
+      "path": "/api/maintenance/resolve_errors",
+      "route_ids": [
+        "post_maintenance_resolve_errors_1"
+      ]
+    },
+    {
+      "path": "/api/memory/delete",
+      "route_ids": [
+        "post_memory_delete_1"
+      ]
+    },
+    {
+      "path": "/api/memory/get",
+      "route_ids": [
+        "post_memory_get_1"
+      ]
+    },
+    {
+      "path": "/api/memory/put",
+      "route_ids": [
+        "post_memory_put_1"
+      ]
+    },
+    {
+      "path": "/api/memory/search",
+      "route_ids": [
+        "post_memory_search_1"
+      ]
+    },
+    {
+      "path": "/api/migration_drift",
+      "route_ids": [
+        "post_migration_drift_1"
+      ]
+    },
+    {
+      "path": "/api/mock_server",
+      "route_ids": [
+        "post_command_mock_server_1"
+      ]
+    },
+    {
+      "path": "/api/models/manage",
+      "route_ids": [
+        "post_models_manage_1"
+      ]
+    },
+    {
+      "path": "/api/mutation_test",
+      "route_ids": [
+        "post_mutation_test_1"
+      ]
+    },
+    {
+      "path": "/api/package_audit",
+      "route_ids": [
+        "post_package_audit_1"
+      ]
+    },
+    {
+      "path": "/api/patch/validate",
+      "route_ids": [
+        "post_patch_validate_1"
+      ]
+    },
+    {
+      "path": "/api/preprocess",
+      "route_ids": [
+        "post_preprocess_1"
+      ]
+    },
+    {
+      "path": "/api/profile_digest",
+      "route_ids": [
+        "post_profile_digest_1"
+      ]
+    },
+    {
+      "path": "/api/prompt_eval",
+      "route_ids": [
+        "post_prompt_eval_1"
+      ]
+    },
+    {
+      "path": "/api/pubsub_poll",
+      "route_ids": [
+        "post_coord_pubsub_poll_1"
+      ]
+    },
+    {
+      "path": "/api/pubsub_publish",
+      "route_ids": [
+        "post_coord_pubsub_publish_1"
+      ]
+    },
+    {
+      "path": "/api/query/expand",
+      "route_ids": [
+        "post_query_expand_1"
+      ]
+    },
+    {
+      "path": "/api/rag/docset/index",
+      "route_ids": [
+        "post_rag_docset_index_1"
+      ]
+    },
+    {
+      "path": "/api/rag/docset/search",
+      "route_ids": [
+        "post_rag_docset_search_1"
+      ]
+    },
+    {
+      "path": "/api/rag/docset_index",
+      "route_ids": [
+        "post_rag_docset_index_1"
+      ]
+    },
+    {
+      "path": "/api/rag/docset_search",
+      "route_ids": [
+        "post_rag_docset_search_1"
+      ]
+    },
+    {
+      "path": "/api/rag/index",
+      "route_ids": [
+        "post_rag_index_1"
+      ]
+    },
+    {
+      "path": "/api/rag/ingest_diagram",
+      "route_ids": [
+        "post_ingest_diagram_1"
+      ]
+    },
+    {
+      "path": "/api/rag/ingest_document",
+      "route_ids": [
+        "post_ingest_document_1"
+      ]
+    },
+    {
+      "path": "/api/rag/search",
+      "route_ids": [
+        "post_rag_search_1"
+      ]
+    },
+    {
+      "path": "/api/reachability_dead_code",
+      "route_ids": [
+        "post_reachability_dead_code_1"
+      ]
+    },
+    {
+      "path": "/api/reason",
+      "route_ids": [
+        "post_reason_1"
+      ]
+    },
+    {
+      "path": "/api/refactor_impact",
+      "route_ids": [
+        "post_refactor_impact_1"
+      ]
+    },
+    {
+      "path": "/api/repo/affected_tests",
+      "route_ids": [
+        "post_affected_tests_1"
+      ]
+    },
+    {
+      "path": "/api/repo/api_spec",
+      "route_ids": [
+        "post_api_spec_1"
+      ]
+    },
+    {
+      "path": "/api/repo/batch_replace",
+      "route_ids": [
+        "post_code_batch_replace_1"
+      ]
+    },
+    {
+      "path": "/api/repo/briefing",
+      "route_ids": [
+        "post_repo_briefing_1"
+      ]
+    },
+    {
+      "path": "/api/repo/call_graph_diff",
+      "route_ids": [
+        "post_repo_call_graph_diff_1"
+      ]
+    },
+    {
+      "path": "/api/repo/callers",
+      "route_ids": [
+        "post_callers_1"
+      ]
+    },
+    {
+      "path": "/api/repo/circular_dependencies",
+      "route_ids": [
+        "post_circular_dependencies_1"
+      ]
+    },
+    {
+      "path": "/api/repo/code-index",
+      "route_ids": [
+        "post_repo_code_index_1"
+      ]
+    },
+    {
+      "path": "/api/repo/code_invariants",
+      "route_ids": [
+        "post_code_invariants_1"
+      ]
+    },
+    {
+      "path": "/api/repo/complexity",
+      "route_ids": [
+        "post_complexity_1"
+      ]
+    },
+    {
+      "path": "/api/repo/context_budget",
+      "route_ids": [
+        "post_context_budget_1"
+      ]
+    },
+    {
+      "path": "/api/repo/cross_repo_contract",
+      "route_ids": [
+        "post_cross_repo_contract_1"
+      ]
+    },
+    {
+      "path": "/api/repo/dead_code",
+      "route_ids": [
+        "post_dead_code_1"
+      ]
+    },
+    {
+      "path": "/api/repo/dependency_slice",
+      "route_ids": [
+        "post_dependency_slice_1"
+      ]
+    },
+    {
+      "path": "/api/repo/deterministic",
+      "route_ids": [
+        "post_repo_deterministic_1"
+      ]
+    },
+    {
+      "path": "/api/repo/diagnose",
+      "route_ids": [
+        "post_repo_diagnose_1"
+      ]
+    },
+    {
+      "path": "/api/repo/env_compat",
+      "route_ids": [
+        "post_env_compat_1"
+      ]
+    },
+    {
+      "path": "/api/repo/explain_query",
+      "route_ids": [
+        "post_explain_query_1"
+      ]
+    },
+    {
+      "path": "/api/repo/generate_dataset",
+      "route_ids": [
+        "post_generate_dataset_1"
+      ]
+    },
+    {
+      "path": "/api/repo/generate_tests_for_diff",
+      "route_ids": [
+        "post_generate_tests_for_diff_1"
+      ]
+    },
+    {
+      "path": "/api/repo/generate_types",
+      "route_ids": [
+        "post_generate_types_1"
+      ]
+    },
+    {
+      "path": "/api/repo/hotspots",
+      "route_ids": [
+        "post_hotspots_1"
+      ]
+    },
+    {
+      "path": "/api/repo/impact",
+      "route_ids": [
+        "post_repo_impact_1"
+      ]
+    },
+    {
+      "path": "/api/repo/investigate",
+      "route_ids": [
+        "post_repo_investigate_1"
+      ]
+    },
+    {
+      "path": "/api/repo/map",
+      "route_ids": [
+        "post_repo_map_1"
+      ]
+    },
+    {
+      "path": "/api/repo/migration_drift",
+      "route_ids": [
+        "post_migration_drift_1"
+      ]
+    },
+    {
+      "path": "/api/repo/mutation_test",
+      "route_ids": [
+        "post_mutation_test_1"
+      ]
+    },
+    {
+      "path": "/api/repo/package_audit",
+      "route_ids": [
+        "post_package_audit_1"
+      ]
+    },
+    {
+      "path": "/api/repo/profile",
+      "route_ids": [
+        "post_repo_profile_1"
+      ]
+    },
+    {
+      "path": "/api/repo/profile_digest",
+      "route_ids": [
+        "post_profile_digest_1"
+      ]
+    },
+    {
+      "path": "/api/repo/reachability_dead_code",
+      "route_ids": [
+        "post_reachability_dead_code_1"
+      ]
+    },
+    {
+      "path": "/api/repo/schema_inspect",
+      "route_ids": [
+        "post_repo_schema_inspect_1"
+      ]
+    },
+    {
+      "path": "/api/repo/secret_scan",
+      "route_ids": [
+        "post_repo_secret_scan_1"
+      ]
+    },
+    {
+      "path": "/api/repo/skeletonize",
+      "route_ids": [
+        "post_repo_skeletonize_1"
+      ]
+    },
+    {
+      "path": "/api/repo/split_changes",
+      "route_ids": [
+        "post_repo_split_changes_1"
+      ]
+    },
+    {
+      "path": "/api/repo/state",
+      "route_ids": [
+        "post_repo_state_1"
+      ]
+    },
+    {
+      "path": "/api/repo/structural_search",
+      "route_ids": [
+        "post_repo_structural_search_1"
+      ]
+    },
+    {
+      "path": "/api/repo/synthesize_rules",
+      "route_ids": [
+        "post_repo_synthesize_rules_1"
+      ]
+    },
+    {
+      "path": "/api/repo/topology",
+      "route_ids": [
+        "post_repo_topology_1"
+      ]
+    },
+    {
+      "path": "/api/repo/type_stubs",
+      "route_ids": [
+        "post_repo_type_stubs_1"
+      ]
+    },
+    {
+      "path": "/api/repo_state",
+      "route_ids": [
+        "post_repo_state_1"
+      ]
+    },
+    {
+      "path": "/api/rerank",
+      "route_ids": [
+        "post_rerank_1"
+      ]
+    },
+    {
+      "path": "/api/resolve_imports",
+      "route_ids": [
+        "post_resolve_imports_1"
+      ]
+    },
+    {
+      "path": "/api/review",
+      "route_ids": [
+        "post_review_1"
+      ]
+    },
+    {
+      "path": "/api/review/diff",
+      "route_ids": [
+        "post_review_diff_1"
+      ]
+    },
+    {
+      "path": "/api/route",
+      "route_ids": [
+        "post_route_1"
+      ]
+    },
+    {
+      "path": "/api/scaffold",
+      "route_ids": [
+        "post_scaffold_1"
+      ]
+    },
+    {
+      "path": "/api/schema_inspect",
+      "route_ids": [
+        "post_repo_schema_inspect_1"
+      ]
+    },
+    {
+      "path": "/api/search",
+      "route_ids": [
+        "post_search_1"
+      ]
+    },
+    {
+      "path": "/api/second-opinion",
+      "route_ids": [
+        "post_second_opinion_1"
+      ]
+    },
+    {
+      "path": "/api/secret_scan",
+      "route_ids": [
+        "post_repo_secret_scan_1"
+      ]
+    },
+    {
+      "path": "/api/security_audit",
+      "route_ids": [
+        "post_security_audit_1"
+      ]
+    },
+    {
+      "path": "/api/simulate_merge",
+      "route_ids": [
+        "post_coord_simulate_merge_1"
+      ]
+    },
+    {
+      "path": "/api/skeletonize",
+      "route_ids": [
+        "post_repo_skeletonize_1"
+      ]
+    },
+    {
+      "path": "/api/solve/repo",
+      "route_ids": [
+        "post_solve_repo_1"
+      ]
+    },
+    {
+      "path": "/api/speculative-lint",
+      "route_ids": [
+        "post_command_speculative_lint_1"
+      ]
+    },
+    {
+      "path": "/api/speculative_draft",
+      "route_ids": [
+        "post_speculative_draft_1"
+      ]
+    },
+    {
+      "path": "/api/split_changes",
+      "route_ids": [
+        "post_repo_split_changes_1"
+      ]
+    },
+    {
+      "path": "/api/structural_search",
+      "route_ids": [
+        "post_repo_structural_search_1"
+      ]
+    },
+    {
+      "path": "/api/symbol_callgraph",
+      "route_ids": [
+        "post_symbol_callgraph_1"
+      ]
+    },
+    {
+      "path": "/api/synthesize_rules",
+      "route_ids": [
+        "post_repo_synthesize_rules_1"
+      ]
+    },
+    {
+      "path": "/api/task/eval_drift",
+      "route_ids": [
+        "post_eval_drift_1"
+      ]
+    },
+    {
+      "path": "/api/task/eval_suite",
+      "route_ids": [
+        "post_eval_suite_1"
+      ]
+    },
+    {
+      "path": "/api/task/prompt_eval",
+      "route_ids": [
+        "post_prompt_eval_1"
+      ]
+    },
+    {
+      "path": "/api/task/scaffold",
+      "route_ids": [
+        "post_scaffold_1"
+      ]
+    },
+    {
+      "path": "/api/task/speculative_draft",
+      "route_ids": [
+        "post_speculative_draft_1"
+      ]
+    },
+    {
+      "path": "/api/task/transcribe",
+      "route_ids": [
+        "post_task_transcribe_1"
+      ]
+    },
+    {
+      "path": "/api/task/vision",
+      "route_ids": [
+        "post_task_vision_1"
+      ]
+    },
+    {
+      "path": "/api/telemetry/timeline",
+      "route_ids": [
+        "post_telemetry_timeline_1"
+      ]
+    },
+    {
+      "path": "/api/telemetry/tool-accounting",
+      "route_ids": [
+        "post_telemetry_tool_accounting_1"
+      ]
+    },
+    {
+      "path": "/api/test_matrix",
+      "route_ids": [
+        "post_test_matrix_1"
+      ]
+    },
+    {
+      "path": "/api/topology",
+      "route_ids": [
+        "post_repo_topology_1"
+      ]
+    },
+    {
+      "path": "/api/transcribe",
+      "route_ids": [
+        "post_task_transcribe_1"
+      ]
+    },
+    {
+      "path": "/api/type_stubs",
+      "route_ids": [
+        "post_repo_type_stubs_1"
+      ]
+    },
+    {
+      "path": "/api/vision",
+      "route_ids": [
+        "post_task_vision_1"
+      ]
+    },
+    {
+      "path": "/api/vision/review",
+      "route_ids": [
+        "post_task_vision_1"
+      ]
+    },
+    {
+      "path": "/api/webhook_replay",
+      "route_ids": [
+        "post_command_webhook_replay_1"
+      ]
+    },
+    {
+      "path": "/api/work-orders",
+      "route_ids": [
+        "post_work_orders_1"
+      ]
+    },
+    {
+      "path": "/api/worktree_lease",
+      "route_ids": [
+        "post_coord_worktree_lease_1"
+      ]
+    },
+    {
+      "path": "/api/worktree_prune",
+      "route_ids": [
+        "post_coord_worktree_prune_1"
+      ]
+    },
+    {
+      "path": "/api/worktree_release",
+      "route_ids": [
+        "post_coord_worktree_release_1"
+      ]
+    },
+    {
+      "path": "/api/worktrees",
+      "route_ids": [
+        "post_coord_worktrees_1"
+      ]
+    }
+  ],
+  "expected_duplicate_paths": {
+    "/api/embed": [
+      "post_embed_1",
+      "post_chat_1"
+    ]
+  },
+  "catch_all": {
+    "candidate_line": 4665,
+    "root_line": 5159,
+    "behavior": "existing 404 branch after selectors; registry miss remains an empty match tuple"
+  },
+  "route_precedence_note": "For every exact POST path, root and candidate choose the same ordered route IDs; /api/embed intentionally matches two ordered branches. /api/bundle/import moves between pre-body and main dispatch by preimage; it has no overlapping selector.",
+  "excluded_post_paths": [
+    {
+      "path": "/api/context/pack",
+      "reason": "Agent-2/T14 explicit exclusion; inline dispatch preserved"
+    }
+  ]
+}

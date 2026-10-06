@@ -1,0 +1,492 @@
+diff --git a/tests/test_root_current_mode_overlay_t18.py b/tests/test_root_current_mode_overlay_t18.py
+new file mode 100644
+index 0000000..8db203a
+--- /dev/null
++++ b/tests/test_root_current_mode_overlay_t18.py
+@@ -0,0 +1,207 @@
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import sys
++import threading
++import urllib.error
++import urllib.request
++from contextlib import contextmanager
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++
++_ROOT_SOURCE = os.environ.get("T18_ROOT_SOURCE", "")
++if _ROOT_SOURCE:
++    sys.path.insert(0, str(Path(_ROOT_SOURCE).resolve()))
++
++from local_ai_hub import http_server
++
++
++def test_current_root_mode_read_auth_post_and_json_envelope(tmp_path: Path, monkeypatch) -> None:
++    root_source = Path(_ROOT_SOURCE).resolve() if _ROOT_SOURCE else None
++    if root_source is None:
++        pytest.skip("set T18_ROOT_SOURCE to pin the current root source")
++    expected_module = root_source / "local_ai_hub" / "http_server.py"
++    assert Path(http_server.__file__).resolve() == expected_module
++    expected_sha = os.environ.get("T18_ROOT_HTTP_SERVER_SHA256", "").upper()
++    assert len(expected_sha) == 64
++    assert hashlib.sha256(expected_module.read_bytes()).hexdigest().upper() == expected_sha
++
++    events: list[tuple[str, object]] = []
++
++    class Telemetry:
++        def record_system(self, action, **details):
++            events.append((action, details))
++
++        def record_live(self, **_details):
++            return None
++
++    class ModeJobs:
++        path = tmp_path / "jobs.sqlite3"
++
++        @contextmanager
++        def operational_mode_change_guard(self):
++            yield
++
++        def on_operational_mode_changed(self, snapshot):
++            events.append(("mode_changed", snapshot.mode))
++            return {"inference_active": False}
++
++        def inference_actions_active(self, *, exclude_actions=()):
++            events.append(("inference_actions_active", tuple(sorted(exclude_actions))))
++            return False
++
++    class ModeTracker:
++        def active_count(self):
++            return 0
++
++        def enter_gaming(self):
++            events.append(("tracker_mode", "gaming"))
++
++        def enter_active(self):
++            events.append(("tracker_mode", "active"))
++
++        def cancel_and_wait(self, _timeout):
++            return {"state": "drained", "inference_active": False}
++
++    class LoadedAccelerator:
++        def status(self):
++            return {"loaded": True, "active_backend": "transformers"}
++
++        def release(self, *, timeout_seconds):
++            assert timeout_seconds > 0
++            return False
++
++    class Runtime:
++        def unload_configured_models(self, *, timeout_seconds):
++            assert 0 < timeout_seconds <= 3
++            return {
++                "success": False,
++                "backend_available": True,
++                "unloaded": ["model-a"],
++                "failed": {"model-b": "timeout"},
++            }
++
++    state_dir = tmp_path / "profile"
++    initial = http_server.set_operational_mode(state_dir, "gaming")
++    assert initial.mode == "gaming"
++
++    app = SimpleNamespace(
++        config={
++            "server": {"state_dir": str(state_dir)},
++            "security": {
++                "api_token": "",
++                "action_tokens": {"mode.control": "mode-control-token-123456"},
++            },
++        },
++        telemetry=Telemetry(),
++        async_jobs=ModeJobs(),
++        debug_traces=None,
++        preprocessor=SimpleNamespace(status=lambda: {"success": True, "projects": []}),
++        runtime=Runtime(),
++        embeddings=LoadedAccelerator(),
++        reranker=LoadedAccelerator(),
++    )
++    monkeypatch.setattr(http_server, "APP", app)
++    monkeypatch.setattr(http_server, "_ACTIVE_TRANSCRIPTIONS", ModeTracker())
++    monkeypatch.setattr(http_server, "_ACTIVE_CONVERSATIONS", ModeTracker())
++
++    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++    base_url = f"http://127.0.0.1:{server.server_address[1]}"
++    try:
++        with urllib.request.urlopen(f"{base_url}/api/mode", timeout=3) as response:
++            mode_before = json.loads(response.read())
++            assert response.status == 200
++        assert mode_before["success"] is True
++        assert mode_before["mode"] == "gaming"
++        assert mode_before["revision"] == initial.revision
++
++        bad_request = urllib.request.Request(
++            f"{base_url}/api/admin/mode",
++            data=b'{"mode":"active"}',
++            headers={
++                "Content-Type": "application/json",
++                "X-LocalAI-Token": "wrong-action-token",
++                "Connection": "close",
++            },
++            method="POST",
++        )
++        with pytest.raises(urllib.error.HTTPError) as denied:
++            urllib.request.urlopen(bad_request, timeout=3)
++        denied_payload = json.loads(denied.value.read())
++        assert denied.value.code == 401
++        assert denied_payload == {
++            "success": False,
++            "status_code": 401,
++            "error": "unauthorized",
++            "terminal": True,
++            "retryable": False,
++        }
++        assert http_server.load_operational_mode(state_dir).mode == "gaming"
++
++        request = urllib.request.Request(
++            f"{base_url}/api/admin/mode",
++            data=b'{"mode":"active"}',
++            headers={
++                "Content-Type": "application/json",
++                "X-LocalAI-Token": "mode-control-token-123456",
++                "Connection": "close",
++            },
++            method="POST",
++        )
++        with urllib.request.urlopen(request, timeout=3) as response:
++            payload = json.loads(response.read())
++            assert response.status == 200
++        assert payload["success"] is True
++        assert payload["mode"] == "active"
++        assert payload["revision"] == initial.revision + 1
++        assert payload["degraded"] is False
++        assert http_server.load_operational_mode(state_dir).mode == "active"
++        assert ("mode_changed", "active") in events
++        assert any(
++            action == "admin.authorization"
++            and details.get("operation") == "mode.control"
++            and details.get("actor") == "action_token"
++            and details.get("success") is True
++            for action, details in events
++        )
++
++        gaming_request = urllib.request.Request(
++            f"{base_url}/api/admin/mode",
++            data=b'{"mode":"gaming"}',
++            headers={
++                "Content-Type": "application/json",
++                "X-LocalAI-Token": "mode-control-token-123456",
++                "Connection": "close",
++            },
++            method="POST",
++        )
++        with urllib.request.urlopen(gaming_request, timeout=3) as response:
++            gaming_payload = json.loads(response.read())
++            assert response.status == 200
++        assert gaming_payload["success"] is True
++        assert gaming_payload["mode"] == "gaming"
++        assert gaming_payload["revision"] == initial.revision + 2
++        assert gaming_payload["whisper_process_release"]["state"] == "drained"
++        assert gaming_payload["conversation_release"]["state"] == "drained"
++        assert gaming_payload["inference_admission_release"]["state"] == "drained"
++        assert gaming_payload["runtime_unload"] == {
++            "success": False,
++            "backend_available": True,
++            "unloaded": ["model-a"],
++            "failed": {"model-b": "timeout"},
++        }
++        assert gaming_payload["accelerator_release"]["success"] is False
++        assert gaming_payload["accelerator_release"]["verified"] is False
++        assert set(gaming_payload["accelerator_release"]["failed"]) == {"embeddings", "reranker"}
++        assert http_server.load_operational_mode(state_dir).mode == "gaming"
++        assert ("mode_changed", "gaming") in events
++    finally:
++        server.shutdown()
++        server.server_close()
++        thread.join(timeout=2)
+diff --git a/tests/test_dashboard_mode_playwright_t18.py b/tests/test_dashboard_mode_playwright_t18.py
+new file mode 100644
+index 0000000..c519ad9
+--- /dev/null
++++ b/tests/test_dashboard_mode_playwright_t18.py
+@@ -0,0 +1,97 @@
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import shutil
++import subprocess
++import sys
++from pathlib import Path
++
++import pytest
++
++_ROOT_SOURCE = os.environ.get("T18_ROOT_SOURCE", "")
++if _ROOT_SOURCE:
++    sys.path.insert(0, str(Path(_ROOT_SOURCE).resolve()))
++
++from local_ai_hub import dashboard, http_server
++from local_ai_hub.dashboard import DASHBOARD_HTML
++
++
++def _playwright_runtime() -> tuple[Path, Path, Path]:
++    runtime = Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node"
++    node = runtime / "bin" / ("node.exe" if os.name == "nt" else "node")
++    if not node.is_file():
++        discovered = shutil.which("node")
++        if not discovered:
++            pytest.skip("bundled Node.js is unavailable")
++        node = Path(discovered)
++
++    package = runtime / "node_modules" / "playwright"
++    override_package = os.environ.get("T18_PLAYWRIGHT_PACKAGE")
++    if override_package:
++        package = Path(override_package)
++    if not package.exists():
++        pytest.skip("bundled Playwright package is unavailable")
++
++    cache = Path.home() / "AppData" / "Local" / "ms-playwright" if os.name == "nt" else Path.home() / ".cache" / "ms-playwright"
++    candidates = sorted(cache.glob("chromium_headless_shell-*/chrome-headless-shell-win64/chrome-headless-shell.exe"))
++    candidates += sorted(cache.glob("chromium_headless_shell-*/chrome-win/headless_shell.exe"))
++    if not candidates:
++        pytest.skip("a preinstalled Playwright headless Chromium is unavailable")
++    return node, package, candidates[-1]
++
++
++def test_dashboard_mode_dom_auth_and_error_projection(tmp_path: Path) -> None:
++    if _ROOT_SOURCE:
++        root_package = Path(_ROOT_SOURCE).resolve() / "local_ai_hub"
++        for module, filename, env_key in (
++            (http_server, "http_server.py", "T18_ROOT_HTTP_SERVER_SHA256"),
++            (dashboard, "dashboard.py", "T18_ROOT_DASHBOARD_SHA256"),
++        ):
++            source_path = root_package / filename
++            expected_sha = os.environ.get(env_key, "").upper()
++            assert Path(module.__file__).resolve() == source_path
++            assert len(expected_sha) == 64
++            assert hashlib.sha256(source_path.read_bytes()).hexdigest().upper() == expected_sha
++    node, playwright_package, chromium = _playwright_runtime()
++    html_path = tmp_path / "dashboard.html"
++    html_path.write_text(DASHBOARD_HTML, encoding="utf-8")
++    runner = Path(__file__).parent / "fixtures" / "dashboard_mode_playwright_t18.cjs"
++
++    env = os.environ.copy()
++    env["T18_PLAYWRIGHT_PACKAGE"] = str(playwright_package)
++    env["T18_CHROMIUM_EXECUTABLE"] = str(chromium)
++    result = subprocess.run(
++        [str(node), str(runner), str(html_path)],
++        capture_output=True,
++        text=True,
++        timeout=45,
++        check=False,
++        env=env,
++    )
++    assert result.returncode == 0, f"Playwright fixture failed:\n{result.stdout}\n{result.stderr}"
++    receipt = json.loads(result.stdout.strip().splitlines()[-1])
++
++    assert receipt["initialMode"] == "active"
++    assert receipt["initialModeGetToken"] is None
++    assert receipt["overviewHealth"] == "Degraded"
++    expected_pill = {"text": "live", "warning": False} if _ROOT_SOURCE else {"text": "degraded", "warning": True}
++    assert receipt["statusPill"] == expected_pill
++    assert receipt["partialMode"] == "gaming"
++    assert receipt["partialBadgeText"] == "Mode: GAMING / PAUSED"
++    assert receipt["partialToken"] == "mode-control-token-123456"
++    assert "Mode persisted as GAMING / PAUSED." in receipt["partialStatus"]
++    assert "VRAM unload pending" in receipt["partialStatus"]
++    assert "accelerator release incomplete" in receipt["partialStatus"]
++    assert "job cancellation incomplete" in receipt["partialStatus"]
++    assert receipt["pressedMode"] == "gaming"
++    assert receipt["buttonsEnabledAfterPartial"] is True
++    assert receipt["unauthorizedStatus"] == "Unauthorized (HTTP 401); check the API token."
++    assert receipt["modeAfterUnauthorized"] == "gaming"
++    assert receipt["unauthorizedToken"] == "wrong-action-token"
++    assert receipt["buttonsEnabledAfterUnauthorized"] is True
++    assert receipt["serverErrorStatus"] == "Mode request failed (HTTP 503)."
++    assert receipt["modeAfterServerError"] == "gaming"
++    assert receipt["serverErrorToken"] == "mode-control-token-123456"
++    assert receipt["buttonsEnabledAfterServerError"] is True
+diff --git a/tests/fixtures/dashboard_mode_playwright_t18.cjs b/tests/fixtures/dashboard_mode_playwright_t18.cjs
+new file mode 100644
+index 0000000..5b610fa
+--- /dev/null
++++ b/tests/fixtures/dashboard_mode_playwright_t18.cjs
+@@ -0,0 +1,170 @@
++const assert = require('node:assert/strict');
++const fs = require('node:fs/promises');
++const http = require('node:http');
++const { chromium } = require(process.env.T18_PLAYWRIGHT_PACKAGE);
++
++const ACTION_TOKEN = 'mode-control-token-123456';
++const requests = [];
++let html = '';
++let currentMode = 'active';
++
++function respond(res, status, payload, contentType = 'application/json; charset=utf-8') {
++  const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
++  res.writeHead(status, { 'Content-Type': contentType, 'Cache-Control': 'no-store' });
++  res.end(body);
++}
++
++function fixtureServer() {
++  return http.createServer(async (req, res) => {
++    const url = new URL(req.url || '/', 'http://127.0.0.1');
++    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/dashboard')) {
++      respond(res, 200, html, 'text/html; charset=utf-8');
++      return;
++    }
++
++    const request = { method: req.method, path: url.pathname, token: req.headers['x-localai-token'] || null };
++    requests.push(request);
++
++    if (req.method === 'GET' && url.pathname === '/api/mode') {
++      respond(res, 200, { success: true, mode: currentMode, runtime_unload: { state: 'pending' } });
++      return;
++    }
++    if (req.method === 'GET' && url.pathname === '/api/live/status') {
++      respond(res, 200, {
++        success: false,
++        hub_online: false,
++        status: 'degraded',
++        current: { degraded: true, health: 'degraded' },
++        error: 'fixture status degraded',
++      });
++      return;
++    }
++    if (req.method === 'POST' && url.pathname === '/api/admin/mode') {
++      let raw = '';
++      for await (const chunk of req) raw += chunk;
++      request.body = JSON.parse(raw || '{}');
++      if (request.token !== ACTION_TOKEN) {
++        respond(res, 401, { success: false, error: 'unauthorized' });
++        return;
++      }
++      if (request.body.mode === 'gaming') {
++        currentMode = 'gaming';
++        respond(res, 200, {
++          success: true,
++          mode: 'gaming',
++          runtime_unload: { state: 'pending' },
++          accelerator_release: { success: false },
++          job_cancellation: { success: false },
++        });
++        return;
++      }
++      respond(res, 503, { success: false, error: 'fixture mode service unavailable' });
++      return;
++    }
++    respond(res, 200, { success: true, data: [], items: [], events: [], errors: [] });
++  });
++}
++
++async function main() {
++  html = await fs.readFile(process.argv[2], 'utf8');
++  const server = fixtureServer();
++  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
++  const address = server.address();
++  const baseUrl = `http://127.0.0.1:${address.port}`;
++  let browser;
++  try {
++    browser = await chromium.launch({ headless: true, executablePath: process.env.T18_CHROMIUM_EXECUTABLE });
++    const context = await browser.newContext();
++    const page = await context.newPage();
++    page.setDefaultTimeout(5000);
++    const pageErrors = [];
++    page.on('pageerror', error => pageErrors.push(error.message));
++    page.on('console', message => { if (message.type() === 'error') pageErrors.push(message.text()); });
++    page.on('dialog', dialog => dialog.dismiss());
++    await page.addInitScript(() => {
++      localStorage.removeItem('apiToken');
++      sessionStorage.removeItem('localAiHubToken');
++    });
++    await page.route('**/*', async route => {
++      if (new URL(route.request().url()).origin === baseUrl) await route.continue();
++      else await route.abort();
++    });
++    await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
++    await page.waitForFunction(() => document.querySelector('#activityModeBadge')?.dataset.mode === 'active', null, { timeout: 8000 });
++    try {
++    await page.waitForFunction(() => document.querySelector('#overviewHealthLevel')?.textContent.trim() === 'Degraded', null, { timeout: 8000 });
++    } catch (error) {
++      const conn = await page.locator('#conn').evaluate(el => ({ text: el.textContent.trim(), className: el.className }));
++      console.error(JSON.stringify({ requests, conn, pageErrors }));
++      throw error;
++    }
++
++    const initialModeGet = requests.find(item => item.method === 'GET' && item.path === '/api/mode');
++    assert.ok(initialModeGet, 'dashboard must load mode from the loopback read endpoint');
++    const initialMode = await page.locator('#activityModeBadge').getAttribute('data-mode');
++    const statusPill = await page.locator('#conn').evaluate(el => ({ text: el.textContent.trim(), warning: el.classList.contains('warn-t') }));
++    const overviewHealth = await page.locator('#overviewHealthLevel').textContent();
++    await page.locator('#controlMenu > summary').click();
++    await page.locator('#apiToken').fill(ACTION_TOKEN);
++    await page.locator('#saveToken').click();
++
++    await page.locator('#activityModeGaming').click();
++    await page.waitForFunction(() => document.querySelector('#activityModeStatus')?.textContent.includes('accelerator release incomplete'), null, { timeout: 8000 });
++    const partial = await page.locator('#activityModeStatus').textContent();
++    const modeAfterPartial = await page.locator('#activityModeBadge').getAttribute('data-mode');
++    const partialBadgeText = await page.locator('#activityModeBadge').textContent();
++    const pressedMode = await page.locator('[data-activity-mode][aria-pressed="true"]').getAttribute('data-activity-mode');
++    const buttonsEnabledAfterPartial = await page.locator('[data-activity-mode]').evaluateAll(items => items.every(item => !item.disabled));
++    const partialPost = requests.find(item => item.method === 'POST' && item.path === '/api/admin/mode' && item.body?.mode === 'gaming');
++    assert.ok(partialPost, 'gaming click must POST through dashboard apiFetch');
++
++    await page.locator('#apiToken').fill('wrong-action-token');
++    await page.locator('#saveToken').click();
++    await page.locator('#activityModeMaintenance').click();
++    await page.waitForFunction(() => document.querySelector('#activityModeStatus')?.textContent.includes('Unauthorized (HTTP 401)'), null, { timeout: 8000 });
++    const unauthorizedStatus = await page.locator('#activityModeStatus').textContent();
++    const modeAfterUnauthorized = await page.locator('#activityModeBadge').getAttribute('data-mode');
++    const unauthorizedPost = requests.find(item => item.method === 'POST' && item.path === '/api/admin/mode' && item.body?.mode === 'maintenance');
++    const buttonsEnabledAfterUnauthorized = await page.locator('[data-activity-mode]').evaluateAll(items => items.every(item => !item.disabled));
++
++    await page.locator('#apiToken').fill(ACTION_TOKEN);
++    await page.locator('#saveToken').click();
++    await page.locator('#activityModeActive').click();
++    await page.waitForFunction(() => document.querySelector('#activityModeStatus')?.textContent.includes('HTTP 503'), null, { timeout: 8000 });
++    const serverErrorStatus = await page.locator('#activityModeStatus').textContent();
++    const modeAfterServerError = await page.locator('#activityModeBadge').getAttribute('data-mode');
++    const serverErrorPost = requests.find(item => item.method === 'POST' && item.path === '/api/admin/mode' && item.body?.mode === 'active');
++    const buttonsEnabledAfterServerError = await page.locator('[data-activity-mode]').evaluateAll(items => items.every(item => !item.disabled));
++
++    const receipt = {
++      initialMode,
++      initialModeGetToken: initialModeGet?.token ?? null,
++      statusPill,
++      overviewHealth: overviewHealth.trim(),
++      partialMode: modeAfterPartial,
++      partialBadgeText: partialBadgeText?.trim() ?? '',
++      partialToken: partialPost?.token ?? null,
++      partialStatus: partial?.trim() ?? '',
++      pressedMode,
++      buttonsEnabledAfterPartial,
++      unauthorizedStatus: unauthorizedStatus?.trim() ?? '',
++      modeAfterUnauthorized,
++      unauthorizedToken: unauthorizedPost?.token ?? null,
++      buttonsEnabledAfterUnauthorized,
++      serverErrorStatus: serverErrorStatus?.trim() ?? '',
++      modeAfterServerError,
++      serverErrorToken: serverErrorPost?.token ?? null,
++      buttonsEnabledAfterServerError,
++    };
++    process.stdout.write(`${JSON.stringify(receipt)}\n`);
++    await context.close();
++  } finally {
++    if (browser) await browser.close();
++    await new Promise(resolve => server.close(resolve));
++  }
++}
++
++main().catch(error => {
++  console.error(error.stack || error);
++  process.exitCode = 1;
++});

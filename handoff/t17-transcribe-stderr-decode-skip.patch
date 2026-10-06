@@ -1,0 +1,10 @@
+diff --git a/src/local_ai_hub/services.py b/src/local_ai_hub/services.py
+--- a/src/local_ai_hub/services.py
++++ b/src/local_ai_hub/services.py
+@@ -2505 +2648,5 @@
+-                if is_audio_decode_skip(str(proc.stdout or "")) or is_audio_decode_skip(transcript):
++                if (
++                    is_audio_decode_skip(str(proc.stdout or ""))
++                    or is_audio_decode_skip(str(proc.stderr or ""))
++                    or is_audio_decode_skip(transcript)
++                ):
