@@ -664,14 +664,17 @@ The WorkOrchestrator queue is now repaired in root: evidence-required test or
 benchmark criteria trigger final validation without file changes; handoff
 artifacts and cancelled terminal payloads include collected verification
 receipts. Regression suite `tests/test_work_orchestrator.py` passed **24/24**
-in 22.43 s, and `git diff --check` passed. The other six queues remain pending
-scoped implementation and acceptance.
+in 22.43 s, and `git diff --check` passed. Remaining TaskStore requirements
+and event-schema compatibility still need scoped implementation/acceptance.
 
 T08 receipt/generation source packet from Helmholtz (`t13-lifecycle-8429`)
-was verified and cherry-picked as master commit `ba538f65`. Follow-up static
-review found the original outer `Mapping` type guard in V04-H018 still absent.
-Added a top-level invalid-payload regression; it failed first for all four
-non-mapping inputs with `AttributeError`, then the explicit guard was added.
+was verified and cherry-picked as master commit `ba538f65`. The immutable-pin
+post-pin ledger `495e4d88dbb621ba991e7e9749cf5a02c8654d4d` records that this
+packet's V04-H018 outer `Mapping` guard was still absent at pin; H020/H021
+typed-field checks and H041 narrow error propagation were restored, H036
+blockers remain open. Root then added the top-level guard: a regression first
+failed for all four non-mapping inputs with `AttributeError`, then passed after
+the fix.
 The parser rejects non-mapping payloads, malformed `passed`, generation, and
 `details`; generation checkpoint handling tolerates only `KeyError`. Packet
 RED showed 33 failed / 17 passed; owner GREEN 50 passed; after the extra guard,
@@ -688,12 +691,16 @@ Task lookup now requires both trusted repository root and tenant with matching
 record provenance; `repository_id` cannot substitute. Broader owner check had
 **90 passed / 8 failed**; the owner reports all eight reproduce on original
 pin `7729c814` and concern GLOBAL/repository/session semantics, not the new
-TASK guard. These failures remain an open compatibility triage; no test
-expectations were changed and T05 isn't release-complete. Tesla has a
-read-only follow-up to adjudicate those eight failures; no code/test changes
-authorized in that triage. The static T05 gap did not prove a live
-cross-tenant leak. No worker may edit concurrently dirty root `http_server.py`
-or `async_jobs.py`.
+TASK guard. Read-only triage classified four real missing guards: repository
+context must require root+tenant, session context must require session+tenant,
+direct explicit-GLOBAL lookup must honor record provenance except for the
+explicit GLOBAL-only tenant-agnostic option, and tenantless context must not
+return repository/session/task rows. Four other failures were stale policy
+assertions/fixtures; never weaken denial tests. Tesla now owns this follow-up
+in the existing T17 checkout, sync target master `9f2c367a`, write scope only
+`agent_memory.py` and targeted tests. T14 `/api/context/pack` and dirty root
+`http_server.py`/`async_jobs.py` remain untouched. T05 isn't release-complete;
+the original static gap did not prove a live cross-tenant leak.
 All original checkpoint refs/stash objects remain preserved.
 
 The tracked/index disposition owner supplied a doc-only follow-up, commit
