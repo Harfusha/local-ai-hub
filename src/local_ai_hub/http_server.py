@@ -25,6 +25,8 @@ from .dashboard import DASHBOARD_HTML
 from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
 from .delivery import decide_delivery
 from .agent_identity import AgentScope, ScopeContext
+from .project_config import resolve_project_context
+from .state_paths import configured_state_dir
 from .agent_tasks import CompletionGateError, GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus
 from .agent_memory import ApprovalRequiredError, MAX_MEMORY_QUERY_LIMIT, MemoryKind, MemoryRecord, MemoryStatus
 from .agent_incidents import IncidentFingerprint, ToolOutcome
@@ -50,6 +52,17 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 APP: LocalAIApp | None = None
+
+
+def _lease_coordination_id(root: str) -> str | None:
+    """Resolve lease namespace from server-side project identity only."""
+    if APP is None:
+        return None
+    try:
+        state_dir = configured_state_dir(APP.config)
+        return resolve_project_context(root, state_dir).coordination_id
+    except Exception:
+        return None
 
 # Monitoring/control reads must never appear as workload. Keep this hard safety set
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
@@ -1698,7 +1711,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"success": True, "workspaces": APP.rag.list_workspaces(self._tenant())}); return
             if path == "/api/leases":
                 root = (query.get("root") or [""])[0]
-                self._send(200, {"success": True, "leases": APP.leases.list(root), "waits": APP.leases.waits(root)}); return
+                coordination_id = _lease_coordination_id(root)
+                self._send(200, {"success": True, "leases": APP.leases.list(root, coordination_id=coordination_id), "waits": APP.leases.waits(root, coordination_id=coordination_id)}); return
             if path == "/api/cross_project_graph":
                 roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
                 if APP.deterministic is not None:
@@ -3616,7 +3630,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.evidence.get(str(payload.get("evidence_id", "")), verify=bool(payload.get("verify", True)))); return
             if path in ("/api/leases/claim", "/api/leases/claim_batch"):
                 paths = payload.get("paths", [])
-                self._send(200, APP.leases.claim_batch(tenant, str(payload.get("root", ".")), [str(x) for x in paths] if isinstance(paths, list) else [], int(payload.get("ttl_seconds", 900)), str(payload.get("purpose", "agent edit")))); return
+                root = str(payload.get("root", "."))
+                coordination_id = _lease_coordination_id(root)
+                self._send(200, APP.leases.claim_batch(tenant, root, [str(x) for x in paths] if isinstance(paths, list) else [], int(payload.get("ttl_seconds", 900)), str(payload.get("purpose", "agent edit")), coordination_id=coordination_id)); return
             if path == "/api/leases/release":
                 self._send(200, APP.leases.release(tenant, str(payload.get("lease_id", "")))); return
             if path == "/api/leases/renew":

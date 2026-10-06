@@ -3030,8 +3030,16 @@ class LocalAIServices:
             return res
         return self._repo_cached(f"det:{operation}", root, params, wrapped_compute)
 
+    def _repository_test_impact_service(self):
+        from .repository_test_impact import RepositoryTestImpactService
+
+        return RepositoryTestImpactService(
+            self.deterministic,
+            self.deterministic_operation,
+        )
+
     def test_matrix(self, root: str) -> dict[str, Any]:
-        return self.deterministic_operation("test-matrix", root, {}, lambda: self.deterministic.test_matrix(root))
+        return self._repository_test_impact_service().test_matrix(root)
 
     def affected_tests(
         self,
@@ -3100,11 +3108,11 @@ class LocalAIServices:
             "project_config_digest": context.config_digest,
             "path_hints_digest": hint_digest,
         }
-        result = self.deterministic_operation(
-            "affected-tests",
+        result = self._repository_test_impact_service().affected_tests(
             root,
+            changed_paths,
+            base,
             params,
-            lambda: self.deterministic.affected_tests(root, changed_paths, base),
         )
         if not isinstance(result, dict) or not result.get("success", True):
             return result
@@ -5433,16 +5441,22 @@ class LocalAIServices:
                 log_callback=log_callback,
             )
         if action == "run":
+            fence_kwargs = (
+                {"_work_attempt_fence": args["writer_fence"]}
+                if args.get("writer_fence") is not None else {}
+            )
             return self.commands.run(
                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
                 timeout=int(args.get("timeout", 0) or 0) or None, force=bool(args.get("force", False)),
                 task_id=str(args.get("task_id", "")), criterion=str(args.get("criterion", "")),
+                record_verification=bool(args.get("record_verification", True)),
                 auto_fix=bool(args.get("auto_fix", False)),
                 fix_generator=self._synthesize_repair_patch if bool(args.get("auto_fix", False)) else None,
                 log_callback=log_callback,
                 snapshot=bool(args.get("snapshot", False)),
                 rollback_on_failure=bool(args.get("rollback_on_failure", False)),
                 rollback_paths=args.get("paths") if isinstance(args.get("paths"), list) else None,
+                **fence_kwargs,
             )
         if action == "run_affected":
             root = str(args.get("cwd", args.get("root", ".")))

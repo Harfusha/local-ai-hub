@@ -189,6 +189,13 @@ class ProjectContext:
     def config_digest(self) -> str:
         return self.resolution.config_digest
 
+    @property
+    def coordination_id(self) -> str | None:
+        """Return producer-owned project namespace, or fail closed on bad config."""
+        if self.resolution.error_codes:
+            return None
+        return self._hint_store.project_id
+
     def path_hints(
         self, *, purpose: str, scope: str, repository_revision: str
     ) -> tuple[PathHint, ...]:
