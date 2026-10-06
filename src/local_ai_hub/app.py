@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import stat
 import io
 import json
 import sqlite3
@@ -11,7 +12,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from . import __version__
 from .artifacts import ArtifactStore
@@ -43,6 +44,7 @@ from .learning import UsageLearner
 from .autotune import RuntimeTuner
 from .deterministic import DeterministicEngine
 from .logging_setup import configure_logging, shutdown_logging
+from .sqlite_support import migrate_agent_state_database
 from .external_tools import ExternalCodeIntelligence
 from .async_jobs import AsyncJobManager
 from .speculative_lint import SpeculativeLintQueue
@@ -66,17 +68,18 @@ from .work_orchestrator import WorkOrchestrator
 
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
-_STATUS_MAX_INFLIGHT_DEPENDENCIES = 8
+_STATUS_MAX_WORKERS = 32
+_STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
 
 
 def _new_status_dependency_executor() -> ThreadPoolExecutor:
     executor = ThreadPoolExecutor(
-        max_workers=_STATUS_MAX_INFLIGHT_DEPENDENCIES,
+        max_workers=_STATUS_MAX_WORKERS,
         thread_name_prefix="local-ai-status",
     )
-    ready = threading.Barrier(_STATUS_MAX_INFLIGHT_DEPENDENCIES)
+    ready = threading.Barrier(_STATUS_MAX_WORKERS)
     try:
-        warmers = [executor.submit(ready.wait, timeout=2.0) for _ in range(_STATUS_MAX_INFLIGHT_DEPENDENCIES)]
+        warmers = [executor.submit(ready.wait, timeout=2.0) for _ in range(_STATUS_MAX_WORKERS)]
         for warmer in warmers:
             warmer.result(timeout=2.5)
     except Exception:
@@ -115,8 +118,8 @@ def _online_probe_status(value: Any, healthy: bool) -> str:
     return "online" if bool(value) else "offline"
 
 
-def _status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline=None, diagnostic=None):
-    """Reuse active status work and cap workers that remain stuck past their deadline."""
+def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline, diagnostic=None):
+    """Start or reuse bounded status work without waiting for its result."""
     def mark_degraded(reason, error=None):
         if diagnostic is None:
             return
@@ -124,21 +127,19 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots, execut
         if error is not None:
             diagnostic["error_type"] = type(error).__name__
 
-    if deadline is None:
-        deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         mark_degraded("deadline_exhausted")
-        return fallback, False
+        return {"fallback": fallback, "healthy": False}
     if not lock.acquire(timeout=remaining):
         mark_degraded("lock_timeout")
-        return fallback, False
+        return {"fallback": fallback, "healthy": False}
     try:
         entry = inflight.get(key)
         if entry is None:
             if not slots.acquire(blocking=False):
                 mark_degraded("worker_capacity_exhausted")
-                return fallback, False
+                return {"fallback": fallback, "healthy": False}
             entry = {"completed": threading.Event(), "outcome": {}}
             inflight[key] = entry
 
@@ -162,18 +163,48 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots, execut
                 del inflight[key]
                 slots.release()
                 mark_degraded("executor_submit_error", exc)
-                return fallback, False
+                return {"fallback": fallback, "healthy": False}
     finally:
         lock.release()
-    remaining = deadline - time.monotonic()
-    if remaining <= 0 or not entry["completed"].wait(remaining):
-        mark_degraded("probe_timeout")
-        return fallback, False
+    return {"entry": entry, "fallback": fallback}
+
+
+def _resolve_status_dependency(handle, *, deadline, diagnostic=None):
+    fallback = handle["fallback"]
+    if "healthy" in handle:
+        return fallback, handle["healthy"]
+    entry = handle["entry"]
+    if not entry["completed"].is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not entry["completed"].wait(remaining):
+            if diagnostic is not None:
+                diagnostic["reason"] = "probe_timeout"
+            return fallback, False
     outcome = entry["outcome"]
     if "error" in outcome:
-        mark_degraded("probe_error", outcome["error"])
+        if diagnostic is not None:
+            diagnostic["reason"] = "probe_error"
+            diagnostic["error_type"] = type(outcome["error"]).__name__
         return fallback, False
     return outcome.get("value", fallback), True
+
+
+def _status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline=None, diagnostic=None):
+    """Reuse active status work and cap workers that remain stuck past their deadline."""
+    if deadline is None:
+        deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+    handle = _schedule_status_dependency(
+        callback,
+        fallback,
+        key=key,
+        lock=lock,
+        inflight=inflight,
+        slots=slots,
+        executor=executor,
+        deadline=deadline,
+        diagnostic=diagnostic,
+    )
+    return _resolve_status_dependency(handle, deadline=deadline, diagnostic=diagnostic)
 
 
 def _runtime_is_available(runtime: Any) -> bool:
@@ -239,6 +270,7 @@ class LocalAIApp:
     def __init__(self, config_path: str | None = None):
         self.config = load_config(config_path)
         state_dir = Path(self.config["server"]["state_dir"])
+        migrate_agent_state_database(state_dir)
         saving = self.config.get("token_saving", {})
         self.started_at = time.time()
         self._shutdown = threading.Event()
@@ -300,17 +332,22 @@ class LocalAIApp:
         self.memory = WorkspaceMemoryStore(state_dir)
         agent_state_cfg = self.config.get("agent_state", {})
         self.agent_state = AgentStateStore(
-            state_dir / "agent_state.sqlite3",
+            state_dir / "agent_state.sqlite",
             enabled=bool(agent_state_cfg.get("enabled", False)),
             max_payload_bytes=int(agent_state_cfg.get("max_payload_bytes", 65536)),
         )
         self.agent_tasks = TaskStore(self.agent_state)
         self.agent_memory = MemoryStore(self.agent_state)
         self.agent_incidents = IncidentStore(self.agent_state)
-        self.agent_verification = VerificationStore(self.agent_state, task_store=self.agent_tasks)
+        self.agent_verification = VerificationStore(
+            self.agent_state,
+            task_store=self.agent_tasks,
+            artifact_store=self.artifacts,
+            evidence_store=self.evidence,
+        )
         self.agent_policy = PolicyEngine(self.agent_state)
         self.agent_tasks.set_policy_engine(self.agent_policy)
-        self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite3")
+        self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite", state_store=self.agent_state)
         self.agent_context = ContextCompiler(
             self.agent_state,
             task_store=self.agent_tasks,
@@ -319,6 +356,16 @@ class LocalAIApp:
             incident_store=self.agent_incidents,
             lease_store=self.leases,
             blackboard=self.agent_blackboard,
+        )
+        self.agent_task_memory_context = ContextCompiler(
+            self.agent_state,
+            task_store=self.agent_tasks,
+            memory_store=self.agent_memory,
+        )
+        self.agent_tasks.set_memory_adoption(
+            memory_store=self.agent_memory,
+            context_compiler=self.agent_task_memory_context,
+            incident_store=self.agent_incidents,
         )
         self.agent_routing = RoutingEngine(cfg=self.config, state_store=self.agent_state)
         self.agent_learning = LearningStore(self.agent_state)
@@ -334,12 +381,16 @@ class LocalAIApp:
             verification_store=self.agent_verification,
             telemetry=self.telemetry,
         )
+        self.services.inference_admission = self.async_jobs.inference_admission
         self.speculative_lint = SpeculativeLintQueue(self.async_jobs, self.config)
-        self.async_jobs.recover()
         self.commands = CommandBroker(self.config, self.artifacts, self.repo_state)
         self.commands.set_incident_store(self.agent_incidents)
         self.commands.set_verification_store(self.agent_verification)
+        self.agent_verification.set_command_execution_record_lookup(
+            getattr(self.commands, "get_command_execution_record", None)
+        )
         self.commands.set_policy_engine(self.agent_policy)
+        self.commands.set_task_store(self.agent_tasks)
         self.commands.set_error_distiller(self.services.distill_command_error)
         self.services.set_commands(self.commands)
         self.services.set_task_store(self.agent_tasks)
@@ -354,12 +405,13 @@ class LocalAIApp:
             verification_store=self.agent_verification,
         )
         self.services.set_consistency_guard(self.consistency_guard)
-        self.swarm = SwarmCoordinator(state_dir / "agent_state.sqlite3", leases=self.leases, blackboard=self.agent_blackboard, verifications=self.agent_verification)
+        self.swarm = SwarmCoordinator(state_dir / "agent_state.sqlite", leases=self.leases, blackboard=self.agent_blackboard, verifications=self.agent_verification)
         self.services.set_swarm(self.swarm)
         self.rag = RAGStore(self.config, self.services, self.reranker)
         self.services.set_rag(self.rag)
         self.preprocessor = ProjectPreprocessor(self.config, self.services, self.rag, self.scheduler, self.runtime, self.repo_tools, self.code_index, self.learner, self.deterministic, telemetry=self.telemetry, background_gpu=self.background_gpu, external_tools=self.external_tools)
         self.services.set_preprocessor(self.preprocessor)
+        self._recover_pending_bundle_imports()
         self.token_router = LosslessTokenRouter(self.config, self.services)
         self.services.set_token_router(self.token_router)
         self.tool_agent = ToolAwareLocalAgent(self.config, self.services, self.preprocessor, self.rag, self.code_index, self.evidence, self.deterministic, external_tools=self.external_tools)
@@ -369,12 +421,14 @@ class LocalAIApp:
         self.work_orchestrator = WorkOrchestrator(self.config, state_dir, self.services, self.commands, self.leases, self.artifacts, telemetry=self.telemetry)
         self.projector = AgentProjector(self.config)
         self.vram_balancer = VRAMBalancer(self.config)
+        self.runtime.vram_balancer = self.vram_balancer
         self.services.set_vram_balancer(self.vram_balancer)
         self.benchmark_runner = HardwareBenchmarkRunner(
             state_dir / "benchmarks.json",
             runtime=self.runtime,
             vram_balancer=self.vram_balancer,
             config=self.config,
+            scheduler=self.scheduler,
         )
         self.recovery = RecoveryJournal(state_dir, stale_seconds=int(self.config.get("resilience", {}).get("journal_stale_seconds", 900)))
         self._start_resilience_watchdog()
@@ -415,6 +469,7 @@ class LocalAIApp:
                     self._shutdown.wait(min(15.0, 1.5 + attempts * 0.5))
             self._prewarm_thread = threading.Thread(target=warm, name="local-ai-prewarm", daemon=True)
             self._prewarm_thread.start()
+        self.async_jobs.recover()
 
     def _watchdog_loop(self) -> None:
         cfg = self.config.get("resilience", {})
@@ -451,14 +506,12 @@ class LocalAIApp:
                         from .sqlite_support import optimize_db
                         state_dir = Path(self.config["server"]["state_dir"])
                         for db_name in (
-                            "agent_state.sqlite3",
+                            "agent_state.sqlite",
                             "async_jobs.sqlite3",
                             "code-index.sqlite3",
-                            "cache.sqlite3",
+                            "cache.sqlite",
                             "rag.sqlite3",
                             "preprocess.sqlite3",
-                            "agent_blackboard.sqlite3",
-                            "leases.sqlite3",
                             "artifacts.sqlite3",
                         ):
                             db_file = state_dir / db_name
@@ -492,26 +545,62 @@ class LocalAIApp:
         self._watchdog_thread.start()
 
     def _execute_async_task(self, action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
+        with self.async_jobs.inference_admission(action) as rejection:
+            if rejection is not None:
+                return rejection
+            return self._execute_async_task_admitted(action, payload, tenant)
+
+    def _execute_async_task_admitted(self, action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
         async_payload = dict(payload)
         async_payload["priority"] = 1
+        for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
+            async_payload.pop(untrusted_context, None)
         if action == "delegate":
             return self.services.delegate(async_payload, tenant)
         if action == "reason":
-            return self.services.reason({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1}, tenant)
+            reason_payload = dict(async_payload)
+            reason_payload.update({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1})
+            return self.services.reason(reason_payload, tenant)
         if action == "review":
-            return self.services.review({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1}, tenant)
+            review_payload = dict(async_payload)
+            review_payload.update({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1})
+            return self.services.review(review_payload, tenant)
         if action == "review_diff":
             review_payload = dict(async_payload)
             review_payload["_async_job"] = True
             return self.services.review_diff(review_payload, tenant)
         if action == "second_opinion":
-            return self.services.second_opinion({"question": async_payload.get("task", ""), "candidate": async_payload.get("candidate", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1100), "priority": 1}, tenant)
+            opinion_payload = dict(async_payload)
+            opinion_payload.update({"question": async_payload.get("task", ""), "candidate": async_payload.get("candidate", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1100), "priority": 1})
+            return self.services.second_opinion(opinion_payload, tenant)
         if action == "compress":
-            return self.services.compress({"text": async_payload.get("context", ""), "instruction": async_payload.get("task", "Compress while preserving facts."), "target_tokens": async_payload.get("max_tokens", 650), "priority": 1}, tenant)
+            compress_payload = dict(async_payload)
+            compress_payload.update({"text": async_payload.get("context", ""), "instruction": async_payload.get("task", "Compress while preserving facts."), "target_tokens": async_payload.get("max_tokens", 650), "priority": 1})
+            return self.services.compress(compress_payload, tenant)
         if action == "route":
-            return self.services.route_context({"text": async_payload.get("context", ""), "query": async_payload.get("task", "")}, tenant)
+            route_payload = dict(async_payload)
+            route_payload.update({"text": async_payload.get("context", ""), "query": async_payload.get("task", "")})
+            return self.services.route_context(route_payload, tenant)
         if action == "batch":
-            return self.services.batch_delegate({"tasks": async_payload.get("tasks", []), "priority": 1}, tenant)
+            raw_tasks = async_payload.get("tasks")
+            if not isinstance(raw_tasks, list) or not raw_tasks:
+                return {"success": False, "error": "tasks must be a non-empty array", "terminal": True, "retryable": False}
+            inherited_context = {key: async_payload[key] for key in ("root", "cwd") if key in async_payload}
+            tasks = []
+            for raw_task in raw_tasks:
+                task_payload = dict(raw_task) if isinstance(raw_task, dict) else {"task": str(raw_task)}
+                for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
+                    task_payload.pop(untrusted_context, None)
+                child_has_workspace = any(
+                    str(task_payload.get(key) or "").strip()
+                    for key in ("root", "cwd")
+                )
+                if not child_has_workspace:
+                    for key, value in inherited_context.items():
+                        if str(value or "").strip():
+                            task_payload[key] = value
+                tasks.append(task_payload)
+            return self.services.batch_delegate({"tasks": tasks, "priority": 1}, tenant)
         if action == "speculative_lint":
             return self.services.speculative_lint(async_payload, tenant)
         return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}
@@ -788,12 +877,18 @@ class LocalAIApp:
                 return result
             degraded = False
             dependency_status: dict[str, dict[str, Any]] = {}
+            pending_dependencies: dict[str, tuple[dict[str, Any], Any, dict[str, Any]]] = {}
 
             def read(key, callback, fallback):
                 nonlocal degraded
-                diagnostic: dict[str, Any] = {}
                 probe_started = time.monotonic()
-                value, healthy = dependency(key, callback, fallback, diagnostic)
+                pending = pending_dependencies.pop(key, None)
+                if pending is None:
+                    diagnostic: dict[str, Any] = {}
+                    value, healthy = dependency(key, callback, fallback, diagnostic)
+                else:
+                    handle, fallback, diagnostic = pending
+                    value, healthy = _resolve_status_dependency(handle, deadline=deadline, diagnostic=diagnostic)
                 degraded = degraded or not healthy
                 dependency_status[key] = {
                     "degraded": not healthy,
@@ -806,13 +901,13 @@ class LocalAIApp:
             runtime_diagnostic: dict[str, Any] = {}
             runtime_probe_started = time.monotonic()
             online, runtime_healthy = dependency("runtime.online", self.runtime.is_online, False, runtime_diagnostic)
+            degraded = degraded or not runtime_healthy
             dependency_status["runtime.online"] = {
                 "degraded": not runtime_healthy,
                 "deadline_ms": max(0, int(_STATUS_DEPENDENCY_TIMEOUT_SECONDS * 1000)),
                 "duration_ms": max(0, int((time.monotonic() - runtime_probe_started) * 1000)),
                 **runtime_diagnostic,
             }
-            degraded = degraded or not runtime_healthy
             ollama_status = _online_probe_status(online, runtime_healthy)
             version = read("runtime.version", self.runtime.version, None) if online else None
             installed: list[str] = read("runtime.installed_models", self.runtime.installed_models, []) if online else []
@@ -821,6 +916,49 @@ class LocalAIApp:
             # Runtime availability is a separate probe phase. A slow runtime must
             # not consume the status snapshot's budget for independent Hub state.
             deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
+            status_probes = {
+                "scheduler": (self.scheduler.status, {}),
+                "accelerators": (lambda: accelerator_status(self.config), _accelerator_status_fallback(self.config)),
+                "telemetry.summary": (lambda: self.telemetry.summary(scope=scope, _flush=False), {}),
+                "model_execution": (self.services.model_policy.summary, {}),
+                "ollama_profile": (self.runtime.managed_profile_status, {}),
+                "background_gpu": (self.background_gpu.status, {}),
+                "generation_cache": (self.services.generation_cache.stats, {}),
+                "semantic_cache": (self.services.semantic_cache.stats, {}),
+                "repo_cache": (self.services.repo_cache.stats, {}),
+                "commands": (self.commands.stats, {}),
+                "repo_snapshots": (self.repo_tools.snapshot_stats, {}),
+                "lossless_router": (self.token_router.stats, {}),
+                "pipeline": (self.pipeline.stats, {}),
+                "preprocessing": (self.preprocessor.stats, {}),
+                "tool_agent": (self.tool_agent.stats, {}),
+                "code_index": (self.code_index.status, {}),
+                "deterministic": (self.deterministic.status, {}),
+                "evidence_store": (self.evidence.stats, {}),
+                "learning": (self.learner.stats, {}),
+                "autotune": (self.tuner.stats, {}),
+                "circuit_breakers": (self.services.breakers.status, {}),
+                "recovery": (lambda: self.recovery.status(limit=8), {}),
+                "embeddings": (self.embeddings.status, {}),
+                "reranker": (self.reranker.status, {}),
+                "code_intelligence": (self.external_tools.status, {}),
+                "debug_traces": (self.debug_traces.stats, {}),
+                "agent_state": (self._agent_state_summary, {"enabled": False}),
+            }
+            for key, (callback, fallback) in status_probes.items():
+                diagnostic: dict[str, Any] = {}
+                handle = _schedule_status_dependency(
+                    callback,
+                    fallback,
+                    key=key,
+                    lock=self._status_dependency_lock,
+                    inflight=self._status_dependency_inflight,
+                    slots=self._status_dependency_slots,
+                    executor=self._status_dependency_executor,
+                    deadline=deadline,
+                    diagnostic=diagnostic,
+                )
+                pending_dependencies[key] = (handle, fallback, diagnostic)
             scheduler = read("scheduler", self.scheduler.status, {})
             accelerators = read(
                 "accelerators",
@@ -977,7 +1115,98 @@ class LocalAIApp:
 
         return retry_busy(_cleanup, retries=5, base_delay_seconds=0.02)
 
-    def export_bundle(self, root: str = "", *, agent_state_record_ids: list[str] | None = None) -> bytes:
+    def _recover_pending_bundle_imports(self) -> None:
+        """Replay durable bundle imports before the app starts serving requests."""
+        import hashlib
+
+        journal_dir = Path(self.config["server"]["state_dir"]) / "bundle-imports"
+        recovered = 0
+        cleanup_pending = False
+        if not journal_dir.exists() and not journal_dir.is_symlink():
+            self._bundle_import_recovery = {"status": "complete", "recovered": 0}
+            return
+        max_bundle, _, _ = self._bundle_limits()
+        try:
+            if journal_dir.is_symlink() or not journal_dir.is_dir():
+                raise RuntimeError("bundle import journal path is not a regular directory")
+            journaled_payload_ids: set[str] = set()
+            for journal_path in sorted(journal_dir.glob("*.json")):
+                if journal_path.is_symlink() or not journal_path.is_file():
+                    raise RuntimeError("bundle import journal is not a regular file")
+                if journal_path.stat().st_size > 16_384:
+                    raise RuntimeError("bundle import journal exceeds its metadata limit")
+                manifest = json.loads(journal_path.read_text(encoding="utf-8"))
+                import_id = str(manifest.get("import_id", "")) if isinstance(manifest, dict) else ""
+                if len(import_id) != 64 or any(ch not in "0123456789abcdef" for ch in import_id):
+                    raise RuntimeError("bundle import journal has an invalid import id")
+                if manifest.get("schema_version") != 1 or manifest.get("status") not in {"staging", "incomplete", "complete"}:
+                    raise RuntimeError("bundle import journal has an unsupported schema or status")
+                if not isinstance(manifest.get("completed_phases"), list):
+                    raise RuntimeError("bundle import journal progress is invalid")
+                if journal_path.stem != import_id:
+                    raise RuntimeError("bundle import journal filename does not match its import id")
+                journaled_payload_ids.add(import_id)
+                payload_path = journal_dir / f"{import_id}.bundle"
+                if payload_path.is_symlink():
+                    raise RuntimeError("bundle import staged payload cannot be a symlink")
+                if str(manifest.get("status", "")) == "complete":
+                    try:
+                        payload_path.unlink(missing_ok=True)
+                        journal_path.unlink(missing_ok=True)
+                    except OSError:
+                        cleanup_pending = True
+                    recovered += 1
+                    continue
+                if not payload_path.is_file() or payload_path.stat().st_size > max_bundle:
+                    raise RuntimeError("bundle import staged payload is missing or exceeds the configured limit")
+                payload = payload_path.read_bytes()
+                expected = str(manifest.get("bundle_sha256", ""))
+                if not expected or hashlib.sha256(payload).hexdigest() != expected:
+                    raise RuntimeError("bundle import staged payload failed its integrity check")
+                target_root = manifest.get("target_root")
+                if target_root is not None and (not isinstance(target_root, str) or not target_root):
+                    raise RuntimeError("bundle import journal target root is invalid")
+                normalized_target_root = (
+                    str(Path(target_root).resolve(strict=False)).replace("\\", "/")
+                    if target_root is not None
+                    else None
+                )
+                if target_root != normalized_target_root:
+                    raise RuntimeError("bundle import journal target root is not canonical")
+                expected_import_id = hashlib.sha256(
+                    f"{expected}\0{normalized_target_root or ''}".encode("utf-8")
+                ).hexdigest()
+                if import_id != expected_import_id:
+                    raise RuntimeError("bundle import journal target root does not match import identity")
+                result = self.import_bundle(payload, normalized_target_root)
+                if not result.get("success") or result.get("recovery_pending"):
+                    raise RuntimeError(str(result.get("error", "bundle import replay did not complete")))
+                recovered += 1
+            for payload_path in journal_dir.glob("*.bundle"):
+                if payload_path.is_symlink() or not payload_path.is_file():
+                    raise RuntimeError("bundle import staged payload is not a regular file")
+                if payload_path.stem not in journaled_payload_ids:
+                    raise RuntimeError("untracked staged bundle payload has no journal")
+        except Exception as exc:
+            self._bundle_import_recovery = {
+                "status": "incomplete",
+                "degraded": True,
+                "recovered": recovered,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            raise RuntimeError(f"bundle import recovery incomplete: {exc}") from exc
+        self._bundle_import_recovery = {"status": "complete", "recovered": recovered}
+        if cleanup_pending:
+            self._bundle_import_recovery["cleanup_pending"] = True
+
+    def export_bundle(
+        self,
+        root: str = "",
+        *,
+        tenant: str | None = None,
+        agent_state_record_ids: list[str] | None = None,
+        agent_state_contexts: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> bytes:
         """Export portable precomputed project state into a bounded ZIP bundle."""
         import hashlib
         from contextlib import closing
@@ -989,7 +1218,31 @@ class LocalAIApp:
             for rid in agent_state_record_ids:
                 rec = None
                 if getattr(self, "agent_memory", None):
-                    rec = self.agent_memory.get(rid)
+                    supplied_context = (agent_state_contexts or {}).get(rid, {})
+                    lookup_context = {
+                        key: supplied_context[key]
+                        for key in (
+                            "scope", "scope_id", "root", "repository_id", "tenant",
+                            "task_id", "session_id", "clone_id", "worktree_id", "branch",
+                        )
+                        if key in supplied_context
+                    }
+                    lookup_context.setdefault("root", root or None)
+                    lookup_context.setdefault("tenant", tenant)
+                    scope_value = getattr(lookup_context.get("scope"), "value", lookup_context.get("scope"))
+                    if scope_value in ("repo", "repository") and not str(lookup_context.get("root") or "").strip():
+                        raise BundleValidationError("repository memory requires provenance root")
+                    if rid in (agent_state_contexts or {}):
+                        rec = self.agent_memory.get(rid, **lookup_context)
+                    else:
+                        rec = self.agent_memory.get(
+                            rid, scope=AgentScope.GLOBAL, tenant=tenant,
+                        )
+                        if rec is None and root and tenant:
+                            rec = self.agent_memory.get(
+                                rid, scope=AgentScope.REPOSITORY,
+                                root=root, tenant=tenant,
+                            )
                 if rec is not None:
                     scope_val = getattr(rec.scope, "value", rec.scope)
                     status_val = getattr(rec.status, "value", rec.status)
@@ -1128,19 +1381,195 @@ class LocalAIApp:
         """Validate and restore a project bundle without extracting archive paths."""
         import hashlib
         import hmac
-        from contextlib import closing
+        import os
+        import tempfile
+        import uuid
+        from dataclasses import replace
+        from contextlib import closing, contextmanager
 
         max_bundle, max_json, max_rows = self._bundle_limits()
         if not isinstance(bundle_bytes, (bytes, bytearray)) or not bundle_bytes:
             return {"success": False, "error": "bundle is empty"}
         if len(bundle_bytes) > max_bundle:
             return {"success": False, "error": f"bundle exceeds configured limit ({max_bundle} bytes)"}
+        raw_bundle = bytes(bundle_bytes)
+        bundle_sha256 = hashlib.sha256(raw_bundle).hexdigest()
+
+        def sync_directory(path: Path) -> None:
+            if os.name == "nt":
+                return
+            directory_fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+
+        def atomic_write(path: Path, value: bytes) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as stream:
+                    temp_path = Path(stream.name)
+                    stream.write(value)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                if os.name == "nt":
+                    import ctypes
+
+                    move_file_ex = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
+                    move_file_ex.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+                    move_file_ex.restype = ctypes.c_int
+                    if not move_file_ex(str(temp_path), str(path), 0x1 | 0x8):
+                        raise ctypes.WinError(ctypes.get_last_error())
+                else:
+                    os.replace(temp_path, path)
+                    sync_directory(path.parent)
+            except Exception:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+                raise
+
+        def create_import_intent(root_path: str | None) -> dict[str, Any]:
+            normalized_root = str(Path(root_path).resolve(strict=False)).replace("\\", "/") if root_path else None
+            import_id = hashlib.sha256(f"{bundle_sha256}\0{normalized_root or ''}".encode("utf-8")).hexdigest()
+            journal_dir = Path(self.config["server"]["state_dir"]) / "bundle-imports"
+            payload_path = journal_dir / f"{import_id}.bundle"
+            journal_path = journal_dir / f"{import_id}.json"
+            if journal_dir.is_symlink():
+                raise OSError("bundle import journal directory cannot be a symlink")
+            missing_directories: list[Path] = []
+            directory = journal_dir
+            while not directory.exists():
+                if directory.is_symlink():
+                    raise OSError("bundle import journal path cannot be a symlink")
+                missing_directories.append(directory)
+                parent = directory.parent
+                if parent == directory:
+                    break
+                directory = parent
+            journal_dir.mkdir(parents=True, exist_ok=True)
+            for created_directory in reversed(missing_directories):
+                sync_directory(created_directory.parent)
+            if journal_path.exists():
+                if journal_path.is_symlink() or not journal_path.is_file():
+                    raise OSError("bundle import journal is not a regular file")
+                if journal_path.stat().st_size > 16_384:
+                    raise OSError("existing bundle import journal exceeds its metadata limit")
+                manifest = json.loads(journal_path.read_text(encoding="utf-8"))
+                if (
+                    not isinstance(manifest, dict)
+                    or manifest.get("import_id") != import_id
+                    or manifest.get("bundle_sha256") != bundle_sha256
+                    or manifest.get("target_root") != normalized_root
+                    or manifest.get("schema_version") != 1
+                    or manifest.get("status") not in {"staging", "incomplete", "complete"}
+                    or not isinstance(manifest.get("completed_phases"), list)
+                ):
+                    raise OSError("existing bundle import journal does not match this payload")
+                if payload_path.is_symlink() or not payload_path.is_file():
+                    raise OSError("existing bundle import staged payload is unavailable")
+                if payload_path.stat().st_size > max_bundle:
+                    raise OSError("existing bundle import staged payload exceeds the configured limit")
+                if hashlib.sha256(payload_path.read_bytes()).hexdigest() != bundle_sha256:
+                    raise OSError("existing bundle import staged payload failed its integrity check")
+                return manifest
+            manifest = {
+                "schema_version": 1,
+                "import_id": import_id,
+                "bundle_sha256": bundle_sha256,
+                "target_root": normalized_root,
+                "status": "staging",
+                "completed_phases": [],
+                "updated_at": time.time(),
+            }
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            atomic_write(payload_path, raw_bundle)
+            manifest["status"] = "incomplete"
+            manifest["updated_at"] = time.time()
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            return manifest
+
+        def staging_failure(root_path: str | None, exc: Exception) -> dict[str, Any]:
+            recovery_pending = False
+            try:
+                normalized_root = str(Path(root_path).resolve(strict=False)).replace("\\", "/") if root_path else None
+                import_id = hashlib.sha256(f"{bundle_sha256}\0{normalized_root or ''}".encode("utf-8")).hexdigest()
+                journal_dir = Path(self.config["server"]["state_dir"]) / "bundle-imports"
+                if journal_dir.is_symlink():
+                    recovery_pending = True
+                elif journal_dir.is_dir():
+                    journal_path = journal_dir / f"{import_id}.json"
+                    payload_path = journal_dir / f"{import_id}.bundle"
+                    recovery_pending = any(
+                        path.exists() or path.is_symlink()
+                        for path in (journal_path, payload_path)
+                    )
+            except Exception:
+                recovery_pending = True
+            return {
+                "success": False,
+                "status": "incomplete" if recovery_pending else "not_started",
+                "degraded": recovery_pending,
+                "recovery_pending": recovery_pending,
+                "error": f"bundle import could not be staged: {type(exc).__name__}: {exc}",
+            }
+
+        def mark_import_phase(manifest: dict[str, Any], phase: str) -> None:
+            phases = manifest.setdefault("completed_phases", [])
+            if phase not in phases:
+                phases.append(phase)
+            manifest["status"] = "incomplete"
+            manifest["updated_at"] = time.time()
+            journal_path = Path(self.config["server"]["state_dir"]) / "bundle-imports" / f"{manifest['import_id']}.json"
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+        def finish_import_intent(manifest: dict[str, Any]) -> bool:
+            manifest["status"] = "complete"
+            manifest["updated_at"] = time.time()
+            journal_dir = Path(self.config["server"]["state_dir"]) / "bundle-imports"
+            journal_path = journal_dir / f"{manifest['import_id']}.json"
+            payload_path = journal_dir / f"{manifest['import_id']}.bundle"
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            try:
+                payload_path.unlink(missing_ok=True)
+                journal_path.unlink(missing_ok=True)
+            except OSError:
+                return True
+            return False
+
+        def incomplete_result(manifest: dict[str, Any], exc: Exception) -> dict[str, Any]:
+            return {
+                "success": False,
+                "status": "incomplete",
+                "degraded": True,
+                "recovery_pending": True,
+                "import_id": str(manifest.get("import_id", "")),
+                "error": f"bundle import incomplete; recovery is pending: {type(exc).__name__}: {exc}",
+            }
+
+        @contextmanager
+        def capture_import_phase(manifest: dict[str, Any], phase: str, errors: list[Exception]):
+            try:
+                yield
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                try:
+                    mark_import_phase(manifest, phase)
+                except Exception as exc:
+                    errors.append(exc)
         try:
-            with zipfile.ZipFile(io.BytesIO(bytes(bundle_bytes)), "r") as zf:
+            with zipfile.ZipFile(io.BytesIO(raw_bundle), "r") as zf:
                 infos = zf.infolist()
                 if len(infos) != 1 or infos[0].filename != "bundle.json":
                     return {"success": False, "error": "bundle must contain exactly one bundle.json member"}
                 info = infos[0]
+                mode = (info.external_attr >> 16) & 0xFFFF
+                file_type = stat.S_IFMT(mode)
+                if stat.S_ISLNK(mode):
+                    return {"success": False, "error": "bundle.json symlink members are not allowed"}
+                if file_type not in {0, stat.S_IFREG}:
+                    return {"success": False, "error": "bundle.json must be a regular file"}
                 if info.is_dir() or info.file_size > max_json:
                     return {"success": False, "error": f"bundle.json exceeds configured limit ({max_json} bytes)"}
                 raw = zf.read(info)
@@ -1159,44 +1588,54 @@ class LocalAIApp:
 
         bundle_format = str(data.get("format", ""))
 
-        def restore_agent_memory_records(
+        def prepare_agent_memory_records(
             records: Any,
             target_root_path: str | None = None,
             source_root_path: str | None = None,
-        ) -> tuple[int, str | None]:
+        ) -> tuple[list[MemoryRecord] | None, str | None]:
             if not isinstance(records, list):
-                return 0, "bundle records are missing"
-            restored = 0
-            for item in records:
+                return None, "bundle records are missing"
+            prepared_records: list[MemoryRecord] = []
+            for record_index, item in enumerate(records):
                 if not isinstance(item, dict):
-                    return 0, "invalid agent-state bundle record"
+                    return None, "invalid agent-state bundle record"
                 rtype = item.get("type")
                 rdata = item.get("data", {})
                 if not isinstance(rdata, dict):
-                    return 0, "invalid agent-state bundle payload"
+                    return None, "invalid agent-state bundle payload"
                 if rtype == "memory" and getattr(self, "agent_memory", None):
-                    record_data = dict(rdata)
-                    scope_value = str(record_data.get("scope", "")).strip().lower()
-                    provenance = record_data.get("provenance")
-                    if target_root_path and scope_value in {"repo", "repository"}:
-                        source_root = provenance.get("root") if isinstance(provenance, dict) else None
-                        if not source_root:
-                            return 0, "repository memory provenance root is required for project import"
-                        if not source_root_path:
-                            return 0, "project bundle root is required for repository memory import"
-                        if _normalise_scope_root(str(source_root)) != _normalise_scope_root(source_root_path):
-                            return 0, "repository memory provenance does not match bundle root"
-                        rebased_provenance = dict(provenance)
-                        rebased_provenance["source_root"] = str(source_root)
-                        rebased_provenance["root"] = target_root_path
-                        record_data["provenance"] = rebased_provenance
-                    from_dict = getattr(MemoryRecord, "from_dict", None)
-                    if callable(from_dict) and all(
-                        field in record_data for field in ("record_id", "status", "provenance")
-                    ):
-                        try:
-                            rec = from_dict(record_data)
-                        except (KeyError, TypeError, ValueError):
+                    try:
+                        record_data = dict(rdata)
+                        scope_value = str(record_data.get("scope", "")).strip().lower()
+                        provenance = record_data.get("provenance")
+                        if target_root_path and scope_value in {"repo", "repository"}:
+                            source_root = provenance.get("root") if isinstance(provenance, dict) else None
+                            if not source_root:
+                                return None, "repository memory provenance root is required for project import"
+                            if not source_root_path:
+                                return None, "project bundle root is required for repository memory import"
+                            if _normalise_scope_root(str(source_root)) != _normalise_scope_root(source_root_path):
+                                return None, "repository memory provenance does not match bundle root"
+                            rebased_provenance = dict(provenance)
+                            rebased_provenance["source_root"] = str(source_root)
+                            rebased_provenance["root"] = target_root_path
+                            record_data["provenance"] = rebased_provenance
+                        from_dict = getattr(MemoryRecord, "from_dict", None)
+                        if callable(from_dict) and all(
+                            field in record_data for field in ("record_id", "status", "provenance")
+                        ):
+                            try:
+                                rec = from_dict(record_data)
+                            except (KeyError, TypeError, ValueError):
+                                rec = MemoryRecord.create(
+                                    kind=MemoryKind(record_data.get("kind", "fact")),
+                                    scope=AgentScope.parse(record_data.get("scope", "task")),
+                                    key=str(record_data.get("key", "")),
+                                    value=record_data.get("value"),
+                                    scope_id=str(record_data.get("scope_id", "")),
+                                    status=MemoryStatus(record_data.get("status", "candidate")),
+                                )
+                        else:
                             rec = MemoryRecord.create(
                                 kind=MemoryKind(record_data.get("kind", "fact")),
                                 scope=AgentScope.parse(record_data.get("scope", "task")),
@@ -1205,18 +1644,27 @@ class LocalAIApp:
                                 scope_id=str(record_data.get("scope_id", "")),
                                 status=MemoryStatus(record_data.get("status", "candidate")),
                             )
-                    else:
-                        rec = MemoryRecord.create(
-                            kind=MemoryKind(record_data.get("kind", "fact")),
-                            scope=AgentScope.parse(record_data.get("scope", "task")),
-                            key=str(record_data.get("key", "")),
-                            value=record_data.get("value"),
-                            scope_id=str(record_data.get("scope_id", "")),
-                            status=MemoryStatus(record_data.get("status", "candidate")),
+                    except (KeyError, OSError, TypeError, ValueError):
+                        return None, "invalid agent-state bundle memory record"
+                    if not str(record_data.get("record_id", "")).strip():
+                        stable_id = uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"{bundle_sha256}\0{target_root_path or ''}\0{record_index}",
                         )
-                    self.agent_memory.record(rec, actor="bundle_import")
-                    restored += 1
-            return restored, None
+                        rec = replace(rec, record_id=str(stable_id))
+                    prepared_records.append(rec)
+            return prepared_records, None
+
+        def restore_agent_memory_records(
+            records: list[MemoryRecord],
+            manifest: dict[str, Any],
+        ) -> None:
+            for record_index, rec in enumerate(records):
+                self.agent_memory.record(
+                    rec,
+                    actor="bundle_import",
+                    idempotency_key=f"bundle-import:{manifest['import_id']}:memory:{record_index}",
+                )
 
         if bundle_format == "local-ai-hub-agent-state-bundle":
             records = data.get("records", [])
@@ -1226,10 +1674,28 @@ class LocalAIApp:
             expected = str(data.get("records_sha256", ""))
             if not expected or not hmac.compare_digest(hashlib.sha256(canonical).hexdigest(), expected):
                 return {"success": False, "error": "bundle integrity check failed"}
-            restored, error = restore_agent_memory_records(records)
+            prepared_records, error = prepare_agent_memory_records(records)
             if error:
                 return {"success": False, "error": error}
-            return {"success": True, "version": __version__, "restored_records": restored}
+            try:
+                manifest: dict[str, Any] | None = None
+                manifest = create_import_intent(None)
+                restore_agent_memory_records(prepared_records or [], manifest)
+                mark_import_phase(manifest, "agent_memory")
+                cleanup_pending = finish_import_intent(manifest)
+            except Exception as exc:
+                if manifest is None:
+                    return staging_failure(None, exc)
+                return incomplete_result(manifest, exc)
+            return {
+                "success": True,
+                "status": "complete",
+                "recovery_pending": False,
+                "cleanup_pending": cleanup_pending,
+                "import_id": manifest["import_id"],
+                "version": __version__,
+                "restored_records": len(prepared_records or []),
+            }
 
         if bundle_format != "local-ai-hub-project-bundle":
             return {"success": False, "error": "invalid Local AI Hub bundle marker"}
@@ -1284,6 +1750,13 @@ class LocalAIApp:
                 continue
             if not isinstance(tbl_rows, list) or len(tbl_rows) > max_rows or any(not isinstance(row, dict) for row in tbl_rows):
                 return {"success": False, "error": f"invalid or oversized bundle table: {name}"}
+        if any(
+            "embedding" in row
+            and row["embedding"] is not None
+            and not isinstance(row["embedding"], (str, bytes, bytearray, memoryview))
+            for row in tables.get("rag_chunks", [])
+        ):
+            return {"success": False, "error": "invalid RAG chunk embedding"}
 
         orig_root = str(data.get("root", ""))
         root = str(target_root or orig_root)
@@ -1292,6 +1765,14 @@ class LocalAIApp:
             return {"success": False, "error": "target repository root does not exist"}
         root_path = str(root_obj).replace("\\", "/")
         workspace = self.rag.workspace_id(root_path)
+        prepared_project_agent_records: list[MemoryRecord] = []
+        if has_agent_records:
+            prepared, error = prepare_agent_memory_records(
+                data.get("agent_state_records"), root_path, str(data.get("root", ""))
+            )
+            if error:
+                return {"success": False, "error": error}
+            prepared_project_agent_records = prepared or []
         now = time.time()
 
         def rows(name: str) -> list[dict[str, Any]]:
@@ -1310,9 +1791,15 @@ class LocalAIApp:
             except (TypeError, ValueError):
                 return default
 
+        try:
+            manifest = create_import_intent(root_path)
+        except Exception as exc:
+            return staging_failure(root_path, exc)
+        phase_errors: list[Exception] = []
+
         # Restore root-scoped preprocessor state transactionally. Derived content
         # cards are content-addressed and therefore safe to upsert globally.
-        with self.preprocessor._db_lock, closing(self.preprocessor._connect()) as con:
+        with capture_import_phase(manifest, "preprocessor", phase_errors), self.preprocessor._db_lock, closing(self.preprocessor._connect()) as con:
             con.execute("BEGIN IMMEDIATE")
             for table in ("file_refs", "module_cards", "project_cards", "external_index_state"):
                 assert table in _PREPROCESS_TABLES, f"unexpected table name: {table}"  # defence-in-depth
@@ -1350,9 +1837,11 @@ class LocalAIApp:
                 con.execute("INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
                             (root_path, str(item.get("backend", "")), str(item.get("revision_hash", "")), str(item.get("status", "complete")), now, item.get("error")))
             con.commit()
+        if phase_errors:
+            return incomplete_result(manifest, phase_errors[0])
 
         if self.deterministic is not None:
-            with self.deterministic._lock, closing(self.deterministic._connect()) as con:
+            with capture_import_phase(manifest, "deterministic", phase_errors), self.deterministic._lock, closing(self.deterministic._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 for table in ("files", "facts", "dependencies", "scripts", "project_state", "query_cache"):
                     assert table in _DET_TABLES, f"unexpected table name: {table}"  # defence-in-depth
@@ -1379,10 +1868,14 @@ class LocalAIApp:
                     con.execute("INSERT OR REPLACE INTO scripts(root,source,name,command,purpose) VALUES(?,?,?,?,?)",
                                 (root_path, str(item.get("source", "")), str(item.get("name", "")), str(item.get("command", "")), str(item.get("purpose", ""))))
                 con.commit()
+            if phase_errors:
+                return incomplete_result(manifest, phase_errors[0])
+        else:
+            mark_import_phase(manifest, "deterministic")
 
         if self.rag is not None:
             scope_key = self.rag._scope_key("__preprocess__")
-            with self.rag._index_lock, closing(self.rag._connect()) as con:
+            with capture_import_phase(manifest, "rag", phase_errors), self.rag._index_lock, closing(self.rag._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=?", (scope_key, workspace))
                 con.execute("DELETE FROM files WHERE tenant=? AND workspace=?", (scope_key, workspace))
@@ -1393,17 +1886,33 @@ class LocalAIApp:
                     con.execute("INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding) VALUES(?,?,?,?,?,?,?)",
                                 (scope_key, workspace, str(c.get("path", "")), int(c.get("chunk_no", 0) or 0), str(c.get("content_hash", "")), str(c.get("text", "")), c.get("embedding", "")))
                 con.commit()
+            if phase_errors:
+                return incomplete_result(manifest, phase_errors[0])
+        else:
+            mark_import_phase(manifest, "rag")
 
-        restored_agent_records = 0
-        if "agent_state_records" in data:
-            restored_agent_records, error = restore_agent_memory_records(
-                data.get("agent_state_records"), root_path, str(data.get("root", ""))
-            )
-            if error:
-                return {"success": False, "error": error}
+        with capture_import_phase(manifest, "agent_memory", phase_errors):
+            for record_index, rec in enumerate(prepared_project_agent_records):
+                self.agent_memory.record(
+                    rec,
+                    actor="bundle_import",
+                    idempotency_key=f"bundle-import:{manifest['import_id']}:memory:{record_index}",
+                )
+        if phase_errors:
+            return incomplete_result(manifest, phase_errors[0])
+        restored_agent_records = len(prepared_project_agent_records)
+
+        try:
+            cleanup_pending = finish_import_intent(manifest)
+        except Exception as exc:
+            return incomplete_result(manifest, exc)
 
         return {
             "success": True,
+            "status": "complete",
+            "recovery_pending": False,
+            "cleanup_pending": cleanup_pending,
+            "import_id": manifest["import_id"],
             "version": __version__,
             "root": root_path,
             "workspace": workspace,

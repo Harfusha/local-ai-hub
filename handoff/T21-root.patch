@@ -1,0 +1,120 @@
+--- a/tests/test_mcp_repo_path_hints.py
++++ b/tests/test_mcp_repo_path_hints.py
+@@ -73,3 +73,117 @@
+         },
+         supplied_hint,
+     ]
++
++
++def test_api_search_route_consumes_t03_hint_and_returns_repository_hit(
++    monkeypatch, tmp_path: Path
++) -> None:
++    import threading
++    from http.server import ThreadingHTTPServer
++
++    from local_ai_hub.client import HubClient
++
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
++    hinted_file = tmp_path / "templates" / "element" / "button.php"
++    hinted_file.parent.mkdir(parents=True)
++    hinted_file.write_text("button()", encoding="utf-8")
++    subprocess.run(
++        ["git", "-C", str(tmp_path), "add", "--", "templates/element/button.php"],
++        check=True,
++    )
++
++    state_dir = tmp_path / "runtime"
++    repo_tools = RepositoryTools(
++        {"server": {"state_dir": str(state_dir)}, "rag": {}, "search": {}}
++    )
++    monkeypatch.setattr(
++        repo_tools,
++        "search",
++        lambda *_args, **_kwargs: {
++            "success": True,
++            "root": str(tmp_path),
++            "results": [],
++        },
++    )
++    services = LocalAIServices.__new__(LocalAIServices)
++    services.config = {"server": {"state_dir": str(state_dir)}, "features": {}}
++    services._touch_project = lambda _root: None
++    services._repo_cache_state = lambda _root: {
++        "fingerprint": "revision-1",
++        "stale": False,
++        "degraded": False,
++    }
++    services._repo_cached = lambda _operation, _root, _params, compute: compute()
++    services.repo_tools = repo_tools
++    services.learner = None
++    services.deterministic = None
++    services.code_index = None
++    services.preprocessor = None
++    services.evidence_store = None
++
++    class Recovery:
++        def lookup(self, *_args):
++            return None
++
++        def begin(self, *_args):
++            return None
++
++    app = SimpleNamespace(
++        config={},
++        debug_traces=None,
++        recovery=Recovery(),
++        services=services,
++    )
++    monkeypatch.setattr(http_server, "APP", app)
++
++    class AuthorizedHandler(http_server.Handler):
++        def _begin_trace(self, _path):
++            return None
++
++        def _require_authorized(self):
++            return True
++
++        def _validate_payload(self, _path, _payload):
++            return None
++
++        def _tenant(self):
++            return "default"
++
++        def _agent(self):
++            return "t21-test"
++
++        def log_message(self, *_args):
++            return None
++
++    server = ThreadingHTTPServer(("127.0.0.1", 0), AuthorizedHandler)
++    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
++    server_thread.start()
++    client_config = tmp_path / "client.toml"
++    client_config.write_text(
++        f"[server]\nport={server.server_port}\nstate_dir='{state_dir.as_posix()}'\n",
++        encoding="utf-8",
++    )
++    client = HubClient(config_path=str(client_config), auto_start=False)
++    try:
++        result = client.post(
++            "/api/search",
++            {"root": str(tmp_path), "query": "button"},
++            path_hints=(
++                {
++                    "path": "templates/element/button.php",
++                    "purpose": "repository_search",
++                    "scope": "repo_search",
++                },
++            ),
++        )
++    finally:
++        client.close()
++        server.shutdown()
++        server.server_close()
++        server_thread.join(timeout=2)
++
++    assert result["success"] is True
++    assert [hit["path"] for hit in result["results"]] == [
++        "templates/element/button.php"
++    ]

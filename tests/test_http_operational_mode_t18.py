@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import hashlib
-import os
 from pathlib import Path
-import subprocess
 import threading
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -29,33 +25,7 @@ def _handler(path: str, peer: str = "127.0.0.1") -> http_server.Handler:
     return handler
 
 
-def _install_mode_module(monkeypatch, snapshot, gate=None, set_mode=None):
-    calls = []
-
-    def default_gate(value, action, *, requires_heavy_work=True):
-        calls.append((value.mode, action, requires_heavy_work))
-        if not requires_heavy_work or (value.mode == "gaming" and action == "speculative_lint"):
-            return None
-        return {
-            "success": False,
-            "error": f"blocked in {value.mode}",
-            "error_code": "operational_mode_blocked",
-            "operational_mode": value.mode,
-            "action": action,
-            "retryable": True,
-            "terminal": False,
-            "retry_after_seconds": 5,
-        }
-
-    monkeypatch.setitem(sys.modules, "local_ai_hub.operational_mode", SimpleNamespace(
-        load_operational_mode=lambda *, state_dir: snapshot,
-        operational_mode_gate_error=gate or default_gate,
-        set_operational_mode=set_mode,
-    ))
-    return snapshot, calls
-
-
-def _install_mode(monkeypatch, mode: str):
+def _install_mode_api(monkeypatch, mode: str):
     snapshot = SimpleNamespace(mode=mode, revision=21, degraded=False)
     calls = []
 
@@ -74,13 +44,18 @@ def _install_mode(monkeypatch, mode: str):
             "retry_after_seconds": 5,
         }
 
-    _install_mode_module(monkeypatch, snapshot, gate=gate)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+        operational_mode_gate_error=gate,
+    ))
     return snapshot, calls
 
 
 def test_mode_get_is_loopback_only_auth_exception_and_returns_snapshot(monkeypatch) -> None:
     snapshot = SimpleNamespace(mode="active", revision=4, degraded=False)
-    _install_mode_module(monkeypatch, snapshot)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+    ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config={"security": {"api_token": ""}},
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
@@ -99,7 +74,9 @@ def test_mode_get_is_loopback_only_auth_exception_and_returns_snapshot(monkeypat
 
 def test_mode_get_without_api_token_does_not_open_admin_post(monkeypatch) -> None:
     snapshot = SimpleNamespace(mode="active", revision=4, degraded=False)
-    _install_mode_module(monkeypatch, snapshot)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+    ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config={"security": {"api_token": "configured-secret"}},
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
@@ -142,7 +119,7 @@ def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch) -> 
         def list_tasks(self, **_kwargs):
             return []
 
-    _install_mode(monkeypatch, "gaming")
+    _install_mode_api(monkeypatch, "gaming")
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")), agent_tasks=AgentTasks(),
     ))
@@ -154,7 +131,7 @@ def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch) -> 
 
 
 def test_gaming_mode_keeps_agent_event_export_available(monkeypatch) -> None:
-    _install_mode(monkeypatch, "gaming")
+    _install_mode_api(monkeypatch, "gaming")
     state_store = SimpleNamespace(export_delta=lambda stream, after, limit: {
         "success": True, "events": [], "stream_id": stream, "after_seq": after, "limit": limit,
     })
@@ -177,7 +154,7 @@ def test_gaming_mode_keeps_agent_event_export_available(monkeypatch) -> None:
 
 
 def test_gaming_mode_allows_memory_and_artifact_reads(monkeypatch) -> None:
-    _install_mode(monkeypatch, "gaming")
+    _install_mode_api(monkeypatch, "gaming")
     app = SimpleNamespace(
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
         debug_traces=None,
@@ -200,7 +177,7 @@ def test_gaming_mode_allows_memory_and_artifact_reads(monkeypatch) -> None:
 
 
 def test_maintenance_mode_blocks_same_agent_read_but_keeps_operator_reads(monkeypatch) -> None:
-    _install_mode(monkeypatch, "maintenance")
+    _install_mode_api(monkeypatch, "maintenance")
     class AgentTasks:
         state_store = SimpleNamespace(enabled=True)
 
@@ -217,14 +194,16 @@ def test_maintenance_mode_blocks_same_agent_read_but_keeps_operator_reads(monkey
     assert tasks.responses[0][1]["terminal"] is False
 
     mode = _handler("/api/mode")
-    _install_mode_module(monkeypatch, SimpleNamespace(mode="maintenance", revision=21, degraded=False))
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: SimpleNamespace(mode="maintenance", revision=21, degraded=False),
+    ))
     mode.do_GET()
     assert mode.responses[0][0] == 200
 
 
 @pytest.mark.parametrize("mode", ["gaming", "maintenance"])
 def test_context_pack_is_gated_in_both_paused_modes(monkeypatch, mode: str) -> None:
-    _snapshot, calls = _install_mode(monkeypatch, mode)
+    _snapshot, calls = _install_mode_api(monkeypatch, mode)
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
         config={},
@@ -274,7 +253,10 @@ def test_gaming_mode_blocks_heavy_preprocess_get_with_retryable_envelope(monkeyp
         calls.append((value.mode, action, requires_heavy_work))
         return error
 
-    _install_mode_module(monkeypatch, snapshot, gate=gate)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+        operational_mode_gate_error=gate,
+    ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3"))))
     handler = _handler("/api/preprocess")
 
@@ -312,7 +294,10 @@ def test_heavy_or_mutating_http_route_returns_retryable_mode_envelope(
         assert requires_heavy_work is True
         return gate_error
 
-    _install_mode_module(monkeypatch, snapshot, gate=check_mode)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+        operational_mode_gate_error=check_mode,
+    ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         async_jobs=SimpleNamespace(path=state_path),
         config={},
@@ -335,7 +320,9 @@ def test_heavy_or_mutating_http_route_returns_retryable_mode_envelope(
 
 def test_mode_get_returns_current_unload_status(monkeypatch) -> None:
     snapshot = SimpleNamespace(mode="gaming", revision=7, degraded=False)
-    _install_mode_module(monkeypatch, snapshot)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+    ))
     monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", {
         7: {"success": False, "state": "partial", "reason": "unload_incomplete", "unloaded": ["model-a"], "remaining": ["model-b"]},
     })
@@ -362,7 +349,9 @@ def test_mode_get_returns_completed_background_unload(monkeypatch) -> None:
     assert complete_status_stored.wait(1)
 
     snapshot = SimpleNamespace(mode="gaming", revision=8, degraded=False)
-    _install_mode_module(monkeypatch, snapshot)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: snapshot,
+    ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3"))))
 
     handler = _handler("/api/mode")
@@ -371,48 +360,87 @@ def test_mode_get_returns_completed_background_unload(monkeypatch) -> None:
     assert handler.responses[0][1]["runtime_unload"] == result
 
 
-def test_admin_mode_post_uses_current_root_setter_and_partial_cleanup_contract() -> None:
-    candidate_root = Path(__file__).resolve().parents[1]
-    common_dir = subprocess.run(
-        ["git", "rev-parse", "--git-common-dir"],
-        cwd=candidate_root,
-        capture_output=True,
-        check=True,
-        text=True,
-    ).stdout.strip()
-    root_git_dir = Path(common_dir)
-    if not root_git_dir.is_absolute():
-        root_git_dir = candidate_root / root_git_dir
-    root_source = Path(os.environ.get("T18_ROOT_SOURCE", root_git_dir.resolve().parent / "src")).resolve()
-    http_source = root_source / "local_ai_hub" / "http_server.py"
-    dashboard_source = root_source / "local_ai_hub" / "dashboard.py"
-    assert http_source.is_file()
-    assert dashboard_source.is_file()
+def test_admin_mode_post_starts_unload_after_releasing_guard_and_returns_pending_then_partial(monkeypatch) -> None:
+    events = []
+    unload_started = threading.Event()
+    allow_unload_finish = threading.Event()
+    unload_finished = threading.Event()
+    partial_status_stored = threading.Event()
 
-    env = os.environ.copy()
-    env["T18_ROOT_SOURCE"] = str(root_source)
-    env["T18_ROOT_HTTP_SERVER_SHA256"] = hashlib.sha256(http_source.read_bytes()).hexdigest().upper()
-    env["T18_ROOT_DASHBOARD_SHA256"] = hashlib.sha256(dashboard_source.read_bytes()).hexdigest().upper()
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-B",
-            "-m",
-            "pytest",
-            "-q",
-            "-p",
-            "no:cacheprovider",
-            "--tb=short",
-            "tests/test_root_current_mode_overlay_t18.py",
-        ],
-        cwd=candidate_root,
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=30,
-        env=env,
-    )
-    assert result.returncode == 0, f"Root mode overlay failed:\n{result.stdout}\n{result.stderr}"
+    class Jobs:
+        path = Path("state/jobs.sqlite3")
+
+        @contextmanager
+        def operational_mode_change_guard(self):
+            events.append("guard_enter")
+            try:
+                yield
+            finally:
+                events.append("guard_exit")
+
+        def on_operational_mode_changed(self, snapshot):
+            events.append(("changed", snapshot.mode))
+            return {"inference_active": False}
+
+    snapshot = SimpleNamespace(mode="gaming", revision=5, degraded=False)
+
+    def set_mode(mode, state_dir):
+        assert mode == "gaming"
+        assert state_dir == Jobs.path.parent
+        events.append("persist")
+        return snapshot
+
+    def unload_models(_runtime, *, inference_active):
+        assert inference_active is False
+        assert events[-1] == "guard_exit"
+        unload_started.set()
+        allow_unload_finish.wait(2)
+        unload_finished.set()
+        return {
+            "success": False,
+            "state": "partial",
+            "reason": "unload_incomplete",
+            "unloaded": ["model-a"],
+            "remaining": ["model-b"],
+        }
+
+    class StatusMap(dict):
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            if value.get("state") == "partial":
+                partial_status_stored.set()
+
+    monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", StatusMap())
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        set_operational_mode=set_mode,
+        unload_ollama_models_for_gaming=unload_models,
+    ))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        async_jobs=Jobs(), scheduler=SimpleNamespace(foreground_busy=lambda: False), runtime=object(),
+    ))
+
+    handler = _handler("/api/admin/mode")
+    handler.do_POST()
+
+    assert unload_started.wait(1)
+    assert events == ["guard_enter", "persist", ("changed", "gaming"), "guard_exit"]
+    assert handler.responses == [(200, {
+        "success": True,
+        "mode": "gaming",
+        "revision": 5,
+        "degraded": False,
+        "runtime_unload": {
+            "success": False,
+            "state": "pending",
+            "reason": "unload_in_progress",
+            "unloaded": [],
+            "remaining": None,
+        },
+    })]
+    allow_unload_finish.set()
+    assert unload_finished.wait(1)
+    assert partial_status_stored.wait(1)
+    assert http_server._MODE_UNLOAD_STATUS[5]["state"] == "partial"
 
 
 def test_background_unload_deadline_replaces_pending_status(monkeypatch) -> None:
@@ -507,11 +535,10 @@ def test_admin_mode_post_defers_unload_if_inference_active(monkeypatch) -> None:
             return {"inference_active": True}
 
     snapshot = SimpleNamespace(mode="gaming", revision=6, degraded=False)
-    _install_mode_module(
-        monkeypatch,
-        snapshot,
-        set_mode=lambda _state_dir, _mode: snapshot,
-    )
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        set_operational_mode=lambda _mode, _state_dir: snapshot,
+        unload_ollama_models_for_gaming=lambda *_args, **_kwargs: unload_calls.append("called"),
+    ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         async_jobs=Jobs(), scheduler=SimpleNamespace(foreground_busy=lambda: False), runtime=object(),
     ))
@@ -536,11 +563,9 @@ def test_admin_mode_post_requires_authorization(monkeypatch) -> None:
         config={"security": {"api_token": ""}, "server": {"state_dir": "unused"}},
         telemetry=telemetry,
     ))
-    _install_mode_module(
-        monkeypatch,
-        SimpleNamespace(mode="active", revision=1, degraded=False),
-        set_mode=lambda state_dir, mode: mode_writes.append((state_dir, mode)),
-    )
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        set_operational_mode=lambda mode, state_dir: mode_writes.append((mode, state_dir)),
+    ))
     handler = _handler("/api/admin/mode", peer="203.0.113.7")
     del handler._require_authorized
     handler.headers = {
@@ -568,14 +593,10 @@ def test_authorized_mutation_fails_closed_when_mode_dependency_is_unavailable(mo
         async_jobs=SimpleNamespace(path=tmp_path / "jobs.sqlite3"),
     ))
 
-    original_import_module = http_server.importlib.import_module
+    def unavailable_mode_api():
+        raise ModuleNotFoundError("mode dependency unavailable")
 
-    def unavailable_mode_module(name: str, package=None):
-        if name == "local_ai_hub.operational_mode":
-            raise ModuleNotFoundError("mode dependency unavailable")
-        return original_import_module(name, package)
-
-    monkeypatch.setattr(http_server.importlib, "import_module", unavailable_mode_module)
+    monkeypatch.setattr(http_server, "_operational_mode_api", unavailable_mode_api)
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -599,4 +620,3 @@ def test_authorized_mutation_fails_closed_when_mode_dependency_is_unavailable(mo
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
-

@@ -1,0 +1,133 @@
+{
+  "task": "T10 root-current handoff r2",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t10-path-hints\\.local-ai-hub",
+  "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_source_sha256": {
+    "src/local_ai_hub/code_index.py": "6eb54f264f156e1dcd7d4b8e1dab3eeb15227273a05a83b5b62cb3e8f43b7598",
+    "src/local_ai_hub/repo_tools.py": "afb79eae567b603db4aecdf07d077a56dd8f1cb7e3562fadb1893176ef8f1e8a",
+    "src/local_ai_hub/preprocess.py": "14cdd83395263470de8468a907045c083c9da54127490ced4b81c5696716ad69",
+    "src/local_ai_hub/defaults.toml": "d688f8546f616b872b2111c1f137c06964035e75c6da8b2a2dd2f420400a039e"
+  },
+  "patches": [
+    {
+      "group": "code_index",
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\t10-path-hints\\.local-ai-hub\\artifacts\\handoff\\t10-root-current-r2-code-index.patch",
+      "sha256": "5aced091921a0a16db35c272ce47313c0db49b49b47b358d32ee490944a54fec",
+      "changed_paths": [
+        "src/local_ai_hub/code_index.py"
+      ],
+      "preimage_sha256": {
+        "src/local_ai_hub/code_index.py": "6eb54f264f156e1dcd7d4b8e1dab3eeb15227273a05a83b5b62cb3e8f43b7598"
+      },
+      "postimage_sha256": {
+        "src/local_ai_hub/code_index.py": "0c096cdc70c1e177b85d31710184737ddd1191093b90f37c0ecc5098757d5d99"
+      }
+    },
+    {
+      "group": "freshness",
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\t10-path-hints\\.local-ai-hub\\artifacts\\handoff\\t10-root-current-r2-freshness.patch",
+      "sha256": "4d21202161db6b2062a97b4a0bee5041d3dfb3975ae4f1d8346804176bd6af6a",
+      "changed_paths": [
+        "src/local_ai_hub/repo_tools.py",
+        "src/local_ai_hub/preprocess.py"
+      ],
+      "preimage_sha256": {
+        "src/local_ai_hub/repo_tools.py": "afb79eae567b603db4aecdf07d077a56dd8f1cb7e3562fadb1893176ef8f1e8a",
+        "src/local_ai_hub/preprocess.py": "14cdd83395263470de8468a907045c083c9da54127490ced4b81c5696716ad69"
+      },
+      "postimage_sha256": {
+        "src/local_ai_hub/repo_tools.py": "6c43f6fa7b067856e4543833ef79c2195ffeacc8c900eb0988afde16392e527b",
+        "src/local_ai_hub/preprocess.py": "3377491ffaa0a7150e2f8b5cc097e7ca1636449e77b8ff2c98a912368984abd3"
+      }
+    },
+    {
+      "group": "python_fallback",
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\t10-path-hints\\.local-ai-hub\\artifacts\\handoff\\t10-root-current-r2-python-fallback.patch",
+      "sha256": "d37bc3b6bf71d41a3a82c8daa8306b6b45b0d6261937fb47fb1c5dd15846aa39",
+      "changed_paths": [
+        "src/local_ai_hub/repo_tools.py",
+        "src/local_ai_hub/defaults.toml"
+      ],
+      "preimage_sha256": {
+        "src/local_ai_hub/repo_tools.py": "afb79eae567b603db4aecdf07d077a56dd8f1cb7e3562fadb1893176ef8f1e8a",
+        "src/local_ai_hub/defaults.toml": "d688f8546f616b872b2111c1f137c06964035e75c6da8b2a2dd2f420400a039e"
+      },
+      "postimage_sha256": {
+        "src/local_ai_hub/repo_tools.py": "6c43f6fa7b067856e4543833ef79c2195ffeacc8c900eb0988afde16392e527b",
+        "src/local_ai_hub/defaults.toml": "54ed3186f6eaa693894c02629a8394d4b03006ad30d3bb79f8b9be89b4f7d8f9"
+      }
+    },
+    {
+      "group": "tests",
+      "path": "C:\\Users\\Adam\\.codex\\worktrees\\t10-path-hints\\.local-ai-hub\\artifacts\\handoff\\t10-root-current-r2-tests.patch",
+      "sha256": "7dd2e8e6be52841f4ce336c31f109cce54a6656a66ef301db50fedb1989d7ded",
+      "changed_paths": [
+        "tests/test_t10_ast_impact_acceptance.py",
+        "tests/test_t10_python_fallback_budget.py"
+      ],
+      "preimage_sha256": {
+        "tests/test_t10_ast_impact_acceptance.py": "ce60751c41a5d2469cf364eba6a8a464b3e7385d9bb09401ae8079b0163aeb34",
+        "tests/test_t10_python_fallback_budget.py": null
+      },
+      "postimage_sha256": {
+        "tests/test_t10_ast_impact_acceptance.py": "9eda789cf61d320af5221e78f0cc96c88ca2f0def6d7579f1a929a3bbd52c098",
+        "tests/test_t10_python_fallback_budget.py": "33df2f3730293c5c8962556268c6e3db2c33f13bb661683dab2632bde786c075"
+      }
+    }
+  ],
+  "apply_check": {
+    "command": "git apply --check <patch> from root C:\\Users\\Adam\\.local-ai-hub",
+    "result": "all four patches passed individually; all four applied sequentially to isolated root-source overlay"
+  },
+  "overlay_validation": {
+    "command": "python -B -m pytest -q -s -p no:cacheprovider --tb=short tests/test_t10_ast_impact_acceptance.py tests/test_t10_python_fallback_budget.py",
+    "result": "12 passed in 1.26s",
+    "scope": "temporary overlay copied from root src/local_ai_hub and tests, then patched; no root files written",
+    "overlay_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t10-root-current-r2-frzfjevl",
+    "exact_shell_command": "python -B -m pytest -q -s -p no:cacheprovider --tb=short tests/test_t10_ast_impact_acceptance.py tests/test_t10_python_fallback_budget.py"
+  },
+  "ownership": {
+    "code_index": "T10 CodeIndex snapshot refresh and L1/status invalidation",
+    "freshness": "T10 RepositoryTools cache invalidation and preprocess hash callsites",
+    "python_fallback": "T10 approved Python fallback file-count cap/config; ripgrep remains timeout-bounded",
+    "tests": "T10 AST/incremental/fallback acceptance tests only; path-hint service consumers excluded"
+  },
+  "open_acceptance": [
+    "full T10 latency/coverage matrix for built-in, Serena and CodeGraph modes",
+    "broader dead-code/affected-test/API-spec/invariant language and framework fixtures"
+  ],
+  "root_write_status": "none; all patches checked; temporary overlay only",
+  "patch_integration_status": "SUPERSEDED: T20 reports all four r2 deltas integrated in root; do not apply patches again",
+  "final_recheck": {
+    "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "status": "SUPERSEDED by T20 root integration; prior root-current patches are archival and must not be reapplied",
+    "root_current_sha256": {
+      "src/local_ai_hub/code_index.py": "ff5c2f010c9c02ac5916c99c6e6859f2e90f5457dba103dce5e9a83816bac3e9",
+      "src/local_ai_hub/repo_tools.py": "360734ceb316a8a9fc698c19c1098d88fc591170dbbf5f3b67db6608cd3a6a36",
+      "src/local_ai_hub/preprocess.py": "86715359388ca1598dde14c01ffcb4a23590263f99e13554d48502b50d4e961f",
+      "src/local_ai_hub/defaults.toml": "418b62992343d074c33bb6df7d2e8139f2b0ddcd6b47cdb1a4e94971a502d57b",
+      "tests/test_t10_ast_impact_acceptance.py": "b300fb05514ec5daf7078aaddfe84235d20ec059104df8323b4dae6a8049219d",
+      "tests/test_t10_python_fallback_budget.py": "d2d810213f0230af20b42152e0e7c19d03f42896eb692e5a7c4af7127d117b20"
+    },
+    "code_index_patch_recheck": "failed at src/local_ai_hub/code_index.py:572 because root changed after original passing checks",
+    "root_written_by_this_task": false,
+    "integration_status": "T20 reports integrated; AST/fallback 12/12 passed in 1.36s"
+  },
+  "integration_receipt": {
+    "reported_by": "T20 release acceptance task",
+    "status": "integrated",
+    "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "acceptance": "AST/fallback suites 12/12 passed in 1.36s (T20-reported; not rerun here)",
+    "current_root_sha256": {
+      "src/local_ai_hub/code_index.py": "ff5c2f010c9c02ac5916c99c6e6859f2e90f5457dba103dce5e9a83816bac3e9",
+      "src/local_ai_hub/repo_tools.py": "360734ceb316a8a9fc698c19c1098d88fc591170dbbf5f3b67db6608cd3a6a36",
+      "src/local_ai_hub/preprocess.py": "86715359388ca1598dde14c01ffcb4a23590263f99e13554d48502b50d4e961f",
+      "src/local_ai_hub/defaults.toml": "418b62992343d074c33bb6df7d2e8139f2b0ddcd6b47cdb1a4e94971a502d57b",
+      "tests/test_t10_ast_impact_acceptance.py": "b300fb05514ec5daf7078aaddfe84235d20ec059104df8323b4dae6a8049219d",
+      "tests/test_t10_python_fallback_budget.py": "d2d810213f0230af20b42152e0e7c19d03f42896eb692e5a7c4af7127d117b20"
+    },
+    "root_write_by_t10_handoff_task": false
+  }
+}

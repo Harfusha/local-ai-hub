@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-
 import pytest
+import errno
 
 from local_ai_hub.telemetry import TelemetryStore
 from local_ai_hub.dashboard import DASHBOARD_HTML
@@ -11,24 +11,11 @@ from local_ai_hub.dashboard import DASHBOARD_HTML
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
-        (
-            json.JSONDecodeError(
-                'PROMPT-PRIVATE token=TOKEN-PRIVATE at /private/project/config.json',
-                '{"source":"/private/project/source.py","secret":"SOURCE-PRIVATE"}',
-                0,
-            ),
-            "JSONDecodeError: invalid JSON",
-        ),
-        (
-            FileNotFoundError("missing MODEL-OUTPUT-PRIVATE /private/project/model.bin token=TOKEN-PRIVATE"),
-            "FileNotFoundError: file not found",
-        ),
-        (
-            PermissionError("denied SOURCE-PRIVATE /private/project/cache.sqlite3 token=TOKEN-PRIVATE"),
-            "PermissionError: permission denied",
-        ),
         (ValueError('invalid PROMPT-PRIVATE source="SOURCE-PRIVATE"'), "ValueError: invalid value or argument"),
+        (json.JSONDecodeError("bad JSON /private/project/config.json token=PRIVATE", "PRIVATE", 0), "JSONDecodeError: invalid JSON"),
         (OSError('read /private/project/source.py token=SECRET-TOKEN'), "OSError: operating system failure"),
+        (FileNotFoundError(errno.ENOENT, "secret path /private/project/missing.json"), "FileNotFoundError: file not found"),
+        (PermissionError(errno.EACCES, "denied for /private/project/secret.db"), "PermissionError: permission denied"),
         (TimeoutError('MODEL-OUTPUT-PRIVATE timed out at /private/project/model.bin'), "TimeoutError: operation timed out"),
     ],
 )
@@ -83,4 +70,3 @@ def test_public_error_report_and_dashboard_expose_only_safe_diagnostic(tmp_path)
     assert "esc(String(err.safe_message||'Diagnostic unavailable').slice(0,96))" in modal_source
     assert '<th>Diagnostic</th>' in DASHBOARD_HTML
     assert "esc(String(x.safe_message||'Diagnostic unavailable').slice(0,96))" in DASHBOARD_HTML
-

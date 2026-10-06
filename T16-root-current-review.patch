@@ -1,0 +1,80 @@
+diff --git a/tests/test_work_fencing.py b/tests/test_work_fencing.py
+--- a/tests/test_work_fencing.py
++++ b/tests/test_work_fencing.py
+@@ -265,7 +265,9 @@
+     alias = root / "alias"
+     try:
+         alias.symlink_to(root / "real", target_is_directory=True)
+     except OSError as exc:
+-        pytest.skip(f"directory symlink unavailable: {exc}")
++        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
++            pytest.skip("Windows symlink privilege unavailable (WinError 1314); symlink normalization behavior unverified")
++        raise
+ 
+     assert normalize_paths(["alias/file.py"], root=root) == normalize_paths(
+diff --git a/tests/test_work_handoff_acceptance.py b/tests/test_work_handoff_acceptance.py
+--- a/tests/test_work_handoff_acceptance.py
++++ b/tests/test_work_handoff_acceptance.py
+@@ -1116,1 +1116,55 @@
+     assert target.read_text(encoding="utf-8") == "committed\n"
++
++def test_recovery_retries_preimage_restore_after_crash_before_journal_clear(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
++    work_id = "work-crash-after-preimage-restore"
++    target = root / "owned.txt"
++    target.write_text("old\n", encoding="utf-8")
++    git_cmd = ["git", "-C", str(root)]
++    identity = ["-c", "user.name=T16", "-c", "user.email=t16@example.invalid"]
++    subprocess.run([*git_cmd, "init", "--quiet"], check=True)
++    subprocess.run([*git_cmd, *identity, "add", "owned.txt"], check=True)
++    subprocess.run(
++        [*git_cmd, *identity, "commit", "--quiet", "-m", "seed"],
++        check=True,
++    )
++    now = [100.0]
++    fencing_path = state_dir / "work_fencing.sqlite3"
++    orchestrator.fencing_store = FencingLeaseStore(fencing_path, clock=lambda: now[0])
++    orchestrator.submit("tenant", _payload(root, work_id))
++    orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
++    journal: list[_JournalEntry] = []
++    patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-old\n+new\n"
++    orchestrator._apply_patch(root, patch, "tenant", work_id, journal)
++    assert target.read_text(encoding="utf-8") == "new\n"
++    rollback = orchestrator._rollback
++
++    class SimulatedProcessCrash(BaseException):
++        pass
++
++    def restore_then_crash(current_root: Path, entries: list[_JournalEntry]) -> None:
++        rollback(current_root, entries)
++        raise SimulatedProcessCrash()
++
++    orchestrator._rollback = restore_then_crash
++    try:
++        with pytest.raises(SimulatedProcessCrash):
++            orchestrator._recover()
++        assert target.read_text(encoding="utf-8") == "old\n"
++        assert orchestrator._load_journal(work_id) == journal
++    finally:
++        orchestrator.close()
++
++    now[0] = 1001.0
++    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
++    recovered = WorkOrchestrator(
++        config,
++        state_dir,
++        services=object(),
++        commands=object(),
++        leases=_Leases(),
++        artifacts=_Artifacts(),
++        fencing_store=FencingLeaseStore(fencing_path, clock=lambda: now[0]),
++    )
++    try:
++        row = recovered._row(work_id, "tenant")
++        assert row is not None and row["state"] == "queued"
++        assert target.read_text(encoding="utf-8") == "old\n"
++        assert recovered._load_journal(work_id) == []
++    finally:
++        recovered.close()

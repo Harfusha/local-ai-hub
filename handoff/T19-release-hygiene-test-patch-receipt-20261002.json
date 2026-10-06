@@ -1,0 +1,56 @@
+{
+  "task": "T19 release hygiene selector preparation",
+  "date": "2026-10-02",
+  "owner": "T19",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "scope": [
+    "tests/test_release_hardening.py::test_release_hygiene_allows_managed_installed_directories",
+    "tests/test_release_hardening.py::test_release_hygiene_still_rejects_build_outputs"
+  ],
+  "patch": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\T19-release-hygiene-tests-root-current-20261002.patch",
+    "sha256": "268360e97fbec7edea7eba23c13345aa9dd1be74ed0ba33d15feed079e2a77e4",
+    "preimage_head_sha256": "a7672c49d5542fab28f2bc9c2dd122dba4e1a19d92fb8b4c6573ecbe3fb5723d",
+    "synthetic_postimage_sha256": "b4a0d210d56e42dd351875ed200af773dfe00b210c4d3afe171e4daddc9c5f48"
+  },
+  "root_current": {
+    "test_file_sha256": "0b21e4eea8636d700dfef1389dc4c75da53c883da32d59e2f7aabfd9d8f0e70a",
+    "release_check_sha256": "90a70686c30c8050ceffeef585a6ad07923c8865ce14ee97cbe2c8d9ca99c8ed",
+    "release_check_matches_candidate": true,
+    "test_functions_already_integrated": true,
+    "function_hashes": {
+      "managed_installed_directories": "4f1a2245fb5b62b5e725de2ab4e1e59708d0202921be2c6b3bb9fbe313980c0e",
+      "rejects_build_outputs": "8b7115092b316a763bf8af3b53d7370ab9f06cbc750334211d340645cb7724b1"
+    }
+  },
+  "checks": {
+    "isolated_head_apply_check": "passed",
+    "isolated_head_apply_check_command": "git apply --check <patch> against temporary copy of root HEAD blob",
+    "root_current_reverse_apply_check": "passed",
+    "root_current_reverse_apply_check_command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --reverse --check --whitespace=nowarn <patch>",
+    "root_modified": false,
+    "tests": "not run",
+    "install_runtime": "not run",
+    "queue": "T20 update: T03 slot13 released before pytest due inprocess_transport.py hash drift; T21 slot14, T01 slot15, T08 no earlier than16 after root integration. T19 has no current slot.",
+    "central_slot_owner": "T20 confirmed central queue ownership.",
+    "t21": "No T21 slot; do not duplicate tests; owner-boundary blocker on direct candidate attachment and root integration.",
+    "prior_slot09": {
+      "owner": "T13",
+      "status": "UNKNOWN",
+      "request_id": "req_31241f6fa3a3",
+      "receipt": "handoff/T13-slot09-unknown-20261002.md",
+      "retry": "prohibited and not attempted"
+    },
+    "hub_health_report": "success=false, version=null (reported by T20; no Hub probe made by T19)",
+    "slot10": "never assigned; source/static only; do not run tests until a new explicit T20 allocation",
+    "slot11": {
+      "owner": "T11",
+      "scope": "privacy selector then offline suite",
+      "benchmark": "none"
+    },
+    "t03_slot13": "Released before tests; inprocess_transport.py expected 4820102BE7AB5BF2E4F2C2F47CC45A500DA65F679FFCB67B7EB122D25C703982 actual AED6A4B8B3F04A3AC0977CFA6D1618FF316441D9ED0E8ED976E234BBF3250C38; no tests started."
+  },
+  "next_test_command": "python -B -m pytest -q -p no:cacheprovider --confcutdir=tests --noconftest --tb=short tests/test_release_hardening.py::test_release_hygiene_allows_managed_installed_directories tests/test_release_hardening.py::test_release_hygiene_still_rejects_build_outputs",
+  "slot_guard": "Before execution, require T20 explicit slot10 assignment and recheck exact root test/source hashes above."
+}

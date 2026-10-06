@@ -1,0 +1,667 @@
+diff --git a/src/local_ai_hub/mcp_server.py b/src/local_ai_hub/mcp_server.py
+index a6dd122..df5377c 100644
+--- a/src/local_ai_hub/mcp_server.py
++++ b/src/local_ai_hub/mcp_server.py
+@@ -12,6 +12,7 @@ import threading
+ from concurrent.futures import ThreadPoolExecutor
+ import time
+ from collections import OrderedDict
++from collections.abc import Mapping
+ from pathlib import Path
+ from typing import Any, Literal, TypeAlias
+ from urllib.parse import quote
+@@ -125,6 +126,65 @@ def _client_root(r: str = "") -> str:
+         return _workspace
+ 
+ 
++_REPO_SEARCH_PATH_HINT_FIELDS = {
++    "path",
++    "purpose",
++    "scope",
++    "evidence_id",
++    "provenance",
++    "repository_revision",
++    "config_digest",
++    "expires_at",
++}
++
++
++def _normalize_repo_search_path_hints(
++    root: str, path_hints: list[dict[str, Any]]
++) -> tuple[list[dict[str, str]] | None, str | None]:
++    if not isinstance(path_hints, list):
++        return None, "path_hints must be an array"
++    if len(path_hints) > 64:
++        return None, "path_hints exceeds 64 items"
++
++    try:
++        root_path = Path(root).expanduser().resolve(strict=True)
++        if not root_path.is_dir():
++            raise ValueError("invalid repository root")
++    except (OSError, RuntimeError, ValueError):
++        return None, "root must be an existing directory"
++
++    normalized: list[dict[str, str]] = []
++    for index, hint in enumerate(path_hints):
++        if not isinstance(hint, Mapping):
++            return None, f"path_hints[{index}] must be an object"
++        if set(hint) - _REPO_SEARCH_PATH_HINT_FIELDS:
++            return None, f"path_hints[{index}] contains unsupported fields"
++        if any(
++            not isinstance(hint.get(field), str) or not hint[field].strip()
++            for field in ("path", "purpose", "scope")
++        ):
++            return None, f"path_hints[{index}] requires non-empty path, purpose, and scope"
++        if any(
++            field in hint and not isinstance(hint[field], str)
++            for field in _REPO_SEARCH_PATH_HINT_FIELDS - {"path", "purpose", "scope"}
++        ):
++            return None, f"path_hints[{index}] metadata fields must be strings"
++        try:
++            candidate = Path(hint["path"].strip()).expanduser()
++            if not candidate.is_absolute():
++                candidate = root_path / candidate
++            relative = candidate.resolve(strict=False).relative_to(root_path)
++        except (OSError, RuntimeError, ValueError):
++            return None, f"path_hints[{index}].path must resolve within root"
++        normalized.append(
++            {
++                **{key: value for key, value in hint.items() if key != "path"},
++                "path": relative.as_posix() or ".",
++            }
++        )
++    return normalized, None
++
++
+ _ACTION_ALIASES: dict[str, dict[str, str]] = {
+     "coord": {
+         "ctx": "context_compile",
+@@ -1740,6 +1800,7 @@ def _local_ai_repo_impl(
+     is_worktree: bool = False,
+     parent_root: str = "",
+     steps: list[dict[str, Any]] | None = None,
++    path_hints: list[dict[str, str]] | None = None,
+ ) -> dict[str, Any]:
+     """Primary bounded repository worker for the main agent.
+ 
+@@ -1804,9 +1865,26 @@ def _local_ai_repo_impl(
+         extra = list(extra_fields or [])
+         if enrich:
+             extra.extend(["text", "raw"])
++        search_path_hints = ([{
++            "path": path,
++            "purpose": "repository_search",
++            "scope": "repo_search",
++        }] if path else [])
++        search_path_hints.extend((path_hints or [])[:64])
++        normalized_hints, hint_error = _normalize_repo_search_path_hints(
++            root, search_path_hints
++        )
++        if hint_error is not None:
++            return {
++                "success": False,
++                "error": hint_error,
++                "status_code": 400,
++                "terminal": True,
++                "retryable": False,
++            }
+         return _compact(CLIENT.post("/api/search", {
+             "root": root, "query": query or task, "top_k": 12, "enrich": enrich,
+-        }, timeout=_timeout("quick")), "search", extra_fields=extra if extra else None)
++        }, timeout=_timeout("quick"), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
+     if action == "map":
+         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
+     if action == "code_index":
+@@ -2202,6 +2280,7 @@ def local_ai_repo(
+     is_worktree: bool = False,
+     parent_root: str = "",
+     steps: list[dict[str, Any]] | None = None,
++    path_hints: list[dict[str, str]] | None = None,
+ ) -> dict[str, Any]:
+     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
+     return _local_ai_repo_impl(
+@@ -2210,7 +2289,7 @@ def local_ai_repo(
+         include_code, include_tests, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
+         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
+         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
+-        token_budget, is_worktree, parent_root, steps,
++        token_budget, is_worktree, parent_root, steps, path_hints,
+     )
+ 
+ 
+diff --git a/tests/test_mcp_repo_path_hints.py b/tests/test_mcp_repo_path_hints.py
+new file mode 100644
+index 0000000..b03e1a5
+--- /dev/null
++++ b/tests/test_mcp_repo_path_hints.py
+@@ -0,0 +1,326 @@
++from __future__ import annotations
++
++import subprocess
++from pathlib import Path
++from types import SimpleNamespace
++
++from local_ai_hub import mcp_server
++from local_ai_hub import http_server
++from local_ai_hub import project_config
++from local_ai_hub.repo_tools import RepositoryTools
++from local_ai_hub.services import LocalAIServices
++
++
++def test_repo_search_forwards_known_path_as_scoped_path_hint(monkeypatch, tmp_path):
++    captured = {}
++
++    def post(path, payload, **kwargs):
++        captured.update(path=path, payload=payload, kwargs=kwargs)
++        return {"success": True, "results": []}
++
++    monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(post=post))
++
++    result = mcp_server._local_ai_repo_impl(
++        action="search",
++        root=str(tmp_path),
++        query="button",
++        path="templates/element",
++    )
++
++    assert result["success"] is True
++    assert captured["path"] == "/api/search"
++    assert captured["kwargs"]["path_hints"] == [
++        {
++            "path": "templates/element",
++            "purpose": "repository_search",
++            "scope": "repo_search",
++        }
++    ]
++
++
++def test_repo_search_forwards_legacy_path_before_typed_path_hints(
++    monkeypatch, tmp_path
++):
++    captured = {}
++
++    def post(path, payload, **kwargs):
++        captured.update(path=path, payload=payload, kwargs=kwargs)
++        return {"success": True, "results": []}
++
++    monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(post=post))
++    supplied_hint = {
++        "path": "src/auth.py",
++        "purpose": "repository_search",
++        "scope": "repo_search",
++        "evidence_id": "evidence-1",
++        "provenance": "verified_search",
++    }
++
++    result = mcp_server._local_ai_repo_impl(
++        action="search",
++        root=str(tmp_path),
++        query="auth",
++        path="templates/element",
++        path_hints=[supplied_hint],
++    )
++
++    assert result["success"] is True
++    assert captured["path"] == "/api/search"
++    assert captured["kwargs"]["path_hints"] == [
++        {
++            "path": "templates/element",
++            "purpose": "repository_search",
++            "scope": "repo_search",
++        },
++        supplied_hint,
++    ]
++
++
++def test_repo_search_normalizes_absolute_hint_inside_root(monkeypatch, tmp_path):
++    captured = {}
++    (tmp_path / "src").mkdir()
++
++    def post(path, payload, **kwargs):
++        captured.update(path=path, payload=payload, kwargs=kwargs)
++        return {"success": True, "results": []}
++
++    monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(post=post))
++
++    result = mcp_server._local_ai_repo_impl(
++        action="search",
++        root=str(tmp_path),
++        query="auth",
++        path_hints=[
++            {
++                "path": str(tmp_path / "src"),
++                "purpose": "repository_search",
++                "scope": "repo_search",
++            }
++        ],
++    )
++
++    assert result["success"] is True
++    assert captured["kwargs"]["path_hints"] == [
++        {
++            "path": "src",
++            "purpose": "repository_search",
++            "scope": "repo_search",
++        }
++    ]
++
++
++def test_repo_search_rejects_hint_outside_root_before_transport(monkeypatch, tmp_path):
++    calls = []
++
++    def post(*args, **kwargs):
++        calls.append((args, kwargs))
++        return {"success": True, "results": []}
++
++    monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(post=post))
++
++    result = mcp_server._local_ai_repo_impl(
++        action="search",
++        root=str(tmp_path),
++        query="auth",
++        path_hints=[
++            {
++                "path": "../outside",
++                "purpose": "repository_search",
++                "scope": "repo_search",
++            }
++        ],
++    )
++
++    assert result["success"] is False
++    assert result["status_code"] == 400
++    assert result["terminal"] is True
++    assert result["retryable"] is False
++    assert calls == []
++
++
++def test_registered_local_ai_repo_passes_public_path_hints(monkeypatch, tmp_path):
++    captured = {}
++    (tmp_path / "src").mkdir()
++
++    def post(path, payload, **kwargs):
++        captured.update(path=path, payload=payload, kwargs=kwargs)
++        return {"success": True, "results": []}
++
++    monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(post=post))
++
++    result = mcp_server.local_ai_repo(
++        action="search",
++        root=str(tmp_path),
++        query="auth",
++        path_hints=[
++            {
++                "path": str(tmp_path / "src"),
++                "purpose": "repository_search",
++                "scope": "repo_search",
++            }
++        ],
++    )
++
++    assert result["success"] is True
++    assert captured["path"] == "/api/search"
++    assert captured["kwargs"]["path_hints"] == [
++        {
++            "path": "src",
++            "purpose": "repository_search",
++            "scope": "repo_search",
++        }
++    ]
++
++
++def test_api_search_forwards_path_hints_to_repo_search(monkeypatch):
++    captured = {}
++    responses = []
++
++    class Recovery:
++        def lookup(self, *_args):
++            return None
++
++        def begin(self, *_args):
++            return None
++
++    class Services:
++        def repo_search(self, *args, **kwargs):
++            captured["args"] = args
++            captured["kwargs"] = kwargs
++            return {"success": True, "results": []}
++
++    app = SimpleNamespace(
++        config={},
++        debug_traces=None,
++        recovery=Recovery(),
++        services=Services(),
++    )
++    handler = http_server.Handler.__new__(http_server.Handler)
++    handler.path = "/api/search"
++    handler.headers = {"Content-Type": "application/json"}
++    handler._begin_trace = lambda _path: None
++    handler._require_authorized = lambda: True
++    handler._read_json = lambda: {
++        "root": "repo",
++        "query": "button",
++        "path_hints": [
++            {"path": "templates/element", "purpose": "repository_search", "scope": "repo_search"}
++        ],
++    }
++    handler._validate_payload = lambda _path, _payload: None
++    handler._tenant = lambda: "default"
++    handler._agent = lambda: "agent"
++    handler._send = lambda status, data: responses.append((status, data))
++    monkeypatch.setattr(http_server, "APP", app)
++
++    handler.do_POST()
++
++    assert captured["kwargs"]["path_hints"] == [
++        {"path": "templates/element", "purpose": "repository_search", "scope": "repo_search"}
++    ]
++    assert responses == [(200, {"success": True, "results": []})]
++
++
++def test_api_search_route_consumes_t03_hint_and_returns_repository_hit(
++    monkeypatch, tmp_path: Path
++) -> None:
++    import threading
++    from http.server import ThreadingHTTPServer
++
++    from local_ai_hub.client import HubClient
++    from local_ai_hub.resilience import RecoveryJournal
++
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
++    hinted_file = tmp_path / "templates" / "element" / "button.php"
++    hinted_file.parent.mkdir(parents=True)
++    hinted_file.write_text("button()", encoding="utf-8")
++    subprocess.run(
++        ["git", "-C", str(tmp_path), "add", "--", "templates/element/button.php"],
++        check=True,
++    )
++
++    state_dir = tmp_path / "runtime"
++    repo_tools = RepositoryTools(
++        {"server": {"state_dir": str(state_dir)}, "rag": {}, "search": {}}
++    )
++    monkeypatch.setattr(
++        repo_tools,
++        "search",
++        lambda *_args, **_kwargs: {
++            "success": True,
++            "root": str(tmp_path),
++            "results": [],
++        },
++    )
++    services = LocalAIServices.__new__(LocalAIServices)
++    services.config = {"server": {"state_dir": str(state_dir)}, "features": {}}
++    services._touch_project = lambda _root: None
++    services._repo_cache_state = lambda _root: {
++        "fingerprint": "revision-1",
++        "stale": False,
++        "degraded": False,
++    }
++    services._repo_cached = lambda _operation, _root, _params, compute: compute()
++    services.repo_tools = repo_tools
++    services.learner = None
++    services.deterministic = None
++    services.code_index = None
++    services.preprocessor = None
++    services.evidence_store = None
++
++    app = SimpleNamespace(
++        config={},
++        debug_traces=None,
++        recovery=RecoveryJournal(state_dir),
++        services=services,
++    )
++    monkeypatch.setattr(http_server, "APP", app)
++
++    class AuthorizedHandler(http_server.Handler):
++        def _require_authorized(self):
++            return True
++
++        def _validate_payload(self, _path, _payload):
++            return None
++
++        def _tenant(self):
++            return "default"
++
++        def _agent(self):
++            return "t21-test"
++
++        def log_message(self, *_args):
++            return None
++
++    server = ThreadingHTTPServer(("127.0.0.1", 0), AuthorizedHandler)
++    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
++    server_thread.start()
++    client_config = tmp_path / "client.toml"
++    client_config.write_text(
++        f"[server]\nport={server.server_port}\nstate_dir='{state_dir.as_posix()}'\n",
++        encoding="utf-8",
++    )
++    client = HubClient(config_path=str(client_config), auto_start=False)
++    try:
++        result = client.post(
++            "/api/search",
++            {"root": str(tmp_path), "query": "button"},
++            path_hints=(
++                {
++                    "path": "templates/element/button.php",
++                    "purpose": "repository_search",
++                    "scope": "repo_search",
++                },
++            ),
++        )
++    finally:
++        client.close()
++        server.shutdown()
++        server.server_close()
++        server_thread.join(timeout=2)
++
++    assert result["success"] is True
++    assert [hit["path"] for hit in result["results"]] == [
++        "templates/element/button.php"
++    ]
+diff --git a/tests/test_t21_root_path_hint_worktree_chain.py b/tests/test_t21_root_path_hint_worktree_chain.py
+new file mode 100644
+index 0000000..7362bc3
+--- /dev/null
++++ b/tests/test_t21_root_path_hint_worktree_chain.py
+@@ -0,0 +1,198 @@
++from __future__ import annotations
++
++import os
++import subprocess
++import sys
++from pathlib import Path
++
++
++ROOT_SOURCE = Path(r"C:\Users\Adam\.local-ai-hub\src")
++
++
++def test_registered_search_honors_worktree_hint_and_path_policy(tmp_path: Path) -> None:
++    assert ROOT_SOURCE.is_dir(), f"root source overlay is missing: {ROOT_SOURCE}"
++    script = r'''
++import asyncio
++import json
++import os
++import socket
++import subprocess
++import sys
++import threading
++from pathlib import Path
++
++root_source = Path(os.environ["T21_ROOT_SOURCE"]).resolve()
++sys.path.insert(0, str(root_source))
++import local_ai_hub
++assert Path(local_ai_hub.__file__).resolve().is_relative_to(root_source), local_ai_hub.__file__
++from local_ai_hub import http_server, mcp_server
++from local_ai_hub.app import LocalAIApp
++from local_ai_hub.client import HubClient
++from local_ai_hub.project_config import resolve_project_config
++
++fixture_root = Path(os.environ["T21_FIXTURE_ROOT"])
++primary = fixture_root / "primary"
++primary.mkdir()
++
++def git(*args):
++    completed = subprocess.run(
++        ["git", "-C", str(primary), *args], capture_output=True, text=True, check=False
++    )
++    assert completed.returncode == 0, (args, completed.stdout, completed.stderr)
++    return completed.stdout.strip()
++
++git("init", "-q")
++(primary / ".gitignore").write_text(
++    "templates/element/ignored.py\n"
++    "templates/element/primary-only.py\n"
++    "**/.local-ai-hub/**\n",
++    encoding="utf-8",
++)
++(primary / ".local-ai.toml").write_text(
++    'exclude_paths = ["templates/element/primary-hidden.py"]\n'
++    'force_include_paths = ["templates/element/primary-only.py"]\n',
++    encoding="utf-8",
++)
++element = primary / "templates/element"
++element.mkdir(parents=True)
++token = "T21_ROOT_WORKTREE_HINT_TOKEN"
++for name in ("button.py", "primary-hidden.py"):
++    (element / name).write_text(f"marker = '{token}'\n", encoding="utf-8")
++git("add", ".")
++git("-c", "user.name=T21 Test", "-c", "user.email=t21@example.invalid", "commit", "-qm", "fixture")
++
++worktree = fixture_root / "worktree"
++git("worktree", "add", "--detach", str(worktree), "HEAD")
++(worktree / ".local-ai.worktree.toml").write_text(
++    'force_include_paths = ["templates/element/ignored.py", '
++    '"templates/element/.local-ai-hub/hard.py"]\n',
++    encoding="utf-8",
++)
++element = worktree / "templates/element"
++(element / "ignored.py").write_text(f"marker = '{token}'\n", encoding="utf-8")
++(element / "primary-only.py").write_text(f"marker = '{token}'\n", encoding="utf-8")
++hard_dir = element / ".local-ai-hub"
++hard_dir.mkdir()
++(hard_dir / "hard.py").write_text(f"marker = '{token}'\n", encoding="utf-8")
++
++resolution = resolve_project_config(worktree)
++assert "primary_project" in resolution.active_sources, resolution.active_sources
++assert "worktree" in resolution.active_sources, resolution.active_sources
++assert resolution.settings.exclude_paths == ("templates/element/primary-hidden.py",)
++assert resolution.settings.force_include_paths == (
++    "templates/element/ignored.py", "templates/element/.local-ai-hub/hard.py"
++)
++
++with socket.socket() as probe:
++    probe.bind(("127.0.0.1", 0))
++    port = probe.getsockname()[1]
++state_dir = fixture_root / "state"
++config_path = fixture_root / "hub.toml"
++config_path.write_text(
++    "[server]\n"
++    'bind = "127.0.0.1"\n'
++    f'port = {port}\nstate_dir = {json.dumps(state_dir.as_posix())}\n'
++    "[ollama]\nenabled = false\n"
++    "[smart_ollama]\nenabled = false\n"
++    '[llama_cpp]\nmode = "off"\n'
++    "[code_intelligence]\nenabled = false\nserena_enabled = false\npreprocess_serena = false\n"
++    "[preprocessing]\nenabled = false\n",
++    encoding="utf-8",
++)
++os.environ["LOCAL_AI_CONFIG"] = str(config_path)
++app = LocalAIApp(str(config_path))
++http_server.APP = app
++server = http_server.LocalAIHTTPServer(("127.0.0.1", port), http_server.Handler)
++server_thread = threading.Thread(target=server.serve_forever, daemon=True)
++server_thread.start()
++client = HubClient(tenant="t21-root-worktree-path-hints", config_path=str(config_path), auto_start=False)
++mcp_server.CLIENT = client
++wire_payloads = []
++service_hints = []
++original_open = client._pooled_open
++original_search = app.services.repo_search
++
++def capture_open(method, path, body, headers, timeout):
++    if path == "/api/search" and body is not None:
++        wire_payloads.append(json.loads(body.decode("utf-8")))
++    return original_open(method, path, body, headers, timeout)
++
++def capture_search(*args, **kwargs):
++    service_hints.append(kwargs.get("path_hints"))
++    return original_search(*args, **kwargs)
++
++client._pooled_open = capture_open
++app.services.repo_search = capture_search
++
++async def call_tool(arguments):
++    result = await mcp_server.mcp.call_tool("local_ai_repo", arguments)
++    contents = result[0] if isinstance(result, tuple) else result
++    text_content = next(item for item in contents if getattr(item, "type", None) == "text")
++    return json.loads(text_content.text)
++
++try:
++    hint = {"path": "templates/element", "purpose": "repository_search", "scope": "repository_search"}
++    result = asyncio.run(call_tool({
++        "action": "search", "root": str(worktree), "query": token, "path_hints": [hint]
++    }))
++    assert result.get("success") is True, result
++    paths = {item.get("path") for item in result.get("results", [])}
++    assert "templates/element/button.py" in paths, paths
++    assert "templates/element/ignored.py" in paths, paths
++    assert "templates/element/primary-hidden.py" not in paths, paths
++    assert "templates/element/primary-only.py" not in paths, paths
++    assert "templates/element/.local-ai-hub/hard.py" not in paths, paths
++    assert wire_payloads[-1]["path_hints"] == [hint], wire_payloads[-1]
++    assert service_hints[-1] == [hint], service_hints[-1]
++
++    requests_before_invalid = len(wire_payloads)
++    invalid = asyncio.run(call_tool({
++        "action": "search", "root": str(worktree), "query": token,
++        "path_hints": [{"path": "../outside.py", "purpose": "repository_search", "scope": "repository_search"}],
++    }))
++    assert invalid.get("success") is False, invalid
++    assert invalid.get("status_code") == 400, invalid
++    assert invalid.get("terminal") is True and invalid.get("retryable") is False, invalid
++    assert len(wire_payloads) == requests_before_invalid, wire_payloads
++    print("T21_ROOT_WORKTREE_HINT_RESULT=" + json.dumps({
++        "import_origin": str(Path(local_ai_hub.__file__).resolve()),
++        "active_sources": list(resolution.active_sources),
++        "valid_paths": sorted(paths),
++        "wire_requests": len(wire_payloads),
++        "service_hint_calls": len(service_hints),
++    }))
++finally:
++    client.close()
++    server.shutdown()
++    server.server_close()
++    server_thread.join(timeout=3)
++    app.close()
++'''
++    env = os.environ.copy()
++    env["T21_ROOT_SOURCE"] = str(ROOT_SOURCE)
++    env["T21_FIXTURE_ROOT"] = str(tmp_path)
++    env["PYTHONPATH"] = str(ROOT_SOURCE)
++    completed = subprocess.run(
++        [sys.executable, "-B", "-c", script],
++        cwd=ROOT_SOURCE.parent,
++        env=env,
++        capture_output=True,
++        text=True,
++        timeout=60,
++        check=False,
++    )
++    assert completed.returncode == 0, (
++        f"root-source worktree path-hint chain failed\n"
++        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
++    )
++    result_line = next(
++        line
++        for line in completed.stdout.splitlines()
++        if line.startswith("T21_ROOT_WORKTREE_HINT_RESULT=")
++    )
++    result = __import__("json").loads(result_line.partition("=")[2])
++    assert Path(result["import_origin"]).resolve().is_relative_to(ROOT_SOURCE.resolve())
++    assert "primary_project" in result["active_sources"]
++    assert "worktree" in result["active_sources"]
++    assert result["wire_requests"] == 1
++    assert result["service_hint_calls"] == 1

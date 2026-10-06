@@ -1,0 +1,97 @@
+--- a/tests/test_identity_contracts.py
++++ b/tests/test_identity_contracts.py
+@@ -1,6 +1,12 @@
+ from __future__ import annotations
+ 
+ from contextlib import closing
++from pathlib import Path
++import json
++import os
++import subprocess
++import sys
++import time
+ from types import SimpleNamespace
+ 
+ import pytest
+@@ -388,3 +394,81 @@
+     )
+     assert store.delete(legacy.record_id, scope=AgentScope.SESSION) is False
+     assert store.get(legacy.record_id) is not None
++
++
++def test_workspace_memo_expected_version_serializes_across_processes(tmp_path):
++    state_dir = tmp_path / "state"
++    root = tmp_path / "repo"
++    root.mkdir()
++    store = WorkspaceMemoryStore(state_dir)
++    assert store.put(str(root), "decision", "initial", "identity-base", expected_version=0)["version"] == 1
++
++    barrier = tmp_path / "release-writers"
++    ready_paths = [tmp_path / f"writer-{index}-ready" for index in range(2)]
++    write_script = (
++        "import json, sys, time\n"
++        "from pathlib import Path\n"
++        "source_dir, state_dir, root, barrier_path, ready_path, tenant, value = sys.argv[1:]\n"
++        "sys.path.insert(0, source_dir)\n"
++        "ready = Path(ready_path)\n"
++        "ready.touch()\n"
++        "deadline = time.monotonic() + 20\n"
++        "while not Path(barrier_path).exists():\n"
++        "    if time.monotonic() >= deadline:\n"
++        "        raise TimeoutError('parent did not release memo writers')\n"
++        "    time.sleep(0.01)\n"
++        "import local_ai_hub.memory as loaded_module\n"
++        "assert Path(loaded_module.__file__).resolve().is_relative_to(Path(source_dir).resolve())\n"
++        "result = loaded_module.WorkspaceMemoryStore(Path(state_dir)).put(root, 'decision', value, tenant, expected_version=1)\n"
++        "print(json.dumps(result, sort_keys=True))\n"
++    )
++    source_dir = os.environ.get("T05_ROOT_SOURCE_DIR", str(Path(__file__).resolve().parents[1] / "src"))
++    worker_values = [("identity-a", "writer-a"), ("identity-b", "writer-b")]
++    workers = []
++    try:
++        for index, (tenant, value) in enumerate(worker_values):
++            workers.append(subprocess.Popen(
++                [
++                    sys.executable,
++                    "-c",
++                    write_script,
++                    source_dir,
++                    str(state_dir),
++                    str(root),
++                    str(barrier),
++                    str(ready_paths[index]),
++                    tenant,
++                    value,
++                ],
++                stdout=subprocess.PIPE,
++                stderr=subprocess.PIPE,
++                text=True,
++            ))
++
++        deadline = time.monotonic() + 15
++        while not all(path.exists() for path in ready_paths):
++            if any(worker.poll() is not None for worker in workers) or time.monotonic() >= deadline:
++                barrier.touch()
++                details = [worker.communicate(timeout=5) for worker in workers]
++                raise AssertionError(f"memo writers failed to rendezvous: {details!r}")
++            time.sleep(0.01)
++        barrier.touch()
++        outputs = [worker.communicate(timeout=20) for worker in workers]
++        assert [worker.returncode for worker in workers] == [0, 0], outputs
++    finally:
++        barrier.touch()
++        for worker in workers:
++            if worker.poll() is None:
++                worker.kill()
++                worker.communicate(timeout=5)
++
++    results = [json.loads(stdout) for stdout, _stderr in outputs]
++    assert sum(result["success"] is True for result in results) == 1
++    assert sum(result.get("version_conflict") is True for result in results) == 1
++    conflict = next(result for result in results if result.get("version_conflict") is True)
++    winner = next(result for result in results if result["success"] is True)
++    assert conflict["current_version"] == 2
++    assert winner["version"] == 2
++    current = store.get(str(root), "decision")
++    assert current["version"] == 2
++    assert current["value"] in {"writer-a", "writer-b"}

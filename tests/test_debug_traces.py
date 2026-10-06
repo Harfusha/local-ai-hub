@@ -5,6 +5,8 @@ import sqlite3
 import time
 from contextlib import closing
 
+import pytest
+
 from local_ai_hub import http_server
 from local_ai_hub.debug_traces import DebugTraceStore
 
@@ -41,6 +43,7 @@ def test_trace_defaults_allow_large_retained_payloads(tmp_path):
 
     assert store.max_event_bytes == 4 * 1024 * 1024
     assert store.max_session_text_bytes == 64 * 1024 * 1024
+
 
 
 def test_trace_retention_days_override_terminal_ttl_and_are_reported(tmp_path):
@@ -311,11 +314,7 @@ def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
     responses = []
     handler._send = lambda status, data: responses.append((status, data))
     monkeypatch.setattr(http_server, "APP", App())
-    mode_api = SimpleNamespace(
-        load_operational_mode=lambda *, state_dir: SimpleNamespace(mode="active", degraded=False),
-        operational_mode_gate_error=lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: mode_api)
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
 
     handler.do_GET()
 
@@ -434,3 +433,16 @@ def test_trace_detail_http_rebuilds_page_after_reconciliation(tmp_path, monkeypa
     assert handler.responses[0][1]["session"]["state"] == "done"
     assert handler.responses[0][1]["terminal"] is True
     assert handler.responses[0][1]["response_bytes"] == len(http_server._json_bytes(handler.responses[0][1]))
+@pytest.mark.parametrize("since_seq", [2**63 - 1, 2**63, 2**100])
+def test_trace_detail_clamps_forward_cursor_and_reports_retained_reset(tmp_path, since_seq):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    store.event(trace_id, "progress", {"index": 1})
+
+    detail = store.detail(trace_id, since_seq=since_seq)
+
+    assert detail["success"] is True
+    assert detail["cursor_reset"] is True
+    assert detail["first_retained_seq"] == 1
+    assert detail["next_seq"] == 1
+    assert [event["seq"] for event in detail["events"]] == [1]

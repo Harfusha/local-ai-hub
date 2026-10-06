@@ -1,0 +1,371 @@
+{
+  "owner": "misc Pyflakes overlay worker; integration/production validation T20",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "overlay": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay",
+  "published_utc": "2026-10-01T16:04:29.863775+00:00",
+  "scope": [
+    "src/local_ai_hub/agent_incidents.py",
+    "src/local_ai_hub/benchmark.py",
+    "src/local_ai_hub/browser_bridge.py",
+    "src/local_ai_hub/client.py",
+    "src/local_ai_hub/deterministic.py",
+    "src/local_ai_hub/generator.py",
+    "src/local_ai_hub/pipeline.py",
+    "src/local_ai_hub/response_protocol.py",
+    "src/local_ai_hub/scheduler.py",
+    "src/local_ai_hub/supervisor.py",
+    "src/local_ai_hub/token_economy.py",
+    "src/local_ai_hub/repo_tools.py",
+    "tools/benchmark_command_broker.py",
+    "tools/benchmark_surfaces.py"
+  ],
+  "baseline": "User-provided genuine full-root Pyflakes exit 1, 31 diagnostics; not rerun",
+  "prior_overlay_check": {
+    "exit_code": 1,
+    "details": "first-overlay-pyflakes.txt",
+    "reason": "Intermediate underscore binding diagnostics, restored earlier client handler, residual duplicate json import; corrected before publication"
+  },
+  "app_imports": false,
+  "hub_gpu_build_pytest": false,
+  "root_writes": false,
+  "ast_command": "C:\\Python313\\python.exe -B C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\verify-publish.py",
+  "files": [
+    {
+      "path": "src/local_ai_hub/agent_incidents.py",
+      "pre_sha256": "565720558ebc1cbd38929f477408d7ee49d49352a32b5fec177789cc31d8dca2",
+      "post_sha256": "79f7d3f4bc182dc8461da70450342892335ff93bac88564373dfb4fb419fc45b",
+      "pre_bytes": 45570,
+      "post_bytes": 45569
+    },
+    {
+      "path": "src/local_ai_hub/benchmark.py",
+      "pre_sha256": "81a117e8878cab21e09ab821f1e89b738eced83eb1265eceee3d9e5f70daf5e3",
+      "post_sha256": "f520621bacfe57d7e47b4bad354fd1176a922d589be9be9dfa8a9fe35828f98c",
+      "pre_bytes": 41594,
+      "post_bytes": 41587
+    },
+    {
+      "path": "src/local_ai_hub/browser_bridge.py",
+      "pre_sha256": "ad38e8efbce8d9a3bf63b38c4508e64d57f8bb2761013d8ff93746aca616e9b9",
+      "post_sha256": "673d3b7e32dd26136524c7ae79b502ec25a0cc32c3a78f21d9ac2ef057ea7fee",
+      "pre_bytes": 34779,
+      "post_bytes": 34773
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "pre_sha256": "252f1781be55dd2545dd7e3b21915f7a8ae20814dd2db351e823124c6bfa1a19",
+      "post_sha256": "5518706e0e81623e3ff0184274bd17f18c9bf7f43d9bc4dd37fd754586b0d056",
+      "pre_bytes": 55683,
+      "post_bytes": 55676
+    },
+    {
+      "path": "src/local_ai_hub/deterministic.py",
+      "pre_sha256": "277c43abe38a6785788747553e5d8690a9c868b3f314d0fa041ae8910be9ed04",
+      "post_sha256": "7d98dc287fd8805e0d43587bf292dfb4431009a92ab5ccb7efbc09b6a35b0d77",
+      "pre_bytes": 380664,
+      "post_bytes": 380658
+    },
+    {
+      "path": "src/local_ai_hub/generator.py",
+      "pre_sha256": "5267ec9c0589acdb70d1595f71c14a0d2de61927377b4f10dea5e44750dbc984",
+      "post_sha256": "2147622d0713579f7be9eee9890c646d50f932f26687d26bb951a51e560cdfcb",
+      "pre_bytes": 63149,
+      "post_bytes": 63136
+    },
+    {
+      "path": "src/local_ai_hub/pipeline.py",
+      "pre_sha256": "1472fccd500072230a29ad372501780aa6a4f93f942fc3a5760747349af93c48",
+      "post_sha256": "1ba9f6a1e43f4b5b2a5068f8b054be1fdb45e0c5c896476f142c9b6889d57664",
+      "pre_bytes": 32092,
+      "post_bytes": 32079
+    },
+    {
+      "path": "src/local_ai_hub/response_protocol.py",
+      "pre_sha256": "2a82e2cf2e9a620c2cdda7b8febff4915e246a97bf86d7917d65444907cf8acd",
+      "post_sha256": "055f4d7926fde98897e76a44fd7b9b5251641cad9f9ee57670d888ecc7fc84bb",
+      "pre_bytes": 5469,
+      "post_bytes": 5457
+    },
+    {
+      "path": "src/local_ai_hub/scheduler.py",
+      "pre_sha256": "6f45f079f45997823ec81a854685b6cb42b6a83adb2567270c00716847868b09",
+      "post_sha256": "be9b99983dfb142f236cda3893d8a847f5d0565b84ba80bc5e71d586324da51d",
+      "pre_bytes": 72409,
+      "post_bytes": 72451
+    },
+    {
+      "path": "src/local_ai_hub/supervisor.py",
+      "pre_sha256": "6e5a78dc766f5db9afce0e07a7bd5cfd86526bee89e958ee1de0c1b692a933d2",
+      "post_sha256": "4c72395546cad01d9249b6c18cfe051ee5137e840cdfde65d5e5238dc19ded2c",
+      "pre_bytes": 16205,
+      "post_bytes": 16192
+    },
+    {
+      "path": "src/local_ai_hub/token_economy.py",
+      "pre_sha256": "74cd20b808b1a236ac43c0751769289e0f572b515c1c329f9b365792850b9e7d",
+      "post_sha256": "2a20b79bb15d53659ec62c538150cf1115b0696f1ac9fede983a4c99a73c45e3",
+      "pre_bytes": 17495,
+      "post_bytes": 17449
+    },
+    {
+      "path": "src/local_ai_hub/repo_tools.py",
+      "pre_sha256": "8da38ecbe3daa4c975ec8f14fedbc74d91d04ceeaf4cbb2c7155a3e554b6da65",
+      "post_sha256": "afb79eae567b603db4aecdf07d077a56dd8f1cb7e3562fadb1893176ef8f1e8a",
+      "pre_bytes": 115105,
+      "post_bytes": 115098
+    },
+    {
+      "path": "tools/benchmark_command_broker.py",
+      "pre_sha256": "ad99e187f625eeebac64ff7d71be34ca63e850959e7ea4879ab62eb65b55aff0",
+      "post_sha256": "28f0f793960ffb0ec811a6e828ea8211b958c828522793ed4f801d16f66c1687",
+      "pre_bytes": 28200,
+      "post_bytes": 28289
+    },
+    {
+      "path": "tools/benchmark_surfaces.py",
+      "pre_sha256": "363ffaf81bfd2be8567a4ec6ee76461e05756620ec924d5c48f71a4a6a520c96",
+      "post_sha256": "dcaed06cf711090e692d4b44555c6e76ff37f06093275b63c121d7cce0ad3de0",
+      "pre_bytes": 291900,
+      "post_bytes": 291860
+    }
+  ],
+  "ast_review": [
+    {
+      "path": "src/local_ai_hub/agent_incidents.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          299,
+          "literal"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    },
+    {
+      "path": "src/local_ai_hub/benchmark.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          491,
+          "except"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    },
+    {
+      "path": "src/local_ai_hub/browser_bridge.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          711,
+          "except"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          621,
+          "except"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    },
+    {
+      "path": "src/local_ai_hub/deterministic.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          4150,
+          "assignment"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    },
+    {
+      "path": "src/local_ai_hub/generator.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          12,
+          "json"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    },
+    {
+      "path": "src/local_ai_hub/pipeline.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          6,
+          "json"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    },
+    {
+      "path": "src/local_ai_hub/response_protocol.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          6,
+          "json"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    },
+    {
+      "path": "src/local_ai_hub/scheduler.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          347,
+          "loop"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    },
+    {
+      "path": "src/local_ai_hub/supervisor.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          5,
+          "json"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    },
+    {
+      "path": "src/local_ai_hub/token_economy.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          96,
+          "json"
+        ],
+        [
+          148,
+          "json"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    },
+    {
+      "path": "src/local_ai_hub/repo_tools.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          1213,
+          "assignment"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    },
+    {
+      "path": "tools/benchmark_command_broker.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [],
+      "type_checking_only_command_broker_import": true
+    },
+    {
+      "path": "tools/benchmark_surfaces.py",
+      "pre_parse": "PASS",
+      "post_parse": "PASS",
+      "exact_allowlisted_ast_delta": "PASS",
+      "allowed_deltas": [
+        [
+          16,
+          "http_import"
+        ],
+        [
+          25,
+          "sqlite"
+        ]
+      ],
+      "type_checking_only_command_broker_import": false
+    }
+  ],
+  "checks": [
+    {
+      "argv": [
+        "C:\\Python313\\python.exe",
+        "-B",
+        "-m",
+        "pyflakes",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\agent_incidents.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\benchmark.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\browser_bridge.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\client.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\deterministic.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\generator.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\pipeline.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\response_protocol.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\scheduler.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\supervisor.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\token_economy.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\repo_tools.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\tools\\benchmark_command_broker.py",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\tools\\benchmark_surfaces.py"
+      ],
+      "command": "C:\\Python313\\python.exe -B -m pyflakes C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\agent_incidents.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\benchmark.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\browser_bridge.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\client.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\deterministic.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\generator.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\pipeline.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\response_protocol.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\scheduler.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\supervisor.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\token_economy.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\src\\local_ai_hub\\repo_tools.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\tools\\benchmark_command_broker.py C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\owned\\tools\\benchmark_surfaces.py",
+      "cwd": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay",
+      "exit_code": 0,
+      "stdout": null,
+      "stderr": null,
+      "timeout_seconds": 60,
+      "reused_from": "Execution 0bd9e2 reached git apply assertion after passing Pyflakes assertion; successful stdout/stderr were not separately persisted",
+      "identical_owned_source_proof": "Exact byte equality of prior and current full unified diffs against unchanged hashed preimages, before LF-only patch serialization"
+    },
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "--whitespace=error",
+        "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\publish-20261001T160429863497Z\\misc-pyflakes-current-root.patch"
+      ],
+      "command": "git apply --check --whitespace=error C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\publish-20261001T160429863497Z\\misc-pyflakes-current-root.patch",
+      "cwd": "C:\\Users\\Adam\\.local-ai-hub",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "timeout_seconds": 60
+    }
+  ],
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\lint-root-current-overlay\\publish-20261001T160429863497Z\\misc-pyflakes-current-root.patch",
+  "patch_sha256": "ccb07f6babf0668228d5ca4eff2a5cfda1c76a405bbb2870535f73fdc7961925",
+  "patch_bytes": 6432,
+  "root_preimages_match_after_checks": true,
+  "status": "SOURCE_STATIC_PASS; root integration/runtime/release acceptance NOT RUN (T20)"
+}

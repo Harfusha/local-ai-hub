@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import errno
 import hashlib
 import json
 import base64
@@ -25,7 +26,7 @@ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick
 _PATH_RE = re.compile(r"(?:(?:[A-Za-z]:\\\\|/)(?:[^\s:'\"<>|]+[/\\\\])+[^\s:'\"<>|]*)")
 _LONG_TOKEN_RE = re.compile(r"\b(?:[A-Fa-f0-9]{24,}|[A-Za-z0-9_\-]{48,})\b")
 _WINDOWS_PATH_RE = re.compile(r"\b[A-Za-z]:[\\/][^\s<>|\"']+")
-_UNC_PATH_RE = re.compile(r"(?<![\w])\\\\[^\\/\s]+\\[^\\/\s]+(?:\\[^\\/\s,;\"']+)*")
+_UNC_PATH_RE = re.compile(r"\\\\[^\\/\s]+\\[^\\/\s]+(?:\\[^\s<>|\"']*)?")
 _POSIX_PATH_RE = re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*")
 _POSIX_FILE_PATH_RE = re.compile(r"(?<![\w:])/[^\s/,;\"']+\.[A-Za-z0-9]{1,12}(?![\w-])")
 _POSIX_ROOT_PATH_RE = re.compile(r"(?<![\w:/])/(?!/)[^\s/\\,;\"']+(?![\w/])")
@@ -75,6 +76,7 @@ def _decode_error_page_cursor(cursor: str | None) -> tuple[int, float, str, str,
     ):
         raise ValueError("error_cursor is invalid")
     return (values[0], float(values[1]), *values[2:])
+
 
 
 def _bound_telemetry_report(report: dict[str, Any]) -> dict[str, Any]:
@@ -191,20 +193,29 @@ def _safe_error_message(value: Any) -> str:
     """Return a bounded reason from an allowlist; never persist exception text."""
     if isinstance(value, TimeoutError):
         reason = "operation timed out"
+    elif isinstance(value, ConnectionError):
+        reason = "connection failed"
     elif isinstance(value, json.JSONDecodeError):
         reason = "invalid JSON"
     elif isinstance(value, FileNotFoundError):
         reason = "file not found"
     elif isinstance(value, PermissionError):
         reason = "permission denied"
-    elif isinstance(value, ConnectionError):
-        reason = "connection failed"
     elif isinstance(value, ValueError):
         reason = "invalid value or argument"
     elif isinstance(value, TypeError):
         reason = "invalid type"
     elif isinstance(value, OSError):
-        reason = "operating system failure"
+        if value.errno == errno.ENOENT:
+            reason = "file not found"
+        elif value.errno in {errno.EACCES, errno.EPERM}:
+            reason = "permission denied"
+        elif value.errno == errno.EEXIST:
+            reason = "file already exists"
+        elif value.errno == errno.ENOTDIR:
+            reason = "path component is not a directory"
+        else:
+            reason = "operating system failure"
     elif isinstance(value, RuntimeError):
         reason = "operation failed"
     else:
@@ -212,6 +223,16 @@ def _safe_error_message(value: Any) -> str:
     error_type = type(value).__name__ if isinstance(value, BaseException) else "Error"
     safe_type = _safe_error_metadata(error_type, 48) or "Error"
     return f"{safe_type}: {reason}"[:96]
+
+
+_SAFE_ERROR_CODE_MESSAGES = {
+    "local_backend_transport": "local backend transport failure",
+    "local_model_error": "local model inference failed",
+    "model_request_timeout": "model request timed out",
+    "circuit_open": "model circuit open",
+    "http_request_failed": "HTTP request failed",
+    "http_stream_failed": "HTTP stream failed",
+}
 
 
 def _error_fingerprint(error_type: str, component: str, operation: str, error_code: str = "") -> str:
@@ -932,6 +953,8 @@ class TelemetryStore:
         request_id: str = "",
         tenant: str = "",
         agent: str = "",
+        error_type_override: str = "",
+        error_code_override: str = "",
         retryable: bool = False,
         recovered: bool = False,
     ) -> str:
@@ -941,15 +964,19 @@ class TelemetryStore:
         request_id = request_id or str(ctx.get("request_id") or "")
         tenant = tenant or str(ctx.get("tenant") or "")
         agent = agent or str(ctx.get("agent") or "")
-        error_type = type(error).__name__ if isinstance(error, BaseException) else "Error"
+        error_type = error_type_override or (type(error).__name__ if isinstance(error, BaseException) else "Error")
         safe_request_id = _safe_error_metadata(request_id, 96)
         safe_tenant = _safe_error_metadata(tenant, 160)
         safe_agent = _safe_error_metadata(agent, 80)
         safe_component = _safe_error_metadata(component, 120)
         safe_operation = _safe_error_metadata(operation, 160)
         safe_error_type = _safe_error_metadata(error_type, 120)
-        safe_error_code = _safe_error_code(error)
-        message = _safe_error_message(error)
+        safe_error_code = error_code_override if error_code_override in _SAFE_ERROR_CODE_MESSAGES else _safe_error_code(error)
+        message = (
+            f"{safe_error_type}: {_SAFE_ERROR_CODE_MESSAGES[error_code_override]}"
+            if error_code_override in _SAFE_ERROR_CODE_MESSAGES
+            else _safe_error_message(error)
+        )[:96]
         fp = _error_fingerprint(safe_error_type, safe_component, safe_operation, safe_error_code)
         payload = {
             "created_at": time.time(), "request_id": safe_request_id, "tenant": safe_tenant, "agent": safe_agent,

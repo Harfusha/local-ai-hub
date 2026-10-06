@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "task": "T08 narrow VerificationReceipt.from_dict type hardening",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "patch_path": "artifacts/t08-verification-receipt-parser-hardening-root-current.patch",
+  "patch_sha256": "7B0E6874A76719D040F5B3BDF9A125E050EF365293A1A0DB3D5770581DF74048",
+  "patch_scope": [
+    "src/local_ai_hub/agent_verification.py",
+    "tests/test_agent_verification.py"
+  ],
+  "root_preimage_sha256": {
+    "src/local_ai_hub/agent_verification.py": "FB477438FF110AB80FE6F2D486FFA5D87AAB1A855735FCD94592F8080EAF0017",
+    "tests/test_agent_verification.py": "0BBD285D18251355A54A9652A0BE16B6BD2DA98658DBDF267DFB9CC888193E96"
+  },
+  "expected_postimage_sha256": {
+    "src/local_ai_hub/agent_verification.py": "F7A699F3F3C4D580DAF25F85F2F9596733BC52DAD5D2203089BEC645BCB2A3BF",
+    "tests/test_agent_verification.py": "46A1AE17F17E102196E7C363F64E018A3297A33D27E141FAF9FA86C1C04B46D6"
+  },
+  "changed_behavior": [
+    "Reject bool, float, string, and negative mutation_generation; missing value defaults to integer 0.",
+    "Reject non-boolean or missing passed instead of silently converting to false.",
+    "Require details to be a Mapping; reject pair-list payloads instead of dict coercion."
+  ],
+  "regression_selector": "tests/test_agent_verification.py::test_verification_receipt_from_dict_rejects_malformed_types",
+  "parameter_cases": 8,
+  "tests_run": false,
+  "root_edited": false,
+  "apply_performed": false,
+  "requires_T20_serial_GO": true,
+  "ownership_note": "Patch uses current root bytes; does not transfer whole file. Existing mixed hunks in root are preserved by context-only delta."
+}

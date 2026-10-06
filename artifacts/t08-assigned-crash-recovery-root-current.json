@@ -1,0 +1,44 @@
+{
+  "task": "T08 assigned Agent OS crash and recovery selectors",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "candidate_sha256": {
+    "src/local_ai_hub/agent_events.py": "B00AAF9A109B697CE7D3A8756EF3E88BD72772D2F36DEC30BF3ACDA76E6BABE3",
+    "src/local_ai_hub/agent_tasks.py": "1D59F3E1FA8A6082EAA439F4EC3D4C542BBAD47FA5F2664D76570462FB505D25",
+    "src/local_ai_hub/agent_verification.py": "6924D69A94EDFE8ADFB5C7F4FB5B94731855F7A956127CDAAF537B51133A357A",
+    "tests/test_agent_crash_recovery.py": "2D69D4A18714E8979C2A54458CCB4F7533D53363CCA66D337790712793E4E0D4",
+    "tests/test_agent_t08_crash_after_commit.py": "AEE9E6B7A74E3E16C7985BF5C7843B0DDC420F26D748DA9881E33451C0BC8541"
+  },
+  "root_sha256": {
+    "src/local_ai_hub/agent_events.py": "30AB4485F34A67D8212E6151057E06EF806D40F92073036D8F9F4F4546B44822",
+    "src/local_ai_hub/agent_tasks.py": "2F4B8996CECD8694DE7D77AFEF2A3F8DD4B04EED941E29DCBB8A7DBAF919EE43",
+    "src/local_ai_hub/agent_verification.py": "FB477438FF110AB80FE6F2D486FFA5D87AAB1A855735FCD94592F8080EAF0017",
+    "tests/test_agent_crash_recovery.py": "09A1B08ABBEDBA3D6396EB54B793C259BFE6666AAAC724FD0B4F50465F293D24",
+    "tests/test_agent_t08_crash_after_commit.py": "9C949A0CB2D9FC5F58FA7264EF1E8F5DEF13BB657328998591D0A97918849E8F"
+  },
+  "candidate_receipt": {
+    "command": "python -m pytest -q --tb=short tests/test_agent_crash_recovery.py::test_crash_after_task_event_append_before_commit_rolls_back_projection_and_event tests/test_agent_crash_recovery.py::test_os_exit_after_task_event_insert_rolls_back_projection_and_event tests/test_agent_crash_recovery.py::test_committed_receipt_and_task_projection_survive_restart_before_publish tests/test_agent_t08_crash_after_commit.py::test_process_exit_during_receipt_write_recovers_atomically",
+    "result": "5 passed in 1.49s",
+    "includes": "receipt selector parameterized before_commit and after_commit"
+  },
+  "root_overlay_receipt": {
+    "overlay": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t08-root-assigned-crash-90a04cefb5ab4262b41841de2662a94a",
+    "source": "root src/local_ai_hub copied to temp; candidate crash tests copied to temp; read-only .git pointer used only for git rev-parse",
+    "command": "python -m pytest -q --tb=short tests/test_agent_crash_recovery.py::test_crash_after_task_event_append_before_commit_rolls_back_projection_and_event tests/test_agent_crash_recovery.py::test_os_exit_after_task_event_insert_rolls_back_projection_and_event tests/test_agent_crash_recovery.py::test_committed_receipt_and_task_projection_survive_restart_before_publish tests/test_agent_t08_crash_after_commit.py::test_process_exit_during_receipt_write_recovers_atomically",
+    "result": "3 passed, 2 failed in 1.80s",
+    "failures": {
+      "test_os_exit_after_task_event_insert_rolls_back_projection_and_event": "root event_page returns dict events; candidate test expects AgentEvent attributes",
+      "test_committed_receipt_and_task_projection_survive_restart_before_publish": "root VerificationReceipt.create requires command_id for passed test receipt"
+    },
+    "root_write": "none"
+  },
+  "ownership": {
+    "agent_tasks.py": "T09 query hunks excluded; no edit",
+    "agent_events.py": "T08/T18/T09 mixed; no edit this run",
+    "agent_verification.py": "T09-owned contract; no edit this run"
+  },
+  "root_changes": "none; no patch applied",
+  "interpretation": "Candidate crash and durability behavior passes assigned selectors. Current-root overlay is blocked by two test/API compatibility differences; no production crash defect demonstrated by those failures."
+}

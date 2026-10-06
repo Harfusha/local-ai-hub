@@ -1,0 +1,31 @@
+--- a/tests/test_agent_verification.py
++++ b/tests/test_agent_verification.py
+@@ -1353,13 +1353,13 @@
+                 )["events"]
+                 task_events = state_store.event_page(f"task:{task.task_id}")["events"]
+                 assert any(
+-                    row.kind == "verification.receipt_recorded"
+-                    and row.payload.get("receipt_id") == receipt.receipt_id
++                    row.get("kind") == "verification.receipt_recorded"
++                    and row.get("payload", {}).get("receipt_id") == receipt.receipt_id
+                     for row in verification_events
+                 )
+                 assert any(
+-                    row.kind == "task.verified"
+-                    and row.payload.get("receipt_id") == receipt.receipt_id
++                    row.get("kind") == "task.verified"
++                    and row.get("payload", {}).get("receipt_id") == receipt.receipt_id
+                     for row in task_events
+                 )
+                 with closing(connect_sqlite(state_store.db_path)) as con:
+@@ -1388,8 +1388,8 @@
+             stream_events = [event for event in queued if event.stream_id == stream_id]
+             persisted = state_store.event_page(stream_id)["events"]
+             queued_ids = [event.event_id for event in stream_events]
+-            persisted_events = [event for event in persisted if event.event_id in queued_ids]
+-            assert stream_events == persisted_events
++            persisted_events = [row for row in persisted if row.get("event_id") in queued_ids]
++            assert [event.to_dict() for event in stream_events] == persisted_events
+             assert [event.seq for event in stream_events] == sorted(
+                 event.seq for event in stream_events
+             )

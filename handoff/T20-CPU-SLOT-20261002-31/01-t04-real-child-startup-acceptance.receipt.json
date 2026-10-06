@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-31",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_t04_real_child_startup_acceptance.py",
+  "route": "native_fallback_user_authorized",
+  "exit_code": 0,
+  "summary": "1 passed in 10.11s",
+  "input_sha256_before": {
+    "tests/test_t04_real_child_startup_acceptance.py": "E97A6D2205B243B31D34D0F78420EBA4E19154F4DFB4E4792DDFD625E21EECC3",
+    "source_files": {
+      "src/local_ai_hub/client.py": "0C3690E24499DEC22A4EC1295BAEA06FF52E54880021E7A432A4BD733D15BC1D",
+      "src/local_ai_hub/http_server.py": "A8DF17496129DDA67BB74711A7D83568385FC301AB670AF3FB8F1659C7E3221D",
+      "src/local_ai_hub/app.py": "2B6E826FEF08863EF9BF1528E402F7DE041A6A2B08A3812E8454398BC1750546"
+    }
+  },
+  "input_sha256_after": {
+    "tests/test_t04_real_child_startup_acceptance.py": "E97A6D2205B243B31D34D0F78420EBA4E19154F4DFB4E4792DDFD625E21EECC3",
+    "source_files": {
+      "src/local_ai_hub/client.py": "0C3690E24499DEC22A4EC1295BAEA06FF52E54880021E7A432A4BD733D15BC1D",
+      "src/local_ai_hub/http_server.py": "A8DF17496129DDA67BB74711A7D83568385FC301AB670AF3FB8F1659C7E3221D",
+      "src/local_ai_hub/app.py": "2B6E826FEF08863EF9BF1528E402F7DE041A6A2B08A3812E8454398BC1750546"
+    }
+  },
+  "inputs_unchanged": true,
+  "acceptance_scope": "T04 real child startup and HTTP search acceptance only",
+  "log_path": "C:\\Users\\Adam\\.local-ai-hub\\handoff\\T20-CPU-SLOT-20261002-31\\01-t04-real-child-startup-acceptance.log",
+  "log_sha256": "31D75FD3E0FA7090CE7F2C5CAC684D0807E5F236F184A47C93A245993195CF1B"
+}

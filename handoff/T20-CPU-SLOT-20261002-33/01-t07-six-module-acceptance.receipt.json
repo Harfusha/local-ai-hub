@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-33",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_mutation_replay.py tests/test_client_transport.py tests/test_command_replay_policy.py tests/test_command_transport.py tests/test_agent_state_transport.py tests/test_reliability_integration.py",
+  "route": "native_fallback_user_authorized",
+  "exit_code": 1,
+  "summary": "5 failed, 166 passed, 1 skipped in 47.51s",
+  "input_sha256_before": {
+    "test_files": {
+      "tests/test_mutation_replay.py": "A55048B4884DC3994DBDA5D34206885188C841A51202D94541D9A9C1652856E5",
+      "tests/test_client_transport.py": "03000F1016075FC4B4025F9185CFFB471043663028F04496B0CD4F42D5EA06A0",
+      "tests/test_command_replay_policy.py": "374CADFA0C0D529E75E34C046562FBD7A6C493C4526484CFAA5EC33473999D9C",
+      "tests/test_command_transport.py": "CD66278996627B9AB2FEC23617C5DD3D07F54A395D07F5E1994AADF24BE8FBDA",
+      "tests/test_agent_state_transport.py": "11D9B32790201E5C629D6553E8B81B2C6BE6D827B2CE7D3A84B32C41A4BA24CE",
+      "tests/test_reliability_integration.py": "679F14B5F343CEB013CB3A664CFCD12A4D317B35A9B73E0EA18A78047C1C86D5"
+    },
+    "source_files": {
+      "src/local_ai_hub/http_server.py": "A8DF17496129DDA67BB74711A7D83568385FC301AB670AF3FB8F1659C7E3221D",
+      "src/local_ai_hub/client.py": "0C3690E24499DEC22A4EC1295BAEA06FF52E54880021E7A432A4BD733D15BC1D",
+      "src/local_ai_hub/async_jobs.py": "0761859846A37E4DDF914AA5930144B4041EB2BC489811B9EF9BFD6379A3A945",
+      "src/local_ai_hub/resilience.py": "88C16039AFC2919BB5E7F8DEAF2165AC09C2C064AD496BA15C1FD2FFAC2AC67E",
+      "src/local_ai_hub/agent_tasks.py": "79487FCE9F8A477A9DE888A6C7FEF77C3526F9B63151EF69FF0CE2019502BA45",
+      "src/local_ai_hub/app.py": "2B6E826FEF08863EF9BF1528E402F7DE041A6A2B08A3812E8454398BC1750546"
+    }
+  },
+  "input_sha256_after": {
+    "test_files": {
+      "tests/test_mutation_replay.py": "A55048B4884DC3994DBDA5D34206885188C841A51202D94541D9A9C1652856E5",
+      "tests/test_client_transport.py": "03000F1016075FC4B4025F9185CFFB471043663028F04496B0CD4F42D5EA06A0",
+      "tests/test_command_replay_policy.py": "374CADFA0C0D529E75E34C046562FBD7A6C493C4526484CFAA5EC33473999D9C",
+      "tests/test_command_transport.py": "CD66278996627B9AB2FEC23617C5DD3D07F54A395D07F5E1994AADF24BE8FBDA",
+      "tests/test_agent_state_transport.py": "11D9B32790201E5C629D6553E8B81B2C6BE6D827B2CE7D3A84B32C41A4BA24CE",
+      "tests/test_reliability_integration.py": "679F14B5F343CEB013CB3A664CFCD12A4D317B35A9B73E0EA18A78047C1C86D5"
+    },
+    "source_files": {
+      "src/local_ai_hub/http_server.py": "A8DF17496129DDA67BB74711A7D83568385FC301AB670AF3FB8F1659C7E3221D",
+      "src/local_ai_hub/client.py": "0C3690E24499DEC22A4EC1295BAEA06FF52E54880021E7A432A4BD733D15BC1D",
+      "src/local_ai_hub/async_jobs.py": "0761859846A37E4DDF914AA5930144B4041EB2BC489811B9EF9BFD6379A3A945",
+      "src/local_ai_hub/resilience.py": "88C16039AFC2919BB5E7F8DEAF2165AC09C2C064AD496BA15C1FD2FFAC2AC67E",
+      "src/local_ai_hub/agent_tasks.py": "79487FCE9F8A477A9DE888A6C7FEF77C3526F9B63151EF69FF0CE2019502BA45",
+      "src/local_ai_hub/app.py": "2B6E826FEF08863EF9BF1528E402F7DE041A6A2B08A3812E8454398BC1750546"
+    }
+  },
+  "inputs_unchanged": true,
+  "acceptance_scope": "T07 six-module root acceptance suite; targeted slot16/17 receipts retained separately",
+  "failure_names": [
+    "tests/test_agent_state_transport.py::test_http_memory_get_is_scope_and_root_isolated",
+    "tests/test_reliability_integration.py::test_ollama_interruptible_stream_exists_and_aggregates",
+    "tests/test_reliability_integration.py::test_prepare_model_reloads_small_context_and_evicts_others",
+    "tests/test_reliability_integration.py::test_embedding_model_residency_uses_embed_api",
+    "tests/test_reliability_integration.py::test_mcp_tools_have_use_when_and_skip_when_cues"
+  ],
+  "log_path": "C:\\Users\\Adam\\.local-ai-hub\\handoff\\T20-CPU-SLOT-20261002-33\\01-t07-six-module-acceptance.log",
+  "log_sha256": "D4FC23611E2932EF19068BBCD36331BD10CBB0F29119DA37F2657910C96A2114"
+}

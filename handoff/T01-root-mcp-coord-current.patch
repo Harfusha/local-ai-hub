@@ -1,0 +1,992 @@
+diff --git a/tests/test_mcp_coord_operation_acceptance.py b/tests/test_mcp_coord_operation_acceptance.py
+index 0cbc50d..2440811 100644
+--- a/tests/test_mcp_coord_operation_acceptance.py
++++ b/tests/test_mcp_coord_operation_acceptance.py
+@@ -1,5 +1,9 @@
+ """Operation-specific behavior coverage for unlinked local_ai_coord actions."""
+ 
++import asyncio
++import json
++
++import mcp.types as mcp_types
+ from local_ai_hub import mcp_server
+ 
+ 
+@@ -194,3 +198,977 @@ def test_local_ai_coord_claim_forwards_owned_paths_and_lease_identity(monkeypatc
+     )]
+     assert result["success"] is True
+     assert result["summary"] == "lease granted"
++
++
++def test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint(monkeypatch, tmp_path):
++    import asyncio
++    import json
++    from types import SimpleNamespace
++
++    import mcp.types as mcp_types
++
++    from local_ai_hub import http_server
++    from local_ai_hub.agent_events import AgentStateStore
++    from local_ai_hub.agent_identity import ScopeContext
++    from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint, TaskStore
++
++    db_path = tmp_path / "agent-state.sqlite3"
++    state_store = AgentStateStore(db_path)
++    tasks = TaskStore(state_store)
++    task_id = "task-rollback-acceptance"
++    target = tmp_path / "rollback-target.txt"
++    target.write_text("baseline", encoding="utf-8")
++    tasks.create(
++        GoalContract(goal="exercise rollback"),
++        ScopeContext(task_id=task_id),
++        task_id=task_id,
++    )
++    tasks.checkpoint(
++        task_id,
++        TaskCheckpoint(
++            phase="baseline",
++            state_data={"file_snapshots": {str(target): "baseline"}},
++        ),
++    )
++    target.write_text("changed", encoding="utf-8")
++    tasks.checkpoint(
++        task_id,
++        TaskCheckpoint(
++            phase="changed",
++            state_data={"file_snapshots": {str(target): "changed"}},
++        ),
++    )
++    app = SimpleNamespace(agent_tasks=tasks, config={"security": {}})
++    monkeypatch.setattr(http_server, "APP", app)
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++
++    def post_without_socket(path, payload, **_kwargs):
++        assert path == "/api/agent-state/tasks"
++        assert payload["action"] == "rollback"
++        assert payload["task_id"] == task_id
++        handler = object.__new__(http_server.Handler)
++        handler.path = path
++        handler.headers = {
++            "Content-Type": "application/json",
++            "X-LocalAI-Agent": "T08-test",
++        }
++        replies = []
++        handler._begin_trace = lambda _path: None
++        handler._require_authorized = lambda: True
++        handler._read_json = lambda: payload
++        handler._send = lambda status, body: replies.append((status, body))
++        http_server.Handler.do_POST(handler)
++        assert len(replies) == 1
++        status, response = replies[0]
++        assert status == 200
++        return response
++
++    monkeypatch.setattr(mcp_server.CLIENT, "post", post_without_socket)
++    tool_result = asyncio.run(
++        mcp_server.mcp.call_tool(
++            "local_ai_coord", {"action": "task_rollback", "task_id": task_id}
++        )
++    )
++    if isinstance(tool_result, tuple):
++        content = tool_result[0][0]
++    else:
++        assert isinstance(tool_result, list)
++        content = tool_result[0]
++    assert isinstance(content, mcp_types.TextContent)
++    result = json.loads(content.text)
++
++    assert result["success"] is True
++    assert target.read_text(encoding="utf-8") == "baseline"
++    reopened = TaskStore(AgentStateStore(db_path))
++    persisted = reopened.get(task_id)
++    assert persisted is not None
++    assert persisted.checkpoint.phase == "baseline"
++    assert reopened.state_store.events(f"task:{task_id}")[-1].kind == "task.rolled_back"
++
++
++def test_local_ai_coord_feature_disabled_rejects_valid_action_before_backend_dispatch(monkeypatch):
++    import asyncio
++    import json
++
++    import mcp.types as mcp_types
++
++    class NeverDispatch:
++        def __getattr__(self, name):
++            raise AssertionError(f"disabled local_ai_coord reached CLIENT.{name}")
++
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", False)
++    monkeypatch.setattr(mcp_server, "CLIENT", NeverDispatch())
++    tool_result = asyncio.run(
++        mcp_server.mcp.call_tool(
++            "local_ai_coord", {"action": "task_rollback", "task_id": "disabled-task"}
++        )
++    )
++    if isinstance(tool_result, tuple):
++        content = tool_result[0][0]
++    else:
++        assert isinstance(tool_result, list)
++        content = tool_result[0]
++    assert isinstance(content, mcp_types.TextContent)
++    result = json.loads(content.text)
++
++    assert result["success"] is False
++    assert result["unsupported"] is True
++    assert result["error"] == "local_ai_coord is disabled in configuration"
++
++def _prepare_coord_api(monkeypatch):
++    backend = ApiBackend({"success": True, "summary": "forwarded"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++    return backend
++
++
++def _prepare_coord_rpc(monkeypatch):
++    backend = CoordBackend({"success": True, "summary": "forwarded"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++    return backend
++
++
++def test_local_ai_coord_blackboard_get_forwards_board_and_section(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='blackboard_get', board_id="board-17", section="planning")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/agent-state/blackboard",
++        {"action": "get", "board_id": "board-17", "section": "planning",
++         "content": None, "author": "agent", "remote_sections": {},
++         "expected_version": None},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_blackboard_list_forwards_board_and_section(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='blackboard_list', board_id="board-18", section="open")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls[0][0] == "/api/agent-state/blackboard"
++    assert calls[0][1] == {
++        "action": "list", "board_id": "board-18", "section": "open",
++        "content": None, "author": "agent", "remote_sections": {},
++        "expected_version": None,
++    }
++    assert calls[0][2] == {"timeout": mcp_server._timeout("quick")}
++
++
++def test_local_ai_coord_blackboard_merge_forwards_sections_and_version(monkeypatch):
++    remote = {"remote": {"summary": "preserve"}}
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='blackboard_merge', board_id="board-19", section="all", record=remote, checkpoint={"expected_version": 6}, approver="reviewer")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls[0][0] == "/api/agent-state/blackboard"
++    assert calls[0][1] == {
++        "action": "merge", "board_id": "board-19", "section": "all",
++        "content": remote, "author": "reviewer", "remote_sections": remote,
++        "expected_version": 6,
++    }
++    assert calls[0][2] == {"timeout": mcp_server._timeout("quick")}
++
++
++def test_local_ai_coord_blackboard_delete_forwards_board_and_version(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='blackboard_delete', board_id="board-20", section="archive", status="8")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls[0][0] == "/api/agent-state/blackboard"
++    assert calls[0][1] == {
++        "action": "delete", "board_id": "board-20", "section": "archive",
++        "content": None, "author": "agent", "remote_sections": {},
++        "expected_version": 8,
++    }
++    assert calls[0][2] == {"timeout": mcp_server._timeout("quick")}
++
++
++def test_local_ai_coord_leases_forwards_root_filter(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='leases', root=root)
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(f"/api/leases?root={mcp_server.quote(root)}", None, {})]
++
++
++def test_local_ai_coord_memo_get_forwards_root_and_key(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='memo_get', root=root, key="handoff:active")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/memory/get", {"root": root, "key": "handoff:active"}, {}
++    )]
++
++
++def test_local_ai_coord_memory_promote_forwards_record_identity(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    result = mcp_server.local_ai_coord(action='memory_promote', root=root, record_id="memory-42", target_scope="project", approver="reviewer", scope="task", scope_id="task-42", task_id="task-42", session_id="session-3")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [{
++        "action": "memory_promote", "record": None, "record_id": "memory-42",
++        "target_scope": "project", "approver": "reviewer", "key": "",
++        "value": "", "query": "", "root": root, "scope": "task",
++        "scope_id": "task-42", "task_id": "task-42", "session_id": "session-3",
++        "clone_id": "", "worktree_id": "", "branch": "",
++        "repository_id": "", "tenant": "",
++    }]
++
++
++def test_local_ai_coord_memory_reap_forwards_scope_and_record(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    record = {"reason": "expired"}
++    backend = _prepare_coord_rpc(monkeypatch)
++    result = mcp_server.local_ai_coord(action='memory_reap', root=root, record=record, record_id="memory-expired", scope="project", scope_id="project-7", tenant="tenant-2")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [{
++        "action": "memory_reap", "record": record, "record_id": "memory-expired",
++        "target_scope": "", "approver": "", "key": "", "value": "",
++        "query": "", "root": root, "scope": "project", "scope_id": "project-7",
++        "task_id": "", "session_id": "", "clone_id": "", "worktree_id": "",
++        "branch": "", "repository_id": "", "tenant": "tenant-2",
++    }]
++
++
++def test_local_ai_coord_negative_knowledge_find_forwards_query_scope(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='negative_knowledge_find', root=root, key="TimeoutError", query="retry exhausted", scope="task", scope_id="task-5", reason="connection reset", status="retry locally", record_id="incident-5")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/agent-state/incidents",
++        {"action": "find", "error_class": "TimeoutError",
++         "message": "retry exhausted", "query": "retry exhausted", "root": root,
++         "root_cause": "connection reset", "verified_fix": "retry locally",
++         "incident_id": "incident-5"},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_negative_knowledge_record_forwards_verified_fix(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='negative_knowledge_record', root=root, key="ValueError", value="invalid payload", query="payload validation", reason="caller omitted field", status="validate before retry", record_id="incident-6")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/agent-state/incidents",
++        {"action": "record", "error_class": "ValueError",
++         "message": "invalid payload", "query": "payload validation", "root": root,
++         "root_cause": "caller omitted field", "verified_fix": "validate before retry",
++         "incident_id": "incident-6"},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_pubsub_poll_forwards_topic_and_subscriber(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    result = mcp_server.local_ai_coord(action='pubsub_poll', root=root, key="build-status", approver="worker-3", ttl_seconds=9)
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [{
++        "action": "pubsub_poll", "topic": "build-status", "subscriber": "worker-3",
++        "limit": 9, "root": root,
++    }]
++
++
++def test_local_ai_coord_pubsub_publish_forwards_topic_message_and_publisher(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    message = {"state": "ready", "revision": "r8"}
++    backend = _prepare_coord_rpc(monkeypatch)
++    result = mcp_server.local_ai_coord(action='pubsub_publish', root=root, key="build-status", value=message, approver="worker-2")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [{
++        "action": "pubsub_publish", "topic": "build-status", "message": message,
++        "publisher": "worker-2", "root": root,
++    }]
++
++
++def test_local_ai_coord_relation_find_forwards_source_and_target(monkeypatch):
++    record = {"confidence": 0.9}
++    backend = _prepare_coord_rpc(monkeypatch)
++    result = mcp_server.local_ai_coord(action='relation_find', key="service-a", value="service-b", reason="depends_on", ttl_seconds=2.5, record=record, max_tokens=4)
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [{
++        "action": "relation_find", "source_entity": "service-a",
++        "relation": "depends_on", "target_entity": "service-b", "weight": 2.5,
++        "metadata": record, "start_entity": "service-a", "max_depth": 4,
++        "limit": 4,
++    }]
++
++
++def test_local_ai_coord_relation_record_forwards_relation_metadata(monkeypatch):
++    record = {"owner": "agent-6"}
++    backend = _prepare_coord_rpc(monkeypatch)
++    result = mcp_server.local_ai_coord(action='relation_record', task_id="task-6", target_scope="repo-2", status="blocks", ttl_seconds=3, record=record)
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [{
++        "action": "relation_record", "source_entity": "task-6",
++        "relation": "blocks", "target_entity": "repo-2", "weight": 3.0,
++        "metadata": record, "start_entity": "task-6", "max_depth": 2,
++        "limit": 50,
++    }]
++
++
++def test_local_ai_coord_relation_traverse_forwards_depth_and_limit(monkeypatch):
++    backend = _prepare_coord_rpc(monkeypatch)
++    result = mcp_server.local_ai_coord(action='relation_traverse', query="component-x", value="component-y", max_tokens=5)
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [{
++        "action": "relation_traverse", "source_entity": "component-x",
++        "relation": "relates_to", "target_entity": "component-y", "weight": 1.0,
++        "metadata": None, "start_entity": "component-x", "max_depth": 5,
++        "limit": 5,
++    }]
++
++
++def test_local_ai_coord_release_forwards_lease_identity(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='release', lease_id="lease-41")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/leases/release", {"lease_id": "lease-41"}, {}
++    )]
++
++
++def test_local_ai_coord_renew_forwards_lease_identity_and_ttl(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='renew', lease_id="lease-42", ttl_seconds=240)
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/leases/renew", {"lease_id": "lease-42", "ttl_seconds": 240}, {}
++    )]
++
++
++def test_local_ai_coord_swarm_cancel_forwards_reason(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='swarm_cancel', task_id="swarm-52", reason="scope closed")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/agent-state/swarm/cancel",
++        {"swarm_id": "swarm-52", "reason": "scope closed"},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_swarm_dispatch_forwards_goal_paths_and_test_command(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    paths = ["src/worker.py", "tests/test_worker.py"]
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='swarm_dispatch', root=root, task="review worker", paths=paths, command="pytest -q tests/test_worker.py", approver="reviewer")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/agent-state/swarm/dispatch",
++        {"goal": "review worker", "target_paths": paths,
++         "test_command": "pytest -q tests/test_worker.py", "author": "reviewer",
++         "root": root},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_swarm_list_forwards_state_filter(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='swarm_list', status="active")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/agent-state/swarm?state=active", None,
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_swarm_status_forwards_swarm_identity(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='swarm_status', task_id="swarm-53")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/agent-state/swarm/swarm-53", None,
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_swarm_step_forwards_role_action_and_payload(monkeypatch):
++    payload = {"patch": "diff --git a/a b/a"}
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='swarm_step', task_id="swarm-54", target_scope="Reviewer", query="approve_patch", record=payload)
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/agent-state/swarm/step",
++        {"swarm_id": "swarm-54", "role": "Reviewer",
++         "action": "approve_patch", "payload": payload},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_task_cleanup_worktree_forwards_task_identity(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='task_cleanup_worktree', task_id="task-55")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/agent-state/tasks",
++        {"action": "cleanup_worktree", "task_id": "task-55"},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_task_fail_forwards_failure_reason(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    result = mcp_server.local_ai_coord(action='task_fail', root=root, task_id="task-56", reason="acceptance failed", status="failed")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [{
++        "action": "task_fail", "task_id": "task-56", "contract": None,
++        "checkpoint": None, "status": "failed", "reason": "acceptance failed",
++        "root": root, "ttl_seconds": 0, "include_stale": False,
++    }]
++
++
++def test_local_ai_coord_task_heartbeat_forwards_task_identity_and_ttl(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    result = mcp_server.local_ai_coord(action='task_heartbeat', root=root, task_id="task-57", ttl_seconds=180)
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [{
++        "action": "task_heartbeat", "task_id": "task-57", "contract": None,
++        "checkpoint": None, "status": "", "reason": "", "root": root,
++        "ttl_seconds": 180, "include_stale": False,
++    }]
++
++
++def test_local_ai_coord_task_resume_forwards_task_identity_and_reason(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    result = mcp_server.local_ai_coord(action='task_resume', root=root, task_id="task-58", reason="operator resumed")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [{
++        "action": "task_resume", "task_id": "task-58", "contract": None,
++        "checkpoint": None, "status": "", "reason": "operator resumed",
++        "root": root, "ttl_seconds": 0, "include_stale": False,
++    }]
++
++
++def test_local_ai_coord_task_sync_forwards_export_and_import_payloads(monkeypatch):
++    backend = ApiBackend({"success": True, "summary": "forwarded"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++    exported = mcp_server.local_ai_coord(
++        action="task_sync", status="export", key="stream-59", ttl_seconds=3,
++        max_tokens=12,
++    )
++    events = [{"seq": 4, "kind": "task.updated"}]
++    imported = mcp_server.local_ai_coord(
++        action="task_sync", status="import", record=events
++    )
++    assert exported["success"] is True
++    assert imported["success"] is True
++    assert backend.calls == [
++        ("/api/agent-state/events/delta",
++         {"action": "export", "stream_id": "stream-59", "after_seq": 3,
++          "limit": 12}, {"timeout": mcp_server._timeout("quick")}),
++        ("/api/agent-state/events/delta",
++         {"action": "import", "events": events},
++         {"timeout": mcp_server._timeout("quick")}),
++    ]
++
++
++def test_local_ai_coord_task_zombie_reap_forwards_recovery_flag(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='task_zombie_reap')
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/agent-state/tasks",
++        {"action": "reap_expired", "auto_recover": True},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_verify_completion_forwards_task_revision(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='verify_completion', root=root, task_id="task-60", repository_revision="rev-60")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/agent-state/verification",
++        {"action": "completion", "task_id": "task-60", "root": root,
++         "repository_revision": "rev-60"},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_worktree_lease_forwards_root_and_branch(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    result = mcp_server.local_ai_coord(action='worktree_lease', root=root, key="feature/coord")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [{
++        "action": "worktree_lease", "root": root, "branch": "feature/coord",
++    }]
++
++
++def test_local_ai_coord_worktree_release_forwards_path_and_branch_policy(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    result = mcp_server.local_ai_coord(action='worktree_release', root=root, value="C:/worktrees/coord", key="feature/coord", status="false")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [{
++        "action": "worktree_release", "root": root,
++        "worktree_path": "C:/worktrees/coord", "delete_branch": False,
++        "branch": "feature/coord",
++    }]
++
++
++def test_local_ai_coord_curate_dataset_forwards_output_policy(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(action='curate_dataset', key="dataset.jsonl", status="3", target_scope="jsonl")
++    assert result["success"] is True
++    calls = backend.calls
++    assert calls == [(
++        "/api/agent-state/tasks",
++        {"action": "curate_dataset", "output_path": "dataset.jsonl",
++         "min_receipts": 3, "format": "jsonl"},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def _mcp_coord_json(tool_result):
++    if isinstance(tool_result, tuple):
++        content = tool_result[0][0]
++    else:
++        assert isinstance(tool_result, list)
++        content = tool_result[0]
++    assert isinstance(content, mcp_types.TextContent)
++    return json.loads(content.text)
++
++
++def test_local_ai_coord_blackboard_update_posts_content_and_version(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_api(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "blackboard_update", "root": root,
++         "board_id": "board-61", "section": "release", "value": "ready",
++         "approver": "reviewer", "status": "5"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls == [(
++        "/api/agent-state/blackboard",
++        {"action": "update", "board_id": "board-61", "section": "release",
++         "content": "ready", "author": "reviewer", "remote_sections": {},
++         "expected_version": 5},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_context_compile_posts_scope_and_budget(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_api(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "context_compile", "root": root,
++         "task_id": "task-62", "max_tokens": 512, "paths": ["src/a.py"],
++         "since_hash": "base-62", "include_diagnostics": True,
++         "focus": ["route", "test"], "preload_profile": "fast"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls == [(
++        "/api/agent-state/context",
++        {"action": "compile", "task_id": "task-62", "token_budget": 512,
++         "root": root, "changed_paths": ["src/a.py"], "since_hash": "base-62",
++         "compact": True, "include_diagnostics": True, "clone_id": "",
++         "worktree_id": "", "branch": "", "repository_id": "", "session_id": "",
++         "repository_revision": "", "phase": "", "focus": ["route", "test"],
++         "preload_profile": "fast"},
++        {"timeout": mcp_server._timeout("context")},
++    )]
++
++
++def test_local_ai_coord_incident_decision_forwards_fingerprint_and_outcome(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    fingerprint = {"error_class": "TimeoutError", "scope": "task"}
++    outcome = {"attempted": True, "recovered": False}
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "incident_decision", "root": root,
++         "fingerprint": fingerprint, "tool_outcome": outcome}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls == [{
++        "action": "incident_decision", "fingerprint": fingerprint,
++        "tool_outcome": outcome, "root": root,
++    }]
++
++
++def test_local_ai_coord_memory_find_forwards_query_and_scope(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "memory_find", "root": root,
++         "query": "lease timeout", "scope": "task", "scope_id": "task-63",
++         "task_id": "task-63", "tenant": "tenant-3"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls == [{
++        "action": "memory_find", "record": None, "record_id": "",
++        "target_scope": "", "approver": "", "key": "", "value": "",
++        "query": "lease timeout", "root": root, "scope": "task",
++        "scope_id": "task-63", "task_id": "task-63", "session_id": "",
++        "clone_id": "", "worktree_id": "", "branch": "", "repository_id": "",
++        "tenant": "tenant-3",
++    }]
++
++
++def test_local_ai_coord_memory_get_forwards_record_identity(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "memory_get", "root": root,
++         "record_id": "memory-64", "scope": "project", "scope_id": "project-4"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls == [{
++        "action": "memory_get", "record": None, "record_id": "memory-64",
++        "target_scope": "", "approver": "", "key": "", "value": "",
++        "query": "", "root": root, "scope": "project", "scope_id": "project-4",
++        "task_id": "", "session_id": "", "clone_id": "", "worktree_id": "",
++        "branch": "", "repository_id": "", "tenant": "",
++    }]
++
++
++def test_local_ai_coord_memory_record_forwards_record_and_ttl(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    record = {"finding": "bounded retry", "verified": True}
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "memory_record", "root": root,
++         "record": record, "record_id": "memory-65", "ttl_seconds": 3600,
++         "scope": "task", "scope_id": "task-65"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls == [{
++        "action": "memory_record", "record": record, "record_id": "memory-65",
++        "target_scope": "", "approver": "", "key": "", "value": "",
++        "query": "", "root": root, "scope": "task", "scope_id": "task-65",
++        "task_id": "", "session_id": "", "clone_id": "", "worktree_id": "",
++        "branch": "", "repository_id": "", "tenant": "", "ttl_seconds": 3600,
++    }]
++
++
++def test_local_ai_coord_simulate_merge_forwards_branch_pair(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "simulate_merge", "root": root,
++         "key": "feature/source", "target_scope": "main"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls == [{
++        "action": "simulate_merge", "root": root,
++        "source_branch": "feature/source", "target_branch": "main",
++    }]
++
++
++def test_local_ai_coord_task_create_forwards_goal_and_contract(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    contract = {"objective": "verify scoped dispatch", "success_criteria": ["receipt"]}
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "task_create", "root": root,
++         "task": "dispatch acceptance", "task_id": "task-66", "contract": contract}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls == [{
++        "action": "task_create", "task_id": "task-66", "contract": contract,
++        "checkpoint": None, "status": "", "reason": "", "root": root,
++        "ttl_seconds": 0, "include_stale": False, "task": "dispatch acceptance",
++    }]
++
++
++def test_local_ai_coord_verify_receipt_forwards_criterion_and_pass_state(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_api(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "verify_receipt", "root": root,
++         "task_id": "task-67", "criterion": "selector passed", "status": "passed"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls == [(
++        "/api/agent-state/verification",
++        {"action": "receipt", "receipt": {"task_id": "task-67",
++         "criterion": "selector passed", "passed": True}, "root": root},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++
++def test_local_ai_coord_alias_ctx_resolves_to_context_compile(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_api(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "ctx", "root": root, "task_id": "task-68"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls[0][0] == "/api/agent-state/context"
++    assert backend.calls[0][1]["action"] == "compile"
++    assert backend.calls[0][1]["task_id"] == "task-68"
++
++
++def test_local_ai_coord_alias_compile_ctx_resolves_to_context_compile(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_api(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "compile_ctx", "root": root,
++         "task_id": "task-69"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls[0][0] == "/api/agent-state/context"
++    assert backend.calls[0][1]["action"] == "compile"
++    assert backend.calls[0][1]["task_id"] == "task-69"
++
++
++def test_local_ai_coord_alias_neg_rec_resolves_to_negative_knowledge_record(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_api(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "neg_rec", "root": root,
++         "key": "ValueError", "value": "bad input", "reason": "missing field"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls[0][0] == "/api/agent-state/incidents"
++    assert backend.calls[0][1]["action"] == "record"
++    assert backend.calls[0][1]["error_class"] == "ValueError"
++    assert backend.calls[0][1]["root_cause"] == "missing field"
++
++
++def test_local_ai_coord_alias_neg_find_resolves_to_negative_knowledge_find(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_api(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "neg_find", "root": root,
++         "key": "ValueError", "query": "bad input"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls[0][0] == "/api/agent-state/incidents"
++    assert backend.calls[0][1]["action"] == "find"
++    assert backend.calls[0][1]["query"] == "bad input"
++
++
++def test_local_ai_coord_alias_mem_put_resolves_to_memory_record(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    record = {"note": "accepted"}
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "mem_put", "root": root, "record": record}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls[0]["action"] == "memory_record"
++    assert backend.calls[0]["record"] == record
++
++
++def test_local_ai_coord_alias_mem_rec_resolves_to_memory_record(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    record = {"note": "recorded"}
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "mem_rec", "root": root, "record": record}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls[0]["action"] == "memory_record"
++    assert backend.calls[0]["record"] == record
++
++
++def test_local_ai_coord_alias_mem_get_resolves_to_memory_get(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "mem_get", "root": root,
++         "record_id": "memory-70"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls[0]["action"] == "memory_get"
++    assert backend.calls[0]["record_id"] == "memory-70"
++
++
++def test_local_ai_coord_alias_mem_find_resolves_to_memory_find(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "mem_find", "root": root, "query": "deadline"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls[0]["action"] == "memory_find"
++    assert backend.calls[0]["query"] == "deadline"
++
++
++def test_local_ai_coord_alias_mem_search_resolves_to_memory_find(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "mem_search", "root": root,
++         "query": "status receipt"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls[0]["action"] == "memory_find"
++    assert backend.calls[0]["query"] == "status receipt"
++
++
++def test_local_ai_coord_alias_task_new_resolves_to_task_create(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "task_new", "root": root,
++         "task": "alias task", "task_id": "alias-task-71"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls[0]["action"] == "task_create"
++    assert backend.calls[0]["task"] == "alias task"
++    assert backend.calls[0]["task_id"] == "alias-task-71"
++
++
++def test_local_ai_coord_alias_task_chk_resolves_to_task_checkpoint(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    checkpoint = {"phase": "verify", "revision": "r72"}
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "task_chk", "root": root,
++         "task_id": "task-72", "checkpoint": checkpoint}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls[0]["action"] == "task_checkpoint"
++    assert backend.calls[0]["checkpoint"] == checkpoint
++    assert backend.calls[0]["task_id"] == "task-72"
++
++
++def test_local_ai_coord_alias_task_done_resolves_to_task_complete(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    backend = _prepare_coord_rpc(monkeypatch)
++    tool_result = asyncio.run(mcp_server.mcp.call_tool(
++        "local_ai_coord", {"action": "task_done", "root": root,
++         "task_id": "task-73", "reason": "verified"}
++    ))
++    result = _mcp_coord_json(tool_result)
++    assert result["success"] is True
++    assert backend.calls[0]["action"] == "task_complete"
++    assert backend.calls[0]["task_id"] == "task-73"
++    assert backend.calls[0]["reason"] == "verified"
++
++
++def test_local_ai_coord_schema_gap_claim_batch_forwards_owned_paths(monkeypatch, tmp_path):
++    root = str(tmp_path.resolve())
++    paths = ["src/worker.py", "tests/test_worker.py"]
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(
++        action="claim_batch", root=root, paths=paths, ttl_seconds=300,
++        value="bounded worker edit",
++    )
++    assert result["success"] is True
++    assert backend.calls == [(
++        "/api/leases/claim_batch",
++        {"root": root, "paths": paths, "ttl_seconds": 300,
++         "purpose": "bounded worker edit"},
++        {},
++    )]
++
++def test_local_ai_coord_schema_gap_curate_training_dataset_forwards_policy(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(
++        action="curate_training_dataset", key="accepted.jsonl", status="4",
++        target_scope="jsonl",
++    )
++    assert result["success"] is True
++    assert backend.calls == [(
++        "/api/agent-state/tasks",
++        {"action": "curate_dataset", "output_path": "accepted.jsonl",
++         "min_receipts": 4, "format": "jsonl"},
++        {"timeout": mcp_server._timeout("quick")},
++    )]
++
++def test_local_ai_coord_schema_gap_lease_renew_forwards_lease_and_ttl(monkeypatch):
++    backend = _prepare_coord_api(monkeypatch)
++    result = mcp_server.local_ai_coord(
++        action="lease_renew", lease_id="lease-74", ttl_seconds=210,
++    )
++    assert result["success"] is True
++    assert backend.calls == [(
++        "/api/leases/renew", {"lease_id": "lease-74", "ttl_seconds": 210}, {}
++    )]
++
++def test_local_ai_coord_schema_gap_delete_is_rejected_without_dispatch(monkeypatch):
++    backend = ApiBackend({"success": True, "summary": "unexpected dispatch"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++    result = mcp_server.local_ai_coord(action="delete")
++    assert result["success"] is False
++    assert result["error"].startswith("Unknown local_ai_coord action 'delete'.")
++    assert backend.calls == []
++
++def test_local_ai_coord_schema_gap_get_is_rejected_without_dispatch(monkeypatch):
++    backend = ApiBackend({"success": True, "summary": "unexpected dispatch"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++    result = mcp_server.local_ai_coord(action="get")
++    assert result["success"] is False
++    assert result["error"].startswith("Unknown local_ai_coord action 'get'.")
++    assert backend.calls == []
++
++def test_local_ai_coord_schema_gap_list_is_rejected_without_dispatch(monkeypatch):
++    backend = ApiBackend({"success": True, "summary": "unexpected dispatch"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++    result = mcp_server.local_ai_coord(action="list")
++    assert result["success"] is False
++    assert result["error"].startswith("Unknown local_ai_coord action 'list'.")
++    assert backend.calls == []
++
++def test_local_ai_coord_schema_gap_merge_is_rejected_without_dispatch(monkeypatch):
++    backend = ApiBackend({"success": True, "summary": "unexpected dispatch"})
++    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++    result = mcp_server.local_ai_coord(action="merge")
++    assert result["success"] is False
++    assert result["error"].startswith("Unknown local_ai_coord action 'merge'.")
++    assert backend.calls == []
