@@ -133,12 +133,10 @@ def test_mode_control_action_token_runs_remote_mode_post(monkeypatch):
     )
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(http_server, "load_operational_mode", lambda _state_dir: snapshot)
-    monkeypatch.setattr(
-        http_server,
-        "set_operational_mode",
-        lambda state_dir, mode: mode_writes.append((mode, state_dir)) or snapshot,
-    )
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda state_dir: snapshot,
+        set_operational_mode=lambda state_dir, mode: mode_writes.append((mode, state_dir)) or snapshot,
+    ))
     handler = _handler("/api/admin/mode", "mode-control-token-123456")
     handler.client_address = ("203.0.113.7", 23456)
     handler._begin_trace = lambda _path: None
@@ -148,7 +146,7 @@ def test_mode_control_action_token_runs_remote_mode_post(monkeypatch):
     handler.do_POST()
 
     assert http_server._http_admin_action("POST", "/api/admin/mode") == "mode.control"
-    assert mode_writes == [("active", "state")]
+    assert mode_writes == [("active", Path("state"))]
     assert handler.responses[0][0] == 200
     assert handler.responses[0][1]["success"] is True
     assert handler.responses[0][1]["mode"] == "active"

@@ -10,6 +10,7 @@ The global Codex entry has `cwd=install_dir` and no project-root environment. Ea
 
 The generated MCP, HTTP, client and CLI surface inventory with contract and evidence states is in [API surface coverage](API_COVERAGE.md).
 
+
 ## Whole-task orchestration
 
 `local_ai_work` is the one high-level orchestration boundary. Use `submit` for a closed repository task that the Hub can plan, edit, validate and verify end-to-end. Use `status`/`wait` for bounded progress checks, `get` with `response_profile`/`return_fields` for projected handoff data, `cancel` to stop work, and `continue` only after a `needs_agent` decision. Detailed plans, step evidence and logs remain artifact-backed by default.
@@ -56,7 +57,23 @@ For model-backed `local_ai_task` actions, use `delivery="sync"` when the answer 
 
 Durable async actions: `batch`, `compress`, `delegate`, `reason`, `review`, `review_diff`, `route`, `second_opinion`, `speculative_lint`.
 
-For HTTP `/api/review/diff`, `delivery="auto"` with a positive `latency_budget_ms` has a cold-start exception: fewer than 5 telemetry samples selects async with reason `cold_start_review_diff`. Other auto delivery follows the measured p95 rule above.
+HTTP foreground delivery maps `/api/delegate`, `/api/reason`, `/api/review`, `/api/review/diff`, `/api/second-opinion`, `/api/compress`, `/api/route`, and `/api/delegate/batch` to their corresponding durable actions. Direct MCP `submit` uses `job_action` from the durable action list above. `sync` is the default delivery; `async` submits immediately on mapped HTTP routes.
+
+For HTTP `/api/review/diff`, auto delivery first checks queue age: when `review.max_queue_age_ms` is positive and queue age exceeds it, the request returns a terminal 503 bypass. Otherwise, a positive `latency_budget_ms` with fewer than 5 telemetry samples selects async with reason `cold_start_review_diff`. Other auto delivery follows the measured p95 rule above.
+
+Async lifecycle responses preserve `job_id`, `state`, `artifact_id` (empty until available), and `expires_at` (Unix timestamp seconds). Expiry is set at submission; terminal job results become `expired` at that time. `async_jobs.result_ttl_seconds` defaults to 259,200 seconds (72 hours), and artifact-store TTL must cover it. A timed-out wait returns current state with `wait_timeout_seconds` and does not cancel the job. Queued cancellation returns terminal `cancelled`; running cancellation returns `running` with `cancel_requested=true` as acknowledgement, then worker completion supplies final state.
+
+Direct HTTP lifecycle requests use `POST /api/async-jobs`: submit sends `action="submit"`, `job_action`, and optional stable `request_id`; controls send `action="status"|"wait"|"result"|"cancel"` with `job_id`, and wait also sends `timeout_seconds`. MCP uses `local_ai_task(action=submit|status|wait|result|cancel, ...)`. `HubClient.submit_async_job`, `HubClient.async_job_status`, `HubClient.wait_async_job`, `HubClient.async_job_result`, and `HubClient.cancel_async_job` call the same HTTP path.
+
+Recovery may replay only explicitly replay-safe actions with a stable `request_id`, matching tenant/action/payload identity, and remaining attempts; command-backed and unclassified actions become terminal `outcome_unknown` after interruption.
+
+### Conversation lifecycle
+
+Initial and continued task text must be nonblank.
+
+Start synchronously with HTTP `POST /api/delegate` or `POST /api/reason`, setting `conversation=true` and `delivery="sync"`, or MCP `local_ai_task(action="delegate"|"explore"|"reason", conversation=true, delivery="sync")`. `HubClient` has no dedicated start helper; use `post("/api/delegate", payload)` or `post("/api/reason", payload)`. Continue with HTTP `POST /api/conversations/continue` and body `conversation_id`, `task`, optional `context`; MCP uses `local_ai_task(action="continue", conversation_id=..., task=..., context=...)`; `HubClient.continue_conversation(conversation_id, prompt, context=...)` maps `prompt` to HTTP `task`. IDs are opaque and tenant-scoped. The initial model, system prompt, output limit, temperature, and route stay pinned for the conversation. Only one turn can be active; a concurrent continuation returns retryable in-progress status.
+
+Conversations allow up to 12 user turns by default. The prompt limit comes from `model_conversations.max_prompt_tokens`, falling back to `token_saving.max_local_input_tokens` or 56,000 tokens. Defaults are 900 seconds idle TTL, 1,800 seconds active TTL, and capacity 1,000. Conversation state and transcripts remain in process memory and are lost on restart.
 
 For repository context, `local_ai_repo(action="context", mode="fast")` returns bounded deterministic/index context and a `continuation` for `mode="full"`. Use it when foreground p95 matters more than broad semantic recall. It runs no generation task. Repository responses expose `cache_hit`, `cache_layer="workspace"`, and `coalesced`; reuse them instead of submitting a near-identical root/revision/query request.
 

@@ -205,7 +205,7 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
         if (!value) {
           artifactCommits += 1;
           serverStaged.delete(body.request_id);
-          value = {success: true, bundle_artifact_id: "bundle"};
+          value = {success: true, bundle_artifact_id: "bundle", request_id: body.request_id};
           committedResults.set(body.request_id, value);
         }
         if (dropFirstCommitResponse && committedPosts.length === 1) {

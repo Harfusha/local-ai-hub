@@ -47,20 +47,29 @@ def test_profile_selection_thresholds():
 
 
 def test_security_validation_refuses_unconfigured_remote_bind(tmp_path: Path):
-    with pytest.raises(ConfigError, match="Refusing non-loopback"):
+    with pytest.raises(ConfigError, match="server.bind must be 127.0.0.1"):
         _config(tmp_path, server_bind="0.0.0.0")
 
 
+def test_health_probe_timeout_rejects_absurd_values(tmp_path: Path):
+    with pytest.raises(ConfigError, match="headless.health_probe_timeout_seconds must be <= 5"):
+        _config(tmp_path, '[headless]\nhealth_probe_timeout_seconds = 3600\n')
+
+
 def test_security_validation_requires_token_for_remote(tmp_path: Path):
-    with pytest.raises(ConfigError, match="api_token with at least 16 characters"):
+    with pytest.raises(ConfigError, match="server.bind must be 127.0.0.1"):
         _config(tmp_path, '[security]\nallow_remote = true\napi_token = "short"\n', server_bind="0.0.0.0")
 
 
-def test_security_validation_accepts_valid_remote_token(tmp_path: Path):
-    cfg = _config(
-        tmp_path,
-        '[security]\nallow_remote = true\napi_token = "very-long-secure-secret-token-1234"\n',
-        server_bind="0.0.0.0",
-    )
-    assert cfg["server"]["bind"] == "0.0.0.0"
-    assert cfg["security"]["allow_remote"] is True
+def test_security_validation_rejects_remote_bind_even_with_valid_token(tmp_path: Path):
+    with pytest.raises(ConfigError, match="server.bind must be 127.0.0.1"):
+        _config(
+            tmp_path,
+            '[security]\nallow_remote = true\napi_token = "very-long-secure-secret-token-1234"\n',
+            server_bind="0.0.0.0",
+        )
+
+
+def test_security_validation_rejects_alternate_loopback_bind(tmp_path: Path):
+    with pytest.raises(ConfigError, match="server.bind must be 127.0.0.1"):
+        _config(tmp_path, server_bind="localhost")

@@ -1423,14 +1423,14 @@ def test_global_memory_delete_ignores_transport_tenant_but_keeps_scope(store: Me
         root=str(repo),
         repository_id="repo-a",
         tenant="codex",
-    ) is None
+    ) == global_record
     assert store.get(
         global_record.record_id,
         scope=AgentScope.GLOBAL,
         root=str(repo),
         repository_id="repo-a",
         tenant="other-tenant",
-    ) is None
+    ) == global_record
     assert store.get(
         global_record.record_id,
         scope=AgentScope.GLOBAL,
@@ -1526,18 +1526,30 @@ def test_global_memory_get_ignores_transport_tenant_but_honors_other_identity(st
         tenant="codex",
         root=str(repo),
         repository_id="repo-global",
+        tenant_agnostic_global=True,
     ) == global_record
     assert store.get(
         global_record.record_id,
         scope=AgentScope.GLOBAL,
         tenant="codex",
-        root=str(tmp_path / "other-repo"),
+        root=str(repo),
+        repository_id="repo-global",
     ) is None
     assert store.get(
         global_record.record_id,
         scope=AgentScope.GLOBAL,
         tenant="codex",
+        root=str(tmp_path / "other-repo"),
+        repository_id="repo-global",
+        tenant_agnostic_global=True,
+    ) is None
+    assert store.get(
+        global_record.record_id,
+        scope=AgentScope.GLOBAL,
+        tenant="codex",
+        root=str(repo),
         repository_id="other-repository",
+        tenant_agnostic_global=True,
     ) is None
 
     session_record = store.record(MemoryRecord.create(
@@ -1623,8 +1635,7 @@ def test_global_promotion_succeeds_with_user_approval(store: MemoryStore):
         record.record_id,
         AgentScope.GLOBAL,
         approver="user",
-        root="C:/repo",
-        tenant="tenant-a",
+        **_repository_identity(record),
     )
     assert promoted.scope is AgentScope.GLOBAL
     assert promoted.status is MemoryStatus.CONFIRMED
@@ -2182,7 +2193,16 @@ def test_delete_rejects_repository_record_with_missing_root_provenance(store: Me
     )
 
     assert deleted is False
-    assert store.get(record.record_id) is not None
+    # Retention is a storage invariant, not permission for an unscoped read.
+    with closing(connect_sqlite(store.state_store.db_path)) as con:
+        row = con.execute(
+            "SELECT scope, provenance FROM agent_memory_records WHERE record_id = ?",
+            (record.record_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == AgentScope.REPOSITORY.value
+    assert json.loads(row[1]) == record.provenance
+    assert store.get(record.record_id) is None
 def test_memory_write_failure_rolls_back_record_event_and_cursor(store: MemoryStore, monkeypatch):
     idempotency_key = "memory-write-rollback"
     stream_ids: list[str] = []
@@ -2600,8 +2620,9 @@ def test_get_global_requires_unowned_or_matching_tenant(store: MemoryStore, tmp_
     assert store.get(task.record_id, scope=AgentScope.TASK, root=root, tenant="tenant-a") is None
     assert store.get(task.record_id, scope=AgentScope.TASK, task_id="task-a", root=root, tenant="tenant-b") is None
     assert store.get(task.record_id, scope=AgentScope.TASK, task_id="task-a", root=root, tenant="tenant-a") == task
-    assert store.delete(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-b") is False
-    assert store.delete(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-a") is True
+    # GLOBAL delete ignores transport tenant; read remains owner-tenant scoped.
+    assert store.delete(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-b") is True
+    assert store.get(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-a") is None
     assert store.delete(global_rooted.record_id, scope=AgentScope.GLOBAL, root=str(tmp_path / "other")) is False
     assert store.delete(global_rooted.record_id, scope=AgentScope.GLOBAL, root=root) is True
     assert store.delete(global_scoped_id.record_id, scope=AgentScope.GLOBAL, scope_id="tenant-a", tenant="tenant-a") is False
