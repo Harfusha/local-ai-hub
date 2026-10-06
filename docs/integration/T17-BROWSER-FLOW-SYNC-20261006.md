@@ -52,4 +52,6 @@ Total observed: **256 passed, 14 failed**. These are bounded partial runs, not w
 - `test_optional_codegraph_docs_use_current_gcf_extra_without_hub_integration`: expected documentation phrase missing.
 - Gemini preprocessing runtime support, live browser/login behavior, live vision quality and installed service behavior remain unverified. Full release suite intentionally not run.
 
-Synchronization and preservation are complete once this merge commit exists, pinned master is its ancestor, and index has no conflicts. Functional/release acceptance remains incomplete. The only final file changed versus pinned master is this integration note.
+Verified merge commit: `e35e986fc7d4e24b3ccae65050f92f47da5b8105`, parents `19d9f312fa7be93292343de43fceed0a2033e39c` and `fcbb1d6fa7347e9b918d030f4f99d058d9846a6c`. Both `git merge-base --is-ancestor <pinned-master> HEAD` and the same check for the all-source checkpoint passed. `git ls-files -u` returned nothing; `git diff --quiet` passed. Only untracked test runtime artifacts remain under `.validation/`.
+
+Shared master advanced concurrently to `25580e005da0442f73530787196d09e7eab57ff2` by the post-merge check. This task follows the explicit pin-once target `fcbb1d6f`; it does not chase subsequent master changes. Synchronization to the pinned target and committed preservation are complete. Functional/release acceptance remains incomplete. The only final file changed versus pinned master is this integration note.
