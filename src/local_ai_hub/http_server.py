@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
 import urllib.request
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import __version__
 from .app import LocalAIApp, _STATUS_DEPENDENCY_TIMEOUT_SECONDS, _STATUS_TOTAL_BUDGET_SECONDS, _status_dependency
@@ -55,6 +55,29 @@ _DB_QUERY_TIMEOUT_SECONDS = 0.5
 _DB_QUERY_MAX_ROWS = 100
 _DB_QUERY_MAX_RESPONSE_BYTES = 256 * 1024
 _DB_QUERY_MAX_SQL_BYTES = 8192
+_MODEL_PULL_TIMEOUT_SECONDS = 120.0
+
+
+def _encode_agent_event_cursor(stream_id: str, seq: int) -> str:
+    return f"{quote(str(stream_id), safe='')}:{max(0, min(int(seq), MAX_EVENT_SEQUENCE))}"
+
+
+def _parse_agent_event_cursor(value: Any) -> tuple[str, int] | None:
+    raw = str(value or "")
+    if not raw or len(raw) > 2048 or "\r" in raw or "\n" in raw:
+        return None
+    encoded_stream, separator, encoded_seq = raw.rpartition(":")
+    if not separator or not encoded_stream or not encoded_seq.isascii() or not encoded_seq.isdecimal():
+        return None
+    try:
+        stream_id = unquote(encoded_stream)
+        seq = int(encoded_seq)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not stream_id or seq < 0 or seq > MAX_EVENT_SEQUENCE:
+        return None
+    return stream_id, seq
+_MODEL_PULL_MAX_RESPONSE_BYTES = 1024 * 1024
 _HTTP_MAX_JSON_BODY_BYTES = 64 * 1024 * 1024
 _HTTP_MAX_BODY_SECONDS = 60.0
 
@@ -742,10 +765,60 @@ class Handler(BaseHTTPRequestHandler):
                     return {"success": True, "deleted": model_name}
             elif action == "pull":
                 req = urllib.request.Request(f"{ollama_url}/api/pull", data=json_dumps({"name": model_name, "stream": False}).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
-                with urllib.request.urlopen(req, timeout=120):
+                timeout = max(0.001, min(float(_MODEL_PULL_TIMEOUT_SECONDS), 600.0))
+                deadline = time.monotonic() + timeout
+                timed_out = threading.Event()
+                response_holder: dict[str, Any] = {}
+
+                def _expire_pull() -> None:
+                    timed_out.set()
+                    response = response_holder.get("response")
+                    if response is not None:
+                        try:
+                            response.close()
+                        except Exception:
+                            pass
+
+                timer = threading.Timer(timeout, _expire_pull)
+                timer.daemon = True
+                timer.start()
+                try:
+                    response = urllib.request.urlopen(req, timeout=max(0.001, deadline - time.monotonic()))
+                    response_holder["response"] = response
+                    remaining = deadline - time.monotonic()
+                    if timed_out.is_set() or remaining <= 0:
+                        return {"success": False, "degraded": True, "retryable": True, "error": "model pull time budget exceeded"}
+                    sock = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+                    if sock is not None:
+                        sock.settimeout(remaining)
+                    body = response.read(max(1, min(int(_MODEL_PULL_MAX_RESPONSE_BYTES), 4 * 1024 * 1024)) + 1)
+                    if timed_out.is_set() or time.monotonic() >= deadline:
+                        return {"success": False, "degraded": True, "retryable": True, "error": "model pull time budget exceeded"}
+                    if len(body) > _MODEL_PULL_MAX_RESPONSE_BYTES:
+                        return {"success": False, "error": "model pull response exceeded byte limit"}
+                    if body:
+                        payload = json_loads(body)
+                        if isinstance(payload, dict) and payload.get("error"):
+                            return {"success": False, "error": str(payload["error"])}
                     return {"success": True, "pulled": model_name}
+                finally:
+                    timer.cancel()
+                    response = response_holder.get("response")
+                    if response is not None:
+                        try:
+                            response.close()
+                        except Exception:
+                            pass
             return {"success": False, "error": f"Unknown action: {action}"}
         except Exception as exc:
+            timed_out_event = locals().get("timed_out")
+            deadline = locals().get("deadline")
+            pull_timed_out = action == "pull" and (
+                bool(timed_out_event and timed_out_event.is_set())
+                or (deadline is not None and time.monotonic() >= deadline)
+            )
+            if pull_timed_out:
+                return {"success": False, "degraded": True, "retryable": True, "error": "model pull time budget exceeded"}
             return {"success": False, "error": str(exc)}
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -1039,26 +1112,32 @@ class Handler(BaseHTTPRequestHandler):
         self._admin_audited = False
         return True
 
-    def _audit_admin_action(self, status: int, data: Any = None) -> None:
+    def _audit_admin_action(self, status: int, data: Any = None) -> bool:
         """Record only fixed operation and outcome metadata; never request content."""
         if getattr(self, "_admin_audited", False):
-            return
+            return True
         operation = str(getattr(self, "_admin_operation", ""))
         if not operation:
-            return
-        self._admin_audited = True
+            return True
         if APP is None:
-            return
+            return False
         try:
             elapsed_ms = max(0.0, (time.perf_counter() - float(getattr(self, "_request_started", time.perf_counter()))) * 1000)
-            APP.telemetry.record_system(
+            accepted = APP.telemetry.record_system(
                 f"admin.{operation}",
                 success=200 <= int(status) < 300,
                 duration_ms=elapsed_ms,
                 status_code=int(status),
             )
         except Exception:
-            pass
+            accepted = False
+        if accepted is True:
+            self._admin_audited = True
+            return True
+        logger = getattr(APP, "logger", None)
+        if logger is not None:
+            logger.error("admin audit event not accepted operation=%s", operation)
+        return False
 
     def _content_length(self, *, limit: int) -> int:
         raw = self.headers.get("Content-Length")
@@ -1379,7 +1458,13 @@ class Handler(BaseHTTPRequestHandler):
         return 200, result
 
     def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
-        self._audit_admin_action(status, data)
+        audit_recorded = self._audit_admin_action(status, data)
+        operation = str(getattr(self, "_admin_operation", ""))
+        if operation and not audit_recorded and isinstance(data, dict):
+            data = dict(data)
+            data["audit_accepted"] = False
+            if 200 <= int(status) < 300:
+                data.setdefault("warning", "operation may have completed but audit event was not accepted for queuing")
         request_id = getattr(self, "_journal_request_id", None)
         if request_id and APP is not None and not getattr(self, "_journal_finished", False):
             try:
@@ -1484,10 +1569,31 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         self._close_trace_context()
 
-    def _stream_agent_events(self, stream_id: str = "", kind: str = "", after_seq: int = 0, timeout: float = 0.0) -> None:
+    def _stream_agent_events(
+        self,
+        stream_id: str = "",
+        kind: str = "",
+        after_seq: int = 0,
+        timeout: float = 0.0,
+        last_event_id: str = "",
+    ) -> None:
         if APP is None or not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
             self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False})
             return
+
+        header_last_event_id = str(self.headers.get("Last-Event-ID", "") or "").strip()
+        if header_last_event_id:
+            last_event_id = header_last_event_id
+        resume_cursor = _parse_agent_event_cursor(last_event_id)
+        resume_stream = ""
+        if resume_cursor and (not stream_id or resume_cursor[0] == stream_id):
+            if stream_id:
+                after_seq = resume_cursor[1]
+            else:
+                resume_stream, after_seq = resume_cursor
+        replay_stream = stream_id or resume_stream
+        last_seen_by_stream = {replay_stream: max(0, int(after_seq))} if replay_stream else {}
+        last_cursor_id = _encode_agent_event_cursor(replay_stream, after_seq) if replay_stream else ""
 
         # Bound maximum stream duration to prevent holding worker threads indefinitely
         app_cfg = getattr(APP, "config", {}) or {}
@@ -1512,19 +1618,161 @@ class Handler(BaseHTTPRequestHandler):
             # Subscribe before fetching history. An event appended in the replay
             # window is then either replayed or queued; duplicate queued events
             # are discarded by the sequence check below.
-            last_seq = after_seq
-            if stream_id and after_seq >= 0:
-                past = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=1000)
-                for ev in past:
-                    if kind and ev.kind != kind:
-                        continue
-                    last_seq = max(last_seq, ev.seq or 0)
-                    payload = json_dumps(ev.to_dict(), separators=(",", ":"))
-                    msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
-                    try:
-                        self.wfile.write(msg)
-                        self.wfile.flush()
-                    except OSError:
+            def emit_replay_notice(reason: str, detail: dict[str, Any]) -> None:
+                notice = {
+                    "event_id": f"replay-notice:{reason}:{replay_stream}:{after_seq}",
+                    "stream_id": replay_stream,
+                    "kind": "replay_notice",
+                    "payload": {"reason": reason, **detail},
+                }
+                cursor_line = f"id: {last_cursor_id}\n" if last_cursor_id else ""
+                msg = f"{cursor_line}data: {json_dumps(notice, separators=(',', ':'))}\n\n".encode("utf-8")
+                self.wfile.write(msg)
+                self.wfile.flush()
+
+            if not stream_id and resume_stream:
+                emit_replay_notice(
+                    "global_resume_is_stream_scoped",
+                    {"message": "This cursor resumes one event stream; other streams may have gaps."},
+                )
+
+            if replay_stream and after_seq >= 0:
+                event_page = getattr(APP.agent_state, "event_page", None)
+                if callable(event_page):
+                    replay_cursor = after_seq
+                    replay_remaining = False
+                    for _ in range(10):
+                        try:
+                            page = event_page(replay_stream, after_seq=replay_cursor, limit=100)
+                            if not isinstance(page, dict) or page.get("success") is False:
+                                break
+                            if page.get("has_gap") is True:
+                                first_retained = page.get("first_retained_seq")
+                                first_retained_valid = (
+                                    isinstance(first_retained, int)
+                                    and not isinstance(first_retained, bool)
+                                    and 0 < first_retained <= MAX_EVENT_SEQUENCE
+                                )
+                                gap_valid = first_retained_valid and first_retained > replay_cursor + 1
+                                gap_ranges = page.get("gap_ranges")
+                                if not isinstance(gap_ranges, list) or not gap_ranges:
+                                    gap_ranges = []
+                                    if gap_valid:
+                                        gap_ranges.append({"from_seq": replay_cursor + 1, "to_seq": first_retained - 1})
+                                metadata_available = bool(gap_valid or gap_ranges)
+                                if page.get("retention_gap_metadata_available") is False:
+                                    metadata_available = False
+                                emit_replay_notice(
+                                    "retention_gap" if metadata_available else "retention_gap_metadata_unavailable",
+                                    {
+                                        "gap_ranges": gap_ranges,
+                                        "first_retained_seq": first_retained if metadata_available and first_retained_valid else None,
+                                        "metadata_available": metadata_available,
+                                    },
+                                )
+                                if not page.get("events") and gap_valid:
+                                    replay_cursor = first_retained - 1
+                                    last_seen_by_stream[replay_stream] = max(last_seen_by_stream.get(replay_stream, 0), replay_cursor)
+                                    last_cursor_id = _encode_agent_event_cursor(replay_stream, replay_cursor)
+                                    self.wfile.write(f"id: {last_cursor_id}\n\n".encode("utf-8"))
+                                    self.wfile.flush()
+
+                            past = page.get("events", [])
+                            for ev in past:
+                                if isinstance(ev, dict):
+                                    event_stream_id = str(ev.get("stream_id") or replay_stream)
+                                    event_seq = int(ev.get("seq") or 0)
+                                    event_kind = str(ev.get("kind") or "message")
+                                    event_data = ev
+                                else:
+                                    event_stream_id = str(getattr(ev, "stream_id", "") or replay_stream)
+                                    event_seq = int(getattr(ev, "seq", 0) or 0)
+                                    event_kind = str(getattr(ev, "kind", "message"))
+                                    to_dict = getattr(ev, "to_dict", None)
+                                    event_data = to_dict() if callable(to_dict) else ev
+                                last_seen_by_stream[event_stream_id] = max(last_seen_by_stream.get(event_stream_id, 0), event_seq)
+                                last_cursor_id = _encode_agent_event_cursor(event_stream_id, event_seq)
+                                if kind and event_kind != kind:
+                                    self.wfile.write(f"id: {last_cursor_id}\n\n".encode("utf-8"))
+                                    self.wfile.flush()
+                                    continue
+                                payload = json_dumps(event_data, separators=(",", ":"))
+                                msg = f"id: {last_cursor_id}\nevent: {event_kind}\ndata: {payload}\n\n".encode("utf-8")
+                                self.wfile.write(msg)
+                                self.wfile.flush()
+
+                            replay_remaining = bool(page.get("has_more"))
+                            if not replay_remaining:
+                                break
+                            next_cursor = page.get("cursor", page.get("next_seq"))
+                            try:
+                                next_cursor = max(replay_cursor, min(int(next_cursor), MAX_EVENT_SEQUENCE))
+                            except (TypeError, ValueError, OverflowError):
+                                next_cursor = replay_cursor
+                            if next_cursor <= replay_cursor:
+                                break
+                            replay_cursor = next_cursor
+                        except OSError:
+                            return
+                        except Exception:
+                            break
+                    if replay_remaining:
+                        try:
+                            emit_replay_notice("replay_page_limit", {"max_pages": 10, "page_size": 100})
+                            timeout_payload = json_dumps({"reconnect": True, "last_event_id": last_cursor_id})
+                            self.wfile.write(f"event: stream_timeout\ndata: {timeout_payload}\n\n".encode("utf-8"))
+                            self.wfile.flush()
+                        except OSError:
+                            pass
+                        return
+                else:
+                    legacy_replay_remaining = False
+                    replay_cursor = after_seq
+                    legacy_first_event_seen = False
+                    for _ in range(10):
+                        past = list(APP.agent_state.events(stream_id=replay_stream, after_seq=replay_cursor, limit=101))
+                        legacy_replay_remaining = len(past) > 100
+                        for ev in past[:100]:
+                            event_stream_id = str(ev.stream_id or replay_stream)
+                            event_seq = int(ev.seq or 0)
+                            if not legacy_first_event_seen:
+                                legacy_first_event_seen = True
+                                if event_seq > replay_cursor + 1:
+                                    emit_replay_notice(
+                                        "retention_gap_metadata_unavailable",
+                                        {
+                                            "gap_ranges": [{"from_seq": replay_cursor + 1, "to_seq": event_seq - 1}],
+                                            "first_retained_seq": None,
+                                            "metadata_available": False,
+                                        },
+                                    )
+                            last_seen_by_stream[event_stream_id] = max(last_seen_by_stream.get(event_stream_id, 0), event_seq)
+                            replay_cursor = max(replay_cursor, event_seq)
+                            last_cursor_id = _encode_agent_event_cursor(event_stream_id, event_seq)
+                            if kind and ev.kind != kind:
+                                try:
+                                    self.wfile.write(f"id: {last_cursor_id}\n\n".encode("utf-8"))
+                                    self.wfile.flush()
+                                except OSError:
+                                    return
+                                continue
+                            payload = json_dumps(ev.to_dict(), separators=(",", ":"))
+                            msg = f"id: {last_cursor_id}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
+                            try:
+                                self.wfile.write(msg)
+                                self.wfile.flush()
+                            except OSError:
+                                return
+                        if not legacy_replay_remaining:
+                            break
+                    if legacy_replay_remaining:
+                        try:
+                            emit_replay_notice("legacy_replay_page_limit", {"max_pages": 10, "page_size": 100})
+                            timeout_payload = json_dumps({"reconnect": True, "last_event_id": last_cursor_id})
+                            self.wfile.write(f"event: stream_timeout\ndata: {timeout_payload}\n\n".encode("utf-8"))
+                            self.wfile.flush()
+                        except OSError:
+                            pass
                         return
 
             start_time = time.monotonic()
@@ -1532,7 +1780,8 @@ class Handler(BaseHTTPRequestHandler):
                 remaining = timeout - (time.monotonic() - start_time)
                 if remaining <= 0:
                     try:
-                        timeout_msg = f"event: stream_timeout\ndata: {{\"reconnect\":true,\"last_seq\":{last_seq}}}\n\n".encode("utf-8")
+                        timeout_payload = json_dumps({"reconnect": True, "last_event_id": last_cursor_id})
+                        timeout_msg = f"event: stream_timeout\ndata: {timeout_payload}\n\n".encode("utf-8")
                         self.wfile.write(timeout_msg)
                         self.wfile.flush()
                     except OSError:
@@ -1540,16 +1789,20 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 try:
                     ev = q.get(timeout=min(1.0, remaining))
-                    if ev.seq is not None and ev.seq <= last_seq:
-                        continue
                     if stream_id and ev.stream_id != stream_id:
                         continue
-                    if kind and ev.kind != kind:
+                    event_stream_id = str(ev.stream_id or "")
+                    event_seq = int(ev.seq or 0)
+                    if event_seq <= last_seen_by_stream.get(event_stream_id, 0):
                         continue
-                    if ev.seq is not None:
-                        last_seq = max(last_seq, ev.seq)
+                    last_seen_by_stream[event_stream_id] = event_seq
+                    last_cursor_id = _encode_agent_event_cursor(event_stream_id, event_seq)
+                    if kind and ev.kind != kind:
+                        self.wfile.write(f"id: {last_cursor_id}\n\n".encode("utf-8"))
+                        self.wfile.flush()
+                        continue
                     payload = json_dumps(ev.to_dict(), separators=(",", ":"))
-                    msg = f"id: {ev.seq or 0}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
+                    msg = f"id: {last_cursor_id}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
                     self.wfile.write(msg)
                     self.wfile.flush()
                 except queue.Empty:
@@ -1650,7 +1903,7 @@ class Handler(BaseHTTPRequestHandler):
                         "tasks_count": len(tasks),
                         "incidents_count": len(incidents),
                         "candidates_count": len(candidates),
-                        "status": "healthy",
+                        "status": "degraded" if degraded else "healthy",
                     }); return
                 scope = str((query.get("scope") or ["process"])[0])
                 status = APP.status(scope=scope)
@@ -1804,10 +2057,63 @@ class Handler(BaseHTTPRequestHandler):
                 if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 stream_id = (query.get("stream_id") or [""])[0]
-                after_seq = int((query.get("after_seq") or [0])[0])
-                limit = int((query.get("limit") or [100])[0])
-                evs = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=limit)
-                self._send(200, {"success": True, "events": [e.to_dict() for e in evs]}); return
+                after_seq = max(0, min(int((query.get("after_seq") or [0])[0]), (1 << 63) - 1))
+                limit = max(1, min(int((query.get("limit") or [100])[0]), 1000))
+                event_page = getattr(APP.agent_state, "event_page", None)
+                if callable(event_page):
+                    page = dict(event_page(stream_id, after_seq=after_seq, limit=limit))
+                    page["events"] = [
+                        event.to_dict() if callable(getattr(event, "to_dict", None)) else event
+                        for event in page.get("events", [])
+                    ]
+                    cursor = page.get("cursor", page.get("next_seq", after_seq))
+                    try:
+                        cursor = max(0, min(int(cursor), MAX_EVENT_SEQUENCE))
+                    except (TypeError, ValueError, OverflowError):
+                        cursor = after_seq
+                    page["cursor"] = cursor
+                    page["cursor_token"] = str(cursor)
+                    if not isinstance(page.get("gap_ranges"), list):
+                        gap_ranges = []
+                        first_retained = page.get("first_retained_seq")
+                        usable_first_retained = (
+                            isinstance(first_retained, int)
+                            and not isinstance(first_retained, bool)
+                            and after_seq + 1 < first_retained <= MAX_EVENT_SEQUENCE
+                        )
+                        if page.get("has_gap") is True and usable_first_retained:
+                            gap_ranges.append({"from_seq": after_seq + 1, "to_seq": first_retained - 1})
+                        elif page.get("has_gap") is True:
+                            page["retention_gap_metadata_available"] = False
+                        page["gap_ranges"] = gap_ranges
+                        if not isinstance(page.get("has_gap"), bool):
+                            page["retention_gap_metadata_available"] = False
+                    if "gap" not in page:
+                        page["gap"] = page["gap_ranges"][0] if page["gap_ranges"] else None
+                    page["success"] = True
+                    self._send(200, page); return
+                evs = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=limit + 1)
+                has_more = len(evs) > limit
+                evs = evs[:limit]
+                last_event = evs[-1] if evs else None
+                cursor = getattr(last_event, "seq", None)
+                if cursor is None and isinstance(last_event, dict):
+                    cursor = last_event.get("seq")
+                if cursor is None:
+                    cursor = after_seq
+                cursor = max(0, min(int(cursor), (1 << 63) - 1))
+                events = [
+                    event.to_dict() if callable(getattr(event, "to_dict", None)) else event
+                    for event in evs
+                ]
+                self._send(200, {
+                    "success": True,
+                    "events": events,
+                    "cursor": cursor,
+                    "cursor_token": str(cursor),
+                    "has_more": has_more,
+                    "retention_gap_metadata_available": False,
+                }); return
             if path == "/api/agent-state/blackboard":
                 if not getattr(APP, "agent_blackboard", None):
                     self._send(503, {"success": False, "error": "blackboard unavailable"}); return
@@ -1830,9 +2136,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 stream_filter = (query.get("stream_id") or [""])[0]
                 kind_filter = (query.get("kind") or [""])[0]
-                after_seq = int((query.get("after_seq") or [0])[0])
+                after_seq = max(0, min(int((query.get("after_seq") or [0])[0]), MAX_EVENT_SEQUENCE))
                 timeout = float((query.get("timeout") or [0.0])[0])
-                self._stream_agent_events(stream_id=stream_filter, kind=kind_filter, after_seq=after_seq, timeout=timeout)
+                last_event_id = str(self.headers.get("Last-Event-ID", "") or (query.get("last_event_id") or [""])[0])
+                self._stream_agent_events(
+                    stream_id=stream_filter,
+                    kind=kind_filter,
+                    after_seq=after_seq,
+                    timeout=timeout,
+                    last_event_id=last_event_id,
+                )
                 return
             if path == "/api/capabilities":
                 self._send(200, APP.capabilities()); return
@@ -1874,7 +2187,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 for item in result.get("items", []):
                     self._reconcile_debug_trace(item)
-                self._send(200, result); return
+                self._send(200 if result.get("success") else 503 if result.get("retryable") else 400, result); return
             if path.startswith("/api/debug-traces/"):
                 if not self._authorize_admin_action("debug_traces.detail"):
                     return
@@ -2210,7 +2523,18 @@ class Handler(BaseHTTPRequestHandler):
             rejection_reasons: dict[str, int] = {}
             for event in payload.get("events", []):
                 try:
-                    APP.telemetry.record_tool_accounting(event)
+                    recorded = APP.telemetry.record_tool_accounting(event)
+                    if recorded is False:
+                        rejected += 1
+                        tool = event.get("tool") if isinstance(event, dict) else None
+                        if isinstance(tool, str) and tool[:160] == "local_ai_telemetry":
+                            reason = "self_accounting"
+                        elif getattr(APP.telemetry, "enabled", True) is False:
+                            reason = "telemetry_disabled"
+                        else:
+                            reason = "queue_full"
+                        rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                        continue
                     accepted += 1
                 except Exception as exc:
                     rejected += 1

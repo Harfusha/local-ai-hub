@@ -219,6 +219,45 @@ def test_trace_detail_since_seq_and_list_filters_are_bounded(tmp_path):
     assert listed["items"][0]["trace_id"] == second
 
 
+@pytest.mark.parametrize("offset", [2**63 - 1, 2**63, 2**100])
+def test_trace_list_accepts_offsets_beyond_sqlite_integer_range(tmp_path, offset):
+    store = DebugTraceStore(_config(tmp_path))
+    store.start(kind="async_job", tenant="tenant", action="reason")
+
+    listed = store.list(offset=offset)
+
+    assert listed["success"] is True
+    assert listed["total"] == 1
+    assert listed["offset"] == offset
+    assert listed["items"] == []
+
+
+def test_debug_trace_list_route_handles_sqlite_oversized_offset(tmp_path, monkeypatch):
+    offset = 2**100
+    store = DebugTraceStore(_config(tmp_path))
+    store.start(kind="async_job", tenant="tenant", action="reason")
+    app = type("App", (), {"debug_traces": store})()
+    monkeypatch.setattr(http_server, "APP", app)
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = f"/api/debug-traces?offset={offset}"
+    handler.command = "GET"
+    handler._begin_trace = lambda path: None
+    handler._require_authorized = lambda: True
+    handler._authorization_succeeded = True
+    handler._authorize_admin_action = lambda action: action == "debug_traces.list"
+    handler._reconcile_debug_trace = lambda item: None
+    responses = []
+    handler._send = lambda status, data: responses.append((status, data))
+
+    handler.do_GET()
+
+    assert responses == [(
+        200,
+        {"success": True, "items": [], "total": 1, "limit": 50, "offset": offset},
+    )]
+
+
 @pytest.mark.parametrize("since_seq", [2**63 - 1, 2**63, 2**100])
 def test_trace_detail_clamps_forward_cursor_to_sqlite_integer_range(tmp_path, since_seq):
     store = DebugTraceStore(_config(tmp_path))

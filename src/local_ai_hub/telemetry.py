@@ -101,6 +101,12 @@ def _tail_latency(rows: list[tuple[Any, ...]], key_name: str) -> list[dict[str, 
 def _safe_error_message(value: Any) -> str:
     """Keep error diagnostics useful without persisting project/source content."""
     text = str(value or "").replace("\r", " ").replace("\n", " ")[:1200]
+    text = re.sub(
+        r"(?i)[\"']?(prompt|source(?:_text)?|input(?:_text)?|completion|output(?:_text)?|response(?:_body)?|request(?:_body)?|body|payload|content)[\"']?\s*[:=].*$",
+        r"\1=[redacted]",
+        text,
+    )
+    text = _WINDOWS_PATH_RE.sub("<path>", text)
     text = _PATH_RE.sub("<path>", text)
     text = _LONG_TOKEN_RE.sub("<token>", text)
     return " ".join(text.split())[:500]
@@ -568,23 +574,26 @@ class TelemetryStore:
             oldest = int(self._live_events[0].get("seq", 0)) if self._live_events else cursor
         return {"success": True, "cursor": cursor, "oldest": oldest, "events": events}
 
-    def _enqueue(self, kind: str, payload: dict[str, Any]) -> None:
+    def _enqueue(self, kind: str, payload: dict[str, Any]) -> bool:
         if not self.enabled:
-            return
-        self._publish_live(kind, payload)
+            return False
         # Reserve the queue sequence before publishing the item.  The writer
         # thread may consume a freshly queued item immediately; incrementing
         # afterwards lets flush() observe processed >= queued and return before
         # the item is actually visible in SQLite.
         with self._stats_lock:
             self._stats["queued"] += 1
-        try:
-            self._queue.put_nowait((kind, payload))
-        except queue.Full:
-            # Observability must never become a back-pressure source for foreground work.
-            with self._stats_lock:
+            try:
+                self._queue.put_nowait((kind, payload))
+            except queue.Full:
+                # Observability must never become a back-pressure source for foreground work.
                 self._stats["queued"] -= 1
                 self._stats["dropped"] += 1
+                return False
+            # Keep accepted queue order aligned with the live feed. The writer can
+            # dequeue now, but cannot publish completion stats until this lock releases.
+            self._publish_live(kind, payload)
+            return True
 
     def record_live(self, kind: str = "live", **event: Any) -> None:
         if not self.enabled:
@@ -717,12 +726,12 @@ class TelemetryStore:
             "decision_grade": history.get("decision_grade", {}),
         }
 
-    def record(self, **event: Any) -> None:
+    def record(self, **event: Any) -> bool:
         ctx = current_trace_context()
         for key in ("request_id", "trace_id", "agent", "tenant"):
             if not event.get(key) and ctx.get(key):
                 event[key] = ctx[key]
-        self._enqueue("event", self._clean_event(event))
+        return self._enqueue("event", self._clean_event(event))
 
     def record_http(self, **event: Any) -> None:
         event["event_type"] = "http"
@@ -732,7 +741,7 @@ class TelemetryStore:
         event["event_type"] = "stage"
         self.record(**event)
 
-    def record_tool_accounting(self, event: dict[str, Any]) -> None:
+    def record_tool_accounting(self, event: dict[str, Any]) -> bool:
         """Record one agent-visible MCP call without storing arguments or output.
 
         Signed net deltas are stored independently from inference context reduction.
@@ -740,10 +749,10 @@ class TelemetryStore:
         dashboard can explain the accounting without double counting.
         """
         if not isinstance(event, dict):
-            return
+            raise TypeError("tool accounting event must be an object")
         tool_name = event.get("tool")
         if isinstance(tool_name, str) and tool_name[:160] == "local_ai_telemetry":
-            return
+            return False
         breakdown = event.get("savings_breakdown") if isinstance(event.get("savings_breakdown"), dict) else {}
         clean_breakdown_json = _clean_savings_breakdown(breakdown)
         clean_breakdown = json.loads(clean_breakdown_json) if clean_breakdown_json else {}
@@ -753,7 +762,7 @@ class TelemetryStore:
         output_source = _clean_savings_source(event.get("output_savings_source", ""))
         gross_input = max(0, int(event.get("gross_input_tokens_avoided_est", 0) or 0))
         gross_output = max(0, int(event.get("gross_output_tokens_avoided_est", 0) or 0))
-        self.record(
+        accepted = self.record(
             event_type="tool_accounting",
             tenant=str(event.get("tenant", ""))[:160],
             agent=str(event.get("agent", ""))[:80],
@@ -780,10 +789,11 @@ class TelemetryStore:
             output_savings_source=output_source,
             savings_breakdown_json=json_dumps(clean_breakdown, separators=(",", ":"), sort_keys=True),
         )
+        return accepted
 
-    def record_system(self, action: str, *, success: bool = True, duration_ms: float = 0.0, **event: Any) -> None:
+    def record_system(self, action: str, *, success: bool = True, duration_ms: float = 0.0, **event: Any) -> bool:
         event.update({"event_type": "system", "action": action, "success": success, "duration_ms": duration_ms})
-        self.record(**event)
+        return self.record(**event)
 
     def record_error(
         self,

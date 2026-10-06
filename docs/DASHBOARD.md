@@ -10,6 +10,8 @@ Command execution uses the same fail-closed broker as agents. The dashboard cann
 
 Operational telemetry is metadata-only; repository/model payloads are not written to telemetry.
 
+If another request is building the first status snapshot, the overview shows `warming`, keeps prior rendered status when available, and retries through its bounded poll backoff.
+
 ## Agent debug traces
 
 The `Queue & requests` tab also contains bounded debug trace history for API requests, scheduler jobs and durable async workers. Clicking a linked row opens a dedicated authenticated trace page: the sidebar lists runs, and the detail pane shows a human-readable inspector instead of a cramped modal.

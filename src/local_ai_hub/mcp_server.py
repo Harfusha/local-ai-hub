@@ -471,6 +471,9 @@ CoordAction: TypeAlias = Literal[
     "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree",
 ]
 StatusDetail: TypeAlias = Literal["brief", "cache", "telemetry", "full", "agent_state"]
+StatusAction: TypeAlias = Literal[
+    "", "brief", "cache", "telemetry", "full", "agent_state", "status", "health", "check", "info",
+]
 StatusScope: TypeAlias = Literal["process", "window"]
 WorkAction: TypeAlias = Literal["submit", "status", "wait", "get", "cancel", "continue"]
 ArtifactAction: TypeAlias = Literal["get", "slice", "list"]
@@ -1140,7 +1143,7 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_status(action: str = "", detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
+def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
     """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state. scope: process (default) or window. action is an alias for detail. To report a deliberate bypass, set adoption_signal=bypassed with validated target_tool and target_action; omitted means no bypass. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, or telemetry check. Skip when: repository evidence or task work is needed."""
     if action:
         act = action.strip().lower()

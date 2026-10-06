@@ -4,10 +4,13 @@ Authenticated dashboard-only debug endpoints expose bounded execution history:
 
 * `GET /api/debug-traces?kind=&state=&agent=&model=&limit=&offset=` lists trace summaries. `limit` is capped by `debug_traces.max_list_limit`.
 * `GET /api/debug-traces/{trace_id}?since_seq=0` returns session detail and ordered events after the supplied sequence number, allowing incremental realtime polling.
+* `GET /api/agent-state/events/stream?stream_id=&after_seq=` streams Agent OS events. SSE IDs encode the stream ID and its sequence; reconnects prefer `Last-Event-ID` and accept `last_event_id` as a query fallback. Replay sends at most 10 pages of 100 events; kind-filtered events still advance the cursor. Remaining backlog emits `replay_notice` and `stream_timeout` with the last cursor. Detected retention gaps emit `replay_notice`; legacy providers mark gap metadata unavailable. An unfiltered reconnect resumes the one stream named by the cursor; other streams that changed while disconnected cannot be recovered through the per-stream provider and produce a `global_resume_is_stream_scoped` notice. Use `stream_id` for explicit per-stream replay.
 
 Trace detail may include the original API request, effective model prompt/payload, streamed model output, tool calls/results and final response. It is stored separately from metadata-only telemetry in `server.state_dir/debug_traces.sqlite3`; retention is bounded by the `[debug_traces]` TTL, byte, session, event and text limits. Cleanup deletes only terminal traces in small batches and never deletes queued/running sessions.
 
 The service defaults to `127.0.0.1:11435`. `/health` is a lightweight liveness endpoint. Runtime/status endpoints include `/api/status`, `/api/capabilities`, `/api/live/status`, metrics/telemetry, hardware status, models, leases and preprocessing.
+
+Status snapshots report `snapshot_cached` and `status_age_ms`. A concurrent request during a cold snapshot build returns `success:false`, `degraded:true`, and `snapshot_warming:true`; retry after `retry_after_ms`. A request during refresh can receive a cached snapshot marked `snapshot_stale:true`. Admin action responses set `audit_accepted:false` when metadata-only audit telemetry cannot queue the event; a successful operation may already have completed. Queue acceptance does not prove SQLite commit.
 
 Repository endpoints cover profile/map/code-index/deterministic/search/context, code symbols/diagnostics/AST, import resolution, dependency/security/test/refactor/dead-code/callgraph analysis and git status. Code-intelligence queries use `/api/code-intelligence/query`; session management uses `/api/code-intelligence/control`.
 

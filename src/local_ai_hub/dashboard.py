@@ -1665,6 +1665,8 @@ $('secretScanBtn')?.addEventListener('click',async()=>{
 
 // ── Bundles ────────────────────────────────────────────────────────────────────
 
+let sseSource=null,sseEventCount=0,sseEvents=[],sseDebounceTimer=0,sseLastEventId='';
+try{sseLastEventId=sessionStorage.getItem('agentOsStreamLastEventId')||''}catch(e){}
 function connectAgentOsStream(){
   if(sseSource){
     try{ sseSource.close(); }catch(e){}
@@ -1673,7 +1675,10 @@ function connectAgentOsStream(){
   const badge=$('sseStreamBadge');
   if(badge){ badge.className='badge-status badge-waiting'; badge.textContent='Connecting…'; }
   const token=getSavedToken()||apiToken;
-  const url='/api/agent-state/events/stream'+(token?'?token='+encodeURIComponent(token):'');
+  const params=new URLSearchParams();
+  if(token)params.set('token',token);
+  if(sseLastEventId)params.set('last_event_id',sseLastEventId);
+  const query=params.toString(),url='/api/agent-state/events/stream'+(query?'?'+query:'');
   try{
     sseSource=new EventSource(url);
     sseSource.onopen=()=>{
@@ -1683,6 +1688,10 @@ function connectAgentOsStream(){
       if(badge){ badge.className='badge-status badge-error'; badge.textContent='🔴 Disconnected (Retrying…)'; }
     };
     sseSource.onmessage=(e)=>{
+      if(e.lastEventId){
+        sseLastEventId=String(e.lastEventId);
+        try{sessionStorage.setItem('agentOsStreamLastEventId',sseLastEventId)}catch(err){}
+      }
       try{
         const data=JSON.parse(e.data);
         handleAgentOsStreamEvent(data);
@@ -1694,6 +1703,8 @@ function connectAgentOsStream(){
 }
 
 function handleAgentOsStreamEvent(ev){
+  const eventId=String(ev?.event_id||'');
+  if(eventId&&sseEvents.some(item=>String(item?.event_id||'')===eventId))return;
   sseEventCount++;
   sseEvents.unshift(ev);
   if(sseEvents.length>200) sseEvents.pop();
@@ -1896,7 +1907,7 @@ function clickableRow(obj,html,type='',idAttr=''){
   return `<tr class="click" data-detail="${id}" data-type="${esc(resolvedType)}" ${entityId?`data-id="${esc(entityId)}"`:''}>${html}</tr>`;
 }
 
-let traceTimer=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null,traceRevealRedactedDetails=false,traceOptionalDetailsOpen=false,tracePollGeneration=0,tracePollInFlight=0,traceEventTotal=0,traceFullPayloadInFlightId='';
+let traceDetailPoller=null,tracePollAbortController=null,activeTraceId='',traceSeq=0,traceEvents=[],traceOpenSteps=new Set(),traceView='timeline',activeTraceData=null,traceRevealRedactedDetails=false,traceOptionalDetailsOpen=false,tracePollGeneration=0,traceEventTotal=0,traceFullPayloadInFlightId='';
 const traceEventBufferLimit=200;
 function traceAppendEvents(current,incoming,eventsTotal=0){const existing=Array.isArray(current)?current:[],seen=new Set(existing.map(event=>event&&Number.isFinite(event.seq)?event.seq:null).filter(seq=>seq!==null)),fresh=(Array.isArray(incoming)?incoming:[]).filter(event=>{const seq=event&&Number.isFinite(event.seq);if(!seq)return true;if(seen.has(event.seq))return false;seen.add(event.seq);return true}),merged=existing.concat(fresh);return {events:merged.slice(-traceEventBufferLimit),eventsTotal:Math.max(Number(eventsTotal)||0,merged.length)};}
 function traceFiniteSequence(candidate,prior){return typeof candidate==='number'&&Number.isFinite(candidate)&&candidate>=prior?candidate:prior;}
@@ -2771,23 +2782,31 @@ function moveTraceTab(tab,key){
 async function openTrace(id){
   const pollTraceId=String(id||''),pollGeneration=++tracePollGeneration;activeTraceId=pollTraceId;traceSeq=0;traceEvents=[];traceEventTotal=0;traceOpenSteps=new Set();traceView='timeline';activeTraceData=null;traceRevealRedactedDetails=false;traceOptionalDetailsOpen=false;
   renderTraceList(lastTraces);switchTab('traceInspector');
-  if(traceTimer){clearInterval(traceTimer);traceTimer=null}
-  let pollInFlight=false;
-  const poll=async()=>{
-    if(!activeTraceId||pollTraceId!==activeTraceId||pollGeneration!==tracePollGeneration||pollInFlight||tracePollInFlight===pollGeneration)return;
-    pollInFlight=true;tracePollInFlight=pollGeneration;
+  if(traceDetailPoller){traceDetailPoller.stop();traceDetailPoller=null}
+  let pollInFlight=false,lastTracePollSignature='';
+  const poll=async isCurrent=>{
+    if(!activeTraceId||pollTraceId!==activeTraceId||pollGeneration!==tracePollGeneration||pollInFlight||!isCurrent())return false;
+    pollInFlight=true;
+    const controller=typeof AbortController==='function'?new AbortController():null;
+    tracePollAbortController=controller;
     try{
-      const sinceSeq=traceSeq,r=await apiFetch('/api/debug-traces/'+encodeURIComponent(pollTraceId)+'?since_seq='+sinceSeq,{cache:'no-store'}),d=await r.json();
-      if(pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return;
+      const sinceSeq=traceSeq,opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
+      const r=await apiFetch('/api/debug-traces/'+encodeURIComponent(pollTraceId)+'?since_seq='+sinceSeq,opts),d=await r.json();
+      if(!isCurrent()||pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return false;
       if(d.success){
-        traceSeq=traceFiniteSequence(d.next_seq,traceSeq);traceEventTotal=Math.max(traceEventTotal,traceSeq,Number(d.events_total||d.eventsTotal||0));const next=traceAppendEvents(traceEvents,d.events,traceEventTotal);traceEvents=next.events;traceEventTotal=next.eventsTotal;renderTraceDetail({...d,events:traceEvents,events_total:traceEventTotal,has_older_events:traceEventTotal>traceEvents.length,events_before_seq:traceEvents[0]?.seq||0,has_newer_events:false});
-        if(d.terminal&&!d.events_has_more&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){clearInterval(traceTimer);traceTimer=null}
-      }else if(d.retryable){const lEl=$('tracePageLive');if(lEl){lEl.textContent='● live · retrying…';lEl.className='tiny trace-running';}return;
-      }else{openModal(d,'Trace error');clearInterval(traceTimer);traceTimer=null}
-    }catch(e){if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){const lEl=$('tracePageLive');if(lEl)lEl.textContent='refresh failed: '+e.message;}
-    }finally{if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){pollInFlight=false;tracePollInFlight=false}}
+        const signature=JSON.stringify([d.state,d.terminal,d.next_seq,d.events_total,d.updated_at,d.error]);
+        const changed=signature!==lastTracePollSignature;lastTracePollSignature=signature;
+        traceSeq=traceFiniteSequence(d.next_seq,traceSeq);traceEventTotal=Math.max(traceEventTotal,traceSeq,Number(d.events_total||d.eventsTotal||0));const next=traceAppendEvents(traceEvents,d.events,traceEventTotal);traceEvents=next.events;traceEventTotal=next.eventsTotal;
+        if(changed)renderTraceDetail({...d,events:traceEvents,events_total:traceEventTotal,has_older_events:traceEventTotal>traceEvents.length,events_before_seq:traceEvents[0]?.seq||0,has_newer_events:false});
+        if(d.terminal&&!d.events_has_more&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId){traceDetailPoller?.stop();traceDetailPoller=null}
+        return {changed};
+      }else if(d.retryable){const lEl=$('tracePageLive');if(lEl){lEl.textContent='● live · retrying…';lEl.className='tiny trace-running';}return false;
+      }else{openModal(d,'Trace error');traceDetailPoller?.stop();traceDetailPoller=null;return false}
+    }catch(e){if(isCurrent()&&pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId&&!controller?.signal.aborted){const lEl=$('tracePageLive');if(lEl)lEl.textContent='refresh failed: '+e.message;}return false;
+    }finally{pollInFlight=false;if(tracePollAbortController===controller)tracePollAbortController=null}
   };
-  await poll();if(pollGeneration===tracePollGeneration&&pollTraceId===activeTraceId)traceTimer=setInterval(poll,1000);
+  traceDetailPoller=createDashboardStatusPoller(poll,{baseDelay:1000,maxDelay:30000});
+  traceDetailPoller.start();
 }
 function openModal(obj,title='',entityType=''){
   if($('modalLive'))$('modalLive').textContent='';
@@ -4532,7 +4551,7 @@ function renderHttpRequestModal(r){
   `;
 }
 
-if($('modalClose'))$('modalClose').onclick=()=>{if($('modalBg'))$('modalBg').classList.remove('open');activeTraceId='';activeTraceData=null;if(traceTimer)clearInterval(traceTimer);traceTimer=null};
+if($('modalClose'))$('modalClose').onclick=()=>{if($('modalBg'))$('modalBg').classList.remove('open');activeTraceId='';activeTraceData=null;traceDetailPoller?.stop();traceDetailPoller=null;tracePollAbortController?.abort();tracePollAbortController=null};
 if($('modalBg'))$('modalBg').onclick=e=>{if(e.target===$('modalBg'))$('modalClose')?.click()};
 
 document.addEventListener('click',e=>{
@@ -5182,7 +5201,21 @@ function renderTraceList(items){
   $('traceSideSummary').textContent=`${sidebarVisible.length} trace${sidebarVisible.length===1?'':'s'} · click to inspect`;
   $('traceSidebarList').innerHTML=sidebarVisible.length?sidebarVisible.map(x=>{const state=traceStatus(x),label=state==='interrupted'?'Interrupted':state,cls=state==='interrupted'?'interrupted':(state==='failed'||state==='error'?'failed':(x.terminal||state==='completed'||state==='succeeded'?'done':'')),kindLabel=x.kind==='api_request'?'API request':humanLabel(x.kind||'trace'),context=traceContextLabel({...x,kind:'',model:''}),project=traceProjectLabel(x)||'Project not recorded';return `<button class="trace-side-item ${String(x.trace_id)===activeTraceId?'active':''}" data-trace-page-id="${esc(x.trace_id)}"><span class="trace-side-top"><span class="trace-side-state ${cls}"></span><span class="trace-side-action">${esc(x.action||x.kind||'Trace')}</span><span class="tiny spacer">${esc(label)}</span></span><span class="trace-side-meta">${esc(project)} · ${esc(context||x.agent||'unknown agent')}</span><span class="trace-side-meta">${esc(x.agent||'unknown agent')} · ${esc(kindLabel)} · ${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'} · ${esc(x.tenant||'no tenant')}</span></button>`}).join(''):'<div class="empty-human">No retained traces</div>';
 }
-async function pollTraces(){if(tracesPollInFlight)return;tracesPollInFlight=true;try{const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',r=await apiFetch('/api/debug-traces?limit=200'+suffix,{cache:'no-store'}),d=await r.json();if(d.success){lastTraces=d.items||[];renderTraceList(lastTraces)}}catch(e){console.warn('trace refresh failed',e)}finally{tracesPollInFlight=false}}
+async function pollTraces(isCurrent=()=>document.visibilityState!=='hidden'){
+  if(!isCurrent()||tracesPollInFlight)return false;
+  tracesPollInFlight=true;
+  const controller=typeof AbortController==='function'?new AbortController():null;
+  tracesPollAbortController=controller;
+  try{
+    const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
+    const r=await apiFetch('/api/debug-traces?limit=200'+suffix,opts);if(!isCurrent())return false;
+    const d=await r.json();if(!isCurrent()||!d.success)return false;
+    const items=Array.isArray(d.items)?d.items:[],changed=JSON.stringify(items)!==JSON.stringify(lastTraces);
+    if(changed){lastTraces=items;renderTraceList(lastTraces)}
+    return {changed};
+  }catch(e){if(isCurrent()&&!controller?.signal.aborted)console.warn('trace refresh failed',e);return false}
+  finally{tracesPollInFlight=false;if(tracesPollAbortController===controller)tracesPollAbortController=null}
+}
 $('traceRefresh')?.addEventListener('click',pollTraces);$('traceKind')?.addEventListener('change',()=>renderTraceList(lastTraces));
 $('traceHistorySearch')?.addEventListener('input',()=>renderTraceList(lastTraces));$('traceHistoryState')?.addEventListener('change',()=>renderTraceList(lastTraces));
 
@@ -5205,10 +5238,16 @@ async function pollStatus(isCurrent=()=>document.visibilityState!=='hidden'){
     if(!current())return false;
     const s=await r.json();
     if(!current())return false;
+    if(s.snapshot_warming===true){
+      lastDashboardStatusChanged=false;
+      if(!hasLiveStatus){$('conn').textContent='warming';$('conn').className='pill warn-t'}
+      return false;
+    }
+    const statusDegraded=s.snapshot_stale===true||s.degraded===true||s.success===false;
     const changed=shouldRefreshDashboardStatus(s);
     lastDashboardStatusChanged=changed;
     if(changed)render(s);
-    hasLiveStatus=true;$('conn').textContent='live';$('conn').className='pill ok';if(changed)$('updated').textContent='updated '+new Date().toLocaleTimeString();
+    hasLiveStatus=true;$('conn').textContent=s.snapshot_stale===true?'stale':statusDegraded?'degraded':'live';$('conn').className=statusDegraded?'pill warn-t':'pill ok';if(changed)$('updated').textContent='updated '+new Date().toLocaleTimeString();
     if(changed||hardwareRefreshPending)try{
       const hardwareOpts={cache:'no-store'};if(controller)hardwareOpts.signal=controller.signal;
       const gr=await apiFetch('/api/hardware/system',hardwareOpts);
@@ -5252,7 +5291,8 @@ document.addEventListener('visibilitychange',()=>{
   if(!visible&&statusPollAbortController)statusPollAbortController.abort();
 });
 statusPoller.start();
-let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false;
+let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false,eventsPollHasLoaded=false;
+let eventsPollAbortController=null,tracesPollAbortController=null;
 function eventSeverity(event){
   if(event?.success===false||/fail|error|crash|reject/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'failure';
   if(/warn|retry|degrad|stale/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'warning';
@@ -5270,18 +5310,34 @@ function renderEvents(events=liveEvents){
 }
 $('eventSeverity')?.addEventListener('change',()=>renderEvents([]));
 $('eventSource')?.addEventListener('input',()=>renderEvents([]));
-async function pollEvents(){if(eventsPollInFlight)return;eventsPollInFlight=true;try{const r=await apiFetch('/api/live?after='+cursor+'&limit=200',{cache:'no-store'}),d=await r.json();cursor=Number(d.cursor||cursor);renderEvents(d.events||[])}catch{}finally{eventsPollInFlight=false}}
+async function pollEvents(isCurrent=()=>document.visibilityState!=='hidden'){
+  if(!isCurrent()||eventsPollInFlight)return false;
+  eventsPollInFlight=true;
+  const controller=typeof AbortController==='function'?new AbortController():null;
+  eventsPollAbortController=controller;
+  try{
+    const previousCursor=cursor,opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
+    const r=await apiFetch('/api/live?after='+cursor+'&limit=200',opts);if(!isCurrent())return false;
+    const d=await r.json();if(!isCurrent()||!d.success)return false;
+    const events=Array.isArray(d.events)?d.events:[];cursor=Number(d.cursor||cursor);
+    const changed=!eventsPollHasLoaded||cursor!==previousCursor||events.length>0;eventsPollHasLoaded=true;
+    if(changed)renderEvents(events);
+    return {changed};
+  }catch{return false}
+  finally{eventsPollInFlight=false;if(eventsPollAbortController===controller)eventsPollAbortController=null}
+}
+const eventsPoller=createDashboardStatusPoller(pollEvents,{baseDelay:1000,maxDelay:30000});
+const tracesPoller=createDashboardStatusPoller(pollTraces,{baseDelay:2000,maxDelay:30000});
 
-probeHealth();pollEvents();pollTraces();
+if(!document.hidden)probeHealth();
+eventsPoller.start();tracesPoller.start();
 let isVisible=!document.hidden;
 document.addEventListener('visibilitychange',()=>{
   isVisible=!document.hidden;
-  if(isVisible){probeHealth();pollEvents();pollTraces();}
+  if(!isVisible){eventsPollAbortController?.abort();tracesPollAbortController?.abort();tracePollAbortController?.abort();}
+  eventsPoller.setVisible(isVisible);tracesPoller.setVisible(isVisible);traceDetailPoller?.setVisible(isVisible);
+  if(isVisible)probeHealth();
 });
-setInterval(()=>{if(isVisible)probeHealth();},5000);
-setInterval(()=>{if(isVisible)pollEvents();},1000);
-setInterval(()=>{if(isVisible)pollTraces();},2000);
-
 // ── Bundles ────────────────────────────────────────────────────────────────────
 function renderBundles(s){
   const projs=groupedProjects(s?.preprocessing?.projects||[]);
@@ -5609,7 +5665,7 @@ function renderTrajectories(){
 $('trajSearch')?.addEventListener('input',renderTrajectories);
 $('trajRefreshBtn')?.addEventListener('click',loadTrajectories);
 
-async function viewTrajectory(taskId){
+async function viewTrajectory(taskId, afterSeq=0, append=false){
   if(!taskId)return;
   const task=cachedTrajTasks.find(t=>t.task_id===taskId);
   const panel=$('trajDetailPanel');
@@ -5618,37 +5674,181 @@ async function viewTrajectory(taskId){
   if(!panel||!list||!title)return;
   panel.style.display='block';
   title.innerHTML=`Trajectory Inspection: <code>${esc(taskId)}</code> — <span class="muted">${esc(task?.contract?.goal||'')}</span>`;
-  list.innerHTML='<div class="tiny muted">Loading event stream & trajectory steps…</div>';
+  if(!append)list.innerHTML='<div class="tiny muted">Loading event stream & trajectory steps…</div>';
+  else list.querySelector('.trajectory-load-more')?.remove();
 
   try{
-    const r=await apiFetch('/api/agent-state/events?stream_id='+encodeURIComponent(taskId),{cache:'no-store'});
-    const d=await r.json();
-    const evs=d.events||[];
-    if(!evs.length){
+    const params=new URLSearchParams({stream_id:taskId,limit:'100'});
+    if(afterSeq>0)params.set('after_seq',String(afterSeq));
+    const r=await apiFetch('/api/agent-state/events?'+params.toString(),{cache:'no-store'});
+    const responseText=await r.text();
+    const d=JSON.parse(responseText);
+    const evs=Array.isArray(d.events)?d.events:[];
+    const gapRanges=Array.isArray(d.gap_ranges)?d.gap_ranges.slice():[];
+    const gapMetadataUnavailable=d.retention_gap_metadata_available===false||
+      !Array.isArray(d.gap_ranges);
+    if(!append)list.innerHTML='';
+    if(gapMetadataUnavailable&&!gapRanges.length&&!list.querySelector('.trajectory-gap')){
+      const gap=document.createElement('div');
+      gap.className='trace-event trajectory-gap';
+      gap.style.cssText='border-left:2px solid #f0ad4e;padding:8px;margin-bottom:8px;color:#f0ad4e';
+      gap.textContent='Retention gap metadata unavailable; cannot verify history completeness.';
+      list.appendChild(gap);
+    }
+    if(!evs.length&&!append){
       const cp=task?.checkpoint||{};
       const receipts=Object.entries(task?.verification_receipts||{});
-      list.innerHTML=`<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px">
+      list.insertAdjacentHTML('beforeend',`<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px">
         <div style="font-weight:600;font-size:12px;margin-bottom:4px">Phase: ${esc(cp.phase||'init')} ➔ Next: ${esc(cp.next_action||'—')}</div>
         <div class="tiny muted">Affected Paths: ${esc((cp.affected_paths||[]).join(', ')||'none')}</div>
         <div class="tiny muted">Evidence IDs: ${esc((cp.evidence_ids||[]).join(', ')||'none')}</div>
         ${receipts.length?`<div style="margin-top:6px;font-size:11px"><b>Receipts:</b> ${receipts.map(([k,v])=>`<span class="chip ok">${esc(k)}</span>`).join(' ')}</div>`:''}
-      </div>`;
-      return;
+      </div>`);
     }
-    list.innerHTML=evs.map(ev=>{
+    const skipQuotedString=(jsonText,start)=>{
+      let escaped=false;
+      for(let i=start+1;i<jsonText.length;i++){
+        const ch=jsonText[i];
+        if(escaped)escaped=false;
+        else if(ch==='\\')escaped=true;
+        else if(ch==='"')return i;
+      }
+      return jsonText.length;
+    };
+    const readRawInteger=(jsonText,key)=>{
+      let depth=0;
+      for(let i=0;i<jsonText.length;i++){
+        if(jsonText[i]==='"'){
+          const end=skipQuotedString(jsonText,i);
+          if(depth===1){
+            const name=JSON.parse(jsonText.slice(i,end+1));
+            let valueIndex=end+1;
+            while(/\s/.test(jsonText[valueIndex]||''))valueIndex++;
+            if(name===key&&jsonText[valueIndex++]===':'){
+              while(/\s/.test(jsonText[valueIndex]||''))valueIndex++;
+              const number=/^-?\d+/.exec(jsonText.slice(valueIndex));
+              if(!number)return null;
+              const delimiter=jsonText[valueIndex+number[0].length];
+              return delimiter&&/[.eE\d]/.test(delimiter)?null:number[0];
+            }
+          }
+          i=end;
+          continue;
+        }
+        if(jsonText[i]==='{'||jsonText[i]==='[')depth++;
+        else if(jsonText[i]==='}'||jsonText[i]===']')depth--;
+      }
+      return null;
+    };
+    const readTopLevelArrayObjects=(jsonText,key)=>{
+      let depth=0;
+      for(let i=0;i<jsonText.length;i++){
+        if(jsonText[i]==='"'){
+          const end=skipQuotedString(jsonText,i);
+          if(depth===1){
+            const name=JSON.parse(jsonText.slice(i,end+1));
+            let valueIndex=end+1;
+            while(/\s/.test(jsonText[valueIndex]||''))valueIndex++;
+            if(name===key&&jsonText[valueIndex++]===':'){
+              while(/\s/.test(jsonText[valueIndex]||''))valueIndex++;
+              if(jsonText[valueIndex]!=='[')return [];
+              const items=[];
+              for(let itemIndex=valueIndex+1;itemIndex<jsonText.length;){
+                while(/[\s,]/.test(jsonText[itemIndex]||''))itemIndex++;
+                if(jsonText[itemIndex]===']')return items;
+                if(jsonText[itemIndex]!=='{')return [];
+                const start=itemIndex;
+                let objectDepth=0;
+                for(;itemIndex<jsonText.length;itemIndex++){
+                  if(jsonText[itemIndex]==='"'){
+                    itemIndex=skipQuotedString(jsonText,itemIndex);
+                    continue;
+                  }
+                  if(jsonText[itemIndex]==='{')objectDepth++;
+                  else if(jsonText[itemIndex]==='}'&&--objectDepth===0){
+                    items.push(jsonText.slice(start,itemIndex+1));
+                    itemIndex++;
+                    break;
+                  }
+                }
+              }
+              return [];
+            }
+          }
+          i=end;
+          continue;
+        }
+        if(jsonText[i]==='{'||jsonText[i]==='[')depth++;
+        else if(jsonText[i]==='}'||jsonText[i]===']')depth--;
+      }
+      return [];
+    };
+    const readRawArrayIntegers=(jsonText,arrayKey,fieldKey)=>
+      readTopLevelArrayObjects(jsonText,arrayKey).map(item=>readRawInteger(item,fieldKey));
+    const exactEventSeqs=readRawArrayIntegers(responseText,'events','seq');
+    const exactGapStarts=readRawArrayIntegers(responseText,'gap_ranges','from_seq');
+    const exactGapEnds=readRawArrayIntegers(responseText,'gap_ranges','to_seq');
+    const exactFirstRetainedSeq=readRawInteger(responseText,'first_retained_seq')??d.first_retained_seq;
+    const timeline=[
+      ...evs.map((ev,index)=>({type:'event',seq:exactEventSeqs[index]??ev.seq,ev})),
+      ...gapRanges.map((range,index)=>({
+        type:'gap',seq:exactGapStarts[index]??range.from_seq,
+        fromSeq:exactGapStarts[index]??range.from_seq,
+        toSeq:exactGapEnds[index]??range.to_seq,range,
+      })),
+    ];
+    timeline.sort((left,right)=>{
+      try{
+        const a=BigInt(String(left.seq??0));
+        const b=BigInt(String(right.seq??0));
+        return a<b?-1:(a>b?1:0);
+      }catch{
+        return String(left.seq??0).localeCompare(String(right.seq??0),undefined,{numeric:true});
+      }
+    });
+    timeline.forEach(item=>{
+      if(item.type==='gap'){
+        const gap=document.createElement('div');
+        gap.className='trace-event trajectory-gap';
+        gap.style.cssText='border-left:2px solid #f0ad4e;padding:8px;margin-bottom:8px;color:#f0ad4e';
+        gap.textContent=`Event history gap: expired #${item.fromSeq}–#${item.toSeq}; first retained #${exactFirstRetainedSeq??'unknown'}.`;
+        list.appendChild(gap);
+        return;
+      }
+      const ev=item.ev;
       const kind=esc(ev.event_type||ev.kind||'event');
-      const time=ev.timestamp?new Date(ev.timestamp*1000).toLocaleTimeString():'';
-       const payload=traceOutputValueMarkup(ev.payload, null, 5000);
-      return `<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px;background:#0d1219;border-radius:4px">
+      const timestamp=ev.created_at??ev.timestamp;
+      const time=timestamp?new Date(timestamp*1000).toLocaleTimeString():'';
+      const payload=traceOutputValueMarkup(ev.payload, null, 5000);
+      list.insertAdjacentHTML('beforeend',`<div class="trace-event" style="border-left:2px solid var(--accent);padding:8px;margin-bottom:8px;background:#0d1219;border-radius:4px">
         <div style="display:flex;justify-content:space-between;margin-bottom:4px">
           <span class="chip"><b>${kind}</b></span>
-          <span class="tiny muted">#${ev.seq||0} · ${time}</span>
+          <span class="tiny muted">#${esc(item.seq||0)} · ${time}</span>
         </div>
-         <div style="margin:0;font-size:11px;color:#d7e2ef;max-height:220px;overflow:auto">${payload}</div>
-      </div>`;
-    }).join('');
+        <div style="margin:0;font-size:11px;color:#d7e2ef;max-height:220px;overflow:auto">${payload}</div>
+      </div>`);
+    });
+    const cursorToken=readRawInteger(responseText,'next_seq')??String(d.next_seq??afterSeq);
+    let cursorAdvances=false;
+    try{cursorAdvances=BigInt(cursorToken)>BigInt(String(afterSeq));}catch{}
+    if(d.has_more&&cursorAdvances){
+      const button=document.createElement('button');
+      button.type='button';
+      button.className='trajectory-load-more';
+      button.style.cssText='margin:8px 0;padding:6px 10px';
+      button.textContent='Load more events';
+      button.onclick=()=>viewTrajectory(taskId,cursorToken,true);
+      list.appendChild(button);
+    }
   }catch(err){
-    list.innerHTML=`<div class="bad-t">Failed to load trajectory events: ${esc(err.message||err)}</div>`;
+    if(append){
+      const error=document.createElement('div');
+      error.className='bad-t';
+      error.textContent=`Failed to load trajectory events: ${err.message||err}`;
+      list.appendChild(error);
+    }else{
+      list.innerHTML=`<div class="bad-t">Failed to load trajectory events: ${esc(err.message||err)}</div>`;
+    }
   }
 }
 

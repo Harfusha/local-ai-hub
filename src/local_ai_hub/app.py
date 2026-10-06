@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 import zipfile
+from contextlib import ExitStack
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -543,13 +544,35 @@ class LocalAIApp:
         now = time.monotonic()
         cache_key = f"{'light' if light else 'full'}:{scope}"
         cache_ttl = 5.0 if light else 1.5
-        with self._live_status_lock:
+
+        def cached_snapshot(cached: tuple[float, dict[str, Any]], now: float, *, stale: bool = False) -> dict[str, Any]:
+            result = deepcopy(cached[1])
+            result["snapshot_cached"] = True
+            result["status_age_ms"] = max(0, int((now - cached[0]) * 1000))
+            if stale:
+                result["snapshot_stale"] = True
+                result["success"] = False
+                result["degraded"] = True
+            return result
+
+        cached = self._live_status_cache.get(cache_key)
+        if cached and now - cached[0] < cache_ttl:
+            return cached_snapshot(cached, now)
+        cache_lock = ExitStack()
+        if cached:
+            if not self._live_status_lock.acquire(blocking=False):
+                return cached_snapshot(cached, now, stale=True)
+            cache_lock.callback(self._live_status_lock.release)
+        else:
+            if not self._live_status_lock.acquire(blocking=False):
+                return self._snapshot_warming(scope)
+            cache_lock.callback(self._live_status_lock.release)
+
+        with cache_lock:
+            now = time.monotonic()
             cached = self._live_status_cache.get(cache_key)
             if cached and now - cached[0] < cache_ttl:
-                result = deepcopy(cached[1])
-                result["snapshot_cached"] = True
-                result["status_age_ms"] = max(0, int((now - cached[0]) * 1000))
-                return result
+                return cached_snapshot(cached, now)
             dependency_status: dict[str, dict[str, Any]] = {}
             deadline = time.monotonic() + _STATUS_TOTAL_BUDGET_SECONDS
 
@@ -704,14 +727,35 @@ class LocalAIApp:
             }
             return value, healthy
 
-        with self._status_full_cache_lock:
+        def cached_snapshot(cached: dict[str, Any], now: float, *, stale: bool = False) -> dict[str, Any]:
+            result = deepcopy(cached["data"])
+            result["snapshot_cached"] = True
+            result["status_age_ms"] = max(0, int((now - cached["time"]) * 1000))
+            if stale:
+                result["snapshot_stale"] = True
+                result["success"] = False
+                result["degraded"] = True
+            return result
+
+        now = time.monotonic()
+        cached = self._status_full_cache.get(scope)
+        if cached and now - cached["time"] < 2.0:
+            return cached_snapshot(cached, now)
+        cache_lock = ExitStack()
+        if cached:
+            if not self._status_full_cache_lock.acquire(blocking=False):
+                return cached_snapshot(cached, now, stale=True)
+            cache_lock.callback(self._status_full_cache_lock.release)
+        else:
+            if not self._status_full_cache_lock.acquire(blocking=False):
+                return self._snapshot_warming(scope)
+            cache_lock.callback(self._status_full_cache_lock.release)
+
+        with cache_lock:
             now = time.monotonic()
             cached = self._status_full_cache.get(scope)
             if cached and now - cached["time"] < 2.0:
-                result = deepcopy(cached["data"])
-                result["snapshot_cached"] = True
-                result["status_age_ms"] = max(0, int((now - cached["time"]) * 1000))
-                return result
+                return cached_snapshot(cached, now)
             degraded = False
 
             def read(key, callback, fallback):
@@ -777,6 +821,23 @@ class LocalAIApp:
             res["agent_state"] = agent_state
             self._status_full_cache[scope] = {"time": time.monotonic(), "data": deepcopy(res)}
             return deepcopy(res)
+
+    def _snapshot_warming(self, scope: str) -> dict[str, Any]:
+        return {
+            "success": False,
+            "degraded": True,
+            "snapshot_warming": True,
+            "snapshot_cached": False,
+            "status_age_ms": 0,
+            "retry_after_ms": 100,
+            "scope": scope,
+            "hub_online": True,
+            "version": __version__,
+            "uptime_seconds": max(0, int(time.time() - self.started_at)),
+            "dependency_status": {
+                "snapshot": {"deadline_ms": 0, "degraded": True, "status": "warming"}
+            },
+        }
 
 
     def _headless_status(self) -> dict[str, Any]:

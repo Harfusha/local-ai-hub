@@ -998,13 +998,14 @@ def test_trace_inspector_polling_guards_stale_responses_and_bounds_client_buffer
     ]
     for marker in [
         "tracePollGeneration",
-        "tracePollInFlight",
         "pollGeneration=++tracePollGeneration",
-        "tracePollInFlight=pollGeneration",
-        "tracePollInFlight=false",
+        "let pollInFlight=false,lastTracePollSignature='';",
+        "pollInFlight||!isCurrent()",
+        "pollInFlight=true",
+        "finally{pollInFlight=false",
         "traceAppendEvents(traceEvents,d.events",
-        "pollGeneration!==tracePollGeneration",
-        "pollTraceId!==activeTraceId",
+        "if(!isCurrent()||pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return false;",
+        "traceDetailPoller=createDashboardStatusPoller(poll,{baseDelay:1000,maxDelay:30000});",
     ]:
         assert marker in source, f"Polling guard missing: {marker}"
 

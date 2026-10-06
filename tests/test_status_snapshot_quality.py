@@ -85,10 +85,39 @@ def make_app(*, scheduler=None, runtime=None):
     app.debug_traces = Probe(stats={})
     app._status_full_cache = {}
     app._status_full_cache_lock = threading.Lock()
+    app._live_status_cache = {}
+    app._live_status_lock = threading.Lock()
     app._status_dependency_lock = threading.Lock()
     app._status_dependency_inflight = {}
     app._status_dependency_slots = threading.BoundedSemaphore(app_module._STATUS_MAX_INFLIGHT_DEPENDENCIES)
     return app
+
+
+def read_concurrent(callback, count=12):
+    barrier = threading.Barrier(count)
+    results = [None] * count
+    durations = [None] * count
+    errors = [None] * count
+
+    def read(index):
+        try:
+            barrier.wait(timeout=1.0)
+            started = time.perf_counter()
+            results[index] = callback()
+            durations[index] = time.perf_counter() - started
+        except BaseException as exc:
+            errors[index] = exc
+
+    threads = [threading.Thread(target=read, args=(index,)) for index in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(1.0)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert all(error is None for error in errors), errors
+    assert all(duration is not None for duration in durations)
+    return results, max(duration for duration in durations if duration is not None)
 
 
 def test_cached_status_snapshot_isolated_from_caller_mutation():
@@ -102,7 +131,22 @@ def test_cached_status_snapshot_isolated_from_caller_mutation():
     assert app.scheduler.calls.get("status") == 1, (second["success"], second["scheduler"], len(app._status_dependency_inflight))
 
 
-def test_concurrent_status_requests_share_one_snapshot_build():
+def test_hot_cached_status_serves_concurrent_poll_burst_without_dependency_calls():
+    app = make_app()
+    initial = app.status()
+    calls_before = dict(app.scheduler.calls)
+
+    results, max_elapsed = read_concurrent(app.status, count=24)
+
+    assert len(results) == 24
+    assert max_elapsed < 0.10
+    assert all(result["snapshot_cached"] is True for result in results)
+    assert all(result["success"] is initial["success"] for result in results)
+    assert all(result["degraded"] is initial["degraded"] for result in results)
+    assert app.scheduler.calls == calls_before
+
+
+def test_cold_concurrent_status_request_returns_warming_without_waiting():
     entered = threading.Event()
     release = threading.Event()
 
@@ -115,21 +159,73 @@ def test_concurrent_status_requests_share_one_snapshot_build():
     app = make_app(scheduler=scheduler)
     results = []
     first = threading.Thread(target=lambda: results.append(app.status()))
-    second = threading.Thread(target=lambda: results.append(app.status()))
 
     first.start()
     assert entered.wait(1.0)
-    second.start()
+    started = time.perf_counter()
+    warming = app.status()
+    elapsed = time.perf_counter() - started
     try:
-        time.sleep(0.03)
         assert scheduler.calls["status"] == 1
     finally:
         release.set()
         first.join(1.0)
-        second.join(1.0)
 
-    assert len(results) == 2
+    assert len(results) == 1
+    assert elapsed < 0.05
+    assert warming["snapshot_warming"] is True
+    assert warming["retry_after_ms"] == 100
+    assert warming["success"] is False
+    assert warming["degraded"] is True
     assert scheduler.calls["status"] == 1
+
+
+def test_cold_realtime_status_contention_returns_warming_without_waiting():
+    app = make_app()
+    app._live_status_lock.acquire()
+    try:
+        started = time.perf_counter()
+        warming = app.realtime_status(light=True)
+        elapsed = time.perf_counter() - started
+    finally:
+        app._live_status_lock.release()
+
+    assert elapsed < 0.05
+    assert warming["snapshot_warming"] is True
+    assert warming["success"] is False
+    assert warming["degraded"] is True
+
+
+def test_expired_status_cache_returns_degraded_snapshot_while_refresh_runs():
+    entered = threading.Event()
+    release = threading.Event()
+    app = make_app()
+    app.status()
+    app._status_full_cache["process"]["time"] = time.monotonic() - 3.0
+
+    def slow_status():
+        entered.set()
+        assert release.wait(1.0)
+        return {"state": "refreshed"}
+
+    app.scheduler = Probe(status=slow_status)
+    refresh = threading.Thread(target=app.status)
+    refresh.start()
+    try:
+        assert entered.wait(1.0)
+        started = time.monotonic()
+        stale = app.status()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        refresh.join(1.0)
+
+    assert elapsed < 0.05
+    assert stale["snapshot_cached"] is True
+    assert stale["snapshot_stale"] is True
+    assert stale["status_age_ms"] >= 3000
+    assert stale["degraded"] is True
+    assert stale["success"] is False
 
 
 def test_status_cache_ttl_starts_after_snapshot_collection(monkeypatch):
@@ -238,6 +334,38 @@ def test_live_status_cache_covers_normal_dashboard_poll_interval(monkeypatch):
 
     assert cached["snapshot_cached"] is True
     assert app.runtime.calls == calls_after_first_snapshot
+
+
+def test_expired_live_status_cache_returns_degraded_snapshot_while_refresh_runs(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    app = make_live_app(monkeypatch)
+    app.realtime_status(light=True)
+    cached_at, cached_data = app._live_status_cache["light:process"]
+    app._live_status_cache["light:process"] = (cached_at - 6.0, cached_data)
+
+    def slow_status():
+        entered.set()
+        assert release.wait(1.0)
+        return {"state": "refreshed"}
+
+    app.scheduler = Probe(status=slow_status)
+    refresh = threading.Thread(target=lambda: app.realtime_status(light=True))
+    refresh.start()
+    try:
+        assert entered.wait(1.0)
+        stale_results, max_elapsed = read_concurrent(lambda: app.realtime_status(light=True))
+    finally:
+        release.set()
+        refresh.join(1.0)
+
+    assert max_elapsed < 0.2
+    assert len(stale_results) == 12
+    assert all(result["snapshot_cached"] is True for result in stale_results)
+    assert all(result["snapshot_stale"] is True for result in stale_results)
+    assert all(result["status_age_ms"] >= 6000 for result in stale_results)
+    assert all(result["degraded"] is True for result in stale_results)
+    assert all(result["success"] is False for result in stale_results)
 
 
 def test_live_status_slow_dependency_returns_degraded_within_deadline(monkeypatch):
