@@ -1817,7 +1817,11 @@ class ProjectPreprocessor:
         # Hash only those paths; building a full Git snapshot defeats incremental work.
         def _content_identity(rel: str) -> tuple[str, bool]:
             try:
-                digest = str(self.repo_tools._hash_file_only(Path(root) / rel) or "")
+                path = Path(root) / rel
+                invalidate = getattr(self.repo_tools, "invalidate_snapshot", None)
+                if callable(invalidate):
+                    invalidate(path)
+                digest = str(self.repo_tools._hash_file_only(path) or "")
             except Exception:
                 digest = ""
             return digest, bool(digest)
@@ -2098,7 +2102,12 @@ class ProjectPreprocessor:
             path = (base / rel).resolve(strict=False)
             try:
                 path.relative_to(base)
-                digest = git_hashes.get(rel) or self.repo_tools._hash_file_only(path)
+                digest = git_hashes.get(rel)
+                if not digest:
+                    invalidate = getattr(self.repo_tools, "invalidate_snapshot", None)
+                    if callable(invalidate):
+                        invalidate(path)
+                    digest = self.repo_tools._hash_file_only(path)
             except Exception:
                 digest = ""
             old_hash = str(item["content_hash"] or "")

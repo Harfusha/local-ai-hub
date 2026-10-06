@@ -2556,7 +2556,16 @@ class LocalAIServices:
     def repo_profile(self, root: str) -> dict[str, Any]:
         return self._repo_cached("profile", root, {}, lambda: self.repo_tools.project_profile(root))
 
-    def repo_search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None, enrich: bool = False) -> dict[str, Any]:
+    def repo_search(
+        self,
+        root: str,
+        query: str,
+        top_k: int = 12,
+        context_lines: int | None = None,
+        enrich: bool = False,
+        path_hints: list[Any] | tuple[Any, ...] | None = None,
+        scope: str = "repository_search",
+    ) -> dict[str, Any]:
         if enrich and not rollout_feature_enabled(self.config, "enriched_search"):
             return {
                 "success": False,
@@ -2568,6 +2577,81 @@ class LocalAIServices:
         # canonical form for cache identity so equivalent agent queries reuse work.
         query = normalize_query(query).casefold()
         eff_ctx_lines = int(context_lines) if context_lines is not None else (8 if enrich else None)
+        from .project_config import (
+            PathHint,
+            ProjectConfigError,
+            path_is_allowed,
+            path_matches_pattern,
+            prioritize_paths_with_hints,
+            resolve_project_context,
+        )
+
+        try:
+            project_context = resolve_project_context(
+                root,
+                configured_state_dir(getattr(self, "config", {}), create=False),
+            )
+        except ProjectConfigError as exc:
+            return {
+                "success": False,
+                "root": root,
+                "error": f"project configuration is invalid: {exc}",
+                "terminal": True,
+                "retryable": False,
+            }
+        search_scope = scope if isinstance(scope, str) else "repository_search"
+        request_hints: list[PathHint] = []
+        allowed_hint_fields = {
+            "path", "purpose", "scope", "evidence_id", "provenance",
+            "repository_revision", "config_digest", "expires_at",
+        }
+        if isinstance(path_hints, (list, tuple)):
+            for item in path_hints[:64]:
+                if isinstance(item, PathHint):
+                    hint = item
+                elif isinstance(item, dict) and not (set(item) - allowed_hint_fields):
+                    try:
+                        hint = PathHint(**item)
+                    except TypeError:
+                        continue
+                else:
+                    continue
+                if (
+                    isinstance(hint.path, str)
+                    and isinstance(hint.purpose, str)
+                    and isinstance(hint.scope, str)
+                    and all(
+                        value is None or isinstance(value, str)
+                        for value in (
+                            hint.evidence_id, hint.provenance,
+                            hint.repository_revision, hint.config_digest,
+                            hint.expires_at,
+                        )
+                    )
+                ):
+                    request_hints.append(hint)
+        request_hint_digest = stable_hash([
+            {
+                "path": hint.path,
+                "purpose": hint.purpose,
+                "scope": hint.scope,
+                "evidence_id": hint.evidence_id,
+                "provenance": hint.provenance,
+                "repository_revision": hint.repository_revision,
+                "config_digest": hint.config_digest,
+                "expires_at": hint.expires_at,
+            }
+            for hint in request_hints
+        ])
+        try:
+            workspace_state = self._repo_cache_state(root) or {}
+        except Exception:
+            workspace_state = {}
+        repository_revision = (
+            str(workspace_state.get("fingerprint") or "")
+            if not workspace_state.get("stale") and not workspace_state.get("degraded")
+            else ""
+        )
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
@@ -2592,24 +2676,118 @@ class LocalAIServices:
             except Exception:
                 pass
         def compute() -> dict[str, Any]:
-            if paths:
-                targeted = (
-                    self.repo_tools.search_paths(root, query, paths, top_k, context_lines=eff_ctx_lines)
-                    if eff_ctx_lines is not None
-                    else self.repo_tools.search_paths(root, query, paths, top_k)
-                )
-            else:
-                targeted = {"results": []}
-            used_preprocessed = bool(paths and targeted.get("results"))
-            result = targeted if targeted.get("results") else (
-                self.repo_tools.search(root, query, top_k, context_lines=eff_ctx_lines)
-                if eff_ctx_lines is not None
-                else self.repo_tools.search(root, query, top_k)
+            candidate_limit = max(
+                1, int(getattr(self.repo_tools, "max_hits", 80)) * 4
             )
-            result["preprocessed_hit"] = used_preprocessed
+            full_result = (
+                self.repo_tools.search(root, query, candidate_limit, context_lines=eff_ctx_lines)
+                if eff_ctx_lines is not None
+                else self.repo_tools.search(root, query, candidate_limit)
+            )
+            if not isinstance(full_result, dict) or not full_result.get("success", True):
+                result = dict(full_result) if isinstance(full_result, dict) else {
+                    "success": False, "error": "repository search failed"
+                }
+                result["preprocessed_hit"] = False
+                return result
+
+            targeted = {"results": []}
+            if paths:
+                try:
+                    targeted = (
+                        self.repo_tools.search_paths(
+                            root, query, paths, candidate_limit, context_lines=eff_ctx_lines
+                        )
+                        if eff_ctx_lines is not None
+                        else self.repo_tools.search_paths(root, query, paths, candidate_limit)
+                    )
+                except Exception:
+                    targeted = {"results": []}
+
+            combined: list[dict[str, Any]] = []
+            seen_hits: set[tuple[str, int]] = set()
+            for source in (full_result, targeted):
+                source_hits = source.get("results", []) if isinstance(source, dict) else []
+                if not isinstance(source_hits, list):
+                    continue
+                for item in source_hits:
+                    if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                        continue
+                    try:
+                        line_number = int(item.get("start_line", 0) or 0)
+                    except (TypeError, ValueError):
+                        line_number = 0
+                    key = (item["path"], line_number)
+                    if key not in seen_hits:
+                        combined.append(dict(item))
+                        seen_hits.add(key)
+
+            base = Path(root).expanduser().resolve(strict=True)
+            allowed_results: list[dict[str, Any]] = []
+            for item in combined:
+                relative = str(item.get("path") or "").replace("\\", "/")
+                if not relative:
+                    continue
+                target = (base / relative).resolve(strict=False)
+                try:
+                    target.relative_to(base)
+                    size_bytes = target.stat().st_size
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                if not path_is_allowed(
+                    base,
+                    target,
+                    project_context.settings,
+                    phase="search",
+                    hard_denied=bool(item.get("hard_denied", False)),
+                    binary=bool(item.get("binary", False)),
+                    size_bytes=size_bytes,
+                ):
+                    continue
+                item["path"] = target.relative_to(base).as_posix()
+                allowed_results.append(item)
+
+            override_patterns = tuple(
+                pattern
+                for pattern, action in project_context.settings.path_overrides.items()
+                if action == "include"
+            )
+            override_order = sorted(
+                allowed_results,
+                key=lambda item: not any(
+                    path_matches_pattern(str(item["path"]), pattern)
+                    for pattern in override_patterns
+                ),
+            )
+            candidate_paths = [str(item["path"]) for item in override_order]
+            configured_usage = project_context.prioritize_paths(
+                candidate_paths,
+                purpose="repository_search",
+                scope=search_scope,
+                repository_revision=repository_revision,
+                path_hints=(),
+            )
+            request_usage = prioritize_paths_with_hints(
+                base,
+                configured_usage.paths,
+                request_hints,
+                purpose="repository_search",
+                scope=search_scope,
+                repository_revision=repository_revision,
+                config_digest=project_context.config_digest,
+            )
+            path_rank = {path: rank for rank, path in enumerate(request_usage.paths)}
+            allowed_results.sort(
+                key=lambda item: path_rank.get(str(item["path"]), len(path_rank))
+            )
+            result = dict(full_result)
+            result["results"] = allowed_results[:max(1, int(top_k))]
+            result["preprocessed_hit"] = bool(
+                paths
+                and any(str(item.get("path")) in set(paths) for item in allowed_results)
+            )
             if enrich:
                 result["enriched"] = True
-                base = Path(root).expanduser().resolve()
                 for hit in result.get("results", [])[:top_k]:
                     rel = str(hit.get("path") or "")
                     target = (base / rel).resolve()
@@ -2634,7 +2812,20 @@ class LocalAIServices:
                 except Exception:
                     pass
             return result
-        return self._repo_cached("search", root, {"query": query, "top_k": top_k, "ci": paths[:24], "ctx": eff_ctx_lines}, compute)
+        return self._repo_cached(
+            "search",
+            root,
+            {
+                "query": query,
+                "top_k": top_k,
+                "ci": paths[:24],
+                "ctx": eff_ctx_lines,
+                "scope": search_scope,
+                "config_digest": project_context.config_digest,
+                "path_hints_digest": request_hint_digest,
+            },
+            compute,
+        )
 
     def _refresh_changed_intelligence(self, root: str) -> None:
         """Synchronize only Git-changed files before serving a cache-miss intelligence query.

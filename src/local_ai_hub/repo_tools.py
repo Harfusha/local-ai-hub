@@ -103,6 +103,9 @@ class RepositoryTools:
         ])}
         self.max_file_bytes = int(rag.get("max_file_bytes", 2_000_000))
         self.max_files = int(search.get("max_files", 8000))
+        self.python_fallback_max_files = max(
+            1, min(max(1, self.max_files), int(search.get("python_fallback_max_files", self.max_files)))
+        )
         self.max_hits = int(search.get("max_hits", 80))
         self.max_search_terms = max(4, int(search.get("max_terms", 12)))
         self.snippet_lines = int(search.get("snippet_lines", 5))
@@ -292,14 +295,14 @@ class RepositoryTools:
             count += 1
             yield path
 
-    def _read_snapshot(self, path: Path) -> tuple[str, list[str]]:
+    def _read_snapshot(self, path: Path, *, force: bool = False) -> tuple[str, list[str]]:
         """Cache decoded file content/hash by stat identity across different repo queries."""
         stat = path.stat()
         key = str(path)
         with self._snapshot_lock:
             item = self._snapshots.get(key)
             identity = (int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)))
-            if item is not None and item[:4] == identity:
+            if not force and item is not None and item[:4] == identity:
                 self._snapshots.move_to_end(key)
                 self.snapshot_hits += 1
                 return item[4], item[5]
@@ -355,6 +358,15 @@ class RepositoryTools:
             if len(self._hash_only_cache) > self._hash_only_max_entries:
                 self._hash_only_cache.popitem(last=False)
         return digest
+
+    def invalidate_snapshot(self, path: Path) -> None:
+        """Drop cached identities when a caller has independent change evidence."""
+        key = str(path)
+        with self._snapshot_lock:
+            item = self._snapshots.pop(key, None)
+            if item is not None:
+                self._snapshot_bytes -= item[6]
+            self._hash_only_cache.pop(key, None)
 
     @staticmethod
     def _git_empty_snapshot(root: str, error: str) -> GitSnapshot:
@@ -882,6 +894,7 @@ class RepositoryTools:
         effective_snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
         hits: list[dict[str, Any]] = []
         scanned = 0
+        python_fallback_scanned: int | None = None
         candidate_engine = "python"
         candidates, accelerator_failed = self._ripgrep_candidates(base, terms, self.max_hits * 4)
         accelerated = candidates is not None
@@ -930,8 +943,12 @@ class RepositoryTools:
                 "retryable": True,
             }
         if not hits and not accelerated:
+            python_fallback_scanned = 0
             for path in self.iter_files(str(base)):
+                if python_fallback_scanned >= self.python_fallback_max_files:
+                    break
                 scanned += 1
+                python_fallback_scanned += 1
                 rel = str(path.relative_to(base)).replace("\\", "/")
                 path_lower = rel.lower()
                 try:
@@ -973,6 +990,9 @@ class RepositoryTools:
         candidate_pool = hits[: max(len(dedup), max(1, int(top_k)) * 4)]
         candidate_tokens = sum(estimate_tokens(str(item.get("text", ""))) for item in candidate_pool)
         result = {"success": True, "root": str(base), "scanned_files": scanned, "terms": terms, "results": dedup, "engine": candidate_engine}
+        if python_fallback_scanned is not None:
+            result["python_fallback_files_scanned"] = python_fallback_scanned
+            result["python_fallback_file_limit"] = self.python_fallback_max_files
         if candidate_tokens:
             # Diagnostic only. Local RG-like filtering is not proof that a cloud
             # agent would otherwise have paid for the candidate snippets.

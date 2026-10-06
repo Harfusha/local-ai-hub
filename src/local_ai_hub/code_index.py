@@ -31,6 +31,10 @@ JS_METHOD = re.compile(r"^\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)
 _CONTROL_NAMES = {"if","for","while","switch","catch","return","new","throw","using","lock","foreach","typeof","sizeof","default"}
 
 
+def _escape_like_literal(value: str) -> str:
+    return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+
+
 class CodeIndex:
     def __init__(self, config: dict[str, Any], repo_tools: Any):
         self.config = config
@@ -61,6 +65,7 @@ class CodeIndex:
             root TEXT,
             path TEXT,
             content_hash TEXT,
+            analyzer_version TEXT,
             language TEXT,
             updated_at REAL,
             PRIMARY KEY(root, path)
@@ -119,6 +124,11 @@ class CodeIndex:
         );
         CREATE INDEX IF NOT EXISTS idx_parse_blobs_updated ON parse_blobs(updated_at);
         """)
+        file_columns = {str(row["name"]) for row in con.execute("PRAGMA table_info(files)").fetchall()}
+        if "analyzer_version" not in file_columns:
+            raise sqlite3.DatabaseError(
+                "stale derived code-index schema; rebuild this cache"
+            )
         
     def _init_db(self) -> None:
         try:
@@ -158,6 +168,7 @@ class CodeIndex:
             ".jsx": "javascript",
             ".php": "php",
             ".java": "java",
+            ".cpp": "cpp",
             ".go": "go",
             ".rs": "rust",
             ".json": "json",
@@ -293,6 +304,33 @@ class CodeIndex:
         closing = pairs.get(opening)
         return (closing + 1) if closing is not None else start_index + 1
 
+    @staticmethod
+    def _call_owners_by_line(symbols: list[dict[str, Any]], line_count: int) -> list[str]:
+        """Map source lines to the narrowest enclosing fallback function symbol."""
+        function_kinds = {"function", "method", "constructor", "func", "fn"}
+        starts: dict[int, list[dict[str, Any]]] = {}
+        for symbol in symbols:
+            start = int(symbol.get("line", 0))
+            end = int(symbol.get("end_line", 0))
+            if str(symbol.get("kind", "")).lower() in function_kinds and 1 <= start <= end <= line_count:
+                starts.setdefault(start, []).append(symbol)
+
+        owners = ["<module>"] * (line_count + 1)
+        active: list[dict[str, Any]] = []
+        for line in range(1, line_count + 1):
+            active = [symbol for symbol in active if int(symbol.get("end_line", 0)) >= line]
+            active.extend(starts.get(line, ()))
+            if active:
+                owner = min(
+                    active,
+                    key=lambda symbol: (
+                        int(symbol.get("end_line", 0)) - int(symbol.get("line", 0)),
+                        -int(symbol.get("line", 0)),
+                    ),
+                )
+                owners[line] = str(owner.get("name_path") or owner.get("name") or "<module>")
+        return owners
+
     def _parse_csharp(self, text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         syms: list[dict[str, Any]] = []
         refs: list[dict[str, Any]] = []
@@ -317,6 +355,7 @@ class CodeIndex:
 
         container_stack: list[tuple[str, str, int, int]] = []
         overloads: dict[str, int] = {}
+        class_names: set[str] = set()
 
         for i, line in enumerate(lines, 1):
             um = using_re.match(line)
@@ -332,6 +371,7 @@ class CodeIndex:
                 access = cm.group(1) or "internal"
                 kind = cm.group(2)
                 name = cm.group(3)
+                class_names.add(name)
                 heritage = cm.group(4) or ""
 
                 end_l = self._block_end_line(i - 1, brace_pairs, next_open, 3500)
@@ -365,7 +405,10 @@ class CodeIndex:
                 continue
 
             mm = method_re.match(line)
-            if mm and mm.group(3) not in _CONTROL_NAMES:
+            is_method_declaration = bool(
+                mm and (mm.group(2) is not None or mm.group(3) in class_names)
+            )
+            if is_method_declaration and mm.group(3) not in _CONTROL_NAMES:
                 access = mm.group(1) or "private"
                 ret_type = mm.group(2) or "void"
                 name = mm.group(3)
@@ -413,13 +456,15 @@ class CodeIndex:
                 })
 
         call_pattern = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{2,})\s*\(")
+        declaration_lines = {int(symbol["line"]) for symbol in syms}
+        call_owners = self._call_owners_by_line(syms, len(lines))
         for i, line in enumerate(lines, 1):
             cleaned = line.split("//")[0]
             for m in call_pattern.finditer(cleaned):
                 cname = m.group(1)
-                if cname not in _CONTROL_NAMES:
+                if cname not in _CONTROL_NAMES and i not in declaration_lines:
                     refs.append({"name": cname, "line": i, "kind": "call"})
-                    edges.append({"src": "<module>", "dst": cname, "kind": "calls", "line": i})
+                    edges.append({"src": call_owners[i], "dst": cname, "kind": "calls", "line": i})
 
         return syms, refs, edges
 
@@ -478,12 +523,14 @@ class CodeIndex:
             syms.append(s)
 
         call_re = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{2,})\s*\(")
+        declaration_lines = {int(symbol["line"]) for symbol in syms}
+        call_owners = self._call_owners_by_line(syms, len(lines))
         for i, line in enumerate(lines, 1):
             for m in call_re.finditer(line):
                 name = m.group(1)
-                if name.lower() not in _CONTROL_NAMES:
+                if name.lower() not in _CONTROL_NAMES and i not in declaration_lines:
                     refs.append({"name": name, "line": i, "kind": "call"})
-                    edges.append({"src": "<module>", "dst": name, "kind": "calls", "line": i})
+                    edges.append({"src": call_owners[i], "dst": name, "kind": "calls", "line": i})
 
         return syms, refs, edges
 
@@ -547,9 +594,11 @@ class CodeIndex:
                 for t in ("files", "symbols", "refs", "edges"):
                     con.execute(f"DELETE FROM {t} WHERE root=? AND path=?", (str(base), path))
                 con.commit()
+            self._query_l1.clear()
+            self._status_cache.pop(str(base), None)
             return {"success": True, "deleted": True}
 
-        digest, lines = self.repo_tools._read_snapshot(target)
+        digest, lines = self.repo_tools._read_snapshot(target, force=True)
         content_hash = content_hash or digest
         with self._lock, closing(self._connect()) as con:
             row = con.execute("SELECT content_hash FROM files WHERE root=? AND path=?", (str(base), path)).fetchone()
@@ -578,6 +627,8 @@ class CodeIndex:
             con.executemany("INSERT INTO edges(root, src, dst, kind, path, line) VALUES(?,?,?,?,?,?)", [(str(base), e["src"], e["dst"], e.get("kind", "reference"), path, e["line"]) for e in edges])
             con.commit()
 
+        self._query_l1.clear()
+        self._status_cache.pop(str(base), None)
         return {"success": True, "cached": False, "path": path, "symbols": len(syms), "refs": len(refs), "edges": len(edges)}
 
     def update_files_batch(self, root: str, items: list[str] | list[tuple[str, str]]) -> dict[str, Any]:
@@ -598,6 +649,7 @@ class CodeIndex:
 
         candidates: list[tuple[str, str, str, list[str]]] = []
         cached = 0
+        deleted_paths: list[tuple[str, str]] = []
         for path, supplied_hash in normalized:
             file_path = (base / path).resolve(strict=False)
             try:
@@ -605,6 +657,7 @@ class CodeIndex:
             except ValueError:
                 continue
             if not file_path.is_file():
+                deleted_paths.append((c_root, path))
                 continue
             lang = self._lang(path)
             if supplied_hash:
@@ -617,7 +670,7 @@ class CodeIndex:
                     candidates.append((path, supplied_hash, lang, []))
                     continue
             try:
-                digest, lines = self.repo_tools._read_snapshot(file_path)
+                digest, lines = self.repo_tools._read_snapshot(file_path, force=True)
             except OSError:
                 continue
             content_hash = supplied_hash or digest
@@ -678,12 +731,16 @@ class CodeIndex:
             refs_to_insert.extend((c_root, path, x["name"], x["line"], x.get("kind", "call")) for x in refs)
             edges_to_insert.extend((c_root, x["src"], x["dst"], x.get("kind", "reference"), path, x["line"]) for x in edges)
 
-        if files_to_insert:
+        if files_to_insert or deleted_paths:
             with self._lock, closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 if parse_blob_rows:
                     con.executemany("INSERT OR REPLACE INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)", parse_blob_rows)
                 _IDX_TABLES = frozenset({"symbols", "refs", "edges"})
+                if deleted_paths:
+                    con.executemany("DELETE FROM files WHERE root=? AND path=?", deleted_paths)
+                    for table in _IDX_TABLES:
+                        con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", deleted_paths)
                 for table in ("symbols", "refs", "edges"):
                     assert table in _IDX_TABLES  # defence-in-depth whitelist
                     con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)  # noqa: S608
@@ -692,6 +749,7 @@ class CodeIndex:
                 con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
                 con.executemany("INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)", edges_to_insert)
                 con.commit()
+            self._query_l1.clear()
         self._status_cache.pop(c_root, None)
         return {"success": True, "files_processed": len(files_to_insert), "cached": cached, "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert), "parse_blob_hits": len(candidates) - len(parse_blob_rows)}
 
@@ -1355,12 +1413,14 @@ class CodeIndex:
         if not symbol or not symbol.strip():
             return {"success": False, "error": "symbol cannot be empty"}
         sym = symbol.strip()
+        like_sym = _escape_like_literal(sym)
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT src, dst, kind, path, line FROM edges
-                   WHERE root=? AND (dst=? OR dst LIKE ?)
+                   WHERE root=? AND kind='calls' AND
+                         (dst=? OR dst LIKE ? ESCAPE '!' OR dst LIKE ? ESCAPE '!')
                    ORDER BY path, line LIMIT ?""",
-                (resolved, sym, f"%/{sym}", limit),
+                (resolved, sym, f"%/{like_sym}", f"%::{like_sym}", limit),
             ).fetchall()
         callers = [
             {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}
@@ -1374,12 +1434,14 @@ class CodeIndex:
         if not symbol or not symbol.strip():
             return {"success": False, "error": "symbol cannot be empty"}
         sym = symbol.strip()
+        like_sym = _escape_like_literal(sym)
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT src, dst, kind, path, line FROM edges
-                   WHERE root=? AND (src=? OR src LIKE ?)
+                   WHERE root=? AND kind='calls' AND
+                         (src=? OR src LIKE ? ESCAPE '!' OR src LIKE ? ESCAPE '!')
                    ORDER BY path, line LIMIT ?""",
-                (resolved, sym, f"%/{sym}", limit),
+                (resolved, sym, f"%/{like_sym}", f"%::{like_sym}", limit),
             ).fetchall()
         callees = [
             {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}

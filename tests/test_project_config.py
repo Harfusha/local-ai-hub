@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import local_ai_hub.project_config as project_config
 import pytest
@@ -14,6 +15,7 @@ from local_ai_hub.project_config import (
     path_matches_pattern,
     path_is_allowed,
     resolve_project_config,
+    resolve_project_context,
 )
 
 
@@ -30,6 +32,29 @@ def _mock_resolutions(monkeypatch, resolutions: dict[Path, Path]) -> None:
         return original_resolve(self, strict=strict)
 
     monkeypatch.setattr(Path, "resolve", controlled_resolve)
+
+
+def test_project_context_never_reads_hub_state_as_configuration(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    state_dir = tmp_path / "hub-state"
+    root.mkdir()
+    state_dir.mkdir()
+    (root / ".local-ai.toml").write_text(
+        'shared_namespace = "project-local"\n', encoding="utf-8"
+    )
+    (state_dir / ".local-ai.toml").write_text(
+        'shared_namespace = "runtime-override"\n', encoding="utf-8"
+    )
+
+    context = resolve_project_context(root, state_dir)
+
+    assert context.settings.shared_namespace == "project-local"
+    assert context.resolution.active_sources == ("defaults", "project")
+    assert (state_dir / ".local-ai.toml").read_text(encoding="utf-8") == (
+        'shared_namespace = "runtime-override"\n'
+    )
 
 
 def test_project_configuration_merges_sources_in_documented_order(
@@ -74,6 +99,61 @@ def test_project_configuration_merges_sources_in_documented_order(
     )
     assert result.error_codes == ()
     assert len(result.config_digest) == 64
+
+
+def test_linked_worktree_inherits_primary_repository_project_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    primary = tmp_path / "primary"
+    common = primary / ".git"
+    linked = tmp_path / "worktrees" / "feature"
+    (common / "info").mkdir(parents=True)
+    linked.mkdir(parents=True)
+    (primary / ".local-ai.toml").write_text(
+        'exclude_paths = ["shared-generated/**"]\n'
+        '[commands]\nlint = "python -m ruff check"\n',
+        encoding="utf-8",
+    )
+    (linked / ".local-ai.toml").write_text(
+        '[commands]\ntest = "python -m pytest"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: common)
+
+    result = resolve_project_config(linked)
+
+    assert result.error_codes == ()
+    assert result.settings.exclude_paths == ("shared-generated/**",)
+    assert result.settings.commands == {
+        "lint": "python -m ruff check",
+        "test": "python -m pytest",
+    }
+    assert result.active_sources == ("defaults", "primary_project", "project")
+
+
+def test_primary_worktree_discovery_uses_git_worktree_list(
+    tmp_path: Path, monkeypatch
+) -> None:
+    common = tmp_path / "custom-git-dir"
+    primary = tmp_path / "primary"
+    linked = tmp_path / "linked"
+    common.mkdir()
+    primary.mkdir()
+    linked.mkdir()
+    (primary / ".git").write_text(f"gitdir: {common}\n", encoding="utf-8")
+    (linked / ".git").write_text(
+        f"gitdir: {common / 'worktrees' / 'linked'}\n", encoding="utf-8"
+    )
+    output = (
+        f"worktree {primary}\nHEAD {('a' * 40)}\nbranch refs/heads/main\n\n"
+        f"worktree {linked}\nHEAD {('b' * 40)}\nbranch refs/heads/feature\n"
+    )
+    monkeypatch.setattr(
+        project_config.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=output),
+    )
+
+    assert project_config._git_primary_worktree_root(linked, common) == primary
 
 
 def test_path_override_inheritance_normalizes_equivalent_separators(
@@ -487,6 +567,37 @@ def test_verification_rules_reject_empty_or_invalid_additive_values(
     assert result.error_codes == ("invalid_config",)
 
 
+def test_verification_rules_reject_undefined_command_aliases(tmp_path: Path) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        '[commands]\nlint = "python -m ruff check"\n'
+        '[verification_rules]\nrequired_commands = ["test"]\n',
+        encoding="utf-8",
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.settings == ProjectSettings()
+    assert result.error_codes == ("invalid_config",)
+
+
+def test_model_profile_and_prompt_prefix_defaults_and_validation(
+    tmp_path: Path,
+) -> None:
+    defaults = resolve_project_config(tmp_path)
+
+    assert defaults.settings.model_profile == "balanced"
+    assert defaults.settings.system_prompt_prefix is None
+    assert defaults.error_codes == ()
+
+    (tmp_path / ".local-ai.toml").write_text(
+        'model_profile = "unknown"\n', encoding="utf-8"
+    )
+    rejected = resolve_project_config(tmp_path)
+
+    assert rejected.settings == ProjectSettings()
+    assert rejected.error_codes == ("invalid_config",)
+
+
 def test_all_declared_configuration_fields_have_typed_values(tmp_path: Path) -> None:
     (tmp_path / ".local-ai.toml").write_text(
         'exclude_paths = ["build/**"]\n'
@@ -599,6 +710,18 @@ def test_language_override_rejects_toml_datetime_atomically(tmp_path: Path) -> N
 
     assert result.settings == ProjectSettings()
     assert result.active_sources == ("defaults",)
+    assert result.error_codes == ("invalid_config",)
+
+
+def test_language_override_rejects_unknown_nested_keys(tmp_path: Path) -> None:
+    (tmp_path / ".local-ai.toml").write_text(
+        '[language_overrides.python]\ntext_extension = [".py"]\n',
+        encoding="utf-8",
+    )
+
+    result = resolve_project_config(tmp_path)
+
+    assert result.settings == ProjectSettings()
     assert result.error_codes == ("invalid_config",)
 
 
@@ -966,6 +1089,23 @@ def test_exclude_paths_match_lexical_alias_and_mocked_resolved_target(
     assert not path_is_allowed(
         tmp_path, target_excluded_alias, settings, phase="search"
     )
+
+
+def test_most_specific_path_override_wins_across_symlink_alias_and_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "src" / "main.py"
+    alias = tmp_path / "vendor" / "main.py"
+    source.parent.mkdir()
+    alias.parent.mkdir()
+    source.write_text("source")
+    alias.write_text("alias")
+    _mock_resolutions(monkeypatch, {alias: source})
+    settings = ProjectSettings(
+        path_overrides={"vendor/**": "exclude", "src/main.py": "include"}
+    )
+
+    assert path_is_allowed(tmp_path, alias, settings, phase="search")
 
 
 def test_project_exclude_wins_over_force_include_and_path_override_include(
