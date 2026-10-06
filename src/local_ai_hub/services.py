@@ -4,8 +4,10 @@ from .json_utils import dumps as json_dumps
 
 import base64
 import copy
+import fnmatch
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -40,23 +42,18 @@ from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
 from .vision_contracts import (
-    UNTRUSTED_CONTEXT_INSTRUCTION,
-    VISION_MAX_BUNDLE_CHARS,
-    VISION_MAX_IMAGE_BYTES,
-    VISION_MAX_IMAGE_CHARS,
-    VISION_MAX_INLINE_RESPONSE_CHARS,
-    VISION_MAX_PROMPT_CHARS,
     VISION_MAX_RUNTIME_OUTPUT_CHARS,
-    VISION_MAX_SCHEMA_CHARS,
     bound_vision_result,
+    image_dimensions,
     parse_vision_result,
 )
 from .frontend_review import (
-    FrontendReviewError,
     build_coder_context,
-    build_model_context,
-    parse_bounded_context,
 )
+from .vision_inputs import prepare_vision_inputs
+from .vision_payload import vision_success_payload
+from .vision_request import build_vision_request, select_vision_model, vision_feature_error, vision_request_timeout
+from .vision_runtime import vision_capability_error, vision_generation_error
 from .agent_consistency import AdaptiveContextPack, ConsistencyRequest, GuardWarning
 from .agent_context import ContextCompiler, ContextRequest
 from .agent_events import AgentStateStore
@@ -350,8 +347,10 @@ def generation_cache_key(
     memory_revision: str = "",
     focus: Any = None,
     preload_profile: str = "",
+    project_config_digest: str = "",
+    project_namespace: str = "",
 ) -> str:
-    return stable_hash({
+    key_data = {
         "model": model,
         "prompt": normalize_generation_cache_prompt(prompt),
         "system": normalize_generation_cache_prompt(system),
@@ -365,7 +364,11 @@ def generation_cache_key(
         "focus": focus,
         "preload_profile": preload_profile,
         "app_version": __version__,
-    })
+    }
+    if project_config_digest or project_namespace:
+        key_data["project_config_digest"] = project_config_digest
+        key_data["project_namespace"] = project_namespace
+    return stable_hash(key_data)
 
 
 def normalize_context_for_hash(context: str) -> str:
@@ -384,6 +387,17 @@ def vram_priority(is_generation: bool = True):
     """Global lock to serialize heavy batch operations and prioritize LLM inference against VRAM thrashing."""
     with _GLOBAL_VRAM_LOCK:
         yield
+
+
+def _active_sqlite_databases(state_dir: Path) -> list[Path]:
+    legacy_names = {"agent_state.sqlite3", "cache.sqlite3", "leases.sqlite3", "agent_blackboard.sqlite3"}
+    recovery_markers = (".path-migration-", ".schema-mismatch-", ".corrupt-")
+    return sorted(
+        db
+        for pattern in ("*.sqlite", "*.sqlite3")
+        for db in state_dir.glob(pattern)
+        if db.name not in legacy_names and not any(marker in db.name for marker in recovery_markers)
+    )
 
 
 class LocalAIServices:
@@ -457,7 +471,7 @@ class LocalAIServices:
 
         cache_cfg = config.get("cache", {})
         persistent = SQLiteCache(
-            Path(config["server"]["state_dir"]) / "cache.sqlite3",
+            Path(config["server"]["state_dir"]) / "cache.sqlite",
             namespace="generation",
             ttl_seconds=int(cache_cfg.get("generation_ttl_seconds", 7 * 86400)),
             max_entries=int(cache_cfg.get("generation_max_entries", 5000)),
@@ -469,7 +483,7 @@ class LocalAIServices:
         )
         self.generation_cache = SingleFlightCache(generation_tier, enabled=bool(cache_cfg.get("generation", True)), wait_timeout_seconds=float(config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 45)))
         embedding_cache = SQLiteCache(
-            Path(config["server"]["state_dir"]) / "cache.sqlite3",
+            Path(config["server"]["state_dir"]) / "cache.sqlite",
             namespace="embeddings",
             ttl_seconds=int(cache_cfg.get("embedding_ttl_seconds", 30 * 86400)),
             max_entries=int(cache_cfg.get("embedding_max_entries", 100000)),
@@ -483,7 +497,7 @@ class LocalAIServices:
         workspace_cfg = config.get("workspace_cache", {})
         self.repo_cache = TieredCache(
             SQLiteCache(
-                Path(config["server"]["state_dir"]) / "cache.sqlite3",
+                Path(config["server"]["state_dir"]) / "cache.sqlite",
                 namespace="repo-results",
                 ttl_seconds=int(workspace_cfg.get("repo_result_ttl_seconds", 7 * 86400)),
                 max_entries=int(workspace_cfg.get("repo_result_max_entries", 20000)),
@@ -499,7 +513,7 @@ class LocalAIServices:
             cooldown_seconds=float(resilience.get("circuit_cooldown_seconds", 20)),
         )
         self.stale_generation_cache = SQLiteCache(
-            Path(config["server"]["state_dir"]) / "cache.sqlite3",
+            Path(config["server"]["state_dir"]) / "cache.sqlite",
             namespace="generation-stale",
             ttl_seconds=int(resilience.get("stale_generation_ttl_seconds", 30 * 86400)),
             max_entries=int(resilience.get("stale_generation_max_entries", 10000)),
@@ -564,6 +578,8 @@ class LocalAIServices:
 
     def set_agent_state(self, store: Any) -> None:
         self.agent_state = store
+        from .agent_events import SwarmPubSub
+        SwarmPubSub.get_default(state_store=store)
 
     def set_consistency_guard(self, guard: Any) -> None:
         self.consistency_guard = guard
@@ -832,9 +848,31 @@ class LocalAIServices:
         internal: bool = False,
         use_cache: bool = True,
         format: Any = None,
+        project_settings: Any | None = None,
+        project_role: str = "",
+        project_config_digest: str = "",
+        project_namespace: str = "",
+        repository_revision: str = "",
+        trace_system_override: str | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        trace_system = system if trace_system_override is None else str(trace_system_override)
+        mode_pause_result: dict[str, Any] | None = None
+        if cancel_event is None:
+            cancel_event = threading.Event()
+        if project_settings is not None:
+            model, project_payload = self.model_policy.apply_project_settings(
+                model,
+                {"model": model, "system": system},
+                settings=project_settings,
+                role=project_role,
+            )
+            system = str(project_payload.get("system", system))
         saving = self.config.get("token_saving", {})
         resilience = self.config.get("resilience", {})
+        default_request_timeout = float(self.config.get("server", {}).get("request_timeout_seconds", 300)) + 30.0
+        request_timeout = max(0.05, float(resilience.get("scheduler_wait_timeout_seconds", default_request_timeout)))
+        request_deadline = time.monotonic() + request_timeout
         max_tokens = max(64, min(int(max_tokens), int(saving.get("max_local_output_tokens", 8192))))
         role = source.rsplit(":", 1)[-1].lower()
         if source == "second-opinion":
@@ -842,7 +880,9 @@ class LocalAIServices:
         vram_free = None
         if getattr(self, "vram_balancer", None):
             try:
-                vram_free = self.vram_balancer.status().get("vram_available_mb")
+                vram_status = self.vram_balancer.status()
+                if vram_status.get("available", "vram_available_mb" in vram_status):
+                    vram_free = vram_status.get("vram_available_mb")
             except Exception:
                 pass
         initial_profile = self.model_policy.profile(
@@ -882,11 +922,21 @@ class LocalAIServices:
             think=base_payload.get("think"),
             execution=execution_scope,
             format=base_payload.get("format"),
+            repository_revision=repository_revision,
+            project_config_digest=project_config_digest,
+            project_namespace=project_namespace,
         )
-        semantic_scope = stable_hash({
+        semantic_scope_data = {
             "model": model, "system": system, "options": options, "think": base_payload.get("think"), "execution": execution_scope,
             "context": norm_context_fp, "source": source.split(":", 1)[0], "app_version": __version__,
-        })
+        }
+        if project_config_digest or project_namespace:
+            semantic_scope_data.update({
+                "repository_revision": repository_revision,
+                "project_config_digest": project_config_digest,
+                "project_namespace": project_namespace,
+            })
+        semantic_scope = stable_hash(semantic_scope_data)
         started = time.perf_counter()
         cache_layer = "miss"
         semantic_score = 0.0
@@ -920,10 +970,48 @@ class LocalAIServices:
                         "model": requested_model,
                     }
 
-            candidates = [requested_model] + self._fallback_models(requested_model)
+            tier_ranks = {"fast_code": 0, "general": 0, "heavy_code": 1, "reasoning": 2}
+
+            def model_tier_rank(candidate_model: str) -> int:
+                return max(
+                    (rank for role_name, rank in tier_ranks.items()
+                     if str(self.config.get("models", {}).get(role_name, "")) == str(candidate_model or "")),
+                    default=0,
+                )
+
+            requested_rank = model_tier_rank(requested_model)
+            # Runtime failover must keep the router's quality floor for this request.
+            candidates = [requested_model] + [
+                candidate
+                for candidate in self._fallback_models(requested_model)
+                if model_tier_rank(candidate) >= requested_rank
+            ]
             errors: list[str] = []
+            attempt_failures: list[dict[str, Any]] = []
             retryable_error = False
             timeout_error = False
+            preempted_error = False
+            cancel_requested = False
+            scheduler_state = ""
+
+            def record_attempt_failures(*, recovered: bool) -> None:
+                for failed in attempt_failures:
+                    self.telemetry.record_error(
+                        "ollama", f"{source}:model_attempt", failed["error"], tenant=tenant,
+                        error_type_override=failed["error_type"],
+                        error_code_override=failed["error_code"],
+                        retryable=failed["retryable"], recovered=recovered,
+                    )
+
+            admission_action = source.split(":", 1)[0].strip().replace("-", "_")
+            known_actions = {
+                "delegate", "reason", "review", "review_diff", "second_opinion",
+                "compress", "route", "batch", "embed", "rerank", "transcribe",
+                "vision", "benchmark", "complete_code", "scaffold", "speculative_draft",
+                "generate_tests", "solve", "eval_suite", "prompt_eval", "eval_drift",
+            }
+            if admission_action not in known_actions:
+                admission_action = "delegate"
             for index, candidate in enumerate(candidates):
                 breaker_key = f"model:{candidate}"
                 if not self.breakers.allow(breaker_key):
@@ -932,12 +1020,24 @@ class LocalAIServices:
                     continue
 
                 def run(candidate_model: str = candidate) -> dict[str, Any]:
+                    nonlocal mode_pause_result
+                    def cancelled_result() -> dict[str, Any]:
+                        return {
+                            "success": False, "cancelled": True, "preempted": True,
+                            "reason": "cancelled",
+                            "error": "conversation generation cancelled for resource release",
+                            "model": candidate_model, "terminal": True, "retryable": False,
+                            "_cacheable": False,
+                        }
+                    if cancel_event is not None and cancel_event.is_set():
+                        return cancelled_result()
                     # A smart->fast resilience fallback may have a smaller context window
                     # than the originally requested model. Re-fit locally instead of
                     # relying on implicit server truncation or turning an outage into OOM.
                     candidate_hint = self.model_policy.profile(
                         candidate_model, role=role, input_tokens=prepared.estimated_tokens, output_tokens=max_tokens,
                         background=source.startswith("preprocess:"),
+                        vram_free_mb=vram_free,
                     )
                     candidate_prepared = fit_text(prepared.text, min(int(saving.get("max_local_input_tokens", 56000)), candidate_hint.prompt_budget_tokens))
                     payload, candidate_profile = self.model_policy.apply_payload(
@@ -947,18 +1047,99 @@ class LocalAIServices:
                          "options": {"num_predict": max_tokens, "temperature": float(temperature)}},
                         role=role, input_tokens=candidate_prepared.estimated_tokens, output_tokens=max_tokens,
                         background=source.startswith("preprocess:"), preserve_explicit_think=False,
+                        vram_free_mb=vram_free,
                     )
                     trace_observer = observer()
-                    if trace_observer is not None:
-                        trace_observer.model_request(payload)
-                        response = self.runtime.request_stream(
-                            "/api/generate", payload, trace_observer.output_delta,
-                            # Keep mixed-version MCP workers alive while the
-                            # trace observer API rolls forward independently.
-                            on_thinking=getattr(trace_observer, "thinking_delta", None),
+                    trace_payload = dict(payload)
+                    if project_settings is not None or trace_system_override is not None:
+                        trace_payload["system"] = trace_system
+                    # A scheduler may defer this closure until after a mode change.
+                    try:
+                        from .operational_mode import (
+                            OperationalModeSnapshot,
+                            load_operational_mode,
+                            operational_mode_gate_error,
                         )
+                    except Exception:
+                        mode_rejection = {
+                            "success": False,
+                            "mode": "maintenance",
+                            "error": "hub paused: maintenance mode active",
+                            "terminal": False,
+                            "retryable": True,
+                            "retry_after_seconds": 5,
+                        }
                     else:
-                        response = self.runtime.request("/api/generate", payload)
+                        try:
+                            mode = load_operational_mode(configured_state_dir(self.config, create=False))
+                        except Exception:
+                            mode = None
+                        mode_rejection = operational_mode_gate_error(mode, admission_action)
+                    if mode_rejection is not None:
+                        mode_pause_result = mode_rejection
+                        return mode_rejection
+                    def request_candidate() -> dict[str, Any]:
+                        stream = getattr(self.runtime, "request_stream", None)
+                        if callable(stream):
+                            if trace_observer is not None:
+                                trace_observer.model_request(trace_payload)
+                            return stream(
+                                "/api/generate", payload,
+                                trace_observer.output_delta if trace_observer is not None else (lambda _chunk: None),
+                                on_thinking=getattr(trace_observer, "thinking_delta", None) if trace_observer is not None else None,
+                                timeout=max(0.05, request_deadline - time.monotonic()),
+                                deadline=request_deadline,
+                                should_stop=cancel_event.is_set,
+                            )
+                        interruptible = getattr(self.runtime, "request_interruptible", None)
+                        if cancel_event is not None and callable(interruptible):
+                            if trace_observer is not None:
+                                trace_observer.model_request(trace_payload)
+                            result = interruptible(
+                                "/api/generate", payload, should_stop=cancel_event.is_set,
+                                timeout=max(0.05, request_deadline - time.monotonic()),
+                                deadline=request_deadline,
+                            )
+                            if trace_observer is not None and result.get("response"):
+                                trace_observer.output_delta(str(result["response"]))
+                            return result
+                        if trace_observer is not None:
+                            trace_observer.model_request(trace_payload)
+                            return self.runtime.request_stream(
+                                "/api/generate", payload, trace_observer.output_delta,
+                                on_thinking=getattr(trace_observer, "thinking_delta", None),
+                                timeout=max(0.05, request_deadline - time.monotonic()),
+                                deadline=request_deadline,
+                                should_stop=cancel_event.is_set,
+                            )
+                        return self.runtime.request("/api/generate", payload)
+
+                    admission = getattr(self, "inference_admission", None)
+                    if callable(admission):
+                        # Recheck at backend handoff; scheduler delay can stale the
+                        # earlier mode snapshot. Do not hold the mode lock over I/O.
+                        with admission(admission_action) as rejection:
+                            if rejection is not None:
+                                if rejection.get("code") == "operational_mode_blocked":
+                                    rejection_mode = OperationalModeSnapshot(
+                                        str(rejection.get("operational_mode") or "maintenance"),
+                                        int(rejection.get("operational_mode_revision", 0) or 0),
+                                        None,
+                                        bool(rejection.get("operational_mode_degraded", False)),
+                                    )
+                                    mode_rejection = operational_mode_gate_error(
+                                        rejection_mode, admission_action,
+                                    )
+                                    if mode_rejection is not None:
+                                        mode_pause_result = mode_rejection
+                                        return mode_rejection
+                                mode_pause_result = rejection
+                                return rejection
+                            response = request_candidate()
+                    else:
+                        response = request_candidate()
+                    if (cancel_event is not None and cancel_event.is_set()) or response.get("preempted") is True:
+                        return cancelled_result()
                     if response.get("_lah_repetition_loop_detected"):
                         return {
                             "success": False,
@@ -969,6 +1150,26 @@ class LocalAIServices:
                             "repetition_loop_detected": True,
                             "_lah_repetition_loop_detected": True,
                             "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
+                        }
+                    if response.get("preempted"):
+                        return {
+                            "success": False,
+                            "error": str(response.get("error") or "model request cancelled"),
+                            "model": candidate_model,
+                            "preempted": True,
+                            "terminal": True,
+                            "retryable": False,
+                            "error_code": "model_request_cancelled",
+                        }
+                    if response.get("timed_out"):
+                        return {
+                            "success": False,
+                            "error": str(response.get("error") or "model request deadline exceeded"),
+                            "model": candidate_model,
+                            "timed_out": True,
+                            "terminal": False,
+                            "retryable": True,
+                            "error_code": "model_request_timeout",
                         }
                     if "error" in response:
                         retryable = is_retryable_local_backend_error(response["error"])
@@ -999,14 +1200,17 @@ class LocalAIServices:
                 try:
                     result = self.scheduler.submit(
                         candidate, tenant, source if index == 0 else f"{source}:fallback", run, priority=priority,
-                        wait_timeout=float(resilience.get("scheduler_wait_timeout_seconds", self.config.get("server", {}).get("request_timeout_seconds", 300) + 30)),
+                        wait_timeout=max(0.05, request_deadline - time.monotonic()),
+                        cancel_event=cancel_event,
                     )
                 except TimeoutError as exc:
                     timeout_error = True
                     retryable_error = True
+                    cancel_event.set()
                     result = {
                         "success": False,
                         "error": str(exc),
+                        "error_type": type(exc).__name__,
                         "model": candidate,
                         "terminal": False,
                         "retryable": True,
@@ -1018,25 +1222,43 @@ class LocalAIServices:
                     state = getattr(exc, "state", "")
                     if state:
                         result["scheduler_state"] = str(state)
+                        scheduler_state = str(state)
+                    cancel_requested = True
                 except Exception as exc:
                     retryable = is_retryable_local_backend_error(exc)
                     result = {
-                        "success": False, "error": str(exc), "model": candidate,
+                        "success": False, "error": str(exc), "error_type": type(exc).__name__, "model": candidate,
                         "retryable": retryable, "terminal": not retryable,
                         "error_code": "local_backend_transport" if retryable else "local_model_error",
                     }
+                if mode_pause_result is not None:
+                    return mode_pause_result
                 retryable_error = retryable_error or bool(result.get("retryable", False))
                 if result.get("success"):
                     self.breakers.success(breaker_key)
                     if candidate != requested_model:
                         self.fallback_count += 1
+                    record_attempt_failures(recovered=True)
                     return result
+                if result.get("preempted"):
+                    preempted_error = True
+                    errors.append(f"{candidate}: {result.get('error') or 'model request cancelled'}")
+                    break
+                if result.get("timed_out"):
+                    timeout_error = True
                 self.breakers.failure(breaker_key)
                 attempt_error = str(result.get("error", "failed"))
                 attempt_retries = int(result.get("_lah_retry_count", 0) or 0)
                 self.telemetry.record_stage(tenant=tenant, action=source, stage="model_attempt", model=candidate, success=False, degraded=index > 0, retry_count=attempt_retries, error_type="model_attempt_failed")
-                self.telemetry.record_error("ollama", f"{source}:model_attempt", attempt_error, tenant=tenant, retryable=True)
+                attempt_failures.append({
+                    "error": attempt_error,
+                    "error_type": str(result.get("error_type", "")),
+                    "error_code": str(result.get("error_code", "")),
+                    "retryable": bool(result.get("retryable", True)),
+                })
                 errors.append(f"{candidate}: {attempt_error}")
+                if timeout_error:
+                    break
 
             # Same exact prompt may be served stale only as a resilience fallback.
             if use_cache and bool(resilience.get("serve_stale_on_error", True)):
@@ -1046,16 +1268,27 @@ class LocalAIServices:
                     reused["_lah_cache_origin"] = "stale"
                     reused["stale_fallback"] = True
                     reused["runtime_errors"] = errors[-3:]
+                    record_attempt_failures(recovered=True)
                     return reused
+            record_attempt_failures(recovered=False)
             failure = {
                 "success": False,
                 "error": "; ".join(errors) or "all local model attempts failed",
                 "model": requested_model,
             }
+            if attempt_failures:
+                failure["error_type"] = attempt_failures[-1]["error_type"]
+                failure["error_code"] = attempt_failures[-1]["error_code"]
             if retryable_error:
                 failure.update({"terminal": False, "retryable": True})
             if timeout_error:
                 failure["error_code"] = "model_request_timeout"
+            if preempted_error:
+                failure.update({"terminal": True, "retryable": False, "preempted": True, "error_code": "model_request_cancelled"})
+            if cancel_requested:
+                failure["cancel_requested"] = True
+            if scheduler_state:
+                failure["scheduler_state"] = scheduler_state
             return failure
 
         def compute() -> dict[str, Any]:
@@ -1084,6 +1317,8 @@ class LocalAIServices:
             raw, cache_hit, coalesced = self.generation_cache.get_or_compute(cache_key, compute)
         else:
             raw, cache_hit, coalesced = compute_inner(), False, False
+        if mode_pause_result is not None:
+            return mode_pause_result
         origin = str(raw.get("_lah_cache_origin", "")) if isinstance(raw, dict) else ""
         if not use_cache:
             cache_layer = "disabled"
@@ -1182,7 +1417,12 @@ class LocalAIServices:
             degraded=bool(result.get("stale_fallback", False) or result.get("fallback_used", False)), error_type=error_type,
         )
         if not success:
-            self.telemetry.record_error("ollama", source, result.get("error", "model request failed"), tenant=tenant, retryable=True)
+            self.telemetry.record_error(
+                "ollama", source, result.get("error", "model request failed"), tenant=tenant,
+                error_type_override=str(result.get("error_type", "")),
+                error_code_override=str(result.get("error_code", "")),
+                retryable=True,
+            )
         return result
 
     @staticmethod
@@ -1216,6 +1456,15 @@ class LocalAIServices:
             "in_progress": active,
         }
 
+    @staticmethod
+    def _conversation_cancelled(conversation_id: str) -> dict[str, Any]:
+        return {
+            "success": False, "conversation_id": conversation_id,
+            "error": "conversation generation cancelled for resource release",
+            "reason": "cancelled", "cancelled": True, "preempted": True,
+            "terminal": True, "retryable": False,
+        }
+
     def _start_conversation(
         self,
         *,
@@ -1227,11 +1476,17 @@ class LocalAIServices:
         temperature: float,
         source: str,
         priority: int,
+        trace_system: str | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        if cancel_event is not None and cancel_event.is_set():
+            return self._conversation_cancelled("")
         if estimate_tokens(prompt) + estimate_tokens(system) > self._conversation_prompt_limit():
             return self._conversation_error("", "conversation prompt limit exceeded")
         conversation = self.conversations.start_reserved(tenant, {
-            "model": route["model"], "system": system, "max_tokens": max_tokens,
+            "model": route["model"], "system": system,
+            "trace_system": system if trace_system is None else trace_system,
+            "max_tokens": max_tokens,
             "temperature": temperature, "source": source, "priority": priority,
             "route": dict(route),
         })
@@ -1240,7 +1495,8 @@ class LocalAIServices:
         try:
             result = self._generate(
                 route["model"], prompt, system, max_tokens, temperature, tenant, source, priority,
-                internal=True, use_cache=False,
+                internal=True, use_cache=False, trace_system_override=trace_system,
+                cancel_event=cancel_event,
             )
         except Exception:
             self.conversations.discard(conversation.conversation_id, tenant)
@@ -1248,6 +1504,9 @@ class LocalAIServices:
         if not result.get("success", "error" not in result):
             self.conversations.discard(conversation.conversation_id, tenant)
             return result
+        if cancel_event is not None and cancel_event.is_set():
+            self.conversations.discard(conversation.conversation_id, tenant)
+            return self._conversation_cancelled(conversation.conversation_id)
         if not self.conversations.complete(conversation.conversation_id, tenant, prompt, str(result.get("text", ""))):
             return self._conversation_error(
                 conversation.conversation_id,
@@ -1257,13 +1516,17 @@ class LocalAIServices:
         result["route"] = dict(route)
         return result
 
-    def continue_conversation(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def continue_conversation(
+        self, args: dict[str, Any], tenant: str, *, cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         conversation_id = str(args.get("conversation_id", "")).strip()
         task = str(args.get("task", "")).strip()
         if not conversation_id:
             return self._conversation_error("", "conversation_id is required")
         if not task:
             return self._conversation_error(conversation_id, "task is required")
+        if cancel_event is not None and cancel_event.is_set():
+            return self._conversation_cancelled(conversation_id)
         conversation, error = self.conversations.reserve(conversation_id, tenant)
         if error:
             return self._conversation_error(conversation_id, error)
@@ -1279,6 +1542,8 @@ class LocalAIServices:
                 str(settings["model"]), prompt, str(settings["system"]), int(settings["max_tokens"]),
                 float(settings["temperature"]), tenant, str(settings["source"]), int(settings["priority"]),
                 internal=True, use_cache=False,
+                trace_system_override=str(settings.get("trace_system", settings["system"])),
+                cancel_event=cancel_event,
             )
         except Exception:
             self.conversations.abort(conversation_id, tenant)
@@ -1286,16 +1551,41 @@ class LocalAIServices:
         if not result.get("success", "error" not in result):
             self.conversations.abort(conversation_id, tenant)
             return result
-        if not self.conversations.complete(conversation_id, tenant, user_prompt, str(result.get("text", ""))):
-            return self._conversation_error(
-                conversation_id,
-                "conversation expired or was lost while model was running",
-            )
+        if cancel_event is not None and cancel_event.is_set():
+            self.conversations.abort(conversation_id, tenant)
+            return self._conversation_cancelled(conversation_id)
+        self.conversations.complete(conversation_id, tenant, user_prompt, str(result.get("text", "")))
         result["conversation_id"] = conversation_id
         result["route"] = dict(settings["route"])
         return result
 
-    def delegate(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def _resolve_local_task_project(self, root: Any) -> tuple[Any | None, str, str, str]:
+        root_value = str(root or "").strip()
+        if not root_value:
+            return None, "", "", ""
+        try:
+            from .project_config import resolve_project_context
+            from .state_paths import configured_state_dir
+
+            project = resolve_project_context(
+                root_value,
+                configured_state_dir(getattr(self, "config", {}), create=False),
+            )
+        except Exception:
+            return None, "", "", ""
+
+        snapshot = None
+        try:
+            snapshot = self.repo_tools.git_snapshot(root_value)
+        except Exception:
+            pass
+        revision = str(getattr(snapshot, "repository_revision", "") or "")[:200]
+        namespace = str(project.coordination_id or "")
+        return project, project.config_digest, namespace, revision
+
+    def delegate(
+        self, args: dict[str, Any], tenant: str, *, cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         if bool(args.get("conversation", False)):
             if str(args.get("profile", "")).strip():
                 return self._conversation_error("", "conversations do not support profiles")
@@ -1303,9 +1593,35 @@ class LocalAIServices:
                 return self._conversation_error("", "conversations require delivery=sync")
         if str(args.get("profile", "")).strip():
             return self.delegate_profile(args, tenant)
+        project_context, project_config_digest, project_namespace, project_revision = self._resolve_local_task_project(
+            args.get("root") or args.get("cwd", "")
+        )
+        project_settings = project_context.settings if project_context is not None else None
+        project_error_codes = getattr(getattr(project_context, "resolution", None), "error_codes", ())
+        if not isinstance(project_error_codes, (list, tuple)):
+            project_error_codes = ()
+        project_warning = ""
+        if project_error_codes:
+            safe_codes = [
+                code[:80] for code in (str(value) for value in project_error_codes[:8])
+                if re.fullmatch(r"[A-Za-z0-9_.-]+", code)
+            ]
+            code_summary = ", ".join(safe_codes)
+            project_warning = "Project settings invalid; defaults used" + (f" (codes: {code_summary})" if code_summary else ".")
+
+        def attach_project_warning(result: dict[str, Any]) -> dict[str, Any]:
+            if project_warning:
+                warnings = result.get("warnings", [])
+                warnings = list(warnings) if isinstance(warnings, (list, tuple)) else []
+                warnings.append(project_warning)
+                result["warnings"] = warnings
+            return result
+
         task = str(args.get("task") or args.get("prompt") or "")
-        if bool(args.get("conversation", False)) and not task.strip():
-            return self._conversation_error("", "task is required")
+        if bool(args.get("conversation", False)):
+            task = task.strip()
+            if not task:
+                return self._conversation_error("", "task is required")
         context = str(args.get("context", ""))
         task_type_override = str(args.get("task_type", "auto"))
         complexity_override = str(args.get("complexity", "auto"))
@@ -1316,6 +1632,17 @@ class LocalAIServices:
         except ValueError as exc:
             return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
         task_type = route["task_type"]
+        if task_type in {"code", "review"}:
+            project_role = "heavy_code" if route.get("complexity") == "heavy" else "fast_code"
+        elif task_type == "reasoning":
+            project_role = "reasoning" if route.get("complexity") == "heavy" else "heavy_code"
+        else:
+            project_role = "general"
+        if project_settings is not None:
+            route["model"], _project_payload = self.model_policy.apply_project_settings(
+                route["model"], {"model": route["model"]},
+                settings=project_settings, role=project_role,
+            )
         operation = str(args.get("operation") or task_type).strip().lower()
         package = build_prompt(
             operation=operation,
@@ -1331,6 +1658,7 @@ class LocalAIServices:
             static_facts=str(args.get("static_facts", "")),
         )
         system = package.system
+        trace_system = system
         # Conversation turns keep the compact transcript protocol so follow-ups
         # remain lossless; the richer static contract lives in the conversation
         # system message and one-shot operations use the full package.user form.
@@ -1340,20 +1668,34 @@ class LocalAIServices:
         source = f"delegate:{task_type}"
         priority = int(args.get("priority", 5))
         if bool(args.get("conversation", False)):
-            return self._start_conversation(
+            if project_settings is not None:
+                _conversation_model, project_payload = self.model_policy.apply_project_settings(
+                    route["model"], {"model": route["model"], "system": system},
+                    settings=project_settings, role=project_role,
+                )
+                system = str(project_payload.get("system", system))
+            result = self._start_conversation(
                 tenant=tenant, prompt=prompt, route=route, system=system, max_tokens=max_tokens,
-                temperature=temperature, source=source, priority=priority,
+                temperature=temperature, source=source, priority=priority, trace_system=trace_system,
+                cancel_event=cancel_event,
             )
+            return attach_project_warning(result)
         format_val = args.get("format") or args.get("json_schema")
         result = self._generate(
             route["model"], prompt, system,
             max_tokens, temperature, tenant, source, priority,
             semantic_query=task, semantic_context_fingerprint=stable_hash(context),
             format=format_val,
+            project_settings=project_settings,
+            project_role=project_role,
+            project_config_digest=project_config_digest,
+            project_namespace=project_namespace,
+            repository_revision=project_revision or str(args.get("repository_revision", "")),
+            use_cache=project_context is None or bool(project_namespace),
         )
         result = self._apply_semantic_quality(result, task=task, evidence_paths=args.get("changed_paths") or ())
         result["route"] = route
-        return result
+        return attach_project_warning(result)
 
     @staticmethod
     def _apply_semantic_quality(result: dict[str, Any], *, task: str, evidence_paths: Any) -> dict[str, Any]:
@@ -1664,619 +2006,61 @@ class LocalAIServices:
 
     def vision(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Multimodal image understanding via local vision model."""
-        features = self.config.get("features", {})
-        if isinstance(features, dict) and not bool(features.get("vision", True)):
-            return {
-                "success": False,
-                "unsupported": True,
-                "terminal": True,
-                "retryable": False,
-                "error_code": "vision_disabled",
-                "error": "Vision capability is disabled. Enable features.vision explicitly.",
-            }
+        feature_error = vision_feature_error(self.config)
+        if feature_error:
+            return feature_error
         image_path = str(args.get("image", args.get("image_path", "")))
         prompt = str(args.get("prompt", args.get("task", "Describe this image in detail.")))
-        models = self.config.get("models", {})
-        configured_model = models.get("vision", "qwen3-vl:4b") if isinstance(models, dict) else "qwen3-vl:4b"
-        model = str(args.get("model") or configured_model or "").strip()
-        if bool(args.get("cloud_fallback", False)):
-            vision_policy = self.config.get("vision", {})
-            if not isinstance(vision_policy, dict) or not bool(vision_policy.get("cloud_fallback_enabled", False)):
-                return {
-                    "success": False,
-                    "terminal": True,
-                    "retryable": False,
-                    "error_code": "vision_cloud_fallback_disabled",
-                    "error": "Cloud vision fallback is disabled. Enable vision.cloud_fallback_enabled explicitly.",
-                    "cloud_fallback": False,
-                }
-            provider = str(vision_policy.get("cloud_provider", "")).strip()
-            if not provider:
-                return {
-                    "success": False,
-                    "terminal": True,
-                    "retryable": False,
-                    "error_code": "vision_cloud_fallback_unavailable",
-                    "error": "Cloud vision fallback is enabled but no provider is configured.",
-                    "cloud_fallback": False,
-                }
-        if not model:
-            return {
-                "success": False,
-                "unsupported": True,
-                "degraded": True,
-                "terminal": True,
-                "retryable": False,
-                "error": "Vision model is not configured; set models.vision to qwen3-vl:4b or another Ollama vision model.",
-            }
+        model, model_error = select_vision_model(args, self.config)
+        if model_error:
+            return model_error
 
-        def input_error(message: str, code: str = "vision_input_error") -> dict[str, Any]:
-            return {
-                "success": False,
-                "terminal": True,
-                "retryable": False,
-                "error": message,
-                "error_code": code,
-            }
-
-        images: list[str] = []
-
-        def append_image(value: str) -> dict[str, Any] | None:
-            if len(value) > VISION_MAX_IMAGE_CHARS:
-                return input_error(
-                    "Vision image transport exceeds the bounded character limit.",
-                    "vision_image_transport_too_large",
-                )
-            encoded = value
-            if value.startswith("data:image/"):
-                if "," not in value:
-                    return input_error("Vision image data URL is invalid.", "vision_image_integrity")
-                encoded = value.split(",", 1)[1]
-            try:
-                decoded = base64.b64decode(encoded, validate=True)
-            except (ValueError, TypeError):
-                return input_error("Vision image input is not valid base64.", "vision_image_integrity")
-            if len(decoded) > VISION_MAX_IMAGE_BYTES:
-                return input_error(
-                    "Vision image exceeds the bounded decoded-byte limit.",
-                    "vision_image_too_large",
-                )
-            # Ollama expects the raw base64 payload, not the transport prefix
-            # from a browser-style data URL. Keep validation accepting both,
-            # but normalize the provider payload to one canonical form.
-            images.append(encoded)
-            return None
-
-        def is_inline_image(value: str) -> bool:
-            if value.startswith("data:image/"):
-                return True
-            try:
-                return bool(value) and bool(base64.b64decode(value, validate=True))
-            except (ValueError, TypeError):
-                return False
-
-        if image_path:
-            if (
-                "image_path" not in args
-                and (image_path.startswith("data:image/") or len(image_path) > VISION_MAX_IMAGE_CHARS or is_inline_image(image_path))
-            ):
-                error = append_image(image_path)
-                if error:
-                    return error
-            else:
-                try:
-                    p = Path(image_path)
-                    is_file = p.is_file()
-                except (OSError, ValueError):
-                    return input_error("Vision image path could not be inspected; provide a readable image or base64 data.")
-                if not is_file:
-                    return input_error("Vision image path was not found; provide a readable image or base64 data.")
-                try:
-                    size_bytes = int(p.stat().st_size)
-                    encoded_chars = ((size_bytes + 2) // 3) * 4
-                    if size_bytes > VISION_MAX_IMAGE_BYTES:
-                        return input_error("Vision image exceeds the bounded decoded-byte limit.", "vision_image_too_large")
-                    if encoded_chars > VISION_MAX_IMAGE_CHARS:
-                        return input_error("Vision image transport exceeds the bounded character limit.", "vision_image_transport_too_large")
-                    b64 = base64.b64encode(p.read_bytes()).decode("utf-8")
-                    error = append_image(b64)
-                    if error:
-                        return error
-                except (OSError, ValueError):
-                    return input_error("Failed to read image file; verify the path and permissions.")
-
-        image_artifact_id = str(
-            args.get("image_artifact_id") or args.get("screenshot_artifact_id") or ""
-        ).strip()
-        bundle_artifact_id = str(
-            args.get("bundle_artifact_id") or args.get("frontend_bundle_artifact_id") or ""
-        ).strip()
-        direct_context_refs = {
-            "dom": str(args.get("dom_artifact_id") or args.get("html_artifact_id") or "").strip(),
-            "accessibility": str(
-                args.get("accessibility_artifact_id") or args.get("a11y_artifact_id") or ""
-            ).strip(),
-            "computed_styles": str(
-                args.get("computed_styles_artifact_id") or args.get("computed_style_artifact_id") or ""
-            ).strip(),
-            "runtime": str(
-                args.get("runtime_artifact_id") or args.get("runtime_context_artifact_id") or ""
-            ).strip(),
-        }
-        network_artifact_id = str(args.get("network_artifact_id") or "").strip()
-
-        def resolve_artifact(artifact_id: str, max_chars: int) -> tuple[str, dict[str, Any] | None]:
-            try:
-                artifact = self.artifacts.get(artifact_id, max_chars=max_chars, tenant=tenant)
-            except Exception:
-                return "", {
-                    "success": False,
-                    "terminal": False,
-                    "retryable": True,
-                    "error": "Vision artifact store is unavailable; retry the request.",
-                }
-            if not isinstance(artifact, dict) or not artifact.get("success"):
-                detail = str(artifact.get("error", "")).lower() if isinstance(artifact, dict) else ""
-                if any(marker in detail for marker in ("not found", "expired", "missing")):
-                    return "", input_error("Vision artifact was not found or has expired.")
-                return "", {
-                    "success": False,
-                    "terminal": False,
-                    "retryable": True,
-                    "error": "Vision artifact store returned an error; retry the request.",
-                }
-            text = artifact.get("text")
-            if not isinstance(text, str) or not text:
-                return "", input_error("Vision artifact does not contain usable content.")
-            try:
-                total_chars = int(artifact.get("total_chars", len(text)))
-            except (TypeError, ValueError, OverflowError):
-                return "", input_error("Vision artifact metadata is invalid.")
-            if artifact.get("next_offset") is not None or total_chars > len(text):
-                return "", input_error(
-                    "Vision artifact is truncated; provide the complete artifact.",
-                    "vision_artifact_truncated",
-                )
-            if total_chars > max_chars:
-                return "", input_error(
-                    "Vision artifact exceeds the bounded size limit.",
-                    "vision_artifact_too_large",
-                )
-            return text[:max_chars], None
-
-        def resolve_binary_artifact(artifact_id: str, max_bytes: int) -> tuple[str, dict[str, Any] | None]:
-            try:
-                artifact = self.artifacts.get_binary(artifact_id, tenant=tenant)
-            except Exception:
-                return "", {
-                    "success": False,
-                    "terminal": False,
-                    "retryable": True,
-                    "error": "Vision artifact store is unavailable; retry the request.",
-                }
-            if not isinstance(artifact, dict) or not artifact.get("success"):
-                detail = str(artifact.get("error", "")).lower() if isinstance(artifact, dict) else ""
-                if any(marker in detail for marker in ("not found", "expired", "missing")):
-                    return "", input_error("Vision artifact was not found or has expired.")
-                return "", input_error("Vision image artifact failed integrity validation.", "vision_artifact_integrity")
-            mime_type = str(artifact.get("mime_type", ""))
-            encoded = artifact.get("data_base64")
-            try:
-                size_bytes = int(artifact.get("size_bytes", -1))
-            except (TypeError, ValueError, OverflowError):
-                size_bytes = -1
-            if not mime_type.startswith("image/") or not isinstance(encoded, str) or size_bytes < 0:
-                return "", input_error("Vision image artifact exceeds the bounded integrity contract.", "vision_artifact_integrity")
-            if len(encoded) > VISION_MAX_IMAGE_CHARS:
-                return "", input_error(
-                    "Vision image transport exceeds the bounded character limit.",
-                    "vision_image_transport_too_large",
-                )
-            try:
-                decoded = base64.b64decode(encoded, validate=True)
-            except (ValueError, TypeError):
-                return "", input_error("Vision image artifact is not valid base64.", "vision_artifact_integrity")
-            if len(decoded) > max_bytes:
-                return "", input_error(
-                    "Vision image exceeds the bounded decoded-byte limit.",
-                    "vision_image_too_large",
-                )
-            if len(decoded) != size_bytes:
-                return "", input_error("Vision image artifact is truncated or incomplete.", "vision_artifact_truncated")
-            return encoded, None
-
-        def resolve_bundle_context(raw: str) -> tuple[str, dict[str, Any] | None]:
-            nonlocal image_artifact_id
-            if not raw.lstrip().startswith(("{", "[")):
-                return raw, None
-            try:
-                bundle = parse_bounded_context(raw, "frontend_bundle")
-            except FrontendReviewError as exc:
-                if exc.code == "invalid_frontend_context":
-                    return "", input_error(
-                        "Vision frontend bundle is not valid JSON.",
-                        "vision_bundle_invalid",
-                    )
-                return "", exc.as_result()
-            resolved = dict(bundle)
-            screenshot = resolved.get("screenshot")
-            screenshot_ref = screenshot.get("artifact_id", "") if isinstance(screenshot, dict) else ""
-            if screenshot_ref and not images:
-                image_data, error = resolve_binary_artifact(str(screenshot_ref), VISION_MAX_IMAGE_BYTES)
-                if error:
-                    return "", error
-                error = append_image(image_data)
-                if error:
-                    return "", error
-                image_artifact_id = str(screenshot_ref)
-            for field_name in ("dom", "accessibility", "computed_styles", "runtime"):
-                value = resolved.get(field_name)
-                if field_name == "runtime":
-                    runtime_refs: dict[str, str] = {}
-                    if isinstance(value, dict):
-                        for ref_key in ("artifact_id", "console_artifact_id", "network_artifact_id"):
-                            ref = str(value.get(ref_key, "")).strip()
-                            if ref:
-                                runtime_refs[ref_key] = ref
-                    for ref_key in ("runtime_artifact_id", "network_artifact_id"):
-                        ref = str(resolved.get(ref_key, "")).strip()
-                        if ref:
-                            runtime_refs.setdefault(
-                                "console_artifact_id" if ref_key == "runtime_artifact_id" else ref_key,
-                                ref,
-                            )
-                    if runtime_refs:
-                        runtime_value = dict(value) if isinstance(value, dict) else {}
-                        for ref_key, ref in runtime_refs.items():
-                            content, error = resolve_artifact(ref, VISION_MAX_BUNDLE_CHARS)
-                            if error:
-                                return "", error
-                            content_key = {
-                                "artifact_id": "content",
-                                "console_artifact_id": "console_content",
-                                "network_artifact_id": "network_content",
-                            }[ref_key]
-                            runtime_value[content_key] = content
-                        resolved[field_name] = runtime_value
-                    continue
-                reference = value.get("artifact_id", "") if isinstance(value, dict) else ""
-                if not reference:
-                    reference = resolved.get(f"{field_name}_artifact_id", "")
-                if not reference:
-                    continue
-                content, error = resolve_artifact(str(reference), VISION_MAX_BUNDLE_CHARS)
-                if error:
-                    return "", error
-                if isinstance(value, dict):
-                    resolved[field_name] = {**value, "content": content}
-                else:
-                    resolved[field_name] = {"artifact_id": str(reference), "content": content}
-            return json_dumps(resolved, ensure_ascii=False), None
-
-        if image_artifact_id and not images:
-            artifact_data, error = resolve_binary_artifact(image_artifact_id, VISION_MAX_IMAGE_BYTES)
-            if error:
-                return error
-            error = append_image(artifact_data)
-            if error:
-                return error
-
-        bundle_context = ""
-        if bundle_artifact_id:
-            bundle_context, error = resolve_artifact(bundle_artifact_id, VISION_MAX_BUNDLE_CHARS)
-            if error:
-                return error
-            bundle_context, error = resolve_bundle_context(bundle_context)
-            if error:
-                return error
-
-        def parse_context_value(field_name: str, value: Any) -> Any:
-            return parse_bounded_context(value, field_name)
-
-        frontend_bundle: dict[str, Any] = {}
-        if bundle_context:
-            if not bundle_context.lstrip().startswith(("{", "[")):
-                frontend_bundle = {}
-            else:
-                try:
-                    frontend_bundle = parse_bounded_context(bundle_context, "frontend_bundle")
-                except FrontendReviewError as exc:
-                    if exc.code == "invalid_frontend_context":
-                        return input_error(
-                            "Vision frontend bundle is not valid JSON.",
-                            "vision_bundle_invalid",
-                        )
-                    return exc.as_result()
-                frontend_bundle["bundle_artifact_id"] = bundle_artifact_id
-
-        inline_bundle = args.get("bundle") or args.get("frontend_bundle") or args.get("dom_bundle")
-        if inline_bundle is not None:
-            try:
-                decoded_inline = (
-                    parse_context_value("bundle", inline_bundle)
-                    if not isinstance(inline_bundle, dict)
-                    else dict(inline_bundle)
-                )
-            except FrontendReviewError as exc:
-                return exc.as_result()
-            frontend_bundle.update(decoded_inline)
-
-        for field_name, artifact_id in direct_context_refs.items():
-            if not artifact_id:
-                continue
-            content, error = resolve_artifact(artifact_id, VISION_MAX_BUNDLE_CHARS)
-            if error:
-                return error
-            try:
-                context_value = parse_context_value(field_name, content)
-            except FrontendReviewError as exc:
-                return exc.as_result()
-            ref_key = "console_artifact_id" if field_name == "runtime" else "artifact_id"
-            frontend_bundle[field_name] = {ref_key: artifact_id, **context_value}
-        if network_artifact_id:
-            content, error = resolve_artifact(network_artifact_id, VISION_MAX_BUNDLE_CHARS)
-            if error:
-                return error
-            runtime_value = frontend_bundle.get("runtime")
-            runtime_value = dict(runtime_value) if isinstance(runtime_value, dict) else {}
-            runtime_value.update(
-                {"network_artifact_id": network_artifact_id, "network_content": content}
-            )
-            frontend_bundle["runtime"] = runtime_value
-
-        inline_aliases = {
-            "dom": ("dom", "html"),
-            "accessibility": ("accessibility", "accessibility_snapshot"),
-            "computed_styles": ("computed_styles", "computed_style_data"),
-            "runtime": ("runtime", "runtime_context"),
-        }
-        for field_name, aliases in inline_aliases.items():
-            supplied = next((args[name] for name in aliases if name in args and args[name] is not None), None)
-            if supplied is not None:
-                try:
-                    frontend_bundle[field_name] = parse_context_value(field_name, supplied)
-                except FrontendReviewError as exc:
-                    return exc.as_result()
-        for field_name in ("viewport", "page", "source"):
-            if field_name in args and args.get(field_name) is not None:
-                frontend_bundle[field_name] = args[field_name]
-        if image_artifact_id:
-            frontend_bundle.setdefault("screenshot", {"artifact_id": image_artifact_id})
-
-        for field_name in ("dom", "accessibility", "computed_styles", "runtime"):
-            value = frontend_bundle.get(field_name)
-            if isinstance(value, dict) and isinstance(value.get("content"), str):
-                try:
-                    decoded_value = parse_context_value(field_name, value["content"])
-                except FrontendReviewError as exc:
-                    return exc.as_result()
-                ref = str(value.get("artifact_id", ""))
-                frontend_bundle[field_name] = {"artifact_id": ref, **decoded_value} if ref else decoded_value
-
-        model_context = None
-        if any(key in frontend_bundle for key in ("dom", "accessibility", "computed_styles", "runtime")):
-            try:
-                dom_value = frontend_bundle.get("dom") or {}
-                accessibility_value = frontend_bundle.get("accessibility") or {}
-                styles_value = frontend_bundle.get("computed_styles") or {}
-                runtime_value = frontend_bundle.get("runtime") or {}
-                model_context = build_model_context(
-                    prompt=prompt,
-                    screenshot_data_url=images[0] if images else "",
-                    dom=dom_value if isinstance(dom_value, dict) else parse_context_value("dom", dom_value),
-                    accessibility=accessibility_value if isinstance(accessibility_value, dict) else parse_context_value("accessibility", accessibility_value),
-                    computed_styles=styles_value if isinstance(styles_value, dict) else parse_context_value("computed_styles", styles_value),
-                    viewport=frontend_bundle.get("viewport") or {},
-                    runtime=runtime_value if isinstance(runtime_value, dict) else parse_context_value("runtime", runtime_value),
-                )
-                if model_context.dom.get("truncated"):
-                    return FrontendReviewError(
-                        "frontend_dom_context_truncated",
-                        "vision review requires complete live DOM within the configured bound",
-                        original_chars=model_context.dom.get("original_chars"),
-                        limit_chars=model_context.dom.get("limit_chars"),
-                    ).as_result()
-                for field_name, value in (
-                    ("dom", model_context.dom),
-                    ("accessibility", model_context.accessibility),
-                    ("computed_styles", model_context.computed_styles),
-                    ("runtime", model_context.runtime),
-                ):
-                    original = frontend_bundle.get(field_name)
-                    ref = original.get("artifact_id", "") if isinstance(original, dict) else ""
-                    frontend_bundle[field_name] = {"artifact_id": ref, **value} if ref else value
-            except FrontendReviewError as exc:
-                return exc.as_result()
-
-        if not images:
-            return input_error("Vision image path, base64 data, or image artifact is required.")
-
-        try:
-            requested_max_tokens = int(args.get("max_tokens", 1200))
-        except (TypeError, ValueError, OverflowError):
-            requested_max_tokens = 1200
-        max_tokens = max(64, min(requested_max_tokens, self._VISION_MAX_OUTPUT_TOKENS))
-        schema = args.get("json_schema")
-        if isinstance(schema, dict):
-            try:
-                schema_text = json_dumps(schema, ensure_ascii=False, separators=(",", ":"))
-            except (TypeError, ValueError, OverflowError):
-                return input_error("Vision JSON schema is invalid.")
-            if len(schema_text) > VISION_MAX_SCHEMA_CHARS:
-                return input_error("Vision JSON schema exceeds the bounded size limit.")
-        prompt_suffix = (
-            "\n\nReturn only a JSON object matching this contract: "
-            "{\"summary\": string, \"findings\": [{\"id\": string, "
-            "\"severity\": \"blocker|high|medium|low|info\", "
-            "\"category\": \"layout|responsive|accessibility|interaction|visual-regression|runtime\", "
-            "\"problem\": string, \"observed\": string, \"hypothesized\": string, "
-            "\"uncertainty\": [string], \"confidence\": number, "
-            "\"element_ids\": [string], \"bbox\": [number, number, number, number] or null, "
-            "\"evidence\": [string], \"likely_cause\": string, \"fix_hint\": string, "
-            "\"needs_runtime_check\": boolean}], "
-            "\"unknowns\": [string], \"recommended_checks\": [string]} ."
+        prepared_inputs = prepare_vision_inputs(
+            args=args,
+            image_path=image_path,
+            prompt=prompt,
+            tenant=tenant,
+            artifacts=self.artifacts,
         )
-        prompt_context = prompt
-        if model_context is not None:
-            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + json_dumps(
-                model_context.prompt_payload(), ensure_ascii=False
-            )
-        elif bundle_context:
-            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + bundle_context
-        prompt_budget = max(0, VISION_MAX_PROMPT_CHARS - len(prompt_suffix))
-        if len(prompt_context) > prompt_budget:
-            return input_error(
-                "Vision prompt and frontend evidence exceed the bounded prompt limit.",
-                "frontend_prompt_too_large",
-            )
-        prompt_context += prompt_suffix
-        payload = {
-            "model": model,
-            "prompt": prompt_context,
-            "images": images,
-            "stream": False,
-            "format": schema if isinstance(schema, dict) else "json",
-            "options": {"num_predict": max_tokens},
-        }
-        payload, _profile = self.model_policy.apply_payload(
-            model,
-            payload,
-            role="vision",
-            output_tokens=max_tokens,
+        if isinstance(prepared_inputs, dict):
+            return prepared_inputs
+        images = prepared_inputs.images
+        image_artifact_id = prepared_inputs.image_artifact_id
+        bundle_artifact_id = prepared_inputs.bundle_artifact_id
+        bundle_context = prepared_inputs.bundle_context
+        frontend_bundle = prepared_inputs.frontend_bundle
+        model_context = prepared_inputs.model_context
+
+        request_plan = build_vision_request(
+            args=args,
+            model=model,
+            images=images,
+            prompt=prompt,
+            bundle_context=bundle_context,
+            model_context=model_context,
+            model_policy=self.model_policy,
+            max_output_tokens=self._VISION_MAX_OUTPUT_TOKENS,
         )
-        try:
-            timeout = float(
-                self.config.get("resilience", {}).get(
-                    "vision_timeout_seconds",
-                    self.config.get("server", {}).get("request_timeout_seconds", 300),
-                )
-            )
-        except (TypeError, ValueError, OverflowError):
-            timeout = 300.0
-        timeout = max(0.05, min(timeout, 300.0))
+        if isinstance(request_plan, dict):
+            return request_plan
+        payload = request_plan.payload
+        prompt_context = request_plan.prompt_context
+        schema = request_plan.schema
+        timeout = vision_request_timeout(self.config)
         try:
             capability_response = self.runtime.request(
                 "/api/show",
                 {"name": model},
                 timeout=min(timeout, 1.0),
             )
-            if not isinstance(capability_response, dict):
-                return {
-                    "success": False,
-                    "model": model,
-                    "terminal": True,
-                    "retryable": False,
-                    "error": "Vision model capability preflight returned an invalid response.",
-                }
-            if capability_response.get("error"):
-                capability_error = str(capability_response.get("error", "")).lower()
-                missing_model = (
-                    "model not found" in capability_error
-                    or "no such model" in capability_error
-                    or ("not found" in capability_error and "model" in capability_error)
-                )
-                transient = any(
-                    marker in capability_error
-                    for marker in (
-                        "timeout", "timed out", "connection", "network", "handoff",
-                        "temporarily", "unavailable", "try again", "http 429", "http 502", "http 503",
-                    )
-                )
-                if missing_model:
-                    return {
-                        "success": False,
-                        "model": model,
-                        "unsupported": True,
-                        "degraded": True,
-                        "terminal": True,
-                        "retryable": False,
-                        "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
-                        "error_code": "vision_model_missing",
-                    }
-                return {
-                    "success": False,
-                    "model": model,
-                    "terminal": not transient,
-                    "retryable": transient,
-                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision model capability preflight failed; inspect the configured local backend and vision model.",
-                    "error_code": "vision_preflight_failed",
-                }
-            capability_values: list[str] = []
-            for value in capability_response.get("capabilities", []):
-                capability_values.append(str(value).lower())
-            details = capability_response.get("details")
-            if isinstance(details, dict):
-                for key in ("family", "families"):
-                    values = details.get(key, [])
-                    if isinstance(values, list):
-                        capability_values.extend(str(value).lower() for value in values)
-                    elif values:
-                        capability_values.append(str(values).lower())
-            supports_vision = any(
-                marker in value
-                for value in capability_values
-                for marker in ("vision", "image", "multimodal", "clip", "vl")
-            )
-            if not supports_vision:
-                return {
-                    "success": False,
-                    "model": model,
-                    "unsupported": True,
-                    "degraded": True,
-                    "terminal": True,
-                    "retryable": False,
-                    "error": f"Vision model '{model}' does not advertise image or multimodal capability; choose a configured vision-capable local model.",
-                    "error_code": "vision_model_unsupported",
-                }
+            capability_error = vision_capability_error(capability_response, model)
+            if capability_error:
+                return capability_error
             res = self.runtime.request("/api/generate", payload, timeout=timeout)
-            if not isinstance(res, dict):
-                return {
-                    "success": False,
-                    "model": model,
-                    "terminal": True,
-                    "retryable": False,
-                    "error": "Vision runtime returned an invalid response.",
-                }
-            if res.get("error"):
-                error_text = str(res.get("error", "")).lower()
-                missing_model = (
-                    "model not found" in error_text
-                    or "no such model" in error_text
-                    or ("not found" in error_text and "model" in error_text)
-                )
-                if missing_model:
-                    return {
-                        "success": False,
-                        "model": model,
-                        "unsupported": True,
-                        "degraded": True,
-                        "terminal": True,
-                        "retryable": False,
-                        "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
-                    }
-                transient = any(
-                    marker in error_text
-                    for marker in (
-                        "timeout", "timed out", "connection", "network", "handoff",
-                        "temporarily", "unavailable", "try again", "http 429", "http 502", "http 503",
-                    )
-                )
-                return {
-                    "success": False,
-                    "model": model,
-                    "terminal": not transient,
-                    "retryable": transient,
-                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime returned an error; inspect the configured local backend and vision model.",
-                }
+            generation_error = vision_generation_error(res, model)
+            if generation_error:
+                return generation_error
             raw_output = res.get("response", "")
-            if not isinstance(raw_output, str):
-                return {
-                    "success": False,
-                    "model": model,
-                    "terminal": True,
-                    "retryable": False,
-                    "error": "Vision runtime returned an invalid response.",
-                }
             if len(raw_output) > VISION_MAX_RUNTIME_OUTPUT_CHARS:
                 raw_artifact_id = ""
                 try:
@@ -2296,29 +2080,52 @@ class LocalAIServices:
                 raw_artifact_id = str(self.artifacts.put(raw_output, tenant, "vision-output"))
             except Exception:
                 pass
+            valid_element_ids = None
+            if model_context is not None:
+                dom_elements = model_context.dom.get("elements", [])
+                valid_element_ids = {
+                    element_id
+                    for element in dom_elements
+                    if isinstance(element, dict)
+                    and isinstance((element_id := element.get("element_id")), str)
+                    and element_id
+                } if isinstance(dom_elements, list) else set()
+            try:
+                image_size = image_dimensions(base64.b64decode(images[0], validate=True))
+            except (ValueError, TypeError):
+                image_size = None
             parsed = parse_vision_result(
-                raw_output, require_observation_fields=model_context is not None
+                raw_output,
+                strict_output_shape=bool(
+                    self.config.get("ollama", {}).get("enabled", False)
+                    and not isinstance(schema, dict)
+                ),
+                require_observation_fields=model_context is not None,
+                valid_element_ids=valid_element_ids,
+                observation_sources=(model_context.observation_sources if model_context is not None else None),
+                image_size=image_size,
             )
             if parsed.terminal:
                 return {
                     "success": False,
                     "model": model,
+                    "degraded": True,
                     "terminal": True,
                     "retryable": False,
-                    "error": parsed.error,
+                    "error": parsed.error or {"code": "malformed_vision_output", "message": "Vision output is invalid."},
+                    "error_code": "vision_output_invalid",
                     "raw_output_artifact_id": raw_artifact_id,
                 }
             parsed = bound_vision_result(parsed)
-            result = {
-                "success": True,
-                "model": model,
-                "response": raw_output[:VISION_MAX_INLINE_RESPONSE_CHARS],
-                "review": asdict(parsed),
-                "prompt": prompt_context,
-                "image_artifact_id": image_artifact_id,
-                "bundle_artifact_id": bundle_artifact_id,
-                "raw_output_artifact_id": raw_artifact_id,
-            }
+            result = vision_success_payload(
+                model=model,
+                raw_output=raw_output,
+                parsed=parsed,
+                prompt_context=prompt_context,
+                image_artifact_id=image_artifact_id,
+                bundle_artifact_id=bundle_artifact_id,
+                raw_output_artifact_id=raw_artifact_id,
+            )
             if frontend_bundle:
                 repo_context = None
                 root = str(args.get("root") or "").strip()
@@ -2369,44 +2176,219 @@ class LocalAIServices:
                 "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime failed; inspect the configured local backend and vision model.",
             }
 
-    def transcribe(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
-        """Transcribe audio recording to text via local Whisper / STT CLI or fallback."""
-        audio_path = str(args.get("audio", args.get("audio_path", "")))
-        model = str(args.get("model") or "whisper")
+    def transcribe(
+        self,
+        args: dict[str, Any],
+        tenant: str,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
+        """Transcribe audio to text through the local Whisper CLI."""
+        if not isinstance(args, dict):
+            return {
+                "success": False,
+                "audio_path": "",
+                "model": "base",
+                "reason": "invalid_request",
+                "terminal": True,
+                "retryable": False,
+                "error_code": "invalid_request",
+                "error": "Audio transcription request must be an object.",
+            }
+        import stat
 
-        p = Path(audio_path).expanduser().resolve(strict=False)
-        if not p.is_file():
-            return {"success": False, "error": f"audio file not found: {audio_path}"}
+        audio_path = str(args.get("audio", args.get("audio_path", "")))
+        model = str(args.get("model") or "base")
+        language_arg = args.get("language")
+        if language_arg is not None and not isinstance(language_arg, str):
+            return {
+                "success": False,
+                "audio_path": audio_path,
+                "model": model,
+                "reason": "invalid_language",
+                "error": "Language hint must be a string.",
+            }
+        language = language_arg.strip() if isinstance(language_arg, str) else ""
+        if language.casefold() == "auto":
+            language = ""
+
+        p = Path(audio_path)
+        try:
+            p = p.expanduser().resolve(strict=False)
+            audio_stat = p.stat()
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "reason": "audio_not_found",
+                "error": "Audio file not found.",
+            }
+        except OSError:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "reason": "audio_unavailable",
+                "degraded": True,
+                "error": "Audio path is not accessible.",
+            }
+        except (RuntimeError, ValueError):
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "reason": "audio_path_invalid",
+                "error": "Audio path is invalid.",
+            }
+        if not stat.S_ISREG(audio_stat.st_mode):
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "reason": "audio_not_regular_file",
+                "error": "Audio path does not refer to a regular file.",
+            }
 
         whisper_cmd = shutil.which("whisper")
-        if whisper_cmd:
-            cmd = [whisper_cmd, str(p), "--output_format", "txt", "--model", "tiny"]
-            try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False, **hidden_run_kwargs())
-                if proc.returncode == 0:
-                    txt_path = p.with_suffix(".txt")
-                    text = txt_path.read_text(encoding="utf-8", errors="replace") if txt_path.exists() else proc.stdout
+        if not whisper_cmd:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": "cli_missing",
+                "degraded": True,
+                "error": "Whisper CLI is not installed or unavailable in PATH.",
+            }
+
+        from tempfile import TemporaryDirectory
+
+        from .process_utils import ProcessCancelledError, run_hidden
+
+        try:
+            with TemporaryDirectory(prefix="local-ai-hub-transcribe-") as output_dir:
+                cmd = [
+                    whisper_cmd,
+                    str(p),
+                    "--output_format",
+                    "json",
+                    "--model",
+                    model,
+                    "--output_dir",
+                    output_dir,
+                ]
+                if language:
+                    cmd.extend(["--language", language])
+                try:
+                    proc = run_hidden(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        check=False,
+                        cancel_event=cancel_event,
+                        cancel_grace_seconds=1.0,
+                    )
+                except FileNotFoundError:
                     return {
-                        "success": True,
-                        "text": text.strip(),
+                        "success": False,
                         "audio_path": str(p),
                         "model": model,
                         "engine": "whisper_cli",
+                        "reason": "cli_missing",
+                        "degraded": True,
+                        "error": "Whisper CLI became unavailable before it could run.",
                     }
-            except Exception:
-                pass
+                if proc.returncode != 0:
+                    return {
+                        "success": False,
+                        "audio_path": str(p),
+                        "model": model,
+                        "engine": "whisper_cli",
+                        "reason": "process_failed",
+                        "error": f"Whisper CLI exited with status {proc.returncode}.",
+                    }
 
-        return {
-            "success": True,
-            "text": f"[Audio transcription registered: {p.name}]",
-            "audio_path": str(p),
-            "file_size_bytes": p.stat().st_size,
-            "format": p.suffix.lstrip("."),
-            "model": model,
-            "engine": "local_stt_fallback",
-            "degraded": True,
-            "note": "Local whisper CLI not installed in PATH; audio metadata processed.",
-        }
+                output_path = Path(output_dir) / f"{p.stem}.json"
+                raw_output = (
+                    output_path.read_text(encoding="utf-8", errors="replace")
+                    if output_path.is_file()
+                    else str(proc.stdout or "")
+                )
+                try:
+                    result = json.loads(raw_output) if raw_output.strip() else {}
+                except (json.JSONDecodeError, TypeError):
+                    result = {}
+                text_value = result.get("text") if isinstance(result, dict) else None
+                transcript = text_value.strip() if isinstance(text_value, str) else ""
+
+                def is_audio_decode_skip(value: str) -> bool:
+                    return any(
+                        line.startswith("Skipping ") and " due to RuntimeError:" in line
+                        for line in value.splitlines()
+                    )
+
+                if (
+                    is_audio_decode_skip(str(proc.stdout or ""))
+                    or is_audio_decode_skip(str(proc.stderr or ""))
+                    or is_audio_decode_skip(transcript)
+                ):
+                    return {
+                        "success": False,
+                        "audio_path": str(p),
+                        "model": model,
+                        "engine": "whisper_cli",
+                        "reason": "invalid_audio",
+                        "error": "Whisper CLI could not decode the audio file.",
+                    }
+                if not transcript:
+                    return {
+                        "success": False,
+                        "audio_path": str(p),
+                        "model": model,
+                        "engine": "whisper_cli",
+                        "reason": "empty_transcript",
+                        "error": "Whisper CLI produced no transcript text.",
+                    }
+
+                return {
+                    "success": True,
+                    "text": transcript,
+                    "audio_path": str(p),
+                    "model": model,
+                    "engine": "whisper_cli",
+                }
+        except ProcessCancelledError:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": "cancelled",
+                "cancelled": True,
+                "terminal": True,
+                "retryable": False,
+                "error": "Whisper CLI was cancelled for resource release.",
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": "timeout",
+                "error": "Whisper CLI timed out before transcription completed.",
+            }
+        except Exception:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": "process_error",
+                "error": "Whisper CLI failed before producing a transcript.",
+            }
 
     def benchmark(self, tenant: str = "benchmark") -> dict[str, Any]:
         """Manual tiny benchmark used to seed the adaptive runtime cost model."""
@@ -2567,7 +2549,16 @@ class LocalAIServices:
     def repo_profile(self, root: str) -> dict[str, Any]:
         return self._repo_cached("profile", root, {}, lambda: self.repo_tools.project_profile(root))
 
-    def repo_search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None, enrich: bool = False) -> dict[str, Any]:
+    def repo_search(
+        self,
+        root: str,
+        query: str,
+        top_k: int = 12,
+        context_lines: int | None = None,
+        enrich: bool = False,
+        path_hints: list[Any] | tuple[Any, ...] | None = None,
+        scope: str = "repo_search",
+    ) -> dict[str, Any]:
         if enrich and not rollout_feature_enabled(self.config, "enriched_search"):
             return {
                 "success": False,
@@ -2579,6 +2570,82 @@ class LocalAIServices:
         # canonical form for cache identity so equivalent agent queries reuse work.
         query = normalize_query(query).casefold()
         eff_ctx_lines = int(context_lines) if context_lines is not None else (8 if enrich else None)
+        from .project_config import (
+            PathHint,
+            ProjectConfigError,
+            path_is_allowed,
+            path_matches_pattern,
+            prioritize_paths_with_hints,
+            resolve_project_context,
+            validate_path_hint,
+        )
+
+        try:
+            project_context = resolve_project_context(
+                root,
+                configured_state_dir(getattr(self, "config", {}), create=False),
+            )
+        except ProjectConfigError as exc:
+            return {
+                "success": False,
+                "root": root,
+                "error": f"project configuration is invalid: {exc}",
+                "terminal": True,
+                "retryable": False,
+            }
+        search_scope = scope if isinstance(scope, str) else "repository_search"
+        request_hints: list[PathHint] = []
+        allowed_hint_fields = {
+            "path", "purpose", "scope", "evidence_id", "provenance",
+            "repository_revision", "config_digest", "expires_at",
+        }
+        if isinstance(path_hints, (list, tuple)):
+            for item in path_hints[:64]:
+                if isinstance(item, PathHint):
+                    hint = item
+                elif isinstance(item, dict) and not (set(item) - allowed_hint_fields):
+                    try:
+                        hint = PathHint(**item)
+                    except TypeError:
+                        continue
+                else:
+                    continue
+                if (
+                    isinstance(hint.path, str)
+                    and isinstance(hint.purpose, str)
+                    and isinstance(hint.scope, str)
+                    and all(
+                        value is None or isinstance(value, str)
+                        for value in (
+                            hint.evidence_id, hint.provenance,
+                            hint.repository_revision, hint.config_digest,
+                            hint.expires_at,
+                        )
+                    )
+                ):
+                    request_hints.append(hint)
+        request_hint_digest = stable_hash([
+            {
+                "path": hint.path,
+                "purpose": hint.purpose,
+                "scope": hint.scope,
+                "evidence_id": hint.evidence_id,
+                "provenance": hint.provenance,
+                "repository_revision": hint.repository_revision,
+                "config_digest": hint.config_digest,
+                "expires_at": hint.expires_at,
+            }
+            for hint in request_hints
+        ])
+        try:
+            workspace_state = self._repo_cache_state(root) or {}
+        except Exception:
+            workspace_state = {}
+        repository_revision = (
+            str(workspace_state.get("fingerprint") or "")
+            if not workspace_state.get("stale") and not workspace_state.get("degraded")
+            else ""
+        )
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
@@ -2602,25 +2669,213 @@ class LocalAIServices:
                         paths.append(p)
             except Exception:
                 pass
-        def compute() -> dict[str, Any]:
-            if paths:
-                targeted = (
-                    self.repo_tools.search_paths(root, query, paths, top_k, context_lines=eff_ctx_lines)
-                    if eff_ctx_lines is not None
-                    else self.repo_tools.search_paths(root, query, paths, top_k)
-                )
-            else:
-                targeted = {"results": []}
-            used_preprocessed = bool(paths and targeted.get("results"))
-            result = targeted if targeted.get("results") else (
-                self.repo_tools.search(root, query, top_k, context_lines=eff_ctx_lines)
-                if eff_ctx_lines is not None
-                else self.repo_tools.search(root, query, top_k)
+        hinted_search_paths: list[str] = []
+        hinted_force_include = False
+        force_include_patterns = tuple(project_context.settings.force_include_paths) + tuple(
+            pattern
+            for pattern, action in project_context.settings.path_overrides.items()
+            if action == "include"
+        )
+        try:
+            hint_root = Path(root).expanduser().resolve(strict=True)
+            inventory_loader = getattr(self.repo_tools, "_git_files", None)
+            file_inventory = (
+                inventory_loader(hint_root) if callable(inventory_loader) else None
             )
-            result["preprocessed_hit"] = used_preprocessed
+            extension_is_searchable = getattr(
+                self.repo_tools, "_path_extension_is_searchable", None
+            )
+            ignored_dirs = getattr(self.repo_tools, "ignore_dirs", set())
+            seen_hint_paths: set[str] = set()
+            for hint in request_hints:
+                target = validate_path_hint(
+                    hint_root,
+                    hint,
+                    purpose="repository_search",
+                    scope=search_scope,
+                    repository_revision=repository_revision,
+                    config_digest=project_context.config_digest,
+                    learned=bool(hint.evidence_id),
+                )
+                if target is None:
+                    continue
+                if target.is_file():
+                    candidates = (target,)
+                elif target.is_dir() and file_inventory is not None:
+                    def under_hint_directory():
+                        for raw_candidate in file_inventory:
+                            try:
+                                candidate = Path(raw_candidate).resolve(strict=False)
+                                candidate.relative_to(hint_root)
+                            except (OSError, RuntimeError, ValueError):
+                                continue
+                            if candidate == target or target in candidate.parents:
+                                yield candidate
+                    candidates = under_hint_directory()
+                else:
+                    continue
+                for candidate in candidates:
+                    try:
+                        relative_path = candidate.relative_to(hint_root)
+                        relative = relative_path.as_posix()
+                        size_bytes = candidate.stat().st_size
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                    if callable(extension_is_searchable) and not extension_is_searchable(
+                        candidate, project_settings=project_context.settings,
+                    ):
+                        continue
+                    soft_ignored = any(
+                        part.lower() in ignored_dirs for part in relative_path.parts[:-1]
+                    )
+                    if not path_is_allowed(
+                        hint_root,
+                        candidate,
+                        project_context.settings,
+                        phase="search",
+                        soft_ignored=soft_ignored,
+                        size_bytes=size_bytes,
+                    ):
+                        continue
+                    hinted_force_include = hinted_force_include or soft_ignored
+                    if relative not in seen_hint_paths:
+                        hinted_search_paths.append(relative)
+                        seen_hint_paths.add(relative)
+                    if len(hinted_search_paths) >= 64:
+                        break
+                if len(hinted_search_paths) >= 64:
+                    break
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            # Hints enrich bounded targeted search; invalid policy never blocks normal search.
+            hinted_search_paths = []
+            hinted_force_include = False
+        paths = list(dict.fromkeys([*hinted_search_paths, *paths]))
+
+        def compute() -> dict[str, Any]:
+            candidate_limit = max(
+                1, int(getattr(self.repo_tools, "max_hits", 80)) * 4
+            )
+            full_result = self.repo_tools.search(
+                root, query, candidate_limit, context_lines=eff_ctx_lines,
+                project_settings=project_context.settings,
+            )
+            if not isinstance(full_result, dict) or not full_result.get("success", True):
+                result = dict(full_result) if isinstance(full_result, dict) else {
+                    "success": False, "error": "repository search failed"
+                }
+                result["preprocessed_hit"] = False
+                return result
+
+            targeted = {"results": []}
+            if paths:
+                try:
+                    search_options = {"project_settings": project_context.settings}
+                    if hinted_force_include:
+                        search_options["force_include_paths"] = list(force_include_patterns)
+                    targeted = (
+                        self.repo_tools.search_paths(
+                            root, query, paths, candidate_limit,
+                            context_lines=eff_ctx_lines, **search_options
+                        )
+                        if eff_ctx_lines is not None
+                        else self.repo_tools.search_paths(
+                            root, query, paths, candidate_limit, **search_options
+                        )
+                    )
+                except Exception:
+                    targeted = {"results": []}
+
+            combined: list[dict[str, Any]] = []
+            seen_hits: set[tuple[str, int]] = set()
+            for source in (full_result, targeted):
+                source_hits = source.get("results", []) if isinstance(source, dict) else []
+                if not isinstance(source_hits, list):
+                    continue
+                for item in source_hits:
+                    if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                        continue
+                    try:
+                        line_number = int(item.get("start_line", 0) or 0)
+                    except (TypeError, ValueError):
+                        line_number = 0
+                    key = (item["path"], line_number)
+                    if key not in seen_hits:
+                        combined.append(dict(item))
+                        seen_hits.add(key)
+
+            base = Path(root).expanduser().resolve(strict=True)
+            allowed_results: list[dict[str, Any]] = []
+            extension_is_searchable = getattr(
+                self.repo_tools, "_path_extension_is_searchable", None
+            )
+            for item in combined:
+                relative = str(item.get("path") or "").replace("\\", "/")
+                if not relative:
+                    continue
+                target = (base / relative).resolve(strict=False)
+                try:
+                    target.relative_to(base)
+                    size_bytes = target.stat().st_size
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                if callable(extension_is_searchable) and not extension_is_searchable(
+                    target, project_settings=project_context.settings,
+                ):
+                    continue
+                if not path_is_allowed(
+                    base,
+                    target,
+                    project_context.settings,
+                    phase="search",
+                    hard_denied=bool(item.get("hard_denied", False)),
+                    binary=bool(item.get("binary", False)),
+                    size_bytes=size_bytes,
+                ):
+                    continue
+                item["path"] = target.relative_to(base).as_posix()
+                allowed_results.append(item)
+
+            override_patterns = tuple(
+                pattern
+                for pattern, action in project_context.settings.path_overrides.items()
+                if action == "include"
+            )
+            override_order = sorted(
+                allowed_results,
+                key=lambda item: not any(
+                    path_matches_pattern(str(item["path"]), pattern)
+                    for pattern in override_patterns
+                ),
+            )
+            candidate_paths = [str(item["path"]) for item in override_order]
+            configured_usage = project_context.prioritize_paths(
+                candidate_paths,
+                purpose="repository_search",
+                scope=search_scope,
+                repository_revision=repository_revision,
+                path_hints=(),
+            )
+            request_usage = prioritize_paths_with_hints(
+                base,
+                configured_usage.paths,
+                request_hints,
+                purpose="repository_search",
+                scope=search_scope,
+                repository_revision=repository_revision,
+                config_digest=project_context.config_digest,
+            )
+            path_rank = {path: rank for rank, path in enumerate(request_usage.paths)}
+            allowed_results.sort(
+                key=lambda item: path_rank.get(str(item["path"]), len(path_rank))
+            )
+            result = dict(full_result)
+            result["results"] = allowed_results[:max(1, int(top_k))]
+            result["preprocessed_hit"] = bool(
+                paths
+                and any(str(item.get("path")) in set(paths) for item in allowed_results)
+            )
             if enrich:
                 result["enriched"] = True
-                base = Path(root).expanduser().resolve()
                 for hit in result.get("results", [])[:top_k]:
                     rel = str(hit.get("path") or "")
                     target = (base / rel).resolve()
@@ -2645,7 +2900,20 @@ class LocalAIServices:
                 except Exception:
                     pass
             return result
-        return self._repo_cached("search", root, {"query": query, "top_k": top_k, "ci": paths[:24], "ctx": eff_ctx_lines}, compute)
+        return self._repo_cached(
+            "search",
+            root,
+            {
+                "query": query,
+                "top_k": top_k,
+                "ci": paths[:24],
+                "ctx": eff_ctx_lines,
+                "scope": search_scope,
+                "config_digest": project_context.config_digest,
+                "path_hints_digest": request_hint_digest,
+            },
+            compute,
+        )
 
     def _refresh_changed_intelligence(self, root: str) -> None:
         """Synchronize only Git-changed files before serving a cache-miss intelligence query.
@@ -3041,12 +3309,261 @@ class LocalAIServices:
             return res
         return self._repo_cached(f"det:{operation}", root, params, wrapped_compute)
 
-    def test_matrix(self, root: str) -> dict[str, Any]:
-        return self.deterministic_operation("test-matrix", root, {}, lambda: self.deterministic.test_matrix(root))
+    def _repository_test_impact_service(self):
+        from .repository_test_impact import RepositoryTestImpactService
+        return RepositoryTestImpactService(
+            self.deterministic,
+            self.deterministic_operation,
+        )
 
-    def affected_tests(self, root: str, changed_paths: list[str] | None = None, base: str = "HEAD") -> dict[str, Any]:
-        params = {"changed_paths": sorted(changed_paths or []), "base": base}
-        return self.deterministic_operation("affected-tests", root, params, lambda: self.deterministic.affected_tests(root, changed_paths, base))
+    def test_matrix(self, root: str) -> dict[str, Any]:
+        return self._repository_test_impact_service().test_matrix(root)
+
+    def affected_tests(
+        self,
+        root: str,
+        changed_paths: list[str] | None = None,
+        base: str = "HEAD",
+        path_hints: list[Any] | tuple[Any, ...] | None = None,
+    ) -> dict[str, Any]:
+        from .project_config import (
+            PathHint,
+            path_is_allowed,
+            path_matches_pattern,
+            resolve_project_context,
+        )
+
+        context = resolve_project_context(root, configured_state_dir(self.config))
+        request_hints: list[PathHint] = []
+        if isinstance(path_hints, (list, tuple)):
+            for item in path_hints[:64]:
+                if isinstance(item, PathHint):
+                    request_hints.append(item)
+                elif isinstance(item, dict):
+                    allowed_fields = {
+                        "path",
+                        "purpose",
+                        "scope",
+                        "evidence_id",
+                        "provenance",
+                        "repository_revision",
+                        "config_digest",
+                        "expires_at",
+                    }
+                    if set(item) - allowed_fields:
+                        continue
+                    try:
+                        request_hints.append(
+                            PathHint(**{
+                                key: value
+                                for key, value in item.items()
+                                if key in allowed_fields
+                            })
+                        )
+                    except TypeError:
+                        continue
+        request_hints = [
+            hint
+            for hint in request_hints
+            if isinstance(hint.path, str)
+            and isinstance(hint.purpose, str)
+            and isinstance(hint.scope, str)
+            and all(
+                value is None or isinstance(value, str)
+                for value in (
+                    hint.evidence_id,
+                    hint.provenance,
+                    hint.repository_revision,
+                    hint.config_digest,
+                    hint.expires_at,
+                )
+            )
+        ]
+        hint_digest = stable_hash([asdict(hint) for hint in request_hints])
+        params = {
+            "changed_paths": sorted(changed_paths or []),
+            "base": base,
+            "project_config_digest": context.config_digest,
+            "path_hints_digest": hint_digest,
+        }
+        result = self._repository_test_impact_service().affected_tests(
+            root,
+            changed_paths,
+            base,
+            params,
+        )
+        if not isinstance(result, dict) or not result.get("success", True):
+            return result
+        workspace_state = result.get("workspace_cache", {})
+        repository_revision = (
+            str(workspace_state.get("fingerprint", ""))
+            if isinstance(workspace_state, dict)
+            and not workspace_state.get("stale")
+            and not workspace_state.get("degraded")
+            else ""
+        )
+
+        candidates = [
+            path for path in result.get("test_files", []) if isinstance(path, str)
+        ]
+        changed_for_mapping = changed_paths or result.get("changed_files", [])
+        changed_for_graph = sorted(
+            {
+                path.replace("\\", "/").lstrip("./")
+                for path in changed_for_mapping
+                if isinstance(path, str) and path
+            }
+        )
+        graph_complete = False
+        graph_tests: list[str] = []
+        graph_missing_candidates = 0
+        try:
+            impact = (
+                self.code_index.impact(root, changed_for_graph, max_dependents=100)
+                if self.code_index is not None and changed_for_graph
+                else None
+            )
+            if isinstance(impact, dict):
+                likely_dependents = impact.get("likely_dependents", [])
+                suggested_tests = impact.get("suggested_tests", [])
+                confidence = impact.get("confidence")
+                graph_complete = (
+                    impact.get("success") is True
+                    and isinstance(confidence, (int, float))
+                    and not isinstance(confidence, bool)
+                    and math.isfinite(float(confidence))
+                    and float(confidence) >= 0.94
+                    and impact.get("indexed_changed_files") == len(changed_for_graph)
+                    and impact.get("changed_files_count") == len(changed_for_graph)
+                    and isinstance(likely_dependents, list)
+                    and len(likely_dependents) < 100
+                    and isinstance(suggested_tests, list)
+                    and len(suggested_tests) < 20
+                )
+                if graph_complete:
+                    for item in suggested_tests:
+                        candidate = item.get("path") if isinstance(item, dict) else None
+                        if isinstance(candidate, str):
+                            graph_tests.append(candidate.replace("\\", "/"))
+                    for item in likely_dependents:
+                        candidate = item.get("path") if isinstance(item, dict) else None
+                        if (
+                            isinstance(candidate, str)
+                            and self.code_index._is_test_path(candidate)
+                        ):
+                            graph_tests.append(candidate.replace("\\", "/"))
+                    graph_tests = list(dict.fromkeys(graph_tests))
+                    graph_missing_candidates = len(set(graph_tests) - set(candidates))
+                    candidates.extend(
+                        path for path in graph_tests if path not in candidates
+                    )
+        except Exception:
+            graph_complete = False
+        selection_uncertain = not graph_complete
+        matrix: dict[str, Any] | None = None
+        complete_matrix_paths: list[str] = []
+        if selection_uncertain:
+            matrix = self.test_matrix(root)
+            for item in matrix.get("test_files", []):
+                candidate = item.get("path") if isinstance(item, dict) else item
+                if isinstance(candidate, str):
+                    complete_matrix_paths.append(candidate)
+            candidates.extend(complete_matrix_paths)
+            if not complete_matrix_paths:
+                candidates = []
+        target_patterns = tuple(
+            target_pattern
+            for source_pattern, targets in context.settings.affected_tests_mapping.items()
+            if any(
+                isinstance(changed_path, str)
+                and path_matches_pattern(changed_path, source_pattern)
+                for changed_path in changed_for_mapping
+            )
+            for target_pattern in targets
+        )
+        if target_patterns:
+            if matrix is None:
+                matrix = self.test_matrix(root)
+            for item in matrix.get("test_files", []):
+                candidate = item.get("path") if isinstance(item, dict) else item
+                if (
+                    isinstance(candidate, str)
+                    and any(
+                        path_matches_pattern(candidate, pattern)
+                        for pattern in target_patterns
+                    )
+                ):
+                    candidates.append(candidate)
+        candidates = list(dict.fromkeys(candidates))
+        usage = context.prioritize_paths(
+            candidates,
+            purpose="affected_tests",
+            scope="run_affected",
+            repository_revision=repository_revision,
+            path_hints=tuple(request_hints),
+        )
+        allowed_tests: list[str] = []
+        for candidate in usage.paths:
+            try:
+                file_size = (Path(root) / candidate).stat().st_size
+            except OSError:
+                file_size = None
+            if path_is_allowed(
+                root,
+                candidate,
+                context.settings,
+                phase="test",
+                size_bytes=file_size,
+            ):
+                allowed_tests.append(candidate)
+
+        result = dict(result)
+        result["test_files"] = allowed_tests
+        quote_argument = (
+            (lambda value: subprocess.list2cmdline([value]))
+            if os.name == "nt"
+            else shlex.quote
+        )
+        quoted_tests = [quote_argument(path) for path in allowed_tests]
+        framework = str(result.get("framework", "unknown"))
+        if not allowed_tests:
+            suggested_command = ""
+        elif framework == "pytest":
+            suggested_command = f"pytest {' '.join(quoted_tests)}"
+        elif framework == "dotnet":
+            filters = " | ".join(
+                f"FullyQualifiedName~{Path(path).stem}" for path in allowed_tests
+            )
+            suggested_command = f"dotnet test --filter {quote_argument(filters)}"
+        elif framework == "npm":
+            suggested_command = f"npm test -- {' '.join(quoted_tests)}"
+        elif framework == "cargo":
+            suggested_command = (
+                f"cargo test {' '.join(quote_argument(Path(path).stem) for path in allowed_tests)}"
+            )
+        elif framework == "go":
+            suggested_command = f"go test {' '.join(quoted_tests)}"
+        else:
+            suggested_command = f"pytest {' '.join(quoted_tests)}"
+        result["suggested_command"] = suggested_command
+        result["project_config_digest"] = context.config_digest
+        if graph_complete:
+            result["dependency_graph_complete"] = True
+            result["dependency_graph_test_count"] = len(graph_tests)
+            result["dependency_graph_missing_candidates"] = graph_missing_candidates
+        if selection_uncertain:
+            result["selection_uncertain"] = True
+            result["selection_fallback"] = (
+                "complete_test_matrix"
+                if complete_matrix_paths
+                else "unavailable_test_matrix"
+            )
+        result["path_hint_usage"] = {
+            "hint_used": usage.hint_used,
+            "fallback_used": usage.fallback_used,
+            "hint_helped": usage.hint_helped,
+        }
+        return result
 
     def repo_topology(self, root: str) -> dict[str, Any]:
         return self.deterministic_operation("repo-topology", root, {}, lambda: self.deterministic.repo_topology(root))
@@ -3089,20 +3606,43 @@ class LocalAIServices:
         return prune_git_worktrees(root)
 
 
-    def spawn_daemon(self, command: str, cwd: str, name: str = "", env: dict[str, str] | None = None) -> dict[str, Any]:
+    def spawn_daemon(
+        self,
+        command: str | list[str],
+        cwd: str,
+        name: str = "",
+        env: dict[str, str] | None = None,
+        *,
+        task_id: str = "",
+    ) -> dict[str, Any]:
         if not self.commands:
             return {"success": False, "error": "command broker unavailable"}
-        return self.commands.spawn_daemon(command, cwd, name=name, env=env)
+        return self.commands.spawn_daemon(command, cwd, name=name, env=env, task_id=task_id)
 
-    def daemon_status(self, daemon_id: str | None = None) -> dict[str, Any]:
+    def daemon_status(
+        self, daemon_id: str | None = None, *, task_id: str = ""
+    ) -> dict[str, Any]:
         if not self.commands:
             return {"success": False, "error": "command broker unavailable"}
-        return self.commands.daemon_status(daemon_id)
+        if not task_id:
+            return {
+                "success": False,
+                "error": "daemon status requires a registered task id",
+                "policy_blocked": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        denied = self._authorize_command_action(
+            "daemon_status", endpoint="services.daemon_status", task_id=task_id
+        )
+        if denied is not None:
+            return denied
+        return self.commands.daemon_status(daemon_id, task_id=task_id)
 
-    def stop_daemon(self, daemon_id: str) -> dict[str, Any]:
+    def stop_daemon(self, daemon_id: str, *, task_id: str = "") -> dict[str, Any]:
         if not self.commands:
             return {"success": False, "error": "command broker unavailable"}
-        return self.commands.stop_daemon(daemon_id)
+        return self.commands.stop_daemon(daemon_id, task_id=task_id)
 
     def lint_fix(self, root: str, command: str | None = None, paths: list[str] | None = None, tenant: str = "agent", timeout: int | None = None) -> dict[str, Any]:
         if not self.commands:
@@ -3230,10 +3770,11 @@ class LocalAIServices:
             return {"success": False, "error": "command broker unavailable"}
         return self.commands.diff_hunk_stage(root, patch)
 
-    def test_flaky_detect(self, root: str, command: str, runs: int = 5, timeout: int = 30) -> dict[str, Any]:
+    def test_flaky_detect(self, root: str, command: str, runs: int = 5, timeout: int = 30, timeout_per_run: int | None = None) -> dict[str, Any]:
         if not self.commands:
             return {"success": False, "error": "command broker unavailable"}
-        return self.commands.test_flaky_detect(root, command, runs=runs, timeout_per_run=timeout)
+        effective_timeout = timeout_per_run if timeout_per_run is not None else timeout
+        return self.commands.test_flaky_detect(root, command, runs=runs, timeout_per_run=effective_timeout)
 
     def webhook_replay(self, url: str, payload: dict[str, Any] | str, secret: str = "", signature_header: str = "X-Hub-Signature-256", timeout: float = 10.0) -> dict[str, Any]:
         if not self.commands:
@@ -3266,11 +3807,19 @@ class LocalAIServices:
 
     def pubsub_publish(self, topic: str, message: dict[str, Any] | str, sender: str = "agent") -> dict[str, Any]:
         from .agent_events import SwarmPubSub
-        return SwarmPubSub.get_default().publish(topic, message, sender=sender)
+        return SwarmPubSub.get_default(state_store=self.agent_state).publish(topic, message, sender=sender)
 
-    def pubsub_poll(self, topic: str, since_timestamp: float = 0.0, limit: int = 50) -> dict[str, Any]:
+    def pubsub_poll(
+        self,
+        topic: str,
+        since_timestamp: float = 0.0,
+        limit: int = 50,
+        after_seq: int = 0,
+    ) -> dict[str, Any]:
         from .agent_events import SwarmPubSub
-        return SwarmPubSub.get_default().poll(topic, since_timestamp=since_timestamp, limit=limit)
+        return SwarmPubSub.get_default(state_store=self.agent_state).poll(
+            topic, since_timestamp=since_timestamp, limit=limit, after_seq=after_seq
+        )
 
     def synthesize_commit(self, root: str, hint: str = "", task_id: str = "") -> dict[str, Any]:
         tasks_data: list[dict[str, Any]] = []
@@ -3444,7 +3993,7 @@ class LocalAIServices:
         try:
             compiler = ContextCompiler(
                 AgentStateStore(
-                    configured_state_dir(getattr(self, "config", {}), create=False) / "agent_state.sqlite3",
+                    configured_state_dir(getattr(self, "config", {}), create=False) / "agent_state.sqlite",
                     enabled=False,
                 ),
                 config=getattr(self, "config", {}),
@@ -3645,6 +4194,45 @@ class LocalAIServices:
                 "error": f"context memory revision unavailable: {type(exc).__name__}",
                 "context": "", "evidence": [],
             }
+        project_config_digest = ""
+        retrieval_weights: dict[str, float] = {}
+        effective_path_hints = request.path_hints
+        if mode == "adaptive":
+            from .project_config import ProjectConfigError, resolve_project_context
+
+            try:
+                project_context = resolve_project_context(
+                    request.root,
+                    configured_state_dir(getattr(self, "config", {}), create=False),
+                )
+                project_config_digest = str(project_context.config_digest or "")[:200]
+                retrieval_weights = dict(project_context.settings.retrieval_weights)
+                from .context_identity import normalize_context_path_hints
+                from .task_context import _project_context_hint_groups
+
+                pinned_hints, entry_hints, saved_hints = _project_context_hint_groups(
+                    project_context,
+                    project_root=Path(request.root).expanduser().resolve(strict=False),
+                    repository_revision="",
+                    config_digest=project_config_digest,
+                )
+                effective_path_hints = normalize_context_path_hints(
+                    (*pinned_hints, *entry_hints, *request.path_hints, *saved_hints)
+                )
+            except ProjectConfigError as exc:
+                return {
+                    "success": False, "terminal": True, "retryable": False,
+                    "stop_code": "context_project_config_invalid",
+                    "error": f"context project configuration invalid: {type(exc).__name__}",
+                    "context": "", "evidence": [],
+                }
+            except (RuntimeError, ValueError) as exc:
+                return {
+                    "success": False, "terminal": True, "retryable": False,
+                    "stop_code": "context_project_hints_invalid",
+                    "error": f"context project hints invalid: {type(exc).__name__}",
+                    "context": "", "evidence": [],
+                }
         retrieval_config = {
             "search": getattr(self, "config", {}).get("search", {}),
             "features": getattr(self, "config", {}).get("features", {}),
@@ -3653,6 +4241,8 @@ class LocalAIServices:
             "retrieval": getattr(self, "config", {}).get("retrieval", {}),
             "external_tools": getattr(self, "config", {}).get("external_tools", {}),
             "code_intelligence": getattr(self, "config", {}).get("code_intelligence", {}),
+            "project_config_digest": project_config_digest,
+            "retrieval_weights": retrieval_weights,
         }
         retrieval_config_revision = stable_hash(retrieval_config)
         context_cache_identity = {
@@ -3665,12 +4255,18 @@ class LocalAIServices:
             "query": request.query,
             "focus": request.focus,
             "changed_paths": request.changed_paths,
+            "path_hints": effective_path_hints,
+            "directory_hints": request.directory_hints,
+            "exclude_paths": request.exclude_paths,
+            "force_include_paths": request.force_include_paths,
             "preload_profile": request.preload_profile,
             "token_budget": request.token_budget,
             "base": request.base,
             "staged": request.staged,
             "memory_revision": memory_revision,
             "retrieval_config_revision": retrieval_config_revision,
+            "project_config_digest": project_config_digest,
+            "retrieval_weights": retrieval_weights,
             "since_hash": since_hash,
             "approval": request.approval,
             "override_reason": request.override_reason,
@@ -3684,6 +4280,11 @@ class LocalAIServices:
                 request.token_budget,
                 quality_first=mode == "adaptive",
                 context_identity=context_cache_identity,
+                path_hints=effective_path_hints if mode == "adaptive" else (),
+                directory_hints=request.directory_hints if mode == "adaptive" else (),
+                exclude_paths=request.exclude_paths if mode == "adaptive" else (),
+                force_include_paths=request.force_include_paths if mode == "adaptive" else (),
+                retrieval_weights=retrieval_weights if mode == "adaptive" else None,
             )
         else:
             base = self.fast_context(request.root, request.query, request.token_budget)
@@ -3936,6 +4537,11 @@ class LocalAIServices:
         *,
         quality_first: bool = False,
         context_identity: dict[str, Any] | None = None,
+        path_hints: tuple[dict[str, str], ...] = (),
+        directory_hints: tuple[str, ...] = (),
+        exclude_paths: tuple[str, ...] = (),
+        force_include_paths: tuple[str, ...] = (),
+        retrieval_weights: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         resolved_root = Path(root).expanduser().resolve(strict=False)
         if not resolved_root.is_dir():
@@ -3950,6 +4556,64 @@ class LocalAIServices:
                 "context": "",
                 "evidence": [],
             }
+        if quality_first and "project_config_digest" not in (context_identity or {}):
+            from .project_config import ProjectConfigError, resolve_project_context
+
+            try:
+                project_context = resolve_project_context(
+                    resolved_root,
+                    configured_state_dir(getattr(self, "config", {}), create=False),
+                )
+                project_config_digest = str(project_context.config_digest or "")[:200]
+                configured_weights = dict(project_context.settings.retrieval_weights)
+                if retrieval_weights is None:
+                    retrieval_weights = configured_weights
+                from .context_identity import normalize_context_path_hints
+                from .task_context import _project_context_hint_groups
+
+                pinned_hints, entry_hints, saved_hints = _project_context_hint_groups(
+                    project_context,
+                    project_root=resolved_root,
+                    repository_revision="",
+                    config_digest=project_config_digest,
+                )
+                path_hints = normalize_context_path_hints(
+                    (*pinned_hints, *entry_hints, *path_hints, *saved_hints)
+                )
+                identity = dict(context_identity or {})
+                identity.update({
+                    "path_hints": path_hints,
+                    "project_config_digest": project_config_digest,
+                    "retrieval_weights": retrieval_weights or {},
+                    "directory_hints": directory_hints,
+                    "exclude_paths": exclude_paths,
+                    "force_include_paths": force_include_paths,
+                })
+                try:
+                    from .agent_consistency import ConsistencyRequest
+
+                    memory_revision = self._adaptive_memory_revision(ConsistencyRequest(
+                        root=str(resolved_root), query=query, tenant=tenant,
+                        workspace=workspace or "", token_budget=max_tokens,
+                    ))
+                except Exception:
+                    memory_revision = ""
+                identity["memory_revision"] = memory_revision
+                context_identity = identity
+            except ProjectConfigError as exc:
+                return {
+                    "success": False, "terminal": True, "retryable": False,
+                    "stop_code": "context_project_config_invalid",
+                    "error": f"context project configuration invalid: {type(exc).__name__}",
+                    "context": "", "evidence": [],
+                }
+            except (RuntimeError, ValueError) as exc:
+                return {
+                    "success": False, "terminal": True, "retryable": False,
+                    "stop_code": "context_project_hints_invalid",
+                    "error": f"context project hints invalid: {type(exc).__name__}",
+                    "context": "", "evidence": [],
+                }
         # Explicit fast mode remains deterministic-only. Adaptive mode intentionally
         # bypasses this early return so independent backends can cross-check the pack.
         if self.deterministic is not None and not quality_first:
@@ -3991,6 +4655,9 @@ class LocalAIServices:
         compute = lambda: self._hybrid_context_uncached(
             root, query, tenant, workspace, max_tokens, quality_first=quality_first,
             rag_revision=str(rag_revision or ""), rag_revision_available=rag_revision_available,
+            path_hints=path_hints, directory_hints=directory_hints,
+            exclude_paths=exclude_paths, force_include_paths=force_include_paths,
+            retrieval_weights=retrieval_weights,
         )
         if rag_enabled and not rag_revision_available:
             result = compute()
@@ -4009,6 +4676,11 @@ class LocalAIServices:
                     "rag_revision": rag_revision,
                     "quality_first": quality_first,
                     "context_identity": context_identity or {},
+                    "path_hints": path_hints,
+                    "directory_hints": directory_hints,
+                    "exclude_paths": exclude_paths,
+                    "force_include_paths": force_include_paths,
+                    "retrieval_weights": retrieval_weights or {},
                 },
                 compute,
             )
@@ -4153,6 +4825,11 @@ class LocalAIServices:
         quality_first: bool = False,
         rag_revision: str = "",
         rag_revision_available: bool = True,
+        path_hints: tuple[dict[str, str], ...] = (),
+        directory_hints: tuple[str, ...] = (),
+        exclude_paths: tuple[str, ...] = (),
+        force_include_paths: tuple[str, ...] = (),
+        retrieval_weights: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         started_at = time.perf_counter()
         if self.learner is not None:
@@ -4246,21 +4923,113 @@ class LocalAIServices:
             retrieval_warnings.extend(external_warnings)
         else:
             backend_states.update({"serena": "skipped", "rag": "skipped"})
-        fused_candidates = fuse_ranked_paths(path_groups, limit=64, max_per_path=2)
-        candidate_paths = [path for path, _score in fused_candidates]
+        hinted_paths = [str(item.get("path", "")) for item in path_hints if isinstance(item, dict) and item.get("path")]
+        if hinted_paths:
+            path_groups["project_hints"] = hinted_paths
+        if directory_hints:
+            path_groups["directory_hints"] = list(directory_hints)
+        if force_include_paths:
+            path_groups["force_include"] = list(force_include_paths)
+
+        def path_matches(path: str, patterns: tuple[str, ...]) -> bool:
+            normalized = path.replace("\\", "/").strip("/").casefold()
+            basename = normalized.rsplit("/", 1)[-1]
+            for pattern in patterns:
+                pattern = pattern.replace("\\", "/").strip("/").casefold()
+                if not pattern:
+                    continue
+                if any(char in pattern for char in "*?["):
+                    if fnmatch.fnmatchcase(normalized, pattern) or fnmatch.fnmatchcase(basename, pattern):
+                        return True
+                elif normalized == pattern or normalized.startswith(pattern + "/"):
+                    return True
+            return False
+
+        def excluded_path(path: str) -> bool:
+            return path_matches(path, exclude_paths)
+
+        if exclude_paths:
+            path_groups = {
+                backend: [path for path in paths if not excluded_path(path)]
+                for backend, paths in path_groups.items()
+            }
+        fused_candidates = fuse_ranked_paths(
+            path_groups, limit=64, max_per_path=2,
+        )
+        pinned_paths = tuple(
+            str(item["path"])
+            for item in path_hints[:64]
+            if isinstance(item, dict)
+            and item.get("provenance") == "project_config:pinned_context"
+            and isinstance(item.get("path"), str)
+        )
+        # Pins survive ranking limits, but never become force-include authorization.
+        candidate_paths = list(dict.fromkeys((
+            *pinned_paths,
+            *force_include_paths,
+            *(path for path, _score in fused_candidates),
+        )))
+        candidate_paths = [path for path in candidate_paths if not excluded_path(path)]
+        has_path_controls = bool(path_hints or directory_hints or exclude_paths or force_include_paths)
+        try:
+            lexical_candidate_limit = max(1, min(64, int(search_cfg.get("context_top_k", 14))))
+        except (TypeError, ValueError, OverflowError):
+            lexical_candidate_limit = 14
+        if has_path_controls and len(candidate_paths) < lexical_candidate_limit:
+            # Hints bias candidate ordering; they must not turn a bounded adaptive
+            # lookup into a search restricted to hinted paths. Fill sparse indexed
+            # candidates with a bounded lexical pass, then apply explicit excludes.
+            try:
+                completion = self.repo_tools.search(
+                    root,
+                    query,
+                    top_k=lexical_candidate_limit,
+                )
+                if isinstance(completion, dict) and completion.get("success"):
+                    candidate_paths.extend(
+                        str(item.get("path"))
+                        for item in completion.get("results", [])
+                        if isinstance(item, dict)
+                        and isinstance(item.get("path"), str)
+                        and item.get("path")
+                        and not excluded_path(str(item["path"]))
+                    )
+                    candidate_paths = list(dict.fromkeys(candidate_paths))
+                else:
+                    retrieval_warnings.append("lexical completeness pass unavailable")
+            except Exception as exc:
+                retrieval_warnings.append(f"lexical completeness pass degraded: {type(exc).__name__}")
         try:
             if candidate_paths:
                 candidate_paths = list(dict.fromkeys(candidate_paths))
+                pack_kwargs: dict[str, Any] = {
+                    "max_tokens": lexical_tokens,
+                    "top_k": int(search_cfg.get("context_top_k", 14)),
+                }
+                if path_hints or directory_hints or exclude_paths or force_include_paths:
+                    hinted_directories = tuple(dict.fromkeys((
+                        *directory_hints,
+                        *hinted_paths,
+                    )))
+                    pack_kwargs.update({
+                        "directory_hints": hinted_directories,
+                        "exclude_paths": exclude_paths,
+                        "force_include_paths": force_include_paths,
+                    })
                 lexical = self.repo_tools.context_pack_paths(
-                    root, query, candidate_paths, max_tokens=lexical_tokens,
-                    top_k=int(search_cfg.get("context_top_k", 14)),
+                    root, query, candidate_paths, **pack_kwargs,
                 )
                 # If targeted cards return no exact evidence, do one completeness scan.
-                if isinstance(lexical, dict) and lexical.get("success") and not lexical.get("evidence"):
+                if isinstance(lexical, dict) and lexical.get("success") and not lexical.get("evidence") and not has_path_controls:
                     lexical = self.repo_tools.context_pack(
                         root, query, max_tokens=lexical_tokens,
                         top_k=int(search_cfg.get("context_top_k", 14)),
                     )
+            elif exclude_paths:
+                lexical = {
+                    "success": True, "root": str(root_path), "context": "", "evidence": [],
+                    "scanned_files": 0, "targeted": True,
+                }
             else:
                 lexical = self.repo_tools.context_pack(
                     root, query, max_tokens=lexical_tokens,
@@ -4286,7 +5055,22 @@ class LocalAIServices:
             backend_states["lexical"] = "used"
         evidence = list(lexical.get("evidence", []))
         path_groups["lexical"] = [str(item.get("path")) for item in evidence if item.get("path")]
-        fused_evidence = fuse_ranked_paths(path_groups, limit=max(24, len(evidence)), max_per_path=2)
+        baseline_fused_evidence = fuse_ranked_paths(
+            path_groups, limit=max(24, len(evidence)), max_per_path=2,
+        )
+        fused_evidence = baseline_fused_evidence
+        if retrieval_weights:
+            selected_paths = {path for path, _score in baseline_fused_evidence}
+            selected_groups = {
+                source: [path for path in paths if path in selected_paths]
+                for source, paths in path_groups.items()
+            }
+            fused_evidence = fuse_ranked_paths(
+                selected_groups,
+                limit=max(1, len(selected_paths)),
+                max_per_path=max(1, len(selected_paths)),
+                source_weights=retrieval_weights,
+            )
         evidence_rank = {path: rank for rank, (path, _score) in enumerate(fused_evidence)}
         evidence.sort(key=lambda item: (evidence_rank.get(str(item.get("path", "")), 999), str(item.get("path", ""))))
         if self.evidence_store is not None:
@@ -4328,6 +5112,33 @@ class LocalAIServices:
                 traceable.append(traced)
             evidence = traceable
         context = str(lexical.get("context", ""))
+        # Keep the already budgeted, exact lexical rendering intact; only move
+        # its complete snippet blocks into the same order as their evidence.
+        rendered_positions: list[tuple[int, int]] = []
+        used_positions: set[int] = set()
+        for evidence_index, item in enumerate(evidence):
+            if not isinstance(item, dict) or not item.get("path"):
+                rendered_positions = []
+                break
+            header = (
+                f"--- {item['path']}:{item.get('start_line')}-{item.get('end_line')} "
+                f"score={item.get('score')} ---\n"
+            )
+            position = context.find(header)
+            while position in used_positions and position >= 0:
+                position = context.find(header, position + 1)
+            if position < 0:
+                rendered_positions = []
+                break
+            rendered_positions.append((evidence_index, position))
+            used_positions.add(position)
+        source_order = sorted(rendered_positions, key=lambda item: item[1])
+        if rendered_positions and len(rendered_positions) == len(evidence) and source_order[0][1] == 0:
+            blocks: dict[int, str] = {}
+            for offset, (evidence_index, start) in enumerate(source_order):
+                end = source_order[offset + 1][1] if offset + 1 < len(source_order) else len(context)
+                blocks[evidence_index] = context[start:end]
+            context = "".join(blocks[index] for index in range(len(evidence)))
         semantic_used = False
         per_path: dict[str, int] = {}
         for item in evidence:
@@ -4369,6 +5180,9 @@ class LocalAIServices:
                 for item in raw_results:
                     if not isinstance(item, dict) or not str(item.get("path") or "").strip():
                         malformed_results = True
+                        continue
+                    rag_path = str(item.get("path", "")).replace("\\", "/").strip("/")
+                    if excluded_path(rag_path):
                         continue
                     try:
                         chunk_no = int(item.get("chunk_no", 0))
@@ -4585,7 +5399,9 @@ class LocalAIServices:
         vram_free_mb = None
         try:
             if getattr(self, "vram_balancer", None):
-                vram_free_mb = self.vram_balancer.status().get("vram_available_mb")
+                vram_status = self.vram_balancer.status()
+                if vram_status.get("available", "vram_available_mb" in vram_status):
+                    vram_free_mb = vram_status.get("vram_available_mb")
         except Exception:
             vram_free_mb = None
         profile = self.model_policy.profile(
@@ -5210,6 +6026,43 @@ class LocalAIServices:
             return self.preprocessor.lookup(root, str(args.get("query", "")), int(args.get("limit", 5)))
         return {"success": False, "error": f"unknown preprocess action: {action}"}
 
+    def _authorize_command_action(
+        self, action: str, *, endpoint: str, task_id: str = ""
+    ) -> dict[str, Any] | None:
+        broker = self.commands
+        authorize = getattr(broker, "authorize_auxiliary_action", None) if broker is not None else None
+        if not callable(authorize):
+            policy = {
+                "success": False,
+                "allowed": False,
+                "requires_approval": True,
+                "reason": "auxiliary action policy boundary unavailable",
+                "owner": "agent_policy",
+                "side_effect_class": "unknown",
+                "terminal": True,
+                "retryable": False,
+            }
+        else:
+            aliases = {
+                "auto_fix": "repair_loop",
+                "repair": "repair_loop",
+                "mock_server": "mock_server_start",
+                "test_flaky_detect": "flaky_detect",
+            }
+            policy = authorize(
+                aliases.get(action, action), endpoint=endpoint, task_id=task_id
+            )
+        if policy.get("allowed", False):
+            return None
+        return {
+            "success": False,
+            "error": policy.get("reason", "command action denied by policy"),
+            "policy": policy,
+            "policy_blocked": True,
+            "terminal": True,
+            "retryable": False,
+        }
+
     def command(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         if self.commands is None:
             return {"success": False, "error": "command broker unavailable"}
@@ -5222,6 +6075,13 @@ class LocalAIServices:
                 "terminal": True,
                 "retryable": False,
             }
+        denied = self._authorize_command_action(
+            action,
+            endpoint="services.command",
+            task_id=str(args.get("task_id", "")),
+        )
+        if denied is not None:
+            return denied
 
         stream_id = str(args.get("stream_id") or (f"cmd:{args.get('task_id')}" if args.get("task_id") else "") or (f"cmd:{tenant}" if args.get("stream") else ""))
         log_callback = None
@@ -5270,22 +6130,45 @@ class LocalAIServices:
                 log_callback=log_callback,
             )
         if action == "run":
+            fence_kwargs = (
+                {"_work_attempt_fence": args["writer_fence"]}
+                if args.get("writer_fence") is not None else {}
+            )
             return self.commands.run(
                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
                 timeout=int(args.get("timeout", 0) or 0) or None, force=bool(args.get("force", False)),
                 task_id=str(args.get("task_id", "")), criterion=str(args.get("criterion", "")),
+                record_verification=bool(args.get("record_verification", True)),
                 auto_fix=bool(args.get("auto_fix", False)),
                 fix_generator=self._synthesize_repair_patch if bool(args.get("auto_fix", False)) else None,
                 log_callback=log_callback,
                 snapshot=bool(args.get("snapshot", False)),
                 rollback_on_failure=bool(args.get("rollback_on_failure", False)),
                 rollback_paths=args.get("paths") if isinstance(args.get("paths"), list) else None,
+                **fence_kwargs,
             )
         if action == "run_affected":
             root = str(args.get("cwd", args.get("root", ".")))
-            aff = self.affected_tests(root, changed_paths=args.get("paths"))
+            aff = self.affected_tests(
+                root,
+                changed_paths=args.get("paths"),
+                path_hints=args.get("path_hints"),
+            )
             cmd = aff.get("suggested_command", "")
             if not cmd:
+                if aff.get("selection_uncertain"):
+                    fallback = aff.get("selection_fallback")
+                    error = (
+                        "affected test selection is uncertain and no complete test matrix is available"
+                        if fallback == "unavailable_test_matrix"
+                        else "affected test selection is uncertain and no allowed test command is available"
+                    )
+                    return {
+                        "success": False,
+                        "error": error,
+                        "selection_uncertain": True,
+                        "changed_files": aff.get("changed_files", []),
+                    }
                 return {
                     "success": True,
                     "message": "No affected tests found for current changes",
@@ -5329,11 +6212,31 @@ class LocalAIServices:
         if action == "lint_fix":
             return self.lint_fix(str(args.get("cwd", args.get("root", "."))), command=args.get("command"), paths=args.get("paths"), tenant=tenant, timeout=args.get("timeout"))
         if action == "spawn_daemon":
-            return self.spawn_daemon(str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), name=str(args.get("name", args.get("task_id", ""))), env=args.get("env"))
+            daemon_command = args.get("argv") if args.get("argv") is not None else str(args.get("command", ""))
+            return self.spawn_daemon(
+                daemon_command,
+                str(args.get("cwd", args.get("root", "."))),
+                name=str(args.get("name", "")),
+                env=args.get("env"),
+                task_id=str(args.get("task_id", "")),
+            )
         if action == "daemon_status":
-            return self.daemon_status(args.get("daemon_id", args.get("task_id", args.get("command"))))
+            task_id = str(args.get("task_id", ""))
+            if not task_id:
+                return {
+                    "success": False,
+                    "error": "daemon status requires a registered task id",
+                    "policy_blocked": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+            daemon_id = args.get("daemon_id", args.get("command"))
+            return self.commands.daemon_status(daemon_id, task_id=task_id)
         if action == "stop_daemon":
-            return self.stop_daemon(str(args.get("daemon_id", args.get("task_id", args.get("command", "")))))
+            return self.stop_daemon(
+                str(args.get("daemon_id", args.get("task_id", args.get("command", "")))),
+                task_id=str(args.get("task_id", "")),
+            )
         if action == "http_probe":
             exp_status = int(args.get("expected_status", 200)) if str(args.get("expected_status", "")).isdigit() else (int(args.get("task_id", 200)) if str(args.get("task_id", "")).isdigit() else 200)
             return self.http_probe(str(args.get("url", args.get("command", ""))), expected_status=exp_status, json_path=args.get("json_path", args.get("criterion")), timeout=float(args.get("timeout", 5.0) or 5.0), headers=args.get("headers"))
@@ -5564,9 +6467,12 @@ class LocalAIServices:
         prepared.sort(key=lambda item: (0 if item[1] == active else 1, item[1], item[0]))
         results: dict[int, dict[str, Any]] = {}
         default_priority = int(args.get("priority", 5))
+        inherited_root = args.get("root") or args.get("cwd")
         for i, _model, item in prepared:
             item = dict(item)
             item.setdefault("priority", default_priority)
+            if inherited_root and not item.get("root") and not item.get("cwd"):
+                item["root"] = inherited_root
             try:
                 results[i] = self.delegate(item, tenant)
             except Exception as exc:
@@ -5579,7 +6485,7 @@ class LocalAIServices:
     def optimize_databases(self) -> dict[str, Any]:
         """Perform WAL checkpointing, page pruning and VACUUM/optimize across all SQLite stores."""
         state_dir = Path(self.config["server"]["state_dir"])
-        db_files = list(state_dir.glob("*.sqlite3"))
+        db_files = _active_sqlite_databases(state_dir)
         optimized = []
         bytes_freed = 0
         for db in db_files:
@@ -5605,7 +6511,7 @@ class LocalAIServices:
         """Purge cache entries older than N days to free disk space."""
         state_dir = Path(self.config["server"]["state_dir"])
         cutoff = time.time() - (days * 86400)
-        cache_db = state_dir / "cache.sqlite3"
+        cache_db = state_dir / "cache.sqlite"
         deleted_entries = 0
         if cache_db.is_file():
             try:
@@ -5686,7 +6592,7 @@ class LocalAIServices:
         })
         
         state_dir = Path(self.config["server"]["state_dir"])
-        dbs = list(state_dir.glob("*.sqlite3"))
+        dbs = _active_sqlite_databases(state_dir)
         checks.append({"component": "SQLite Databases", "status": "OK", "detail": f"{len(dbs)} active databases in {state_dir.name}"})
         
         prep_status = self.preprocessor.status() if self.preprocessor else {}
