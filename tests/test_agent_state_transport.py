@@ -39,7 +39,7 @@ enabled = true
         task_id="task-1",
     )
     # Save a memo
-    app.memory.put(str(tmp_path), "known", "memo_value", 3600)
+    app.memory.put(str(tmp_path), "known", "memo_value", "test", ttl_seconds=3600)
 
     # We mock or run directly via app or client
     # For transport test without network server, we can mock client request/get/post through app handlers or test client directly
@@ -585,6 +585,79 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         finally:
             mcp_server.CLIENT = previous_mcp_client
             mcp_client.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        gc.collect()
+        http_server.APP = previous
+        app.close()
+
+
+def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
+    import gc
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from local_ai_hub import http_server
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    scoped_record = MemoryRecord.create(
+        kind="finding",
+        scope=AgentScope.WORKTREE,
+        scope_id="worktree-one",
+        key="private-delete",
+        value="preserve me",
+    )
+    global_record = MemoryRecord.create(
+        kind="finding",
+        scope=AgentScope.GLOBAL,
+        key="global-delete",
+        value="delete me",
+    )
+    app.agent_memory.record(scoped_record, actor="user")
+    app.agent_memory.record(global_record, actor="user")
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def post(payload):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    try:
+        with pytest.raises(urllib.error.HTTPError) as denied:
+            post({
+                "action": "delete",
+                "record_id": scoped_record.record_id,
+                "scope": "worktree",
+                "scope_id": "worktree-one",
+                "worktree_id": "worktree-one",
+            })
+        assert denied.value.code == 403
+        assert app.agent_memory.get(
+            scoped_record.record_id,
+            scope=AgentScope.WORKTREE,
+            scope_id="worktree-one",
+        ).value == "preserve me"
+        deleted = post({"action": "delete", "record_id": global_record.record_id})
+        assert deleted["deleted"] is True
     finally:
         server.shutdown()
         thread.join(timeout=5)

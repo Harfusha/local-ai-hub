@@ -222,12 +222,99 @@ class TaskStore:
         self.state_store = state_store
         self.default_heartbeat_ttl = float(default_heartbeat_ttl)
         self.policy_engine = policy_engine
+        self._memory_store: Any | None = None
+        self._context_compiler: Any | None = None
+        self._incident_store: Any | None = None
         self._lock = threading.RLock()
         self._initialized = False
         self._init_projection_table()
 
     def set_policy_engine(self, policy_engine: Any) -> None:
         self.policy_engine = policy_engine
+
+    def set_memory_adoption(
+        self,
+        *,
+        memory_store: Any,
+        context_compiler: Any,
+        incident_store: Any | None = None,
+    ) -> None:
+        self._memory_store = memory_store
+        self._context_compiler = context_compiler
+        self._incident_store = incident_store
+        context_compiler.memory_store = memory_store
+        context_compiler.task_store = self
+        if incident_store is not None:
+            context_compiler.incident_store = incident_store
+
+    def _memory_context_snapshot(
+        self,
+        task_id: str,
+        context: ScopeContext,
+        *,
+        root: str = "",
+    ) -> dict[str, Any] | None:
+        compiler = self._context_compiler
+        if compiler is None or self._memory_store is None:
+            return None
+        from .agent_context import ContextRequest
+        from .trace_context import current as current_trace_context
+
+        tenant = str(current_trace_context().get("tenant") or "")
+        resolved_root = root or context.repository_id
+        request = ContextRequest(
+            task_id=task_id,
+            token_budget=4000,
+            root=resolved_root,
+            tenant=tenant,
+            clone_id=context.clone_id,
+            worktree_id=context.worktree_id,
+            branch=context.branch,
+            repository_id=context.repository_id,
+            session_id=context.session_id,
+        )
+        try:
+            compiled = compiler.compile(request)
+            items: list[dict[str, Any]] = []
+            for element in compiled.elements:
+                if element.source_kind != "memory_record" or len(items) >= 20:
+                    continue
+                item = element.to_dict()
+                item["id"] = item.pop("element_id")
+                item["stale"] = False
+                items.append(item)
+            evidence_ids = sorted({
+                str(evidence_id)
+                for item in items
+                for evidence_id in (item.get("provenance") or {}).get("evidence_ids", ())
+                if str(evidence_id).strip()
+            })
+            return {
+                "status": "compiled",
+                "context_stale": bool(compiled.stale),
+                "scope": {
+                    "root_bound": bool(resolved_root),
+                    "tenant_bound": bool(tenant),
+                    "repository_bound": bool(context.repository_id),
+                    "clone_bound": bool(context.clone_id),
+                    "worktree_bound": bool(context.worktree_id),
+                    "branch_bound": bool(context.branch),
+                },
+                "compiled_at": time.time(),
+                "items": items,
+                "used_memory_ids": [item["id"] for item in items],
+                "evidence_ids": evidence_ids,
+                "etag": compiled.etag(),
+            }
+        except Exception:
+            # Missing or damaged memory context must not block task creation/resume
+            # or leak provider errors, tenant labels, or stored memory values.
+            return {
+                "status": "unavailable",
+                "items": [],
+                "used_memory_ids": [],
+                "evidence_ids": [],
+            }
 
     def _db_path_available(self) -> bool:
         """Return whether the projection database path is usable.
@@ -319,6 +406,12 @@ class TaskStore:
                     initial_sd["worktree"] = wt_res
             except Exception:
                 pass
+
+        if repo_root:
+            initial_sd["repo_root"] = repo_root
+        memory_context = self._memory_context_snapshot(t_id, context, root=repo_root)
+        if memory_context is not None:
+            initial_sd["memory_context"] = memory_context
 
         initial_state = TaskState(
             task_id=t_id,
@@ -778,13 +871,50 @@ class TaskStore:
         return self._commit_update(current, updated, event)
 
     def resume(self, task_id: str, *, actor: str = "agent", idempotency_key: str = "") -> TaskState:
-        return self.transition(
+        resumed = self.transition(
             task_id,
             TaskStatus.ACTIVE,
             reason="resumed from checkpoint",
             actor=actor,
             idempotency_key=idempotency_key or f"resume_{task_id}_{int(time.time())}",
         )
+        memory_context = self._memory_context_snapshot(
+            resumed.task_id,
+            resumed.context,
+            root=str(resumed.checkpoint.state_data.get("repo_root") or resumed.context.repository_id),
+        )
+        if memory_context is None or resumed.checkpoint.state_data.get("memory_context") == memory_context:
+            return resumed
+
+        state_data = dict(resumed.checkpoint.state_data)
+        state_data["memory_context"] = memory_context
+        checkpoint = TaskCheckpoint(
+            phase=resumed.checkpoint.phase,
+            next_action=resumed.checkpoint.next_action,
+            affected_paths=resumed.checkpoint.affected_paths,
+            state_data=state_data,
+        )
+        updated = TaskState(
+            task_id=resumed.task_id,
+            status=resumed.status,
+            contract=resumed.contract,
+            context=resumed.context,
+            owner=resumed.owner,
+            lease_id=resumed.lease_id,
+            created_at=resumed.created_at,
+            updated_at=time.time(),
+            heartbeat_expires_at=resumed.heartbeat_expires_at,
+            checkpoint=checkpoint,
+            verification_receipts=resumed.verification_receipts,
+        )
+        event = AgentEvent.create(
+            stream_id=f"task:{task_id}",
+            kind="task.memory_context_compiled",
+            payload={"task_id": task_id, "memory_context": memory_context},
+            idempotency_key=f"memory_context_{task_id}_{memory_context['etag']}",
+            actor=actor,
+        )
+        return self._commit_update(resumed, updated, event)
 
     def heartbeat(
         self,

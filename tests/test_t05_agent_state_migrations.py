@@ -1,0 +1,639 @@
+from __future__ import annotations
+
+from contextlib import closing
+import json
+import os
+import sqlite3
+import subprocess
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import time
+
+import pytest
+
+from local_ai_hub import agent_events as agent_events_module
+from local_ai_hub.agent_events import AgentEvent, AgentStateStore
+from local_ai_hub.agent_blackboard import BlackboardStore
+from local_ai_hub.agent_context import ContextCompiler
+from local_ai_hub.agent_identity import AgentScope
+from local_ai_hub.agent_incidents import IncidentStore
+from local_ai_hub.agent_learning import LearningStore
+from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
+from local_ai_hub.agent_policy import PolicyEngine
+from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStore
+from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
+
+
+def _seed_state(db_path):
+    state = AgentStateStore(db_path)
+    tasks = TaskStore(state)
+    task = tasks.create(
+        GoalContract(goal="preserve durable records", acceptance_criteria=("migration",)),
+        ScopeContext(task_id="migration-task"),
+        task_id="migration-task",
+    )
+    event = AgentEvent.create(
+        "migration-stream",
+        "migration.seeded",
+        {"sentinel": "durable event"},
+        "migration-event-key",
+    )
+    assert state.append(event).event == event.with_seq(1)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            "INSERT INTO agent_snapshots(stream_id, seq, state, created_at) VALUES (?, ?, ?, ?)",
+            (event.stream_id, 1, '{"snapshot":"durable"}', 1.0),
+        )
+        connection.commit()
+
+    memory = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.TASK,
+        scope_id=task.task_id,
+        key="migration-memory",
+        value="durable memory",
+        source="test",
+        provenance={"root": str(db_path.parent / "memory-repo"), "tenant": "migration-tenant"},
+    )
+    # Seed durable projection directly; event-writer integration belongs to T08.
+    MemoryStore(state)._save_record(memory)
+
+    verifications = VerificationStore(state, task_store=tasks)
+    receipt = VerificationReceipt.create(
+        task_id=task.task_id,
+        criterion="migration",
+        passed=True,
+        evidence_id="migration-evidence",
+    )
+    verifications.record(receipt)
+    BlackboardStore(db_path)
+    ContextCompiler(state)
+    IncidentStore(state)
+    LearningStore(state)
+    PolicyEngine(state)
+    return task, event, memory
+
+
+def _assert_state_survives(db_path, task, event, memory):
+    state = AgentStateStore(db_path)
+    tasks = TaskStore(state)
+    assert tasks.get(task.task_id).contract.goal == "preserve durable records"
+    assert state.events(event.stream_id) == [event.with_seq(1)]
+    with closing(sqlite3.connect(db_path)) as connection:
+        assert connection.execute(
+            "SELECT state FROM agent_snapshots WHERE stream_id=? AND seq=1",
+            (event.stream_id,),
+        ).fetchone()[0] == '{"snapshot":"durable"}'
+    row = None
+    with closing(sqlite3.connect(db_path)) as connection:
+        row = connection.execute(
+            "SELECT scope, scope_id, provenance FROM agent_memory_records WHERE record_id=?",
+            (memory.record_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0:2] == (AgentScope.TASK.value, task.task_id)
+    assert json.loads(row[2]) == dict(memory.provenance)
+
+    memory_store = MemoryStore(state)
+    assert memory_store.get(
+        memory.record_id,
+        scope=AgentScope.TASK,
+        scope_id=task.task_id,
+    ) is None
+    assert memory_store.get(
+        memory.record_id,
+        scope=AgentScope.TASK,
+        scope_id=task.task_id,
+        task_id=task.task_id,
+        root=memory.provenance["root"],
+        tenant=memory.provenance["tenant"],
+    ).value == "durable memory"
+    assert VerificationStore(state, task_store=tasks).completion(task.task_id).complete is True
+
+
+def _backup_for(db_path):
+    backups = list(db_path.parent.glob(f"{db_path.name}.migration-v0-v1-*.bak"))
+    assert len(backups) == 1
+    return backups[0]
+
+
+def _sqlite_file_snapshot(db_path):
+    paths = (
+        db_path,
+        Path(f"{db_path}-wal"),
+        Path(f"{db_path}-shm"),
+        Path(f"{db_path}-journal"),
+    )
+    return tuple(path.read_bytes() if path.is_file() else None for path in paths)
+
+
+def _make_historical_v0(db_path, event):
+    with closing(sqlite3.connect(db_path)) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "agent_event_schema_versions" in tables:
+            connection.execute("DROP TABLE agent_event_schema_versions")
+        connection.execute("ALTER TABLE agent_events RENAME TO agent_events_current")
+        connection.execute("""
+            CREATE TABLE agent_events (
+                stream_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                event_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                correlation_id TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                schema_version INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (stream_id, seq),
+                UNIQUE (stream_id, idempotency_key)
+            )
+        """)
+        connection.execute("""
+            INSERT INTO agent_events (
+                stream_id, seq, event_id, kind, payload, idempotency_key,
+                correlation_id, actor, schema_version, created_at
+            )
+            SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
+                   correlation_id, actor, CASE WHEN event_id=? THEN 7 ELSE 1 END, created_at
+            FROM agent_events_current
+        """, (event.event_id,))
+        connection.execute("DROP TABLE agent_events_current")
+        connection.execute("CREATE INDEX idx_agent_events_created ON agent_events(created_at)")
+        connection.execute("CREATE INDEX idx_agent_events_kind ON agent_events(kind)")
+        connection.execute("""
+            CREATE TABLE agent_schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at REAL NOT NULL,
+                description TEXT NOT NULL
+            )
+        """)
+        connection.execute("INSERT INTO agent_schema_migrations VALUES (1, 1.0, 'legacy v1')")
+        connection.execute("PRAGMA user_version=0")
+        connection.commit()
+
+
+def test_unversioned_current_schema_migrates_with_verified_backup_and_restart(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    task, event, memory = _seed_state(db_path)
+
+    with closing(sqlite3.connect(db_path)) as connection:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(agent_events)")]
+        if "schema_version" in columns:
+            connection.execute("ALTER TABLE agent_events DROP COLUMN schema_version")
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in ("agent_event_schema_versions", "agent_schema_migrations"):
+            if table in tables:
+                connection.execute(f'DROP TABLE "{table}"')
+        connection.execute("PRAGMA user_version=0")
+        connection.commit()
+
+    _assert_state_survives(db_path, task, event, memory)
+    backup_path = _backup_for(db_path)
+    with closing(sqlite3.connect(backup_path)) as backup:
+        assert backup.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        assert backup.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert backup.execute(
+            "SELECT payload FROM agent_events WHERE event_id=?", (event.event_id,)
+        ).fetchone()[0]
+
+    with closing(sqlite3.connect(db_path)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(agent_events)")]
+        assert columns == [
+            "stream_id", "seq", "event_id", "kind", "payload", "idempotency_key",
+            "correlation_id", "actor", "created_at",
+        ]
+    _assert_state_survives(db_path, task, event, memory)
+    assert len(list(tmp_path.glob("agent_state.sqlite3.migration-v0-v1-*.bak"))) == 1
+
+
+def test_historical_schema_version_migrates_and_preserves_legacy_event_versions(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    task, event, memory = _seed_state(db_path)
+    _make_historical_v0(db_path, event)
+
+    _assert_state_survives(db_path, task, event, memory)
+    backup_path = _backup_for(db_path)
+    with closing(sqlite3.connect(backup_path)) as backup:
+        assert backup.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        assert backup.execute(
+            "SELECT schema_version FROM agent_events WHERE event_id=?", (event.event_id,)
+        ).fetchone()[0] == 7
+    with closing(sqlite3.connect(db_path)) as connection:
+        assert connection.execute(
+            "SELECT schema_version FROM agent_event_schema_versions WHERE stream_id=? AND seq=1",
+            (event.stream_id,),
+        ).fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+    _assert_state_survives(db_path, task, event, memory)
+
+
+def test_migration_backup_verification_failure_preserves_source_bytes_and_retries(tmp_path, monkeypatch):
+    db_path = tmp_path / "agent_state.sqlite3"
+    task, event, memory = _seed_state(db_path)
+    _make_historical_v0(db_path, event)
+    before = _sqlite_file_snapshot(db_path)
+
+    def fail_verification(cls, source, backup, *, deadline=None):
+        raise RuntimeError("injected migration backup verifier failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AgentStateStore, "_verify_backup", classmethod(fail_verification))
+        with pytest.raises(RuntimeError, match="injected migration backup verifier failure"):
+            AgentStateStore(db_path).events(event.stream_id)
+
+    assert _sqlite_file_snapshot(db_path) == before
+    assert not list(tmp_path.glob("agent_state.sqlite3.migration-v0-v1-*.bak"))
+    _assert_state_survives(db_path, task, event, memory)
+    assert len(list(tmp_path.glob("agent_state.sqlite3.migration-v0-v1-*.bak"))) == 1
+
+
+def test_migration_ddl_failure_rolls_back_after_backup_and_retry_succeeds(tmp_path, monkeypatch):
+    db_path = tmp_path / "agent_state.sqlite3"
+    task, event, memory = _seed_state(db_path)
+    _make_historical_v0(db_path, event)
+    with closing(sqlite3.connect(db_path)) as connection:
+        before_schema = AgentStateStore._classify_schema(connection)
+        before_event = connection.execute(
+            "SELECT schema_version FROM agent_events WHERE event_id=?", (event.event_id,)
+        ).fetchone()
+
+    real_connect = sqlite3.connect
+    partial_ddl_seen = False
+    failure_injected = False
+
+    class FailingMigrationConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            nonlocal partial_ddl_seen, failure_injected
+            statement = " ".join(str(sql).split()).casefold()
+            if statement.startswith("create table if not exists agent_event_schema_versions"):
+                result = super().execute(sql, parameters)
+                partial_ddl_seen = True
+                return result
+            if partial_ddl_seen and statement.startswith("create table agent_events_v1"):
+                failure_injected = True
+                raise sqlite3.OperationalError("injected migration DDL failure")
+            return super().execute(sql, parameters)
+
+    def connect_with_migration_fault(database, *args, **kwargs):
+        if not kwargs.get("uri", False) and Path(database).resolve(strict=False) == db_path.resolve():
+            kwargs["factory"] = FailingMigrationConnection
+        return real_connect(database, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(agent_events_module.sqlite3, "connect", connect_with_migration_fault)
+        with pytest.raises(sqlite3.OperationalError, match="injected migration DDL failure"):
+            AgentStateStore(db_path).events(event.stream_id)
+
+    assert partial_ddl_seen is True
+    assert failure_injected is True
+    backups = list(tmp_path.glob("agent_state.sqlite3.migration-v0-v1-*.bak"))
+    assert len(backups) == 1
+    with closing(real_connect(db_path)) as source, closing(real_connect(backups[0])) as backup:
+        assert AgentStateStore._classify_schema(source) == before_schema
+        assert source.execute(
+            "SELECT schema_version FROM agent_events WHERE event_id=?", (event.event_id,)
+        ).fetchone() == before_event
+        AgentStateStore._verify_backup(source, backup)
+
+    _assert_state_survives(db_path, task, event, memory)
+    assert backups[0].is_file()
+
+
+@pytest.mark.parametrize("unsupported_version", [2, 99])
+def test_unsupported_newer_schema_version_fails_closed_byte_for_byte(tmp_path, unsupported_version):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _, event, _ = _seed_state(db_path)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(f"PRAGMA user_version={unsupported_version}")
+        connection.commit()
+    before = _sqlite_file_snapshot(db_path)
+
+    with pytest.raises(RuntimeError, match="schema version"):
+        AgentStateStore(db_path).events(event.stream_id)
+
+    assert db_path.is_file()
+    assert _sqlite_file_snapshot(db_path) == before
+
+
+def test_unknown_legacy_layout_fails_closed_without_changing_database_bytes(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _, event, _ = _seed_state(db_path)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("ALTER TABLE agent_events ADD COLUMN unknown_future_data TEXT")
+        connection.execute("DROP TABLE agent_event_schema_versions")
+        connection.execute("PRAGMA user_version=0")
+        connection.commit()
+    before = _sqlite_file_snapshot(db_path)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        AgentStateStore(db_path).events(event.stream_id)
+
+    diagnostic = str(exc_info.value).casefold().replace("_", " ")
+    assert "unsupported" in diagnostic
+    assert "agent state schema" in diagnostic
+    assert db_path.is_file()
+    assert _sqlite_file_snapshot(db_path) == before
+
+
+@pytest.mark.parametrize("unknown_object", [
+    "CREATE TABLE future_table (id INTEGER)",
+    "CREATE VIEW future_view AS SELECT 1 AS value",
+    "CREATE INDEX idx_future_unknown ON agent_events(created_at)",
+    "CREATE TRIGGER future_trigger AFTER INSERT ON agent_events BEGIN SELECT 1; END",
+])
+def test_unknown_schema_objects_fail_closed_without_file_changes(tmp_path, unknown_object):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _, event, _ = _seed_state(db_path)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(unknown_object)
+        connection.execute("DROP TABLE agent_event_schema_versions")
+        connection.execute("PRAGMA user_version=0")
+        connection.commit()
+    before = _sqlite_file_snapshot(db_path)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        AgentStateStore(db_path).events(event.stream_id)
+
+    diagnostic = str(exc_info.value).casefold().replace("_", " ")
+    assert "unsupported" in diagnostic
+    assert "agent state schema" in diagnostic
+    assert _sqlite_file_snapshot(db_path) == before
+
+
+def test_unknown_schema_read_only_preflight_preserves_wal_and_shm_bytes(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _, event, _ = _seed_state(db_path)
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("CREATE VIEW future_view AS SELECT 1 AS value")
+        connection.execute("DROP TABLE agent_event_schema_versions")
+        connection.execute("PRAGMA user_version=0")
+        connection.commit()
+        before = _sqlite_file_snapshot(db_path)
+        assert before[1] is not None
+        assert before[2] is not None
+
+        with pytest.raises(RuntimeError):
+            AgentStateStore(db_path).events(event.stream_id)
+
+        assert _sqlite_file_snapshot(db_path) == before
+    finally:
+        connection.close()
+
+
+def test_missing_required_projection_schema_fails_closed_and_preserves_wal_and_shm(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _, event, _ = _seed_state(db_path)
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("DROP TABLE agent_tasks_projection")
+        connection.execute("DROP TABLE agent_event_schema_versions")
+        connection.execute("PRAGMA user_version=0")
+        connection.commit()
+        before = _sqlite_file_snapshot(db_path)
+        assert before[1] is not None
+        assert before[2] is not None
+
+        with pytest.raises(RuntimeError, match="missing required schema objects") as exc_info:
+            AgentStateStore(db_path).events(event.stream_id)
+
+        assert _sqlite_file_snapshot(db_path) == before
+        backups = list(tmp_path.glob("agent_state.sqlite.schema-mismatch-*.sqlite3"))
+        assert len(backups) == 1
+        assert str(backups[0]) in str(exc_info.value)
+        assert "preserve the original database files" in str(exc_info.value).casefold()
+        with closing(sqlite3.connect(backups[0])) as backup:
+            assert backup.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+            assert backup.execute("PRAGMA user_version").fetchone()[0] == 0
+            assert backup.execute(
+                "SELECT payload FROM agent_events WHERE event_id=?", (event.event_id,)
+            ).fetchone()[0]
+        if os.name == "posix":
+            assert backups[0].stat().st_mode & 0o777 == 0o600
+        elif os.name == "nt":
+            account = subprocess.run(
+                ["whoami"], check=True, capture_output=True, text=True, timeout=2.0
+            ).stdout.strip()
+            acl = subprocess.run(
+                ["icacls", str(backups[0])],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            ).stdout
+            assert account.casefold() in acl.casefold()
+            assert "(I)" not in acl
+    finally:
+        connection.close()
+
+
+def test_verified_backup_reserves_destination_and_only_cleans_its_file(tmp_path, monkeypatch):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _seed_state(db_path)
+    collision = tmp_path / "existing.sqlite3"
+    collision.write_bytes(b"preserve existing backup")
+    sidecar_collision = tmp_path / "sidecar-collision.sqlite3"
+    sidecar_wal = Path(f"{sidecar_collision}-wal")
+    sidecar_wal.write_bytes(b"preserve existing sidecar")
+    target = tmp_path / "symlink-target.sqlite3"
+    target.write_bytes(b"preserve symlink target")
+    symlink = tmp_path / "symlink.sqlite3"
+    try:
+        symlink.symlink_to(target)
+    except (OSError, NotImplementedError):
+        symlink = None
+
+    partial = tmp_path / "owned-partial.sqlite3"
+    with closing(sqlite3.connect(db_path)) as source:
+        with pytest.raises(FileExistsError):
+            AgentStateStore._verified_backup(source, destination_path=collision)
+        assert collision.read_bytes() == b"preserve existing backup"
+        with pytest.raises(FileExistsError):
+            AgentStateStore._verified_backup(source, destination_path=sidecar_collision)
+        assert not sidecar_collision.exists()
+        assert sidecar_wal.read_bytes() == b"preserve existing sidecar"
+
+        if symlink is not None:
+            with pytest.raises(FileExistsError):
+                AgentStateStore._verified_backup(source, destination_path=symlink)
+            assert symlink.is_symlink()
+            assert target.read_bytes() == b"preserve symlink target"
+
+        def fail_verification(cls, source, backup, *, deadline=None):
+            raise RuntimeError("injected verification failure")
+
+        monkeypatch.setattr(AgentStateStore, "_verify_backup", classmethod(fail_verification))
+        with pytest.raises(RuntimeError, match="injected verification failure"):
+            AgentStateStore._verified_backup(source, destination_path=partial)
+
+    assert not partial.exists()
+    assert not Path(f"{partial}-wal").exists()
+    assert not Path(f"{partial}-shm").exists()
+    assert collision.read_bytes() == b"preserve existing backup"
+    assert sidecar_wal.read_bytes() == b"preserve existing sidecar"
+    assert target.read_bytes() == b"preserve symlink target"
+
+
+def test_concurrent_legacy_initializers_accept_completed_migration(tmp_path, monkeypatch):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _, event, _ = _seed_state(db_path)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("DROP TABLE agent_event_schema_versions")
+        connection.execute("PRAGMA user_version=0")
+        connection.commit()
+
+    migration_barrier = threading.Barrier(2)
+    backup_barrier = threading.Barrier(2)
+    original_migrate = AgentStateStore._migrate_known_schema.__func__
+    original_backup = AgentStateStore._verified_backup.__func__
+
+    def synchronized_migrate(cls, source, *, existed_before_open):
+        if int(source.execute("PRAGMA user_version").fetchone()[0]) == 0:
+            migration_barrier.wait(timeout=5)
+        return original_migrate(cls, source, existed_before_open=existed_before_open)
+
+    def synchronized_backup(cls, source):
+        backup_path = original_backup(cls, source)
+        backup_barrier.wait(timeout=5)
+        return backup_path
+
+    monkeypatch.setattr(AgentStateStore, "_migrate_known_schema", classmethod(synchronized_migrate))
+    monkeypatch.setattr(AgentStateStore, "_verified_backup", classmethod(synchronized_backup))
+
+    def read_events():
+        return AgentStateStore(db_path).events(event.stream_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(read_events), pool.submit(read_events)]
+        results = [future.result(timeout=15) for future in futures]
+
+    assert results == [[event.with_seq(1)], [event.with_seq(1)]]
+    with closing(sqlite3.connect(db_path)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+def test_migration_backup_timeout_fails_closed_before_database_mutation(tmp_path, monkeypatch):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _, event, _ = _seed_state(db_path)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("DROP TABLE agent_event_schema_versions")
+        connection.execute("PRAGMA user_version=0")
+        connection.commit()
+    before = _sqlite_file_snapshot(db_path)
+    monkeypatch.setattr(
+        AgentStateStore,
+        "_MIGRATION_BACKUP_TIMEOUT_SECONDS",
+        0.0,
+        raising=False,
+    )
+
+    with pytest.raises(TimeoutError, match="backup time limit"):
+        AgentStateStore(db_path).events(event.stream_id)
+
+    assert _sqlite_file_snapshot(db_path) == before
+
+
+@pytest.mark.parametrize("schema_changes", [
+    ("ALTER TABLE agent_tasks_projection ADD COLUMN extra TEXT NOT NULL DEFAULT ''",),
+    ("ALTER TABLE agent_change_intents ADD COLUMN linked_task TEXT REFERENCES agent_tasks_projection(task_id)",),
+    (
+        "DROP TABLE agent_memory_embeddings",
+        "CREATE TABLE agent_memory_embeddings (record_id BLOB PRIMARY KEY, embedding TEXT NOT NULL, created_at REAL NOT NULL)",
+    ),
+    (
+        "DROP TABLE agent_memory_embeddings",
+        "CREATE TABLE agent_memory_embeddings (record_id TEXT NOT NULL, embedding TEXT NOT NULL, created_at REAL NOT NULL)",
+    ),
+])
+def test_known_table_definition_change_fails_closed_byte_for_byte(tmp_path, schema_changes):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _, event, _ = _seed_state(db_path)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("DROP TABLE agent_event_schema_versions")
+        for schema_change in schema_changes:
+            connection.execute(schema_change)
+        connection.execute("PRAGMA user_version=0")
+        connection.commit()
+    before = _sqlite_file_snapshot(db_path)
+
+    with pytest.raises(RuntimeError, match="unsupported agent_state schema"):
+        AgentStateStore(db_path).events(event.stream_id)
+
+    assert _sqlite_file_snapshot(db_path) == before
+
+
+def test_known_index_definition_change_fails_closed_byte_for_byte(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _, event, _ = _seed_state(db_path)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("DROP TABLE agent_event_schema_versions")
+        connection.execute("DROP INDEX idx_agent_tasks_updated")
+        connection.execute(
+            "CREATE INDEX idx_agent_tasks_updated ON agent_tasks_projection(task_id)"
+        )
+        connection.execute("PRAGMA user_version=0")
+        connection.commit()
+    before = _sqlite_file_snapshot(db_path)
+
+    with pytest.raises(RuntimeError, match="unsupported agent_state schema"):
+        AgentStateStore(db_path).events(event.stream_id)
+
+    assert _sqlite_file_snapshot(db_path) == before
+
+
+def test_backup_verifier_rejects_same_count_different_row_content(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _, event, _ = _seed_state(db_path)
+    backup_path = tmp_path / "altered-backup.sqlite3"
+    with closing(sqlite3.connect(db_path)) as source, closing(sqlite3.connect(backup_path)) as backup:
+        source.backup(backup)
+        before_count = backup.execute("SELECT COUNT(*) FROM agent_events").fetchone()[0]
+        backup.execute("UPDATE agent_events SET payload='{}' WHERE event_id=?", (event.event_id,))
+        backup.commit()
+        assert backup.execute("SELECT COUNT(*) FROM agent_events").fetchone()[0] == before_count
+
+        with pytest.raises(RuntimeError, match="content hash mismatch"):
+            AgentStateStore._verify_backup(source, backup)
+
+
+def test_backup_verifier_rejects_same_objects_with_different_sql(tmp_path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _seed_state(db_path)
+    backup_path = tmp_path / "altered-schema-backup.sqlite3"
+    with closing(sqlite3.connect(db_path)) as source, closing(sqlite3.connect(backup_path)) as backup:
+        source.backup(backup)
+        backup.execute("DROP INDEX idx_agent_tasks_updated")
+        backup.execute(
+            "CREATE INDEX idx_agent_tasks_updated ON agent_tasks_projection(task_id)"
+        )
+        backup.commit()
+
+        with pytest.raises(RuntimeError, match="schema definition mismatch"):
+            AgentStateStore._verify_backup(source, backup)
+
+
+def test_backup_timeout_bounds_sqlite_busy_wait(tmp_path, monkeypatch):
+    db_path = tmp_path / "agent_state.sqlite3"
+    _seed_state(db_path)
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.commit()
+
+    locker = sqlite3.connect(db_path, timeout=5.0)
+    source = sqlite3.connect(db_path, timeout=5.0)
+    try:
+        locker.execute("BEGIN EXCLUSIVE")
+        monkeypatch.setattr(AgentStateStore, "_MIGRATION_BACKUP_TIMEOUT_SECONDS", 0.08)
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match="backup time limit"):
+            AgentStateStore._verified_backup(source)
+        assert time.monotonic() - started < 0.5
+    finally:
+        source.close()
+        locker.rollback()
+        locker.close()
