@@ -202,6 +202,23 @@ Additional integrations:
 Current parallel owners: T21 project config; T19 docs rollout; historical
 55ed docs/SDK contracts; T16 orchestration resume; T14 path-scan checkout.
 
+T21 `4714124b` integrated at `182e1c46`. Original project config/preprocessing
+policy hooks, generation-aware RAG invalidation and hint normalization retained
+with master inheritance and verification safety. Worker: 143 passed / 25 failed;
+old search/metrics/verification/RAG contracts remain unfinished.
+
+Integration invariant correction: T21 removed `.codegraphcontext` from scan
+defaults. This contradicts the permanent external-data exclusion and could
+reintroduce expensive scans, even though CodeGraph runtime remains removed.
+New regression ran RED (one failure); the narrow ignore restoration ran GREEN
+with identity regressions: `python -B -m pytest -q -p no:cacheprovider
+tests/test_sync_codegraph_scan_ignore.py tests/test_sync_command_identity_calls.py
+--tb=short`: **3 passed in 0.60s**. Commit `6d32a3c5`. No backend restored.
+Do not satisfy the stale CodeGraph absence assertion by deleting the ignore.
+
+Current parallel owners after T21 handoff: T18 candidate Halley; T19 docs
+Ptolemy; historical 55ed Meitner; T16 resume Dewey; T14 path-scan Archimedes.
+
 ## Rules for the remainder
 
 - Preserve each original HEAD and dirty tracked content in a checkpoint ref
