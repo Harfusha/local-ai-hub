@@ -543,6 +543,8 @@ class ExternalCodeIntelligence:
     @contextmanager
     def _backend_operation(self, backend: str, root: str, timeout: float | None = None):
         """Serialize operations for one embedded database, with bounded lock wait."""
+        if backend != "serena":
+            raise ValueError(f"unknown code-intelligence backend: {backend}")
         key = (backend, root)
         with self._operation_lock_guard:
             operation_lock = self._operation_locks.get(key)
@@ -709,7 +711,7 @@ class ExternalCodeIntelligence:
         return installed == version
 
     def _repair_backend(self, backend: str, *, reason: str) -> bool:
-        if backend not in self._repair_locks or not self._backend_enabled(backend):
+        if backend != "serena" or not self._backend_enabled(backend):
             return False
         setup_cfg = self.config.get("setup", {})
         if not bool(setup_cfg.get("install_optional_tools", True)):
@@ -896,9 +898,11 @@ class ExternalCodeIntelligence:
     def index(self, backend: str, root: str) -> dict[str, Any]:
         backend = backend.strip().lower()
         root = self._root(root)
+        if backend != "serena":
+            return {"success": False, "backend": backend, "unavailable": True, "error": f"unsupported backend: {backend}"}
         if not self.enabled:
             return {"success": False, "skipped": True, "backend": backend, "reason": "code intelligence disabled"}
-        if backend in self._repair_locks and self._backend_enabled(backend):
+        if self._backend_enabled(backend):
             self.backend_available(backend)
         if not self._allowed(backend, root):
             return {"success": False, "skipped": True, "backend": backend, "reason": "circuit cooldown"}
@@ -1164,7 +1168,8 @@ class ExternalCodeIntelligence:
                 client = sessions.pop(key, None)
                 self._session_access["serena"].pop(key, None)
                 if client is not None:
-                    clients.append(client); removed["serena"] += 1
+                    clients.append(client)
+                    removed["serena"] += 1
             failure_keys = [key for key in self._root_failures if key[0] == "serena" and (resolved_root is None or key[1] == resolved_root)]
             for key in failure_keys:
                 self._root_failures.pop(key, None)

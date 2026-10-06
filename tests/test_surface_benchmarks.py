@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -29,6 +32,18 @@ from tools.benchmark_surfaces import (
     _vision_matches_golden,
 )
 import tools.benchmark_surfaces as surface_benchmarks
+
+
+def test_implementation_fingerprint_includes_retrieval_dependency(monkeypatch, tmp_path: Path) -> None:
+    package_dir = tmp_path / "src" / "local_ai_hub"
+    package_dir.mkdir(parents=True)
+    retrieval = package_dir / "retrieval.py"
+    retrieval.write_text("weight = 0.0\n", encoding="utf-8")
+    monkeypatch.setattr(surface_benchmarks, "_REPO_ROOT", tmp_path)
+    before = surface_benchmarks._implementation_fingerprint()
+    retrieval.write_text("weight = 0.75\n", encoding="utf-8")
+    after = surface_benchmarks._implementation_fingerprint()
+    assert after != before, "fingerprint must include imported runtime dependencies"
 from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.normalizer import tokenize_query_terms
 

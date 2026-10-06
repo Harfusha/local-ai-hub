@@ -37,32 +37,42 @@ Use `--profile integrated` to force the conservative shared-memory profile on a 
 
 ## Optional standalone tool: CodeGraphContext
 
-CodeGraphContext and KuzuDB are not Hub dependencies or backends; both are separate from Local AI Hub. Any CodeGraphContext installation or MCP setup below is optional standalone tooling outside Hub. Hub does not discover, report, or use the standalone installation.
+CodeGraphContext is an independent CLI and MCP server. Local AI Hub does not install, configure, invoke, monitor or fall back to it. Hub setup and operation use Hub-managed features such as the built-in code index; CodeGraphContext has its own package, database, configuration and process lifecycle.
 
-For users who independently choose standalone CodeGraphContext for deep call-graph analysis, install it directly in the target repository or environment. This is separate from Hub installation:
-
-- **Benefits**: Deep call graphs, caller/callee tracing, blast-radius impact analysis, and dead code detection.
-- **Standalone installation**:
-  ```bash
-  pip install "codegraphcontext[gcf]==0.6.13"
-  ```
-- **Standalone Agent MCP configuration** (e.g. in `.cursor/mcp.json`, `claude_desktop_config.json`, or Codex configuration). This connects an agent directly to CodeGraphContext; it does not configure Local AI Hub:
-  ```json
-  {
-    "mcpServers": {
-      "codegraph": {
-        "command": "codegraphcontext",
-        "args": ["mcp", "start"]
-      }
-    }
-  }
-  ```
-- **Local AI Hub analysis**: Built-in AST indexing and symbol analysis remain available independently. CodeGraphContext is not a Hub backend and does not trigger a Hub fallback path.
+Install CodeGraphContext only if you want that separate tool. Use its [official installation guide](https://codegraphcontext.github.io/getting-started/installation/) and, if needed, its [MCP setup guide](https://github.com/CodeGraphContext/CodeGraphContext/blob/main/docs/docs/getting-started/mcp-setup.md). Configure it directly with the agent that should use it; it is not part of the Hub's `local-ai` MCP entry.
 
 ## Python package
 
-For development/package installation use `pip install .` or `pip install ".[token-economy]"`. CLI tools `tokcount`, `trim-run`, `repo-map`, and `local-ai-hub` are registered automatically. `local-ai-hub --config /path/config.toml` starts the service. See [Python SDK](PYTHON_SDK.md) for the `HubClient` API.
+From the repository root, install the core package with `python -m pip install .`. For development, use `python -m pip install ".[dev]"`; to combine development and Token Economy dependencies, use `python -m pip install ".[dev,token-economy]"`. For Python client usage, see [Python SDK](PYTHON_SDK.md). CLI tools `tokcount`, `trim-run`, `repo-map`, and `local-ai-hub` are registered automatically. `local-ai-hub --config /path/config.toml` starts the service.
+
+When `HubClient` has no explicit `config_path`, it uses `LOCAL_AI_CONFIG` when set; otherwise an existing installed home config takes priority, followed by repository-root `config.toml` for a source checkout, then the home config path as the default.
+
+### Optional Python extras
+
+Install one or more extras with `python -m pip install ".[extra-name]"`; combine names with commas, for example `python -m pip install ".[local-nlp,performance]"`. These are package dependencies from `pyproject.toml`; setup-managed tools, agent configuration, and service installation remain separate.
+
+| Extra | Declared packages |
+| --- | --- |
+| `local-nlp` | `sentence-transformers` |
+| `intel-accelerators` | `sentence-transformers[openvino]`, `openvino` |
+| `token-economy` | `tiktoken`, `files-to-prompt`, `grep-ast` |
+| `performance` | `orjson`, `msgspec`, `Cython` |
+| `profiling` | `py-spy`, `scalene` |
+| `dev` | `pytest`, `pyflakes`, `coverage[toml]` |
 
 ## Verification
 
-Run `python tools/doctor.py`, `python tools/selftest.py`, `python tools/hubctl.py clean`, and `python -m pytest -q`. The lightweight `/health` endpoint must return the same version as the package.
+After setup, activate the installed `.venv` and run from the active installation root:
+
+```text
+python tools/doctor.py --json
+python tools/hubctl.py status --json
+```
+
+The lightweight `/health` endpoint must return the same version as the package. Its default URL is `http://127.0.0.1:11435/health`; use the active config's bind address and port when they differ. From the activated venv, compare the running service and installed package with:
+
+```text
+python -c 'import importlib.metadata as m,json,urllib.request; h=json.load(urllib.request.urlopen("http://127.0.0.1:11435/health", timeout=3)); p=m.version("local-ai-hub"); print({"health_version":h["version"],"package_version":p}); assert h["version"] == p'
+```
+
+`python tools/selftest.py` and `python -m pytest -q` are source-checkout checks, separate from installed-instance verification. `python tools/hubctl.py clean` removes repository caches and build artifacts; it is not an installation check.

@@ -49,7 +49,7 @@ served_model = "hub-qwen-7"
 context_length = 32768
 
 [code_intelligence]
-# Enable Serena (semantic symbols).
+# Enable Hub-managed Serena semantic and symbol operations.
 enabled = true
 serena_enabled = true
 # Increase timeout for large projects (default 120s may not be enough for big Unity repos)
