@@ -891,6 +891,7 @@ class TaskStore:
         auto_worktree: bool = False,
         repo_root: str = "",
         repository_revision: str = "",
+        worktree_ttl_seconds: float = 24 * 60 * 60.0,
     ) -> TaskState:
         t_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
         now = time.time()
@@ -913,7 +914,7 @@ class TaskStore:
                 r_root = repo_root or context.repository_id or "."
                 if context.repository_id and Path(r_root).expanduser().resolve(strict=False) != Path(context.repository_id).expanduser().resolve(strict=False):
                     raise ValueError("task worktree repository does not match task context")
-                worktree_ttl = 24 * 60 * 60.0
+                worktree_ttl = max(60.0, min(float(worktree_ttl_seconds), 30 * 24 * 60 * 60.0))
                 worktree_expiry = now + worktree_ttl
                 wt_res = create_git_worktree(
                     r_root,
@@ -1138,7 +1139,10 @@ class TaskStore:
                     where_clauses.append("status = ?")
                     params.append(status.value)
                 if not query_terms and not include_stale:
-                    where_clauses.append("NOT (heartbeat_expires_at > 0 AND heartbeat_expires_at < ?)")
+                    where_clauses.append(
+                        "(status IN ('completed', 'cancelled', 'failed', 'abandoned') "
+                        "OR NOT (heartbeat_expires_at > 0 AND heartbeat_expires_at < ?))"
+                    )
                     params.append(now)
                 scan_where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
                 scan_params = list(params)
@@ -1550,6 +1554,11 @@ class TaskStore:
             )
 
         if target == current.status:
+            if target == TaskStatus.COMPLETED:
+                # No-op retries must not trust an old terminal projection alone.
+                self._verify_completion(current)
+                if checkpoint is not None:
+                    self._verify_completion(replace(current, checkpoint=checkpoint))
             if checkpoint is not None:
                 return self.checkpoint(
                     task_id,
@@ -1708,6 +1717,9 @@ class TaskStore:
                         or not valid_transition
                     ):
                         raise ValueError("idempotency key was already used")
+                if target == TaskStatus.COMPLETED:
+                    # Recheck the serialized projection/receipts, not the earlier read.
+                    self._verify_completion(persisted)
                 con.execute("COMMIT")
                 return persisted
             except Exception:
@@ -1731,7 +1743,13 @@ class TaskStore:
         if not current:
             raise KeyError(f"Task {task_id} not found")
         if current.status == TaskStatus.COMPLETED:
-            return current
+            return self.transition(
+                task_id,
+                TaskStatus.COMPLETED,
+                reason=reason,
+                actor=actor,
+                idempotency_key=idempotency_key,
+            )
         if current.status == TaskStatus.PLANNED:
             current = self.transition(
                 task_id,
@@ -1889,6 +1907,33 @@ class TaskStore:
             actor=actor,
         )
         return self._commit_update(current, updated, event)
+
+    def advance_mutation_generation(
+        self,
+        task_id: str,
+        *,
+        repository_revision: str = "",
+        actor: str = "agent",
+    ) -> TaskState:
+        """Advance receipt freshness without discarding checkpoint or owned state."""
+        current = self.get(task_id)
+        if current is None:
+            raise KeyError(f"Task {task_id} not found")
+        state_data = dict(current.checkpoint.state_data)
+        generation = state_data.get("mutation_generation", 0)
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+            raise ValueError("task mutation_generation must be a non-negative integer")
+        generation += 1
+        state_data["mutation_generation"] = generation
+        if repository_revision:
+            state_data["repository_revision"] = str(repository_revision).strip()
+        checkpoint = replace(current.checkpoint, state_data=state_data)
+        return self.checkpoint(
+            task_id,
+            checkpoint,
+            actor=actor,
+            idempotency_key=f"mutation_{task_id}_{generation}",
+        )
 
     def rollback(
         self,
