@@ -581,3 +581,15 @@ tests/test_vision_service.py tests/test_vision_contracts.py
 tests/test_http_vision_routes.py --tb=short --maxfail=4`:
 150 passed in 37.08 seconds. This does not supersede the owner's two remaining
 transcription failures or its unverified process/audio/browser acceptance.
+
+#### Checkpoint ancestry reconciliation
+
+T08 checkpoint `7153deb5` merged with an unchanged resulting tree: its five
+historical acceptance logs were already present. T06 checkpoint `4e1ee2ac`
+also has no active source/test/tool delta. Its 107 add/add handoff conflicts were
+individually checked using `git diff --ignore-cr-at-eol --quiet HEAD 4e1ee2ac
+-- <path>`; all 107 matched ignoring CR only. Resolution retained the current
+normalized bytes, with both exact original trees retained in merge ancestry.
+The resulting staged tree was unchanged before this note. This is proven
+newline-only archival reconciliation, not a claim that each historical patch's
+behavior satisfies release acceptance.
