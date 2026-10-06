@@ -284,6 +284,7 @@ def test_task_scaffold(tmp_path: Path):
     assert "class UserDTO:" in res["code"]
     assert "```" not in res["code"]
     assert res["language"] == "python"
+    assert res["validated"] is False
 
 
 def test_treesitter_go_and_rust():

@@ -1496,9 +1496,14 @@ def local_ai_task(
                 payload[name] = value
         return _compact(CLIENT.post("/api/task/vision", payload, timeout=_timeout("model")), "delegate")
     if action == "transcribe":
-        return _compact(CLIENT.post("/api/task/transcribe", {
-            "audio_path": candidate or context or task or prompt, "model": model,
-        }, timeout=_timeout("long")), "delegate")
+        transcribe_payload = {
+            "audio_path": candidate or context or task or prompt,
+            "model": model,
+        }
+        language_hint = str(language or "").strip()
+        if language_hint and language_hint.casefold() != "auto":
+            transcribe_payload["language"] = language_hint
+        return _compact(CLIENT.post("/api/task/transcribe", transcribe_payload, timeout=_timeout("long")), "delegate")
     if action == "eval_suite":
         eval_payload: dict[str, Any] = {"suite_name": task or prompt or "default"}
         if model:
