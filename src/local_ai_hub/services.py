@@ -49,6 +49,7 @@ from .vision_contracts import (
     VISION_MAX_RUNTIME_OUTPUT_CHARS,
     VISION_MAX_SCHEMA_CHARS,
     bound_vision_result,
+    image_dimensions,
     parse_vision_result,
 )
 from .frontend_review import (
@@ -1651,7 +1652,206 @@ class LocalAIServices:
             "tokens_generated": gen_result.get("tokens", 0),
         }
 
-    def vision(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    @staticmethod
+    def _vision_cancelled_result(model_name: str = "") -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "success": False,
+            "reason": "cancelled",
+            "cancelled": True,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "cancelled",
+            "error": "Vision request was cancelled.",
+        }
+        if model_name:
+            result["model"] = model_name
+        return result
+
+    @staticmethod
+    def _vision_prompt_context(
+        prompt: str,
+        model_context: Any,
+        bundle_context: str,
+        prompt_suffix: str,
+    ) -> str | None:
+        prompt_context = prompt
+        if model_context is not None:
+            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + json_dumps(
+                model_context.prompt_payload(), ensure_ascii=False
+            )
+        elif bundle_context:
+            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + bundle_context
+        prompt_budget = max(0, VISION_MAX_PROMPT_CHARS - len(prompt_suffix))
+        if len(prompt_context) > prompt_budget:
+            return None
+        return prompt_context + prompt_suffix
+
+    @staticmethod
+    def _vision_capability_error(model: str, response: Any) -> dict[str, Any] | None:
+        if not isinstance(response, dict):
+            return {
+                "success": False,
+                "model": model,
+                "terminal": True,
+                "retryable": False,
+                "error": "Vision model capability preflight returned an invalid response.",
+            }
+        if response.get("error"):
+            capability_error = str(response.get("error", "")).lower()
+            missing_model = (
+                "model not found" in capability_error
+                or "no such model" in capability_error
+                or ("not found" in capability_error and "model" in capability_error)
+            )
+            transient = any(
+                marker in capability_error
+                for marker in (
+                    "timeout", "timed out", "connection", "network", "handoff",
+                    "temporarily", "unavailable", "try again", "http 429", "http 502", "http 503",
+                )
+            )
+            if missing_model:
+                return {
+                    "success": False,
+                    "model": model,
+                    "unsupported": True,
+                    "degraded": True,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
+                    "error_code": "vision_model_missing",
+                }
+            return {
+                "success": False,
+                "model": model,
+                "terminal": not transient,
+                "retryable": transient,
+                "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision model capability preflight failed; inspect the configured local backend and vision model.",
+                "error_code": "vision_preflight_failed",
+            }
+        capability_values: list[str] = []
+        for value in response.get("capabilities", []):
+            capability_values.append(str(value).lower())
+        details = response.get("details")
+        if isinstance(details, dict):
+            for key in ("family", "families"):
+                values = details.get(key, [])
+                if isinstance(values, list):
+                    capability_values.extend(str(value).lower() for value in values)
+                elif values:
+                    capability_values.append(str(values).lower())
+        supports_vision = any(
+            marker in value
+            for value in capability_values
+            for marker in ("vision", "image", "multimodal", "clip", "vl")
+        )
+        if not supports_vision:
+            return {
+                "success": False,
+                "model": model,
+                "unsupported": True,
+                "degraded": True,
+                "terminal": True,
+                "retryable": False,
+                "error": f"Vision model '{model}' does not advertise image or multimodal capability; choose a configured vision-capable local model.",
+                "error_code": "vision_model_unsupported",
+            }
+        return None
+
+    @staticmethod
+    def _vision_default_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "required": ["summary", "findings", "unknowns", "recommended_checks"],
+            "properties": {
+                "summary": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "id", "severity", "category", "problem", "observed",
+                            "hypothesized", "uncertainty", "confidence", "element_ids",
+                            "bbox", "evidence", "likely_cause", "fix_hint",
+                            "needs_runtime_check", "observation_facts",
+                        ],
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                            "severity": {
+                                "type": "string",
+                                "enum": ["blocker", "high", "medium", "low", "info"],
+                            },
+                            "category": {
+                                "type": "string",
+                                "enum": [
+                                    "layout", "responsive", "accessibility",
+                                    "interaction", "visual-regression", "runtime",
+                                ],
+                            },
+                            "problem": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                            "observed": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                            "hypothesized": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                            "uncertainty": {"type": "array", "items": {"type": "string"}},
+                            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                            "element_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": r"\S"}},
+                            "bbox": {
+                                "anyOf": [
+                                    {
+                                        "type": "array",
+                                        "items": {"type": "number"},
+                                        "minItems": 4,
+                                        "maxItems": 4,
+                                    },
+                                    {"type": "null"},
+                                ],
+                            },
+                            "evidence": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": r"\S"}, "minItems": 1},
+                            "likely_cause": {"type": "string"},
+                            "fix_hint": {"type": "string"},
+                            "needs_runtime_check": {"type": "boolean"},
+                            "observation_facts": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["source", "element_id", "field", "value"],
+                                    "properties": {
+                                        "source": {
+                                            "type": "string",
+                                            "enum": [
+                                                "dom", "accessibility",
+                                                "computed_styles", "runtime",
+                                            ],
+                                        },
+                                        "element_id": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                                        "field": {"type": "string", "minLength": 1, "pattern": r"\S"},
+                                        "value": {
+                                            "anyOf": [
+                                                {"type": "string"},
+                                                {"type": "number"},
+                                                {"type": "boolean"},
+                                            ],
+                                        },
+                                    },
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "unknowns": {"type": "array", "items": {"type": "string"}},
+                "recommended_checks": {"type": "array", "items": {"type": "string"}},
+            },
+            "additionalProperties": False,
+        }
+
+    def vision(
+        self,
+        args: dict[str, Any],
+        tenant: str,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         """Multimodal image understanding via local vision model."""
         features = self.config.get("features", {})
         if isinstance(features, dict) and not bool(features.get("vision", True)):
@@ -1662,6 +1862,19 @@ class LocalAIServices:
                 "retryable": False,
                 "error_code": "vision_disabled",
                 "error": "Vision capability is disabled. Enable features.vision explicitly.",
+            }
+        def is_cancelled() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
+
+        if is_cancelled():
+            return self._vision_cancelled_result()
+        if not isinstance(args, dict):
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "invalid_request",
+                "error": "Vision request must be an object.",
             }
         image_path = str(args.get("image", args.get("image_path", "")))
         prompt = str(args.get("prompt", args.get("task", "Describe this image in detail.")))
@@ -2080,6 +2293,8 @@ class LocalAIServices:
         if not images:
             return input_error("Vision image path, base64 data, or image artifact is required.")
 
+        image_size = image_dimensions(base64.b64decode(images[0], validate=True))
+
         try:
             requested_max_tokens = int(args.get("max_tokens", 1200))
         except (TypeError, ValueError, OverflowError):
@@ -2100,31 +2315,40 @@ class LocalAIServices:
             "\"category\": \"layout|responsive|accessibility|interaction|visual-regression|runtime\", "
             "\"problem\": string, \"observed\": string, \"hypothesized\": string, "
             "\"uncertainty\": [string], \"confidence\": number, "
-            "\"element_ids\": [string], \"bbox\": [number, number, number, number] or null, "
+            "\"element_ids\": [string], \"observation_facts\": [{\"source\": string, "
+            "\"element_id\": string, \"field\": string, \"value\": scalar}], "
+            "\"bbox\": [left, top, right, bottom] in image pixels or null, "
             "\"evidence\": [string], \"likely_cause\": string, \"fix_hint\": string, "
             "\"needs_runtime_check\": boolean}], "
-            "\"unknowns\": [string], \"recommended_checks\": [string]} ."
+            "\"unknowns\": [string], \"recommended_checks\": [string]} . "
+            "Grounding rules: use only element_ids present in supplied DOM. Without DOM, keep "
+            "element_ids empty and ground each finding with a bbox in source-image pixels "
+            "(origin top-left; right/bottom exclusive). Confidence must be between 0 and 1. "
+            "Treat supplied DOM and accessibility fields as authoritative; never claim a "
+            "label, name, or attribute is missing when supplied values show it. observed "
+            "must contain a non-empty directly observed fact. When a DOM id grounds a "
+            "finding, set bbox to null."
         )
-        prompt_context = prompt
-        if model_context is not None:
-            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + json_dumps(
-                model_context.prompt_payload(), ensure_ascii=False
+        if image_size is not None:
+            prompt_suffix += (
+                f" Image 0 dimensions are {image_size[0]} x {image_size[1]} pixels; "
+                f"bbox coordinates must stay within x=0..{image_size[0]} and "
+                f"y=0..{image_size[1]}."
             )
-        elif bundle_context:
-            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + bundle_context
-        prompt_budget = max(0, VISION_MAX_PROMPT_CHARS - len(prompt_suffix))
-        if len(prompt_context) > prompt_budget:
+        prompt_context = self._vision_prompt_context(
+            prompt, model_context, bundle_context, prompt_suffix
+        )
+        if prompt_context is None:
             return input_error(
                 "Vision prompt and frontend evidence exceed the bounded prompt limit.",
                 "frontend_prompt_too_large",
             )
-        prompt_context += prompt_suffix
         payload = {
             "model": model,
             "prompt": prompt_context,
             "images": images,
             "stream": False,
-            "format": schema if isinstance(schema, dict) else "json",
+            "format": schema if isinstance(schema, dict) else self._vision_default_schema() if bool(self.config.get("ollama", {}).get("enabled", False)) else "json",
             "options": {"num_predict": max_tokens},
         }
         payload, _profile = self.model_policy.apply_payload(
@@ -2144,80 +2368,23 @@ class LocalAIServices:
             timeout = 300.0
         timeout = max(0.05, min(timeout, 300.0))
         try:
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
             capability_response = self.runtime.request(
                 "/api/show",
                 {"name": model},
                 timeout=min(timeout, 1.0),
             )
-            if not isinstance(capability_response, dict):
-                return {
-                    "success": False,
-                    "model": model,
-                    "terminal": True,
-                    "retryable": False,
-                    "error": "Vision model capability preflight returned an invalid response.",
-                }
-            if capability_response.get("error"):
-                capability_error = str(capability_response.get("error", "")).lower()
-                missing_model = (
-                    "model not found" in capability_error
-                    or "no such model" in capability_error
-                    or ("not found" in capability_error and "model" in capability_error)
-                )
-                transient = any(
-                    marker in capability_error
-                    for marker in (
-                        "timeout", "timed out", "connection", "network", "handoff",
-                        "temporarily", "unavailable", "try again", "http 429", "http 502", "http 503",
-                    )
-                )
-                if missing_model:
-                    return {
-                        "success": False,
-                        "model": model,
-                        "unsupported": True,
-                        "degraded": True,
-                        "terminal": True,
-                        "retryable": False,
-                        "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
-                        "error_code": "vision_model_missing",
-                    }
-                return {
-                    "success": False,
-                    "model": model,
-                    "terminal": not transient,
-                    "retryable": transient,
-                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision model capability preflight failed; inspect the configured local backend and vision model.",
-                    "error_code": "vision_preflight_failed",
-                }
-            capability_values: list[str] = []
-            for value in capability_response.get("capabilities", []):
-                capability_values.append(str(value).lower())
-            details = capability_response.get("details")
-            if isinstance(details, dict):
-                for key in ("family", "families"):
-                    values = details.get(key, [])
-                    if isinstance(values, list):
-                        capability_values.extend(str(value).lower() for value in values)
-                    elif values:
-                        capability_values.append(str(values).lower())
-            supports_vision = any(
-                marker in value
-                for value in capability_values
-                for marker in ("vision", "image", "multimodal", "clip", "vl")
-            )
-            if not supports_vision:
-                return {
-                    "success": False,
-                    "model": model,
-                    "unsupported": True,
-                    "degraded": True,
-                    "terminal": True,
-                    "retryable": False,
-                    "error": f"Vision model '{model}' does not advertise image or multimodal capability; choose a configured vision-capable local model.",
-                    "error_code": "vision_model_unsupported",
-                }
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
+            capability_error = self._vision_capability_error(model, capability_response)
+            if capability_error is not None:
+                return capability_error
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
             res = self.runtime.request("/api/generate", payload, timeout=timeout)
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
             if not isinstance(res, dict):
                 return {
                     "success": False,
@@ -2285,15 +2452,37 @@ class LocalAIServices:
                 raw_artifact_id = str(self.artifacts.put(raw_output, tenant, "vision-output"))
             except Exception:
                 pass
+            dom_context = model_context.dom if model_context is not None else {}
+            dom_elements = dom_context.get("elements", []) if isinstance(dom_context, dict) else []
+            valid_element_ids = {
+                str(element["element_id"])
+                for element in dom_elements
+                if isinstance(element, dict)
+                and isinstance(element.get("element_id"), (str, int, float))
+                and not isinstance(element.get("element_id"), bool)
+                and str(element["element_id"])
+            } if isinstance(dom_elements, list) else set()
             parsed = parse_vision_result(
-                raw_output, require_observation_fields=model_context is not None
+                raw_output,
+                strict_output_shape=bool(
+                    self.config.get("ollama", {}).get("enabled", False)
+                    and not isinstance(schema, dict)
+                ),
+                require_observation_fields=model_context is not None,
+                valid_element_ids=valid_element_ids,
+                observation_sources=(
+                    model_context.observation_sources if model_context is not None else None
+                ),
+                image_size=image_size,
             )
             if parsed.terminal:
                 return {
                     "success": False,
+                    "degraded": True,
                     "model": model,
                     "terminal": True,
                     "retryable": False,
+                    "error_code": "vision_output_invalid",
                     "error": parsed.error,
                     "raw_output_artifact_id": raw_artifact_id,
                 }
@@ -2346,6 +2535,8 @@ class LocalAIServices:
                 result["coder_context"] = coder_context
             return result
         except Exception as exc:
+            if is_cancelled():
+                return self._vision_cancelled_result(model)
             detail = str(exc).lower()
             transient = isinstance(exc, (TimeoutError, ConnectionError, OSError)) or any(
                 marker in detail for marker in ("timeout", "timed out", "connection", "network", "handoff", "temporarily", "unavailable")
@@ -2358,44 +2549,218 @@ class LocalAIServices:
                 "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime failed; inspect the configured local backend and vision model.",
             }
 
-    def transcribe(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
-        """Transcribe audio recording to text via local Whisper / STT CLI or fallback."""
-        audio_path = str(args.get("audio", args.get("audio_path", "")))
-        model = str(args.get("model") or "whisper")
+    def transcribe(
+        self,
+        args: dict[str, Any],
+        tenant: str,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
+        """Transcribe audio to text through the local Whisper CLI."""
+        if not isinstance(args, dict):
+            return {
+                "success": False,
+                "audio_path": "",
+                "model": "base",
+                "reason": "invalid_request",
+                "terminal": True,
+                "retryable": False,
+                "error_code": "invalid_request",
+                "error": "Audio transcription request must be an object.",
+            }
+        import stat
 
-        p = Path(audio_path).expanduser().resolve(strict=False)
-        if not p.is_file():
-            return {"success": False, "error": f"audio file not found: {audio_path}"}
+        audio_path = str(args.get("audio", args.get("audio_path", "")))
+        model = str(args.get("model") or "base")
+        language_arg = args.get("language")
+        if language_arg is not None and not isinstance(language_arg, str):
+            return {
+                "success": False,
+                "audio_path": audio_path,
+                "model": model,
+                "reason": "invalid_language",
+                "error": "Language hint must be a string.",
+            }
+        language = language_arg.strip() if isinstance(language_arg, str) else ""
+        if language.casefold() == "auto":
+            language = ""
+
+        p = Path(audio_path)
+        try:
+            p = p.expanduser().resolve(strict=False)
+            audio_stat = p.stat()
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "reason": "audio_not_found",
+                "error": "Audio file not found.",
+            }
+        except OSError:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "reason": "audio_unavailable",
+                "degraded": True,
+                "error": "Audio path is not accessible.",
+            }
+        except (RuntimeError, ValueError):
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "reason": "audio_path_invalid",
+                "error": "Audio path is invalid.",
+            }
+        if not stat.S_ISREG(audio_stat.st_mode):
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "reason": "audio_not_regular_file",
+                "error": "Audio path does not refer to a regular file.",
+            }
 
         whisper_cmd = shutil.which("whisper")
-        if whisper_cmd:
-            cmd = [whisper_cmd, str(p), "--output_format", "txt", "--model", "tiny"]
-            try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False, **hidden_run_kwargs())
-                if proc.returncode == 0:
-                    txt_path = p.with_suffix(".txt")
-                    text = txt_path.read_text(encoding="utf-8", errors="replace") if txt_path.exists() else proc.stdout
+        if not whisper_cmd:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": "cli_missing",
+                "degraded": True,
+                "error": "Whisper CLI is not installed or unavailable in PATH.",
+            }
+
+        from tempfile import TemporaryDirectory
+
+        from .process_utils import ProcessCancelledError, run_hidden
+
+        try:
+            with TemporaryDirectory(prefix="local-ai-hub-transcribe-") as output_dir:
+                cmd = [
+                    whisper_cmd,
+                    str(p),
+                    "--output_format",
+                    "json",
+                    "--model",
+                    model,
+                    "--output_dir",
+                    output_dir,
+                ]
+                if language:
+                    cmd.extend(["--language", language])
+                proc = run_hidden(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                    cancel_event=cancel_event,
+                    cancel_grace_seconds=1.0,
+                )
+                if proc.returncode != 0:
                     return {
-                        "success": True,
-                        "text": text.strip(),
+                        "success": False,
                         "audio_path": str(p),
                         "model": model,
                         "engine": "whisper_cli",
+                        "reason": "process_failed",
+                        "error": f"Whisper CLI exited with status {proc.returncode}.",
                     }
-            except Exception:
-                pass
 
-        return {
-            "success": True,
-            "text": f"[Audio transcription registered: {p.name}]",
-            "audio_path": str(p),
-            "file_size_bytes": p.stat().st_size,
-            "format": p.suffix.lstrip("."),
-            "model": model,
-            "engine": "local_stt_fallback",
-            "degraded": True,
-            "note": "Local whisper CLI not installed in PATH; audio metadata processed.",
-        }
+                output_path = Path(output_dir) / f"{p.stem}.json"
+                raw_output = (
+                    output_path.read_text(encoding="utf-8", errors="replace")
+                    if output_path.is_file()
+                    else str(proc.stdout or "")
+                )
+                try:
+                    result = json.loads(raw_output) if raw_output.strip() else {}
+                except (json.JSONDecodeError, TypeError):
+                    result = {}
+                text_value = result.get("text") if isinstance(result, dict) else None
+                transcript = text_value.strip() if isinstance(text_value, str) else ""
+
+                def is_audio_decode_skip(value: str) -> bool:
+                    return any(
+                        line.startswith("Skipping ") and " due to RuntimeError:" in line
+                        for line in value.splitlines()
+                    )
+
+                if (
+                    is_audio_decode_skip(str(proc.stdout or ""))
+                    or is_audio_decode_skip(str(proc.stderr or ""))
+                    or is_audio_decode_skip(transcript)
+                ):
+                    return {
+                        "success": False,
+                        "audio_path": str(p),
+                        "model": model,
+                        "engine": "whisper_cli",
+                        "reason": "invalid_audio",
+                        "error": "Whisper CLI could not decode the audio file.",
+                    }
+                if not transcript:
+                    return {
+                        "success": False,
+                        "audio_path": str(p),
+                        "model": model,
+                        "engine": "whisper_cli",
+                        "reason": "empty_transcript",
+                        "error": "Whisper CLI produced no transcript text.",
+                    }
+
+                return {
+                    "success": True,
+                    "text": transcript,
+                    "audio_path": str(p),
+                    "model": model,
+                    "engine": "whisper_cli",
+                }
+        except ProcessCancelledError:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": "cancelled",
+                "cancelled": True,
+                "terminal": True,
+                "retryable": False,
+                "error": "Whisper CLI was cancelled for resource release.",
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": "timeout",
+                "error": "Whisper CLI timed out before transcription completed.",
+            }
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": "cli_missing",
+                "degraded": True,
+                "error": "Whisper CLI became unavailable before it could run.",
+            }
+        except Exception:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": "process_error",
+                "error": "Whisper CLI failed before producing a transcript.",
+            }
 
     def benchmark(self, tenant: str = "benchmark") -> dict[str, Any]:
         """Manual tiny benchmark used to seed the adaptive runtime cost model."""

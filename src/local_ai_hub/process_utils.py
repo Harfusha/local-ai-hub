@@ -17,6 +17,18 @@ from typing import Any, Sequence
 
 _LOW_PRIORITY_VALUES = {"idle", "below_normal", "normal"}
 _POST_TERMINATION_DRAIN_SECONDS = 0.5
+_CANCEL_POLL_SECONDS = 0.1
+_CANCEL_GRACE_SECONDS = 1.0
+
+
+class ProcessCancelledError(subprocess.SubprocessError):
+    """Raised after a cancelled child process tree is terminated and drained."""
+
+    def __init__(self, cmd: Sequence[str], output: Any = None, stderr: Any = None):
+        super().__init__("process cancelled")
+        self.cmd = list(cmd)
+        self.output = output
+        self.stderr = stderr
 
 
 class _FILETIME(ctypes.Structure):
@@ -427,6 +439,8 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
     for key, value in hidden_run_kwargs(text=text, new_group=True).items():
         opts.setdefault(key, value)
     timeout = opts.pop("timeout", 60.0)
+    cancel_event = opts.pop("cancel_event", None)
+    cancel_grace_seconds = float(opts.pop("cancel_grace_seconds", _CANCEL_GRACE_SECONDS))
     check = bool(opts.pop("check", False))
     input_data = opts.pop("input", None)
     capture_output = bool(opts.pop("capture_output", False))
@@ -458,6 +472,8 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
             opts["process_group"] = 0
 
     command = [str(x) for x in argv]
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelledError(command)
     process: subprocess.Popen[Any] | None = None
     try:
         process = subprocess.Popen(command, **opts)
@@ -482,7 +498,41 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
             close_job_object(job_handle)
         raise
     try:
-        stdout, stderr = process.communicate(input=input_data, timeout=timeout)
+        if cancel_event is None:
+            stdout, stderr = process.communicate(input=input_data, timeout=timeout)
+        else:
+            deadline = None if timeout is None else time.monotonic() + float(timeout)
+            first_communicate = True
+            while True:
+                if cancel_event.is_set():
+                    process_group = None
+                    if os.name != "nt":
+                        requested_group = opts.get("process_group")
+                        if requested_group is not None:
+                            process_group = process.pid if int(requested_group) == 0 else int(requested_group)
+                        elif opts.get("start_new_session"):
+                            process_group = process.pid
+                    stdout, stderr = _terminate_and_drain(
+                        process,
+                        process_group=process_group,
+                        grace_seconds=cancel_grace_seconds,
+                    )
+                    raise ProcessCancelledError(command, stdout, stderr)
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                wait_for = _CANCEL_POLL_SECONDS if remaining is None else min(_CANCEL_POLL_SECONDS, remaining)
+                try:
+                    stdout, stderr = process.communicate(
+                        input=input_data if first_communicate else None,
+                        timeout=wait_for,
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    first_communicate = False
+                    continue
+    except ProcessCancelledError:
+        raise
     except subprocess.TimeoutExpired as timeout_error:
         process_group = None
         if os.name != "nt":
@@ -514,9 +564,14 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
 
 
 def _terminate_and_drain(
-    process: subprocess.Popen[Any], *, process_group: int | None = None
+    process: subprocess.Popen[Any],
+    *,
+    process_group: int | None = None,
+    grace_seconds: float | None = None,
 ) -> tuple[Any, Any]:
-    cleanup_kwargs = {"process_group": process_group} if process_group is not None else {}
+    cleanup_kwargs = {"grace_seconds": grace_seconds} if grace_seconds is not None else {}
+    if process_group is not None:
+        cleanup_kwargs["process_group"] = process_group
     job_handle = getattr(process, "_local_ai_job_handle", None)
     if job_handle:
         if not _release_process_job(process):
