@@ -235,8 +235,14 @@ def test_registry_repair_reactivates_the_selected_project(tmp_path):
     processor._init_db()
 
     now = time.time()
-    older = str(tmp_path / "older-project")
-    newest = str(tmp_path / "newest-project")
+    # Registry repair discards missing roots; keep these projects valid so this
+    # fixture exercises slot rebalancing rather than runtime cleanup.
+    older_path = tmp_path / "older-project"
+    newest_path = tmp_path / "newest-project"
+    older_path.mkdir()
+    newest_path.mkdir()
+    older = str(older_path)
+    newest = str(newest_path)
     con = processor._connect()
     try:
         for root, requested_at in ((older, now - 10), (newest, now)):

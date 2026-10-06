@@ -1,7 +1,7 @@
 """treesitter_parser.py — Tree-Sitter AST symbol and reference extractor.
 
-Provides robust, syntax-aware AST extraction for C#, TypeScript, JavaScript,
-and Python. Falls back gracefully when language grammars are missing.
+Provides robust, syntax-aware AST extraction for C#, TypeScript/TSX,
+JavaScript, Python, Go, and Rust. Falls back when grammars are missing.
 """
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -36,8 +37,6 @@ def _init_treesitter() -> bool:
             "python": "python",
             "go": "go",
             "rust": "rust",
-            "java": "java",
-            "cpp": "cpp",
         }
         for internal_key, tslp_key in mapping.items():
             try:
@@ -142,6 +141,18 @@ def is_treesitter_available(lang: str) -> bool:
     if norm in ("rs", "rust"):
         return "rust" in _PARSERS
     return False
+
+
+def language_for_path(path: str, fallback_language: str, settings: Any | None = None) -> str:
+    """Resolve project-configured extensions to parser language names."""
+    suffix = Path(path).suffix.lower()
+    overrides = getattr(settings, "language_overrides", {}) if settings is not None else {}
+    if isinstance(overrides, dict) or hasattr(overrides, "items"):
+        for language, override in overrides.items():
+            extensions = override.get("text_extensions", ()) if hasattr(override, "get") else ()
+            if suffix in {str(extension).lower() for extension in extensions}:
+                return str(language).strip().lower()
+    return fallback_language
 
 
 def parse_treesitter(
@@ -476,6 +487,30 @@ def _extract_js_ts(
 
                 stack.append(name)
                 for child in node.children:
+                    visit(child)
+                stack.pop()
+                return
+
+        if ntype == "variable_declarator":
+            name_node = node.child_by_field_name("name")
+            value_node = node.child_by_field_name("value")
+            name = _node_text(name_node, source_bytes) if name_node else ""
+            if name and value_node and value_node.type == "arrow_function":
+                container = "/".join(stack)
+                name_path = f"{container}/{name}" if container else name
+                syms.append({
+                    "name": name,
+                    "kind": "method" if stack else "function",
+                    "line": node.start_point.row + 1,
+                    "end_line": node.end_point.row + 1,
+                    "container": container,
+                    "name_path": name_path,
+                    "signature": _first_line_sig(node, lines),
+                    "access": "public",
+                    "docstring": "",
+                })
+                stack.append(name)
+                for child in value_node.children:
                     visit(child)
                 stack.pop()
                 return

@@ -4023,6 +4023,21 @@ class LocalAIServices:
         found: list[str] = []
         visited = 0
 
+        def add_path(raw_path: str | Path) -> None:
+            candidate_text = str(raw_path).strip()
+            candidate = Path(candidate_text).expanduser()
+            if not candidate.is_absolute():
+                candidate = root_path / Path(candidate_text.replace("\\", "/"))
+            try:
+                resolved = candidate.resolve(strict=False)
+                resolved.relative_to(root_path)
+                if resolved.is_file():
+                    relative = resolved.relative_to(root_path).as_posix()
+                    if relative not in found:
+                        found.append(relative)
+            except (OSError, ValueError):
+                pass
+
         def visit(value: Any) -> None:
             nonlocal visited
             if visited >= 500:
@@ -4031,19 +4046,14 @@ class LocalAIServices:
             if isinstance(value, dict):
                 for key, item in value.items():
                     if str(key).lower() in path_keys and isinstance(item, (str, Path)):
-                        candidate = Path(str(item)).expanduser()
-                        if not candidate.is_absolute():
-                            candidate = root_path / candidate
-                        try:
-                            resolved = candidate.resolve(strict=False)
-                            resolved.relative_to(root_path)
-                            if resolved.is_file():
-                                relative = resolved.relative_to(root_path).as_posix()
-                                if relative not in found:
-                                    found.append(relative)
-                        except (OSError, ValueError):
-                            pass
+                        add_path(item)
                     else:
+                        if (
+                            isinstance(key, str)
+                            and ("/" in key or "\\" in key)
+                            and isinstance(item, (dict, list, tuple))
+                        ):
+                            add_path(key)
                         visit(item)
             elif isinstance(value, (list, tuple)):
                 for item in value:
@@ -4062,11 +4072,16 @@ class LocalAIServices:
         external = getattr(self, "external_tools", None)
         if external is None:
             return groups, warnings, {"serena": "skipped"}
+        if getattr(external, "serena_enabled", True) is False:
+            return groups, warnings, {"serena": "skipped"}
         try:
             terms = list(self.repo_tools.search_terms(query))[:8]
         except Exception:
             terms = []
         anchor_query = (terms[0] if terms else str(query)[:80]).strip()
+        surface_match = re.search(re.escape(anchor_query), str(query), flags=re.IGNORECASE)
+        if surface_match:
+            anchor_query = surface_match.group(0)
         if not anchor_query:
             return groups, warnings, {"serena": "skipped"}
 
@@ -4207,9 +4222,8 @@ class LocalAIServices:
         rag_future = None
         semantic_fraction = max(0.0, min(float(search_cfg.get("semantic_fraction", 0.35)), 0.7))
         lexical_tokens = max_tokens if not target_workspace else max(512, int(max_tokens * (1.0 - semantic_fraction)))
-        # Local AI: preprocessed deterministic/semantic cards narrow the lexical scan to likely files.
-        # This is an optimization hint only; if cards are absent or select nothing,
-        # the full lexical search remains the correctness fallback.
+        # Local AI: deterministic/semantic paths are ranking hints only. Keep lexical
+        # search repository-wide so one hit in a hinted file cannot hide other candidates.
         candidate_paths: list[str] = []
         path_groups: dict[str, list[str]] = {}
         backend_states: dict[str, str] = {}
@@ -4289,7 +4303,9 @@ class LocalAIServices:
             rag_configured and target_workspace and query.strip() and rag_revision_available
         )
         requested_backends: list[str] = []
-        if quality_first and request_optional and self.external_tools is not None:
+        external_tools = getattr(self, "external_tools", None)
+        serena_enabled = external_tools is not None and getattr(external_tools, "serena_enabled", True) is not False
+        if quality_first and request_optional and serena_enabled:
             requested_backends.append("serena")
         if rag_ready and request_optional:
             requested_backends.append("rag")
@@ -4334,26 +4350,11 @@ class LocalAIServices:
             "selected_backends": selected_backends,
             "remaining_budget_ms": round(remaining_budget * 1000, 3),
         }
-        fused_candidates = fuse_ranked_paths(path_groups, limit=64, max_per_path=2)
-        candidate_paths = [path for path, _score in fused_candidates]
         try:
-            if candidate_paths:
-                candidate_paths = list(dict.fromkeys(candidate_paths))
-                lexical = self.repo_tools.context_pack_paths(
-                    root, query, candidate_paths, max_tokens=lexical_tokens,
-                    top_k=int(search_cfg.get("context_top_k", 14)),
-                )
-                # If targeted cards return no exact evidence, do one completeness scan.
-                if isinstance(lexical, dict) and lexical.get("success") and not lexical.get("evidence"):
-                    lexical = self.repo_tools.context_pack(
-                        root, query, max_tokens=lexical_tokens,
-                        top_k=int(search_cfg.get("context_top_k", 14)),
-                    )
-            else:
-                lexical = self.repo_tools.context_pack(
-                    root, query, max_tokens=lexical_tokens,
-                    top_k=int(search_cfg.get("context_top_k", 14)),
-                )
+            lexical = self.repo_tools.context_pack(
+                root, query, max_tokens=lexical_tokens,
+                top_k=int(search_cfg.get("context_top_k", 14)),
+            )
         except Exception as exc:
             lexical = {"success": False, "error": f"lexical backend degraded: {type(exc).__name__}"}
         if not isinstance(lexical, dict) or not isinstance(lexical.get("evidence", []), list):
@@ -4417,6 +4418,14 @@ class LocalAIServices:
             evidence = traceable
         context = str(lexical.get("context", ""))
         semantic_used = False
+        semantic_candidate_count = 0
+        semantic_included_count = 0
+        semantic_omitted_count = 0
+        semantic_truncated_count = 0
+        semantic_malformed_count = 0
+        semantic_declared_hash_count = 0
+        semantic_backend_truncated: bool | None = None
+        semantic_backend_coverage_complete: bool | None = None
         per_path: dict[str, int] = {}
         for item in evidence:
             path = str(item.get("path", ""))
@@ -4451,19 +4460,27 @@ class LocalAIServices:
             from .token_router import strip_boilerplate
             if isinstance(rr, dict) and rr.get("success") and isinstance(rr.get("results"), list):
                 raw_results = rr["results"]
+                if isinstance(rr.get("truncated"), bool):
+                    semantic_backend_truncated = rr["truncated"]
+                raw_backend_coverage = rr.get("coverage")
+                if isinstance(raw_backend_coverage, dict) and isinstance(raw_backend_coverage.get("complete"), bool):
+                    semantic_backend_coverage_complete = raw_backend_coverage["complete"]
                 sorted_results_input = []
                 malformed_results = False
                 for item in raw_results:
                     if not isinstance(item, dict) or not str(item.get("path") or "").strip():
                         malformed_results = True
+                        semantic_malformed_count += 1
                         continue
                     try:
                         chunk_no = int(item.get("chunk_no", 0))
                     except (TypeError, ValueError, OverflowError):
                         malformed_results = True
+                        semantic_malformed_count += 1
                         continue
                     if not isinstance(item.get("text", ""), str):
                         malformed_results = True
+                        semantic_malformed_count += 1
                         continue
                     sorted_results_input.append({**item, "chunk_no": chunk_no})
                 if malformed_results:
@@ -4481,13 +4498,15 @@ class LocalAIServices:
                 fused_order = [p for p, _score in fuse_ranked_paths(path_groups, limit=64, max_per_path=2)]
                 fused_rank = {p: i for i, p in enumerate(fused_order)}
                 sorted_results = sorted(sorted_results_input, key=lambda item: fused_rank.get(str(item.get("path", "")), 999))
+                semantic_candidate_count = len(sorted_results)
                 remaining = max(0, chars_for_tokens(max_tokens) - len(context))
                 seen_chunks: set[tuple[str, int]] = set()
-                for item in sorted_results:
+                for result_index, item in enumerate(sorted_results):
                     path = str(item.get("path", ""))
                     chunk_no = int(item.get("chunk_no", 0))
                     key = (path, chunk_no)
                     if key in seen_chunks or per_path.get(path, 0) >= max_per_file:
+                        semantic_omitted_count += 1
                         continue
                     seen_chunks.add(key)
                     clean_text = strip_boilerplate(str(item.get("text", "")))
@@ -4495,7 +4514,9 @@ class LocalAIServices:
                     if len(rendered) > remaining:
                         if remaining > 400:
                             rendered = rendered[:remaining] + "\n[semantic snippet truncated]\n"
+                            semantic_truncated_count += 1
                         else:
+                            semantic_omitted_count += len(sorted_results) - result_index
                             break
                     context += rendered
                     remaining -= len(rendered)
@@ -4511,7 +4532,11 @@ class LocalAIServices:
                         if field in item:
                             rag_evidence[field] = item[field]
                     evidence.append(rag_evidence)
+                    semantic_included_count += 1
+                    if item.get("content_hash"):
+                        semantic_declared_hash_count += 1
                     if remaining <= 0:
+                        semantic_omitted_count += len(sorted_results) - result_index - 1
                         break
             elif backend_states.get("rag") != "degraded":
                 backend_states["rag"] = "degraded" if rr is not None else "skipped"
@@ -4524,6 +4549,55 @@ class LocalAIServices:
         for backend_paths in path_groups.values():
             for candidate in set(backend_paths):
                 path_backend_counts[candidate] = path_backend_counts.get(candidate, 0) + 1
+        lexical_coverage = lexical.get("coverage")
+        lexical_freshness = lexical.get("freshness")
+        lexical_truncation = lexical.get("truncation")
+        lexical_metadata = {
+            "coverage": dict(lexical_coverage) if isinstance(lexical_coverage, dict) else {
+                "scope": "unknown", "complete": False,
+            },
+            "freshness": dict(lexical_freshness) if isinstance(lexical_freshness, dict) else {
+                "scope": "unknown", "status": "not_reported", "complete": False,
+            },
+            "truncated": lexical.get("truncated") if isinstance(lexical.get("truncated"), bool) else None,
+            "truncation": dict(lexical_truncation) if isinstance(lexical_truncation, dict) else {
+                "status": "unknown", "complete": False,
+            },
+        }
+        semantic_metadata = {
+            "coverage": {
+                "scope": "returned_rag_candidates",
+                "candidate_count": semantic_candidate_count,
+                "included_evidence_count": semantic_included_count,
+                "omitted_chunk_count": semantic_omitted_count,
+                "malformed_chunk_count": semantic_malformed_count,
+                "complete": semantic_candidate_count > 0 and semantic_omitted_count == 0 and semantic_truncated_count == 0 and semantic_malformed_count == 0 and semantic_backend_truncated is not True and semantic_backend_coverage_complete is not False,
+            },
+            "freshness": {
+                "scope": "included_semantic_evidence",
+                "status": "not_checked" if semantic_included_count else "not_available",
+                "checked_chunks": 0,
+                "declared_hash_chunks": semantic_declared_hash_count,
+                "complete": False,
+            },
+            "truncated": (
+                semantic_truncated_count > 0 or semantic_omitted_count > 0 or semantic_backend_truncated is True or semantic_backend_coverage_complete is False
+                if semantic_candidate_count > 0 or semantic_backend_truncated is not None or semantic_backend_coverage_complete is not None else None
+            ),
+            "truncation": {
+                "status": "truncated" if semantic_truncated_count or semantic_omitted_count or semantic_backend_truncated is True or semantic_backend_coverage_complete is False else "none_observed" if semantic_candidate_count else "not_available",
+                "rendered_truncated_chunks": semantic_truncated_count,
+                "omitted_chunks": semantic_omitted_count,
+                "backend_reported_truncated": semantic_backend_truncated,
+                "backend_coverage_complete": semantic_backend_coverage_complete,
+                "complete": semantic_candidate_count > 0 and semantic_truncated_count == 0 and semantic_omitted_count == 0 and semantic_backend_truncated is not True and semantic_backend_coverage_complete is not False,
+            },
+        }
+        fallbacks = [
+            {"backend": name, "fallback": "lexical"}
+            for name, state in sorted(backend_states.items())
+            if name != "lexical" and state == "degraded" and backend_states.get("lexical") == "used"
+        ]
         return {
             "success": True, "root": lexical["root"], "query": query, "context": context,
             "evidence": evidence, "estimated_tokens": estimate_tokens(context),
@@ -4538,6 +4612,9 @@ class LocalAIServices:
                 "degraded_backends": sorted(name for name, state in backend_states.items() if state == "degraded"),
                 "backend_states": dict(sorted(backend_states.items())),
                 "backend_selection": backend_selection,
+                "fallbacks": fallbacks,
+                "lexical": lexical_metadata,
+                "semantic": semantic_metadata,
                 "warnings": list(dict.fromkeys(retrieval_warnings))[:8],
                 "fused_paths": [path for path, _score in fuse_ranked_paths(path_groups, limit=24, max_per_path=2)],
                 "quality": {

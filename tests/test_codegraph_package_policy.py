@@ -57,7 +57,10 @@ def test_runtime_has_no_managed_codegraph_or_kuzu_references():
     offenders = []
     for path in sources:
         content = path.read_text(encoding="utf-8").casefold()
-        if "codegraph" in content or "kuzudb" in content:
+        # Allow only the literal ignore-directory marker in the repository scanner.
+        if path == ROOT / "src" / "local_ai_hub" / "repo_tools.py":
+            content = content.replace('".codegraphcontext"', "", 1)
+        if "codegraph" in content or "kuzu" in content:
             offenders.append(str(path.relative_to(ROOT)))
 
     assert offenders == []
@@ -68,3 +71,39 @@ def test_runtime_has_no_managed_codegraph_or_kuzu_references():
     assert "cross_project_graph" in mcp_server._REPO_ACTIONS
     assert "cross_repo_graph" in mcp_server._REPO_ACTIONS
     assert ".codegraphcontext/" in (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+
+def test_native_graph_mcp_actions_still_reach_cross_project_route(monkeypatch, tmp_path):
+    from local_ai_hub import mcp_server
+
+    calls = []
+
+    def fake_post(path, payload, **kwargs):
+        calls.append((path, payload))
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server.FEATURES, "repo", True)
+    monkeypatch.setattr(mcp_server.CLIENT, "post", fake_post)
+
+    for action in ("cross_project_graph", "cross_repo_graph"):
+        result = mcp_server._local_ai_repo_impl(action=action, root=str(tmp_path))
+        assert result["success"] is True
+
+    expected_payload = {"roots": [str(tmp_path)]}
+    assert calls == [
+        ("/api/cross_project_graph", expected_payload),
+        ("/api/cross_project_graph", expected_payload),
+    ]
+
+
+def test_packaging_metadata_has_no_managed_codegraph_or_kuzu_dependencies():
+    package_files = [ROOT / "pyproject.toml", *ROOT.glob("requirements*.txt"), ROOT / "tools" / "setup.py"]
+    offenders = []
+    for path in package_files:
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8").casefold()
+        if "codegraph" in content or "kuzu" in content:
+            offenders.append(str(path.relative_to(ROOT)))
+
+    assert offenders == []

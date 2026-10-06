@@ -27,29 +27,9 @@ On a supported Intel Core Ultra system, `--profile auto` can select `integrated`
 
 Use `--profile integrated` to force the conservative shared-memory profile on a machine whose firmware/driver metadata prevents reliable auto-detection.
  
-## Optional: CodeGraphContext for Repository Optimization
- 
-CodeGraphContext was decoupled from the core Local AI Hub runtime to keep Hub lightweight, fast, and free of heavy graph database dependencies.
- 
-For complex or large codebases with deep call hierarchies, installing CodeGraphContext directly in the target repository or environment is recommended as an optional optimization tool:
- 
-- **Benefits**: Deep call graphs, caller/callee tracing, blast-radius impact analysis, and dead code detection.
-- **Standalone installation**:
-  ```bash
-  pip install "codegraphcontext[gcf]==0.6.8"
-  ```
-- **Direct Agent MCP configuration** (e.g. in `.cursor/mcp.json`, `claude_desktop_config.json`, or Codex configuration):
-  ```json
-  {
-    "mcpServers": {
-      "codegraph": {
-        "command": "codegraphcontext",
-        "args": ["mcp", "start"]
-      }
-    }
-  }
-  ```
-- **Fallback Behavior**: Local AI Hub gracefully falls back to built-in AST code-indexing and symbol analysis when CodeGraphContext is absent, so repositories can adopt it independently without affecting core Hub operations.
+## Optional standalone repository-analysis tool
+
+For separate graph-based repository analysis, [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) is an optional standalone tool. Install and configure it using its upstream documentation. Local AI Hub does not install, invoke, configure, or depend on it.
  
 ## Python package
 

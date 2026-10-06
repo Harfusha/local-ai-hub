@@ -19,7 +19,7 @@ Coordinate available tools and capabilities systematically across six distinct e
 ### 1. Discover
 - Clarify domain, objective, and requirements.
 - Identify project boundaries, configuration, and technology stack.
-- **Local AI Hub Adaptive Retrieval — mandatory first repository step**: call `local_ai_repo(action="context", mode="adaptive")` with the task/context before native reads, grep, planning, editing, review or tests. The orchestrator fuses deterministic/indexed evidence, CodeIndex, Serena, CodeGraphContext, bounded lexical search and RAG; it ranks agreement, deduplicates and preserves path diversity. Send the task/context directly; do not manufacture a long grep-term list.
+- **Local AI Hub Adaptive Retrieval — mandatory first repository step**: call `local_ai_repo(action="context", mode="adaptive")` with the task/context before native reads, grep, planning, editing, review or tests. The orchestrator fuses deterministic/indexed evidence, CodeIndex, Serena, bounded lexical search and RAG; it ranks agreement, deduplicates and preserves path diversity. Send the task/context directly; do not manufacture a long grep-term list.
 - Use `local_ai_repo(action="solve")` only after the grounded context pack when bounded implementation reasoning is needed.
 - For external library questions: query **Context7** (`resolve-library-id`, `query-docs`).
 - For codebase overview: list project structure, active Git branch (`local_ai_repo(action="git_status")`), and recent changes.

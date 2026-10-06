@@ -34,6 +34,8 @@ from urllib.request import Request, urlopen
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_SOURCE_ROOT = (_REPO_ROOT / "src").resolve()
+sys.path.insert(0, str(_SOURCE_ROOT))
 _FULL_FILE_SIZES = {100, 10_000, 100_000}
 _FULL_RAG_SIZES = {10_000, 100_000}
 _MAX_CONCURRENCY = 256
@@ -54,6 +56,20 @@ _REQUIRED_COMPARISON_STAGES = {
     "hub_sqlite_db_read", "hub_code_index", "hub_context_pack",
     "hub_queue_admission", "hub_rag_chunking",
 }
+_QUEUE_ERROR_TYPES = frozenset({"Exception", "OSError", "RuntimeError", "TimeoutError", "ValueError"})
+_QUEUE_STATES = frozenset({
+    "queued", "running", "done", "failed", "cancelled", "expired",
+    "outcome_unknown", "rejected", "conflict",
+})
+_QUEUE_REASONS = frozenset({
+    "capacity_available", "resource_pressure", "queue_limit",
+    "duplicate_active_job", "idempotent_request_replay",
+})
+_QUEUE_PRESSURE_LEVELS = frozenset({"nominal", "moderate", "high", "critical"})
+
+
+def _safe_queue_label(value: object, allowed: frozenset[str]) -> str:
+    return value if isinstance(value, str) and value in allowed else "unknown"
 
 
 @dataclass(frozen=True)
@@ -741,6 +757,11 @@ def run_benchmark(
 
         from local_ai_hub import http_server as http_server_module
         from local_ai_hub.app import LocalAIApp
+        runtime_source_root = Path(http_server_module.__file__).resolve().parents[1]
+        if runtime_source_root != _SOURCE_ROOT:
+            raise RuntimeError(
+                f"benchmark runtime source mismatch: expected {_SOURCE_ROOT}, got {runtime_source_root}"
+            )
 
         app_state_dir = scratch / "hub-state"
         app_config_path = scratch / "hub-config.toml"
@@ -922,9 +943,11 @@ def run_benchmark(
             definition="Direct LocalAIApp RAGStore._chunks calls on one synthetic source file; excludes retrieval, embeddings, reranking, and model inference.",
         )
 
-        def queue_admission_attempt(_value: int) -> tuple[float, str | None]:
+        def queue_admission_attempt(_value: int) -> tuple[float, str | None, dict[str, Any] | None]:
             queued_at = time.perf_counter()
             error_type: str | None = None
+            error_detail: dict[str, Any] | None = None
+            phase = "submit"
             try:
                 task_id = f"benchmark-{uuid.uuid4().hex}"
                 submitted = app.async_jobs.submit(
@@ -932,18 +955,46 @@ def run_benchmark(
                     dispatch_delay_seconds=30.0,
                 )
                 if submitted.get("success") is not True or not submitted.get("job_id"):
+                    admission = submitted.get("admission")
+                    error_detail = {
+                        "phase": phase,
+                        "type": "RuntimeError",
+                        "message": "async job admission failed",
+                        "reported_error": bool(submitted.get("error")),
+                        "state": _safe_queue_label(submitted.get("state"), _QUEUE_STATES),
+                    }
+                    if isinstance(admission, dict):
+                        error_detail["reason"] = _safe_queue_label(admission.get("reason"), _QUEUE_REASONS)
+                        error_detail["pressure_level"] = _safe_queue_label(admission.get("pressure_level"), _QUEUE_PRESSURE_LEVELS)
                     raise RuntimeError("Hub async job admission failed")
+                phase = "cancel"
                 cancelled = app.async_jobs.cancel("benchmark", str(submitted["job_id"]))
                 if cancelled.get("success") is not True or cancelled.get("state") != "cancelled":
+                    admission = cancelled.get("admission")
+                    error_detail = {
+                        "phase": phase,
+                        "type": "RuntimeError",
+                        "message": "async job cancellation did not reach cancelled state",
+                        "reported_error": bool(cancelled.get("error")),
+                        "state": _safe_queue_label(cancelled.get("state"), _QUEUE_STATES),
+                    }
+                    if isinstance(admission, dict):
+                        error_detail["reason"] = _safe_queue_label(admission.get("reason"), _QUEUE_REASONS)
+                        error_detail["pressure_level"] = _safe_queue_label(admission.get("pressure_level"), _QUEUE_PRESSURE_LEVELS)
                     raise RuntimeError("Hub async job was not cancelled before worker service")
             except Exception as exc:
-                error_type = type(exc).__name__
-            return (time.perf_counter() - queued_at) * 1000.0, error_type
+                error_type = _safe_queue_label(type(exc).__name__, _QUEUE_ERROR_TYPES)
+                if error_type == "unknown":
+                    error_type = "Exception"
+                if error_detail is None:
+                    error_detail = {"phase": phase, "type": error_type, "message": f"async job {phase} raised an exception"}
+            return (time.perf_counter() - queued_at) * 1000.0, error_type, error_detail
 
         queue_samples: list[float] = []
         queue_cold_samples: list[float] = []
         queue_warm_samples: list[float] = []
         queue_error_types: set[str] = set()
+        queue_error_samples: list[dict[str, Any]] = []
         queue_error_count = 0
         queue_measurements: dict[str, Any] = {}
         total_admissions = 0
@@ -960,7 +1011,7 @@ def run_benchmark(
                 level_batch_seconds += batch_seconds
                 total_batch_seconds += batch_seconds
                 total_admissions += level
-                for elapsed_ms, error_type in outcomes:
+                for elapsed_ms, error_type, error_detail in outcomes:
                     level_samples.append(elapsed_ms)
                     queue_samples.append(elapsed_ms)
                     (queue_cold_samples if repetition_index == 0 else queue_warm_samples).append(elapsed_ms)
@@ -968,6 +1019,8 @@ def run_benchmark(
                         level_errors += 1
                         queue_error_count += 1
                         queue_error_types.add(error_type)
+                        if error_detail is not None and len(queue_error_samples) < 20:
+                            queue_error_samples.append(error_detail)
             queue_measurements[str(level)] = {
                 **summarize_samples(level_samples),
                 "error_count": level_errors,
@@ -988,6 +1041,7 @@ def run_benchmark(
             "error_count": queue_error_count,
             "error_rate_pct": round(queue_error_count * 100.0 / max(1, len(queue_samples)), 3),
             "error_types": sorted(queue_error_types),
+            "error_samples": queue_error_samples,
             "http_response_body_bytes": 0,
             "whitespace_token_estimate": 0,
             "response_measurement": "not_applicable_no_http_response",
@@ -1082,6 +1136,7 @@ def run_benchmark(
             "cold_warm_policy": "Explicit cold query keys and preseeded warm keys for cached Hub routes; uncached operations use fresh calls; no OS cache flush.",
             "revision": _revision(),
             "implementation_fingerprint": _implementation_fingerprint(),
+            "runtime_source_root": str(runtime_source_root),
             "config_fingerprint": hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest(),
             "hardware_fingerprint": hashlib.sha256(json.dumps(machine, sort_keys=True).encode()).hexdigest(),
             "platform": machine,
