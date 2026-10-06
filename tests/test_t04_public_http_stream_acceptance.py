@@ -93,6 +93,8 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
             )
             cleanup.callback(authorized_events.close)
             kind, payload = next(authorized_events)
+            if kind == "replay_page":
+                kind, payload = next(authorized_events)
             assert kind == "update"
             assert payload["payload"] == {"public": True}
             started = threading.Event()
@@ -117,6 +119,8 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
             cleanup.callback(deadline_events.close)
             started_at = time.monotonic()
             kind, result = next(deadline_events)
+            if kind == "replay_page":
+                kind, result = next(deadline_events)
             assert kind == "error"
             assert result["retry_timeout"] is True
             assert result["outcome_unknown"] is True

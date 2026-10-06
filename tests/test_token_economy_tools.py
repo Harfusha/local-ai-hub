@@ -20,6 +20,7 @@ from local_ai_hub.token_economy import (
     repo_map_main,
 )
 from local_ai_hub.generator import (
+    context_economy_contract,
     generate_token_economy_policy,
     TOKEN_ECONOMIZER_SKILL_MD,
     write_all_generated,
@@ -123,6 +124,32 @@ def test_token_economy_policy_generation():
     update_prompt = (Path(__file__).resolve().parents[1] / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
     agents_file = (Path(__file__).resolve().parents[1] / "AGENTS.md").read_text(encoding="utf-8")
     assert all(trigger in instructions for instructions in (install_prompt, update_prompt, agents_file))
+
+
+def test_response_budget_and_fallback_contracts_match_all_agent_instructions():
+    root = Path(__file__).resolve().parents[1]
+    instructions = (
+        context_economy_contract(),
+        generate_token_economy_policy(),
+        TOKEN_ECONOMIZER_SKILL_MD,
+        (root / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8"),
+        (root / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8"),
+        (root / "AGENTS.md").read_text(encoding="utf-8"),
+        (root / "skills" / "tool-orchestration" / "SKILL.md").read_text(encoding="utf-8"),
+    )
+    budget_contract = (
+        "`response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.",
+        "Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.",
+        "Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.",
+        "Reject `max_response_tokens` below 128; never raise the request silently.",
+    )
+    fallback_contract = (
+        "Native fallback requires an explicit `terminal=true` and `retryable=false` result.",
+        "On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.",
+    )
+
+    for contract in (*budget_contract, *fallback_contract):
+        assert all(contract in text for text in instructions), contract
 
 
 def test_token_economizer_skill_md(tmp_path: Path):

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import io
+import sys
+import threading
 import time
+import types
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from types import SimpleNamespace
 
 from local_ai_hub import client as client_module
+from local_ai_hub.client import HubClient
 
 
-def test_start_lock_marker_records_creation_identity(monkeypatch, tmp_path) -> None:
-    import io
-
+def test_start_lock_marker_records_creation_identity(monkeypatch) -> None:
     handle = io.BytesIO()
     monkeypatch.setattr(
         client_module,
@@ -59,3 +65,56 @@ def test_start_lock_keeps_same_live_process_identity(tmp_path, monkeypatch) -> N
 
     handle = client_module._acquire_start_lock(lock_path, stale_seconds=60)
     assert handle is None
+
+
+def test_30_concurrent_root_clients_share_one_start_lock(tmp_path, monkeypatch) -> None:
+    state_dir = tmp_path / "state"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"[server]\nport=39201\nstate_dir='{state_dir.as_posix()}'\n"
+        "[client]\nstartup_wait_seconds=2\nstartup_poll_seconds=0.01\n",
+        encoding="utf-8",
+    )
+    operational_mode = types.ModuleType("local_ai_hub.operational_mode")
+    operational_mode.load_operational_mode = lambda _state: SimpleNamespace(mode="active", degraded=False)
+    monkeypatch.setitem(sys.modules, "local_ai_hub.operational_mode", operational_mode)
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: False)
+    lock = threading.Lock()
+    initial_barrier = threading.Barrier(30)
+    initial_calls = 0
+    running = False
+    starts = []
+    clients = [HubClient(config_path=str(config_path), auto_start=True) for _ in range(30)]
+
+    def online(_timeout=None):
+        nonlocal initial_calls
+        with lock:
+            initial_calls += 1
+            initial = initial_calls <= 30
+            ready = running
+        if initial:
+            initial_barrier.wait(timeout=5)
+            return False
+        return ready
+
+    def start_service(command, **kwargs):
+        nonlocal running
+        assert command[-1] == "start"
+        assert kwargs["stdin"] is client_module.subprocess.DEVNULL
+        assert kwargs["stdout"] is client_module.subprocess.DEVNULL
+        assert kwargs["stderr"] is client_module.subprocess.DEVNULL
+        assert 0 < kwargs["timeout"] <= 2.0
+        with lock:
+            starts.append(command)
+            running = True
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(client_module.subprocess, "run", start_service)
+    for client in clients:
+        client._online = online
+
+    with ThreadPoolExecutor(max_workers=30) as pool:
+        results = list(pool.map(lambda client: client.ensure_server(timeout=2.0), clients))
+
+    assert results == [True] * 30
+    assert len(starts) == 1

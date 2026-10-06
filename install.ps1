@@ -1,5 +1,8 @@
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedRevision,
     [ValidateSet('auto','cpu','integrated','low','balanced','high','max')]
     [string]$Profile = 'auto',
     [switch]$SkipModelPull,
@@ -14,6 +17,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Git is required to verify the installer source commit.' }
+$ActualRevision = (& git -C $Root rev-parse --verify HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $ActualRevision -ine $ExpectedRevision) {
+    throw "Source checkout does not match expected verified commit $ExpectedRevision. Refusing install/update."
+}
+$SourceStatus = & git -C $Root status --porcelain=v1 --untracked-files=all
+if ($LASTEXITCODE -ne 0) { throw 'Could not inspect source checkout status. Refusing install/update.' }
+if ($SourceStatus) { throw 'Source checkout is dirty. Preserve changes, use the verified clean commit, then rerun install/update.' }
+Write-Host "[local-ai-hub] Verified clean source commit: $ActualRevision"
 
 function Test-Python311([string]$Exe, [string[]]$Prefix = @()) {
     try {
@@ -65,7 +78,7 @@ if (-not $Python) {
 & $Python @PythonPrefix -m venv --help *> $null
 if ($LASTEXITCODE -ne 0) { throw 'The selected Python build does not provide the stdlib venv module.' }
 
-$argsList = @($PythonPrefix) + @((Join-Path $Root 'tools\setup.py'), '--profile', $Profile)
+$argsList = @($PythonPrefix) + @((Join-Path $Root 'tools\setup.py'), '--expected-revision', $ExpectedRevision, '--profile', $Profile)
 if ($SkipModelPull) { $argsList += '--skip-model-pull' }
 if ($SkipTools) { $argsList += '--skip-tools' }
 if ($SkipAgentConfig) { $argsList += '--skip-agent-config' }

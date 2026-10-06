@@ -227,7 +227,15 @@ def test_service_passes_screenshot_and_dom_bundle_to_vision_model(tmp_path: Path
                             "uncertainty": ["runtime visibility after hydration"],
                             "confidence": 0.91,
                             "element_ids": ["el-1"],
-                            "evidence": ["display:none"],
+                            "observation_facts": [
+                                {
+                                    "source": "dom",
+                                    "element_id": "el-1",
+                                    "field": "tag",
+                                    "value": "button",
+                                }
+                            ],
+                            "evidence": ["button display:none"],
                         }
                     ],
                     "unknowns": ["runtime visibility after hydration"],
