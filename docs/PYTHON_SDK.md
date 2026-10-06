@@ -67,6 +67,7 @@ Use existing Hub API paths and payload schemas. The client is a transport wrappe
 | Connection and diagnostics | `close`, `ensure_server`, `status`, `doctor`, `logs`, `events`, `stream_events` |
 | HTTP transport | `request`, `get`, `post` |
 | Agent state, tasks, evidence, and memory | `coord`, `context_compile`, `verify_receipt`, `verify_completion`, `create_task`, `get_task`, `list_tasks`, `complete_task`, `fail_task`, `checkpoint_task`, `record_memory`, `find_memory` |
+| Asynchronous jobs | `submit_async_job`, `async_job_status`, `wait_async_job`, `async_job_result`, `cancel_async_job` |
 | Conversation | `continue_conversation` |
 | Repository analysis | `circular_dependencies`, `generate_types`, `complexity`, `api_spec`, `dependency_slice`, `migration_drift`, `package_audit`, `git_diff`, `git_history_search`, `hotspots`, `generate_tests_for_diff`, `cross_repo_contract` |
 | Other workflows | `diff_hunk_stage`, `flaky_detect`, `webhook_replay`, `eval_drift`, `mock_server`, `ingest_diagram`, `curate_training_dataset` |
@@ -90,6 +91,9 @@ Convenience methods below call these Hub routes. `body` lists the wrapper's JSON
 | `verify_receipt`, `verify_completion` | `POST /api/agent-state/verification`; bodies contain respectively action + receipt, or action + task ID. |
 | `create_task`, `get_task`, `list_tasks`, `complete_task`, `fail_task`, `checkpoint_task` | `POST /api/agent-state/tasks`; bodies select the action and carry task ID, goal, acceptance criteria, scope, filters, checkpoint, or reason as applicable. `create_task()` sends `action=create`, `goal`, `acceptance_criteria`, `task_id`, and `scope`, then merges any extra keyword fields into the body. |
 | `record_memory`, `find_memory` | `POST /api/agent-state/memory`; action and memory fields come from the method arguments. |
+| `submit_async_job` | `POST /api/async-jobs`; body merges the supplied payload with `action=submit` and `job_action`; optional `request_id` is included when supplied. |
+| `async_job_status`, `async_job_result`, `cancel_async_job` | `POST /api/async-jobs`; body contains the corresponding action (`status`, `result`, or `cancel`) and `job_id`. |
+| `wait_async_job` | `POST /api/async-jobs`; body contains `action=wait`, `job_id`, and a bounded `timeout_seconds`. Defaults to a 90-second wait and derives a transport timeout with a 30-second margin, capped by the client's maximum request timeout. |
 | `continue_conversation` | `POST /api/conversations/continue`; body carries `conversation_id` and `task` (the `prompt` argument), plus optional `model`, `system`, `max_tokens`, and `temperature` settings. |
 | `circular_dependencies` | `POST /api/repo/circular_dependencies`; body: `root`, `language`. |
 | `generate_types` | `POST /api/repo/generate_types`; body: `root`, `file`, `write_stub`. |
@@ -122,7 +126,7 @@ Convenience methods below call these Hub routes. `body` lists the wrapper's JSON
 | `pubsub_publish`, `pubsub_poll` | `POST /api/coord/pubsub_publish` or `/api/coord/pubsub_poll`; body uses root, topic, message/publisher or cursor/limit fields. |
 | `simulate_merge` | `POST /api/coord/simulate_merge`; body: `root`, `source_branch`, `target_branch`. |
 
-All wrapper calls through `get()` use its 15-second default; calls through `post()` use 360 seconds. Both are capped by `client.max_request_timeout_seconds`; the wrappers do not declare per-method timeout overrides. `stream_events()` uses its own 30-second wait default. `ensure_server()` can start the configured local service; `close()` closes the client connection only. Other server-side effects and per-operation replay status are established only where the matching inventory row has evidence; `unverified` remains unknown.
+Calls through `get()` default to 15 seconds and calls through `post()` default to 360 seconds; both are capped by `client.max_request_timeout_seconds`. Most convenience wrappers use those defaults. The asynchronous-job wrappers expose timeout overrides, and `wait_async_job()` separately bounds its server wait and transport timeout. `stream_events()` uses its own 30-second wait default. `ensure_server()` can start the configured local service; `close()` closes the client connection only. Other server-side effects and per-operation replay status are established only where the matching inventory row has evidence; `unverified` remains unknown.
 
 ## One-call workflows retained from T19
 

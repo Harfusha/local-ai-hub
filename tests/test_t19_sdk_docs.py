@@ -27,7 +27,11 @@ def test_python_sdk_docs_cover_public_methods_and_literal_routes() -> None:
     docs = (ROOT / "docs/PYTHON_SDK.md").read_text(encoding="utf-8")
     methods = _public_client_methods()
     missing_methods = sorted(
-        method.name for method in methods if f"`{method.name}`" not in docs
+        method.name
+        for method in methods
+        if f"`{method.name}`" not in docs
+        and f"`client.{method.name}`" not in docs
+        and f"client.{method.name}(" not in docs
     )
     routes = {
         call.args[0].value
