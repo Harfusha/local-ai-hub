@@ -36,6 +36,11 @@ from typing import Any, Callable
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+if __package__:
+    from tools.t02_queue_diagnostics import admission_failure_code, cancellation_failure_code
+else:  # Direct script execution puts tools/, not the repository root, on sys.path.
+    from t02_queue_diagnostics import admission_failure_code, cancellation_failure_code
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _FULL_FILE_SIZES = {100, 10_000, 100_000}
@@ -4286,10 +4291,11 @@ def run_benchmark(
                 definition="Unpaired direct LocalAIApp RAGStore._chunks calls on one synthetic source file because corpus lacks enough distinct cases; no sample identities asserted.",
             )
 
-        def queue_admission_attempt(sample_id: str) -> tuple[float, str | None, str | None, dict[str, Any] | None]:
+        def queue_admission_attempt(sample_id: str) -> tuple[float, str | None, str | None, dict[str, Any] | None, str | None]:
             queued_at = time.perf_counter()
             error_type: str | None = None
             error_reason: str | None = None
+            error_code: str | None = None
             submitted: Any = None
             cancelled: Any = None
             try:
@@ -4305,8 +4311,10 @@ def run_benchmark(
                 ):
                     cancelled = app.async_jobs.cancel("benchmark", str(submitted["job_id"]))
                     error_reason = _queue_admission_error_reason(submitted, cancelled)
+                    error_code = cancellation_failure_code(cancelled)
                 else:
                     error_reason = _queue_admission_error_reason(submitted)
+                    error_code = admission_failure_code(submitted)
                 if error_reason is not None:
                     error_type = "RuntimeError"
             except Exception as exc:
@@ -4344,7 +4352,7 @@ def run_benchmark(
                     error_reason=error_reason,
                     diagnostic_error_types=diagnostic_error_types,
                 )
-            return elapsed_ms, error_type, error_reason, diagnostic
+            return elapsed_ms, error_type, error_reason, diagnostic, error_code
 
         queue_samples: list[float] = []
         queue_cold_samples: list[float] = []
@@ -4357,6 +4365,7 @@ def run_benchmark(
             "definition": "Each async job uses delayed dispatch and immediate cancellation; queue returns to empty per sample. Worker service is excluded.",
         })
         queue_error_types: set[str] = set()
+        queue_error_codes: set[str] = set()
         queue_error_reasons: dict[str, int] = {}
         queue_error_count = 0
         queue_measurements: dict[str, Any] = {}
@@ -4368,6 +4377,7 @@ def run_benchmark(
             level_samples: list[float] = []
             level_errors = 0
             level_error_reasons: dict[str, int] = {}
+            level_codes: set[str] = set()
             level_batch_seconds = 0.0
             for repetition_index in range(light_repetitions):
                 batch_started = time.perf_counter()
@@ -4382,11 +4392,14 @@ def run_benchmark(
                 total_batch_seconds += batch_seconds
                 total_admissions += level
                 regime = "cold" if repetition_index == 0 else "warm"
-                for sample_id, (elapsed_ms, error_type, error_reason, diagnostic) in zip(sample_ids, outcomes):
+                for sample_id, (elapsed_ms, error_type, error_reason, diagnostic, error_code) in zip(sample_ids, outcomes):
                     level_samples.append(elapsed_ms)
                     queue_samples.append(elapsed_ms)
                     (queue_cold_samples if repetition_index == 0 else queue_warm_samples).append(elapsed_ms)
                     queue_sample_ids_by_regime[regime].append(sample_id)
+                    if error_code:
+                        level_codes.add(error_code)
+                        queue_error_codes.add(error_code)
                     if error_type:
                         level_errors += 1
                         queue_error_count += 1
@@ -4399,6 +4412,7 @@ def run_benchmark(
             queue_measurements[str(level)] = {
                 **summarize_samples(level_samples),
                 "error_count": level_errors,
+                "error_codes": sorted(level_codes),
                 "error_rate_pct": round(level_errors * 100.0 / max(1, len(level_samples)), 3),
                 "error_reasons": dict(sorted(level_error_reasons.items())),
                 "concurrent_admissions_per_second": round(level * light_repetitions / level_batch_seconds, 3) if level_batch_seconds else None,
@@ -4423,6 +4437,7 @@ def run_benchmark(
             "error_count": queue_error_count,
             "error_rate_pct": round(queue_error_count * 100.0 / max(1, len(queue_samples)), 3),
             "error_types": sorted(queue_error_types),
+            "error_codes": sorted(queue_error_codes),
             "error_reasons": dict(sorted(queue_error_reasons.items())),
             "failed_sample_count": queue_error_count,
             "failed_samples": queue_failure_diagnostics,
