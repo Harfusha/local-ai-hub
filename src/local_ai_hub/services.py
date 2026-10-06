@@ -40,23 +40,16 @@ from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
 from .vision_contracts import (
-    UNTRUSTED_CONTEXT_INSTRUCTION,
-    VISION_MAX_BUNDLE_CHARS,
-    VISION_MAX_IMAGE_BYTES,
-    VISION_MAX_IMAGE_CHARS,
-    VISION_MAX_INLINE_RESPONSE_CHARS,
-    VISION_MAX_PROMPT_CHARS,
     VISION_MAX_RUNTIME_OUTPUT_CHARS,
-    VISION_MAX_SCHEMA_CHARS,
     bound_vision_result,
+    image_dimensions,
     parse_vision_result,
 )
-from .frontend_review import (
-    FrontendReviewError,
-    build_coder_context,
-    build_model_context,
-    parse_bounded_context,
-)
+from .frontend_review import build_coder_context
+from .vision_inputs import prepare_vision_inputs
+from .vision_payload import vision_input_error, vision_success_payload
+from .vision_request import build_vision_request, select_vision_model, vision_feature_error, vision_request_timeout
+from .vision_runtime import vision_capability_error, vision_generation_error
 from .agent_consistency import AdaptiveContextPack, ConsistencyRequest, GuardWarning
 from .agent_context import ContextCompiler, ContextRequest
 from .agent_events import AgentStateStore
@@ -1653,619 +1646,61 @@ class LocalAIServices:
 
     def vision(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Multimodal image understanding via local vision model."""
-        features = self.config.get("features", {})
-        if isinstance(features, dict) and not bool(features.get("vision", True)):
-            return {
-                "success": False,
-                "unsupported": True,
-                "terminal": True,
-                "retryable": False,
-                "error_code": "vision_disabled",
-                "error": "Vision capability is disabled. Enable features.vision explicitly.",
-            }
+        feature_error = vision_feature_error(self.config)
+        if feature_error:
+            return feature_error
         image_path = str(args.get("image", args.get("image_path", "")))
         prompt = str(args.get("prompt", args.get("task", "Describe this image in detail.")))
-        models = self.config.get("models", {})
-        configured_model = models.get("vision", "qwen3-vl:4b") if isinstance(models, dict) else "qwen3-vl:4b"
-        model = str(args.get("model") or configured_model or "").strip()
-        if bool(args.get("cloud_fallback", False)):
-            vision_policy = self.config.get("vision", {})
-            if not isinstance(vision_policy, dict) or not bool(vision_policy.get("cloud_fallback_enabled", False)):
-                return {
-                    "success": False,
-                    "terminal": True,
-                    "retryable": False,
-                    "error_code": "vision_cloud_fallback_disabled",
-                    "error": "Cloud vision fallback is disabled. Enable vision.cloud_fallback_enabled explicitly.",
-                    "cloud_fallback": False,
-                }
-            provider = str(vision_policy.get("cloud_provider", "")).strip()
-            if not provider:
-                return {
-                    "success": False,
-                    "terminal": True,
-                    "retryable": False,
-                    "error_code": "vision_cloud_fallback_unavailable",
-                    "error": "Cloud vision fallback is enabled but no provider is configured.",
-                    "cloud_fallback": False,
-                }
-        if not model:
-            return {
-                "success": False,
-                "unsupported": True,
-                "degraded": True,
-                "terminal": True,
-                "retryable": False,
-                "error": "Vision model is not configured; set models.vision to qwen3-vl:4b or another Ollama vision model.",
-            }
+        model, model_error = select_vision_model(args, self.config)
+        if model_error:
+            return model_error
 
-        def input_error(message: str, code: str = "vision_input_error") -> dict[str, Any]:
-            return {
-                "success": False,
-                "terminal": True,
-                "retryable": False,
-                "error": message,
-                "error_code": code,
-            }
-
-        images: list[str] = []
-
-        def append_image(value: str) -> dict[str, Any] | None:
-            if len(value) > VISION_MAX_IMAGE_CHARS:
-                return input_error(
-                    "Vision image transport exceeds the bounded character limit.",
-                    "vision_image_transport_too_large",
-                )
-            encoded = value
-            if value.startswith("data:image/"):
-                if "," not in value:
-                    return input_error("Vision image data URL is invalid.", "vision_image_integrity")
-                encoded = value.split(",", 1)[1]
-            try:
-                decoded = base64.b64decode(encoded, validate=True)
-            except (ValueError, TypeError):
-                return input_error("Vision image input is not valid base64.", "vision_image_integrity")
-            if len(decoded) > VISION_MAX_IMAGE_BYTES:
-                return input_error(
-                    "Vision image exceeds the bounded decoded-byte limit.",
-                    "vision_image_too_large",
-                )
-            # Ollama expects the raw base64 payload, not the transport prefix
-            # from a browser-style data URL. Keep validation accepting both,
-            # but normalize the provider payload to one canonical form.
-            images.append(encoded)
-            return None
-
-        def is_inline_image(value: str) -> bool:
-            if value.startswith("data:image/"):
-                return True
-            try:
-                return bool(value) and bool(base64.b64decode(value, validate=True))
-            except (ValueError, TypeError):
-                return False
-
-        if image_path:
-            if (
-                "image_path" not in args
-                and (image_path.startswith("data:image/") or len(image_path) > VISION_MAX_IMAGE_CHARS or is_inline_image(image_path))
-            ):
-                error = append_image(image_path)
-                if error:
-                    return error
-            else:
-                try:
-                    p = Path(image_path)
-                    is_file = p.is_file()
-                except (OSError, ValueError):
-                    return input_error("Vision image path could not be inspected; provide a readable image or base64 data.")
-                if not is_file:
-                    return input_error("Vision image path was not found; provide a readable image or base64 data.")
-                try:
-                    size_bytes = int(p.stat().st_size)
-                    encoded_chars = ((size_bytes + 2) // 3) * 4
-                    if size_bytes > VISION_MAX_IMAGE_BYTES:
-                        return input_error("Vision image exceeds the bounded decoded-byte limit.", "vision_image_too_large")
-                    if encoded_chars > VISION_MAX_IMAGE_CHARS:
-                        return input_error("Vision image transport exceeds the bounded character limit.", "vision_image_transport_too_large")
-                    b64 = base64.b64encode(p.read_bytes()).decode("utf-8")
-                    error = append_image(b64)
-                    if error:
-                        return error
-                except (OSError, ValueError):
-                    return input_error("Failed to read image file; verify the path and permissions.")
-
-        image_artifact_id = str(
-            args.get("image_artifact_id") or args.get("screenshot_artifact_id") or ""
-        ).strip()
-        bundle_artifact_id = str(
-            args.get("bundle_artifact_id") or args.get("frontend_bundle_artifact_id") or ""
-        ).strip()
-        direct_context_refs = {
-            "dom": str(args.get("dom_artifact_id") or args.get("html_artifact_id") or "").strip(),
-            "accessibility": str(
-                args.get("accessibility_artifact_id") or args.get("a11y_artifact_id") or ""
-            ).strip(),
-            "computed_styles": str(
-                args.get("computed_styles_artifact_id") or args.get("computed_style_artifact_id") or ""
-            ).strip(),
-            "runtime": str(
-                args.get("runtime_artifact_id") or args.get("runtime_context_artifact_id") or ""
-            ).strip(),
-        }
-        network_artifact_id = str(args.get("network_artifact_id") or "").strip()
-
-        def resolve_artifact(artifact_id: str, max_chars: int) -> tuple[str, dict[str, Any] | None]:
-            try:
-                artifact = self.artifacts.get(artifact_id, max_chars=max_chars, tenant=tenant)
-            except Exception:
-                return "", {
-                    "success": False,
-                    "terminal": False,
-                    "retryable": True,
-                    "error": "Vision artifact store is unavailable; retry the request.",
-                }
-            if not isinstance(artifact, dict) or not artifact.get("success"):
-                detail = str(artifact.get("error", "")).lower() if isinstance(artifact, dict) else ""
-                if any(marker in detail for marker in ("not found", "expired", "missing")):
-                    return "", input_error("Vision artifact was not found or has expired.")
-                return "", {
-                    "success": False,
-                    "terminal": False,
-                    "retryable": True,
-                    "error": "Vision artifact store returned an error; retry the request.",
-                }
-            text = artifact.get("text")
-            if not isinstance(text, str) or not text:
-                return "", input_error("Vision artifact does not contain usable content.")
-            try:
-                total_chars = int(artifact.get("total_chars", len(text)))
-            except (TypeError, ValueError, OverflowError):
-                return "", input_error("Vision artifact metadata is invalid.")
-            if artifact.get("next_offset") is not None or total_chars > len(text):
-                return "", input_error(
-                    "Vision artifact is truncated; provide the complete artifact.",
-                    "vision_artifact_truncated",
-                )
-            if total_chars > max_chars:
-                return "", input_error(
-                    "Vision artifact exceeds the bounded size limit.",
-                    "vision_artifact_too_large",
-                )
-            return text[:max_chars], None
-
-        def resolve_binary_artifact(artifact_id: str, max_bytes: int) -> tuple[str, dict[str, Any] | None]:
-            try:
-                artifact = self.artifacts.get_binary(artifact_id, tenant=tenant)
-            except Exception:
-                return "", {
-                    "success": False,
-                    "terminal": False,
-                    "retryable": True,
-                    "error": "Vision artifact store is unavailable; retry the request.",
-                }
-            if not isinstance(artifact, dict) or not artifact.get("success"):
-                detail = str(artifact.get("error", "")).lower() if isinstance(artifact, dict) else ""
-                if any(marker in detail for marker in ("not found", "expired", "missing")):
-                    return "", input_error("Vision artifact was not found or has expired.")
-                return "", input_error("Vision image artifact failed integrity validation.", "vision_artifact_integrity")
-            mime_type = str(artifact.get("mime_type", ""))
-            encoded = artifact.get("data_base64")
-            try:
-                size_bytes = int(artifact.get("size_bytes", -1))
-            except (TypeError, ValueError, OverflowError):
-                size_bytes = -1
-            if not mime_type.startswith("image/") or not isinstance(encoded, str) or size_bytes < 0:
-                return "", input_error("Vision image artifact exceeds the bounded integrity contract.", "vision_artifact_integrity")
-            if len(encoded) > VISION_MAX_IMAGE_CHARS:
-                return "", input_error(
-                    "Vision image transport exceeds the bounded character limit.",
-                    "vision_image_transport_too_large",
-                )
-            try:
-                decoded = base64.b64decode(encoded, validate=True)
-            except (ValueError, TypeError):
-                return "", input_error("Vision image artifact is not valid base64.", "vision_artifact_integrity")
-            if len(decoded) > max_bytes:
-                return "", input_error(
-                    "Vision image exceeds the bounded decoded-byte limit.",
-                    "vision_image_too_large",
-                )
-            if len(decoded) != size_bytes:
-                return "", input_error("Vision image artifact is truncated or incomplete.", "vision_artifact_truncated")
-            return encoded, None
-
-        def resolve_bundle_context(raw: str) -> tuple[str, dict[str, Any] | None]:
-            nonlocal image_artifact_id
-            if not raw.lstrip().startswith(("{", "[")):
-                return raw, None
-            try:
-                bundle = parse_bounded_context(raw, "frontend_bundle")
-            except FrontendReviewError as exc:
-                if exc.code == "invalid_frontend_context":
-                    return "", input_error(
-                        "Vision frontend bundle is not valid JSON.",
-                        "vision_bundle_invalid",
-                    )
-                return "", exc.as_result()
-            resolved = dict(bundle)
-            screenshot = resolved.get("screenshot")
-            screenshot_ref = screenshot.get("artifact_id", "") if isinstance(screenshot, dict) else ""
-            if screenshot_ref and not images:
-                image_data, error = resolve_binary_artifact(str(screenshot_ref), VISION_MAX_IMAGE_BYTES)
-                if error:
-                    return "", error
-                error = append_image(image_data)
-                if error:
-                    return "", error
-                image_artifact_id = str(screenshot_ref)
-            for field_name in ("dom", "accessibility", "computed_styles", "runtime"):
-                value = resolved.get(field_name)
-                if field_name == "runtime":
-                    runtime_refs: dict[str, str] = {}
-                    if isinstance(value, dict):
-                        for ref_key in ("artifact_id", "console_artifact_id", "network_artifact_id"):
-                            ref = str(value.get(ref_key, "")).strip()
-                            if ref:
-                                runtime_refs[ref_key] = ref
-                    for ref_key in ("runtime_artifact_id", "network_artifact_id"):
-                        ref = str(resolved.get(ref_key, "")).strip()
-                        if ref:
-                            runtime_refs.setdefault(
-                                "console_artifact_id" if ref_key == "runtime_artifact_id" else ref_key,
-                                ref,
-                            )
-                    if runtime_refs:
-                        runtime_value = dict(value) if isinstance(value, dict) else {}
-                        for ref_key, ref in runtime_refs.items():
-                            content, error = resolve_artifact(ref, VISION_MAX_BUNDLE_CHARS)
-                            if error:
-                                return "", error
-                            content_key = {
-                                "artifact_id": "content",
-                                "console_artifact_id": "console_content",
-                                "network_artifact_id": "network_content",
-                            }[ref_key]
-                            runtime_value[content_key] = content
-                        resolved[field_name] = runtime_value
-                    continue
-                reference = value.get("artifact_id", "") if isinstance(value, dict) else ""
-                if not reference:
-                    reference = resolved.get(f"{field_name}_artifact_id", "")
-                if not reference:
-                    continue
-                content, error = resolve_artifact(str(reference), VISION_MAX_BUNDLE_CHARS)
-                if error:
-                    return "", error
-                if isinstance(value, dict):
-                    resolved[field_name] = {**value, "content": content}
-                else:
-                    resolved[field_name] = {"artifact_id": str(reference), "content": content}
-            return json_dumps(resolved, ensure_ascii=False), None
-
-        if image_artifact_id and not images:
-            artifact_data, error = resolve_binary_artifact(image_artifact_id, VISION_MAX_IMAGE_BYTES)
-            if error:
-                return error
-            error = append_image(artifact_data)
-            if error:
-                return error
-
-        bundle_context = ""
-        if bundle_artifact_id:
-            bundle_context, error = resolve_artifact(bundle_artifact_id, VISION_MAX_BUNDLE_CHARS)
-            if error:
-                return error
-            bundle_context, error = resolve_bundle_context(bundle_context)
-            if error:
-                return error
-
-        def parse_context_value(field_name: str, value: Any) -> Any:
-            return parse_bounded_context(value, field_name)
-
-        frontend_bundle: dict[str, Any] = {}
-        if bundle_context:
-            if not bundle_context.lstrip().startswith(("{", "[")):
-                frontend_bundle = {}
-            else:
-                try:
-                    frontend_bundle = parse_bounded_context(bundle_context, "frontend_bundle")
-                except FrontendReviewError as exc:
-                    if exc.code == "invalid_frontend_context":
-                        return input_error(
-                            "Vision frontend bundle is not valid JSON.",
-                            "vision_bundle_invalid",
-                        )
-                    return exc.as_result()
-                frontend_bundle["bundle_artifact_id"] = bundle_artifact_id
-
-        inline_bundle = args.get("bundle") or args.get("frontend_bundle") or args.get("dom_bundle")
-        if inline_bundle is not None:
-            try:
-                decoded_inline = (
-                    parse_context_value("bundle", inline_bundle)
-                    if not isinstance(inline_bundle, dict)
-                    else dict(inline_bundle)
-                )
-            except FrontendReviewError as exc:
-                return exc.as_result()
-            frontend_bundle.update(decoded_inline)
-
-        for field_name, artifact_id in direct_context_refs.items():
-            if not artifact_id:
-                continue
-            content, error = resolve_artifact(artifact_id, VISION_MAX_BUNDLE_CHARS)
-            if error:
-                return error
-            try:
-                context_value = parse_context_value(field_name, content)
-            except FrontendReviewError as exc:
-                return exc.as_result()
-            ref_key = "console_artifact_id" if field_name == "runtime" else "artifact_id"
-            frontend_bundle[field_name] = {ref_key: artifact_id, **context_value}
-        if network_artifact_id:
-            content, error = resolve_artifact(network_artifact_id, VISION_MAX_BUNDLE_CHARS)
-            if error:
-                return error
-            runtime_value = frontend_bundle.get("runtime")
-            runtime_value = dict(runtime_value) if isinstance(runtime_value, dict) else {}
-            runtime_value.update(
-                {"network_artifact_id": network_artifact_id, "network_content": content}
-            )
-            frontend_bundle["runtime"] = runtime_value
-
-        inline_aliases = {
-            "dom": ("dom", "html"),
-            "accessibility": ("accessibility", "accessibility_snapshot"),
-            "computed_styles": ("computed_styles", "computed_style_data"),
-            "runtime": ("runtime", "runtime_context"),
-        }
-        for field_name, aliases in inline_aliases.items():
-            supplied = next((args[name] for name in aliases if name in args and args[name] is not None), None)
-            if supplied is not None:
-                try:
-                    frontend_bundle[field_name] = parse_context_value(field_name, supplied)
-                except FrontendReviewError as exc:
-                    return exc.as_result()
-        for field_name in ("viewport", "page", "source"):
-            if field_name in args and args.get(field_name) is not None:
-                frontend_bundle[field_name] = args[field_name]
-        if image_artifact_id:
-            frontend_bundle.setdefault("screenshot", {"artifact_id": image_artifact_id})
-
-        for field_name in ("dom", "accessibility", "computed_styles", "runtime"):
-            value = frontend_bundle.get(field_name)
-            if isinstance(value, dict) and isinstance(value.get("content"), str):
-                try:
-                    decoded_value = parse_context_value(field_name, value["content"])
-                except FrontendReviewError as exc:
-                    return exc.as_result()
-                ref = str(value.get("artifact_id", ""))
-                frontend_bundle[field_name] = {"artifact_id": ref, **decoded_value} if ref else decoded_value
-
-        model_context = None
-        if any(key in frontend_bundle for key in ("dom", "accessibility", "computed_styles", "runtime")):
-            try:
-                dom_value = frontend_bundle.get("dom") or {}
-                accessibility_value = frontend_bundle.get("accessibility") or {}
-                styles_value = frontend_bundle.get("computed_styles") or {}
-                runtime_value = frontend_bundle.get("runtime") or {}
-                model_context = build_model_context(
-                    prompt=prompt,
-                    screenshot_data_url=images[0] if images else "",
-                    dom=dom_value if isinstance(dom_value, dict) else parse_context_value("dom", dom_value),
-                    accessibility=accessibility_value if isinstance(accessibility_value, dict) else parse_context_value("accessibility", accessibility_value),
-                    computed_styles=styles_value if isinstance(styles_value, dict) else parse_context_value("computed_styles", styles_value),
-                    viewport=frontend_bundle.get("viewport") or {},
-                    runtime=runtime_value if isinstance(runtime_value, dict) else parse_context_value("runtime", runtime_value),
-                )
-                if model_context.dom.get("truncated"):
-                    return FrontendReviewError(
-                        "frontend_dom_context_truncated",
-                        "vision review requires complete live DOM within the configured bound",
-                        original_chars=model_context.dom.get("original_chars"),
-                        limit_chars=model_context.dom.get("limit_chars"),
-                    ).as_result()
-                for field_name, value in (
-                    ("dom", model_context.dom),
-                    ("accessibility", model_context.accessibility),
-                    ("computed_styles", model_context.computed_styles),
-                    ("runtime", model_context.runtime),
-                ):
-                    original = frontend_bundle.get(field_name)
-                    ref = original.get("artifact_id", "") if isinstance(original, dict) else ""
-                    frontend_bundle[field_name] = {"artifact_id": ref, **value} if ref else value
-            except FrontendReviewError as exc:
-                return exc.as_result()
-
-        if not images:
-            return input_error("Vision image path, base64 data, or image artifact is required.")
-
-        try:
-            requested_max_tokens = int(args.get("max_tokens", 1200))
-        except (TypeError, ValueError, OverflowError):
-            requested_max_tokens = 1200
-        max_tokens = max(64, min(requested_max_tokens, self._VISION_MAX_OUTPUT_TOKENS))
-        schema = args.get("json_schema")
-        if isinstance(schema, dict):
-            try:
-                schema_text = json_dumps(schema, ensure_ascii=False, separators=(",", ":"))
-            except (TypeError, ValueError, OverflowError):
-                return input_error("Vision JSON schema is invalid.")
-            if len(schema_text) > VISION_MAX_SCHEMA_CHARS:
-                return input_error("Vision JSON schema exceeds the bounded size limit.")
-        prompt_suffix = (
-            "\n\nReturn only a JSON object matching this contract: "
-            "{\"summary\": string, \"findings\": [{\"id\": string, "
-            "\"severity\": \"blocker|high|medium|low|info\", "
-            "\"category\": \"layout|responsive|accessibility|interaction|visual-regression|runtime\", "
-            "\"problem\": string, \"observed\": string, \"hypothesized\": string, "
-            "\"uncertainty\": [string], \"confidence\": number, "
-            "\"element_ids\": [string], \"bbox\": [number, number, number, number] or null, "
-            "\"evidence\": [string], \"likely_cause\": string, \"fix_hint\": string, "
-            "\"needs_runtime_check\": boolean}], "
-            "\"unknowns\": [string], \"recommended_checks\": [string]} ."
+        prepared_inputs = prepare_vision_inputs(
+            args=args,
+            image_path=image_path,
+            prompt=prompt,
+            tenant=tenant,
+            artifacts=self.artifacts,
         )
-        prompt_context = prompt
-        if model_context is not None:
-            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + json_dumps(
-                model_context.prompt_payload(), ensure_ascii=False
-            )
-        elif bundle_context:
-            prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + bundle_context
-        prompt_budget = max(0, VISION_MAX_PROMPT_CHARS - len(prompt_suffix))
-        if len(prompt_context) > prompt_budget:
-            return input_error(
-                "Vision prompt and frontend evidence exceed the bounded prompt limit.",
-                "frontend_prompt_too_large",
-            )
-        prompt_context += prompt_suffix
-        payload = {
-            "model": model,
-            "prompt": prompt_context,
-            "images": images,
-            "stream": False,
-            "format": schema if isinstance(schema, dict) else "json",
-            "options": {"num_predict": max_tokens},
-        }
-        payload, _profile = self.model_policy.apply_payload(
-            model,
-            payload,
-            role="vision",
-            output_tokens=max_tokens,
+        if isinstance(prepared_inputs, dict):
+            return prepared_inputs
+        images = prepared_inputs.images
+        image_artifact_id = prepared_inputs.image_artifact_id
+        bundle_artifact_id = prepared_inputs.bundle_artifact_id
+        bundle_context = prepared_inputs.bundle_context
+        frontend_bundle = prepared_inputs.frontend_bundle
+        model_context = prepared_inputs.model_context
+
+        request_plan = build_vision_request(
+            args=args,
+            model=model,
+            images=images,
+            prompt=prompt,
+            bundle_context=bundle_context,
+            model_context=model_context,
+            model_policy=self.model_policy,
+            max_output_tokens=self._VISION_MAX_OUTPUT_TOKENS,
         )
-        try:
-            timeout = float(
-                self.config.get("resilience", {}).get(
-                    "vision_timeout_seconds",
-                    self.config.get("server", {}).get("request_timeout_seconds", 300),
-                )
-            )
-        except (TypeError, ValueError, OverflowError):
-            timeout = 300.0
-        timeout = max(0.05, min(timeout, 300.0))
+        if isinstance(request_plan, dict):
+            return request_plan
+        payload = request_plan.payload
+        prompt_context = request_plan.prompt_context
+        schema = request_plan.schema
+        timeout = vision_request_timeout(self.config)
         try:
             capability_response = self.runtime.request(
                 "/api/show",
                 {"name": model},
                 timeout=min(timeout, 1.0),
             )
-            if not isinstance(capability_response, dict):
-                return {
-                    "success": False,
-                    "model": model,
-                    "terminal": True,
-                    "retryable": False,
-                    "error": "Vision model capability preflight returned an invalid response.",
-                }
-            if capability_response.get("error"):
-                capability_error = str(capability_response.get("error", "")).lower()
-                missing_model = (
-                    "model not found" in capability_error
-                    or "no such model" in capability_error
-                    or ("not found" in capability_error and "model" in capability_error)
-                )
-                transient = any(
-                    marker in capability_error
-                    for marker in (
-                        "timeout", "timed out", "connection", "network", "handoff",
-                        "temporarily", "unavailable", "try again", "http 429", "http 502", "http 503",
-                    )
-                )
-                if missing_model:
-                    return {
-                        "success": False,
-                        "model": model,
-                        "unsupported": True,
-                        "degraded": True,
-                        "terminal": True,
-                        "retryable": False,
-                        "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
-                        "error_code": "vision_model_missing",
-                    }
-                return {
-                    "success": False,
-                    "model": model,
-                    "terminal": not transient,
-                    "retryable": transient,
-                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision model capability preflight failed; inspect the configured local backend and vision model.",
-                    "error_code": "vision_preflight_failed",
-                }
-            capability_values: list[str] = []
-            for value in capability_response.get("capabilities", []):
-                capability_values.append(str(value).lower())
-            details = capability_response.get("details")
-            if isinstance(details, dict):
-                for key in ("family", "families"):
-                    values = details.get(key, [])
-                    if isinstance(values, list):
-                        capability_values.extend(str(value).lower() for value in values)
-                    elif values:
-                        capability_values.append(str(values).lower())
-            supports_vision = any(
-                marker in value
-                for value in capability_values
-                for marker in ("vision", "image", "multimodal", "clip", "vl")
-            )
-            if not supports_vision:
-                return {
-                    "success": False,
-                    "model": model,
-                    "unsupported": True,
-                    "degraded": True,
-                    "terminal": True,
-                    "retryable": False,
-                    "error": f"Vision model '{model}' does not advertise image or multimodal capability; choose a configured vision-capable local model.",
-                    "error_code": "vision_model_unsupported",
-                }
+            capability_error = vision_capability_error(capability_response, model)
+            if capability_error:
+                return capability_error
             res = self.runtime.request("/api/generate", payload, timeout=timeout)
-            if not isinstance(res, dict):
-                return {
-                    "success": False,
-                    "model": model,
-                    "terminal": True,
-                    "retryable": False,
-                    "error": "Vision runtime returned an invalid response.",
-                }
-            if res.get("error"):
-                error_text = str(res.get("error", "")).lower()
-                missing_model = (
-                    "model not found" in error_text
-                    or "no such model" in error_text
-                    or ("not found" in error_text and "model" in error_text)
-                )
-                if missing_model:
-                    return {
-                        "success": False,
-                        "model": model,
-                        "unsupported": True,
-                        "degraded": True,
-                        "terminal": True,
-                        "retryable": False,
-                        "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
-                    }
-                transient = any(
-                    marker in error_text
-                    for marker in (
-                        "timeout", "timed out", "connection", "network", "handoff",
-                        "temporarily", "unavailable", "try again", "http 429", "http 502", "http 503",
-                    )
-                )
-                return {
-                    "success": False,
-                    "model": model,
-                    "terminal": not transient,
-                    "retryable": transient,
-                    "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime returned an error; inspect the configured local backend and vision model.",
-                }
+            generation_error = vision_generation_error(res, model)
+            if generation_error:
+                return generation_error
             raw_output = res.get("response", "")
-            if not isinstance(raw_output, str):
-                return {
-                    "success": False,
-                    "model": model,
-                    "terminal": True,
-                    "retryable": False,
-                    "error": "Vision runtime returned an invalid response.",
-                }
             if len(raw_output) > VISION_MAX_RUNTIME_OUTPUT_CHARS:
                 raw_artifact_id = ""
                 try:
@@ -2285,29 +1720,54 @@ class LocalAIServices:
                 raw_artifact_id = str(self.artifacts.put(raw_output, tenant, "vision-output"))
             except Exception:
                 pass
+            valid_element_ids = None
+            observation_sources = None
+            if model_context is not None:
+                dom_elements = model_context.dom.get("elements", [])
+                valid_element_ids = {
+                    element_id
+                    for element in dom_elements
+                    if isinstance(element, dict)
+                    and isinstance((element_id := element.get("element_id")), str)
+                    and element_id
+                } if isinstance(dom_elements, list) else set()
+                observation_sources = model_context.observation_sources
+            try:
+                image_size = image_dimensions(base64.b64decode(images[0], validate=True))
+            except (ValueError, TypeError):
+                image_size = None
             parsed = parse_vision_result(
-                raw_output, require_observation_fields=model_context is not None
+                raw_output,
+                strict_output_shape=bool(
+                    self.config.get("ollama", {}).get("enabled", False)
+                    and not isinstance(schema, dict)
+                ),
+                require_observation_fields=model_context is not None,
+                valid_element_ids=valid_element_ids,
+                observation_sources=observation_sources,
+                image_size=image_size,
             )
             if parsed.terminal:
                 return {
                     "success": False,
                     "model": model,
+                    "degraded": True,
                     "terminal": True,
                     "retryable": False,
-                    "error": parsed.error,
+                    "error": parsed.error or {"code": "malformed_vision_output", "message": "Vision output is invalid."},
+                    "error_code": "vision_output_invalid",
                     "raw_output_artifact_id": raw_artifact_id,
                 }
             parsed = bound_vision_result(parsed)
-            result = {
-                "success": True,
-                "model": model,
-                "response": raw_output[:VISION_MAX_INLINE_RESPONSE_CHARS],
-                "review": asdict(parsed),
-                "prompt": prompt_context,
-                "image_artifact_id": image_artifact_id,
-                "bundle_artifact_id": bundle_artifact_id,
-                "raw_output_artifact_id": raw_artifact_id,
-            }
+            result = vision_success_payload(
+                model=model,
+                raw_output=raw_output,
+                parsed=parsed,
+                prompt_context=prompt_context,
+                image_artifact_id=image_artifact_id,
+                bundle_artifact_id=bundle_artifact_id,
+                raw_output_artifact_id=raw_artifact_id,
+            )
             if frontend_bundle:
                 repo_context = None
                 root = str(args.get("root") or "").strip()
@@ -2360,42 +1820,90 @@ class LocalAIServices:
 
     def transcribe(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Transcribe audio recording to text via local Whisper / STT CLI or fallback."""
+        from tempfile import TemporaryDirectory
+
         audio_path = str(args.get("audio", args.get("audio_path", "")))
-        model = str(args.get("model") or "whisper")
+        model = str(args.get("model") or "tiny")
 
         p = Path(audio_path).expanduser().resolve(strict=False)
         if not p.is_file():
             return {"success": False, "error": f"audio file not found: {audio_path}"}
 
-        whisper_cmd = shutil.which("whisper")
-        if whisper_cmd:
-            cmd = [whisper_cmd, str(p), "--output_format", "txt", "--model", "tiny"]
+        whisper_cmd = shutil.which("whisper-cli") or shutil.which("whisper")
+        if not whisper_cmd:
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "degraded": True,
+                "reason": "cli_missing",
+                "error": "Local whisper CLI not installed in PATH; audio was not transcribed.",
+                "audio_path": str(p),
+                "model": model,
+            }
+
+        with TemporaryDirectory(prefix="local-ai-hub-whisper-") as output_dir:
+            output_path = Path(output_dir)
+            cmd = [
+                whisper_cmd,
+                str(p),
+                "--output_format",
+                "txt",
+                "--model",
+                model,
+                "--output_dir",
+                output_dir,
+            ]
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False, **hidden_run_kwargs())
                 if proc.returncode == 0:
-                    txt_path = p.with_suffix(".txt")
-                    text = txt_path.read_text(encoding="utf-8", errors="replace") if txt_path.exists() else proc.stdout
+                    txt_path = output_path / f"{p.stem}.txt"
+                    text = txt_path.read_text(encoding="utf-8", errors="replace") if txt_path.is_file() else str(proc.stdout or "")
+                    text = text.strip()
+                    if text:
+                        return {
+                            "success": True,
+                            "text": text,
+                            "audio_path": str(p),
+                            "model": model,
+                            "engine": "whisper_cli",
+                        }
                     return {
-                        "success": True,
-                        "text": text.strip(),
+                        "success": False,
+                        "terminal": True,
+                        "retryable": False,
+                        "error": "Local whisper CLI produced no transcription text.",
                         "audio_path": str(p),
                         "model": model,
-                        "engine": "whisper_cli",
                     }
-            except Exception:
-                pass
-
-        return {
-            "success": True,
-            "text": f"[Audio transcription registered: {p.name}]",
-            "audio_path": str(p),
-            "file_size_bytes": p.stat().st_size,
-            "format": p.suffix.lstrip("."),
-            "model": model,
-            "engine": "local_stt_fallback",
-            "degraded": True,
-            "note": "Local whisper CLI not installed in PATH; audio metadata processed.",
-        }
+                return {
+                    "success": False,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": (str(proc.stderr or "Whisper CLI failed.").strip())[:1000],
+                    "audio_path": str(p),
+                    "model": model,
+                }
+            except subprocess.TimeoutExpired:
+                return {
+                    "success": False,
+                    "terminal": False,
+                    "retryable": True,
+                    "error": "Local whisper CLI timed out while transcribing audio.",
+                    "audio_path": str(p),
+                    "model": model,
+                }
+            except OSError as exc:
+                return {
+                    "success": False,
+                    "terminal": True,
+                    "retryable": False,
+                    "degraded": isinstance(exc, FileNotFoundError),
+                    "reason": "cli_missing" if isinstance(exc, FileNotFoundError) else "cli_error",
+                    "error": str(exc)[:1000],
+                    "audio_path": str(p),
+                    "model": model,
+                }
 
     def benchmark(self, tenant: str = "benchmark") -> dict[str, Any]:
         """Manual tiny benchmark used to seed the adaptive runtime cost model."""
