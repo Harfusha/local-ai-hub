@@ -130,22 +130,21 @@ class _CommandCacheCoordinator:
 
     def write_redundant_locked(self, generation: int, poisoned: bool) -> None:
         errors: list[Exception] = []
-        for write in (self.write_locked, self.write_fallback_locked):
+        for writer in (self.write_locked, self.write_fallback_locked):
             try:
-                write(generation, poisoned)
+                writer(generation, poisoned)
             except Exception as exc:
                 errors.append(exc)
         if len(errors) == 2:
-            # We hold the cross-process lock. In-place publication is safe here:
-            # readers cannot observe a partial write, and a crash-corrupt file
-            # makes readers fail closed instead of accepting an old generation.
+            # The cross-process lock excludes readers during direct publication.
+            # A torn write is unreadable, so readers fail closed rather than reuse old epoch.
             for state_path in (self.state_path, self.fallback_state_path):
                 try:
                     self._write_state_path_in_place(state_path, generation, poisoned)
                 except Exception:
                     continue
                 return
-            raise OSError("all command-cache coordination sidecars failed to publish") from errors[0]
+            raise OSError("all command-cache coordination sidecars failed") from errors[-1]
 
     def _write_state_path_in_place(self, state_path: Path, generation: int, poisoned: bool) -> None:
         payload = json.dumps({"generation": generation, "poisoned": poisoned}, separators=(",", ":")).encode("utf-8")

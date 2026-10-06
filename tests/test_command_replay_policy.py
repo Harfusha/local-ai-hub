@@ -6,7 +6,6 @@ import pytest
 
 from local_ai_hub.commands import CommandBroker
 
-
 def _broker(tmp_path) -> CommandBroker:
     return CommandBroker(
         {
@@ -51,7 +50,6 @@ def test_builtin_python_and_powershell_validation_classifiers_declare_replay_saf
     assert result["class"] == "validation"
     assert result.get("replay_safe") is True
 
-
 def test_compound_validation_replays_only_when_every_part_is_explicitly_safe(tmp_path) -> None:
     broker = _broker(tmp_path)
     safe = broker.classify("python -m pytest -q && python tools/check_contracts.py")
@@ -62,6 +60,24 @@ def test_compound_validation_replays_only_when_every_part_is_explicitly_safe(tmp
     assert safe["replay_safe"] is True
     assert unclassified["class"] == "validation"
     assert unclassified["replay_safe"] is False
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'python -c "open(\'x\', \'a\').write(\'y\')"',
+        'python -c "open(\'x\', mode=\'w\').write(\'y\')"',
+        'python -c "Path(\'x\').write_text(\'y\')"',
+        'python -c "import shutil; shutil.copyfile(\'a\', \'b\')"',
+        'python -c "from pathlib import Path; Path(\'x\').symlink_to(\'y\')"',
+        'python -c "assert check()"',
+    ],
+)
+def test_python_inline_unverified_file_effects_are_not_replay_safe(tmp_path, command: str) -> None:
+    result = _broker(tmp_path).classify(command)
+
+    assert result["class"] == "unknown"
+    assert result.get("replay_safe") is not True
+
 
 
 def test_repair_loop_skips_validation_when_classifier_omits_replay_safety(
@@ -158,20 +174,33 @@ def test_repair_loop_keeps_retrying_recognized_python_and_powershell_validation(
     assert executions == [command, command]
     assert generator_calls == [command]
 
-
 @pytest.mark.parametrize(
     "command",
     [
-        'python -c "open(\'x\', \'a\').write(\'y\')"',
-        'python -c "open(\'x\', mode=\'w\').write(\'y\')"',
-        'python -c "Path(\'x\').write_text(\'y\')"',
-        'python -c "import shutil; shutil.copyfile(\'a\', \'b\')"',
-        'python -c "from pathlib import Path; Path(\'x\').symlink_to(\'y\')"',
-        'python -c "assert check()"',
+        "custom_tool --apply",
+        'pwsh -Command "custom_tool --apply"',
+        'powershell -Command "custom_tool --apply"',
     ],
 )
-def test_python_inline_unverified_file_effects_are_not_replay_safe(tmp_path, command: str) -> None:
-    result = _broker(tmp_path).classify(command)
+def test_user_whitelisted_validation_is_explicitly_unsafe(tmp_path, monkeypatch, command: str) -> None:
+    broker = _broker(tmp_path)
+    paths = _enable_local_transaction(broker, tmp_path, monkeypatch)
+    broker.config["commands"]["extra_allowed_tools"] = ["custom_tool"]
+    executions: list[str] = []
+    monkeypatch.setattr(
+        broker, "run",
+        lambda actual, *_args, **_kwargs: executions.append(actual) or {"success": False, "exit_code": 1},
+    )
+    classification = broker.classify(command)
 
-    assert result["class"] == "unknown"
-    assert result.get("replay_safe") is not True
+    assert classification["class"] == "validation"
+    assert classification.get("replay_safe") is False
+    result = broker.repair_loop(
+        command, str(tmp_path), "tenant", max_attempts=1,
+        fix_generator=lambda *_args: pytest.fail("whitelisted commands must not replay"),
+        paths=paths,
+    )
+
+    assert result["repair_skipped"] is True
+    assert result["outcome_unknown"] is True
+    assert executions == [command]

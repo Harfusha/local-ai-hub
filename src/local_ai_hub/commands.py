@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import ast
 import base64
+import codecs
+from contextlib import contextmanager
 import getpass
 import hashlib
 import http.client
+import io
 import ipaddress
 import inspect
 import json
@@ -12,6 +15,7 @@ import math
 import os
 import re
 import ntpath
+import queue
 import shlex
 import shutil
 import socket
@@ -23,7 +27,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Mapping, Sequence
 from functools import wraps
 from dataclasses import dataclass, field
@@ -37,8 +41,9 @@ from .command_transactions import (
     validate_transaction_output,
     verify_transaction_source_unchanged,
 )
-from .features import rollout_feature_enabled
 from .leases import ScopeLeaseStore
+from .work_fencing import WorkAttemptFence
+from .features import rollout_feature_enabled
 from .process_utils import (
     _resume_suspended_process,
     assign_process_to_job,
@@ -54,6 +59,38 @@ from .state_paths import configured_state_dir
 from .json_utils import dumps as json_dumps
 
 _GLOBAL_WINDOWS_JOB = create_job_object_kill_on_close() if os.name == "nt" else None
+_PROJECT_COMMAND_ALIAS_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+_PROJECT_COMMAND_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PROJECT_COMMAND_ENV_BLOCKED = {
+    "BASH_ENV",
+    "COMSPEC",
+    "ENV",
+    "GIT_COMMON_DIR",
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_PREFIX",
+    "GIT_WORK_TREE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "DYLD_FRAMEWORK_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "PATH",
+    "PATHEXT",
+    "SHELL",
+}
+
+
+def _is_unsafe_project_command_env_key(key: str) -> bool:
+    normalized = key.upper()
+    return normalized in _PROJECT_COMMAND_ENV_BLOCKED or normalized.startswith("GIT_CONFIG_")
+_MAX_PROJECT_COMMAND_ARGS = 128
+_MAX_PROJECT_COMMAND_ENV_ENTRIES = 128
+_MAX_PROJECT_COMMAND_ENV_BYTES = 65_536
+_COMMAND_LOG_QUEUE_MAX_CHUNKS = 256
 
 _NETWORK_RESPONSE_HEADER_ALLOWLIST = {
     "cache-control",
@@ -581,13 +618,13 @@ def _perform_network_request(
                 previous_origin = origin
                 continue
             response_body = response.read(max_response_bytes + 1)
-            if timed_out.is_set():
+            if timed_out.is_set() or time.monotonic() >= deadline:
                 raise _NetworkPolicyError("network_timeout", "Network request timed out")
             return status, response_headers, response_body
         except _NetworkPolicyError:
             raise
-        except Exception:
-            if timed_out.is_set():
+        except Exception as exc:
+            if timed_out.is_set() or isinstance(exc, (TimeoutError, socket.timeout)) or time.monotonic() >= deadline:
                 raise _NetworkPolicyError("network_timeout", "Network request timed out") from None
             raise
         finally:
@@ -618,43 +655,6 @@ class RollbackPostimage:
     safe: bool
     fingerprint: tuple[int, int, int, int, int, int, str, str] | None
     reason: str = ""
-
-
-class _MutationLeaseHeartbeat:
-    def __init__(self, store: Any, lease: Any, ttl_seconds: float) -> None:
-        self.store = store
-        self.ttl_seconds = ttl_seconds
-        self.interval_seconds = min(30.0, max(1.0, ttl_seconds / 3.0))
-        self._lease = lease
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self.lost = threading.Event()
-        self.error = ""
-        self._thread = threading.Thread(target=self._renew_loop, daemon=True)
-        self._thread.start()
-
-    def _renew_loop(self) -> None:
-        while not self._stop.wait(self.interval_seconds):
-            with self._lock:
-                lease = self._lease
-            try:
-                renewed = self.store.renew(lease, ttl_seconds=self.ttl_seconds)
-            except Exception as exc:
-                self.error = str(exc)[:512]
-                self.lost.set()
-                return
-            with self._lock:
-                self._lease = renewed
-
-    def stop(self) -> tuple[Any, bool, str]:
-        self._stop.set()
-        self._thread.join(timeout=max(5.0, self.interval_seconds + 1.0))
-        if self._thread.is_alive():
-            self.error = self.error or "mutation fence renewal did not stop before commit"
-            self.lost.set()
-        with self._lock:
-            lease = self._lease
-        return lease, self.lost.is_set(), self.error
 
 
 def _get_windows_dacl(fd: int) -> bytes:
@@ -1854,6 +1854,188 @@ class CommandInvocation:
     shell: bool = False
 
 
+@dataclass(frozen=True)
+class _ResolvedProjectCommand:
+    alias: str
+    command: str | CommandInvocation
+    environment: dict[str, str]
+    config_digest: str
+    cache_context: str
+    configured_command: str | CommandInvocation
+    caller_arguments: tuple[str, ...]
+
+
+
+def _project_config_cache_key(root: Path, state_dir: Path) -> str | None:
+    """Fingerprint project config files and the exact Git HEAD without storing paths."""
+    try:
+        project_root = root.expanduser().resolve(strict=True)
+        root_identity = hashlib.sha256(os.fsencode(str(project_root))).hexdigest()
+
+        git_marker: Path | None = None
+        for parent in (project_root, *project_root.parents):
+            marker = parent / ".git"
+            if marker.exists() or marker.is_symlink():
+                git_marker = marker
+                break
+
+        common_dir: Path | None = None
+        git_dir: Path | None = None
+        git_revision: str | None = None
+        git_signatures: list[tuple[str, tuple[Any, ...]]] = []
+        primary_root: Path | None = None
+        if git_marker is not None:
+            marker_signature = _project_file_signature(git_marker)
+            if marker_signature is None:
+                return None
+            git_signatures.append(("git-marker", marker_signature))
+            if git_marker.is_dir():
+                git_dir = git_marker.resolve(strict=True)
+            elif git_marker.is_file():
+                marker_text = git_marker.read_text(encoding="utf-8", errors="replace")[:4096]
+                prefix, separator, raw_git_dir = marker_text.partition(":")
+                if prefix.strip().lower() != "gitdir" or not separator:
+                    return None
+                git_dir = Path(raw_git_dir.strip())
+                if not git_dir.is_absolute():
+                    git_dir = git_marker.parent / git_dir
+                git_dir = git_dir.resolve(strict=True)
+            else:
+                return None
+
+            common_file = git_dir / "commondir"
+            if common_file.exists():
+                common_signature = _project_file_signature(common_file)
+                if common_signature is None:
+                    return None
+                git_signatures.append(("git-common-dir", common_signature))
+                raw_common_dir = common_file.read_text(
+                    encoding="utf-8", errors="replace"
+                )[:4096].strip()
+                common_dir = Path(raw_common_dir)
+                if not common_dir.is_absolute():
+                    common_dir = git_dir / common_dir
+                common_dir = common_dir.resolve(strict=True)
+            else:
+                common_dir = git_dir
+            if common_dir.name.lower() != ".git":
+                return None
+            primary_root = common_dir.parent
+            primary_marker = primary_root / ".git"
+            if not primary_marker.is_dir() or primary_marker.resolve(strict=True) != common_dir:
+                return None
+
+            head_file = git_dir / "HEAD"
+            head_signature = _project_file_signature(head_file)
+            if head_signature is None:
+                return None
+            git_signatures.append(("git-head", head_signature))
+            head_value = head_file.read_text(encoding="ascii", errors="replace")[:4096].strip()
+            if head_value.startswith("ref: "):
+                ref_name = head_value[5:].strip()
+                parts = ref_name.split("/")
+                if not ref_name.startswith("refs/") or any(part in {"", ".", ".."} for part in parts):
+                    return None
+                ref_file: Path | None = None
+                for base in (git_dir, common_dir):
+                    candidate = base.joinpath(*parts)
+                    try:
+                        resolved_ref = candidate.resolve(strict=True)
+                        resolved_ref.relative_to(base.resolve(strict=True))
+                        ref_file = resolved_ref
+                        break
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                if ref_file is not None:
+                    ref_signature = _project_file_signature(ref_file)
+                    if ref_signature is None:
+                        return None
+                    git_signatures.append(("git-ref", ref_signature))
+                    git_revision = ref_file.read_text(encoding="ascii", errors="replace")[:128].strip()
+                else:
+                    packed_refs = common_dir / "packed-refs"
+                    packed_signature = _project_file_signature(packed_refs)
+                    if packed_signature is None:
+                        return None
+                    if packed_refs.stat().st_size > 4 * 1024 * 1024:
+                        return None
+                    git_signatures.append(("git-packed-refs", packed_signature))
+                    packed_text = packed_refs.read_text(encoding="ascii", errors="replace")
+                    for line in packed_text.splitlines():
+                        fields = line.split(" ", 1)
+                        if len(fields) == 2 and fields[1] == ref_name:
+                            git_revision = fields[0]
+                            break
+            else:
+                git_revision = head_value
+            if not isinstance(git_revision, str) or not re.fullmatch(
+                r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", git_revision
+            ):
+                return None
+
+        config_paths = [
+            ("project", project_root / ".local-ai.toml"),
+            ("worktree", project_root / ".local-ai.worktree.toml"),
+        ]
+        if primary_root is not None and primary_root != project_root:
+            config_paths.append(("primary", primary_root / ".local-ai.toml"))
+        if common_dir is not None:
+            config_paths.append(("machine", common_dir / "info" / "local-ai.toml"))
+        config_signatures: list[tuple[str, tuple[Any, ...]]] = []
+        for label, path in config_paths:
+            signature = _project_file_signature(path, missing_ok=True)
+            if signature is None:
+                return None
+            config_signatures.append((label, signature))
+        state_identity = hashlib.sha256(
+            os.fsencode(str(state_dir.expanduser().resolve(strict=False)))
+        ).hexdigest()
+        payload = {
+            "root": root_identity,
+            "state_dir": state_identity,
+            "git_revision": git_revision,
+            "git_signatures": git_signatures,
+            "config_signatures": config_signatures,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    except (OSError, RuntimeError, ValueError, UnicodeError):
+        return None
+
+
+def _project_file_signature(
+    path: Path, *, missing_ok: bool = False
+) -> tuple[Any, ...] | None:
+    try:
+        link_info = path.lstat()
+    except FileNotFoundError:
+        return ("missing",) if missing_ok else None
+    except OSError:
+        return None
+    try:
+        resolved = path.resolve(strict=True)
+        target_info = resolved.stat()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return (
+        "file",
+        link_info.st_dev,
+        link_info.st_ino,
+        link_info.st_size,
+        link_info.st_mtime_ns,
+        link_info.st_ctime_ns,
+        link_info.st_mode,
+        hashlib.sha256(os.fsencode(str(resolved))).hexdigest(),
+        target_info.st_dev,
+        target_info.st_ino,
+        target_info.st_size,
+        target_info.st_mtime_ns,
+        target_info.st_ctime_ns,
+        target_info.st_mode,
+    )
+
+
 def _patch_write_paths(root: Path, patch: bytes, timeout: float) -> list[str]:
     """Return patch paths only after rejecting escapes and symlink traversal."""
     result = subprocess.run(
@@ -2152,6 +2334,8 @@ class CommandBroker:
     def __init__(self, config: dict[str, Any], artifacts: Any = None, repo_state: Any = None):
         self.config = config
         self.artifacts = artifacts
+        self._project_command_context_cache: OrderedDict[str, Any] = OrderedDict()
+        self._project_command_context_cache_lock = threading.Lock()
         if repo_state is None:
             from .repo_state import RepoStateTracker
             repo_state = RepoStateTracker(config)
@@ -2179,9 +2363,54 @@ class CommandBroker:
         self._daemon_state_dir = state_dir / "daemons"
         self._daemon_registry_path = self._daemon_state_dir / "registry.json"
         l1_entries = int(cfg.get("l1_entries", 128))
-        self.success_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:success", int(cfg.get("success_ttl_seconds", 43200)), int(cfg.get("max_entries", 5000))), l1_entries, int(cfg.get("l1_ttl_seconds", 900)))
-        self.failure_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:failure", int(cfg.get("failure_ttl_seconds", 180)), int(cfg.get("max_failure_entries", 1000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
-        self.suppression_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:suppression", int(cfg.get("suppression_ttl_seconds", 900)), int(cfg.get("max_suppression_entries", 2000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
+        configured_l1_ttl = max(0, int(cfg.get("l1_ttl_seconds", 900)))
+
+        def effective_l1_ttl(
+            persistent_ttl: int, *, max_l1_ttl: int | None = None
+        ) -> int:
+            l1_ttl = configured_l1_ttl
+            if max_l1_ttl is not None:
+                l1_ttl = min(l1_ttl, max_l1_ttl)
+            persistent_ttl = max(0, int(persistent_ttl))
+            if persistent_ttl == 0:
+                return l1_ttl
+            if l1_ttl == 0:
+                return persistent_ttl
+            return min(l1_ttl, persistent_ttl)
+
+        success_ttl = max(0, int(cfg.get("success_ttl_seconds", 43200)))
+        failure_ttl = max(0, int(cfg.get("failure_ttl_seconds", 180)))
+        suppression_ttl = max(0, int(cfg.get("suppression_ttl_seconds", 900)))
+        self.success_cache = TieredCache(
+            SQLiteCache(
+                state_dir / "cache.sqlite3",
+                "command:success",
+                success_ttl,
+                int(cfg.get("max_entries", 5000)),
+            ),
+            l1_entries,
+            effective_l1_ttl(success_ttl),
+        )
+        self.failure_cache = TieredCache(
+            SQLiteCache(
+                state_dir / "cache.sqlite3",
+                "command:failure",
+                failure_ttl,
+                int(cfg.get("max_failure_entries", 1000)),
+            ),
+            max(32, l1_entries // 2),
+            effective_l1_ttl(failure_ttl, max_l1_ttl=300),
+        )
+        self.suppression_cache = TieredCache(
+            SQLiteCache(
+                state_dir / "cache.sqlite3",
+                "command:suppression",
+                suppression_ttl,
+                int(cfg.get("max_suppression_entries", 2000)),
+            ),
+            max(32, l1_entries // 2),
+            effective_l1_ttl(suppression_ttl, max_l1_ttl=300),
+        )
         self._lock = threading.Lock()
         self._inflight: dict[str, threading.Event] = {}
         self._last: dict[str, dict[str, Any]] = {}
@@ -2218,25 +2447,99 @@ class CommandBroker:
         self.fencing_lease_store = fencing_lease_store
 
     @staticmethod
-    def _work_attempt_fence_payload(work_attempt_fence: Any) -> dict[str, Any]:
+    def _work_attempt_fence_payload(work_attempt_fence: WorkAttemptFence) -> dict[str, Any]:
+        if not isinstance(work_attempt_fence, WorkAttemptFence):
+            raise ValueError("work attempt fence has an invalid type")
         fields = {
-            "resource": getattr(work_attempt_fence, "resource", None),
-            "work_id": getattr(work_attempt_fence, "work_id", None),
-            "attempt_id": getattr(work_attempt_fence, "attempt_id", None),
-            "owner_id": getattr(work_attempt_fence, "owner_id", None),
-            "fencing_token": getattr(work_attempt_fence, "fencing_token", None),
-            "expires_at": getattr(work_attempt_fence, "expires_at", None),
+            "resource": work_attempt_fence.resource,
+            "work_id": work_attempt_fence.work_id,
+            "attempt_id": work_attempt_fence.attempt_id,
+            "owner_id": work_attempt_fence.owner_id,
+            "fencing_token": work_attempt_fence.fencing_token,
+            "expires_at": work_attempt_fence.expires_at,
         }
         if (
             any(not isinstance(fields[name], str) or not fields[name] for name in (
                 "resource", "work_id", "attempt_id", "owner_id",
             ))
-            or not isinstance(fields["fencing_token"], int)
+            or type(fields["fencing_token"]) is not int
             or fields["fencing_token"] <= 0
             or not isinstance(fields["expires_at"], (int, float))
+            or not math.isfinite(float(fields["expires_at"]))
         ):
             raise ValueError("work attempt fence is malformed")
         return fields
+
+    def _assert_work_attempt_fence(
+        self,
+        work_attempt_fence: WorkAttemptFence | None,
+        *,
+        task_id: str,
+        resource: str | Path,
+    ) -> dict[str, Any]:
+        payload = self._work_attempt_fence_payload(work_attempt_fence)
+        if payload["work_id"] != task_id:
+            raise ValueError("work attempt fence does not belong to this task")
+        registered_root = Path(payload["resource"]).expanduser().resolve(strict=True)
+        requested_root = Path(resource).expanduser().resolve(strict=True)
+        if os.path.normcase(str(registered_root)) != os.path.normcase(str(requested_root)):
+            raise ValueError("work attempt fence resource does not match command worktree")
+        store = self.fencing_lease_store
+        if not callable(getattr(store, "assert_attempt_current", None)):
+            raise ValueError("authoritative work attempt fence store is unavailable")
+        store.assert_attempt_current(work_attempt_fence)
+        return payload
+
+    def _transaction_namespace_kwargs(self, source: Path, fencing_store: Any) -> dict[str, str]:
+        lease_claim = self._transaction_leases.claim
+        fence_acquire = fencing_store.acquire
+        lease_supports_namespace = "coordination_id" in inspect.signature(lease_claim).parameters
+        fence_supports_namespace = "coordination_id" in inspect.signature(fence_acquire).parameters
+        if not lease_supports_namespace and not fence_supports_namespace:
+            return {}
+        if not lease_supports_namespace or not fence_supports_namespace:
+            raise RuntimeError("transaction lease and mutation fence namespace APIs do not match")
+        try:
+            from .project_config import resolve_project_context
+
+            coordination_id = resolve_project_context(
+                source, configured_state_dir(self.config)
+            ).coordination_id
+        except Exception as exc:
+            raise RuntimeError("project coordination namespace could not be resolved") from exc
+        if not isinstance(coordination_id, str) or not coordination_id.strip():
+            raise RuntimeError("project coordination namespace is required")
+        return {"coordination_id": coordination_id}
+
+    @contextmanager
+    def _fenced_transaction_commit(
+        self,
+        work_attempt_fence: WorkAttemptFence,
+        *,
+        task_id: str,
+        source: Path,
+        paths: list[str],
+        owner_id: str,
+        namespace_kwargs: dict[str, str] | None = None,
+    ):
+        payload = self._assert_work_attempt_fence(
+            work_attempt_fence, task_id=task_id, resource=source
+        )
+        store = self.fencing_lease_store
+        lease = store.acquire(
+            str(source), owner_id, paths, ttl_seconds=300.0,
+            attempt=work_attempt_fence,
+            **(namespace_kwargs or {}),
+        )
+        try:
+            with store.commit_guard(lease, paths):
+                store.assert_current(lease, actual_paths=paths)
+                yield lease, payload
+        finally:
+            try:
+                store.release(lease)
+            except Exception:
+                pass
 
     def authorize_auxiliary_action(self, action: str, *, endpoint: str = "", task_id: str = "") -> dict[str, Any]:
         """Authorize auxiliary process actions at their final broker boundary."""
@@ -2275,28 +2578,25 @@ class CommandBroker:
 
         task = None
         if task_id:
-            get_task = getattr(getattr(self, "task_store", None), "get", None)
-            if not callable(get_task):
+            if self.task_store is None:
                 return {
                     "success": False,
                     "allowed": False,
-                    "requires_approval": True,
-                    "reason": "auxiliary action task registry unavailable",
+                    "reason": "task context unavailable for auxiliary action",
                     "owner": "agent_policy",
                     "side_effect_class": AUXILIARY_ACTION_POLICIES[action_name][1],
                     "terminal": True,
                     "retryable": False,
                 }
             try:
-                task = get_task(str(task_id))
+                task = self.task_store.get(task_id)
             except Exception:
                 task = None
-            if task is None or str(getattr(task, "task_id", "")) != str(task_id):
+            if task is None or str(getattr(task, "task_id", "")) != task_id:
                 return {
                     "success": False,
                     "allowed": False,
-                    "requires_approval": True,
-                    "reason": "auxiliary action task is not registered",
+                    "reason": "task context missing or mismatched for auxiliary action",
                     "owner": "agent_policy",
                     "side_effect_class": AUXILIARY_ACTION_POLICIES[action_name][1],
                     "terminal": True,
@@ -2317,7 +2617,6 @@ class CommandBroker:
                     "auxiliary_action": True,
                     "policy_enabled": policy_enabled,
                     "endpoint": str(endpoint),
-                    "task_id": str(task_id),
                 },
             ),
             task=task,
@@ -2339,6 +2638,8 @@ class CommandBroker:
         task_id: str,
         cwd: str | Path,
         command: str | CommandInvocation | None = None,
+        *,
+        require_git_identity: bool = False,
     ) -> str | None:
         if not task_id or self.task_store is None:
             return "mutating commands require a registered task-owned worktree"
@@ -2362,10 +2663,14 @@ class CommandBroker:
             common = os.path.commonpath([str(requested), str(registered)])
             if os.path.normcase(common) != os.path.normcase(str(registered)):
                 return "mutating command cwd must be inside the registered task-owned worktree"
-            identity_error = self._validate_registered_git_worktree(registered, worktree)
-            if identity_error:
-                return identity_error
-            return self._reject_git_worktree_overrides(command, requested, registered)
+            override_error = self._reject_git_worktree_overrides(command, requested, registered)
+            if override_error:
+                return override_error
+            if require_git_identity:
+                identity_error = self._validate_registered_git_worktree(registered, worktree)
+                if identity_error:
+                    return identity_error
+            return None
         except Exception:
             return "registered task worktree could not be verified"
 
@@ -2441,6 +2746,7 @@ class CommandBroker:
             elif line.startswith("branch "):
                 current["branch"] = line[len("branch "):]
         return "registered task worktree is not present in its source Git worktree registry"
+
 
     def _reject_git_worktree_overrides(
         self,
@@ -2587,7 +2893,7 @@ class CommandBroker:
             raise
 
     def _get_server_command_execution_record(self, command_id: str) -> dict[str, Any] | None:
-        """Read checksum-verified broker provenance through the T09 consumer seam."""
+        """Read a checksum-verified record through the T09 internal consumer seam."""
         try:
             path = self._command_execution_record_path(command_id)
             if path.is_symlink() or not path.is_file() or path.stat().st_size > 64 * 1024:
@@ -2599,7 +2905,11 @@ class CommandBroker:
             canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
             if not isinstance(record_digest, str) or record_digest != hashlib.sha256(canonical).hexdigest():
                 return None
-            if payload.get("command_id") != command_id or payload.get("exit_code") != 0 or payload.get("cached") is not False:
+            if (
+                payload.get("command_id") != command_id
+                or payload.get("exit_code") != 0
+                or payload.get("cached") is not False
+            ):
                 return None
             payload["record_sha256"] = record_digest
             return dict(payload)
@@ -2647,67 +2957,89 @@ class CommandBroker:
         command_digest: str,
         repository_revision: str,
         duration_ms: float,
+        cached: bool = False,
         project_alias: str = "",
         project_config_digest: str = "",
         project_environment_sha256: str = "",
-        cached: bool = False,
+        configured_command_sha256: str = "",
+        caller_arguments_sha256: str = "",
+        project_alias_required: bool = False,
         repository_root: str = "",
     ) -> None:
         if (
-            not result.get("success") or not task_id or not command_id or cached
-            or result.get("cache_hit") or result.get("coalesced")
+            not result.get("success") or not task_id or self.verification_store is None
+            or cached or result.get("cache_hit") or result.get("coalesced")
             or len(command_id) != 32 or any(character not in "0123456789abcdef" for character in command_id)
-            or self.verification_store is None
         ):
             return
         try:
             if self.artifacts is None:
                 raise RuntimeError("artifact store unavailable")
-            from .agent_verification import VerificationReceipt
+            from .agent_verification import (
+                VerificationReceipt,
+                classify_verification_command,
+                criterion_evidence_type,
+            )
 
-            try:
-                from .agent_verification import classify_verification_command
-
-                evidence_type = classify_verification_command(command)
-            except ImportError:
-                command_text = str(command or "").lower()
-                if re.search(r"\b(benchmark|bench|hyperfine|pytest-benchmark)\b", command_text):
-                    evidence_type = "benchmark"
-                elif re.search(r"\b(pytest|py\.test|unittest|jest|vitest|mocha|phpunit)\b", command_text):
-                    evidence_type = "test"
-                else:
-                    evidence_type = "source_review"
-            if (
+            evidence_type = classify_verification_command(command)
+            if evidence_type not in {"test", "benchmark", "source_review"}:
+                return
+            project_bound = any((
+                project_alias, project_config_digest, project_environment_sha256,
+                configured_command_sha256, caller_arguments_sha256,
+            ))
+            if project_bound and (
                 not project_alias
                 or project_alias != criterion
                 or not project_config_digest
                 or not project_environment_sha256
+                or not configured_command_sha256
+                or not caller_arguments_sha256
             ):
                 return
-            tokens = [token.lower() for token in self._tokens(command)]
-            non_execution_flags = {
-                "-h", "--help", "--version", "-version", "-v",
+            if not project_bound and (project_alias_required or evidence_type == "source_review"):
+                return
+            if criterion_evidence_type(criterion) != evidence_type:
+                return
+            raw_tokens = shlex.split(command, posix=(os.name != "nt"))
+            tokens = [token.lower() for token in raw_tokens]
+            no_execution_options = {
+                "-h", "--help", "--version", "-version", "-V",
                 "--collect-only", "--co", "--fixtures", "--fixtures-per-test",
                 "--list-tests", "--dry-run",
             }
-            if any(
-                token in non_execution_flags
-                or token.startswith(("--help=", "--version="))
-                for token in tokens
+            effective_raw_tokens = list(raw_tokens)
+            for index, token in enumerate(raw_tokens):
+                lower_token = token.lower()
+                override = ""
+                if lower_token in {"-o", "--override-ini"} and index + 1 < len(raw_tokens):
+                    override = raw_tokens[index + 1]
+                elif lower_token.startswith("--override-ini="):
+                    override = token.split("=", 1)[1]
+                if override.lower().startswith("addopts="):
+                    effective_raw_tokens.extend(
+                        shlex.split(override.split("=", 1)[1], posix=(os.name != "nt"))
+                    )
+            if any(token in no_execution_options for token in effective_raw_tokens) or any(
+                token.lower().startswith(("--help=", "--version="))
+                for token in effective_raw_tokens
             ) or any(token in {";", "&&", "||", "|", ">", "<"} for token in tokens):
                 return
-            try:
-                from .agent_verification import criterion_evidence_type
-
-                expected_type = criterion_evidence_type(criterion)
-            except ImportError:
-                criterion_text = str(criterion or "").lower()
-                expected_type = (
-                    "benchmark" if "benchmark" in criterion_text
-                    else "test" if re.search(r"\b(test|tests|pytest|suite|unit|unittest|integration|regression)\b", criterion_text)
-                    else "source_review"
-                )
-            if expected_type != evidence_type:
+            executable = Path(tokens[0].strip("\"'")).stem.lower() if tokens else ""
+            invoked_tools = {executable}
+            if (executable.startswith("python") or executable in {"pythonw", "py"}) and "-m" in tokens:
+                module_index = tokens.index("-m") + 1
+                if module_index < len(tokens):
+                    invoked_tools.add(tokens[module_index].split(".", 1)[0])
+            if executable in {"npm", "pnpm", "yarn", "dotnet", "cargo", "go"} and len(tokens) > 1:
+                invoked_tools.add(tokens[1])
+                invoked_tools.update(tokens[2:4])
+            test_subcommand = executable in {"npm", "pnpm", "yarn", "dotnet", "cargo", "go"} and "test" in tokens[1:5]
+            test_runners = {
+                "pytest", "py.test", "unittest", "jest", "vitest", "mocha",
+                "phpunit", "pester", "tox", "nox", "ctest", "hyperfine",
+            }
+            if evidence_type in {"test", "benchmark"} and not (invoked_tools.intersection(test_runners) or test_subcommand):
                 return
             if evidence_type == "source_review":
                 validator_tools = {
@@ -2715,14 +3047,8 @@ class CommandBroker:
                     "tsc", "bandit", "shellcheck", "yamllint", "markdownlint",
                     "biome", "phpstan", "phpcs", "clippy",
                 }
-                command_words = {
-                    Path(token.strip("\\\"'")).stem.lower()
-                    for token in tokens
-                }
-                if not command_words.intersection(validator_tools):
+                if not invoked_tools.intersection(validator_tools):
                     return
-            if evidence_type not in {"test", "benchmark", "source_review"}:
-                return
             task_store = self.task_store or getattr(self.verification_store, "task_store", None)
             task = task_store.get(task_id) if task_store is not None else None
             verified_owner = str(getattr(task, "owner", "") or tenant).strip()
@@ -2732,38 +3058,36 @@ class CommandBroker:
             if type(exit_code) is not int or exit_code != 0 or not verified_owner:
                 return
 
+
             proof = {
                 "kind": "work_command_verification",
-                "passed": True,
                 "task_id": task_id,
                 "owner": verified_owner,
                 "criterion": criterion,
                 "command_id": command_id,
                 "command_classification": evidence_type,
-                "command": command,
                 "command_sha256": command_digest,
                 "exit_code": exit_code,
                 "repository_revision": repository_revision,
                 "mutation_generation": mutation_generation,
-                "result": {"success": True, "exit_code": exit_code},
+                "passed": True,
+                "result": {"success": result.get("success") is True, "exit_code": exit_code},
                 "duration_ms": max(0.0, float(duration_ms or 0)),
                 "cached": cached,
             }
-            if project_alias:
-                proof["project_alias"] = project_alias
-                proof["project_config_digest"] = project_config_digest
-                proof["project_environment_sha256"] = project_environment_sha256
+            if project_bound:
+                proof["command"] = command
+                binding = {
+                    "project_alias": project_alias,
+                    "project_config_digest": project_config_digest,
+                    "configured_command_sha256": configured_command_sha256,
+                    "caller_arguments_sha256": caller_arguments_sha256,
+                    "command_sha256": command_digest,
+                    "project_environment_sha256": project_environment_sha256,
+                }
+                proof.update(binding)
                 proof["project_execution_binding_sha256"] = hashlib.sha256(
-                    json_dumps(
-                        {
-                            "project_alias": project_alias,
-                            "project_config_digest": project_config_digest,
-                            "command_sha256": command_digest,
-                            "project_environment_sha256": project_environment_sha256,
-                        },
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
+                    json.dumps(binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 ).hexdigest()
             if hasattr(self.artifacts, "put_json"):
                 evidence_id = self.artifacts.put_json(proof, verified_owner, "command_verification")
@@ -2773,37 +3097,28 @@ class CommandBroker:
                 evidence_id = ""
             if not evidence_id:
                 raise RuntimeError("verification evidence was not persisted")
-            import inspect
-
-            receipt_arguments: dict[str, Any] = {
-                "task_id": task_id,
-                "criterion": criterion,
-                "passed": True,
-                "command_id": command_id,
-                "evidence_id": str(evidence_id),
-                "repository_revision": repository_revision,
-                "details": {
-                    "command": command,
-                    "command_sha256": command_digest,
-                    "command_classification": evidence_type,
+            receipt = VerificationReceipt.create(
+                task_id=task_id,
+                criterion=criterion,
+                passed=True,
+                command_id=command_id,
+                evidence_id=str(evidence_id),
+                repository_revision=repository_revision,
+                owner=verified_owner,
+                mutation_generation=mutation_generation,
+                evidence_type=evidence_type,
+                details={
                     "exit_code": proof["exit_code"],
                     "duration_ms": proof["duration_ms"],
                     "cached": cached,
                 },
-            }
-            receipt_parameters = inspect.signature(VerificationReceipt.create).parameters
-            for name, value in (
-                ("owner", verified_owner),
-                ("mutation_generation", mutation_generation),
-                ("evidence_type", evidence_type),
-            ):
-                if name in receipt_parameters:
-                    receipt_arguments[name] = value
-            receipt = VerificationReceipt.create(**receipt_arguments)
+            )
             self.verification_store.record(receipt)
             receipt_data = receipt.to_dict()
+            result["verification_receipt"] = receipt_data
+            result["verification_evidence_id"] = str(evidence_id)
             canonical_root = str(Path(repository_root or ".").expanduser().resolve(strict=False))
-            execution_record = {
+            record = {
                 "schema": "command_execution_record.v1",
                 "command_id": command_id,
                 "tenant_identity": self._tenant_identity(tenant),
@@ -2814,25 +3129,25 @@ class CommandBroker:
                 "evidence_type": evidence_type,
                 "repository_root": canonical_root,
                 "repository_root_sha256": hashlib.sha256(canonical_root.encode("utf-8")).hexdigest(),
-                "project_alias": project_alias,
-                "project_config_digest": project_config_digest,
-                "project_environment_sha256": project_environment_sha256,
-                "project_execution_binding_sha256": proof.get("project_execution_binding_sha256", ""),
+                "repository_revision": repository_revision,
+                "mutation_generation": mutation_generation,
                 "evidence_id": str(evidence_id),
                 "receipt_sha256": hashlib.sha256(
                     json.dumps(receipt_data, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 ).hexdigest(),
-                "repository_revision": repository_revision,
-                "mutation_generation": mutation_generation,
                 "exit_code": exit_code,
                 "cached": False,
+                "project_alias": project_alias,
+                "project_config_digest": project_config_digest,
+                "project_environment_sha256": project_environment_sha256,
+                "configured_command_sha256": configured_command_sha256,
+                "caller_arguments_sha256": caller_arguments_sha256,
+                "project_execution_binding_sha256": proof.get("project_execution_binding_sha256", ""),
                 "created_at_unix": time.time(),
             }
-            encoded_record = json.dumps(execution_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            execution_record["record_sha256"] = hashlib.sha256(encoded_record).hexdigest()
-            self._persist_command_execution_record(command_id, execution_record)
-            result["verification_receipt"] = receipt.to_dict()
-            result["verification_evidence_id"] = str(evidence_id)
+            encoded_record = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            record["record_sha256"] = hashlib.sha256(encoded_record).hexdigest()
+            self._persist_command_execution_record(command_id, record)
         except Exception:
             result["verification_receipt_warning"] = (
                 "command succeeded but durable verification evidence was unavailable"
@@ -3131,7 +3446,6 @@ class CommandBroker:
                 self._schedule_daemon_expiry(info)
             except RuntimeError:
                 info["ttl_timer"] = None
-
     def _persist_daemon_registry(self) -> bool:
         """Atomically persist bounded, secret-redacted daemon identity metadata."""
         try:
@@ -3197,7 +3511,6 @@ class CommandBroker:
             return True
         except (OSError, TypeError, ValueError, OverflowError):
             return False
-
     @staticmethod
     def _flush_daemon_log(info: dict[str, Any]) -> None:
         log_fh = info.get("log_fh")
@@ -3396,7 +3709,7 @@ class CommandBroker:
 
         extra_allowed = set(str(x).strip().lower() for x in cfg.get("extra_allowed_tools", []))
         if exe_base in extra_allowed:
-            return {"class": "validation", "cacheable": True, "allowed": True, "reason": f"user-whitelisted tool: {exe_base}"}
+            return {"class": "validation", "cacheable": True, "allowed": True, "replay_safe": False, "reason": f"user-whitelisted tool: {exe_base}"}
 
         # PowerShell commands or script blocks
         if self._is_powershell_command(command) or exe_base in {"pwsh", "powershell"}:
@@ -3422,7 +3735,7 @@ class CommandBroker:
             if any(w in cmd_lower for w in validation_keywords):
                 return {"class": "validation", "cacheable": False, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "powershell validation command"}
             if any(w in cmd_lower for w in extra_allowed):
-                return {"class": "validation", "cacheable": False, "allowed": bool(cfg.get("allow_validation", True)), "reason": "user-whitelisted powershell tool"}
+                return {"class": "validation", "cacheable": False, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": False, "reason": "user-whitelisted powershell tool"}
 
             ps_read_prefixes = ("get-", "select-", "measure-", "format-", "test-path", "where-", "out-string", "compare-", "convertfrom-", "convertto-")
             first_word = command.strip().split()[0].lower() if command.strip() else ""
@@ -3553,22 +3866,6 @@ class CommandBroker:
                 is_validation = False
                 try:
                     tree = ast.parse(dash_c)
-                    safe_sys_version_probe = ast.dump(
-                        tree, include_attributes=False
-                    ) == ast.dump(
-                        ast.parse("import sys\nprint(sys.version)"),
-                        include_attributes=False,
-                    )
-                    safe_loopback_health_probe = ast.dump(
-                        tree, include_attributes=False
-                    ) == ast.dump(
-                        ast.parse(
-                            "import urllib.request\n"
-                            "print(urllib.request.urlopen("
-                            "'http://127.0.0.1:11435/health').read())"
-                        ),
-                        include_attributes=False,
-                    )
 
                     def _literal_only(node: ast.AST) -> bool:
                         if isinstance(node, ast.Constant):
@@ -3582,19 +3879,8 @@ class CommandBroker:
                             )
                         return False
 
-                    literal_names = {
-                        target.id
-                        for statement in tree.body
-                        if isinstance(statement, ast.Assign)
-                        and _literal_only(statement.value)
-                        for target in statement.targets
-                        if isinstance(target, ast.Name)
-                    }
-
                     for node in ast.walk(tree):
                         if isinstance(node, ast.Call):
-                            if safe_sys_version_probe or safe_loopback_health_probe:
-                                continue
                             func_name = ""
                             if isinstance(node.func, ast.Name):
                                 func_name = node.func.id
@@ -3611,26 +3897,15 @@ class CommandBroker:
                                 "len", "list", "max", "min", "print", "range", "repr", "round",
                                 "set", "sorted", "str", "sum", "tuple", "zip",
                             }
-                            safe_arguments = all(
-                                _literal_only(arg)
-                                or isinstance(arg, ast.Name) and arg.id in literal_names
-                                for arg in node.args
-                            ) and all(
-                                _literal_only(keyword.value)
-                                or isinstance(keyword.value, ast.Name) and keyword.value.id in literal_names
-                                for keyword in node.keywords
-                            )
                             if (
                                 not isinstance(node.func, ast.Name)
                                 or func_name not in safe_builtin_calls
-                                or not safe_arguments
+                                or not all(_literal_only(arg) for arg in node.args)
+                                or not all(_literal_only(keyword.value) for keyword in node.keywords)
                             ):
                                 return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code has unverified call: {func_name or 'dynamic'}"}
                         elif isinstance(node, ast.Import):
-                            allowed_imports = {"sys"}
-                            if safe_loopback_health_probe:
-                                allowed_imports.add("urllib.request")
-                            if any(alias.name not in allowed_imports for alias in node.names):
+                            if any(alias.name != "sys" for alias in node.names):
                                 return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code imports module with unknown side effects"}
                         elif isinstance(node, ast.ImportFrom):
                             return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code imports module with unknown side effects"}
@@ -3647,8 +3922,6 @@ class CommandBroker:
 
                 if is_validation:
                     return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "python inline validation"}
-                if safe_loopback_health_probe:
-                    return {"class": "read", "cacheable": False, "allowed": bool(cfg.get("allow_read", True)), "reason": "one-shot loopback health probe"}
                 return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "python inline read"}
 
             non_flag_args = [t for t in tokens[1:] if not t.startswith("-")]
@@ -3671,10 +3944,21 @@ class CommandBroker:
                 if script_name in {"setup.py", "setup"}:
                     if any(t in lower for t in {"--generate-only", "--help", "-h"}):
                         return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "setup.py generate dynamic artifacts"}
+                script_path = non_flag_args[0].replace("\\", "/").lower()
+                is_builtin_tool = (
+                    script_path.startswith("tools/")
+                    or script_path.startswith("./tools/")
+                    or script_path.startswith("src/")
+                )
                 if script_name in {
-                    "doctor.py", "selftest.py", "telemetry_report.py",
-                    "benchmark.py", "show_summary.py",
-                }:
+                    "doctor.py",
+                    "selftest.py",
+                    "telemetry_report.py",
+                    "benchmark.py",
+                    "show_summary.py",
+                    "release_check.py",
+                    "check_contracts.py",
+                } or (is_builtin_tool and any(k in script_name for k in ("test", "validate", "check", "audit", "verify", "lint"))):
                     return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "python validation script"}
                 if any(f in script_name for f in ("generate", "build", "compile", "bundle")):
                     return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "python build/generate script"}
@@ -3691,9 +3975,9 @@ class CommandBroker:
                 is_mutating = any(t in lower for t in {"--complete", "--fail"})
                 if is_mutating:
                     return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "hubctl tasks status mutation"}
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "hubctl tasks status check"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "hubctl tasks status check"}
             if sub in {"status", "service-status", "agent-state", "dashboard", "watch", "memory", "doctor", "logs"}:
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"hubctl {sub} status check"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"hubctl {sub} status check"}
             if sub == "generate":
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "hubctl generate dynamic artifacts"}
             if sub in {"start", "stop", "restart", "cleanup"}:
@@ -3702,15 +3986,15 @@ class CommandBroker:
         if exe_base == "php" and lower:
             php_target = ntpath.basename(lower[0].replace("/", "\\"))
             if any(name in php_target for name in ("phpunit", "phpstan", "pest")):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "PHP validation tool"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "PHP validation tool"}
 
         if exe_base in {"black", "isort"}:
             if any(f in lower for f in {"--check", "--diff"}):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"{exe_base} check"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} check"}
             return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"{exe_base} format without --check"}
 
         if exe_base in self.PURE_VALIDATORS or any(name in exe_base for name in ("phpunit", "phpstan", "pytest", "pest", "flake8", "pylint", "shellcheck", "yamllint")):
-            return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"{exe_base} validation tool"}
+            return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} validation tool"}
 
         positional_verbs = [t.lower() for t in tokens[1:] if not t.startswith(("-", "/"))]
         primary_verb = positional_verbs[0] if positional_verbs else ""
@@ -3720,12 +4004,12 @@ class CommandBroker:
             if any(f in lower for f in flag_info) and not any(v in lower for v in ("build", "test", "run", "clean", "publish")):
                 return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "read-only dotnet inspection"}
             if primary_verb in {"test", "vstest"}:
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "dotnet test"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "dotnet test"}
             if primary_verb in {"build", "compile", "pack", "restore", "clean", "run", "msbuild"}:
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"dotnet {primary_verb}"}
             if primary_verb == "format":
                 if any(f in lower for f in {"--verify-no-changes", "--check"}):
-                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "dotnet format check"}
+                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "dotnet format check"}
                 return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "dotnet format changes source without --verify-no-changes"}
 
         package_tools = {"npm", "pnpm", "yarn", "bun"}
@@ -3741,7 +4025,7 @@ class CommandBroker:
             safe_validation = {"test", "lint", "check", "typecheck", "type-check", "analyse", "analyze", "audit"}
             safe_build = {"build", "compile"}
             if script in safe_validation:
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"{exe_base} safe validation script"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} safe validation script"}
             if script in safe_build:
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"{exe_base} safe build script"}
             return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"{exe_base} script is not in the safe validation/build allowlist"}
@@ -3750,7 +4034,7 @@ class CommandBroker:
             if primary_verb in {"install", "update", "upgrade", "remove", "require", "create-project", "dump-autoload", "global"}:
                 return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"composer {primary_verb} may change dependencies or generated files"}
             if primary_verb in {"validate", "audit", "test", "phpunit", "phpstan", "analyse", "analyze", "check"}:
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "composer validation command"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "composer validation command"}
             return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "composer command is not in the safe validation allowlist"}
 
         if exe_base == "make":
@@ -3759,7 +4043,7 @@ class CommandBroker:
             safe_validation = {"test", "tests", "check", "lint", "validate", "verify", "typecheck"}
             safe_build = {"build", "compile", "all"}
             if positional_verbs and all(v in safe_validation for v in positional_verbs):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "make validation target"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "make validation target"}
             if positional_verbs and all(v in safe_build for v in positional_verbs):
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "make build target"}
             return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "make target is not in the safe validation/build allowlist"}
@@ -3768,7 +4052,7 @@ class CommandBroker:
             if primary_verb in {"fmt"} and "--check" not in lower:
                 return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "cargo fmt changes source without --check"}
             if primary_verb in {"test", "check", "clippy", "bench"} or (primary_verb == "fmt" and "--check" in lower):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "cargo validation command"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "cargo validation command"}
             if primary_verb == "build":
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "cargo build"}
             return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "cargo command is not in the safe validation/build allowlist"}
@@ -3779,7 +4063,7 @@ class CommandBroker:
             validation_words = {"test", "tests", "check", "verify", "lint", "vet", "clippy", "ctest"}
             build_words = {"build", "compile", "package", "assemble"}
             if exe_base == "ctest" or any(v in validation_words for v in positional_verbs):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": f"{exe_base} validation command"}
+                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} validation command"}
             if exe_base == "cmake" or any(v in build_words for v in positional_verbs):
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"{exe_base} build command"}
             return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"{exe_base} command is not in the safe validation/build allowlist"}
@@ -3789,7 +4073,7 @@ class CommandBroker:
                 return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"mutating verb {primary_verb}"}
             if any(x in positional_verbs for x in ("build", "compile")):
                 return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "build command"}
-            return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "reason": "validation/test command"}
+            return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "validation/test command"}
 
         return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "command not in safe broker allowlist"}
 
@@ -3837,24 +4121,63 @@ class CommandBroker:
         except Exception:
             return {"path": str(resolved)}
 
-    def _key(self, command: str, cwd: str, classification: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    def _key(
+        self,
+        command: str,
+        cwd: str,
+        classification: dict[str, Any],
+        *,
+        cache_context: str = "",
+    ) -> tuple[str, dict[str, Any]]:
         state = self.repo_state.fingerprint(cwd)
-        env_keys = self.config.get("commands", {}).get("environment_keys", ["CI", "NODE_ENV", "APP_ENV", "PYTHONPATH"])
+        commands_config = self.config.get("commands", {})
+        env_keys = commands_config.get("environment_keys", ["CI", "NODE_ENV", "APP_ENV", "PYTHONPATH"])
         env = {str(k): os.environ.get(str(k), "") for k in env_keys}
-        key = stable_hash({
+        payload = {
             "command": command.strip(), "cwd": str(Path(cwd).resolve()), "class": classification.get("class"),
             "repo": state.get("fingerprint"), "env": env, "python": sys.version_info[:3], "tool": self._tool_identity(command, cwd),
-        })
+            "policy": {
+                "blocking": self.policy_blocking,
+                "allow_read": bool(commands_config.get("allow_read", True)),
+                "allow_validation": bool(commands_config.get("allow_validation", True)),
+                "allow_build": bool(commands_config.get("allow_build", True)),
+                "allow_mutating": bool(commands_config.get("allow_mutating", False)),
+                "allow_unknown": bool(commands_config.get("allow_unknown", False)),
+                "extra_allowed_tools": sorted(
+                    str(tool).strip().lower()
+                    for tool in commands_config.get("extra_allowed_tools", [])
+                ),
+            },
+        }
+        if cache_context:
+            payload["context"] = cache_context
+        key = stable_hash(payload)
         return key, state
 
-    def _attempt_key(self, command: str, cwd: str) -> str:
+    def _attempt_key(self, command: str, cwd: str, *, cache_context: str = "") -> str:
         tokens = self._tokens(command)
         cmd_str = " ".join(tokens) if tokens else command.strip()
-        return stable_hash({
+        commands_config = self.config.get("commands", {})
+        payload = {
             "command": cmd_str,
             "cwd": str(Path(cwd).resolve()),
             "tool": self._tool_identity(command, cwd),
-        })
+            "policy": {
+                "blocking": self.policy_blocking,
+                "allow_read": bool(commands_config.get("allow_read", True)),
+                "allow_validation": bool(commands_config.get("allow_validation", True)),
+                "allow_build": bool(commands_config.get("allow_build", True)),
+                "allow_mutating": bool(commands_config.get("allow_mutating", False)),
+                "allow_unknown": bool(commands_config.get("allow_unknown", False)),
+                "extra_allowed_tools": sorted(
+                    str(tool).strip().lower()
+                    for tool in commands_config.get("extra_allowed_tools", [])
+                ),
+            },
+        }
+        if cache_context:
+            payload["context"] = cache_context
+        return stable_hash(payload)
 
     def _mark_rollback_outcome_unknown(
         self,
@@ -3865,35 +4188,35 @@ class CommandBroker:
         error: BaseException,
         rollback_paths: Sequence[str] | None = None,
     ) -> None:
-        rollback_error = str(error)[:512]
         result.update({
             "rolled_back": False,
-            "rollback_error": rollback_error,
+            "rollback_paths": list(rollback_paths or ()),
+            "rollback_error": str(error)[:512],
             "outcome_unknown": True,
             "fail_closed": True,
             "incident_required": True,
             "cache_hit": False,
             "coalesced": False,
             "retryable": False,
-            "rollback_paths": list(rollback_paths or ()),
         })
-        cache_invalidation_errors: list[str] = []
-        for cache, key in (
+        invalidation_errors: list[str] = []
+        for cache, cache_key in (
             (self.success_cache, command_key),
             (self.failure_cache, command_key),
             (self.suppression_cache, attempt_key),
         ):
             try:
-                deleted = cache.delete(key)
+                deleted = cache.delete(cache_key)
                 if deleted is False:
-                    cache_invalidation_errors.append("cache delete reported failure")
+                    invalidation_errors.append("cache delete reported failure")
             except Exception as cache_exc:
-                cache_invalidation_errors.append(str(cache_exc)[:160])
+                invalidation_errors.append(str(cache_exc)[:160])
         with self._lock:
             self._last.pop(command_key, None)
-        if cache_invalidation_errors:
+        if invalidation_errors:
             result["cache_invalidation_failed"] = True
-            result["cache_invalidation_errors"] = cache_invalidation_errors
+            result["cache_invalidation_errors"] = invalidation_errors
+
 
     def _capture_rollback_unknown_incident(
         self,
@@ -3907,6 +4230,7 @@ class CommandBroker:
             return
         try:
             from .agent_incidents import ToolOutcome
+
             incident = self.incident_store.capture(ToolOutcome(
                 tool_name="command",
                 command=command,
@@ -3927,6 +4251,7 @@ class CommandBroker:
                 result["incident_recorded"] = True
         except Exception:
             pass
+
 
     def _unavailable_executable(self, command: str, cwd: str) -> str | None:
         if self._needs_shell(command):
@@ -3979,6 +4304,9 @@ class CommandBroker:
         timeout: int,
         cancel_event: threading.Event | None = None,
         log_callback: Any | None = None,
+        *,
+        argv_override: Sequence[str] | None = None,
+        environment_overrides: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         if isinstance(command, str):
             tokens = self._tokens(command)
@@ -3987,16 +4315,15 @@ class CommandBroker:
             tokens = list(command)
             if not tokens or any(not isinstance(token, str) or "\x00" in token for token in tokens):
                 return {
-                    "success": False,
-                    "exit_code": 2,
-                    "timed_out": False,
-                    "stdout": "",
-                    "stderr": "argv must be a non-empty list of null-free strings",
+                    "success": False, "exit_code": 2, "timed_out": False,
+                    "stdout": "", "stderr": "argv must be a non-empty list of null-free strings",
                     "error": "invalid process argv",
                 }
             needs_shell = False
         started = time.perf_counter()
-        if needs_shell:
+        if argv_override is not None:
+            argv = list(argv_override)
+        elif needs_shell:
             if os.name == "nt":
                 shell_bin = shutil.which("pwsh") or shutil.which("powershell") or "powershell.exe"
                 argv = [shell_bin, "-NoProfile", "-NonInteractive", "-Command", command]
@@ -4023,10 +4350,11 @@ class CommandBroker:
         proc_env = os.environ.copy()
         proc_env["PYTHONDONTWRITEBYTECODE"] = "1"
         proc_env["PYTHONIOENCODING"] = "utf-8"
+        if environment_overrides:
+            proc_env.update(environment_overrides)
         kwargs: dict[str, Any] = {
             "cwd": str(Path(cwd).resolve()), "stdin": subprocess.DEVNULL,
             "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
-            "text": True, "encoding": "utf-8", "errors": "replace",
             "env": proc_env,
         }
         if os.name == "nt":
@@ -4049,44 +4377,96 @@ class CommandBroker:
 
         out_buf = _BoundedStreamBuffer(self.max_output_chars)
         err_buf = _BoundedStreamBuffer(self.max_output_chars)
+        callback_queue: queue.Queue[tuple[str, str]] | None = (
+            queue.Queue(maxsize=_COMMAND_LOG_QUEUE_MAX_CHUNKS)
+            if log_callback is not None
+            else None
+        )
+        callback_dropped = 0
+        callback_drop_lock = threading.Lock()
+        readers_remaining = 2
+        readers_lock = threading.Lock()
+        readers_done = threading.Event()
+
+        def _dispatch_logs() -> None:
+            assert callback_queue is not None and log_callback is not None
+            while True:
+                try:
+                    item = callback_queue.get(timeout=0.05)
+                except queue.Empty:
+                    if readers_done.is_set():
+                        return
+                    continue
+                try:
+                    log_callback(*item)
+                except Exception:
+                    pass
+                finally:
+                    callback_queue.task_done()
+
+        log_dispatcher = (
+            threading.Thread(target=_dispatch_logs, name="command-log-dispatch", daemon=True)
+            if callback_queue is not None
+            else None
+        )
+        if log_dispatcher is not None:
+            log_dispatcher.start()
+
+        def _publish_log(stream_name: str, text: str) -> None:
+            nonlocal callback_dropped
+            if callback_queue is None:
+                return
+            try:
+                callback_queue.put_nowait((stream_name, text))
+            except queue.Full:
+                with callback_drop_lock:
+                    callback_dropped += 1
 
         def _reader(stream: Any, buf: _BoundedStreamBuffer, stream_name: str) -> None:
             last_callback_time = 0.0
             callback_min_interval = 0.005  # Max ~200 callbacks/sec to prevent downstream lock/choking
             pending_batch: list[str] = []
+            decoder = io.IncrementalNewlineDecoder(
+                codecs.getincrementaldecoder("utf-8")(errors="replace"),
+                translate=True,
+            )
+            read_chunk = (
+                getattr(stream, "read1", None)
+                or getattr(stream, "read", None)
+                or getattr(stream, "readline")
+            )
             try:
-                for line in iter(lambda: stream.readline(65536), ""):
-                    if not line:
+                while True:
+                    raw_chunk = read_chunk(65536)
+                    if not raw_chunk:
                         break
-                    buf.append(line)
+                    chunk = raw_chunk if isinstance(raw_chunk, str) else decoder.decode(raw_chunk)
+                    if not chunk:
+                        continue
+                    buf.append(chunk)
                     if log_callback:
                         now = time.monotonic()
                         if now - last_callback_time >= callback_min_interval:
                             if pending_batch:
-                                text = "".join(pending_batch) + line
+                                text = "".join(pending_batch) + chunk
                                 pending_batch.clear()
                             else:
-                                text = line
+                                text = chunk
                             last_callback_time = now
-                            try:
-                                log_callback(stream_name, text)
-                            except Exception:
-                                pass
+                            _publish_log(stream_name, text)
                         else:
-                            pending_batch.append(line)
+                            pending_batch.append(chunk)
                             if len(pending_batch) >= 50:
                                 text = "".join(pending_batch)
                                 pending_batch.clear()
                                 last_callback_time = now
-                                try:
-                                    log_callback(stream_name, text)
-                                except Exception:
-                                    pass
+                                _publish_log(stream_name, text)
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    buf.append(tail)
+                    pending_batch.append(tail)
                 if log_callback and pending_batch:
-                    try:
-                        log_callback(stream_name, "".join(pending_batch))
-                    except Exception:
-                        pass
+                    _publish_log(stream_name, "".join(pending_batch))
             except Exception:
                 pass
             finally:
@@ -4094,6 +4474,11 @@ class CommandBroker:
                     stream.close()
                 except Exception:
                     pass
+                nonlocal readers_remaining
+                with readers_lock:
+                    readers_remaining -= 1
+                    if readers_remaining == 0:
+                        readers_done.set()
 
         t_out = threading.Thread(target=_reader, args=(process.stdout, out_buf, "stdout"), daemon=True)
         t_err = threading.Thread(target=_reader, args=(process.stderr, err_buf, "stderr"), daemon=True)
@@ -4121,26 +4506,18 @@ class CommandBroker:
         if timed_out or cancelled or aborted_interactive:
             cleanup_confirmed = False
             try:
-                cleanup_confirmed = bool(
-                    terminate_tree(process.pid, grace_seconds=self.terminate_grace_seconds)
-                )
+                cleanup_confirmed = bool(terminate_tree(process.pid, grace_seconds=self.terminate_grace_seconds))
             except Exception:
                 cleanup_confirmed = False
             if not cleanup_confirmed:
                 self.executed += 1
                 return {
-                    "success": False,
-                    "exit_code": -9,
-                    "timed_out": timed_out,
-                    "cancelled": cancelled,
-                    "aborted_interactive": aborted_interactive,
-                    "cleanup_unconfirmed": True,
-                    "outcome_unknown": True,
-                    "fail_closed": True,
-                    "retryable": False,
+                    "success": False, "exit_code": -9, "timed_out": timed_out,
+                    "cancelled": cancelled, "aborted_interactive": aborted_interactive,
+                    "cleanup_unconfirmed": True, "outcome_unknown": True,
+                    "fail_closed": True, "retryable": False,
                     "error": "process-tree cleanup could not be confirmed; command outcome is unknown",
-                    "stdout": out_buf.getvalue(),
-                    "stderr": err_buf.getvalue(),
+                    "stdout": out_buf.getvalue(), "stderr": err_buf.getvalue(),
                     "duration_ms": round((time.perf_counter() - started) * 1000, 1),
                 }
 
@@ -4152,6 +4529,8 @@ class CommandBroker:
         drain_deadline = time.monotonic() + drain_seconds
         t_out.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         t_err.join(timeout=max(0.0, drain_deadline - time.monotonic()))
+        if log_dispatcher is not None:
+            log_dispatcher.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         try:
             if process.stdout and not process.stdout.closed:
                 process.stdout.close()
@@ -4175,6 +4554,8 @@ class CommandBroker:
             "exit_code": -9 if (timed_out or cancelled or aborted_interactive) else int(process.returncode or 0),
             "timed_out": timed_out, "cancelled": cancelled, "aborted_interactive": aborted_interactive,
             "stdout": stdout, "stderr": stderr,
+            "log_chunks_dropped": callback_dropped,
+            "log_dispatch_incomplete": bool(log_dispatcher and log_dispatcher.is_alive()),
             "duration_ms": round((time.perf_counter() - started) * 1000, 1),
             **({"error": "interactive_prompt_detected: command aborted because it requested interactive input"} if aborted_interactive else {"error": "command cancelled"} if cancelled else {"error": f"command timed out after {timeout}s"} if timed_out else {}),
         }
@@ -4482,13 +4863,10 @@ class CommandBroker:
             if verify_error or verified is None:
                 return False
             try:
-                restored = all(
+                return all(
                     self._transaction_file_matches(verified.files[path], source_snapshot.files[path])
                     for path in paths
                 )
-                if restored:
-                    self._fsync_rollback_directories(verified, paths)
-                return restored
             finally:
                 _close_rollback_root(verified.root_guard)
         except (OSError, ValueError):
@@ -4538,44 +4916,52 @@ class CommandBroker:
         return RollbackFileSnapshot(content, mode, xattrs, windows_dacl, atime_ns, mtime_ns)
 
     @staticmethod
-    def _fsync_transaction_directory(path: Path) -> None:
-        """Persist directory entry changes used by the transaction journal."""
+    def _fsync_transaction_directory(path: Path) -> bool:
+        """Sync directory entries where supported; Windows has no portable directory fsync."""
         if os.name == "nt":
-            return
-        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
-        descriptor = os.open(path, flags)
+            return False
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        return True
 
     @staticmethod
-    def _fsync_rollback_directories(snapshot: RollbackSnapshot, paths: list[str]) -> None:
-        """Persist changed write-set entries through pinned source directories."""
+    def _fsync_rollback_directories(root: Path, paths: Sequence[str]) -> bool:
+        """Sync directories containing write-set entries, including created parents."""
         if os.name == "nt":
-            return
-        if snapshot.root_guard is None:
-            raise OSError("rollback root is not pinned for directory sync")
-        parents: set[tuple[str, ...]] = {()}
-        for path in paths:
-            components = tuple(Path(path).parts)
-            for depth in range(1, len(components)):
-                parents.add(components[:depth])
-        for components in sorted(parents, key=lambda item: (-len(item), item)):
-            if components:
-                descriptor, owned = _open_rollback_parent_handle(
-                    snapshot.root_guard, list(components)
-                )
-            else:
-                descriptor, owned = os.dup(snapshot.root_guard), True
-            try:
-                os.fsync(descriptor)
-            finally:
-                if owned:
-                    _close_rollback_root(descriptor)
+            return False
+        root = root.resolve(strict=True)
+        directories = {root}
+        for relative in paths:
+            parent = (root / relative).parent
+            while parent == root or root in parent.parents:
+                if parent.exists():
+                    directories.add(parent)
+                if parent == root:
+                    break
+                parent = parent.parent
+        supported = True
+        for directory in sorted(directories, key=lambda item: (len(item.parts), str(item))):
+            supported = CommandBroker._fsync_transaction_directory(directory) and supported
+        return supported
 
     @staticmethod
-    def _persist_transaction_journal(path: Path, payload: dict[str, Any]) -> None:
+    def _remove_transaction_journal(path: Path, payload: dict[str, Any]) -> bool:
+        path.unlink(missing_ok=True)
+        try:
+            return CommandBroker._fsync_transaction_directory(path.parent)
+        except OSError:
+            try:
+                CommandBroker._persist_transaction_journal(path, payload)
+            except OSError:
+                pass
+            raise
+
+
+    @staticmethod
+    def _persist_transaction_journal(path: Path, payload: dict[str, Any]) -> bool:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -4586,6 +4972,7 @@ class CommandBroker:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
+            return CommandBroker._fsync_transaction_directory(path.parent)
         finally:
             if fd >= 0:
                 os.close(fd)
@@ -4594,69 +4981,36 @@ class CommandBroker:
             except FileNotFoundError:
                 pass
 
-    def _transaction_namespace_kwargs(self, source: Path, fencing_store: Any) -> dict[str, str]:
-        lease_claim = self._transaction_leases.claim
-        fence_acquire = fencing_store.acquire
-        lease_supports_namespace = "coordination_id" in inspect.signature(lease_claim).parameters
-        fence_supports_namespace = "coordination_id" in inspect.signature(fence_acquire).parameters
-        if not lease_supports_namespace and not fence_supports_namespace:
-            return {}
-        if not lease_supports_namespace or not fence_supports_namespace:
-            raise RuntimeError("transaction lease and mutation fence namespace APIs do not match")
-        try:
-            from .project_config import resolve_project_context
-
-            coordination_id = resolve_project_context(
-                source, configured_state_dir(self.config)
-            ).coordination_id
-        except Exception as exc:
-            raise RuntimeError("project coordination namespace could not be resolved") from exc
-        if not isinstance(coordination_id, str) or not coordination_id.strip():
-            raise RuntimeError("project coordination namespace is required")
-        return {"coordination_id": coordination_id}
-
     def _recover_transaction_journals(
         self,
         source: Path,
         task_id: str,
         transaction_parent: Path,
         lease_tenant: str,
-        work_attempt_fence: Any,
+        work_attempt_fence: WorkAttemptFence,
         namespace_kwargs: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
+        self._assert_work_attempt_fence(
+            work_attempt_fence, task_id=task_id, resource=source
+        )
         journal_paths = sorted(transaction_parent.glob("*.journal.json"))
         if not journal_paths:
             return None
-        if work_attempt_fence is None:
-            return {
-                "success": False, "transaction_status": "recovery_required",
-                "failure_kind": "work_attempt_fence_required",
-                "mutation_fence_required": True, "outcome_unknown": True,
-                "terminal": True, "retryable": False,
-                "error": "fenced transaction recovery requires a current work attempt fence",
-            }
-        fencing_store = self.fencing_lease_store
-        if not all(callable(getattr(fencing_store, method, None)) for method in (
-            "acquire", "renew", "release", "assert_current", "commit_guard",
-        )):
-            return {
-                "success": False, "transaction_status": "recovery_required",
-                "failure_kind": "mutation_fence_unavailable", "outcome_unknown": True,
-                "terminal": True, "retryable": False,
-                "error": "authoritative worktree mutation fence is unavailable for recovery",
-            }
         if namespace_kwargs is None:
             try:
-                namespace_kwargs = self._transaction_namespace_kwargs(source, fencing_store)
+                namespace_kwargs = self._transaction_namespace_kwargs(
+                    source, self.fencing_lease_store
+                )
             except Exception as exc:
                 return {
                     "success": False, "transaction_status": "recovery_required",
-                    "failure_kind": "mutation_namespace_unavailable", "outcome_unknown": True,
-                    "terminal": True, "retryable": False, "error": str(exc)[:512],
+                    "failure_kind": "mutation_namespace_unavailable",
+                    "outcome_unknown": True, "terminal": True, "retryable": False,
+                    "error": str(exc)[:512],
                 }
+        directory_fsync_supported = True
         for journal_path in journal_paths:
             lease: dict[str, Any] | None = None
-            fencing_lease: Any = None
             journal: dict[str, Any] = {}
             try:
                 if journal_path.stat().st_size > 96 * 1024 * 1024:
@@ -4709,71 +5063,53 @@ class CommandBroker:
                         "error": str(lease.get("error") or "transaction recovery lease denied")[:512],
                     }
                 original_fencing = journal.get("fencing")
-                if not isinstance(original_fencing, dict):
-                    raise ValueError("transaction journal lacks mutation fencing identity")
-                original_token = original_fencing.get("fencing_token")
-                original_lease_id = original_fencing.get("lease_id")
-                if not isinstance(original_token, int) or original_token <= 0 or not isinstance(original_lease_id, str) or not original_lease_id:
-                    raise ValueError("transaction journal fencing identity is invalid")
                 original_attempt = journal.get("attempt_fence")
-                if not isinstance(original_attempt, dict):
-                    raise ValueError("transaction journal lacks work attempt identity")
-                original_attempt_token = original_attempt.get("fencing_token")
-                original_attempt_id = original_attempt.get("attempt_id")
-                original_attempt_work_id = original_attempt.get("work_id")
-                original_attempt_resource = original_attempt.get("resource")
-                original_attempt_owner = original_attempt.get("owner_id")
-                original_attempt_expiry = original_attempt.get("expires_at")
+                if not isinstance(original_fencing, dict) or not isinstance(original_attempt, dict):
+                    raise ValueError("transaction journal lacks mutation fence identity")
+                original_fence_token = original_attempt.get("fencing_token")
+                original_work_id = original_attempt.get("work_id")
+                original_resource = original_attempt.get("resource")
                 if (
-                    not isinstance(original_attempt_token, int)
-                    or original_attempt_token <= 0
-                    or not isinstance(original_attempt_id, str)
-                    or not original_attempt_id
-                    or not isinstance(original_attempt_work_id, str)
-                    or not original_attempt_work_id
-                    or not isinstance(original_attempt_resource, str)
-                    or os.path.normcase(original_attempt_resource) != os.path.normcase(str(source))
-                    or not isinstance(original_attempt_owner, str)
-                    or not original_attempt_owner
-                    or not isinstance(original_attempt_expiry, (int, float))
+                    type(original_fence_token) is not int
+                    or original_fence_token <= 0
+                    or original_work_id != task_id
+                    or not isinstance(original_resource, str)
+                    or os.path.normcase(str(Path(original_resource).resolve(strict=True)))
+                    != os.path.normcase(str(source))
+                    or work_attempt_fence.fencing_token <= original_fence_token
                 ):
-                    raise ValueError("transaction journal work attempt identity is invalid")
-                prior_recovery_fence = journal.get("recovery_fencing")
+                    raise ValueError("transaction recovery attempt is stale or mismatched")
+                original_writer_token = original_fencing.get("fencing_token")
+                prior_recovery = journal.get("recovery_fencing")
                 prior_recovery_token = (
-                    prior_recovery_fence.get("fencing_token")
-                    if isinstance(prior_recovery_fence, dict) else 0
+                    prior_recovery.get("fencing_token")
+                    if isinstance(prior_recovery, dict) else 0
                 )
-                if not isinstance(prior_recovery_token, int) or prior_recovery_token < 0:
-                    raise ValueError("transaction journal recovery fencing identity is invalid")
-                highest_recorded_token = max(original_token, prior_recovery_token)
                 if (
-                    work_attempt_fence.fencing_token <= original_attempt_token
-                    or work_attempt_fence.work_id != original_attempt_work_id
-                    or original_attempt_work_id != task_id
+                    type(original_writer_token) is not int or original_writer_token <= 0
+                    or type(prior_recovery_token) is not int or prior_recovery_token < 0
                 ):
-                    raise ValueError("transaction recovery work attempt is stale")
-                if os.path.normcase(str(work_attempt_fence.resource)) != os.path.normcase(str(source)):
-                    raise ValueError("transaction recovery work attempt resource does not match")
-                fencing_lease = fencing_store.acquire(
-                    str(source),
-                    f"command-recovery:{task_id}:{journal.get('transaction_id', '')}:{uuid.uuid4().hex}",
-                    list(paths),
-                    ttl_seconds=300.0,
-                    attempt=work_attempt_fence,
-                    **namespace_kwargs,
-                )
-                if fencing_lease.fencing_token <= highest_recorded_token:
-                    raise ValueError("transaction recovery fencing token is stale")
-                with fencing_store.commit_guard(fencing_lease, list(paths)):
-                    fencing_store.assert_current(fencing_lease, actual_paths=list(paths))
+                    raise ValueError("transaction journal fencing token is invalid")
+                highest_writer_token = max(original_writer_token, prior_recovery_token)
+                with self._fenced_transaction_commit(
+                    work_attempt_fence,
+                    task_id=task_id,
+                    source=source,
+                    paths=list(paths),
+                    owner_id=f"command-recovery:{task_id}:{journal.get('transaction_id', '')}:{uuid.uuid4().hex}",
+                    namespace_kwargs=namespace_kwargs,
+                ) as (fencing_lease, recovery_attempt_payload):
+                    if fencing_lease.fencing_token <= highest_writer_token:
+                        raise ValueError("transaction recovery writer fence is stale")
                     journal["recovery_fencing"] = {
                         "lease_id": fencing_lease.lease_id,
                         "fencing_token": fencing_lease.fencing_token,
                     }
-                    journal["recovery_attempt_fence"] = self._work_attempt_fence_payload(
-                        work_attempt_fence
+                    journal["recovery_attempt_fence"] = recovery_attempt_payload
+                    directory_fsync_supported = (
+                        self._persist_transaction_journal(journal_path, journal)
+                        and directory_fsync_supported
                     )
-                    self._persist_transaction_journal(journal_path, journal)
                     current, scope_error = _snapshot_rollback_scope(str(source), list(paths))
                     if scope_error or current is None:
                         raise OSError(scope_error or "cannot inspect transaction recovery targets")
@@ -4816,13 +5152,18 @@ class CommandBroker:
                                 for path in paths
                             ):
                                 raise OSError("transaction recovery postimages did not verify")
-                            self._fsync_rollback_directories(verified, list(paths))
                         finally:
                             _close_rollback_root(verified.root_guard)
                     finally:
                         _close_rollback_root(current.root_guard)
-                    self._fsync_transaction_directory(transaction_parent)
-                    journal_path.unlink()
+                    directory_fsync_supported = (
+                        self._fsync_rollback_directories(source, list(paths))
+                        and directory_fsync_supported
+                    )
+                    directory_fsync_supported = (
+                        self._remove_transaction_journal(journal_path, journal)
+                        and directory_fsync_supported
+                    )
                 transaction_root_value = journal.get("transaction_root")
                 if isinstance(transaction_root_value, str):
                     transaction_root = Path(transaction_root_value).resolve(strict=False)
@@ -4835,7 +5176,7 @@ class CommandBroker:
                     else:
                         if transaction_relative.parts:
                             shutil.rmtree(transaction_root, ignore_errors=True)
-            except Exception as exc:
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 return {
                     "success": False,
                     "transaction_id": str(journal.get("transaction_id", "")),
@@ -4849,11 +5190,15 @@ class CommandBroker:
             finally:
                 if lease is not None and lease.get("success"):
                     self._transaction_leases.release(lease_tenant, str(lease.get("lease_id") or ""))
-                if fencing_lease is not None:
-                    try:
-                        fencing_store.release(fencing_lease)
-                    except Exception:
-                        pass
+        if not directory_fsync_supported:
+            return {
+                "success": True,
+                "transaction_status": "recovered",
+                "rollback_paths": list(paths),
+                "command_not_run": True,
+                "directory_fsync_supported": False,
+                "durability_warning": "filesystem directory fsync is unsupported; crash durability is not guaranteed",
+            }
         return None
 
     def _run_private_transaction(
@@ -4866,7 +5211,7 @@ class CommandBroker:
         paths: list[str],
         timeout: int,
         docker_image: str,
-        work_attempt_fence: Any = None,
+        work_attempt_fence: WorkAttemptFence | None = None,
         cancel_event: threading.Event | None = None,
         log_callback: Any | None = None,
         operation: Any | None = None,
@@ -4889,43 +5234,23 @@ class CommandBroker:
                 "error": ready_error, "mutation_sandbox_required": True,
                 "terminal": True, "retryable": False,
             }
-        fencing_store = self.fencing_lease_store
-        if not all(callable(getattr(fencing_store, method, None)) for method in (
-            "acquire", "renew", "release", "assert_current", "commit_guard",
-        )):
+
+        source = Path(canonical_root(source_root)).resolve(strict=True)
+        try:
+            attempt_payload = self._assert_work_attempt_fence(
+                work_attempt_fence, task_id=task_id, resource=source
+            )
+        except (AttributeError, OSError, TypeError, ValueError, RuntimeError) as exc:
             return {
                 "success": False,
                 "transaction_id": transaction_id,
                 "transaction_status": "discarded",
-                "failure_kind": "mutation_fence_unavailable",
+                "failure_kind": "work_attempt_fence_invalid",
                 "mutation_fence_required": True,
                 "outcome_unknown": False,
                 "terminal": True,
                 "retryable": False,
-                "error": "authoritative worktree mutation fence is unavailable",
-            }
-
-        source = Path(canonical_root(source_root)).resolve(strict=True)
-        if work_attempt_fence is None:
-            return {
-                "success": False, "transaction_id": transaction_id,
-                "transaction_status": "discarded", "failure_kind": "work_attempt_fence_required",
-                "mutation_fence_required": True, "outcome_unknown": False,
-                "terminal": True, "retryable": False,
-                "error": "mutating command requires a current work attempt fence",
-            }
-        try:
-            attempt_payload = self._work_attempt_fence_payload(work_attempt_fence)
-            if os.path.normcase(str(work_attempt_fence.resource)) != os.path.normcase(str(source)):
-                raise ValueError("work attempt fence resource does not match command worktree")
-            if attempt_payload["work_id"] != task_id:
-                raise ValueError("work attempt fence does not belong to this task")
-        except (AttributeError, TypeError, ValueError) as exc:
-            return {
-                "success": False, "transaction_id": transaction_id,
-                "transaction_status": "discarded", "failure_kind": "work_attempt_fence_invalid",
-                "mutation_fence_required": True, "outcome_unknown": False,
-                "terminal": True, "retryable": False, "error": str(exc)[:512],
+                "error": str(exc)[:512],
             }
         if not attempt_key:
             attempt_key = self._attempt_key(command, str(source))
@@ -4955,13 +5280,16 @@ class CommandBroker:
             transaction_parent = fallback / state_key
         transaction_parent.mkdir(parents=True, exist_ok=True)
         try:
-            namespace_kwargs = self._transaction_namespace_kwargs(source, fencing_store)
+            namespace_kwargs = self._transaction_namespace_kwargs(
+                source, self.fencing_lease_store
+            )
         except Exception as exc:
             return {
                 "success": False, "transaction_id": transaction_id,
-                "transaction_status": "discarded", "failure_kind": "mutation_namespace_unavailable",
-                "mutation_fence_required": True, "outcome_unknown": False,
-                "terminal": True, "retryable": False, "error": str(exc)[:512],
+                "transaction_status": "recovery_required",
+                "failure_kind": "mutation_namespace_unavailable",
+                "outcome_unknown": True, "terminal": True, "retryable": False,
+                "error": str(exc)[:512],
             }
         try:
             recovery = self._recover_transaction_journals(
@@ -4994,29 +5322,10 @@ class CommandBroker:
                     error=recovery_error,
                     rollback_paths=recovery_paths,
                 )
-                self._capture_rollback_unknown_incident(recovery, command=command)
+                self._capture_rollback_unknown_incident(
+                    recovery, command=command, affected_paths=recovery_paths
+                )
             return recovery
-        fencing_owner = f"command-transaction:{task_id}:{transaction_id}"
-        fencing_ttl = max(60.0, float(timeout) + 120.0)
-        try:
-            fencing_lease = fencing_store.acquire(
-                str(source), fencing_owner, paths, ttl_seconds=fencing_ttl,
-                attempt=work_attempt_fence,
-                **namespace_kwargs,
-            )
-            fencing_store.assert_current(fencing_lease, actual_paths=paths)
-        except Exception as exc:
-            try:
-                if "fencing_lease" in locals():
-                    fencing_store.release(fencing_lease)
-            except Exception:
-                pass
-            return {
-                "success": False, "transaction_id": transaction_id,
-                "transaction_status": "discarded", "failure_kind": "mutation_fence_denied",
-                "mutation_fence_required": True, "outcome_unknown": False,
-                "error": str(exc)[:512], "terminal": True, "retryable": False,
-            }
         lease = self._transaction_leases.claim(
             tenant=transaction_name,
             root=str(source),
@@ -5026,10 +5335,6 @@ class CommandBroker:
             **namespace_kwargs,
         )
         if not lease.get("success"):
-            try:
-                fencing_store.release(fencing_lease)
-            except Exception:
-                pass
             return {
                 "success": False, "transaction_id": transaction_id,
                 "transaction_status": "discarded", "failure_kind": "destination_conflict",
@@ -5042,14 +5347,12 @@ class CommandBroker:
         transaction_snapshot: RollbackSnapshot | None = None
         retain_transaction = False
         retain_lease = False
-        retain_fencing_lease = False
-        fencing_heartbeat: _MutationLeaseHeartbeat | None = None
-        fence_commit_started = False
         result: dict[str, Any] = {
             "success": False, "transaction_id": transaction_id,
             "transaction_status": "discarded", "failure_kind": "command_failed",
             "terminal": True, "retryable": False,
         }
+        directory_fsync_supported = True
         try:
             source_snapshot, scope_error = _snapshot_rollback_scope(str(source), paths)
             if scope_error or source_snapshot is None:
@@ -5072,13 +5375,6 @@ class CommandBroker:
             )
             with self._transaction_roots_lock:
                 self._active_transaction_roots[transaction_id] = transaction_root.resolve(strict=True)
-            fencing_lease = fencing_store.renew(
-                fencing_lease, ttl_seconds=fencing_ttl
-            )
-            fencing_store.assert_current(fencing_lease, actual_paths=paths)
-            fencing_heartbeat = _MutationLeaseHeartbeat(
-                fencing_store, fencing_lease, fencing_ttl
-            )
             if callable(operation):
                 try:
                     execution = operation(transaction_root, transaction_id)
@@ -5098,10 +5394,7 @@ class CommandBroker:
                 )
                 try:
                     execution = self._execute(
-                        argv,
-                        str(transaction_root),
-                        timeout,
-                        cancel_event,
+                        argv, str(transaction_root), timeout, cancel_event,
                         log_callback=log_callback,
                     )
                 except subprocess.TimeoutExpired as exc:
@@ -5123,7 +5416,6 @@ class CommandBroker:
             if not cleanup_confirmed:
                 retain_transaction = True
                 retain_lease = True
-                retain_fencing_lease = True
                 self._mark_rollback_outcome_unknown(
                     result,
                     command_key=command_key,
@@ -5148,29 +5440,12 @@ class CommandBroker:
                 execution["cleanup_unconfirmed"] = False
                 result["cleanup_unconfirmed"] = False
 
-            if fencing_heartbeat is not None:
-                fencing_lease, fence_lost, fence_error = fencing_heartbeat.stop()
-                fencing_heartbeat = None
-                if fence_lost and execution.get("success"):
-                    result.update({
-                        "success": False,
-                        "transaction_status": "discarded",
-                        "failure_kind": "mutation_fence_lost",
-                        "outcome_unknown": False,
-                        "source_unchanged": True,
-                        "retryable": False,
-                        "terminal": True,
-                        "error": fence_error or "worktree mutation fence renewal failed",
-                    })
-                    return result
-
             if not execution.get("success"):
                 try:
                     verify_transaction_source_unchanged(source, baseline, paths)
                 except (OSError, ValueError) as exc:
                     retain_transaction = True
                     retain_lease = True
-                    retain_fencing_lease = True
                     self._mark_rollback_outcome_unknown(
                         result,
                         command_key=command_key,
@@ -5243,7 +5518,6 @@ class CommandBroker:
                 if source_conflict:
                     retain_transaction = True
                     retain_lease = True
-                    retain_fencing_lease = True
                     self._mark_rollback_outcome_unknown(
                         result,
                         command_key=command_key,
@@ -5306,6 +5580,7 @@ class CommandBroker:
                         "schema": 1,
                         "transaction_id": transaction_id,
                         "task_id": task_id,
+                        "attempt_fence": attempt_payload,
                         "source_root": str(source),
                         "transaction_root": str(transaction_root),
                         "paths": changed_paths,
@@ -5317,22 +5592,22 @@ class CommandBroker:
                             for path in changed_paths
                         },
                     }
-                    fencing_lease = fencing_store.renew(
-                        fencing_lease, ttl_seconds=fencing_ttl
-                    )
-                    with fencing_store.commit_guard(fencing_lease, changed_paths):
-                        fencing_store.assert_current(
-                            fencing_lease, actual_paths=changed_paths
-                        )
-                        verify_transaction_source_unchanged(source, baseline, paths)
+                    with self._fenced_transaction_commit(
+                        work_attempt_fence,
+                        task_id=task_id,
+                        source=source,
+                        paths=changed_paths,
+                        owner_id=f"command-import:{task_id}:{transaction_id}:{uuid.uuid4().hex}",
+                        namespace_kwargs=namespace_kwargs,
+                    ) as (fencing_lease, commit_attempt_payload):
+                        journal_payload["attempt_fence"] = commit_attempt_payload
                         journal_payload["fencing"] = {
                             "lease_id": fencing_lease.lease_id,
                             "fencing_token": fencing_lease.fencing_token,
                         }
-                        journal_payload["attempt_fence"] = attempt_payload
-                        fence_commit_started = True
-                        self._persist_transaction_journal(journal_path, journal_payload)
-                        self._fsync_transaction_directory(transaction_parent)
+                        directory_fsync_supported = self._persist_transaction_journal(
+                            journal_path, journal_payload
+                        )
                         try:
                             _restore_rollback_scope(str(source), import_snapshot)
                         except Exception as import_error:
@@ -5340,8 +5615,11 @@ class CommandBroker:
                                 source, source_snapshot, transaction_snapshot, changed_paths
                             )
                             if restored:
-                                self._fsync_transaction_directory(transaction_parent)
-                                journal_path.unlink(missing_ok=True)
+                                directory_fsync_supported = (
+                                    self._fsync_rollback_directories(source, changed_paths)
+                                    and directory_fsync_supported
+                                )
+                                self._remove_transaction_journal(journal_path, journal_payload)
                                 result.update({
                                     "success": False,
                                     "transaction_status": "discarded",
@@ -5366,11 +5644,16 @@ class CommandBroker:
                                     verify_snapshot.files[path], transaction_snapshot.files[path]
                                 ):
                                     raise OSError(f"imported transaction output changed: {path}")
-                            self._fsync_rollback_directories(verify_snapshot, changed_paths)
                         finally:
                             _close_rollback_root(verify_snapshot.root_guard)
-                        self._fsync_transaction_directory(transaction_parent)
-                        journal_path.unlink()
+                        directory_fsync_supported = (
+                            self._fsync_rollback_directories(source, changed_paths)
+                            and directory_fsync_supported
+                        )
+                        directory_fsync_supported = (
+                            self._remove_transaction_journal(journal_path, journal_payload)
+                            and directory_fsync_supported
+                        )
                 result.update({
                     "success": True,
                     "transaction_status": "committed",
@@ -5379,47 +5662,37 @@ class CommandBroker:
                     "retryable": False,
                     "terminal": True,
                     "imported_paths": changed_paths if 'changed_paths' in locals() else [],
+                    "directory_fsync_supported": directory_fsync_supported,
                 })
-                return result
+                if not directory_fsync_supported:
+                    result["durability_warning"] = (
+                        "Directory fsync is unsupported on Windows; transaction crash durability is not guaranteed."
+                    )
             except Exception as exc:
-                source_conflict = "source path changed while command was running" in str(exc)
-                if fence_commit_started or source_conflict:
-                    retain_transaction = True
-                    retain_lease = True
-                    retain_fencing_lease = True
-                    if not result.get("incident_required"):
-                        commit_error = OSError(str(exc)[:512])
-                        self._mark_rollback_outcome_unknown(
-                            result,
-                            command_key=command_key,
-                            attempt_key=attempt_key,
-                            error=commit_error,
-                            rollback_paths=paths,
-                        )
-                        self._capture_rollback_unknown_incident(
-                            result, command=command, affected_paths=paths
-                        )
-                    result.update({
-                        "success": False,
-                        "transaction_status": "recovery_required",
-                        "failure_kind": "destination_conflict" if source_conflict or "changed" in str(exc).lower() else "import_failed",
-                        "outcome_unknown": True,
-                        "retryable": False,
-                        "terminal": True,
-                        "error": str(exc)[:512],
-                    })
-                else:
-                    result.update({
-                        "success": False,
-                        "transaction_status": "discarded",
-                        "failure_kind": "mutation_fence_lost",
-                        "outcome_unknown": False,
-                        "source_unchanged": True,
-                        "retryable": False,
-                        "terminal": True,
-                        "error": str(exc)[:512],
-                    })
-                return result
+                retain_transaction = True
+                retain_lease = True
+                self._mark_rollback_outcome_unknown(
+                    result,
+                    command_key=command_key,
+                    attempt_key=attempt_key,
+                    error=exc,
+                    rollback_paths=paths,
+                )
+                self._capture_rollback_unknown_incident(
+                    result, command=command, affected_paths=paths
+                )
+                result.update({
+                    "success": False,
+                    "transaction_status": "recovery_required",
+                    "failure_kind": "durability_sync_failed" if "sync" in str(exc).lower() else "import_failed",
+                    "outcome_unknown": True,
+                    "fail_closed": True,
+                    "incident_required": True,
+                    "retryable": False,
+                    "terminal": True,
+                    "error": str(exc)[:512],
+                })
+            return result
         except Exception as exc:
             result.update({
                 "success": False,
@@ -5431,8 +5704,6 @@ class CommandBroker:
             })
             return result
         finally:
-            if fencing_heartbeat is not None:
-                fencing_lease, _fence_lost, _fence_error = fencing_heartbeat.stop()
             if transaction_snapshot is not None:
                 try:
                     _close_rollback_root(transaction_snapshot.root_guard)
@@ -5449,11 +5720,7 @@ class CommandBroker:
                 self._active_transaction_roots.pop(transaction_id, None)
             if not retain_lease:
                 self._transaction_leases.release(transaction_name, str(lease.get("lease_id") or ""))
-            if not retain_fencing_lease:
-                try:
-                    fencing_store.release(fencing_lease)
-                except Exception:
-                    pass
+
 
     def _distill_error_with_model(self, result: dict[str, Any]) -> str:
         if not callable(self.error_distiller):
@@ -5470,6 +5737,201 @@ class CommandBroker:
         if isinstance(distilled, dict):
             distilled = distilled.get("text", distilled.get("summary", ""))
         return str(distilled or "").strip()[:300]
+
+    def _cached_project_command_context(self, root: str, state_dir: Path) -> Any:
+        from .project_config import resolve_project_context
+
+        cache_key = _project_config_cache_key(Path(root), state_dir)
+        if cache_key is not None:
+            with self._project_command_context_cache_lock:
+                context = self._project_command_context_cache.get(cache_key)
+                if context is not None:
+                    self._project_command_context_cache.move_to_end(cache_key)
+                    return context
+
+        context = resolve_project_context(root, state_dir)
+        if cache_key is not None and _project_config_cache_key(Path(root), state_dir) == cache_key:
+            with self._project_command_context_cache_lock:
+                self._project_command_context_cache[cache_key] = context
+                self._project_command_context_cache.move_to_end(cache_key)
+                while len(self._project_command_context_cache) > 64:
+                    self._project_command_context_cache.popitem(last=False)
+        return context
+
+    def _resolve_project_command(
+        self,
+        alias: str,
+        cwd: str,
+        *,
+        args: Sequence[str] = (),
+    ) -> _ResolvedProjectCommand:
+        """Resolve one explicit project alias without invoking a process."""
+        from .project_config import (
+            CommandDefinition,
+            ProjectConfigError,
+        )
+
+        if not isinstance(alias, str) or not _PROJECT_COMMAND_ALIAS_RE.fullmatch(alias):
+            raise ProjectConfigError("invalid_command_alias")
+        if isinstance(args, (str, bytes)) or not isinstance(args, (list, tuple)):
+            raise ProjectConfigError("invalid_command_arguments")
+        if len(args) > _MAX_PROJECT_COMMAND_ARGS or any(
+            not isinstance(item, str) or len(item) > 4096 or "\x00" in item
+            for item in args
+        ):
+            raise ProjectConfigError("invalid_command_arguments")
+
+        context = self._cached_project_command_context(
+            cwd, configured_state_dir(self.config)
+        )
+        command_root = Path(cwd).expanduser().resolve(strict=True)
+        try:
+            command_root.relative_to(context.root)
+        except ValueError:
+            raise ProjectConfigError("command_outside_project") from None
+
+        if not isinstance(context.config_digest, str) or not context.config_digest:
+            raise ProjectConfigError("invalid_config")
+        definition = context.settings.commands.get(alias)
+        if definition is None:
+            raise ProjectConfigError("command_alias_not_found")
+
+        command_env_references = dict(context.settings.env_references)
+        if isinstance(definition, str):
+            if args:
+                raise ProjectConfigError("string_command_does_not_accept_arguments")
+            command: str | CommandInvocation = definition
+            configured_command: str | CommandInvocation = definition
+        elif isinstance(definition, CommandDefinition):
+            command_env_references.update(definition.env_references)
+            configured_command = CommandInvocation(
+                argv=list(definition.argv),
+                cwd=str(command_root),
+                shell=False,
+            )
+            invocation = CommandInvocation(
+                argv=[*definition.argv, *args],
+                cwd=str(command_root),
+                shell=False,
+            )
+            invocation_result = validate_invocation(invocation)
+            if not invocation_result.get("safe"):
+                raise ProjectConfigError("invalid_command_definition")
+            command = invocation
+        else:
+            raise ProjectConfigError("invalid_command_definition")
+
+        project_environment = dict(context.settings.env)
+        if len(project_environment) + len(command_env_references) > _MAX_PROJECT_COMMAND_ENV_ENTRIES:
+            raise ProjectConfigError("invalid_command_environment")
+        environment: dict[str, str] = {}
+        environment_size = 0
+        for target_name, value in project_environment.items():
+            if (
+                not isinstance(target_name, str)
+                or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(target_name)
+                or _is_unsafe_project_command_env_key(target_name)
+                or not isinstance(value, str)
+                or "\x00" in value
+            ):
+                raise ProjectConfigError("invalid_command_environment")
+            environment_size += len(target_name.encode("utf-8")) + len(value.encode("utf-8"))
+            if environment_size > _MAX_PROJECT_COMMAND_ENV_BYTES:
+                raise ProjectConfigError("command_environment_too_large")
+            environment[target_name] = value
+
+        for target_name, source_name in command_env_references.items():
+            if (
+                not isinstance(target_name, str)
+                or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(target_name)
+                or _is_unsafe_project_command_env_key(target_name)
+                or not isinstance(source_name, str)
+                or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(source_name)
+            ):
+                raise ProjectConfigError("invalid_command_environment")
+            if source_name not in os.environ:
+                raise ProjectConfigError("command_environment_unavailable")
+            value = os.environ[source_name]
+            if not isinstance(value, str) or "\x00" in value:
+                raise ProjectConfigError("invalid_command_environment")
+            environment_size += len(target_name.encode("utf-8")) + len(value.encode("utf-8"))
+            if environment_size > _MAX_PROJECT_COMMAND_ENV_BYTES:
+                raise ProjectConfigError("command_environment_too_large")
+            environment[target_name] = value
+
+        cache_context = stable_hash(
+            {
+                "alias": alias,
+                "config_digest": context.config_digest,
+                "environment": environment,
+            }
+        )
+        return _ResolvedProjectCommand(
+            alias=alias,
+            command=command,
+            environment=environment,
+            config_digest=context.config_digest,
+            cache_context=cache_context,
+            configured_command=configured_command,
+            caller_arguments=tuple(args),
+        )
+
+    def run_project_command(
+        self,
+        alias: str,
+        cwd: str,
+        tenant: str = "agent",
+        *,
+        args: Sequence[str] = (),
+        timeout: int | None = None,
+        force: bool = False,
+        task_id: str = "",
+        criterion: str = "",
+        log_callback: Any | None = None,
+        snapshot: bool = False,
+        rollback_on_failure: bool = False,
+        rollback_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Run an explicit project command alias through normal broker policy."""
+        from .project_config import ProjectConfigError
+
+        try:
+            resolved = self._resolve_project_command(alias, cwd, args=args)
+        except ProjectConfigError as exc:
+            return {
+                "success": False,
+                "error": f"project command unavailable: {exc.code}",
+                "project_command_error": exc.code,
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return {
+                "success": False,
+                "error": "project command configuration could not be resolved",
+                "project_command_error": "configuration_resolution_failed",
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+
+        return self.run(
+            resolved.command,
+            cwd,
+            tenant,
+            timeout=timeout,
+            force=force,
+            task_id=task_id,
+            criterion=criterion,
+            log_callback=log_callback,
+            snapshot=snapshot,
+            rollback_on_failure=rollback_on_failure,
+            rollback_paths=rollback_paths,
+            _environment_overrides=resolved.environment,
+            _cache_context=resolved.cache_context,
+            _project_command_context=resolved,
+        )
 
     @staticmethod
     def _read_cache_entry(cache: Any, key: str) -> tuple[Any | None, bool]:
@@ -5492,7 +5954,7 @@ class CommandBroker:
     @_stable_rollback_status
     def run(
         self,
-        command: str,
+        command: str | CommandInvocation,
         cwd: str,
         tenant: str = "agent",
         *,
@@ -5512,11 +5974,101 @@ class CommandBroker:
         bypass_cache: bool = False,
         paths: list[str] | None = None,
         rollback_paths: list[str] | None = None,
+        _environment_overrides: Mapping[str, str] | None = None,
+        _cache_context: str = "",
         _transaction_context: str = "",
-        _work_attempt_fence: Any = None,
+        _work_attempt_fence: WorkAttemptFence | None = None,
+        _project_command_context: _ResolvedProjectCommand | None = None,
     ) -> dict[str, Any]:
+        project_alias = ""
+        project_config_digest = ""
+        project_environment_sha256 = ""
+        configured_command_sha256 = ""
+        caller_arguments_sha256 = ""
+        if (
+            isinstance(_project_command_context, _ResolvedProjectCommand)
+            and _project_command_context.command == command
+        ):
+            project_alias = _project_command_context.alias
+            project_config_digest = _project_command_context.config_digest
+            project_environment_sha256 = hashlib.sha256(
+                json.dumps(
+                    _project_command_context.environment,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            configured = _project_command_context.configured_command
+            if isinstance(configured, CommandInvocation):
+                configured_text = json.dumps(
+                    {
+                        "argv": configured.argv,
+                        "cwd": configured.cwd,
+                        "shell": configured.shell,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            else:
+                configured_text = configured
+            configured_command_sha256 = hashlib.sha256(
+                configured_text.encode("utf-8")
+            ).hexdigest()
+            caller_arguments_sha256 = hashlib.sha256(
+                json.dumps(
+                    list(_project_command_context.caller_arguments),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
+        project_alias_required = False
+        if record_verification and task_id and criterion and _project_command_context is None:
+            try:
+                project_context = self._cached_project_command_context(
+                    cwd, configured_state_dir(self.config)
+                )
+                if project_context.resolution.error_codes:
+                    project_alias_required = True
+                else:
+                    project_alias_required = criterion.strip() in project_context.settings.verification_rules
+            except Exception:
+                project_alias_required = True
+        argv_override: list[str] | None = None
+        if isinstance(command, CommandInvocation):
+            invocation_result = validate_invocation(command)
+            if not invocation_result.get("safe"):
+                return {**invocation_result, "success": False, "preflight": True}
+            argv_override = list(invocation_result["argv"])
+            invocation_cwd = invocation_result.get("cwd")
+            if invocation_cwd is not None:
+                try:
+                    if Path(invocation_cwd).resolve(strict=False) != Path(cwd).resolve(strict=False):
+                        return {
+                            "success": False,
+                            "error": "structured invocation working directory does not match command working directory",
+                            "preflight": True,
+                            "terminal": True,
+                            "retryable": False,
+                        }
+                except (OSError, TypeError, ValueError):
+                    return {
+                        "success": False,
+                        "error": "structured invocation working directory is invalid",
+                        "preflight": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }
+            command = shlex.join(argv_override)
+        if not isinstance(command, str):
+            return {
+                "success": False,
+                "error": "command must be a string or validated argv invocation",
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
         transaction_cwd: Path | None = None
         if _transaction_context:
             if not re.fullmatch(r"[0-9a-f]{32}", _transaction_context):
@@ -5528,71 +6080,60 @@ class CommandBroker:
                     raise ValueError("private transaction cwd does not match transaction context")
             except (OSError, ValueError) as exc:
                 return {"success": False, "error": str(exc)[:256], "terminal": True, "retryable": False}
+        if not isinstance(_cache_context, str):
+            return {
+                "success": False,
+                "error": "project command cache context is invalid",
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        if _environment_overrides is not None:
+            if not isinstance(_environment_overrides, Mapping) or len(_environment_overrides) > _MAX_PROJECT_COMMAND_ENV_ENTRIES:
+                return {
+                    "success": False,
+                    "error": "project command environment is invalid",
+                    "preflight": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+            environment_size = 0
+            for name, value in _environment_overrides.items():
+                if (
+                    not isinstance(name, str)
+                    or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(name)
+                    or name.upper() in _PROJECT_COMMAND_ENV_BLOCKED
+                    or not isinstance(value, str)
+                    or "\x00" in value
+                ):
+                    return {
+                        "success": False,
+                        "error": "project command environment is invalid",
+                        "preflight": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }
+                environment_size += len(name.encode("utf-8")) + len(value.encode("utf-8"))
+                if environment_size > _MAX_PROJECT_COMMAND_ENV_BYTES:
+                    return {
+                        "success": False,
+                        "error": "project command environment is too large",
+                        "preflight": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }
         if rollback_on_failure and auto_fix:
             return {"success": False, "error": "rollback_on_failure is supported only for direct run actions", "rollback_unsupported_action": True, "terminal": True, "retryable": False}
         rollback_state: RollbackSnapshot | None = None
         original_command = command
         classification = self.classify(original_command)
         is_mutating = classification.get("class") == "mutating"
-        if (is_mutating or auto_fix or rollback_on_failure) and not _transaction_context:
-            worktree_error = self._require_task_worktree(task_id, cwd, original_command)
-            if worktree_error:
-                return {
-                    "success": False,
-                    "error": worktree_error,
-                    "mutation_worktree_required": True,
-                    "terminal": True,
-                    "retryable": False,
-                }
-        # Services routes the task attempt's changed paths through the existing
-        # rollback_paths argument. Treat that explicit list as the write set even
-        # when rollback-on-failure is disabled.
-        declared_paths = paths if paths is not None else rollback_paths
-        if (is_mutating or auto_fix) and not declared_paths:
-            return {
-                "success": False,
-                "error": "mutating command requires an explicit non-empty paths write set",
-                "mutation_write_set_required": True,
-                "terminal": True,
-                "retryable": False,
-            }
-        if rollback_on_failure and paths is not None and rollback_paths is not None:
-            if (
-                all(isinstance(value, str) for value in paths)
-                and all(isinstance(value, str) for value in rollback_paths)
-                and {value.replace("\\", "/") for value in paths}
-                != {value.replace("\\", "/") for value in rollback_paths}
-            ):
-                return {
-                    "success": False,
-                    "error": "paths and rollback_paths must describe the same write set",
-                    "mutation_write_set_invalid": True,
-                    "terminal": True,
-                    "retryable": False,
-                }
-        docker_ready = False
-        docker_sandbox = sandbox == "docker"
-        if docker_sandbox and not (is_mutating or auto_fix or rollback_on_failure):
-            docker_ready, docker_error = self._transaction_docker_ready()
-            if not docker_ready:
-                return {
-                    "success": False,
-                    "error": docker_error,
-                    "terminal": True,
-                    "retryable": False,
-                }
-        if task_id and self.policy_engine:
-            budget = self.policy_engine.get_budget(task_id)
-            if budget.is_exhausted():
-                return {
-                    "success": False,
-                    "error": f"task budget exhausted ({task_id}): max_tokens={budget.max_tokens}, max_compute_seconds={budget.max_compute_seconds}",
-                    "terminal": True,
-                    "retryable": False,
-                    "budget_exhausted": True,
-                }
-        attempt_key = self._attempt_key(command, cwd)
-        if not force and not bypass_cache and not is_mutating:
+        attempt_key = (
+            self._attempt_key(command, cwd, cache_context=_cache_context)
+            if _cache_context
+            else self._attempt_key(command, cwd)
+        )
+        if not force and not bypass_cache and not is_mutating and not _transaction_context:
             suppressed, suppression_cache_healthy = self._read_cache_entry(self.suppression_cache, attempt_key)
             if suppression_cache_healthy and isinstance(suppressed, dict):
                 self.suppressed += 1
@@ -5609,9 +6150,72 @@ class CommandBroker:
                 "success": False, "error": f"command blocked: {classification['reason']}",
                 "classification": classification, "policy_blocked": True, "terminal": True, "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return result
+        if (is_mutating or auto_fix or rollback_on_failure) and not _transaction_context:
+            worktree_error = self._require_task_worktree(task_id, cwd, original_command, require_git_identity=True)
+            if worktree_error:
+                return {
+                    "success": False,
+                    "error": worktree_error,
+                    "mutation_worktree_required": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+        declared_paths = paths if paths is not None else rollback_paths
+        if (is_mutating or auto_fix) and not declared_paths and not _transaction_context:
+            return {"success": False, "error": "mutating command requires an explicit non-empty paths write set", "mutation_write_set_required": True, "terminal": True, "retryable": False}
+        if rollback_on_failure and paths is not None and rollback_paths is not None:
+            if {value.replace(chr(92), "/") for value in paths} != {value.replace(chr(92), "/") for value in rollback_paths}:
+                return {"success": False, "error": "paths and rollback_paths must describe the same write set", "mutation_write_set_invalid": True, "terminal": True, "retryable": False}
+        if (is_mutating or rollback_on_failure) and _environment_overrides:
+            return {"success": False, "error": "mutating transaction does not accept project environment overrides", "terminal": True, "retryable": False}
+        fence_required = is_mutating or auto_fix or (
+            rollback_on_failure and classification.get("class") == "unknown"
+        )
+        if fence_required and _work_attempt_fence is None:
+            return {
+                "success": False,
+                "error": "mutating transaction requires a current work attempt fence",
+                "mutation_fence_required": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        if _work_attempt_fence is not None:
+            try:
+                self._assert_work_attempt_fence(
+                    _work_attempt_fence, task_id=task_id, resource=cwd
+                )
+            except (AttributeError, OSError, TypeError, ValueError, RuntimeError) as exc:
+                return {
+                    "success": False,
+                    "error": str(exc)[:512],
+                    "failure_kind": "work_attempt_fence_invalid",
+                    "mutation_fence_required": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+        if sandbox == "docker" and not is_mutating and not _transaction_context:
+            if not shutil.which("docker"):
+                return {
+                    "success": False,
+                    "error": "docker executable not found for sandbox mode",
+                    "terminal": True,
+                    "retryable": False,
+                }
+            abs_cwd = str(Path(cwd).resolve())
+            command = f'docker run --rm -v "{abs_cwd}:/workspace" -w /workspace {docker_image} {command}'
+        if task_id and self.policy_engine:
+            budget = self.policy_engine.get_budget(task_id)
+            if budget.is_exhausted():
+                return {
+                    "success": False,
+                    "error": f"task budget exhausted ({task_id}): max_tokens={budget.max_tokens}, max_compute_seconds={budget.max_compute_seconds}",
+                    "terminal": True,
+                    "retryable": False,
+                    "budget_exhausted": True,
+                }
         cwd_path = Path(cwd).expanduser().resolve(strict=False)
         if not cwd_path.is_dir():
             result = {
@@ -5621,16 +6225,16 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return result
-        unavailable = self._unavailable_executable(command, cwd)
+        unavailable = None if _transaction_context else self._unavailable_executable(command, cwd)
         if unavailable:
             result = {
                 "success": False, "error": f"command executable is unavailable: {unavailable}",
                 "exit_code": 127, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         if not Path(cwd).is_dir():
@@ -5638,11 +6242,16 @@ class CommandBroker:
                 "success": False, "error": f"working directory does not exist: {cwd}",
                 "exit_code": 1, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         try:
-            key, state = self._key(command, cwd, classification)
+            if _cache_context:
+                key, state = self._key(
+                    command, cwd, classification, cache_context=_cache_context
+                )
+            else:
+                key, state = self._key(command, cwd, classification)
         except ValueError as exc:
             result = {
                 "success": False,
@@ -5652,41 +6261,88 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
-        cacheable = bool(classification["cacheable"]) and not is_mutating
-        if cacheable and not force:
+        cacheable = bool(classification["cacheable"]) and not is_mutating and not _transaction_context
+        if cacheable and not force and not bypass_cache:
             cached = self._read_cached_command_result(self.success_cache, self.failure_cache, key)
+            if isinstance(cached, dict):
+                stale_key = key
+                invalidate_repo_state = getattr(self.repo_state, "invalidate", None)
+                if callable(invalidate_repo_state):
+                    invalidate_repo_state(cwd)
+                try:
+                    if _cache_context:
+                        key, state = self._key(
+                            command, cwd, classification, cache_context=_cache_context
+                        )
+                    else:
+                        key, state = self._key(command, cwd, classification)
+                except ValueError:
+                    cached = None
+                else:
+                    if key != stale_key:
+                        cached = self._read_cached_command_result(self.success_cache, self.failure_cache, key)
             if isinstance(cached, dict):
                 self.hits += 1
                 result = dict(cached)
                 result.update({"cache_hit": True, "coalesced": False, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
-                if record_verification:
-                    self._record_command_verification(
-                        result,
-                        tenant=tenant,
-                        task_id=task_id,
-                        criterion=criterion or f"command:{self._safe_label(command)}",
-                        command_id=f"cache_{uuid.uuid4().hex}",
-                        command=command,
-                        command_digest=hashlib.sha256(command.encode("utf-8")).hexdigest(),
-                        repository_revision=str(state.get("fingerprint", "")),
-                        duration_ms=float(result.get("duration_ms", 0) or 0),
-                        cached=True,
-                        repository_root=str(state.get("root") or cwd),
-                    )
+                self._record_command_verification(
+                    result,
+                    tenant=tenant,
+                    task_id=task_id,
+                    criterion=criterion or f"command:{self._safe_label(command)}",
+                    command=command,
+                    command_id=f"cache_{uuid.uuid4().hex}",
+                    command_digest=hashlib.sha256(command.encode("utf-8")).hexdigest(),
+                    repository_revision=str(state.get("fingerprint", "")),
+                    duration_ms=float(result.get("duration_ms", 0) or 0),
+                    cached=True,
+                    project_alias=project_alias,
+                    project_config_digest=project_config_digest,
+                    project_environment_sha256=project_environment_sha256,
+                    configured_command_sha256=configured_command_sha256,
+                    caller_arguments_sha256=caller_arguments_sha256,
+                    project_alias_required=project_alias_required,
+                    repository_root=str(state.get("root") or cwd),
+                )
                 return self._compact(result, tenant, command)
 
-        singleflight = not is_mutating and not bypass_cache
+        singleflight = not is_mutating and not bypass_cache and not _transaction_context
         event: threading.Event | None = None
+        owner = False
         if singleflight:
-            with self._lock:
-                event = self._inflight.get(key)
-                if event is None:
-                    event = _CommandSingleflightEvent(); self._inflight[key] = event; owner = True
-                else:
-                    owner = False; self.coalesced += 1
+            refreshed_for_inflight = False
+            while True:
+                with self._lock:
+                    event = self._inflight.get(key)
+                    if event is None:
+                        event = _CommandSingleflightEvent(); self._inflight[key] = event; owner = True
+                        break
+                    if refreshed_for_inflight:
+                        owner = False; self.coalesced += 1
+                        break
+                invalidate_repo_state = getattr(self.repo_state, "invalidate", None)
+                if not callable(invalidate_repo_state):
+                    refreshed_for_inflight = True
+                    continue
+                invalidate_repo_state(cwd)
+                try:
+                    if _cache_context:
+                        key, state = self._key(command, cwd, classification, cache_context=_cache_context)
+                    else:
+                        key, state = self._key(command, cwd, classification)
+                except ValueError as exc:
+                    return self._compact({
+                        "success": False,
+                        "error": str(exc),
+                        "classification": classification,
+                        "preflight": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }, tenant, command)
+                refreshed_for_inflight = True
         if singleflight and not owner:
             # A second agent should benefit from single-flight without being trapped
             # behind a very long build/test command. The owner keeps running and will
@@ -5712,11 +6368,13 @@ class CommandBroker:
                     "fail_closed": True,
                     "retryable": False,
                     "cache_hit": False,
-                    "coalesced": False,
+                    "coalesced": True,
                     "classification": classification,
                     "repo_state": state,
                 }
                 if isinstance(owner_result, Mapping):
+                    if owner_result.get("error"):
+                        waiter_result["error"] = str(owner_result["error"])
                     for flag in ("timed_out", "cancelled", "aborted_interactive", "cleanup_unconfirmed"):
                         if owner_result.get(flag):
                             waiter_result[flag] = True
@@ -5732,14 +6390,8 @@ class CommandBroker:
             scope_snapshot, scope_error = _snapshot_rollback_scope(cwd, scope_paths)
             if scope_error:
                 key = "rollback_scope_required" if scope_error == "rollback paths are required" else "rollback_scope_invalid"
-                return {
-                    "success": False,
-                    "error": scope_error,
-                    key: True,
-                    "terminal": True,
-                    "retryable": False,
-                }
-            if rollback_on_failure and _transaction_context:
+                return {"success": False, "error": scope_error, key: True, "terminal": True, "retryable": False}
+            if rollback_on_failure and (_transaction_context or not is_mutating):
                 rollback_state = scope_snapshot
             elif scope_snapshot is not None:
                 _close_rollback_root(scope_snapshot.root_guard)
@@ -5747,13 +6399,7 @@ class CommandBroker:
             rollback_state, scope_error = _snapshot_rollback_scope(cwd, rollback_paths)
             if scope_error:
                 key = "rollback_scope_required" if scope_error == "rollback paths are required" else "rollback_scope_invalid"
-                return {
-                    "success": False,
-                    "error": scope_error,
-                    key: True,
-                    "terminal": True,
-                    "retryable": False,
-                }
+                return {"success": False, "error": scope_error, key: True, "terminal": True, "retryable": False}
 
         self.misses += 1
         started_wall = time.time()
@@ -5797,50 +6443,35 @@ class CommandBroker:
                 or (rollback_on_failure and classification.get("class") == "unknown")
             ) and not _transaction_context:
                 result = self._run_private_transaction(
-                    original_command,
-                    cwd,
-                    tenant,
-                    task_id=task_id,
-                    paths=list(declared_paths or []),
-                    timeout=int(timeout or self.timeout),
-                    docker_image=docker_image,
+                    command, cwd, tenant, task_id=task_id, paths=list(declared_paths or []),
+                    timeout=int(timeout or self.timeout), docker_image=docker_image,
+                    cancel_event=cancel_event, log_callback=log_callback,
+                    command_key=key, attempt_key=attempt_key,
                     work_attempt_fence=_work_attempt_fence,
-                    cancel_event=cancel_event,
-                    log_callback=log_callback,
-                    command_key=key,
-                    attempt_key=attempt_key,
                 )
-            elif _transaction_context or docker_sandbox:
-                if not docker_ready and not _transaction_context:
-                    docker_ready, docker_error = self._transaction_docker_ready()
-                    if not docker_ready:
-                        result = {
-                            "success": False, "error": docker_error,
-                            "terminal": True, "retryable": False,
-                        }
-                    else:
-                        result = {}
-                else:
-                    result = {}
-                if docker_ready or _transaction_context:
-                    transaction_cwd = transaction_cwd or Path(cwd).resolve(strict=True)
-                    container_key = _transaction_context or uuid.uuid4().hex
-                    argv = self._transaction_docker_argv(
-                        container_key,
-                        transaction_cwd,
-                        original_command,
-                        docker_image,
-                        read_only_mount=not bool(_transaction_context),
-                    )
-                    result = self._execute(
-                        argv, str(transaction_cwd), int(timeout or self.timeout),
-                        cancel_event, log_callback=log_callback,
-                    )
-                    if result.get("timed_out") or result.get("cancelled") or result.get("cleanup_unconfirmed"):
-                        if not self._transaction_stop_container(container_key):
-                            result["cleanup_unconfirmed"] = True
+            elif _transaction_context:
+                transaction_cwd = transaction_cwd or Path(cwd).resolve(strict=True)
+                argv = self._transaction_docker_argv(
+                    _transaction_context, transaction_cwd, original_command, docker_image,
+                    read_only_mount=False,
+                )
+                result = self._execute(
+                    argv, str(transaction_cwd), int(timeout or self.timeout),
+                    cancel_event, log_callback=log_callback,
+                )
+                if result.get("timed_out") or result.get("cancelled") or result.get("cleanup_unconfirmed"):
+                    if not self._transaction_stop_container(_transaction_context):
+                        result.update({"success": False, "cleanup_unconfirmed": True, "outcome_unknown": True, "fail_closed": True, "retryable": False, "terminal": True})
             else:
-                result = self._execute(command, cwd, int(timeout or self.timeout), cancel_event, log_callback=log_callback)
+                result = self._execute(
+                    command,
+                    cwd,
+                    int(timeout or self.timeout),
+                    cancel_event,
+                    log_callback=log_callback,
+                    argv_override=argv_override,
+                    environment_overrides=_environment_overrides,
+                )
             # CPython compileall reports missing targets as a diagnostic while
             # still exiting 0. A green exit code must not hide that no target
             # was compiled.
@@ -5870,7 +6501,7 @@ class CommandBroker:
                 except Exception as rb_exc:
                     self._mark_rollback_outcome_unknown(
                         result, command_key=key, attempt_key=attempt_key, error=rb_exc,
-                        rollback_paths=scope_paths,
+                        rollback_paths=rollback_paths,
                     )
             elif snapshot and git_snapshot:
                 result["snapshot_taken"] = True
@@ -5902,6 +6533,8 @@ class CommandBroker:
                         ),
                         exit_code=int(result.get("exit_code", 1)),
                         state_revision=str(state.get("fingerprint", "")),
+                        repository_root=cwd,
+                        tenant=tenant,
                         timed_out=bool(result.get("timed_out")),
                         cancelled=bool(result.get("cancelled")),
                         metadata={"outcome_unknown": True, "rollback_error": result.get("rollback_error", "")} if result.get("outcome_unknown") else {},
@@ -5909,18 +6542,17 @@ class CommandBroker:
                             scope_paths or result.get("rollback_paths") or set(diag_paths)
                         ),
                     ))
-                    if inc:
-                        if result.get("outcome_unknown"):
-                            result["incident_id"] = inc.incident_id
-                            result["incident_recorded"] = True
-                        if inc.root_cause or inc.verified_fix:
-                            result["remediation"] = {
-                                "incident_id": inc.incident_id,
-                                "root_cause": inc.root_cause,
-                                "verified_fix": inc.verified_fix,
-                                "confidence": inc.confidence,
-                                "attempts": inc.attempts,
-                            }
+                    if inc and result.get("outcome_unknown"):
+                        result["incident_id"] = inc.incident_id
+                        result["incident_recorded"] = True
+                    if inc and (inc.root_cause or inc.verified_fix):
+                        result["remediation"] = {
+                            "incident_id": inc.incident_id,
+                            "root_cause": inc.root_cause,
+                            "verified_fix": inc.verified_fix,
+                            "confidence": inc.confidence,
+                            "attempts": inc.attempts,
+                        }
                 except Exception:
                     pass
 
@@ -5955,21 +6587,28 @@ class CommandBroker:
                 bool(result.get(flag))
                 for flag in ("timed_out", "cancelled", "aborted_interactive", "outcome_unknown", "in_progress")
             )
-            if cacheable and not uncertain_outcome:
+            if cacheable and not bypass_cache and not uncertain_outcome:
                 (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)
-            if record_verification and not result.get("outcome_unknown"):
+            if not result.get("outcome_unknown"):
                 self._record_command_verification(
                     result,
                     tenant=tenant,
                     task_id=task_id,
                     criterion=criterion or f"command:{self._safe_label(command)}",
-                    command_id=execution_id,
                     command=command,
+                    command_id=execution_id,
                     command_digest=hashlib.sha256(command.encode("utf-8")).hexdigest(),
                     repository_revision=str(state.get("fingerprint", "")),
                     duration_ms=float(result.get("duration_ms", 0) or 0),
+                    project_alias=project_alias,
+                    project_config_digest=project_config_digest,
+                    project_environment_sha256=project_environment_sha256,
+                    configured_command_sha256=configured_command_sha256,
+                    caller_arguments_sha256=caller_arguments_sha256,
+                    project_alias_required=project_alias_required,
+                    repository_root=str(state.get("root") or cwd),
                 )
-            if not force and not is_mutating and not uncertain_outcome and self._non_retryable_failure(raw):
+            if not force and not bypass_cache and not is_mutating and not uncertain_outcome and self._non_retryable_failure(raw):
                 raw.update({"terminal": True, "retryable": False})
                 self.suppression_cache.set(attempt_key, raw)
             if singleflight:
@@ -5999,7 +6638,6 @@ class CommandBroker:
                         timeout_result, command=command,
                         repository_revision=str(state.get("fingerprint", "")),
                     )
-            result = timeout_result
             return timeout_result
         finally:
             if rollback_state is not None:
@@ -6015,6 +6653,8 @@ class CommandBroker:
                 self._active_cancel_keys.pop(execution_key, None)
                 if event is not None:
                     completed_result = locals().get("result")
+                    if not isinstance(completed_result, dict):
+                        completed_result = locals().get("timeout_result")
                     if isinstance(event, _CommandSingleflightEvent) and isinstance(completed_result, dict):
                         event.owner_result = dict(completed_result)
                     event.set()
@@ -6061,7 +6701,7 @@ class CommandBroker:
         log_callback: Any | None = None,
         docker_image: str = "python:3.11-slim",
         _transaction_context: str = "",
-        _work_attempt_fence: Any = None,
+        _work_attempt_fence: WorkAttemptFence | None = None,
     ) -> dict[str, Any]:
         """Apply a unified diff, run verification tests, and auto-rollback on failure."""
         cwd_path = Path(cwd).resolve(strict=True) if _transaction_context else Path(canonical_root(cwd))
@@ -6338,7 +6978,6 @@ class CommandBroker:
                 and self.verification_store is not None
             ):
                 try:
-                    import uuid
                     from .agent_verification import VerificationReceipt
                     rcpt = VerificationReceipt.create(
                         task_id=task_id,
@@ -6439,15 +7078,14 @@ class CommandBroker:
 
         if py_files:
             checker = "py_compile"
-            import py_compile
             for pf in py_files:
                 p_path = cwd_path / pf
                 try:
-                    py_compile.compile(str(p_path), doraise=True)
-                except py_compile.PyCompileError as err:
+                    compile(p_path.read_bytes(), str(p_path), "exec")
+                except SyntaxError as err:
                     errors.append({
                         "file": pf,
-                        "line": getattr(err, "lineno", 1) or 1,
+                        "line": err.lineno or 1,
                         "message": str(err.msg),
                         "level": "syntax_error",
                     })
@@ -6609,6 +7247,23 @@ class CommandBroker:
                 "attempts": 0,
                 "result": uncertain,
                 "message": "repair skipped because command outcome or side effects are not safe to replay",
+            }
+
+        classification = self.classify(command)
+        replay_safe = bool(
+            classification.get("replay_safe", False)
+        )
+        uncertain = bool(initial.get("outcome_unknown") or initial.get("timed_out") or initial.get("in_progress"))
+        unsafe_class = classification.get("class") in {"mutating", "dangerous"}
+        if uncertain or unsafe_class or not replay_safe:
+            return {
+                "success": False,
+                "repaired": False,
+                "repair_skipped": True,
+                "outcome_unknown": bool(uncertain or unsafe_class or not replay_safe),
+                "attempts": 0,
+                "result": initial,
+                "message": "repair skipped because command outcome or side effects are unsafe to replay",
             }
 
         original_files: dict[Path, str | None] = {}
@@ -6997,7 +7652,9 @@ class CommandBroker:
             }
         classification_command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
         classification = self.classify(classification_command)
-        if classification.get("class") == "dangerous" or not classification.get("allowed", False):
+        if classification.get("class") == "dangerous" or (
+            not classification.get("allowed", False)
+        ):
             return {
                 "success": False,
                 "error": f"daemon command blocked: {classification.get('reason', 'policy')}",
@@ -7903,7 +8560,7 @@ class CommandBroker:
         """Save dirty working tree state to Git stash."""
         resolved = str(Path(cwd).resolve())
         cmd = ["git", "stash", "push", "-u", "-m", message]
-        worktree_error = self._require_task_worktree(task_id, resolved)
+        worktree_error = self._require_task_worktree(task_id, resolved, require_git_identity=True)
         if worktree_error:
             return {
                 "success": False,
@@ -7923,7 +8580,7 @@ class CommandBroker:
         """Restore most recent Git stash."""
         resolved = str(Path(cwd).resolve())
         cmd = ["git", "stash", "pop"]
-        worktree_error = self._require_task_worktree(task_id, resolved)
+        worktree_error = self._require_task_worktree(task_id, resolved, require_git_identity=True)
         if worktree_error:
             return {
                 "success": False,
@@ -8024,7 +8681,7 @@ class CommandBroker:
         resolved = str(Path(cwd).resolve())
         if not patch or not patch.strip():
             return {"success": False, "error": "patch content must not be empty"}
-        worktree_error = self._require_task_worktree(task_id, resolved)
+        worktree_error = self._require_task_worktree(task_id, resolved, require_git_identity=True)
         if worktree_error:
             return {
                 "success": False,
@@ -8300,6 +8957,14 @@ class CommandBroker:
         except _NetworkPolicyError as exc:
             duration = round((time.perf_counter() - started) * 1000, 1) if "started" in locals() else 0.0
             return {"success": False, "error_code": exc.code, "error": str(exc), "duration_ms": duration}
+        except (TimeoutError, socket.timeout):
+            duration = round((time.perf_counter() - started) * 1000, 1) if "started" in locals() else 0.0
+            return {
+                "success": False,
+                "error_code": "network_timeout",
+                "error": "Network request timed out",
+                "duration_ms": duration,
+            }
         except Exception as exc:
             duration = round((time.perf_counter() - started) * 1000, 1) if "started" in locals() else 0.0
             return {

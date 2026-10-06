@@ -419,8 +419,6 @@ def test_12_git_precommit_hooks(tmp_path: Path):
 
 def test_13_mock_recorder_and_replayer(tmp_path: Path):
     task_id = "mock-recorder-test-task"
-    worktree_path = tmp_path.resolve()
-    subprocess.run(["git", "init"], cwd=str(worktree_path), capture_output=True, check=True, **hidden_run_kwargs())
     broker = CommandBroker(config={
         "server": {"state_dir": str(tmp_path)},
         "agent_policy": {
@@ -431,14 +429,7 @@ def test_13_mock_recorder_and_replayer(tmp_path: Path):
     task = SimpleNamespace(
         task_id=task_id,
         checkpoint=SimpleNamespace(
-            state_data={"worktree": {
-                "worktree_path": str(worktree_path), "success": True,
-                "repo_root": str(worktree_path),
-                "branch": subprocess.run(
-                    ["git", "-C", str(worktree_path), "symbolic-ref", "--quiet", "--short", "HEAD"],
-                    capture_output=True, text=True, check=True, **hidden_run_kwargs()
-                ).stdout.strip(),
-            }}
+            state_data={"worktree": {"worktree_path": str(tmp_path), "success": True}}
         ),
     )
 

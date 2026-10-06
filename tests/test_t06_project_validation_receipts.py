@@ -170,8 +170,9 @@ def test_structured_project_validation_binds_args_and_private_environment(
         generic_proof = _proof(app, generic)
         assert generic_proof["command_classification"] == "test"
         assert generic_proof["command_sha256"] == hashlib.sha256(
-            generic_proof["command"].encode()
+            proof["command"].encode()
         ).hexdigest()
+        assert "command" not in generic_proof
         assert "project_alias" not in generic_proof
         assert "project_execution_binding_sha256" not in generic_proof
 
