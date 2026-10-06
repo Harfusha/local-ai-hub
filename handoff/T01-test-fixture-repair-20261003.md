@@ -1,0 +1,50 @@
+# T01 test-fixture repair receipt — 2026-10-03
+
+## Scope
+
+Only these T01-owned acceptance tests changed:
+
+- `tests/test_http_route_operation_acceptance.py`
+- `tests/test_mcp_coord_operation_acceptance.py`
+
+No production source changed. Root untouched. No tests run after these edits.
+
+Exact patch: `handoff/T01-test-fixture-repair-20261003.patch`
+Patch SHA-256: `F517BC43BA79C4282476B6C8F4F510D53057F4CC03A9C2C09102F17F5D8F447E`
+
+## Pre/post SHA-256
+
+| File | Pre-edit SHA-256 | Post-edit SHA-256 |
+|---|---|---|
+| `tests/test_http_route_operation_acceptance.py` | `FA5C866BD05A69364EEB7DC63C6B051A86F551ABCD5738613547CBFC273CEC7C` | `1831895DD1F94BF646953007FCC4F742F69454FF1B79952683DB707F55F0A008` |
+| `tests/test_mcp_coord_operation_acceptance.py` | `0DB2EB213FF4F8B121F8B82EA12340C5F01558EED03D1B780DC60BD0467CABB5` | `99701E4738026993D07AD16718068ACDB609ECB12F8E298B61B907FCF520F3D7` |
+
+Pre-edit values match the T01 operation inventory's source pins captured before the 95-selector run.
+
+## Fixture corrections
+
+- HTTP events test now patches the implemented `AgentStateStore.events(stream_id, after_seq, limit)` and checks the actual response payload.
+- `ApiBackend` test double now supports GET and records the exact path/kwargs.
+- Blackboard forwarding expectations now match adapter default `content=""`.
+- Twelve internal action-alias tests now call `local_ai_coord` directly. The public MCP action enum advertises canonical actions; these short aliases are internal normalization behavior, not valid public MCP inputs. The tests continue checking alias normalization and backend forwarding without asserting an unsupported public schema value.
+
+These changes fix acceptance harness assumptions only. They do not prove production acceptance.
+
+## Commands and results
+
+Baseline before fixture repair:
+```powershell
+$env:PYTHONPATH='src'
+$env:PYTHONDONTWRITEBYTECODE='1'
+$selectors = Get-Content -LiteralPath 'handoff/T01-operation-selector-rerun-20261003.txt'
+& 'C:\Python313\python.exe' -B -m pytest -vv -p no:cacheprovider --tb=short $selectors
+```
+Result: exit 1; 76 passed, 19 failed in 55.03 s.
+
+After repair, one submission was sent via `local_ai_command` after explicit slot GO:
+
+```powershell
+$env:PYTHONPATH='src'; $env:PYTHONDONTWRITEBYTECODE='1'; $selectors = Get-Content -LiteralPath 'handoff/T01-operation-selector-rerun-20261003.txt'; & 'C:\Python313\python.exe' -B -m pytest -vv -p no:cacheprovider --tb=short $selectors
+```
+
+Broker result: `outcome_unknown=true`, request ID `req_c63767e93fda`, no execution ID and no pytest output. Orchestration could not resolve the request. Do not retry, poll, relaunch, or use native fallback for this same run. No acceptance result or post-repair failure list is available. Slot stays held until an authoritative process/command receipt arrives. Any further test run requires new explicit consent. Inventory remains unaccepted.

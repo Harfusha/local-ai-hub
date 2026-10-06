@@ -5,7 +5,6 @@ from collections.abc import Mapping
 import json
 import math
 import threading
-import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -15,6 +14,7 @@ from .priority_gate import CooperativePriorityGate
 from .accelerators import openvino_cache_dir, openvino_device_candidates
 from .state_paths import configured_state_dir
 from .json_utils import dumps as json_dumps
+from .model_lifecycle import acquire_locks, load_model, release_model, uses_torch_cuda
 
 
 class EmbeddingModel:
@@ -38,7 +38,6 @@ class EmbeddingModel:
         self.batch_size = max(1, int(cpu_cfg.get("embedding_batch_size", 32)))
         self._model = None
         self._load_lock = threading.Lock()
-        self._model_use_lock = threading.RLock()
         self._cpu_gate = CooperativePriorityGate(int(cpu_cfg.get("foreground_priority", 3)))
         self._load_error: str | None = None
         self._load_error_time: float = 0.0
@@ -63,6 +62,38 @@ class EmbeddingModel:
         self._loaded_model_name = self.model_name
         self._active_cache_identity: str | None = None
         self._active_embedding_dimension: int | None = None
+        self._identity_dimension_lock = threading.Lock()
+        self._dimensions_by_identity: dict[str, int] = {}
+        self._model_provenance_lock = threading.Lock()
+        self._model_provenance_by_identity: dict[str, dict[str, str | None]] = {}
+        self._loaded_model_revision: str | None = None
+        self._loaded_model_digest: str | None = None
+        self._encoder_lock_state = threading.RLock()
+        self._execution_local_state = threading.local()
+
+    @property
+    def _encoder_lock(self) -> threading.RLock:
+        lock = getattr(self, "_encoder_lock_state", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._encoder_lock_state = lock
+        return lock
+
+    @_encoder_lock.setter
+    def _encoder_lock(self, value: threading.RLock) -> None:
+        self._encoder_lock_state = value
+
+    @property
+    def _execution_local(self) -> threading.local:
+        local_state = getattr(self, "_execution_local_state", None)
+        if local_state is None:
+            local_state = threading.local()
+            self._execution_local_state = local_state
+        return local_state
+
+    @_execution_local.setter
+    def _execution_local(self, value: threading.local) -> None:
+        self._execution_local_state = value
 
     @staticmethod
     def _valid_cached_vector(cached: Any, identity: str, expected_dimension: int | None) -> list[float] | None:
@@ -84,6 +115,61 @@ class EmbeddingModel:
             return None
         return converted
 
+    @staticmethod
+    def _resolved_model_revision(model: Any) -> str | None:
+        candidates = [model]
+        try:
+            candidates.append(model[0])
+        except (IndexError, KeyError, TypeError):
+            pass
+        candidates.extend(getattr(candidate, "auto_model", None) for candidate in tuple(candidates))
+        for candidate in candidates:
+            config = getattr(candidate, "config", None)
+            revision = getattr(config, "_commit_hash", None)
+            if isinstance(revision, str):
+                value = revision.strip().lower()
+                if len(value) in {40, 64} and all(char in "0123456789abcdef" for char in value):
+                    return value
+        return None
+
+    def _record_model_provenance(
+        self,
+        identity: str,
+        *,
+        model: Any = None,
+        revision: str | None = None,
+        digest: str | None = None,
+    ) -> dict[str, str | None]:
+        resolved = {
+            "revision": revision or self._resolved_model_revision(model),
+            "digest": digest or getattr(model, "digest", None),
+        }
+        with self._model_provenance_lock:
+            self._model_provenance_by_identity[identity] = resolved
+        if identity == getattr(self, "_active_cache_identity", None) or identity.startswith(
+            f"{self.active_backend or ''}:{self.active_device or ''}:"
+        ):
+            self._loaded_model_revision = resolved["revision"]
+            self._loaded_model_digest = resolved["digest"]
+        return resolved
+
+    def _model_provenance(self, identity: str | None) -> dict[str, str | None]:
+        if identity:
+            lock = getattr(self, "_model_provenance_lock", None)
+            if lock is not None:
+                with lock:
+                    known = getattr(self, "_model_provenance_by_identity", {}).get(identity)
+                if isinstance(known, dict):
+                    return known
+        models = self.config.get("models", {})
+        return {
+            "revision": models.get("embedding_revision") or models.get("model_revision"),
+            "digest": models.get("embedding_digest") or models.get("model_digest"),
+        }
+
+    def _identity_cacheable(self, identity: str | None) -> bool:
+        return bool(identity)
+
     def _configured_embedding_dimension(self) -> int | None:
         models = self.config.get("models", {})
         cpu_cfg = self.config.get("cpu_retrieval", {})
@@ -91,6 +177,80 @@ class EmbeddingModel:
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 return value
         return None
+
+    def _dimension_identity_key(self, identity: str) -> str:
+        provenance = self._model_provenance(identity)
+        provider, _, remainder = identity.partition(":")
+        model_name = remainder.partition(":")[2] if provider in {"sentence-transformers", "openvino"} else remainder
+        return stable_hash({
+            "identity": identity,
+            "model": model_name,
+            "digest": provenance.get("digest"),
+            "revision": provenance.get("revision"),
+            "normalized": self._embedding_normalized(identity),
+            "configured_dimension": self._configured_embedding_dimension(),
+        })
+
+    def _dimension_for_identity(self, identity: str) -> int | None:
+        identity_key = self._dimension_identity_key(identity)
+        dimensions = getattr(self, "_dimensions_by_identity", None)
+        lock = getattr(self, "_identity_dimension_lock", None)
+        if isinstance(dimensions, dict) and lock is not None:
+            with lock:
+                known = dimensions.get(identity_key)
+            if known is not None:
+                return known
+
+        cache = getattr(self, "cache", None)
+        if (
+            cache is not None
+            and bool(getattr(self, "cache_enabled", False))
+            and self._identity_cacheable(identity)
+        ):
+            try:
+                metadata = cache.get(stable_hash({"embedding_dimension_metadata": identity_key}))
+            except Exception:
+                metadata = None
+            if isinstance(metadata, dict) and metadata.get("identity") == identity_key:
+                dimension = metadata.get("dimension")
+                configured = self._configured_embedding_dimension()
+                if (
+                    isinstance(dimension, int)
+                    and not isinstance(dimension, bool)
+                    and dimension > 0
+                    and (configured is None or configured == dimension)
+                ):
+                    self._remember_dimension(identity, dimension, persist=False)
+                    return dimension
+        return self._configured_embedding_dimension()
+
+    def _remember_dimension(self, identity: str, dimension: int, *, persist: bool = True) -> None:
+        lock = getattr(self, "_identity_dimension_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._identity_dimension_lock = lock
+        dimensions = getattr(self, "_dimensions_by_identity", None)
+        if not isinstance(dimensions, dict):
+            dimensions = {}
+            self._dimensions_by_identity = dimensions
+        identity_key = self._dimension_identity_key(identity)
+        with lock:
+            dimensions[identity_key] = int(dimension)
+        cache = getattr(self, "cache", None)
+        if (
+            persist
+            and cache is not None
+            and bool(getattr(self, "cache_enabled", False))
+            and self._identity_cacheable(identity)
+            and isinstance(cache, (TieredCache, SQLiteCache))
+        ):
+            try:
+                cache.set(
+                    stable_hash({"embedding_dimension_metadata": identity_key}),
+                    {"identity": identity_key, "dimension": int(dimension)},
+                )
+            except Exception:
+                pass
 
     def _embedding_normalized(self, identity: str | None = None) -> bool | None:
         if identity and identity.startswith("ollama:"):
@@ -102,37 +262,38 @@ class EmbeddingModel:
             return False
         return None
 
-    def _embedding_cache_key(self, identity: str, query: bool, text: str) -> str:
-        model_name = self._ollama_model_name if identity.startswith("ollama:") else self._loaded_model_name
-        models = self.config.get("models", {})
-        model_digest = (
-            getattr(self, "_loaded_model_digest", None)
-            or getattr(getattr(self, "_model", None), "digest", None)
-            or models.get("embedding_digest")
-            or models.get("model_digest")
-        )
-        model_revision = (
-            getattr(self, "_loaded_model_revision", None)
-            or getattr(getattr(self, "_model", None), "revision", None)
-            or models.get("embedding_revision")
-            or models.get("model_revision")
-        )
+    def _embedding_cache_key(
+        self,
+        identity: str,
+        query: bool,
+        text: str,
+        *,
+        dimension: int | None = None,
+    ) -> str:
+        provider, _, remainder = identity.partition(":")
+        model_name = remainder.partition(":")[2] if provider in {"sentence-transformers", "openvino"} else remainder
+        provenance = self._model_provenance(identity)
         return stable_hash({
             "space": stable_hash({
                 "identity": identity,
                 "provider": identity.split(":", 1)[0],
                 "model": model_name,
-                "digest": model_digest,
-                "revision": model_revision,
-                "dimension": self._configured_embedding_dimension(),
+                "digest": provenance.get("digest"),
+                "revision": provenance.get("revision"),
+                "dimension": dimension if dimension is not None else self._dimension_for_identity(identity),
                 "normalized": self._embedding_normalized(identity),
             }),
             "query": query,
             "text": text,
         })
 
-    def embedding_space_id(self, identity: str | None = None) -> str:
+    def embedding_space_id(self, identity: str | None = None, *, dimension: int | None = None) -> str:
         selected = identity or self._active_cache_identity or f"configured:{self.backend}:{self.device}:{self.model_name}"
+        if dimension is not None:
+            try:
+                return self._embedding_cache_key(selected, False, "", dimension=dimension)
+            except TypeError:
+                pass
         return self._embedding_cache_key(selected, False, "")
 
     def _encode_request_key(self, texts: list[str], query: bool) -> str:
@@ -182,6 +343,10 @@ class EmbeddingModel:
                 "device": str(device).lower(),
                 "trust_remote_code": self.trust_remote_code,
             }
+            models = self.config.get("models", {})
+            configured_revision = models.get("embedding_revision") or models.get("model_revision")
+            if isinstance(configured_revision, str) and configured_revision.strip():
+                kwargs["revision"] = configured_revision.strip()
             if backend == "openvino":
                 # SentenceTransformers is still an nn.Module and calls .to(device) on
                 # its pooling/output modules.  Passing "npu" there can make PyTorch
@@ -200,32 +365,44 @@ class EmbeddingModel:
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
                 kwargs["model_kwargs"] = ov_model_kwargs
-            try:
-                model = SentenceTransformer(self.model_name, **kwargs)
-            except Exception:
-                if self.model_name == "BAAI/bge-small-en-v1.5":
-                    raise
-                fallback_kwargs = dict(kwargs)
-                fallback_kwargs["trust_remote_code"] = False
-                model = SentenceTransformer("BAAI/bge-small-en-v1.5", **fallback_kwargs)
-                loaded_model_name = "BAAI/bge-small-en-v1.5"
-            if hasattr(model, "max_seq_length"):
-                max_pos = getattr(model, "max_seq_length", 512) or 512
+            def create_model():
+                nonlocal loaded_model_name
                 try:
-                    max_pos = int(getattr(model[0].auto_model.config, "max_position_embeddings", max_pos) or max_pos)
+                    model = SentenceTransformer(self.model_name, **kwargs)
                 except Exception:
-                    pass
-                model.max_seq_length = min(self.max_seq_length, max_pos)
-                if backend == "openvino" and str(device).upper().startswith("NPU"):
-                    ov_model = getattr(model[0], "auto_model", None)
-                    if ov_model is None:
-                        raise RuntimeError("OpenVINO NPU model does not expose a reshapeable transformer")
-                    ov_model.reshape(1, int(model.max_seq_length))
-                    ov_model.compile()
+                    if self.model_name == "BAAI/bge-small-en-v1.5":
+                        raise
+                    fallback_kwargs = dict(kwargs)
+                    fallback_kwargs["trust_remote_code"] = False
+                    fallback_kwargs.pop("revision", None)
+                    loaded_model_name = "BAAI/bge-small-en-v1.5"
+                    model = SentenceTransformer(loaded_model_name, **fallback_kwargs)
+                if hasattr(model, "max_seq_length"):
+                    max_pos = getattr(model, "max_seq_length", 512) or 512
+                    try:
+                        max_pos = int(getattr(model[0].auto_model.config, "max_position_embeddings", max_pos) or max_pos)
+                    except Exception:
+                        pass
+                    model.max_seq_length = min(self.max_seq_length, max_pos)
+                    if backend == "openvino" and str(device).upper().startswith("NPU"):
+                        ov_model = getattr(model[0], "auto_model", None)
+                        if ov_model is None:
+                            raise RuntimeError("OpenVINO NPU model does not expose a reshapeable transformer")
+                        ov_model.reshape(1, int(model.max_seq_length))
+                        ov_model.compile()
+                return model
+
+            model = load_model(
+                self,
+                uses_cuda=uses_torch_cuda(backend, device),
+                factory=create_model,
+            )
             self._model = model
             self._loaded_model_name = loaded_model_name
             self.active_backend = backend
             self.active_device = str(device)
+            identity = f"{backend}:{device}:{loaded_model_name}"
+            self._record_model_provenance(identity, model=model)
             self._load_error = None
             return True
         except Exception as exc:
@@ -250,8 +427,29 @@ class EmbeddingModel:
                     return True
             return False
 
+    def release(self, timeout_seconds: float = 3.0) -> bool:
+        """Detach the local model; CUDA allocator cleanup remains best-effort."""
+        with acquire_locks((self._encoder_lock, self._load_lock), timeout_seconds) as acquired:
+            if not acquired:
+                return False
+            model = self._model
+            if model is None:
+                return False
+            used_cuda = uses_torch_cuda(self.active_backend, self.active_device)
+            self._model = None
+            self.active_backend = None
+            self.active_device = None
+            self._st_candidates = None
+            self._st_candidate_index = -1
+            self._loaded_model_name = self.model_name
+            self._active_cache_identity = None
+            self._active_embedding_dimension = None
+            del model
+            release_model(self, used_cuda=used_cuda)
+            return True
+
     def _ensure_model(self) -> bool:
-        if not self.enabled:
+        if not getattr(self, "enabled", True):
             return False
         if self.backend == "ollama":
             self.active_backend = "ollama"
@@ -266,17 +464,32 @@ class EmbeddingModel:
         return self._ensure_st_model()
 
     def _encode_st_batch(self, batch_texts: list[str], *, query: bool, priority: int) -> tuple[list[list[float]] | None, str]:
-        with self._model_use_lock:
+        with self._encoder_lock:
+            self._execution_local.snapshot = None
             return self._encode_st_batch_locked(batch_texts, query=query, priority=priority)
 
-    def _encode_st_batch_locked(self, batch_texts: list[str], *, query: bool, priority: int) -> tuple[list[list[float]] | None, str]:
+    def _encode_st_batch_locked(
+        self, batch_texts: list[str], *, query: bool, priority: int
+    ) -> tuple[list[list[float]] | None, str]:
         while True:
             if self._model is None and not self._ensure_st_model(ollama_fallback=self.backend == "ollama"):
                 return None, self.active_backend or "sentence-transformers"
-
             model = self._model
             if model is None:
                 return None, self.active_backend or "sentence-transformers"
+            backend = self.active_backend or "sentence-transformers"
+            device = str(self.active_device or self.device)
+            model_name = self._loaded_model_name
+            identity = f"{backend}:{device}:{model_name}"
+            provenance = self._model_provenance(identity)
+            execution_snapshot = {
+                "identity": identity,
+                "backend": backend,
+                "device": device,
+                "model": model_name,
+                "revision": provenance.get("revision"),
+                "digest": provenance.get("digest"),
+            }
             if (
                 self.active_backend == "openvino"
                 and str(self.active_device or "").upper().startswith("NPU")
@@ -286,19 +499,21 @@ class EmbeddingModel:
                 # single input and fallback switches accelerators, finish the rest
                 # of this logical batch on the new device in one call.
                 vectors: list[list[float]] = []
-                for index, text in enumerate(batch_texts):
+                for text in batch_texts:
                     item_vectors, active = self._encode_st_batch([text], query=query, priority=priority)
                     if item_vectors is None:
                         return None, active
                     vectors.extend(item_vectors)
                     if not str(self.active_device or "").upper().startswith("NPU"):
-                        remaining = batch_texts[index + 1 :]
-                        if remaining:
-                            rest_vectors, active = self._encode_st_batch(remaining, query=query, priority=priority)
-                            if rest_vectors is None:
-                                return None, active
-                            vectors.extend(rest_vectors)
-                        return vectors, active
+                        # Earlier items may already be NPU vectors. Re-encode the
+                        # whole batch on the fallback device so one batch never
+                        # mixes embedding spaces or precision.
+                        restarted, active = self._encode_st_batch(
+                            batch_texts, query=query, priority=priority
+                        )
+                        if restarted is None:
+                            return None, active
+                        return restarted, active
                 return vectors, self.active_backend or "sentence-transformers"
             prompts = getattr(model, "prompts", {}) or {}
             kwargs: dict[str, Any] = {
@@ -316,7 +531,8 @@ class EmbeddingModel:
                 for vector in encoded:
                     as_list = vector.tolist() if hasattr(vector, "tolist") else list(vector)
                     vectors.append([float(v) for v in as_list])
-                return vectors, self.active_backend or "sentence-transformers"
+                self._execution_local.snapshot = execution_snapshot
+                return vectors, backend
             except Exception as exc:
                 # OpenVINO may discover an NPU but reject a particular model/shape
                 # at first inference. Advance to iGPU/CPU instead of poisoning RAG.
@@ -329,44 +545,6 @@ class EmbeddingModel:
                     if self._ensure_st_model():
                         continue
                 return None, self.active_backend or "sentence-transformers"
-
-    def release_accelerator(self, *, timeout_seconds: float = 1.0) -> dict[str, Any]:
-        """Drop a resident non-CPU model after bounded exclusion of encode calls."""
-        budget = min(1.5, max(0.0, float(timeout_seconds)))
-        started = time.monotonic()
-        if not self._model_use_lock.acquire(timeout=budget):
-            return {"success": False, "state": "busy", "verified": False, "timeout_seconds": budget}
-        load_lock_acquired = False
-        try:
-            remaining = max(0.0, budget - (time.monotonic() - started))
-            load_lock_acquired = self._load_lock.acquire(timeout=remaining)
-            if not load_lock_acquired:
-                return {"success": False, "state": "busy", "verified": False, "timeout_seconds": budget}
-            model = self._model
-            backend = str(self.active_backend or "")
-            device = str(self.active_device or "").strip()
-            if model is None or not device or device.lower() in {"cpu", "ollama"}:
-                return {"success": True, "state": "not_applicable", "verified": False, "backend": backend, "device": device}
-            self._model = None
-            self.active_backend = None
-            self.active_device = None
-            self._st_candidate_index = -1
-            self._load_error = None
-            self._active_cache_identity = None
-            self._active_embedding_dimension = None
-            del model
-            return {
-                "success": True,
-                "state": "unloaded",
-                "verified": False,
-                "backend": backend,
-                "device": device,
-                "cuda_memory_possible": backend != "openvino" and device.lower().startswith("cuda"),
-            }
-        finally:
-            if load_lock_acquired:
-                self._load_lock.release()
-            self._model_use_lock.release()
 
     @staticmethod
     def _encode_static_npu_batch(
@@ -429,6 +607,7 @@ class EmbeddingModel:
         return None
 
     def encode(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
+        self._execution_local.snapshot = None
         request_key = self._encode_request_key(texts, query)
         result, _coalesced = self.flight_group.do(
             request_key,
@@ -440,10 +619,6 @@ class EmbeddingModel:
         return output
 
     def _encode_uncached(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
-        with self._model_use_lock:
-            return self._encode_uncached_locked(texts, query=query, priority=priority)
-
-    def _encode_uncached_locked(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
         if not texts:
             return {"success": True, "model": self.model_name, "backend": self.backend, "embeddings": []}
 
@@ -457,27 +632,29 @@ class EmbeddingModel:
         # Establish a verified identity before the first lookup. Previously this
         # was assigned only after computing a miss, making every fresh process
         # ignore its persistent cross-worktree embedding cache for its first batch.
-        if cache_identity is None and self.cache_enabled:
-            if self.backend in {"sentence-transformers", "openvino"} and self._ensure_model():
-                active = self.active_backend or "sentence-transformers"
-                device = self.active_device or self.device
-                self._active_cache_identity = f"{active}:{device}:{self._loaded_model_name}"
-            elif self.backend == "ollama":
-                self._active_cache_identity = f"ollama:{self._ollama_model_name}"
+        if cache_identity is None and self.cache_enabled and self.backend in {"sentence-transformers", "openvino"}:
+            with self._encoder_lock:
+                model_ready = self._ensure_model()
+                if model_ready:
+                    active = self.active_backend or "sentence-transformers"
+                    device = self.active_device or self.device
+                    self._active_cache_identity = f"{active}:{device}:{self._loaded_model_name}"
+            if model_ready:
+                cache_identity = self._active_cache_identity
+        elif cache_identity is None and self.cache_enabled and self.backend == "ollama":
+            self._active_cache_identity = f"ollama:{self._ollama_model_name}"
             cache_identity = self._active_cache_identity
-        used_backend = self.active_backend or self.backend
+        used_backend = cache_identity.split(":", 1)[0] if cache_identity else (self.active_backend or self.backend)
         backend_fallback = False
+        cache_identity_usable = self.cache_enabled and self._identity_cacheable(cache_identity)
         for i, text in enumerate(texts):
             clean_text = str(text).replace("\r\n", "\n")
-            key = self._embedding_cache_key(cache_identity, query, clean_text) if cache_identity else ""
-            cached = self.cache.get(key) if self.cache_enabled and key else None
-            if cached is None and self.cache_enabled and cache_identity:
-                legacy_key = stable_hash({"identity": cache_identity, "query": query, "text": clean_text})
-                cached = self.cache.get(legacy_key)
+            key = self._embedding_cache_key(cache_identity, query, clean_text) if cache_identity_usable else ""
+            cached = self.cache.get(key) if cache_identity_usable and key else None
             # Runtime dimension is shared mutable state. Concurrent requests may
-            # finish on different backends, so only use configured dimension when
-            # validating an entry before this request has produced its own vector.
-            expected_dimension = self._configured_embedding_dimension()
+            # finish on different backends, so use dimensions learned for this
+            # exact cache identity rather than a process-wide last result.
+            expected_dimension = self._dimension_for_identity(cache_identity) if cache_identity_usable else None
             cached_vector = self._valid_cached_vector(cached, cache_identity, expected_dimension) if cache_identity else None
             if cached_vector is not None:
                 vectors[i] = cached_vector
@@ -502,6 +679,7 @@ class EmbeddingModel:
         batch_deduplicated = sum(len(group) - 1 for group in missing_groups)
         recomputed_cached = 0
         response_cache_identity = cache_identity
+        result_cache_enabled = cache_identity_usable
 
         if missing_texts:
             computed_vectors: list[list[float]] | None = None
@@ -534,7 +712,7 @@ class EmbeddingModel:
                 for _restart in range(max_restarts):
                     all_st_vectors: list[list[float]] = []
                     failed = False
-                    execution_identity: tuple[str, str] | None = None
+                    execution_identity: tuple[str, str, str, str | None] | None = None
                     switched = False
                     for start in range(0, len(missing_texts), self.batch_size):
                         stop = min(len(missing_texts), start + self.batch_size)
@@ -543,14 +721,28 @@ class EmbeddingModel:
                         if encoded is None:
                             failed = True
                             break
-                        current_identity = (active, str(self.active_device or self.device))
+                        snapshot = getattr(self._execution_local, "snapshot", None)
+                        if isinstance(snapshot, dict):
+                            current_identity = (
+                                str(snapshot["backend"]),
+                                str(snapshot["device"]),
+                                str(snapshot["model"]),
+                                snapshot.get("revision"),
+                            )
+                        else:
+                            current_identity = (
+                                active,
+                                str(self.active_device or self.device),
+                                self._loaded_model_name,
+                                getattr(self, "_loaded_model_revision", None),
+                            )
                         if execution_identity is None:
                             execution_identity = current_identity
                         elif current_identity != execution_identity:
                             switched = True
                             break
                         all_st_vectors.extend(encoded)
-                        used_backend = active
+                        used_backend = current_identity[0]
                     if switched:
                         continue
                     if failed or len(all_st_vectors) != len(missing_texts):
@@ -562,12 +754,22 @@ class EmbeddingModel:
                     return {"success": False, "error": self._load_error or "embedding accelerator repeatedly changed", "model": self.model_name}
 
             # 3. Store in vectors and persist to cache
+            execution_snapshot = getattr(self._execution_local, "snapshot", None)
             model_identity = self._ollama_model_name if used_backend == "ollama" else self._loaded_model_name
             if used_backend == "ollama":
                 result_cache_identity = f"ollama:{model_identity}"
+                result_device = "ollama"
             else:
-                result_cache_identity = f"{used_backend}:{self.active_device or self.device}:{model_identity}"
-            self._active_cache_identity = result_cache_identity
+                if isinstance(execution_snapshot, dict) and execution_snapshot.get("backend") == used_backend:
+                    result_cache_identity = str(execution_snapshot["identity"])
+                    model_identity = str(execution_snapshot["model"])
+                    result_device = str(execution_snapshot["device"])
+                else:
+                    result_device = str(self.active_device or self.device)
+                    result_cache_identity = f"{used_backend}:{result_device}:{model_identity}"
+            with self._encoder_lock:
+                self._active_cache_identity = result_cache_identity
+            result_cache_enabled = self.cache_enabled and self._identity_cacheable(result_cache_identity)
             if len(computed_vectors) != len(missing_texts) or any(
                 not isinstance(vector, list) for vector in computed_vectors
             ):
@@ -590,6 +792,7 @@ class EmbeddingModel:
                 return {"success": False, "error": "embedding backend returned an invalid vector", "model": self.model_name}
             result_dimension = dimensions.pop()
             self._active_embedding_dimension = result_dimension
+            self._remember_dimension(result_cache_identity, result_dimension, persist=result_cache_enabled)
 
             if result_cache_identity != cache_identity and cached_items:
                 cached_groups: dict[str, list[int]] = {}
@@ -601,7 +804,12 @@ class EmbeddingModel:
                 for start in range(0, len(cached_texts), self.batch_size):
                     batch = cached_texts[start:start + self.batch_size]
                     encoded, active = self._encode_st_batch(batch, query=query, priority=priority)
-                    active_identity = f"{active}:{self.active_device or self.device}:{self._loaded_model_name}"
+                    snapshot = getattr(self._execution_local, "snapshot", None)
+                    active_identity = (
+                        str(snapshot["identity"])
+                        if isinstance(snapshot, dict)
+                        else f"{active}:{self.active_device or self.device}:{self._loaded_model_name}"
+                    )
                     if encoded is None or len(encoded) != len(batch) or active_identity != result_cache_identity:
                         return {"success": False, "error": "embedding backend changed while reconciling cached vectors", "model": self.model_name}
                     for vector in encoded:
@@ -620,7 +828,7 @@ class EmbeddingModel:
                 for text, vector in zip(cached_texts, cached_vectors):
                     for index in cached_groups[text]:
                         vectors[index] = vector
-                    if self.cache_enabled:
+                    if result_cache_enabled:
                         key = self._embedding_cache_key(result_cache_identity, query, text)
                         self.cache.set(key, {"identity": result_cache_identity, "dimension": result_dimension, "vector": vector})
                 recomputed_cached = len(cached_texts)
@@ -631,7 +839,7 @@ class EmbeddingModel:
             for indices, text, vector in zip(missing_groups, missing_texts, computed_vectors):
                 for idx in indices:
                     vectors[idx] = vector
-                if self.cache_enabled:
+                if result_cache_enabled:
                     clean_text = str(text).replace("\r\n", "\n")
                     key = self._embedding_cache_key(result_cache_identity, query, clean_text)
                     self.cache.set(key, {"identity": result_cache_identity, "dimension": result_dimension, "vector": vector})
@@ -639,12 +847,61 @@ class EmbeddingModel:
             self._computed += recomputed_cached
             self._batch_deduplicated += batch_deduplicated
 
+        if any(vector is None for vector in vectors):
+            return {"success": False, "error": "embedding backend returned incomplete vectors", "model": self.model_name}
+        vector_dimensions = {len(vector) for vector in vectors if vector is not None}
+        if len(vector_dimensions) != 1:
+            return {"success": False, "error": "embedding backend returned inconsistent vector dimensions", "model": self.model_name}
+        result_dimension = vector_dimensions.pop()
+        if response_cache_identity:
+            self._remember_dimension(
+                response_cache_identity,
+                result_dimension,
+                persist=self.cache_enabled and self._identity_cacheable(response_cache_identity),
+            )
+        execution_snapshot = getattr(self._execution_local, "snapshot", None)
+        provenance = self._model_provenance(response_cache_identity)
+        if used_backend == "ollama":
+            models = self.config.get("models", {})
+            model_digest = models.get("embedding_digest") or models.get("model_digest")
+            model_revision = models.get("embedding_revision") or models.get("model_revision")
+            result_device = "ollama"
+        else:
+            model_digest = (
+                execution_snapshot.get("digest")
+                if isinstance(execution_snapshot, dict)
+                and execution_snapshot.get("identity") == response_cache_identity
+                else provenance.get("digest")
+            )
+            model_revision = (
+                execution_snapshot.get("revision")
+                if isinstance(execution_snapshot, dict)
+                and execution_snapshot.get("identity") == response_cache_identity
+                else provenance.get("revision")
+            )
+            result_device = (
+                str(execution_snapshot["device"])
+                if isinstance(execution_snapshot, dict)
+                and execution_snapshot.get("identity") == response_cache_identity
+                else str(self.active_device or self.device)
+            )
+        if self.backend in {"auto", "ollama"}:
+            backend_fallback = used_backend != "ollama"
+        else:
+            backend_fallback = (
+                used_backend != self.backend
+                or str(result_device).lower() != str(self.device).lower()
+            )
         return {
             "success": True,
             "model": self.model_name,
             "backend": used_backend,
-            "device": self.active_device or self.device,
-            "embedding_space_id": self.embedding_space_id(response_cache_identity),
+            "device": result_device,
+            "embedding_space_id": self.embedding_space_id(response_cache_identity, dimension=result_dimension),
+            "embedding_dimension": result_dimension,
+            "normalized": self._embedding_normalized(response_cache_identity),
+            "model_digest": model_digest,
+            "model_revision": model_revision,
             "degraded": backend_fallback,
             "fallback": used_backend if backend_fallback else None,
             "embeddings": vectors,

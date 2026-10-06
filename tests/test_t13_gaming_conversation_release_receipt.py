@@ -18,8 +18,7 @@ def production_hub(tmp_path, monkeypatch):
     config = tmp_path / "config.toml"
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
-        f'state_dir = "{state_dir.as_posix()}"\n'
-        '[security]\napi_token = "t13-test-service-token"\n',
+        f'state_dir = "{state_dir.as_posix()}"\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
@@ -109,7 +108,14 @@ def test_gaming_release_receipt_includes_conversation_cancelled_before_snapshot(
     mode_result = mode_results[0]
     assert results[0]["success"] is False
     assert results[0]["cancelled"] is True
-    assert mode_result["resources"]["conversation_release"]["state"] == "cancelled"
+    assert mode_result["success"] is True
+    assert mode_result["mode"] == "gaming"
+    assert mode_result["conversation_release"] == {
+        "state": "cancelled",
+        "inference_active": False,
+        "active": 0,
+        "cancelled": True,
+    }
     assert cancellation_observed.is_set()
     assert worker_exited.is_set()
     assert unload_observed.is_set()

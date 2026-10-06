@@ -23,7 +23,6 @@ from .process_utils import terminate_tree
 class AsyncJobManager:
     """Durable, tenant-scoped orchestration whose model calls use the scheduler."""
 
-    REQUEST_ID_SUPPLIED_MARKER = "_async_request_id_supplied"
     ACTIONS = {"delegate", "reason", "review", "review_diff", "second_opinion", "compress", "route", "batch", "speculative_lint"}
     INFERENCE_ACTIONS = frozenset(ACTIONS - {"speculative_lint"})
     DIRECT_INFERENCE_ACTIONS = frozenset({
@@ -32,11 +31,8 @@ class AsyncJobManager:
         "prompt_eval", "eval_drift",
     })
     INFERENCE_ADMISSION_ACTIONS = INFERENCE_ACTIONS | DIRECT_INFERENCE_ACTIONS
-    # Command-backed actions stay out until they have an explicit T07 replay contract.
-    RECOVERY_REPLAY_SAFE_ACTIONS = frozenset(
-        {"delegate", "reason", "review", "review_diff", "second_opinion", "compress", "route", "batch"}
-    )
     TERMINAL_STATES = frozenset({"done", "failed", "cancelled", "expired", "outcome_unknown"})
+    REQUEST_ID_SUPPLIED_MARKER = "_async_request_id_supplied"
 
     def __init__(
         self,
@@ -55,9 +51,6 @@ class AsyncJobManager:
         self.wait_max_seconds = max(1.0, min(3600.0, float(cfg.get("wait_max_seconds", 600))))
         self.lease_seconds = max(30.0, float(cfg.get("lease_seconds", 900)))
         self.result_ttl_seconds = max(60.0, float(cfg.get("result_ttl_seconds", 259200)))
-        artifact_ttl_seconds = getattr(artifacts, "ttl_seconds", None)
-        if artifact_ttl_seconds is not None and float(artifact_ttl_seconds) < self.result_ttl_seconds:
-            raise ValueError("async_jobs.result_ttl_seconds must not exceed artifact store ttl_seconds")
         self.max_attempts = max(1, int(cfg.get("max_attempts", 2)))
         self.stats_max_items = max(1, min(256, int(cfg.get("stats_max_items", 32))))
         self.scheduler, self.artifacts, self.executor, self.debug_traces = scheduler, artifacts, executor, debug_traces
@@ -76,8 +69,8 @@ class AsyncJobManager:
         self._resource_release_tokens: set[str] = set()
         self._resource_release_workers: dict[str, threading.Thread] = {}
         self._resource_release_waiters: set[str] = set()
-        self._inference_admission_depth: ContextVar[int] = ContextVar(
-            f"async_job_inference_admission_{id(self)}", default=0
+        self._inference_admission_actions_context: ContextVar[tuple[str, ...]] = ContextVar(
+            f"async_job_inference_admission_actions_{id(self)}", default=()
         )
         self._events: dict[str, threading.Event] = {}
         self._delayed_dispatch: dict[str, threading.Timer] = {}
@@ -137,7 +130,7 @@ class AsyncJobManager:
     @staticmethod
     def _safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
         allowed = {
-            "task", "context", "candidate", "complexity", "max_tokens", "tasks", "task_id", "root", "paths", "command",
+            "task", "context", "candidate", "complexity", "max_tokens", "tasks", "task_id", "root", "cwd", "paths", "command",
             "instructions", "base", "staged", "mode", "diff_tokens", "consensus", "_async_job", "request_id",
         }
         return {key: payload[key] for key in allowed if key in payload}
@@ -150,12 +143,22 @@ class AsyncJobManager:
             return ""
         return value.strip() if isinstance(value, str) else ""
 
+    @classmethod
+    def _replay_request_id(cls, payload: Any) -> str:
+        try:
+            decoded = json.loads(payload) if isinstance(payload, str) else payload
+        except Exception:
+            return ""
+        if not isinstance(decoded, dict) or decoded.get(cls.REQUEST_ID_SUPPLIED_MARKER) is not True:
+            return ""
+        return cls._request_id(decoded)
+
     def _can_replay_after_interruption(self, action: Any, payload: Any, attempts: int) -> bool:
         normalized_action = str(action or "").strip().lower().replace("-", "_")
         attempt_count = int(attempts or 0)
         return (
-            normalized_action in self.RECOVERY_REPLAY_SAFE_ACTIONS
-            and bool(self._request_id(payload))
+            normalized_action in {"delegate", "reason", "review", "review_diff", "second_opinion", "compress", "route", "batch"}
+            and bool(self._replay_request_id(payload))
             and 0 < attempt_count < self.max_attempts
         )
 
@@ -230,9 +233,7 @@ class AsyncJobManager:
                 raise RuntimeError("operational mode loader is not available")
             snapshot = loader(self.path.parent)
         except Exception as exc:
-            return self._normalize_operational_mode_snapshot(
-                None, gate_error, error=str(exc)
-            )
+            return self._normalize_operational_mode_snapshot(None, gate_error, error=str(exc))
         return self._normalize_operational_mode_snapshot(snapshot, gate_error)
 
     @staticmethod
@@ -277,11 +278,7 @@ class AsyncJobManager:
 
     @contextmanager
     def operational_mode_change_guard(self):
-        """Serialize mode persistence against async executor admission.
-
-        The mode setter must hold this guard while it persists the new snapshot
-        and calls ``on_operational_mode_changed`` with that snapshot.
-        """
+        """Serialize mode persistence and cancellation against executor admission."""
         with self._mode_transition_lock:
             yield
 
@@ -453,8 +450,8 @@ class AsyncJobManager:
                         else:
                             con.commit()
             if rejection is None and action in self.INFERENCE_ADMISSION_ACTIONS:
-                depth = self._inference_admission_depth.get()
-                if depth == 0:
+                active_actions = self._inference_admission_actions_context.get()
+                if action not in active_actions:
                     active_token = uuid.uuid4().hex
                     with self._inference_condition:
                         self._inference_admissions.add(active_token)
@@ -463,7 +460,9 @@ class AsyncJobManager:
                             str(job_id) if job_id is not None else None
                         )
                         self._inference_condition.notify_all()
-                context_token = self._inference_admission_depth.set(depth + 1)
+                context_token = self._inference_admission_actions_context.set(
+                    (*active_actions, action)
+                )
 
         if rejection is not None:
             yield rejection
@@ -472,7 +471,7 @@ class AsyncJobManager:
             yield None
         finally:
             if context_token is not None:
-                self._inference_admission_depth.reset(context_token)
+                self._inference_admission_actions_context.reset(context_token)
             if active_token is not None:
                 callbacks: list[Callable[[], Any]] = []
                 with self._inference_condition:
@@ -669,24 +668,28 @@ class AsyncJobManager:
         action = str(action).strip().lower().replace("-", "_")
         if action not in self.ACTIONS:
             return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}
-        if bool(payload.get("conversation", False)):
-            return {"success": False, "error": "conversations require delivery=sync", "terminal": True, "retryable": False}
         clean = self._safe_payload(payload)
         clean.pop(self.REQUEST_ID_SUPPLIED_MARKER, None)
-        request_id = self._request_id(clean)
-        if request_id:
-            clean["request_id"] = request_id
+        caller_request_id = self._request_id(clean)
+        if caller_request_id:
+            clean["request_id"] = caller_request_id
+            request_hash_payload = dict(clean)
         else:
             clean.pop("request_id", None)
+            # Hash caller content without the private replay key so identical
+            # submissions still coalesce onto one active job.
+            request_hash_payload = dict(clean)
+            clean["request_id"] = uuid.uuid4().hex
+        request_id = self._request_id(clean)
         stored_payload = dict(clean)
-        stored_payload[self.REQUEST_ID_SUPPLIED_MARKER] = bool(request_id)
+        stored_payload[self.REQUEST_ID_SUPPLIED_MARKER] = bool(caller_request_id)
         encoded = json_dumps(stored_payload, ensure_ascii=False, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > 2_000_000:
             return {"success": False, "error": "async task payload exceeds 2MB", "terminal": True, "retryable": False}
-        request_hash = stable_hash({"tenant": tenant, "action": action, "payload": clean})
+        request_hash = stable_hash({"tenant": tenant, "action": action, "payload": request_hash_payload})
         task_id = str(clean.get("task_id") or "")
-        delay = max(0.0, min(30.0, float(dispatch_delay_seconds or 0.0)))
         now = time.time()
+        delay = max(0.0, min(30.0, float(dispatch_delay_seconds or 0.0)))
         dispatch_not_before = now + delay if delay else 0.0
         mode_snapshot: dict[str, Any] | None = None
         mode_rejection: dict[str, Any] | None = None
@@ -699,7 +702,7 @@ class AsyncJobManager:
                 if identified:
                     job_id, old_action, old_hash, old_state, trace_id, old_task_id, expires_at, created_at, old_error, artifact_id = identified
                     if str(old_action) != action or str(old_hash) != request_hash:
-                        return {"success": False, "job_id": str(job_id), "state": "conflict", "artifact_id": str(artifact_id or ""), "expires_at": float(expires_at), "error": "request_id already used with different operation or payload", "conflict": True, "terminal": True, "retryable": False}
+                        return {"success": False, "job_id": str(job_id), "state": "conflict", "error": "request_id already used with different operation or payload", "conflict": True, "terminal": True, "retryable": False}
                     state = str(old_state)
                     if state in self.TERMINAL_STATES and float(expires_at) <= now:
                         state = "expired"
@@ -709,17 +712,17 @@ class AsyncJobManager:
                     age_ms = max(0.0, (now - float(created_at)) * 1000.0)
                     admission = self._admission("coalesced", "idempotent_request_replay", retryable=False, queue_age_ms=age_ms)
                     if state == "expired":
-                        return {"success": False, "job_id": str(job_id), "state": state, "artifact_id": str(artifact_id or ""), "expires_at": float(expires_at), "error": "async job result expired", "terminal": True, "retryable": False}
+                        return {"success": False, "job_id": str(job_id), "state": state, "error": "async job result expired", "terminal": True, "retryable": False}
                     if state == "outcome_unknown":
-                        return {"success": False, "job_id": str(job_id), "state": state, "artifact_id": str(artifact_id or ""), "expires_at": float(expires_at), "error": str(old_error or "async job outcome unknown"), "outcome_unknown": True, "terminal": True, "retryable": False}
+                        return {"success": False, "job_id": str(job_id), "state": state, "error": str(old_error or "async job outcome unknown"), "outcome_unknown": True, "terminal": True, "retryable": False}
                     self._stats["coalesced"] += 1
-                    return {"success": True, "job_id": str(job_id), "trace_id": str(trace_id or ""), "task_id": str(old_task_id or ""), "state": state, "artifact_id": str(artifact_id or ""), "expires_at": float(expires_at), "coalesced": state in {"queued", "running"}, "idempotent_replay": True, "admission": admission, "admission_state": admission["state"]}
-            existing = con.execute("SELECT job_id,state,trace_id,task_id,expires_at,artifact_id FROM async_jobs WHERE tenant=? AND request_hash=? AND state IN ('queued','running')", (tenant, request_hash)).fetchone()
+                    return {"success": True, "job_id": str(job_id), "trace_id": str(trace_id or ""), "task_id": str(old_task_id or ""), "state": state, "coalesced": state in {"queued", "running"}, "idempotent_replay": True, "admission": admission, "admission_state": admission["state"]}
+            existing = con.execute("SELECT job_id,state,trace_id,task_id FROM async_jobs WHERE tenant=? AND request_hash=? AND state IN ('queued','running')", (tenant, request_hash)).fetchone()
             if existing:
                 self._stats["coalesced"] += 1
                 age_ms = max(0.0, (now - float(con.execute("SELECT created_at FROM async_jobs WHERE job_id=?", (existing[0],)).fetchone()[0])) * 1000.0)
                 admission = self._admission("coalesced", "duplicate_active_job", retryable=False, queue_age_ms=age_ms)
-                return {"success": True, "job_id": existing[0], "trace_id": str(existing[2] or ""), "task_id": str(existing[3] or ""), "state": existing[1], "artifact_id": str(existing[5] or ""), "expires_at": float(existing[4]), "coalesced": True, "admission": admission, "admission_state": admission["state"]}
+                return {"success": True, "job_id": existing[0], "trace_id": str(existing[2] or ""), "task_id": str(existing[3] or ""), "state": existing[1], "coalesced": True, "admission": admission, "admission_state": admission["state"]}
             mode_snapshot = self._operational_mode_snapshot()
             mode_rejection = self._mode_blocked_result(action, mode_snapshot)
             if mode_rejection is None:
@@ -731,10 +734,7 @@ class AsyncJobManager:
                     admission = self._admission("rejected", "queue_limit", retryable=True)
                     return {"success": False, "state": "rejected", "error": "async job queue limit reached", "admission": admission, "admission_state": admission["state"], "terminal": False, "retryable": True, "coalesced": False}
                 job_id = uuid.uuid4().hex
-                expires_at = now + self.result_ttl_seconds
-                # Persist delay before commit. Recovery/tick must not claim this
-                # queued row before the in-process Timer has been registered.
-                con.execute("INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,task_id,dispatch_not_before) VALUES(?,?,?,?,?,'queued',?,?,?,?,?)", (job_id, tenant, action, request_hash, encoded, now, now, expires_at, task_id, dispatch_not_before))
+                con.execute("INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,task_id,dispatch_not_before) VALUES(?,?,?,?,?,'queued',?,?,?,?,?)", (job_id, tenant, action, request_hash, encoded, now, now, now + self.result_ttl_seconds, task_id, dispatch_not_before))
                 con.commit()
                 self._stats["submitted"] += 1
         if mode_rejection is not None:
@@ -759,7 +759,7 @@ class AsyncJobManager:
             timer.start()
         else:
             self._dispatch_background(job_id)
-        return {"success": True, "job_id": job_id, "trace_id": trace_id, "task_id": task_id, "state": "queued", "artifact_id": "", "expires_at": expires_at, "coalesced": False, "admission": admission, "admission_state": admission["state"]}
+        return {"success": True, "job_id": job_id, "trace_id": trace_id, "task_id": task_id, "state": "queued", "coalesced": False, "admission": admission, "admission_state": admission["state"]}
 
     def _row(self, tenant: str, job_id: str) -> sqlite3.Row | None:
         def read() -> sqlite3.Row | None:
@@ -773,9 +773,8 @@ class AsyncJobManager:
             return
         with self._mode_transition_lock:
             self._cancel_jobs_blocked_by_mode(self._operational_mode_snapshot())
-            with self._lock:
-                self._delayed_dispatch.pop(job_id, None)
             with self._lock, closing(self._connect()) as con:
+                self._delayed_dispatch.pop(job_id, None)
                 con.row_factory = sqlite3.Row
                 row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
                 now = time.time()
@@ -783,9 +782,15 @@ class AsyncJobManager:
                     not row
                     or row["state"] != "queued"
                     or row["cancel_requested"]
-                    or float(row["dispatch_not_before"] or 0) > now
                     or float(row["lease_until"] or 0) > now
                 ):
+                    return
+                dispatch_not_before = float(row["dispatch_not_before"] or 0)
+                if dispatch_not_before > now:
+                    timer = threading.Timer(dispatch_not_before - now, self._dispatch, args=(job_id,))
+                    timer.daemon = True
+                    self._delayed_dispatch[job_id] = timer
+                    timer.start()
                     return
                 if self._resource_release_tokens:
                     self._resource_release_waiters.add(str(job_id))
@@ -835,7 +840,6 @@ class AsyncJobManager:
                 elif cancelled:
                     state, detail = "cancelled", error[:500]
                 elif current_state == "queued" and attempts == 0:
-                    # No executor attempt began; keep this dispatch retry free.
                     state, detail = "queued", error[:500]
                 elif self._can_replay_after_interruption(row[5], row[4], attempts):
                     state, detail = "queued", error[:500]
@@ -844,7 +848,7 @@ class AsyncJobManager:
                     detail = f"async job outcome unknown after interrupted attempt: {error}"[:500]
                 if not already_terminal:
                     con.execute(
-                        "UPDATE async_jobs SET state=?,attempts=?,lease_until=0,dispatch_not_before=0,error=?,updated_at=? WHERE job_id=?",
+                        "UPDATE async_jobs SET state=?,attempts=?,lease_until=0,error=?,updated_at=? WHERE job_id=?",
                         (state, attempts, detail, time.time(), job_id),
                     )
                     con.commit()
@@ -857,65 +861,36 @@ class AsyncJobManager:
                     self.debug_traces.finish(trace_id, state=state, error=detail)
             except Exception:
                 pass
-        self._event(job_id).set()
+        # A running job is only cancellation-requested, not terminal yet. Wake
+        # waiters only for the queued->cancelled transition; the worker signals
+        # its event after it records the final cancelled state.
+        if state == "queued":
+            self._event(job_id).set()
 
     def _execute(self, job_id: str) -> dict[str, Any]:
         self._cancel_jobs_blocked_by_mode(self._operational_mode_snapshot())
         with self._lock, closing(self._connect()) as con:
             con.row_factory = sqlite3.Row
-            # Claim under a write lock: separate manager instances do not share
-            # ``self._lock`` and must not both observe the same queued row.
-            con.execute("BEGIN IMMEDIATE")
             row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
             if not row:
-                con.commit()
                 return {"success": False, "error": "async job cancelled before execution (job not found)", "terminal": True, "retryable": False}
             current_state = str(row["state"])
             if current_state != "queued" or row["cancel_requested"]:
                 cancelled = bool(row["cancel_requested"]) or current_state == "cancelled"
                 state = "cancelled" if cancelled else current_state
-                con.commit()
                 return {"success": False, "job_id": job_id, "state": state, "error": "async job cancelled before execution" if cancelled else "async job is not queued", "outcome_unknown": state == "outcome_unknown", "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}, "admission": self._admission("accepted", "capacity_available", retryable=False)}
-            claimed = con.execute(
-                "UPDATE async_jobs SET state='running',attempts=attempts+1,lease_until=?,updated_at=? "
-                "WHERE job_id=? AND state='queued' AND cancel_requested=0",
-                (time.time() + self.lease_seconds, time.time(), job_id),
-            ).rowcount
-            if claimed != 1:
-                con.commit()
-                latest = con.execute(
-                    "SELECT state,cancel_requested FROM async_jobs WHERE job_id=?",
-                    (job_id,),
-                ).fetchone()
-                state = str(latest[0]) if latest else "cancelled"
-                cancelled = not latest or bool(latest[1]) or state == "cancelled"
-                state = "cancelled" if cancelled else state
-                return {
-                    "success": False,
-                    "job_id": job_id,
-                    "state": state,
-                    "error": (
-                        "async job cancelled before execution"
-                        if cancelled
-                        else "async job execution claim was lost"
-                    ),
-                    "outcome_unknown": state == "outcome_unknown",
-                    "terminal": state in self.TERMINAL_STATES,
-                    "retryable": state in {"queued", "running"},
-                    "admission": self._admission(
-                        "accepted", "capacity_available", retryable=False
-                    ),
-                }
+            con.execute("UPDATE async_jobs SET state='running',attempts=attempts+1,lease_until=?,updated_at=? WHERE job_id=?", (time.time() + self.lease_seconds, time.time(), job_id))
             con.commit()
             tenant, action, stored_payload, trace_id = str(row["tenant"]), str(row["action"]), json.loads(str(row["payload_json"])), str(row["trace_id"] or "")
             if not isinstance(stored_payload, dict):
                 stored_payload = {}
+            request_id = self._replay_request_id(stored_payload)
             payload = {
                 key: value
                 for key, value in stored_payload.items()
                 if key != self.REQUEST_ID_SUPPLIED_MARKER
+                and (key != "request_id" or bool(request_id))
             }
-            request_id = self._request_id(payload)
             task_id = str(row["task_id"] or "") if "task_id" in row.keys() else ""
         if task_id and self.task_store is not None:
             try:
@@ -944,15 +919,14 @@ class AsyncJobManager:
         finally:
             reset_observer(observer_token)
             self._cleanup_processes(job_id)
+        deferred_for_resource_release = False
         if result.get("success") and str(result.get("state", "")) in {"queued", "running"}:
             result = {"success": False, "error": "async executor returned non-terminal state", "retryable": True}
-        deferred_for_resource_release = False
         with self._lock, closing(self._connect()) as con:
-            con.execute("BEGIN IMMEDIATE")
             cur_cancel = con.execute("SELECT cancel_requested FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
             cancelled = bool(cur_cancel[0]) if cur_cancel else False
             if cancelled:
-                con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
+                con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                 self._stats["cancelled"] += 1
                 final = {"success": False, "error": "async job cancelled", "terminal": True, "retryable": False}
                 if task_id and self.task_store is not None:
@@ -960,6 +934,18 @@ class AsyncJobManager:
                         self.task_store.fail(task_id, reason="async job cancelled")
                     except Exception:
                         pass
+            elif result.get("error_code") == "resource_release_in_progress":
+                final = {
+                    **result,
+                    "state": "queued",
+                    "terminal": False,
+                    "retryable": True,
+                }
+                con.execute(
+                    "UPDATE async_jobs SET state='queued',attempts=CASE WHEN attempts>0 THEN attempts-1 ELSE 0 END,result_json=?,error=?,lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?",
+                    (json_dumps(final, ensure_ascii=False, separators=(",", ":")), str(final.get("error", "resource release in progress"))[:500], time.time(), job_id),
+                )
+                deferred_for_resource_release = True
             elif result.get("success"):
                 artifact_id = ""
                 try:
@@ -969,9 +955,9 @@ class AsyncJobManager:
                     pass
                 if not self._result_artifact_available(artifact_id, tenant):
                     final = {"success": False, "state": "outcome_unknown", "outcome_unknown": True, "error": "async job result artifact unavailable", "terminal": True, "retryable": False}
-                    con.execute("UPDATE async_jobs SET state='outcome_unknown',result_json=?,artifact_id='',error=?,lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"], time.time(), job_id))
+                    con.execute("UPDATE async_jobs SET state='outcome_unknown',result_json=?,artifact_id='',error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"], time.time(), job_id))
                 else:
-                    con.execute("UPDATE async_jobs SET state='done',result_json=?,artifact_id=?,lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), artifact_id, time.time(), job_id))
+                    con.execute("UPDATE async_jobs SET state='done',result_json=?,artifact_id=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), artifact_id, time.time(), job_id))
                     self._stats["completed"] += 1
                     final = result
                     if task_id and self.task_store is not None:
@@ -1000,25 +986,13 @@ class AsyncJobManager:
                             self.verification_store.record(rcpt)
                         except Exception:
                             pass
-            elif result.get("error_code") == "resource_release_in_progress":
-                final = {
-                    **result,
-                    "state": "queued",
-                    "terminal": False,
-                    "retryable": True,
-                }
-                con.execute(
-                    "UPDATE async_jobs SET state='queued',attempts=CASE WHEN attempts>0 THEN attempts-1 ELSE 0 END,result_json=?,error=?,lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?",
-                    (json_dumps(final, ensure_ascii=False, separators=(",", ":")), str(final.get("error", "resource release in progress"))[:500], time.time(), job_id),
-                )
-                deferred_for_resource_release = True
             else:
                 con.row_factory = sqlite3.Row
                 cur_row = con.execute("SELECT attempts FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
                 attempts = int(cur_row["attempts"] if cur_row else 1)
                 retryable = bool(result.get("retryable", True))
                 if retryable and (
-                    self._can_replay_after_interruption(action, payload, attempts)
+                    self._can_replay_after_interruption(action, stored_payload, attempts)
                     or (
                         action == "reason"
                         and self.REQUEST_ID_SUPPLIED_MARKER in stored_payload
@@ -1030,9 +1004,9 @@ class AsyncJobManager:
                 elif retryable:
                     detail = str(result.get("error", "async job interrupted without a durable outcome"))[:400]
                     final = {"success": False, "state": "outcome_unknown", "outcome_unknown": True, "error": f"async job outcome unknown: {detail}", "terminal": True, "retryable": False}
-                    con.execute("UPDATE async_jobs SET state='outcome_unknown',result_json=?,error=?,lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"][:500], time.time(), job_id))
+                    con.execute("UPDATE async_jobs SET state='outcome_unknown',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"][:500], time.time(), job_id))
                 else:
-                    con.execute("UPDATE async_jobs SET state='failed',result_json=?,error=?,lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), str(result.get("error", "async job failed"))[:500], time.time(), job_id))
+                    con.execute("UPDATE async_jobs SET state='failed',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), str(result.get("error", "async job failed"))[:500], time.time(), job_id))
                     self._stats["failed"] += 1
                     final = result
                     if task_id and self.task_store is not None:
@@ -1043,11 +1017,7 @@ class AsyncJobManager:
             con.commit()
         if self.debug_traces is not None and trace_id:
             try:
-                if deferred_for_resource_release:
-                    self.debug_traces.update(trace_id, state="queued")
-                    self.debug_traces.event(trace_id, "retry", {"reason": "resource_release_in_progress", "job_id": job_id})
-                else:
-                    self.debug_traces.finish(trace_id, state=str(final.get("state") or ("done" if final.get("success") else "failed")), response=final if final.get("success") else None, error=str(final.get("error", "")))
+                self.debug_traces.finish(trace_id, state=str(final.get("state") or ("done" if final.get("success") else "failed")), response=final if final.get("success") else None, error=str(final.get("error", "")))
             except Exception:
                 pass
         self._event(job_id).set()
@@ -1076,7 +1046,7 @@ class AsyncJobManager:
         row = self._row(tenant, job_id)
         if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
         if float(row["expires_at"]) <= time.time() and row["state"] in self.TERMINAL_STATES:
-            return {"success": False, "job_id": job_id, "state": "expired", "artifact_id": str(row["artifact_id"] or ""), "expires_at": float(row["expires_at"]), "terminal": True, "retryable": False}
+            return {"success": False, "job_id": job_id, "state": "expired", "terminal": True, "retryable": False}
         state = str(row["state"])
         artifact_unavailable = state == "done" and not self._result_artifact_available(str(row["artifact_id"] or ""), tenant)
         if artifact_unavailable:
@@ -1085,8 +1055,6 @@ class AsyncJobManager:
             "success": True,
             "job_id": job_id,
             "state": state,
-            "artifact_id": str(row["artifact_id"] or ""),
-            "expires_at": float(row["expires_at"]),
             "outcome_unknown": state == "outcome_unknown",
             "attempts": int(row["attempts"]),
             "cancel_requested": bool(row["cancel_requested"]),
@@ -1108,8 +1076,7 @@ class AsyncJobManager:
 
     def wait(self, tenant: str, job_id: str, timeout_seconds: float) -> dict[str, Any]:
         started = time.perf_counter()
-        requested_timeout = self.wait_max_seconds if timeout_seconds is None else float(timeout_seconds)
-        timeout = max(0.0, min(self.wait_max_seconds, requested_timeout))
+        timeout = max(1.0, min(self.wait_max_seconds, float(timeout_seconds or self.wait_max_seconds)))
         status = self.status(tenant, job_id)
         if status.get("success") and status.get("state") in {"queued", "running"}: self._event(job_id).wait(timeout)
         result = self.status(tenant, job_id); result["wait_timeout_seconds"] = timeout
@@ -1131,50 +1098,47 @@ class AsyncJobManager:
         if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
         state = str(row["state"])
         if state == "expired" or (float(row["expires_at"]) <= time.time() and state in self.TERMINAL_STATES):
-            return {"success": False, "job_id": job_id, "state": "expired", "artifact_id": str(row["artifact_id"] or ""), "expires_at": float(row["expires_at"]), "error": "async job result expired", "terminal": True, "retryable": False}
+            return {"success": False, "job_id": job_id, "state": "expired", "error": "async job result expired", "terminal": True, "retryable": False}
         if row["state"] != "done":
-            return {"success": False, "job_id": job_id, "state": state, "artifact_id": str(row["artifact_id"] or ""), "expires_at": float(row["expires_at"]), "error": str(row["error"] or "async job is not complete"), "outcome_unknown": state == "outcome_unknown", "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}}
+            return {"success": False, "job_id": job_id, "state": state, "error": str(row["error"] or "async job is not complete"), "outcome_unknown": state == "outcome_unknown", "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}}
         artifact_id = str(row["artifact_id"] or "").strip()
         if not self._result_artifact_available(artifact_id, tenant):
-            return {"success": False, "job_id": job_id, "state": "outcome_unknown", "artifact_id": artifact_id, "expires_at": float(row["expires_at"]), "error": "async job result artifact unavailable", "outcome_unknown": True, "terminal": True, "retryable": False}
+            return {"success": False, "job_id": job_id, "state": "outcome_unknown", "error": "async job result artifact unavailable", "outcome_unknown": True, "terminal": True, "retryable": False}
         try:
             value = json.loads(str(row["result_json"]))
         except Exception:
-            return {"success": False, "job_id": job_id, "state": "outcome_unknown", "artifact_id": artifact_id, "expires_at": float(row["expires_at"]), "error": "async job result payload unavailable", "outcome_unknown": True, "terminal": True, "retryable": False}
-        return {"success": True, "job_id": job_id, "state": "done", "artifact_id": artifact_id, "expires_at": float(row["expires_at"]), "result": value, "terminal": True, "retryable": False}
+            return {"success": False, "job_id": job_id, "state": "outcome_unknown", "error": "async job result payload unavailable", "outcome_unknown": True, "terminal": True, "retryable": False}
+        return {"success": True, "job_id": job_id, "state": "done", "artifact_id": artifact_id, "result": value, "terminal": True, "retryable": False}
 
     def cancel(self, tenant: str, job_id: str) -> dict[str, Any]:
         with self._lock, closing(self._connect()) as con:
             con.execute("BEGIN IMMEDIATE")
-            row = con.execute("SELECT state,trace_id,expires_at,artifact_id FROM async_jobs WHERE job_id=? AND tenant=?", (job_id, tenant)).fetchone()
+            row = con.execute("SELECT state,trace_id FROM async_jobs WHERE job_id=? AND tenant=?", (job_id, tenant)).fetchone()
             if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
             state = str(row[0])
             trace_id = str(row[1] or "")
-            expires_at = float(row[2])
-            artifact_id = str(row[3] or "")
-            if expires_at <= time.time() and state in self.TERMINAL_STATES:
-                state = "expired"
             if state == "cancelled":
                 admission = self._admission("accepted", "capacity_available", retryable=False)
-                return {"success": True, "job_id": job_id, "state": "cancelled", "artifact_id": artifact_id, "expires_at": expires_at, "cancel_requested": True, "terminal": True, "retryable": False, "admission": admission, "admission_state": admission["state"]}
-            if state in {"done", "failed", "expired", "outcome_unknown"}: return {"success": False, "job_id": job_id, "state": state, "artifact_id": artifact_id, "expires_at": expires_at, "error": "async job is already terminal", "terminal": True, "retryable": False}
+                return {"success": True, "job_id": job_id, "state": "cancelled", "cancel_requested": True, "terminal": True, "retryable": False, "admission": admission, "admission_state": admission["state"]}
+            if state in {"done", "failed", "expired", "outcome_unknown"}: return {"success": False, "job_id": job_id, "state": state, "error": "async job is already terminal", "terminal": True, "retryable": False}
             delayed = self._delayed_dispatch.pop(job_id, None)
             if delayed is not None:
                 delayed.cancel()
-            changed = con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,dispatch_not_before=CASE WHEN state='queued' THEN 0 ELSE dispatch_not_before END,updated_at=? WHERE job_id=? AND cancel_requested=0", (time.time(), job_id)).rowcount
+            changed = con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE job_id=? AND cancel_requested=0", (time.time(), job_id)).rowcount
             con.commit()
         self._cleanup_processes(job_id)
         if changed:
             self._stats["cancelled"] += 1
+        # Running cancellation is only a request until the worker records its
+        # terminal outcome. Do not wake waiters with a stale `running` state.
+        if state == "queued":
+            self._event(job_id).set()
         if self.debug_traces is not None and trace_id and state == "queued":
             try: self.debug_traces.finish(trace_id, state="cancelled", error="async job cancelled before execution")
             except Exception: pass
         admission = self._admission("accepted", "capacity_available", retryable=False)
         final_state = "cancelled" if state == "queued" else "running"
-        if final_state == "cancelled":
-            # A running cancellation is only an acknowledgement; _execute wakes waiters at completion.
-            self._event(job_id).set()
-        return {"success": True, "job_id": job_id, "state": final_state, "artifact_id": artifact_id, "expires_at": expires_at, "cancel_requested": True, "terminal": final_state == "cancelled", "retryable": final_state == "running", "admission": admission, "admission_state": admission["state"]}
+        return {"success": True, "job_id": job_id, "state": final_state, "cancel_requested": True, "terminal": final_state == "cancelled", "retryable": final_state == "running", "admission": admission, "admission_state": admission["state"]}
 
     def recover(self) -> int:
         if self._shutdown.is_set():
@@ -1182,24 +1146,17 @@ class AsyncJobManager:
         cancelled_ids: list[tuple[str, str]] = []
         unknown_ids: list[tuple[str, str]] = []
         with self._lock, closing(self._connect()) as con:
-            now = time.time()
-            rows = con.execute(
-                "SELECT job_id,state,action,attempts,cancel_requested,trace_id,payload_json,dispatch_not_before "
-                "FROM async_jobs WHERE state IN ('queued','running')"
-            ).fetchall(); ids: list[tuple[str, str]] = []
-            for job_id, state, action, attempts, cancelled, trace_id, payload_json, dispatch_not_before in rows:
+            rows = con.execute("SELECT job_id,state,action,attempts,cancel_requested,trace_id,payload_json FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
+            for job_id, state, action, attempts, cancelled, trace_id, payload_json in rows:
                 if cancelled:
-                    con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (now, job_id))
+                    con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                     cancelled_ids.append((str(job_id), str(trace_id or "")))
                 elif (state == "running" or int(attempts or 0) > 0) and int(attempts or 0) > 0 and not self._can_replay_after_interruption(action, payload_json, int(attempts or 0)):
                     error = "async job outcome unknown after restart; safe replay unavailable"
-                    con.execute("UPDATE async_jobs SET state='outcome_unknown',lease_until=0,dispatch_not_before=0,error=?,updated_at=? WHERE job_id=?", (error, now, job_id))
+                    con.execute("UPDATE async_jobs SET state='outcome_unknown',lease_until=0,error=?,updated_at=? WHERE job_id=?", (error, time.time(), job_id))
                     unknown_ids.append((str(job_id), str(trace_id or "")))
-                elif state == "queued" and float(dispatch_not_before or 0) > now:
-                    # Preserve a durable dispatch deadline across restart/recovery.
-                    continue
                 else:
-                    con.execute("UPDATE async_jobs SET state='queued',lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (now, job_id)); ids.append((str(job_id), str(trace_id or "")))
+                    con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id)); ids.append((str(job_id), str(trace_id or "")))
             con.commit()
         for job_id, trace_id in cancelled_ids:
             self._event(job_id).set()
@@ -1230,23 +1187,19 @@ class AsyncJobManager:
             expired = con.execute("UPDATE async_jobs SET state='expired',updated_at=? WHERE state IN ('done','failed','cancelled','outcome_unknown') AND expires_at<?", (now, now)).rowcount
             # Periodic tombstone purge: evict expired jobs whose retention period has lapsed
             con.execute("DELETE FROM async_jobs WHERE state='expired' AND updated_at<?", (now - self.result_ttl_seconds,))
-            stuck = con.execute(
-                "SELECT job_id, action, attempts, cancel_requested, payload_json "
-                "FROM async_jobs WHERE state='running' AND lease_until<?",
-                (now,),
-            ).fetchall()
+            stuck = con.execute("SELECT job_id, action, attempts, cancel_requested, payload_json FROM async_jobs WHERE state='running' AND lease_until<?", (now,)).fetchall()
             for s_id, s_action, s_att, s_canc, payload_json in stuck:
                 s_attempts = int(s_att or 0)
                 if s_canc or (s_attempts > 0 and not self._can_replay_after_interruption(s_action, payload_json, s_attempts)):
                     state = "cancelled" if s_canc else "outcome_unknown"
                     error = "async job cancelled" if s_canc else "async job outcome unknown after lease expiry; safe replay unavailable"
-                    con.execute("UPDATE async_jobs SET state=?,lease_until=0,dispatch_not_before=0,error=?,updated_at=? WHERE job_id=?", (state, error, now, str(s_id)))
+                    con.execute("UPDATE async_jobs SET state=?,lease_until=0,error=?,updated_at=? WHERE job_id=?", (state, error, now, str(s_id)))
                     self._event(str(s_id)).set()
                     if s_canc:
                         self._stats["cancelled"] += 1
                 else:
-                    con.execute("UPDATE async_jobs SET state='queued',lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (now, str(s_id)))
-            rows = con.execute("SELECT job_id FROM async_jobs WHERE state='queued' AND dispatch_not_before<?", (now,)).fetchall()
+                    con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (now, str(s_id)))
+            rows = con.execute("SELECT job_id FROM async_jobs WHERE state='queued' AND lease_until<? AND dispatch_not_before<?", (now, now)).fetchall()
             delayed_ids = set(self._delayed_dispatch)
             active_rows = con.execute("SELECT job_id FROM async_jobs WHERE state IN ('queued','running')").fetchall()
             active_ids = {str(r[0]) for r in active_rows}
@@ -1281,7 +1234,7 @@ class AsyncJobManager:
             self._delayed_dispatch.clear()
             self._resource_release_waiters.clear()
         with self._lock, closing(self._connect()) as con:
-            con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,dispatch_not_before=CASE WHEN state='queued' THEN 0 ELSE dispatch_not_before END,updated_at=? WHERE state IN ('queued','running')", (time.time(),))
+            con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE state IN ('queued','running')", (time.time(),))
             con.commit()
         for timer in delayed:
             timer.cancel()

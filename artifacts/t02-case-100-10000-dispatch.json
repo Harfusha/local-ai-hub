@@ -1,0 +1,66 @@
+{
+  "case": {
+    "files": 100,
+    "rag_chunks": 10000,
+    "repetitions": 3,
+    "light_repetitions": 1000,
+    "paired_repetitions": 30,
+    "concurrency": [1, 4, 16, 32],
+    "full": true,
+    "inference": false,
+    "checkpoint_batch_size": 25,
+    "hard_timeout_seconds": 900
+  },
+  "command": "python -B tools/benchmark_surfaces.py --state-dir C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-matrix-baseline-20261003\\case-100-10000\\state --scratch-dir C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-matrix-baseline-20261003\\case-100-10000\\scratch --files 100 --rag-chunks 10000 --repetitions 3 --light-repetitions 1000 --paired-repetitions 30 --concurrency 1 4 16 32 --full --checkpoint C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-matrix-baseline-20261003\\case-100-10000\\run.checkpoint.json --checkpoint-batch-size 25",
+  "status": "not_started",
+  "broker_result": {
+    "success": false,
+    "terminal": true,
+    "retryable": false,
+    "error": "mutating commands require a registered task-owned worktree",
+    "execution_started": false
+  },
+  "checkpoint_artifact": null,
+  "active_process": false,
+  "local_task_id": "task_2d1d72257ea5",
+  "worktree_lease": {
+    "lease_id": "lease_fc36c8e2e311",
+    "worktree_id": "worktree_3160927dfdea",
+    "worktree_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\lah_wt_worktree_3160927dfdea",
+    "branch": "task_2d1d72257ea5",
+    "ttl_seconds": 86400,
+    "release_attempts": 6,
+    "release_error": "worktree ownership identifier is required",
+    "released": false
+  },
+  "worktree_release_attempts": [
+    {"fields": ["lease_id", "worktree_id", "task_id"], "result": "worktree ownership identifier is required"},
+    {"fields": ["lease_id", "scope", "scope_id", "task_id"], "result": "worktree ownership identifier is required"},
+    {"fields": ["lease_id", "worktree_id", "clone_id", "scope", "scope_id", "task_id", "root"], "result": "worktree ownership identifier is required"},
+    {"fields": ["root", "value=returned worktree_path", "task_id"], "result": "worktree ownership identifier is required"},
+    {"fields": ["root", "value=returned worktree_path", "lease_id", "task_id"], "result": "worktree ownership identifier is required"},
+    {"fields": ["root", "value=returned worktree_path", "worktree_id", "lease_id", "task_id", "scope_id"], "result": "worktree ownership identifier is required"}
+  ],
+  "coordinator_reported_release_check": {
+    "source": "T20 coordination message; not independently verified",
+    "action": "release",
+    "arguments": ["lease_id", "task_id"],
+    "result": {
+      "success": true,
+      "released_rows": 0
+    },
+    "leases_query": {
+      "terminal": true,
+      "retryable": false,
+      "error": "HubClient._singleflight() got an unexpected keyword argument 'request_id'"
+    },
+    "release_proven": false
+  },
+  "latest_t20_slot_snapshot": {
+    "source": "T20 coordination message; not independently verified",
+    "lease_owner": "T02",
+    "lease_id": "lease_fc36c8e2e311",
+    "slot_free": false
+  },
+  "note": "No benchmark or test run was queued after the broker rejection and stop instruction. Existing T02 candidate smoke/test receipts remain unchanged."
+}

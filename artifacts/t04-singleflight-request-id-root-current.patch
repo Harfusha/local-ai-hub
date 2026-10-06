@@ -1,0 +1,55 @@
+diff --git a/src/local_ai_hub/client.py b/src/local_ai_hub/client.py
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -458,5 +458,6 @@ class HubClient:
+         timeout: float,
+         execute: Any,
+         *,
++        request_id: str | None = None,
+         cancel_event: threading.Event | None = None,
+     ) -> dict[str, Any]:
+@@ -482,5 +483,8 @@ class HubClient:
+             remaining = deadline - time.monotonic()
+             if remaining <= 0:
+-                raise TimeoutError("coalesced hub request timed out")
++                error = TimeoutError("coalesced hub request timed out")
++                if request_id is not None:
++                    error.request_id = request_id
++                raise error
+             if flight["event"].wait(min(0.05, remaining)):
+                 break
+@@ -491,4 +495,7 @@ class HubClient:
+             raise flight["error"]
+         result = copy.deepcopy(flight["result"])
+-        if isinstance(result, dict): result["coalesced"] = True
++        if isinstance(result, dict):
++            result["coalesced"] = True
++            if request_id is not None:
++                result["request_id"] = request_id
+         return result
+diff --git a/tests/test_client_transport.py b/tests/test_client_transport.py
+--- a/tests/test_client_transport.py
++++ b/tests/test_client_transport.py
+@@ -91,5 +91,22 @@ def test_client_coalesces_simultaneous_identical_requests(tmp_path, monkeypatch):
+     assert Connection.calls == 1
+     assert sorted(bool(item.get("coalesced")) for item in results) == [False, True]
+ 
+ 
++def test_get_passes_request_id_through_singleflight(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    observed_ids = []
++
++    def pooled_open(_method, _path, _body, headers, _timeout):
++        observed_ids.append(headers["X-LocalAI-Request-ID"])
++        return b'{"success":true}'
++
++    monkeypatch.setattr(client, "_pooled_open", pooled_open)
++
++    result = client.get("/health")
++
++    assert result["success"] is True
++    assert len(observed_ids) == 1
++    assert observed_ids[0].startswith("req_")
++
++
+ def test_singleflight_removes_completed_flight_before_signaling(tmp_path, monkeypatch):

@@ -144,66 +144,26 @@ def test_generated_agent_instructions_define_ollama_ownership():
 
     assert "Never run `ollama serve`" in generated
     assert "headless.manage_ollama = false" in generated
-
-
-def test_loaded_model_details_uses_live_api_ps_without_configured_tag_filter():
+def test_gaming_unload_covers_every_loaded_ollama_model():
     from types import SimpleNamespace
 
     from local_ai_hub.ollama import OllamaRuntime
 
     runtime = OllamaRuntime.__new__(OllamaRuntime)
-    runtime._meta_cache = {}
-    runtime._meta_cache_at = {}
-    runtime.llama_cpp = SimpleNamespace(loaded_model_details=lambda: [])
-    calls = []
+    runtime.config = {"ollama": {"enabled": True}, "models": {"chat": "configured:7b"}}
+    runtime.llama_cpp = SimpleNamespace()
+    runtime._invalidate_loaded_cache = lambda: None
+    unloads = []
 
-    def request(endpoint, *, timeout=None):
-        calls.append((endpoint, timeout))
-        return {
-            "models": [
-                {"name": "", "model": "runtime-only:9b"},
-                {"name": "unconfigured:3b"},
-            ]
-        }
+    def request(endpoint, payload=None, *, timeout=None, deadline=None, should_stop=None):
+        if endpoint == "/api/ps":
+            return {"models": [] if unloads else [{"name": "configured:7b"}, {"name": "", "model": "runtime-only:9b"}]}
+        unloads.append(payload["model"])
+        return {"done_reason": "unload"}
 
     runtime.request = request
 
-    details = runtime.loaded_model_details()
+    result = runtime.unload_configured_models()
 
-    assert [row["name"] for row in details] == ["runtime-only:9b", "unconfigured:3b"]
-    assert calls == [("/api/ps", 1.0)]
-
-
-def test_unload_model_forwards_deadline_and_preserves_llama_cpp_dispatch():
-    from types import SimpleNamespace
-
-    from local_ai_hub.ollama import OllamaRuntime
-
-    runtime = OllamaRuntime.__new__(OllamaRuntime)
-    runtime.config = {"llama_cpp": {"fallback_to_ollama": True}}
-    runtime._is_embedding_model = lambda _model: False
-    runtime._invalidate_loaded_cache = lambda: None
-    ollama_calls = []
-    runtime.request = lambda endpoint, payload, timeout=None: ollama_calls.append(
-        (endpoint, payload, timeout)
-    ) or {"response": ""}
-    runtime.llama_cpp = SimpleNamespace(
-        supports_model=lambda _model: False,
-        ready_for_model=lambda _model: False,
-    )
-
-    assert runtime.unload_model("unconfigured:3b", timeout=0.25) is True
-    assert ollama_calls == [
-        ("/api/generate", {"model": "unconfigured:3b", "keep_alive": 0}, 0.25)
-    ]
-
-    llama_calls = []
-    runtime.llama_cpp = SimpleNamespace(
-        supports_model=lambda _model: True,
-        ready_for_model=lambda _model: True,
-        unload_model=lambda model, *, timeout=None: llama_calls.append(
-            (model, timeout)
-        ) or True,
-    )
-    assert runtime.unload_model("local-gguf", timeout=0.125) is True
-    assert llama_calls == [("local-gguf", 0.125)]
+    assert result["success"] is True
+    assert unloads == ["configured:7b", "runtime-only:9b"]
