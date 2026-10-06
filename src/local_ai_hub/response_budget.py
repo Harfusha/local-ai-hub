@@ -32,7 +32,8 @@ _POINTER_KEYS = (
 _CONTEXT_PROTECTED_KEYS = (
     "success", "complete", "partial", "task_context", "context_id", "etag",
     "evidence_ids", "repo_revision", "stale", "warnings", "omitted_sections",
-    "next_action",
+    "context_pack",
+    "next_action", "adaptive_context_pack",
 )
 
 
@@ -41,6 +42,14 @@ def _safe_limit(value: Any, default: int) -> int:
         return max(64, int(value))
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _bounded_string(value: str, max_chars: int) -> str:
+    """Truncate metadata strings to an explicit character bound."""
+    limit = max(1, int(max_chars))
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1] + "…"
 
 
 def _bounded_pointer_item(value: Any, *, budget_chars: int, depth: int = 0) -> Any:
@@ -138,37 +147,163 @@ def _with_budget_meta(
     if token_metadata is not None:
         value["token_efficiency"] = token_efficiency_metadata(token_metadata)
     _fit_to_tokens(value, requested, protected_keys=effective_protected)
-    value["response_budget"]["returned_tokens"] = min(requested, json_tokens(value))
+    for _ in range(16):
+        returned = min(requested, json_tokens(value))
+        if value["response_budget"]["returned_tokens"] == returned:
+            break
+        value["response_budget"]["returned_tokens"] = returned
     return value
 
 
-def _budget_rejection(*, requested: int, original: int) -> dict[str, Any]:
+def _bounded_context_pack(value: Any, *, budget_chars: int) -> Any:
+    """Keep context identity and one exact citation in a bounded response."""
+    if not isinstance(value, dict):
+        return _bounded_pointer_item(value, budget_chars=budget_chars)
+    result: dict[str, Any] = {}
+    for key in ("context_id", "repo_revision"):
+        item = value.get(key)
+        if isinstance(item, str) and item:
+            result[key] = _bounded_string(item, min(160, budget_chars))
+    evidence = value.get("evidence")
+    if isinstance(evidence, list):
+        citations: list[dict[str, Any]] = []
+        for item in evidence[:24]:
+            if not isinstance(item, dict):
+                continue
+            citation: dict[str, Any] = {}
+            for key in ("evidence_id", "path", "start_line", "end_line", "source"):
+                field = item.get(key)
+                if isinstance(field, str):
+                    citation[key] = _bounded_string(field, min(160, budget_chars))
+                elif isinstance(field, int) and not isinstance(field, bool):
+                    citation[key] = field
+            if citation.get("evidence_id") and citation.get("path"):
+                citations.append(citation)
+                break
+        if citations:
+            result["evidence"] = citations
+    evidence_ids = value.get("evidence_ids")
+    if isinstance(evidence_ids, (list, tuple)) and evidence_ids:
+        result["evidence_ids"] = [_bounded_string(str(evidence_ids[0]), min(160, budget_chars))]
+    return result
+
+
+def _retain_bounded_context_citation(
+    candidate: Any,
+    source: Any,
+    *,
+    protected_keys: tuple[str, ...],
+    budget_chars: int,
+) -> Any:
+    """Apply the context citation contract to every reduced budget candidate."""
+    if not isinstance(candidate, dict) or not isinstance(source, dict):
+        return candidate
+    for key in ("adaptive_context_pack", "context_pack"):
+        pack = source.get(key)
+        if key in protected_keys and isinstance(pack, dict):
+            candidate[key] = _bounded_context_pack(pack, budget_chars=budget_chars)
+    return candidate
+
+
+def _budget_rejection(
+    *,
+    requested: int,
+    original: int,
+    source: Any = None,
+    protected_keys: tuple[str, ...] = (),
+) -> dict[str, Any]:
     """Return bounded deterministic error when required metadata cannot fit."""
-    value: dict[str, Any] = {
-        "success": False,
-        "status_code": 400,
-        "terminal": True,
-        "retryable": False,
-        "error": "max_response_tokens too small for authoritative context envelope",
-    }
-    value["response_budget"] = {
-        "requested_tokens": requested,
-        "original_tokens": original,
-        "returned_tokens": 0,
-        "truncated": True,
-        "rejected": True,
-    }
-    if json_tokens(value) <= requested:
-        value["response_budget"]["returned_tokens"] = json_tokens(value)
-        return value
+    preserved = source if isinstance(source, dict) else {}
+    error = str(preserved.get("error") or "max_response_tokens too small for authoritative context envelope")
+    metadata_variants = (
+        {
+            "requested_tokens": requested,
+            "original_tokens": original,
+            "returned_tokens": 0,
+            "truncated": True,
+            "rejected": True,
+            "unit": "estimated_tokens",
+        },
+        {
+            "requested_tokens": requested,
+            "returned_tokens": 0,
+            "rejected": True,
+            "unit": "estimated_tokens",
+        },
+        {"requested_tokens": requested, "rejected": True},
+        {},
+    )
+    for metadata in metadata_variants:
+        for error_chars in (256, 128, 64, 32, 16, 8, 1):
+            value: dict[str, Any] = {
+                "success": False,
+                "error": _bounded_string(error, error_chars),
+            }
+            status_code = preserved.get("status_code")
+            value["status_code"] = (
+                status_code
+                if isinstance(status_code, int) and not isinstance(status_code, bool)
+                else 400
+            )
+            for key, fallback in (("terminal", True), ("retryable", False)):
+                item = preserved.get(key)
+                value[key] = item if isinstance(item, bool) else fallback
+            if metadata:
+                value["response_budget"] = dict(metadata)
+            for key in protected_keys:
+                if key not in preserved or key in {"success", "error", "status_code", "terminal", "retryable", "response_budget"}:
+                    continue
+                item = preserved[key]
+                if key in {"adaptive_context_pack", "context_pack"}:
+                    value[key] = _bounded_context_pack(item, budget_chars=error_chars)
+                elif key in {"evidence_ids", "artifact_ids"} and isinstance(item, (list, tuple)):
+                    value[key] = [_bounded_string(str(part), min(160, error_chars)) for part in item[:1]]
+                elif key == "warnings" and isinstance(item, (list, tuple)):
+                    value[key] = [
+                        _bounded_pointer_item(item[0], budget_chars=error_chars)
+                    ] if item else []
+                elif key == "changed_paths" and isinstance(item, (list, tuple)):
+                    value[key] = [
+                        _bounded_string(str(item[0]), min(160, error_chars))
+                    ] if item else []
+                elif isinstance(item, str):
+                    value[key] = _bounded_string(item, min(160, error_chars))
+                else:
+                    value[key] = _bounded_pointer_item(item, budget_chars=error_chars)
+            if json_tokens(value) > requested:
+                continue
+            if "returned_tokens" in value.get("response_budget", {}):
+                for _ in range(8):
+                    returned = json_tokens(value)
+                    value["response_budget"]["returned_tokens"] = returned
+                    if json_tokens(value) == returned:
+                        break
+                if json_tokens(value) != value["response_budget"]["returned_tokens"]:
+                    # Tokenizer boundaries can make the self-referential count
+                    # oscillate by one. Try a shorter error/metadata variant.
+                    continue
+            if json_tokens(value) <= requested:
+                return value
     return {"success": False, "error": "max_response_tokens too small"}
 
 
-def _bounded_result(result: Any, *, requested: int, original: int) -> Any:
+def _bounded_result(
+    result: Any,
+    *,
+    requested: int,
+    original: int,
+    source: Any = None,
+    protected_keys: tuple[str, ...] = (),
+) -> Any:
     """Never let envelope metadata invalidate the advertised hard budget."""
     if json_tokens(result) <= requested:
         return result
-    return _budget_rejection(requested=requested, original=original)
+    return _budget_rejection(
+        requested=requested,
+        original=original,
+        source=source if source is not None else result,
+        protected_keys=protected_keys,
+    )
 
 
 def result_id(value: Any) -> str:
@@ -228,7 +363,13 @@ def budget_response(
             protected_keys=protected_keys,
             token_metadata=token_metadata,
         )
-        return _bounded_result(result, requested=requested, original=original) if protected_keys or json_tokens(result) > requested else result
+        return _bounded_result(
+            result,
+            requested=requested,
+            original=original,
+            source=value,
+            protected_keys=protected_keys,
+        ) if protected_keys or json_tokens(result) > requested else result
     if original <= requested:
         return value
 
@@ -243,13 +384,33 @@ def budget_response(
         text_chars, evidence, items = 700, 4, 5
 
     candidates = [
-        compact_result(value, max_text_chars=text_chars, max_evidence=evidence, max_items=items),
-        compact_result(value, max_text_chars=max(180, text_chars // 2), max_evidence=max(1, evidence // 2), max_items=max(1, items // 2)),
-        _pointer_envelope(
+        _retain_bounded_context_citation(
+            compact_result(value, max_text_chars=text_chars, max_evidence=evidence, max_items=items),
             value,
-            max_tokens=requested,
-            reuse_key=reuse_key,
             protected_keys=protected_keys,
+            budget_chars=text_chars,
+        ),
+        _retain_bounded_context_citation(
+            compact_result(
+                value,
+                max_text_chars=max(180, text_chars // 2),
+                max_evidence=max(1, evidence // 2),
+                max_items=max(1, items // 2),
+            ),
+            value,
+            protected_keys=protected_keys,
+            budget_chars=max(180, text_chars // 2),
+        ),
+        _retain_bounded_context_citation(
+            _pointer_envelope(
+                value,
+                max_tokens=requested,
+                reuse_key=reuse_key,
+                protected_keys=protected_keys,
+            ),
+            value,
+            protected_keys=protected_keys,
+            budget_chars=max(180, text_chars // 2),
         ),
     ]
     for candidate in candidates:
@@ -265,7 +426,13 @@ def budget_response(
                 if json_tokens(result) <= requested:
                     return result
                 if not protected_keys:
-                    return _bounded_result(result, requested=requested, original=original)
+                    return _bounded_result(
+                        result,
+                        requested=requested,
+                        original=original,
+                        source=value,
+                        protected_keys=protected_keys,
+                    )
                 continue
             return candidate
 
@@ -282,4 +449,10 @@ def budget_response(
         protected_keys=protected_keys,
         token_metadata=token_metadata,
     )
-    return _bounded_result(result, requested=requested, original=original)
+    return _bounded_result(
+        result,
+        requested=requested,
+        original=original,
+        source=value,
+        protected_keys=protected_keys,
+    )

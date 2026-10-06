@@ -1059,6 +1059,11 @@ def _instrumented_tool():
                         routing_added = True
                     requested_tokens = int(arguments.get("max_response_tokens") or 0)
                     if routing_added and (requested_tokens <= 0 or json_tokens(candidate) <= requested_tokens):
+                        response_budget = candidate.get("response_budget")
+                        if isinstance(response_budget, dict):
+                            response_budget = dict(response_budget)
+                            response_budget["returned_tokens"] = json_tokens(candidate)
+                            candidate["response_budget"] = response_budget
                         clean = candidate
                         handoff_added = True
             _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000, recommended=handoff_added)
@@ -1646,7 +1651,10 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
             authoritative[key] = safe_value[key]
     evidence = pack.get("evidence")
     if isinstance(evidence, list):
-        ids = [item.get("evidence_id") for item in evidence if isinstance(item, dict) and item.get("evidence_id")]
+        ids = list(dict.fromkeys(
+            item.get("evidence_id") for item in evidence
+            if isinstance(item, dict) and item.get("evidence_id")
+        ))
         authoritative["evidence_ids"] = ids[:24]
     if "evidence_ids" not in authoritative:
         if "evidence_ids" in pack:
@@ -1677,7 +1685,22 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
         max_evidence=MAX_EVIDENCE,
         extra_fields=extra_fields,
     )
+    context_pack_key = (
+        "adaptive_context_pack" if "adaptive_context_pack" in safe_value
+        else "context_pack" if "context_pack" in safe_value
+        else ""
+    )
     if isinstance(final, dict) and ("adaptive_context_pack" in safe_value or "context_pack" in safe_value or safe_value.get("guarded")):
+        pack_key = "adaptive_context_pack" if "adaptive_context_pack" in final else "context_pack"
+        context_pack = final.get(pack_key)
+        if isinstance(context_pack, dict) and isinstance(context_pack.get("evidence"), list):
+            context_pack = dict(context_pack)
+            context_pack["evidence"] = [
+                {key: item[key] for key in ("evidence_id", "path", "start_line", "end_line", "source") if key in item}
+                for item in context_pack["evidence"][:24]
+                if isinstance(item, dict)
+            ]
+            final[pack_key] = context_pack
         final["provenance"] = evidence_meta(
             "repo.context",
             str(authoritative.get("repo_revision", safe_value.get("repo_revision", ""))),
@@ -1688,14 +1711,45 @@ def _context_pack_projection(value: Any, *, extra_fields: list[str] | None = Non
     options = _CURRENT_RESPONSE_OPTIONS.get()
     requested, profile, reuse_key, enabled = _response_budget("context", options)
     if enabled:
+        protected_context_keys = (
+            "success", "context_id", "repo_revision", "evidence_ids",
+            "adaptive_context_pack" if "adaptive_context_pack" in final else "context_pack",
+        )
+        if requested >= 256:
+            protected_context_keys += tuple(
+                key for key in (
+                    "changed_paths", "stale", "delta_from", "since_hash", "warnings", "degraded",
+                    "fallback_used",
+                ) if key in final
+            )
+        elif requested <= 160:
+            protected_context_keys += tuple(
+                key for key in ("stale", "warnings", "delta_from", "since_hash") if key in final
+            )
+        if requested >= 512:
+            protected_context_keys += tuple(
+                key for key in ("contract", "provenance") if key in final
+            )
+        protected_context_keys = tuple(
+            key for key in protected_context_keys if key in final
+        )
+        # Match the token count to the exact key order returned to the MCP
+        # serializer. Sorting after budgeting can change tokenization.
+        final = _normalize_deterministic(final)
         final = budget_response(
             final,
             max_tokens=requested,
             profile=profile,
             reuse_key=reuse_key,
-            protected_keys=tuple(authoritative),
+            protected_keys=protected_context_keys,
             token_metadata=efficiency_metadata(),
         )
+        budget_meta = final.get("response_budget") if isinstance(final, dict) else None
+        if isinstance(budget_meta, dict) and "returned_tokens" in budget_meta:
+            budget_meta["returned_tokens"] = json_tokens(final)
+            if json_tokens(final) > requested:
+                return _context_input_error("response budget metadata exceeds max_response_tokens")
+        return final
     return _normalize_deterministic(final)
 
 
@@ -1835,7 +1889,7 @@ def _local_ai_repo_impl(
         payload: dict[str, Any] = {
             "root": root, "query": query or task, "workspace": workspace or None,
             "max_tokens": effective_tokens,
-            "mode": "full" if mode == "full" else "fast",
+            "mode": "full" if mode == "full" else "adaptive" if mode == "adaptive" else "fast",
         }
         if guarded_requested:
             payload.update({

@@ -40,6 +40,27 @@ class ContextRequest:
     since_hash: str = ""
 
 
+def _context_scope_digest(request: ContextRequest) -> str:
+    """Bind cache validators to the request scope without exposing its values."""
+    identity = (
+        request.task_id,
+        request.root,
+        request.tenant,
+        request.clone_id,
+        request.worktree_id,
+        request.branch,
+        request.repository_id,
+        request.session_id,
+        request.phase,
+        request.focus,
+        request.preload_profile,
+        request.include_kinds,
+        request.include_diagnostics,
+        request.changed_paths,
+    )
+    return hashlib.sha256(json_dumps(identity).encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class ContextElement:
     element_id: str
@@ -87,12 +108,14 @@ class CompiledContext:
     warnings: tuple[dict[str, Any], ...] = ()
     delta_from: str = ""
     unchanged: bool = False
+    request_scope_digest: str = ""
 
     def text(self) -> str:
         return "\n\n".join(el.content for el in self.elements)
 
     def etag(self) -> str:
         h = hashlib.sha1(usedforsecurity=False)
+        h.update(self.request_scope_digest.encode("ascii"))
         h.update(self.phase.encode("utf-8"))
         h.update(self.repo_revision.encode("utf-8"))
         for el in self.elements:
@@ -175,7 +198,7 @@ class ContextCompiler:
         self.config = dict(config or {})
         self._lock = threading.RLock()
         self._initialized = False
-        self._context_history: dict[str, tuple[ContextElement, ...]] = {}
+        self._context_history: dict[str, tuple[str, tuple[ContextElement, ...]]] = {}
         self._init_table()
 
     def _init_table(self) -> None:
@@ -943,6 +966,7 @@ class ContextCompiler:
             repo_revision=effective_revision,
             stale=not self.state_store.enabled,
             warnings=tuple(warnings[:32]),
+            request_scope_digest=_context_scope_digest(request),
         )
         current_etag = compiled.etag()
         if request.since_hash:
@@ -960,23 +984,29 @@ class ContextCompiler:
             else:
                 previous = self._context_history.get(request.since_hash)
                 if previous is not None:
-                    previous_by_id = {element.element_id: element.content for element in previous}
-                    delta_elements = [
-                        element for element in compiled.elements
-                        if previous_by_id.get(element.element_id) != element.content
-                    ]
-                    delta_tokens = sum(element.estimated_tokens for element in delta_elements)
-                    compiled = replace(
-                        compiled,
-                        elements=delta_elements,
-                        estimated_tokens=delta_tokens,
-                        value_density=(sum(element.confidence for element in delta_elements) / max(1, delta_tokens)),
-                        packed_ratio=(delta_tokens / request.token_budget if request.token_budget > 0 else 0.0),
-                        delta_from=request.since_hash,
-                    )
+                    previous_scope_digest, previous_elements = previous
+                    if previous_scope_digest == compiled.request_scope_digest:
+                        previous_by_id = {
+                            element.element_id: element.content for element in previous_elements
+                        }
+                        delta_elements = [
+                            element for element in compiled.elements
+                            if previous_by_id.get(element.element_id) != element.content
+                        ]
+                        delta_tokens = sum(element.estimated_tokens for element in delta_elements)
+                        compiled = replace(
+                            compiled,
+                            elements=delta_elements,
+                            estimated_tokens=delta_tokens,
+                            value_density=(sum(element.confidence for element in delta_elements) / max(1, delta_tokens)),
+                            packed_ratio=(delta_tokens / request.token_budget if request.token_budget > 0 else 0.0),
+                            delta_from=request.since_hash,
+                        )
+                    else:
+                        compiled = replace(compiled, delta_from=request.since_hash)
                 else:
                     compiled = replace(compiled, delta_from=request.since_hash)
-        self._context_history[current_etag] = tuple(final_elements)
+        self._context_history[current_etag] = (compiled.request_scope_digest, tuple(final_elements))
         if len(self._context_history) > 32:
             oldest = next(iter(self._context_history))
             self._context_history.pop(oldest, None)

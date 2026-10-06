@@ -3442,17 +3442,14 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/context/pack":
                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))
                 raw_max_tokens = payload.get("max_tokens", APP.config.get("token_saving", {}).get("default_repo_context_tokens", 4200))
-                if isinstance(raw_max_tokens, bool):
+                if isinstance(raw_max_tokens, bool) or not isinstance(raw_max_tokens, int):
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be an integer"}); return
-                try:
-                    max_tokens = int(raw_max_tokens)
-                except (TypeError, ValueError, OverflowError):
-                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be an integer"}); return
+                max_tokens = raw_max_tokens
                 if max_tokens < 0:
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be non-negative"}); return
                 mode = str(payload.get("mode", "fast")).strip().lower()
-                if mode not in {"full", "fast"}:
-                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "context mode must be full or fast"}); return
+                if mode not in {"full", "fast", "adaptive"}:
+                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "context mode must be full, fast, or adaptive"}); return
                 guarded = payload.get("guarded", False)
                 if not isinstance(guarded, bool):
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "guarded must be boolean"}); return
