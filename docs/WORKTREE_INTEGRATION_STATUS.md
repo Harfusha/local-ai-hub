@@ -691,12 +691,16 @@ Task lookup now requires both trusted repository root and tenant with matching
 record provenance; `repository_id` cannot substitute. Broader owner check had
 **90 passed / 8 failed**; the owner reports all eight reproduce on original
 pin `7729c814` and concern GLOBAL/repository/session semantics, not the new
-TASK guard. These failures remain an open compatibility triage; no test
-expectations were changed and T05 isn't release-complete. Tesla has a
-read-only follow-up to adjudicate those eight failures; no code/test changes
-authorized in that triage. The static T05 gap did not prove a live
-cross-tenant leak. No worker may edit concurrently dirty root `http_server.py`
-or `async_jobs.py`.
+TASK guard. Read-only triage classified four real missing guards: repository
+context must require root+tenant, session context must require session+tenant,
+direct explicit-GLOBAL lookup must honor record provenance except for the
+explicit GLOBAL-only tenant-agnostic option, and tenantless context must not
+return repository/session/task rows. Four other failures were stale policy
+assertions/fixtures; never weaken denial tests. Tesla now owns this follow-up
+in the existing T17 checkout, sync target master `9f2c367a`, write scope only
+`agent_memory.py` and targeted tests. T14 `/api/context/pack` and dirty root
+`http_server.py`/`async_jobs.py` remain untouched. T05 isn't release-complete;
+the original static gap did not prove a live cross-tenant leak.
 All original checkpoint refs/stash objects remain preserved.
 
 The tracked/index disposition owner supplied a doc-only follow-up, commit
@@ -725,8 +729,10 @@ not proof of successful DB initialization or row preservation. V13-H005 is
 master-improved: all 53 original accepted object hashes remain among the
 current 61. T18's read-only review found `_reserve_backup_destination`
 swallows Windows account/ACL subprocess exceptions; this is a separate
-fail-closed confidentiality issue for the exception-handling queue. No
-runtime, import, model, DB, or source changes/tests were run in this review.
+fail-closed confidentiality issue. Sartre now owns the bounded fix in that
+method plus unit tests: existing T18 worktree, root master `e13142e3`, no
+schema/DB changes, and no edits to concurrently dirty root HTTP/async files.
+The review itself ran no runtime, import, model, DB, or tests.
 Five additional event hunks have manual counterparts, now dispositioned in follow-up commit
 `088f9b3300b36f46ba131652082040b1d46339a6` (parent
 `b7757a77d57374d8ef04971d417f81ac42d1d57a`), merged into master. The report
