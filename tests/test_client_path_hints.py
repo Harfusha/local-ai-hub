@@ -33,12 +33,12 @@ def test_post_forwards_path_hints_to_search_and_command(tmp_path, monkeypatch):
         (
             "/api/search",
             {"query": "needle", "path_hints": list(hints)},
-            {"timeout": 360.0, "replay_safe": False, "request_id": "search-1"},
+            {"timeout": 360.0, "replay_safe": True, "request_id": "search-1", "tenant": None, "cancel_event": None},
         ),
         (
             "/api/command",
             {"command": "pytest", "path_hints": list(hints)},
-            {"timeout": 360.0, "replay_safe": False, "request_id": "command-1"},
+            {"timeout": 360.0, "replay_safe": False, "request_id": "command-1", "tenant": None, "cancel_event": None},
         ),
     ]
 
