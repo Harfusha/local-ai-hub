@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ from local_ai_hub.command_transactions import (
     verify_transaction_source_unchanged,
 )
 from local_ai_hub import commands as commands_module
+from local_ai_hub import leases as leases_module
 from local_ai_hub.commands import CommandBroker
 from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 
@@ -222,6 +224,64 @@ def test_mutating_run_requires_enforced_docker_boundary_before_spawn(
     assert result["success"] is False
     assert result["mutation_sandbox_required"] is True
     assert result["failure_kind"] == "sandbox_unavailable"
+    assert spawned == []
+
+
+def test_mutating_run_requires_authoritative_fencing_before_spawn(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source"
+    _make_source_repo(source)
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path / "state")},
+         "commands": {"allowed": True, "allow_mutating": True}},
+        artifacts=None,
+    )
+    broker.set_task_store(_RegisteredTaskStore(source))
+    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+    spawned: list[bool] = []
+    monkeypatch.setattr(
+        broker, "_execute",
+        lambda *_args, **_kwargs: spawned.append(True) or {"success": True},
+    )
+
+    result = broker.run(
+        "git add owned.txt", str(source), force=True, task_id="task-owned",
+        paths=["owned.txt"],
+    )
+
+    assert result["success"] is False
+    assert result["failure_kind"] == "mutation_fence_unavailable"
+    assert result["mutation_fence_required"] is True
+    assert result["outcome_unknown"] is False
+    assert spawned == []
+
+
+def test_private_transaction_requires_work_attempt_even_when_store_is_available(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source"
+    _make_source_repo(source)
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path / "state")}, "commands": {"allowed": True}},
+        artifacts=None,
+    )
+    broker.set_fencing_lease_store(FakeFencingLeaseStore())
+    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+    spawned: list[bool] = []
+    monkeypatch.setattr(
+        broker, "_execute",
+        lambda *_args, **_kwargs: spawned.append(True) or {"success": True},
+    )
+
+    result = broker._run_private_transaction(
+        "git add owned.txt", source, "tenant-1", task_id="task-owned",
+        paths=["owned.txt"], timeout=1, docker_image="python:3.11-slim",
+    )
+
+    assert result["success"] is False
+    assert result["failure_kind"] == "work_attempt_fence_required"
+    assert result["outcome_unknown"] is False
     assert spawned == []
 
 
@@ -554,3 +614,137 @@ def test_transaction_recovery_preserves_foreign_change_and_keeps_journal(tmp_pat
     assert recovery["outcome_unknown"] is True
     assert journal.exists()
     assert (source / "owned.txt").read_text(encoding="utf-8") == "foreign edit\n"
+
+
+def test_expired_transaction_lease_cannot_overwrite_newer_declared_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source"
+    _make_source_repo(source)
+    state = tmp_path / "state"
+    owner_a = CommandBroker(
+        {"server": {"state_dir": str(state)}, "commands": {"allowed": True}},
+        artifacts=None,
+    )
+    owner_b = CommandBroker(
+        {"server": {"state_dir": str(state)}, "commands": {"allowed": True}},
+        artifacts=None,
+    )
+    clock = [1_000_000.0]
+    monkeypatch.setattr(leases_module, "time", SimpleNamespace(time=lambda: clock[0]))
+    fencing_store = FakeFencingLeaseStore(clock=lambda: clock[0])
+    attempt_a = fencing_store.claim_attempt(
+        str(source.resolve()), "task-owned", "owner-a", ttl_seconds=100.0
+    )
+    attempt_b: list[object] = []
+    a_started = threading.Event()
+    release_a = threading.Event()
+
+    def execute_a(_argv, cwd, *_args, **_kwargs):
+        a_started.set()
+        assert release_a.wait(30)
+        (Path(cwd) / "owned.txt").write_text("stale owner A\n", encoding="utf-8")
+        return {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
+
+    def execute_b(_argv, cwd, *_args, **_kwargs):
+        return {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
+
+    for broker in (owner_a, owner_b):
+        broker.set_task_store(_RegisteredTaskStore(source))
+        broker.set_fencing_lease_store(fencing_store)
+        monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+    monkeypatch.setattr(owner_a, "_execute", execute_a)
+    monkeypatch.setattr(owner_b, "_execute", execute_b)
+
+    result_a: list[dict] = []
+    thread_a = threading.Thread(
+        target=lambda: result_a.append(owner_a._run_private_transaction(
+            "git add owned.txt", source, "tenant-a", task_id="task-owned",
+            paths=["owned.txt"], timeout=1, docker_image="python:3.11-slim",
+            work_attempt_fence=attempt_a,
+        ))
+    )
+    thread_a.start()
+    try:
+        assert a_started.wait(30)
+        clock[0] += 150
+        attempt_b.append(fencing_store.claim_attempt(
+            str(source.resolve()), "task-owned", "owner-b", ttl_seconds=300.0
+        ))
+        result_b = owner_b._run_private_transaction(
+            "git add owned.txt", source, "tenant-b", task_id="task-owned",
+            paths=["owned.txt"], timeout=1, docker_image="python:3.11-slim",
+            work_attempt_fence=attempt_b[0],
+        )
+    finally:
+        release_a.set()
+        thread_a.join(30)
+
+    assert not thread_a.is_alive()
+    assert result_b["transaction_status"] == "committed", result_b
+    assert fencing_store.generations[str(source.resolve())] == 2
+    assert result_a[0]["transaction_status"] == "discarded", result_a[0]
+    assert result_a[0]["failure_kind"] == "mutation_fence_lost", result_a[0]
+    assert result_a[0]["outcome_unknown"] is False
+    assert (source / "owned.txt").read_text(encoding="utf-8") == "original\n"
+
+
+def test_disjoint_private_transactions_commit_only_their_declared_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source"
+    _make_source_repo(source)
+    (source / "other.txt").write_text("other original\n", encoding="utf-8")
+    state = tmp_path / "state"
+    brokers = [
+        CommandBroker(
+            {"server": {"state_dir": str(state)}, "commands": {"allowed": True}},
+            artifacts=None,
+        )
+        for _ in range(2)
+    ]
+    fencing_store = FakeFencingLeaseStore()
+    barrier = threading.Barrier(2)
+    shared_attempt = fencing_store.claim_attempt(
+        str(source.resolve()), "task-owned", "task-caller", ttl_seconds=300.0
+    )
+    for broker in brokers:
+        broker.set_task_store(_RegisteredTaskStore(source))
+        broker.set_fencing_lease_store(fencing_store)
+        monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+
+    def execute_owned(_argv, cwd, *_args, **_kwargs):
+        (Path(cwd) / "owned.txt").write_text("owned output\n", encoding="utf-8")
+        barrier.wait(5)
+        return {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
+
+    def execute_other(_argv, cwd, *_args, **_kwargs):
+        (Path(cwd) / "other.txt").write_text("other output\n", encoding="utf-8")
+        barrier.wait(5)
+        return {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(brokers[0], "_execute", execute_owned)
+    monkeypatch.setattr(brokers[1], "_execute", execute_other)
+    results: list[dict] = []
+
+    def run(broker: CommandBroker, path: str) -> None:
+        results.append(broker._run_private_transaction(
+            f"git add {path}", source, f"tenant-{path}", task_id="task-owned",
+            paths=[path], timeout=5, docker_image="python:3.11-slim",
+            work_attempt_fence=shared_attempt,
+        ))
+
+    threads = [
+        threading.Thread(target=run, args=(brokers[0], "owned.txt")),
+        threading.Thread(target=run, args=(brokers[1], "other.txt")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == 2
+    assert all(result["transaction_status"] == "committed" for result in results), results
+    assert (source / "owned.txt").read_text(encoding="utf-8") == "owned output\n"
+    assert (source / "other.txt").read_text(encoding="utf-8") == "other output\n"

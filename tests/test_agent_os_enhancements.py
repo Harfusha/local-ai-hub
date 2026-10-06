@@ -110,7 +110,7 @@ def test_command_validator_classifies_doctor_and_selftest(tmp_path: Path):
     assert telem_res["class"] == "validation"
 
 
-def test_command_broker_auto_registers_verification_receipt(tmp_path: Path):
+def test_generic_command_does_not_auto_register_verification_receipt(tmp_path: Path):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     state_store = AgentStateStore(state_dir / "agent_state.sqlite3", enabled=True)
@@ -170,17 +170,10 @@ def test_command_broker_auto_registers_verification_receipt(tmp_path: Path):
     )
 
     assert res["exit_code"] == 0
-    assert "verification_receipt" in res
-    receipt_dict = res["verification_receipt"]
-    assert receipt_dict["task_id"] == "task-test-1"
-    assert receipt_dict["criterion"] == "Tests must pass"
-    assert receipt_dict["passed"] is True
-
-    # Check store has receipt
+    assert "verification_receipt" not in res
     comp = v_store.completion("task-test-1")
-    assert len(comp.receipts) == 1
-    assert comp.receipts[0].task_id == "task-test-1"
-    assert comp.complete is True
+    assert len(comp.receipts) == 0
+    assert comp.complete is False
 
 
 def test_memory_store_query_search(tmp_path: Path):

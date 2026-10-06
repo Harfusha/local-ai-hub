@@ -344,39 +344,48 @@ def terminate_tree(
             return not pid_alive(pid)
     group_id = pid if process_group in (None, 0) else int(process_group)
 
-    def group_alive() -> bool:
+    def group_alive() -> bool | None:
         try:
             os.killpg(group_id, 0)
             return True
         except ProcessLookupError:
             return False
         except PermissionError:
-            return True
+            # EPERM proves a group exists, but not that it is still the owned
+            # group. Treat it as unverifiable so cleanup cannot claim success.
+            return None
         except OSError:
-            return pid_alive(pid)
+            # Group state is unknown. A bare PID check can observe a recycled PID
+            # and must not authorize a later signal to that unrelated process.
+            return None
 
     try:
-        # Runtime children are started in their own sessions. Prefer the group, then
-        # fall back to the process itself for older/recovered installations.
+        # Runtime children are started in their own sessions. Never fall back to a
+        # bare PID: it may have been reused after the original process group vanished.
         try:
             os.killpg(group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            return True
         except OSError:
-            os.kill(pid, signal.SIGTERM)
+            return False
         deadline = time.monotonic() + max(0.1, grace_seconds)
         while time.monotonic() < deadline:
-            if not group_alive():
+            alive = group_alive()
+            if alive is False:
                 return True
+            if alive is None:
+                return False
             time.sleep(0.05)
         try:
             os.killpg(group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            return True
         except OSError:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-        return not group_alive()
+            return False
+        alive = group_alive()
+        return alive is False
     except OSError:
-        return True
+        return False
 
 
 def _resume_suspended_process(process: subprocess.Popen[Any]) -> bool:
@@ -933,6 +942,57 @@ def create_sandboxed_job_object(
 
 
 
+def _git_worktree_admin_dir(repo: Path, target: Path) -> Path | None:
+    common_proc = run_hidden(
+        ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        **hidden_run_kwargs(),
+    )
+    admin_proc = run_hidden(
+        ["git", "-C", str(target), "rev-parse", "--git-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        **hidden_run_kwargs(),
+    )
+    if common_proc.returncode != 0 or admin_proc.returncode != 0:
+        return None
+    common = Path(common_proc.stdout.strip())
+    admin = Path(admin_proc.stdout.strip())
+    if not common.is_absolute():
+        common = repo / common
+    if not admin.is_absolute():
+        admin = target / admin
+    common = common.resolve(strict=False)
+    admin = admin.resolve(strict=False)
+    try:
+        admin.relative_to(common / "worktrees")
+    except ValueError:
+        return None
+    return admin
+
+
+def get_git_worktree_ownership(repo_root: str | Path, worktree_path: str | Path) -> dict[str, Any] | None:
+    """Read ownership metadata stored outside a linked worktree's working files."""
+    repo = Path(repo_root).expanduser().resolve(strict=False)
+    target = Path(worktree_path).expanduser().resolve(strict=False)
+    admin = _git_worktree_admin_dir(repo, target)
+    if admin is None:
+        return None
+    marker = admin / "local_ai_hub_worktree.json"
+    try:
+        import json
+
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def create_git_worktree(
     repo_root: str | Path,
     branch_name: str | None = None,
@@ -989,7 +1049,7 @@ def create_git_worktree(
     cmd = ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(target_dir), base_commit]
     created_checkout = False
     try:
-        completed = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
+        completed = run_hidden(cmd, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
         if completed.returncode != 0:
             return {
                 "success": False,
@@ -1079,7 +1139,10 @@ def remove_git_worktree(
 ) -> dict[str, Any]:
     """Remove only clean worktree whose persisted owner metadata matches caller."""
     repo = Path(repo_root).expanduser().resolve(strict=False)
-    target = Path(worktree_path).resolve(strict=False)
+    raw_target = Path(worktree_path).expanduser()
+    if raw_target.is_symlink():
+        return {"success": False, "error": "worktree path must not be a symlink"}
+    target = raw_target.resolve(strict=False)
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
     if not worktree_id.strip():
@@ -1193,7 +1256,7 @@ def remove_git_worktree(
             branch_deleted = (proc_b.returncode == 0)
         return {
             "success": True,
-            "worktree_removed": True,
+            "worktree_removed": not target.exists(),
             "branch_deleted": branch_deleted,
             "repo_root": str(repo),
             "worktree_path": str(target),
@@ -1208,7 +1271,7 @@ def list_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
     try:
-        proc = subprocess.run(
+        proc = run_hidden(
             ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
             capture_output=True, text=True, check=False, timeout=15, **hidden_run_kwargs()
         )
@@ -1251,7 +1314,7 @@ def prune_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
     try:
-        proc = subprocess.run(
+        proc = run_hidden(
             ["git", "-C", str(repo), "worktree", "prune", "-v"],
             capture_output=True, text=True, check=False, timeout=15, **hidden_run_kwargs()
         )
@@ -1385,3 +1448,4 @@ def terminate_job_object(job_handle: Any) -> bool:
         return bool(_job_kernel32().TerminateJobObject(job_handle, 1))
     except Exception:
         return False
+

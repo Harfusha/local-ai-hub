@@ -685,7 +685,9 @@ class TieredCache:
                     self._sync_l1_generation(generation)
                     if poisoned:
                         self.l1.clear()
-                        self._recover_poisoned_namespace(generation)
+                        if self._recover_poisoned_namespace(generation) is None:
+                            self.misses += 1
+                            return None, False
                         self.misses += 1
                         return None, False
                     value = self.l1.get(key)
@@ -700,6 +702,7 @@ class TieredCache:
                     self.misses += 1
                     return None, True
             except Exception:
+                # Coordination failures fail closed; never fall back to an unvalidated L1.
                 self.l1.clear()
                 self._l1_generation = None
                 self.misses += 1
