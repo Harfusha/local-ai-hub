@@ -157,6 +157,15 @@ No test expectation weakened and no repeat of this command was launched.
 - Active owners now: T10 path hints Lorentz; T21 config Chandrasekhar;
   T19 docs Ptolemy; T14 isolated snippet Peirce; historical fefe Ohm.
 
+Fresh root T08 check:
+`python -B -m pytest -q -p no:cacheprovider
+tests/test_agent_task_memory_adoption.py tests/test_agent_t08_live_order.py
+tests/test_t08_sync_transport_remaining.py --tb=short --maxfail=6`:
+**28 passed, 1 failed in 20.68s**. The remaining verified-worktree delete
+regression did not raise the expected HTTP 403. Keep the denial expectation;
+repair authorization after historical consolidation. Passing memory-adoption
+and ordering tests are targeted integration evidence, not full release proof.
+
 ## Rules for the remainder
 
 - Preserve each original HEAD and dirty tracked content in a checkpoint ref
