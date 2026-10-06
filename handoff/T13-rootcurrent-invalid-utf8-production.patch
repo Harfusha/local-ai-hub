@@ -1,0 +1,12 @@
+diff --git a/src/local_ai_hub/operational_mode.py b/src/local_ai_hub/operational_mode.py
+--- a/src/local_ai_hub/operational_mode.py
++++ b/src/local_ai_hub/operational_mode.py
+@@ -119,6 +119,8 @@ def load_operational_mode(state_dir: str | Path) -> OperationalModeSnapshot:
+             return OperationalModeSnapshot("active", 0, None)
+         except OSError:
+             return _degraded_snapshot("operational mode state is unreadable")
++        except UnicodeError:
++            return _degraded_snapshot("operational mode state is invalid")
+ 
+         try:
+             value = json.loads(raw)
