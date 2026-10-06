@@ -793,6 +793,8 @@ acceptance.
 - Re-ran only `tests/test_agent_t08_durable_contract.py` with imports explicitly
   pinned to root master `6b3c9a5e` (confirmed source path
   `C:\Users\Adam\.local-ai-hub\src\local_ai_hub\__init__.py`).
+  Exact command:
+  `$env:PYTHONPATH='C:\Users\Adam\.local-ai-hub\src'; python -B -c "import local_ai_hub; print('SOURCE=' + str(local_ai_hub.__file__)); import pytest; raise SystemExit(pytest.main(['-q','-p','no:cacheprovider','--tb=short',r'C:\Users\Adam\.codex\worktrees\hub-audit-repairs\.local-ai-hub\tests\test_agent_t08_durable_contract.py']))"`
   Result: **59 passed, 3 failed in 29.79s**. Failures:
   `test_memory_append_result_error_rolls_back_projection`,
   `test_expired_memory_delete_and_event_are_atomic`, and
