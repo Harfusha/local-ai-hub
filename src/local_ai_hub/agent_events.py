@@ -208,9 +208,6 @@ class AgentStateStore:
             "43c461c1906a1c11a5558889e2c49478942b940c3e98d0a926848ead3010a63e",
             "b3f8fa5c1723ab3addf421e28c3e9e07d232a7734cc95c247aed04224f3856b0",
         ),
-        ("table", "agent_incidents", "agent_incidents"): (
-            "6ea9770af294cd83e1fd6dcc80a0c7950bc93d142c27d40996c5acf5a0b478d4",
-        ),
         # T08 adds root/version columns to the T05 swarm projection. Both layouts
         # are known; present definitions still require an exact fingerprint.
         ("table", "agent_swarms", "agent_swarms"): (
@@ -238,7 +235,7 @@ class AgentStateStore:
         lock_key = os.path.normcase(str(self.db_path.resolve()))
         with self._append_publish_locks_guard:
             self._append_publish_lock = self._append_publish_locks.setdefault(
-                lock_key, threading.Lock()
+                lock_key, threading.RLock()
             )
         self._lock = threading.RLock()
         self._initialized = False
