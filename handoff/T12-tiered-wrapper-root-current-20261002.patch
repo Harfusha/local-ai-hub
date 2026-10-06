@@ -1,0 +1,58 @@
+--- a/src/local_ai_hub/tiered_ollama.py
++++ b/src/local_ai_hub/tiered_ollama.py
+@@ -129,19 +129,50 @@
+                 return {"error": str(exc), "retryable": True}
+             return target.request_stream(endpoint, payload, on_chunk, timeout, on_thinking=on_thinking)
+ 
+-    def request_interruptible(self, endpoint: str, payload: dict[str, Any] | None, should_stop: Any, *, timeout: float | None = None) -> dict[str, Any]:
++    def request_interruptible(
++        self,
++        endpoint: str,
++        payload: dict[str, Any] | None,
++        should_stop: Any,
++        *,
++        timeout: float | None = None,
++        deadline: float | None = None,
++    ) -> dict[str, Any]:
+         model = str((payload or {}).get("model", ""))
+         with self._lock:
+             try:
+                 target, _ = self._target(model)
+             except RuntimeError as exc:
+                 return {"error": str(exc), "retryable": True}
+-            return target.request_interruptible(endpoint, payload, should_stop, timeout=timeout)
+-
+-    def prepare_model(self, model: str, *, unload_others: bool = True) -> list[str]:
++            return target.request_interruptible(endpoint, payload, should_stop, timeout=timeout, deadline=deadline)
++
++    def prepare_model(
++        self,
++        model: str,
++        *,
++        unload_others: bool = True,
++        post_unload_admission: Any | None = None,
++        should_stop: Any | None = None,
++        deadline: float | None = None,
++    ) -> list[str]:
+         with self._lock:
+             target, _ = self._target(model)
+-            return target.prepare_model(model, unload_others=unload_others)
++            kwargs: dict[str, Any] = {"unload_others": unload_others}
++            if post_unload_admission is not None:
++                kwargs["post_unload_admission"] = post_unload_admission
++            if should_stop is not None or deadline is not None:
++                kwargs.update(should_stop=should_stop, deadline=deadline)
++            return target.prepare_model(model, **kwargs)
++
++    def supports_post_unload_admission(self, model: str) -> bool:
++        _, target, _ = self._runtime_for_model(model)
++        capability = getattr(target, "supports_post_unload_admission", None)
++        if not callable(capability):
++            return False
++        try:
++            return bool(capability(model))
++        except Exception:
++            return False
+ 
+     def unload(self, model: str) -> bool:
+         return self.unload_model(model)
