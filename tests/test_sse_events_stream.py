@@ -71,6 +71,62 @@ class DummyHandler:
         )
 
 
+def test_sse_stream_disabled_is_terminal_403_without_stream_headers(monkeypatch):
+    class DisabledState:
+        enabled = False
+
+    class DisabledApp:
+        agent_state = DisabledState()
+
+    app = DisabledApp()
+    responses = []
+    monkeypatch.setattr(http_server, "APP", app)
+    handler = DummyHandler(app)
+    handler._send = lambda status, data: responses.append((status, data))
+
+    handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.05)
+
+    assert responses == [(403, {
+        "success": False,
+        "error": "agent_state is disabled",
+        "terminal": True,
+        "retryable": False,
+    })]
+    assert handler.headers_sent == []
+    assert handler.wfile.getvalue() == b""
+
+
+def test_sse_http_route_rejects_disabled_agent_state_before_stream(monkeypatch):
+    app = type("App", (), {})()
+    app.agent_state = type("DisabledState", (), {"enabled": False})()
+    app.config = {}
+    responses = []
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: None)
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(
+        http_server.Handler,
+        "_send",
+        lambda self, status, data, **_kwargs: responses.append((status, data)),
+    )
+    monkeypatch.setattr(
+        http_server.Handler,
+        "_stream_agent_events",
+        lambda self, **_kwargs: pytest.fail("disabled agent_state must not start SSE streaming"),
+    )
+    handler = object.__new__(http_server.Handler)
+    handler.path = "/api/agent-state/events/stream?stream_id=task-1"
+
+    http_server.Handler.do_GET(handler)
+
+    assert responses == [(403, {
+        "success": False,
+        "error": "agent_state is disabled",
+        "terminal": True,
+        "retryable": False,
+    })]
+
+
 def test_sse_stream_replays_and_receives_live_events(tmp_path: Path):
     store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     store.append(AgentEvent.create("task-1", "task.created", {"step": 1}, "k1"))

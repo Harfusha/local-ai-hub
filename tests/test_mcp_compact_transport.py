@@ -12,6 +12,10 @@ import mcp.types as t
 from local_ai_hub.token_accounting import json_tokens
 
 
+def test_fallback_used_is_protected_reliability_metadata() -> None:
+    assert "fallback_used" in local_ai_mcp._RELIABILITY_PROTECTED_KEYS
+
+
 def test_python_direct_invocation_returns_dict() -> None:
     res = local_ai_mcp.local_ai_status()
     assert isinstance(res, dict)

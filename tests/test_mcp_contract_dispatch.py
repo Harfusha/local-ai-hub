@@ -575,4 +575,3 @@ def test_mcp_repo_search_passes_path_hints_to_client_keyword(monkeypatch) -> Non
             expected_hints,
         )
     ]
-

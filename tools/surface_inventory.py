@@ -2082,6 +2082,9 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
             if isinstance(prop, dict) and "default" in prop
         } if isinstance(properties, dict) else {}
         input_schema = parameters if isinstance(parameters, dict) else {}
+        operation_metadata = schema.get("x-operation-contract", {})
+        if not isinstance(operation_metadata, dict):
+            operation_metadata = {}
         output_schema = schema.get(
             "outputSchema",
             schema.get("output_schema", "generator omits outputSchema; result shape remains action-dependent"),
@@ -2095,20 +2098,20 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
             if dispatch_symbols
             else f"invokes MCP handler {name}; transitive side effects unverified"
         )
-        backend_gate = (source_tool or {}).get("registration_condition") or "generated schema for active configuration"
+        backend_gate = operation_metadata.get("feature_gate") or (source_tool or {}).get("registration_condition") or "generated schema for active configuration"
         mcp_contracts[name] = {
             "request_payload": {"schema": input_schema, "required": list(parameters.get("required", [])) if isinstance(parameters, dict) else [], "defaults": defaults},
             "response_contract": output_schema,
             "status_codes": "not applicable: MCP tool protocol",
-            "timeout": "no timeout is declared in the generated MCP schema; effective caller budget unverified",
-            "operation_side_effects": dispatch_effects,
+            "timeout": operation_metadata.get("timeout", "no timeout is declared in the generated MCP schema; effective caller budget unverified"),
+            "operation_side_effects": operation_metadata.get("actions") or dispatch_effects,
             "backend_availability": f"{backend_gate}; runtime backend health unverified",
             "input_schema": input_schema,
             "output_schema": output_schema,
-            "operation_contract": operation_contract,
             "defaults": defaults,
             "required": list(parameters.get("required", [])) if isinstance(parameters, dict) else [],
-            "feature_gate": (source_tool or {}).get("registration_condition"),
+            "feature_gate": backend_gate,
+            "operation_contract": operation_metadata,
             "handler_symbols": (source_tool or {}).get("handler_symbols", []),
             "http_target": (source_tool or {}).get("http_targets") or (
                 "delegated through coordination; no HTTP path detected in handler source"
@@ -2665,7 +2668,7 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
                     "contract": {
                         "action": action,
                         "request_payload": {"action": action, "schema": inventory["mcp_contracts"].get(tool_name, {}).get("input_schema", {}).get("properties", {}).get("action", {})},
-                        "response_contract": inventory["mcp_contracts"].get(tool_name, {}).get("output_schema", "not declared"),
+                        "response_contract": tool_contract.get("output_schema", "not declared"),
                         "status_codes": "not applicable: MCP tool protocol",
                         "timeout": inventory["mcp_contracts"].get(tool_name, {}).get("timeout", "not statically identified"),
                         "operation_side_effects": action_contract.get(

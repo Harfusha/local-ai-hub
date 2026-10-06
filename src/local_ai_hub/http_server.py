@@ -5,6 +5,7 @@ import inspect
 import ipaddress
 import hashlib
 import json
+import math
 import os
 import queue
 import re
@@ -1369,7 +1370,12 @@ class Handler(BaseHTTPRequestHandler):
         if store is None or recovery is None or not trace.get("request_id"):
             return trace
         try:
-            journal = recovery.lookup(str(trace.get("request_id")), str(trace.get("tenant", "")), str(trace.get("action", "")))
+            journal = recovery.lookup_metadata(
+                str(trace.get("request_id")),
+                str(trace.get("tenant", "")),
+                str(trace.get("action", "")),
+                identity=str(trace.get("agent", "")),
+            )
             journal_state = str((journal or {}).get("state", ""))
             if journal_state not in {"done", "failed"}:
                 return trace
@@ -1716,7 +1722,26 @@ class Handler(BaseHTTPRequestHandler):
                         return value
             raise RequestBodyError(f"{name} is required")
 
-        if path == "/api/embed":
+        def bounded_integer(value: Any, name: str, minimum: int, maximum: int) -> None:
+            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                raise RequestBodyError(f"{name} must be an integer from {minimum} to {maximum}")
+
+        def bounded_number(value: Any, name: str, minimum: float, maximum: float) -> None:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or (isinstance(value, float) and not math.isfinite(value))
+                or not minimum <= value <= maximum
+            ):
+                raise RequestBodyError(f"{name} must be a finite number from {minimum:g} to {maximum:g}")
+
+        if path == "/api/chat/completions":
+            messages = payload.get("messages")
+            if not isinstance(messages, list) or not messages or len(messages) > 128:
+                raise RequestBodyError("messages must be a non-empty list of at most 128 entries")
+            if len(json_dumps(messages, default=str)) > 1_000_000:
+                raise RequestBodyError("messages exceed 1000000 characters", 413)
+        elif path == "/api/embed":
             values = payload.get("texts", payload.get("input", []))
             values = [values] if isinstance(values, str) else values
             if not isinstance(values, list) or len(values) > 256:
@@ -1765,6 +1790,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise RequestBodyError(f"{name} must be an object")
             if "response_profile" in payload:
                 text(payload["response_profile"], "response_profile", 16)
+            if action == "wait" or "timeout_seconds" in payload:
+                bounded_number(payload.get("timeout_seconds", 90), "timeout_seconds", 0, 90)
+            if action in {"submit", "get"} or "max_output_tokens" in payload:
+                bounded_integer(payload.get("max_output_tokens", 0), "max_output_tokens", 0, 4096)
         elif path in {"/api/preprocess", "/api/repo/profile", "/api/repo/map", "/api/repo/code-index", "/api/repo/investigate", "/api/repo/diagnose", "/api/repo/briefing", "/api/command/preflight", "/api/repo/deterministic", "/api/search"}:
             if "root" in payload:
                 text(payload["root"], "root", 4096)
@@ -4372,7 +4401,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 if action == "receipt":
-                    rcpt_data = payload.get("receipt") or {}
+                    rcpt_data = payload.get("receipt")
+                    if not isinstance(rcpt_data, dict):
+                        self._send(400, {"success": False, "error": "receipt must be an object", "terminal": True, "retryable": False}); return
+                    if type(rcpt_data.get("passed")) is not bool:
+                        self._send(400, {"success": False, "error": "receipt.passed must be boolean", "terminal": True, "retryable": False}); return
                     try:
                         if "receipt_id" in rcpt_data:
                             rcpt = VerificationReceipt.from_dict(rcpt_data)
@@ -4380,7 +4413,7 @@ class Handler(BaseHTTPRequestHandler):
                             rcpt = VerificationReceipt.create(
                                 task_id=str(rcpt_data.get("task_id", "")),
                                 criterion=str(rcpt_data.get("criterion", "")),
-                                passed=bool(rcpt_data.get("passed", True)),
+                                passed=rcpt_data["passed"],
                                 change_intent_id=str(rcpt_data.get("change_intent_id", "")),
                                 evidence_id=str(rcpt_data.get("evidence_id", "")),
                                 command_id=str(rcpt_data.get("command_id", "")),

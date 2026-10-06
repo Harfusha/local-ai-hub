@@ -736,7 +736,7 @@ _STATUS_PROTECTED_KEYS = (
 )
 _RELIABILITY_PROTECTED_KEYS = (
     "success", "terminal", "retryable", "degraded", "stale",
-    "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
+    "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
 )
 _REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
 _REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()

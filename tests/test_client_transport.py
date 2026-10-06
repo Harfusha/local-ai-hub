@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
 from io import BytesIO
+import pytest
 
 from local_ai_hub import client as client_module
 from local_ai_hub.client import HubClient
