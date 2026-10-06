@@ -30,6 +30,7 @@ DYNAMIC_ROUTE_REGISTRY = (
         "method": "GET",
         "match": "exact",
         "classification": "registered_dynamic",
+        "owner_task": "T01",
         "note": "Agent 2 source release pending; T19 POST candidate behavior excluded.",
         "owner_gate": "Agent 2 source release pending; T19 POST candidate behavior excluded",
     },
@@ -170,7 +171,7 @@ def _mcp_action_handlers(
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     if "action" not in {item.arg for item in function.args.args}:
-        return {"actions": [], "default_actions": [], "prefixes": [], "symbols": [function.name], "delegated": False, "targets": []}
+        return {"actions": [], "action_literals": [], "detail_literals": [], "default_actions": [], "prefixes": [], "symbols": [function.name], "delegated": False, "targets": []}
 
     handlers = [function]
     symbols = [function.name]
@@ -207,8 +208,9 @@ def _mcp_action_handlers(
                 handlers.append(target)
                 symbols.append(target_name)
                 pending.append(target)
-    dispatch_actions = _dispatch_literals(handlers, "action", type_aliases)
-    dispatch_actions.update(_dispatch_literals(handlers, "detail", type_aliases))
+    runtime_action_literals = _dispatch_literals(handlers, "action", type_aliases)
+    runtime_detail_literals = _dispatch_literals(handlers, "detail", type_aliases)
+    dispatch_actions = runtime_action_literals | runtime_detail_literals
     action_parameter = next(arg for arg in function.args.args if arg.arg == "action")
     declared_actions = _annotation_values(action_parameter.annotation, type_aliases) if action_parameter.annotation else set()
     has_explicit_fallback = any(
@@ -226,6 +228,8 @@ def _mcp_action_handlers(
     )
     return {
         "actions": sorted(dispatch_actions),
+        "action_literals": sorted(runtime_action_literals),
+        "detail_literals": sorted(runtime_detail_literals),
         "default_actions": sorted(default_actions),
         "prefixes": sorted(prefixes),
         "symbols": sorted(symbols),
@@ -290,6 +294,8 @@ def _extract_mcp(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], dic
             "handler": node.name,
             "handler_symbols": handler_analysis["symbols"],
             "dispatch_actions": handler_analysis["actions"],
+            "action_literals": handler_analysis["action_literals"],
+            "detail_literals": handler_analysis["detail_literals"],
             "default_actions": handler_analysis["default_actions"],
             "dispatch_prefixes": handler_analysis["prefixes"],
             "delegated_dispatch": handler_analysis["delegated"],
@@ -342,7 +348,9 @@ def _extract_mcp(tree: ast.Module, path: str) -> tuple[list[dict[str, Any]], dic
     return sorted(tools, key=lambda item: item["name"]), action_aliases, conditional_actions
 
 
-def _generated_mcp_schemas(root: Path) -> tuple[dict[str, dict[str, Any]], dict[str, str], list[str]]:
+def _generated_mcp_schemas(
+    root: Path,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str], list[str], set[str]]:
     schema_dir = root / "generated" / "schemas"
     schemas: dict[str, dict[str, Any]] = {}
     evidence: dict[str, str] = {}
@@ -365,23 +373,34 @@ def _generated_mcp_schemas(root: Path) -> tuple[dict[str, dict[str, Any]], dict[
             evidence[name] = schema_path.relative_to(root).as_posix()
         if not schemas and not errors:
             errors.append("generated MCP schema directory contains no tool schemas")
-        return schemas, evidence, errors
+        return schemas, evidence, errors, set()
 
     source_path = str((root / "src").resolve())
     added_path = source_path not in sys.path
     previous_dont_write_bytecode = sys.dont_write_bytecode
+    disabled_tools: set[str] = set()
     sys.dont_write_bytecode = True
     if added_path:
         sys.path.insert(0, source_path)
     try:
         from local_ai_hub.config import load_config
+        from local_ai_hub.features import FeatureSet
         from local_ai_hub.generator import generate_mcp_tool_schemas
 
         # This --check fallback must stay read-only: load_config reads files and
         # generate_mcp_tool_schemas returns an in-memory mapping. Never call
         # write_all_generated here; that separate generator persists artifacts.
         config_path = root / "config.toml"
-        cfg = load_config(str(config_path)) if config_path.is_file() else load_config()
+        if config_path.is_file():
+            cfg = load_config(str(config_path))
+        else:
+            # Inventory generation must not inherit a developer's home config
+            # or LOCAL_AI_CONFIG when this checkout has no project config.
+            defaults_path = root / "defaults.toml"
+            if not defaults_path.is_file():
+                raise FileNotFoundError("project config.toml or defaults.toml is required")
+            cfg = load_config(str(defaults_path))
+        disabled_tools = set(FeatureSet.from_config(cfg).disabled_tools)
         generated = generate_mcp_tool_schemas(cfg)
         schemas = {name: json.loads(json.dumps(schema)) for name, schema in generated.items()}
         evidence = {name: "src/local_ai_hub/generator.py:generate_mcp_tool_schemas" for name in schemas}
@@ -394,7 +413,7 @@ def _generated_mcp_schemas(root: Path) -> tuple[dict[str, dict[str, Any]], dict[
                 sys.path.remove(source_path)
             except ValueError:
                 pass
-    return schemas, evidence, errors
+    return schemas, evidence, errors, disabled_tools
 
 
 def _route_literals(condition: ast.AST) -> tuple[set[str], bool]:
@@ -424,6 +443,46 @@ def _walk_handler_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         yield node
         stack.extend(reversed(list(ast.iter_child_nodes(node))))
+
+
+def _route_availability_gates(nodes: list[ast.AST]) -> list[str]:
+    gates: list[str] = []
+    for node in nodes:
+        if not isinstance(node, ast.If) or _route_literals(node.test)[0]:
+            continue
+        descendants = list(ast.walk(node.test))
+        has_app = any(isinstance(item, ast.Name) and item.id == "APP" for item in descendants)
+        if not has_app:
+            continue
+        has_optional_lookup = any(
+            isinstance(item, ast.Call)
+            and _call_name(item.func) == "getattr"
+            and item.args
+            and isinstance(item.args[0], ast.Name)
+            and item.args[0].id == "APP"
+            for item in descendants
+        )
+        has_enabled_check = any(
+            (isinstance(item, ast.Attribute) and item.attr in {"enabled", "available"})
+            or (isinstance(item, ast.Constant) and item.value in {"enabled", "available"})
+            for item in descendants
+        )
+        has_feature_check = any(
+            (isinstance(item, ast.Attribute) and item.attr == "features")
+            or (isinstance(item, ast.Constant) and item.value in {"features", "dashboard_enabled"})
+            for item in descendants
+        )
+        has_optional_compare = any(
+            isinstance(item, ast.Compare)
+            and any(isinstance(operator, (ast.Is, ast.IsNot)) for operator in item.ops)
+            and any(isinstance(value, ast.Constant) and value.value is None for value in item.comparators)
+            for item in descendants
+        )
+        if has_optional_lookup or has_enabled_check or has_feature_check or has_optional_compare:
+            condition = ast.unparse(node.test)
+            if condition not in gates:
+                gates.append(condition)
+    return gates
 
 
 def _extract_http(tree: ast.Module, path: str) -> list[dict[str, Any]]:
@@ -458,6 +517,7 @@ def _extract_http(tree: ast.Module, path: str) -> list[dict[str, Any]]:
                     route_nodes.append(current)
                     pending.extend(reversed(list(ast.iter_child_nodes(current))))
 
+                conditional_gates = _route_availability_gates(route_nodes)
                 query_fields: set[str] = set()
                 body_fields: set[str] = set()
                 status_codes: set[int] = set()
@@ -524,13 +584,20 @@ def _extract_http(tree: ast.Module, path: str) -> list[dict[str, Any]]:
                         "body_fields": sorted(body_fields),
                         "response_contract": response_contract,
                         "status_codes": sorted(status_codes),
+                        "conditional_gates": conditional_gates,
                         "timeout": "no route-local timeout declaration; effective request budget unverified",
                         "operation_side_effects": {
                             "direct_calls": sorted(direct_calls),
                             "classification": "transitive effects unverified",
                         },
-                        "backend_availability": "handler route is registered; downstream runtime health unverified",
+                        "backend_availability": (
+                            "route availability depends on the listed source gates; downstream runtime health unverified"
+                            if conditional_gates
+                            else "handler route is registered; downstream runtime health unverified"
+                        ),
                     },
+                    "conditional_gates": conditional_gates,
+                    "evidence_status": "conditional" if conditional_gates else "confirmed",
                     "evidence": f"{path}:{branch.lineno}",
                 }
                 routes[(method, route)] = item
@@ -579,6 +646,7 @@ def _merge_dynamic_routes(routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "match": entry["match"],
             "prefix": prefix,
             "classification": entry["classification"],
+            "owner_task": entry.get("owner_task"),
             "handler": (source_route or {}).get("handler", "dynamic registry handler not inspected"),
             "action": (source_route or {}).get("action", []),
             "contract": contract,
@@ -903,6 +971,45 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
         match = re.search(r"(?:https?://[^/]+)?(/[^?#\s'\"]*)", value)
         return match.group(1) if match else None
 
+    def static_url_text(
+        node: ast.AST,
+        nodes: list[ast.AST],
+        before: tuple[int, int],
+        seen: frozenset[str] = frozenset(),
+    ) -> str:
+        value = string_value(node)
+        if value is not None:
+            return value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return static_url_text(node.left, nodes, before, seen) + static_url_text(
+                node.right, nodes, before, seen
+            )
+        if isinstance(node, ast.Name) and node.id not in seen:
+            assignments = sorted(
+                (
+                    assignment
+                    for assignment in nodes
+                    if isinstance(assignment, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+                    and (assignment.lineno, assignment.col_offset) < before
+                    and node.id
+                    in (
+                        set().union(*(target_names(target) for target in assignment.targets))
+                        if isinstance(assignment, ast.Assign)
+                        else target_names(assignment.target)
+                    )
+                ),
+                key=lambda assignment: (assignment.lineno, assignment.col_offset),
+            )
+            if assignments:
+                assignment = assignments[-1]
+                return static_url_text(
+                    assignment.value,
+                    nodes,
+                    (assignment.lineno, assignment.col_offset),
+                    seen | {node.id},
+                )
+        return ""
+
     def route_matches(method: str, path: str, route: dict[str, Any]) -> bool:
         if method != route["method"]:
             return False
@@ -1009,6 +1116,11 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
                 continue
             if value is None:
                 continue
+            if isinstance(value, ast.Name) and value.id == "running_app_client":
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, (ast.Tuple, ast.List)) and target.elts:
+                        receivers.update(target_names(target.elts[0]))
             is_hubclient = False
             if isinstance(value, ast.Call):
                 if isinstance(value.func, ast.Name) and value.func.id == "HubClient":
@@ -1270,10 +1382,10 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
         if not isinstance(node, (ast.List, ast.Tuple)):
             return None
         values = [string_value(item) for item in node.elts]
-        if not values or any(value is None for value in values):
+        if not values or values[0] is None:
             return None
-        if values[0].endswith(".py") and len(values) > 1:
-            return values[1]
+        if values[0].endswith(".py"):
+            return values[1] if len(values) > 1 else None
         return values[0]
 
     def cli_argv_mutation_operation(node: ast.AST) -> str | None:
@@ -1397,6 +1509,97 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
                     imports[alias.asname or alias.name] = alias.name
         return imports
 
+    def module_http_request_helpers_for(tree: ast.Module) -> dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str | None, str | None]]:
+        module_http_request_helpers: dict[
+            str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str | None, str | None]
+        ] = {}
+        for helper in (node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))):
+            helper_parameters = [
+                argument.arg for argument in [*helper.args.posonlyargs, *helper.args.args, *helper.args.kwonlyargs]
+            ]
+            helper_nodes = scoped_nodes(helper)
+            helper_modules, helper_symbols = urllib_request_imports([*tree.body, *helper_nodes])
+            helper_request_specs = urllib_request_bindings(helper_nodes, helper_modules, helper_symbols)
+            for helper_node in helper_nodes:
+                if not isinstance(helper_node, ast.Call) or not is_urllib_request_call(
+                    helper_node, "urlopen", helper_modules, helper_symbols
+                ) or not urllib_result_returned(helper_node, helper_nodes):
+                    continue
+                helper_url = helper_node.args[0] if helper_node.args else next(
+                    (keyword.value for keyword in helper_node.keywords if keyword.arg == "url"), None
+                )
+                request_name = helper_url.id if isinstance(helper_url, ast.Name) else None
+                spec = urllib_request_binding_at(
+                    helper_request_specs,
+                    request_name or "",
+                    (getattr(helper_node, "lineno", 0), getattr(helper_node, "col_offset", 0)),
+                )
+                request_call = helper_url if isinstance(helper_url, ast.Call) and is_urllib_request_call(
+                    helper_url, "Request", helper_modules, helper_symbols
+                ) else None
+                if request_name:
+                    request_calls = [
+                        assignment
+                        for assignment in helper_nodes
+                        if isinstance(assignment, (ast.Assign, ast.AnnAssign))
+                        and (
+                            request_name in (
+                                set().union(*(target_names(target) for target in assignment.targets))
+                                if isinstance(assignment, ast.Assign)
+                                else target_names(assignment.target)
+                            )
+                        )
+                        and isinstance(assignment.value, ast.Call)
+                        and is_urllib_request_call(
+                            assignment.value, "Request", helper_modules, helper_symbols
+                        )
+                        and (assignment.lineno, assignment.col_offset)
+                        < (getattr(helper_node, "lineno", 0), getattr(helper_node, "col_offset", 0))
+                    ]
+                    if request_calls:
+                        request_call = max(
+                            request_calls,
+                            key=lambda assignment: (assignment.lineno, assignment.col_offset),
+                        ).value
+                if spec is None or not isinstance(spec[0], ast.Name):
+                    continue
+                url_parameter = spec[0].id
+                if url_parameter not in helper_parameters:
+                    continue
+                method_node = next(
+                    (keyword.value for keyword in request_call.keywords if keyword.arg == "method"), None
+                ) if request_call is not None else None
+                method_parameter = (
+                    method_node.id
+                    if isinstance(method_node, ast.Name) and method_node.id in helper_parameters
+                    else None
+                )
+                method_value = spec[1] or (string_value(method_node) if method_node is not None else None)
+                if method_parameter and not method_value:
+                    positional = [*helper.args.posonlyargs, *helper.args.args]
+                    positional_defaults = dict(
+                        zip(
+                            (argument.arg for argument in positional[-len(helper.args.defaults):]),
+                            helper.args.defaults,
+                        )
+                    ) if helper.args.defaults else {}
+                    keyword_defaults = dict(zip(
+                        (argument.arg for argument in helper.args.kwonlyargs),
+                        helper.args.kw_defaults,
+                    ))
+                    method_default = positional_defaults.get(
+                        method_parameter, keyword_defaults.get(method_parameter)
+                    )
+                    method_value = string_value(method_default) if method_default is not None else None
+                if method_parameter or method_value:
+                    module_http_request_helpers[helper.name] = (
+                        helper,
+                        url_parameter,
+                        method_parameter,
+                        method_value.upper() if method_value else None,
+                    )
+        return module_http_request_helpers
+
     for test_file in sorted(tests_root.rglob("test_*.py")):
         if test_file.name == "test_surface_inventory.py":
             continue
@@ -1405,6 +1608,7 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
         except (OSError, SyntaxError):
             continue
         relative = test_file.relative_to(root).as_posix()
+        module_http_request_helpers = module_http_request_helpers_for(tree)
         imported_cli_modules, imported_cli_paths = module_import_bindings(tree.body, "tools.hubctl")
         imported_mcp_modules, imported_mcp_paths = module_import_bindings(
             tree.body, "local_ai_hub.mcp_server"
@@ -1494,14 +1698,28 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
                 detail = keyword_values.get("detail") or protocol_arguments.get("detail")
                 if action:
                     alias = aliases.get(tool, {}).get(action)
-                    if tool == "local_ai_repo" and (action == "context" or alias == "context"):
-                        continue
                     if alias:
                         add(f"MCP action alias {tool}::{action} (alias for {alias})", selector)
                     else:
-                        add(f"MCP action {tool}::{action}", selector)
+                        known_actions = set(inventory.get("mcp_actions", {}).get(tool, []))
+                        known_actions.update(inventory.get("conditional_mcp_actions", {}).get(tool, {}))
+                        if action in known_actions:
+                            add(f"MCP action {tool}::{action}", selector)
+                        elif any(
+                            item["name"] == tool and action in item.get("runtime_action_literals", [])
+                            for item in inventory.get("mcp_tools", [])
+                        ):
+                            add(f"MCP action schema gap {tool}::{action}", selector)
                 if detail:
-                    add(f"MCP detail {tool}::{detail}", selector)
+                    advertised_details = set(inventory.get("mcp_variants", {}).get(tool, {}).get("detail", []))
+                    runtime_details = next(
+                        (set(item.get("runtime_detail_literals", [])) for item in inventory.get("mcp_tools", []) if item["name"] == tool),
+                        set(),
+                    )
+                    if detail in advertised_details:
+                        add(f"MCP detail {tool}::{detail}", selector)
+                    elif detail in runtime_details:
+                        add(f"MCP detail schema gap {tool}::{detail}", selector)
 
             receivers = hubclient_receivers(body_nodes, function)
             for call in calls:
@@ -1513,9 +1731,20 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
                 if call.func.value.id not in receivers:
                     continue
                 add(f"HubClient method::{method}", selector)
-                for target in inventory["client_targets"]:
+                method_targets = [
+                    target for target in inventory["client_targets"]
+                    if target["client_method"] == method
+                ]
+                for target in method_targets:
                     target_path = target["path"].split("?", 1)[0]
-                    if target["client_method"] == method and target_path in literals:
+                    same_method_target = [
+                        candidate for candidate in method_targets
+                        if candidate["method"] == target["method"]
+                        and candidate["path"] == target["path"]
+                    ]
+                    if len(same_method_target) == 1 and (
+                        target_path in literals or len(method_targets) == 1
+                    ):
                         target_name = f"{target['method']} {target['path']}"
                         add(f"HubClient target::{target_name}::{method}", selector)
 
@@ -1572,7 +1801,32 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
                 )
                 method: str | None = None
                 url_node: ast.AST | None = None
-                if is_urllib_request_call(call, "urlopen", urllib_modules, urllib_symbols):
+                module_helper = module_http_request_helpers.get(call_name)
+                if module_helper is not None and isinstance(call.func, ast.Name):
+                    helper, url_parameter, method_parameter, default_method = module_helper
+                    positional_parameters = [
+                        argument.arg for argument in [*helper.args.posonlyargs, *helper.args.args]
+                    ]
+
+                    def helper_argument(name: str) -> ast.AST | None:
+                        if name in positional_parameters:
+                            index = positional_parameters.index(name)
+                            if index < len(call.args):
+                                return call.args[index]
+                        return next((keyword.value for keyword in call.keywords if keyword.arg == name), None)
+
+                    url_node = helper_argument(url_parameter)
+                    method_node = helper_argument(method_parameter) if method_parameter else None
+                    method = string_value(method_node) if method_node is not None else default_method
+                    url_text = static_url_text(
+                        url_node,
+                        body_nodes,
+                        (getattr(call, "lineno", 0), getattr(call, "col_offset", 0)),
+                    ) if url_node is not None else ""
+                    path = url_path(url_text) if url_text else None
+                    if method and path:
+                        pairs.append((method.upper(), path, call))
+                elif is_urllib_request_call(call, "urlopen", urllib_modules, urllib_symbols):
                     request_arg = call.args[0] if call.args else next(
                         (keyword.value for keyword in call.keywords if keyword.arg == "url"), None
                     )
@@ -1628,6 +1882,12 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
 
                 if method in HTTP_METHODS.values() and url_node is not None:
                     value = string_value(url_node)
+                    if not value:
+                        value = static_url_text(
+                            url_node,
+                            body_nodes,
+                            (getattr(call, "lineno", 0), getattr(call, "col_offset", 0)),
+                        )
                     path = url_path(value) if value else None
                     if path:
                         pairs.append((method, path, call))
@@ -1667,7 +1927,7 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
         modules["mcp"][1], SOURCE_FILES["mcp"]
     )
     source_tools_by_name = {item["name"]: item for item in source_mcp_tools}
-    mcp_schemas, mcp_schema_evidence, schema_errors = _generated_mcp_schemas(root)
+    mcp_schemas, mcp_schema_evidence, schema_errors, disabled_mcp_tools = _generated_mcp_schemas(root)
     mcp_tools = []
     mcp_contracts: dict[str, dict[str, Any]] = {}
     mcp_actions: dict[str, list[str]] = {}
@@ -1736,6 +1996,9 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
                 "schema_evidence": mcp_schema_evidence[name],
                 "handler": (source_tool or {}).get("handler", "no matching runtime handler registration was found"),
                 "handler_symbols": (source_tool or {}).get("handler_symbols", []),
+                "dispatch_actions": (source_tool or {}).get("dispatch_actions", []),
+                "runtime_action_literals": (source_tool or {}).get("action_literals", []),
+                "runtime_detail_literals": (source_tool or {}).get("detail_literals", []),
                 "registration_condition": (source_tool or {}).get("registration_condition"),
                 "evidence_status": "conditional" if (source_tool or {}).get("registration_condition") else "confirmed",
             }
@@ -1753,6 +2016,8 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
         if name in mcp_schemas:
             continue
         conditional = source_tool.get("registration_condition")
+        if name in disabled_mcp_tools:
+            conditional = conditional or "disabled by active feature configuration"
         if not conditional:
             drift.append(f"source MCP tool {name} has no generated schema")
         mcp_tools.append({
@@ -1804,6 +2069,9 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
             "client_methods": client_methods,
             "client_targets": client_targets,
             "http_routes": http_routes,
+            "mcp_actions": mcp_actions,
+            "conditional_mcp_actions": conditional_mcp_actions,
+            "mcp_variants": mcp_variants,
             "cli_operations": cli_contract["operations"],
         }),
         "drift": sorted(drift),
@@ -2002,6 +2270,134 @@ def _access_classification(surface: str) -> str:
     return "source surface recorded; access behavior requires an operation-specific gate"
 
 
+_OPERATION_OWNER_TASKS = frozenset(f"T{number:02d}" for number in range(1, 22))
+_MCP_TOOL_OWNER_TASK = {
+    "local_ai_status": "T18",
+    "local_ai_repo": "T10",
+    "local_ai_task": "T12",
+    "local_ai_command": "T15",
+    "local_ai_coord": "T08",
+    "local_ai_rag": "T11",
+    "local_ai_artifact": "T14",
+    "local_ai_work": "T16",
+}
+
+
+def _http_operation_owner_task(path: str) -> str:
+    normalized = path.split(" ", 1)[-1].lower()
+    if normalized == "/api/context/pack":
+        return "T01"
+    if normalized == "/api/search":
+        return "T21"
+    if "/benchmark" in normalized or normalized.endswith("/benchmark"):
+        return "T02"
+    if "/release" in normalized or "/selftest" in normalized:
+        return "T20"
+    if normalized.startswith("/api/agent-state/memory") or normalized.startswith(("/api/memory", "/api/leases")):
+        return "T05"
+    if normalized.startswith(("/api/agent-state/verification", "/api/evidence", "/api/worktrees")):
+        return "T09"
+    if normalized.startswith("/api/agent-state") or normalized.startswith("/api/coord"):
+        return "T08"
+    if normalized.startswith(("/api/project-config", "/api/project/", "/api/path-hints")):
+        return "T21"
+    if normalized.startswith(("/api/repo", "/api/code", "/api/git", "/api/ast", "/api/preprocess", "/api/affected_tests", "/api/topology")):
+        return "T10"
+    if normalized.startswith(("/api/rag", "/api/embed", "/api/rerank", "/api/ingest")):
+        return "T11"
+    if normalized.startswith(("/api/models", "/api/model", "/api/router", "/api/inference", "/api/ollama", "/api/llama", "/api/hardware", "/api/scheduler")):
+        return "T12"
+    if normalized.startswith(("/api/jobs", "/api/conversation", "/api/async", "/api/task")):
+        return "T13"
+    if normalized.startswith(("/api/artifact", "/api/context", "/api/cache", "/api/token", "/api/ledger")):
+        return "T14"
+    if normalized.startswith(("/api/command", "/api/stream", "/api/speculative")):
+        return "T15"
+    if normalized.startswith(("/api/work", "/api/orchestrator")):
+        return "T16"
+    if normalized.startswith(("/api/browser", "/api/vision", "/api/audio", "/api/transcri", "/api/generate")):
+        return "T17"
+    if normalized.startswith(("/api/status", "/api/health", "/api/queue", "/api/telemetry", "/api/debug", "/api/live", "/api/adoption", "/api/mode", "/api/maintenance", "/api/capabilities", "/api/metrics", "/api/db", "/dashboard")):
+        return "T18"
+    if normalized.startswith(("/api/install", "/api/setup", "/api/doctor", "/api/config", "/api/bundle", "/api/cli")):
+        return "T19"
+    return "T04"
+
+
+def _mcp_action_owner_task(tool_name: str, action: str) -> str:
+    canonical = re.sub(r"\s+\(alias for .+\)$", "", action).lower()
+    if tool_name == "local_ai_status":
+        return "T08" if canonical == "agent_state" else "T18"
+    if tool_name == "local_ai_repo":
+        if canonical == "search":
+            return "T21"
+        if canonical in {"context_budget", "artifact", "artifacts", "cache"}:
+            return "T14"
+        if canonical in {"project_config", "path_hints"}:
+            return "T21"
+        return "T10"
+    if tool_name == "local_ai_task":
+        if any(word in canonical for word in ("conversation", "async", "wait", "continue", "cancel", "resume")):
+            return "T13"
+        if any(word in canonical for word in ("vision", "transcribe", "audio", "image")):
+            return "T17"
+        if any(word in canonical for word in ("benchmark", "evaluation", "candidate")):
+            return "T02"
+        return "T12"
+    if tool_name == "local_ai_command":
+        if canonical in {"run", "repair", "auto_fix", "format", "stage", "stash", "daemon", "network", "bundle"}:
+            return "T06"
+        if canonical in {"cancel", "retry", "replay"}:
+            return "T07"
+        return "T15"
+    if tool_name == "local_ai_coord":
+        if any(word in canonical for word in ("verify", "receipt", "evidence", "worktree", "completion")):
+            return "T09"
+        return "T08"
+    return _MCP_TOOL_OWNER_TASK.get(tool_name, "T03")
+
+
+def _operation_owner_task(finding: dict[str, Any]) -> str | None:
+    explicit = finding.get("owner_task")
+    if explicit in _OPERATION_OWNER_TASKS:
+        return explicit
+    surface = str(finding.get("surface", ""))
+    name = str(finding.get("name", ""))
+    if surface == "MCP tool" or surface.startswith("MCP action schema gap "):
+        return "T03"
+    if surface.startswith("MCP detail "):
+        return "T08" if name.lower() == "agent_state" else "T18"
+    if surface.startswith("MCP action "):
+        family = surface.removeprefix("MCP action ").removeprefix("alias ")
+        return _mcp_action_owner_task(family, name)
+    if surface.startswith("HTTP "):
+        return _http_operation_owner_task(name)
+    if surface == "HubClient target":
+        return _http_operation_owner_task(name)
+    if surface == "HubClient method":
+        return "T04"
+    if surface == "CLI operation":
+        action = name.lower().replace("_", "-")
+        if "benchmark" in action:
+            return "T02"
+        if any(word in action for word in ("release", "selftest", "self-test")):
+            return "T20"
+        if action in {"status", "dashboard", "logs", "service-status", "watch"}:
+            return "T18"
+        if action == "memory":
+            return "T05"
+        if action in {"agent-state", "tasks"}:
+            return "T08"
+        if action in {"clean", "cleanup", "start", "stop", "restart", "pause", "resume"}:
+            return "T06"
+        return "T19"
+    if surface == "Generated manifest":
+        return "T19"
+    if surface == "route":
+        return None
+    return None
+
+
 def coverage_rows(findings: list[dict[str, Any]], task_id: str | None = None) -> list[dict[str, Any]]:
     rows = []
     reproduction = "python tools/surface_inventory.py --check"
@@ -2044,7 +2440,7 @@ def coverage_rows(findings: list[dict[str, Any]], task_id: str | None = None) ->
             "status": evidence_status,
             "evidence_status": evidence_status,
             "owner": owner,
-            "owner_task": task_id or finding.get("owner_task"),
+            "owner_task": _operation_owner_task(finding) or task_id,
             "handler": _normalize_unverified(finding.get("handler") or finding["name"], "handler"),
             "fixtures": (
                 behavioral_test_ids
@@ -2103,12 +2499,16 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     for route in inventory["http_routes"]:
+        conditional_gates = route.get("conditional_gates", [])
+        condition = "; ".join(conditional_gates) or route.get("classification")
         findings.append(
             {
                 "surface": f"HTTP {route['method']}",
                 "name": route["path"],
-                "condition": route.get("classification"),
+                "condition": condition,
+                "evidence_status": route.get("evidence_status") or ("conditional" if condition else "confirmed"),
                 "owner": SOURCE_FILES["http"] if route.get("classification") is None else "tools/surface_inventory.py",
+                "owner_task": route.get("owner_task"),
                 "handler": route.get("handler"),
                 "contract": route.get("contract", {}),
                 "acceptance": "HTTP method and path resolve to a handler or registered dynamic route.",
@@ -2173,6 +2573,63 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
                     "acceptance": f"Generated schema advertises this action when {gate} is enabled.",
                     "evidence_status": "conditional",
                     "evidence": [f"{SOURCE_FILES['mcp']}:RepoAction"],
+                }
+            )
+    for tool in inventory["mcp_tools"]:
+        tool_name = tool["name"]
+        advertised = set(inventory["mcp_actions"].get(tool_name, []))
+        conditional = set(inventory["conditional_mcp_actions"].get(tool_name, {}))
+        for action in tool.get("runtime_action_literals", []):
+            if action in advertised or action in conditional:
+                continue
+            findings.append(
+                {
+                    "surface": f"MCP action schema gap {tool_name}",
+                    "name": action,
+                    "condition": "runtime dispatch action is absent from the generated action enum",
+                    "owner": SOURCE_FILES["mcp"],
+                    "handler": tool.get("handler"),
+                    "contract": {
+                        "action": action,
+                        "request_payload": {"action": action},
+                        "input_property_schema": inventory["mcp_contracts"].get(tool_name, {}).get("input_schema", {}).get("properties", {}).get("action", {}),
+                        "schema_gap": "handler accepts this action but the generated action enum does not advertise it",
+                        "response_contract": inventory["mcp_contracts"].get(tool_name, {}).get("output_schema", "not declared"),
+                        "status_codes": "not applicable: MCP tool protocol",
+                        "operation_side_effects": "runtime dispatch branch exists; action effects need operation-specific verification",
+                        "backend_availability": "runtime backend health unverified",
+                    },
+                    "acceptance": "Source handler dispatches this action, while the generated MCP input schema omits it.",
+                    "evidence_status": "confirmed",
+                    "evidence": [tool["evidence"], tool["schema_evidence"]],
+                }
+            )
+    for tool in inventory["mcp_tools"]:
+        tool_name = tool["name"]
+        advertised = set(inventory.get("mcp_variants", {}).get(tool_name, {}).get("detail", []))
+        for detail in tool.get("runtime_detail_literals", []):
+            if detail in advertised:
+                continue
+            findings.append(
+                {
+                    "surface": f"MCP detail schema gap {tool_name}",
+                    "name": detail,
+                    "condition": "runtime detail dispatch is absent from the generated detail enum",
+                    "owner": SOURCE_FILES["mcp"],
+                    "handler": tool.get("handler"),
+                    "contract": {
+                        "detail": detail,
+                        "request_payload": {"detail": detail},
+                        "input_property_schema": inventory["mcp_contracts"].get(tool_name, {}).get("input_schema", {}).get("properties", {}).get("detail", {}),
+                        "schema_gap": "handler accepts this detail but the generated detail enum does not advertise it",
+                        "response_contract": inventory["mcp_contracts"].get(tool_name, {}).get("output_schema", "not declared"),
+                        "status_codes": "not applicable: MCP tool protocol",
+                        "operation_side_effects": "runtime detail branch exists; detail effects need operation-specific verification",
+                        "backend_availability": "runtime backend health unverified",
+                    },
+                    "acceptance": "Source handler dispatches this detail, while the generated MCP input schema omits it.",
+                    "evidence_status": "confirmed",
+                    "evidence": [tool["evidence"], tool["schema_evidence"]],
                 }
             )
     for tool_name, variants in inventory.get("mcp_variants", {}).items():
@@ -2339,6 +2796,8 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
     behavioral_links = inventory.get("behavioral_test_links", {})
     for finding in findings:
         key = f"{finding['surface']}::{finding['name']}"
+        if finding["surface"] == "HubClient target":
+            key += f"::{finding.get('handler', '')}"
         test_ids = behavioral_links.get(key)
         if test_ids:
             finding["behavioral_test_ids"] = test_ids

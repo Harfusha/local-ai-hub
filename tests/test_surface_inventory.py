@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import subprocess
@@ -164,6 +165,41 @@ ROOT_COVERAGE_ROWS = MODULE.coverage_rows(
 )
 
 
+def test_operation_owner_tasks_follow_surface_families():
+    cases = (
+        ({"surface": "HTTP GET", "name": "/api/context/pack"}, "T01"),
+        ({"surface": "HTTP GET", "name": "/api/benchmark"}, "T02"),
+        ({"surface": "MCP tool", "name": "local_ai_repo"}, "T03"),
+        ({"surface": "HubClient method", "name": "get_health"}, "T04"),
+        ({"surface": "HTTP POST", "name": "/api/memory"}, "T05"),
+        ({"surface": "HTTP POST", "name": "/api/search"}, "T21"),
+        ({"surface": "HTTP POST", "name": "/api/command/run"}, "T15"),
+        ({"surface": "MCP action local_ai_command", "name": "run"}, "T06"),
+        ({"surface": "MCP action local_ai_command", "name": "retry"}, "T07"),
+        ({"surface": "MCP action local_ai_coord", "name": "task_list"}, "T08"),
+        ({"surface": "HTTP POST", "name": "/api/evidence/verify"}, "T09"),
+        ({"surface": "MCP action local_ai_repo", "name": "context"}, "T10"),
+        ({"surface": "MCP action local_ai_repo", "name": "search"}, "T21"),
+        ({"surface": "MCP action local_ai_rag", "name": "docset_search"}, "T11"),
+        ({"surface": "MCP action local_ai_task", "name": "delegate"}, "T12"),
+        ({"surface": "HTTP POST", "name": "/api/conversations/continue"}, "T13"),
+        ({"surface": "MCP action local_ai_artifact", "name": "get"}, "T14"),
+        ({"surface": "MCP action local_ai_work", "name": "submit"}, "T16"),
+        ({"surface": "HTTP POST", "name": "/api/vision/analyze"}, "T17"),
+        ({"surface": "MCP action local_ai_status", "name": "brief"}, "T18"),
+        ({"surface": "CLI operation", "name": "generate"}, "T19"),
+        ({"surface": "CLI operation", "name": "release-check"}, "T20"),
+        ({"surface": "HTTP GET", "name": "/api/project-config"}, "T21"),
+    )
+
+    assert all(MODULE._operation_owner_task(finding) == expected for finding, expected in cases)
+    assert all(row["owner_task"] in MODULE._OPERATION_OWNER_TASKS for row in ROOT_COVERAGE_ROWS)
+    assert all(
+        row["owner_task"] == MODULE._operation_owner_task({**row, "owner_task": None})
+        for row in ROOT_COVERAGE_ROWS
+    )
+
+
 @pytest.mark.parametrize("row", ROOT_COVERAGE_ROWS, ids=lambda row: row["operation_id"])
 def test_operation_contract_metadata(row):
     required_contract_fields = {
@@ -176,7 +212,9 @@ def test_operation_contract_metadata(row):
     }
 
     assert row["owner"]
-    assert row["owner_task"] == ROOT_TASK_ID
+    expected_owner_task = MODULE._operation_owner_task({**row, "owner_task": None})
+    assert row["owner_task"] == expected_owner_task
+    assert row["owner_task"] in MODULE._OPERATION_OWNER_TASKS
     assert row["acceptance"]
     assert row["evidence"]
     assert row["state"] in {"verified", "conditional", "unsupported", "removed"}
@@ -313,6 +351,51 @@ def test_inventory_extracts_surfaces_and_resolves_dynamic_route_registry(tmp_pat
     assert inventory["drift"] == []
 
 
+def test_http_route_evidence_status_captures_dynamic_and_backend_gates(tmp_path):
+    make_repo(tmp_path)
+    write(
+        tmp_path,
+        "src/local_ai_hub/http_server.py",
+        '''class Handler:
+    def do_GET(self):
+        if self.path.startswith("/api/jobs/"):
+            return self.job()
+        if self.path == "/api/agent-state/events":
+            if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
+                return self._send(403, {"error": "agent state disabled"})
+            return self.events()
+        if self.path in {"/", "/dashboard"}:
+            if not bool(APP.config.get("features", {}).get("dashboard", True)):
+                return self._send(404, {"error": "dashboard disabled"})
+            return self.dashboard()
+        if self.path == "/api/browser/capability":
+            if not APP.config.get("browser_bridge", {}).get("enabled", True):
+                return self._send(501, {"error": "browser bridge disabled"})
+            return self.capability()
+''',
+    )
+
+    inventory = MODULE.collect_inventory(tmp_path)
+    rows = MODULE.coverage_rows(MODULE._findings(inventory))
+    routes = {(route["method"], route["path"]): route for route in inventory["http_routes"]}
+    rows_by_target = {(row["surface"], row["name"]): row for row in rows}
+
+    assert routes[("GET", "/api/jobs/")]["match"] == "prefix"
+    assert routes[("GET", "/api/jobs/")]["evidence_status"] == "confirmed"
+    for path, gate in (
+        ("/api/agent-state/events", "agent_state.enabled"),
+        ("/dashboard", "features"),
+        ("/api/browser/capability", "browser_bridge"),
+    ):
+        route = routes[("GET", path)]
+        row = rows_by_target[(f"HTTP GET", path)]
+        assert route["evidence_status"] == "conditional"
+        assert any(gate in condition for condition in route["conditional_gates"])
+        assert row["evidence_status"] == "conditional"
+        assert row["state"] == "conditional"
+        assert gate in row["condition"]
+
+
 def test_inventory_reports_orphan_client_target_and_ignores_prompt_text(tmp_path):
     make_repo(tmp_path)
     write(
@@ -440,6 +523,32 @@ def test_urllib_post_helper_route():
     result = post_json("/health", {})
     assert result["success"] is True
 
+def _module_request(url, *, method="GET", body=None):
+    request = urllib.request.Request(url, method="GET")
+    request = urllib.request.Request(url, data=body, method=method)
+    with urllib.request.urlopen(request) as response:
+        return response.status, dict(response.headers), response.read()
+
+def test_module_level_urllib_helper_links_asserted_operation():
+    url = "http://127.0.0.1" + "/api/status"
+    url = "http://127.0.0.1" + "/api/repo/search"
+    status, _, body = _module_request(url, method="POST", body=b"{}")
+    assert status == 200
+    assert json.loads(body)["success"] is True
+
+def _module_discarded_request(url):
+    with urllib.request.urlopen(url) as response:
+        response.read()
+    return {"success": True}
+
+def test_module_level_helper_discarding_response_is_not_route_coverage():
+    result = _module_discarded_request("http://127.0.0.1/api/repo/search")
+    assert result["success"] is True
+
+def test_module_level_urllib_helper_defaults_to_get():
+    _, _, body = _module_request("http://127.0.0.1/api/health")
+    assert json.loads(body)["success"] is True
+
 def test_client_health_method():
     client = HubClient()
     result = client.get_health()
@@ -462,7 +571,9 @@ def test_context_pack_http_request():
     assert links["MCP action local_ai_repo::search"] == [
         "tests/test_operation_behavior.py::test_repo_search_dispatch"
     ]
-    assert "MCP action local_ai_repo::context" not in links
+    assert links["MCP action local_ai_repo::context"] == [
+        "tests/test_operation_behavior.py::test_repo_context_dispatch"
+    ]
     assert links["HTTP POST::/health"] == sorted([
         "tests/test_operation_behavior.py::test_post_health_route",
         "tests/test_operation_behavior.py::test_urllib_post_helper_route",
@@ -472,7 +583,20 @@ def test_context_pack_http_request():
         "tests/test_operation_behavior.py::test_urllib_request_alias_defaults_to_get",
         "tests/test_operation_behavior.py::test_urllib_request_route",
         "tests/test_operation_behavior.py::test_urllib_keyword_url_route",
+        "tests/test_operation_behavior.py::test_module_level_urllib_helper_defaults_to_get",
     ])
+    assert "tests/test_operation_behavior.py::test_module_level_urllib_helper_defaults_to_get" not in links.get(
+        "HTTP POST::/api/health", []
+    )
+    assert links["HTTP POST::/api/repo/"] == [
+        "tests/test_operation_behavior.py::test_module_level_urllib_helper_links_asserted_operation"
+    ]
+    assert "tests/test_operation_behavior.py::test_module_level_helper_discarding_response_is_not_route_coverage" not in links.get(
+        "HTTP POST::/api/repo/", []
+    )
+    assert "tests/test_operation_behavior.py::test_module_level_urllib_helper_links_asserted_operation" not in links.get(
+        "HTTP GET::/api/repo/", []
+    )
     assert links["HubClient method::get_health"] == [
         "tests/test_operation_behavior.py::test_client_health_method"
     ]
@@ -491,6 +615,25 @@ def test_context_pack_http_request():
         row = next(row for row in rows if (row["surface"], row["name"]) == key)
         assert row["test_coverage"] == "behavioral tests linked; coverage bounded to cited assertions"
         assert any(expected_selector in selector for selector in row["test_ids"])
+
+
+def test_cli_operation_links_allow_dynamic_option_values():
+    links = MODULE.collect_inventory(ROOT)["behavioral_test_links"]
+    for operation, selector in (
+        (
+            "generate",
+            "tests/test_hubctl_unlinked_operations.py::test_hubctl_generate_dispatches_writers_and_optional_agent_install",
+        ),
+        (
+            "service-status",
+            "tests/test_hubctl_unlinked_operations.py::test_hubctl_service_status_reads_configured_supervisor_file",
+        ),
+        (
+            "status",
+            "tests/test_hubctl_unlinked_operations.py::test_hubctl_status_reports_offline_without_starting_service",
+        ),
+    ):
+        assert selector in links[f"CLI operation::{operation}"]
 
 
 def test_behavioral_links_require_receiver_invocation_and_result_assertion(tmp_path):
@@ -750,6 +893,171 @@ def test_existing_cli_argv_calls_link_each_operation():
     assert selector in links["CLI operation::cleanup"]
 
 
+def test_behavioral_links_only_reference_inventoried_operations():
+    inventory = MODULE.collect_inventory(ROOT)
+    links = inventory["behavioral_test_links"]
+    finding_keys = {
+        f"{finding['surface']}::{finding['name']}"
+        + (f"::{finding.get('handler', '')}" if finding["surface"] == "HubClient target" else "")
+        for finding in MODULE._findings(inventory)
+    }
+
+    assert set(links) <= finding_keys
+    context_selector = (
+        "tests/test_client_operation_acceptance.py::"
+        "test_client_context_compile_targets_agent_state_context"
+    )
+    assert context_selector in links["HubClient target::POST /api/agent-state/context::context_compile"]
+    assert (
+        "tests/test_mcp_compact_transport.py::test_local_ai_repo_context_forwards_guarded_pack_fields"
+        in links["MCP action local_ai_repo::context"]
+    )
+    for route, selector in (
+        (
+            "/api/agent-state/blackboard",
+            "test_http_get_agent_state_blackboard_forwards_board_and_section",
+        ),
+        (
+            "/api/agent-state/events",
+            "test_http_get_agent_state_events_forwards_stream_cursor_and_limit",
+        ),
+        (
+            "/api/agent-state/swarm",
+            "test_http_get_agent_state_swarm_forwards_state_and_limit",
+        ),
+        (
+            "/api/agent-state/swarm/",
+            "test_http_get_agent_state_swarm_detail_forwards_swarm_id",
+        ),
+        ("/api/config", "test_http_get_config_redacts_configured_token"),
+        ("/api/capabilities", "test_http_get_capabilities_returns_surface_and_features"),
+        ("/api/audit/tail", "test_http_get_audit_tail_forwards_limit"),
+        ("/api/audit_dependencies", "test_http_get_audit_dependencies_forwards_root"),
+        (
+            "/api/affected_tests",
+            "test_http_get_affected_tests_forwards_root_and_repeated_paths",
+        ),
+    ):
+        key = f"HTTP GET::{route}"
+        assert any(selector in item for item in links[key])
+    assert any(
+        "test_http_post_affected_tests_forwards_json_paths" in item
+        for item in links["HTTP POST::/api/affected_tests"]
+    )
+    assert "MCP action local_ai_repo::not_a_real_action" not in links
+    assert "MCP action local_ai_task::not_a_real_action" not in links
+    task_list_selector = (
+        "tests/test_mcp_coord_operation_acceptance.py::"
+        "test_local_ai_coord_task_list_forwards_status_and_stale_filter"
+    )
+    assert task_list_selector in links["MCP action local_ai_coord::task_list"]
+    selector = (
+        "tests/test_mcp_command_operation_acceptance.py::"
+        "test_mcp_command_speculative_lint_submits_bounded_paths_and_job_identity"
+    )
+    gap_key = "MCP action schema gap local_ai_command::speculative_lint"
+    assert selector in links[gap_key]
+    gap = next(
+        row for row in MODULE.coverage_rows(MODULE._findings(inventory))
+        if (row["surface"], row["name"]) == ("MCP action schema gap local_ai_command", "speculative_lint")
+    )
+    assert gap["evidence_status"] == "confirmed"
+    assert "generated action enum" in gap["contract"]["schema_gap"]
+
+
+def test_hubclient_target_links_match_the_client_method_handler():
+    inventory = MODULE.collect_inventory(ROOT)
+    findings = MODULE._findings(inventory)
+    task_target_rows = [
+        finding
+        for finding in findings
+        if finding["surface"] == "HubClient target"
+        and finding["name"] == "POST /api/agent-state/tasks"
+    ]
+    create_selector = (
+        "tests/test_client_operation_acceptance.py::"
+        "test_client_create_task_targets_agent_state_tasks"
+    )
+    by_handler = {finding["handler"]: finding for finding in task_target_rows}
+
+    assert create_selector in by_handler["create_task"].get("behavioral_test_ids", [])
+    assert all(
+        create_selector not in finding.get("behavioral_test_ids", [])
+        for handler, finding in by_handler.items()
+        if handler != "create_task"
+    )
+    fixture_selector = "tests/test_agent_state_transport.py::test_client_convenience_methods"
+    links = inventory["behavioral_test_links"]
+
+    assert fixture_selector in links["HubClient method::get_task"]
+    assert fixture_selector in links["HubClient target::POST /api/agent-state/tasks::get_task"]
+    incident_selector = (
+        "tests/test_client_operation_acceptance.py::"
+        "test_client_incident_decision_targets_agent_state_incidents"
+    )
+    incident_coord_targets = [
+        finding
+        for finding in findings
+        if finding["surface"] == "HubClient target"
+        and finding["name"] == "POST /api/agent-state/incidents"
+        and finding["handler"] == "coord"
+    ]
+
+    assert len(incident_coord_targets) == 2
+    assert all(
+        incident_selector not in finding.get("behavioral_test_ids", [])
+        for finding in incident_coord_targets
+    )
+
+
+def test_generation_task_preserves_explicit_dynamic_route_owner():
+    inventory = MODULE.collect_inventory(ROOT)
+    rows = MODULE.coverage_rows(MODULE._findings(inventory), task_id="T19")
+    matches = [
+        row for row in rows
+        if row["surface"] == "HTTP GET" and row["name"] == "/api/context/pack"
+    ]
+
+    assert len(matches) == 1
+    assert matches[0]["owner_task"] == "T01"
+    assert matches[0]["task_id"] == "T19"
+
+
+def test_behavioral_disposition_excludes_metadata_only_selectors():
+    inventory = MODULE.collect_inventory(ROOT)
+    rows = MODULE.coverage_rows(MODULE._findings(inventory), task_id=ROOT_TASK_ID)
+    metadata_rows = [
+        row for row in rows
+        if row["test_coverage"] == "metadata only; operation behavior unverified"
+    ]
+    behavioral_rows = [
+        row for row in rows
+        if row["test_coverage"] == "behavioral tests linked; coverage bounded to cited assertions"
+    ]
+    selectors = [selector for linked in inventory["behavioral_test_links"].values() for selector in linked]
+
+    assert metadata_rows
+    assert behavioral_rows
+    assert not any("test_operation_contract_metadata" in selector for selector in selectors)
+    assert any(
+        "test_client_create_task_targets_agent_state_tasks" in selector
+        for selector in selectors
+    )
+    assert all(
+        row["behavioral_disposition"] == "no asserted operation test linked; behavior unverified"
+        and row["test_ids"] == [
+            f"tests/test_surface_inventory.py::test_operation_contract_metadata[{row['operation_id']}]"
+        ]
+        for row in metadata_rows
+    )
+    assert all(
+        row["behavioral_disposition"] == "asserted behavior test linked"
+        and row["test_ids"]
+        and all("test_operation_contract_metadata" not in selector for selector in row["test_ids"])
+        for row in behavioral_rows
+    )
+
+
 def test_coverage_rows_disambiguate_same_surface_and_name_by_handler():
     rows = MODULE.coverage_rows(
         [
@@ -873,6 +1181,53 @@ def test_generated_schema_without_source_tool_is_reported(tmp_path):
     assert any("generated MCP schema local_ai_rogue" in item for item in inventory["drift"])
 
 
+def test_check_with_disabled_source_tools_is_read_only_and_not_drift(tmp_path, capsys):
+    make_repo(tmp_path)
+    mcp_path = tmp_path / "src" / "local_ai_hub" / "mcp_server.py"
+    mcp_path.write_text(
+        mcp_path.read_text(encoding="utf-8")
+        + "\n@mcp.tool()\ndef local_ai_task(action: str):\n    pass\n"
+        + "@mcp.tool()\ndef local_ai_work(action: str):\n    pass\n",
+        encoding="utf-8",
+    )
+    schema_dir = tmp_path / "generated" / "schemas"
+    for schema_path in schema_dir.glob("*.json"):
+        schema_path.unlink()
+    schema_dir.rmdir()
+    write(tmp_path, "defaults.toml", (ROOT / "defaults.toml").read_text(encoding="utf-8"))
+    write(
+        tmp_path,
+        "config.toml",
+        "[features]\ntasks = false\nlocal_models = false\nwork_orchestrator = false\n",
+    )
+
+    def snapshot_tree(root):
+        snapshot = {}
+        for item in (root, *root.rglob("*")):
+            stat = item.stat()
+            relative = item.relative_to(root)
+            if item.is_dir():
+                snapshot[relative] = ("directory", stat.st_mtime_ns)
+            else:
+                snapshot[relative] = ("file", stat.st_mtime_ns, stat.st_size, item.read_bytes())
+        return snapshot
+
+    before = snapshot_tree(tmp_path)
+    result = MODULE.main(["--root", str(tmp_path), "--check"])
+    summary = json.loads(capsys.readouterr().out)
+
+    assert result == 1
+    assert summary["coverage_matches"] is False
+    assert any("rendered coverage document differs" in item for item in summary["drift"])
+    assert not any(
+        "source MCP tool local_ai_task has no generated schema" in item
+        or "source MCP tool local_ai_work has no generated schema" in item
+        for item in summary["drift"]
+    )
+    after = snapshot_tree(tmp_path)
+    assert after == before
+
+
 def test_check_mode_detects_drift_without_mutating_coverage(tmp_path, capsys):
     make_repo(tmp_path)
     stale_coverage = "# API surface coverage\n\n| Surface | Name |\n|---|---|\n| stale | `row` |\n"
@@ -889,6 +1244,33 @@ def test_check_mode_detects_drift_without_mutating_coverage(tmp_path, capsys):
     assert coverage_path.read_bytes() == before_bytes
     assert coverage_path.stat().st_mtime_ns == before_mtime
 
+
+def test_check_cli_preserves_stale_coverage_hash_on_drift(tmp_path):
+    make_repo(tmp_path)
+    coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
+    stale_coverage = b"# API surface coverage\n\n| Surface | Name |\n|---|---|\n| stale | `row` |\n"
+    coverage_path.parent.mkdir(parents=True, exist_ok=True)
+    coverage_path.write_bytes(stale_coverage)
+    before_hash = hashlib.sha256(coverage_path.read_bytes()).hexdigest()
+    command = [
+        sys.executable,
+        str(ROOT / "tools" / "surface_inventory.py"),
+        "--root",
+        str(tmp_path),
+        "--check",
+    ]
+
+    check = subprocess.run(
+        command, cwd=ROOT, capture_output=True, text=True, check=False
+    )
+
+    assert check.returncode == 1
+    summary = json.loads(check.stdout)
+    assert summary["coverage_matches"] is False
+    assert summary["drift"]
+    assert "written" not in summary
+    after_hash = hashlib.sha256(coverage_path.read_bytes()).hexdigest()
+    assert after_hash == before_hash
 
 def test_check_mode_reports_missing_coverage_without_creating_doc(tmp_path, capsys):
     make_repo(tmp_path)
@@ -1257,6 +1639,23 @@ def local_ai_orphan():
     assert any("source MCP tool local_ai_orphan has no generated schema" in item for item in inventory["drift"])
 
 
+def test_schema_fallback_uses_project_defaults_not_ambient_config(tmp_path, monkeypatch):
+    write(tmp_path, "defaults.toml", (ROOT / "defaults.toml").read_text(encoding="utf-8"))
+    ambient_config = tmp_path / "ambient.toml"
+    ambient_config.write_text(
+        "[features]\nstatus = false\ntasks = false\nwork_orchestrator = false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LOCAL_AI_CONFIG", str(ambient_config))
+
+    schemas, evidence, errors, disabled_tools = MODULE._generated_mcp_schemas(tmp_path)
+
+    assert errors == []
+    assert "local_ai_status" in schemas
+    assert set(evidence) == set(schemas)
+    assert "local_ai_status" not in disabled_tools
+
+
 def test_missing_generated_manifest_is_reported(tmp_path):
     make_repo(tmp_path)
     (tmp_path / "docs" / "UPDATE_PROMPT.md").unlink()
@@ -1282,6 +1681,8 @@ def test_inventory_contract_rows_include_required_machine_readable_fields(tmp_pa
         "tenant_scope",
         "provenance",
         "test_ids",
+        "test_coverage",
+        "behavioral_disposition",
         "benchmark_cohort",
         "state",
         "contract",
@@ -1302,8 +1703,61 @@ def test_inventory_contract_rows_include_required_machine_readable_fields(tmp_pa
         row["contract"][field] not in (None, "")
         for row in rows for field in required_contract_fields
     )
-    assert all(row["owner_task"] == task_id for row in rows)
+    assert all(row.get("task_id") == task_id for row in rows)
+    rendered_header = MODULE.render_coverage(inventory, task_id).splitlines()[5]
+    assert "Test IDs" in rendered_header
+    assert "Test coverage" in rendered_header
+    assert "Behavioral disposition" in rendered_header
+    assert all(
+        row["owner_task"] == (MODULE._operation_owner_task({**row, "owner_task": None}) or task_id)
+        for row in rows
+    )
     assert all(row["operation_id"] and row["handler"] and row["test_ids"] for row in rows)
     contract = next(row["contract"] for row in rows if row["surface"] == "MCP tool" and row["name"] == "local_ai_repo")
     assert contract["input_schema"]["properties"]["query"]["default"] == ""
     assert contract["output_schema"]["properties"]["success"]["type"] == "boolean"
+
+
+def test_check_cli_preserves_coverage_until_explicit_write_doc(tmp_path):
+    make_repo(tmp_path)
+    task_id = "task-check-is-read-only"
+    coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
+    stale_coverage = b"# Stale coverage; check must not replace it.\n"
+    stale_hash = hashlib.sha256(stale_coverage).hexdigest()
+    coverage_path.parent.mkdir(parents=True, exist_ok=True)
+    coverage_path.write_bytes(stale_coverage)
+    before_mtime = coverage_path.stat().st_mtime_ns
+    root_coverage_path = ROOT / "docs" / "API_COVERAGE.md"
+    root_before_bytes = root_coverage_path.read_bytes()
+    root_before_mtime = root_coverage_path.stat().st_mtime_ns
+    command = [sys.executable, str(ROOT / "tools" / "surface_inventory.py"), "--root", str(tmp_path)]
+
+    check = subprocess.run(
+        [*command, "--check"], cwd=ROOT, capture_output=True, text=True, check=False
+    )
+
+    assert check.returncode == 1
+    check_summary = json.loads(check.stdout)
+    assert check_summary["coverage_matches"] is False
+    assert "written" not in check_summary
+    assert coverage_path.read_bytes() == stale_coverage
+    assert hashlib.sha256(coverage_path.read_bytes()).hexdigest() == stale_hash
+    assert coverage_path.stat().st_mtime_ns == before_mtime
+    assert root_coverage_path.read_bytes() == root_before_bytes
+    assert root_coverage_path.stat().st_mtime_ns == root_before_mtime
+
+    write_doc = subprocess.run(
+        [*command, "--write-doc", "--task-id", task_id],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert write_doc.returncode == 0, write_doc.stdout + write_doc.stderr
+    write_summary = json.loads(write_doc.stdout)
+    assert write_summary["written"] == "docs/API_COVERAGE.md"
+    assert coverage_path.read_text(encoding="utf-8") == MODULE.render_coverage(
+        MODULE.collect_inventory(tmp_path), task_id
+    )
+    assert coverage_path.read_bytes() != stale_coverage

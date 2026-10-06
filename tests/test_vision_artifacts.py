@@ -436,7 +436,7 @@ def test_mcp_binary_artifact_response_is_metadata_only(monkeypatch: pytest.Monke
         },
     )
 
-    result = mcp_server.local_ai_artifact("art_image", binary=True)
+    result = mcp_server.local_ai_artifact(action="get", artifact_id="art_image", binary=True)
 
     assert result["success"] is True
     assert "data_base64" not in result
