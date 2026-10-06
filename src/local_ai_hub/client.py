@@ -1470,8 +1470,8 @@ class HubClient:
     def get_evidence(self, evidence_id: str, verify: bool = True) -> dict[str, Any]:
         return self.post("/api/evidence/get", {"evidence_id": evidence_id, "verify": verify})
 
-    def verify_receipt(self, task_id: str, criterion: str, passed: bool = True, command_id: str = "", evidence_id: str = "", details: dict[str, Any] | None = None) -> dict[str, Any]:
-        return self.post("/api/agent-state/verification", {
+    def verify_receipt(self, task_id: str, criterion: str, passed: bool = True, command_id: str = "", evidence_id: str = "", details: dict[str, Any] | None = None, root: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "action": "receipt",
             "receipt": {
                 "task_id": task_id,
@@ -1481,13 +1481,19 @@ class HubClient:
                 "evidence_id": evidence_id,
                 "details": details or {},
             },
-        })
+        }
+        if root is not None:
+            payload["root"] = root
+        return self.post("/api/agent-state/verification", payload)
 
-    def verify_completion(self, task_id: str) -> dict[str, Any]:
-        return self.post("/api/agent-state/verification", {
+    def verify_completion(self, task_id: str, root: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "action": "completion",
             "task_id": task_id,
-        })
+        }
+        if root is not None:
+            payload["root"] = root
+        return self.post("/api/agent-state/verification", payload)
 
     def create_task(
         self,
