@@ -69,19 +69,50 @@ def _source_bundle(tmp_path: Path, source_root: Path) -> bytes:
                 (source_scope, source_workspace, "new.py", 0, "new-hash", "new bundle text", ""),
             )
             con.commit()
-        records = [
-            source_app.agent_memory.record(
-                MemoryRecord.create(kind="fact", scope="task", key=f"bundle-memory-{index}", value={"index": index}),
-                actor="bundle_fixture",
+        tenant = "bundle-fixture"
+        records = []
+        for index in (1, 2):
+            task_id = f"bundle-task-{index}"
+            records.append(
+                source_app.agent_memory.record(
+                    MemoryRecord.create(
+                        kind="fact",
+                        scope="task",
+                        scope_id=task_id,
+                        key=f"bundle-memory-{index}",
+                        value={"index": index},
+                        provenance={"root": source_root_path, "tenant": tenant, "task_id": task_id},
+                    ),
+                    actor="bundle_fixture",
+                )
             )
-            for index in (1, 2)
-        ]
         return source_app.export_bundle(
             source_root_path,
+            tenant=tenant,
             agent_state_record_ids=[record.record_id for record in records],
+            agent_state_contexts={
+                record.record_id: {
+                    "scope": record.scope,
+                    "scope_id": record.scope_id,
+                    "root": source_root_path,
+                    "tenant": tenant,
+                    "task_id": record.scope_id,
+                }
+                for record in records
+            },
         )
     finally:
         source_app.close()
+
+
+def _task_memory_context(record: MemoryRecord, tenant: str, root: str) -> dict[str, object]:
+    return {
+        "scope": record.scope,
+        "scope_id": record.scope_id,
+        "tenant": tenant,
+        "task_id": record.scope_id,
+        "root": root,
+    }
 
 
 def test_bundle_import_rejects_malformed_rag_embedding_before_staging(tmp_path: Path) -> None:
@@ -297,15 +328,30 @@ def test_bundle_import_reports_incomplete_and_keeps_recovery_intent(tmp_path: Pa
 
 def test_agent_state_bundle_recovers_after_partial_memory_commit(tmp_path: Path, monkeypatch):
     source_app, _ = _app(tmp_path / "source-app")
+    source_root = tmp_path / "source-repo"
+    source_root.mkdir()
+    source_root_path = source_root.as_posix()
     try:
-        records = [
-            source_app.agent_memory.record(
-                MemoryRecord.create(kind="fact", scope="task", key=f"standalone-memory-{index}", value=index),
-                actor="bundle_fixture",
+        tenant = "bundle-fixture"
+        records = []
+        for index in (1, 2):
+            task_id = f"standalone-task-{index}"
+            records.append(
+                source_app.agent_memory.record(
+                    MemoryRecord.create(
+                        kind="fact", scope="task", scope_id=task_id,
+                        key=f"standalone-memory-{index}", value=index,
+                        provenance={"root": source_root_path, "tenant": tenant, "task_id": task_id},
+                    ),
+                    actor="bundle_fixture",
+                )
             )
-            for index in (1, 2)
-        ]
-        bundle = source_app.export_bundle(agent_state_record_ids=[record.record_id for record in records])
+        bundle = source_app.export_bundle(
+            source_root_path,
+            tenant=tenant,
+            agent_state_record_ids=[record.record_id for record in records],
+            agent_state_contexts={record.record_id: _task_memory_context(record, tenant, source_root_path) for record in records},
+        )
     finally:
         source_app.close()
 
@@ -463,12 +509,25 @@ def test_payload_staging_failure_reports_pending_recovery(tmp_path: Path, monkey
 
 def test_agent_state_initial_journal_failure_reports_no_pending_recovery(tmp_path: Path, monkeypatch):
     source_app, _ = _app(tmp_path / "source-app")
+    source_root = tmp_path / "source-repo"
+    source_root.mkdir()
+    source_root_path = source_root.as_posix()
     try:
+        tenant = "bundle-fixture"
+        task_id = "staging-failure-task"
         record = source_app.agent_memory.record(
-            MemoryRecord.create(kind="fact", scope="task", key="staging-failure", value=True),
+            MemoryRecord.create(
+                kind="fact", scope="task", scope_id=task_id, key="staging-failure", value=True,
+                provenance={"root": source_root_path, "tenant": tenant, "task_id": task_id},
+            ),
             actor="bundle_fixture",
         )
-        bundle = source_app.export_bundle(agent_state_record_ids=[record.record_id])
+        bundle = source_app.export_bundle(
+            source_root_path,
+            tenant=tenant,
+            agent_state_record_ids=[record.record_id],
+            agent_state_contexts={record.record_id: _task_memory_context(record, tenant, source_root_path)},
+        )
     finally:
         source_app.close()
 
