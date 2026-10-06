@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from local_ai_hub.work_fencing import FencingLease, FencingLeaseStore, LeaseLostError, LeaseScopeError, WorkAttemptFence
 
 
@@ -24,10 +26,11 @@ namespace = "team-shared"
 if mode == "old":
     store = FencingLeaseStore(db, clock=lambda: 100.0)
     attempt = store.claim_attempt(root, "write-set-work", "old", ttl_seconds=5, coordination_id=namespace)
-    lease = store.acquire(root, "old", ["src/owned.txt"], ttl_seconds=5, attempt=attempt, coordination_id=namespace)
+    lease = store.acquire(root, "old", ["src/owned.txt"], ttl_seconds=30, attempt=attempt, coordination_id=namespace)
     receipt.write_text(json.dumps({"attempt": asdict(attempt), "lease": {**asdict(lease), "paths": list(lease.paths)}}), encoding="utf-8")
 elif mode == "successor":
     store = FencingLeaseStore(db, clock=lambda: 106.0)
+    old = json.loads(receipt.read_text(encoding="utf-8"))
     attempt = store.claim_attempt(root, "write-set-work", "new", ttl_seconds=30, coordination_id=namespace)
     lease = store.acquire(root, "new", ["src/owned.txt"], ttl_seconds=30, attempt=attempt, coordination_id=namespace)
     outside_rejected = False

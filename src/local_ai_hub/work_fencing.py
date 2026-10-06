@@ -194,12 +194,26 @@ class FencingLeaseStore:
                     lease_columns = {
                         str(row[1]) for row in con.execute("PRAGMA table_info(writer_fence_leases)")
                     }
+                    if "work_id" not in lease_columns:
+                        try:
+                            con.execute("ALTER TABLE writer_fence_leases ADD COLUMN work_id TEXT NOT NULL DEFAULT ''")
+                        except sqlite3.OperationalError:
+                            pass
                     if "attempt_id" not in lease_columns:
-                        con.execute("ALTER TABLE writer_fence_leases ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''")
+                        try:
+                            con.execute("ALTER TABLE writer_fence_leases ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''")
+                        except sqlite3.OperationalError:
+                            pass
                     if "attempt_token" not in lease_columns:
-                        con.execute("ALTER TABLE writer_fence_leases ADD COLUMN attempt_token INTEGER NOT NULL DEFAULT 0")
+                        try:
+                            con.execute("ALTER TABLE writer_fence_leases ADD COLUMN attempt_token INTEGER NOT NULL DEFAULT 0")
+                        except sqlite3.OperationalError:
+                            pass
                     if "scope_id" not in lease_columns:
-                        con.execute("ALTER TABLE writer_fence_leases ADD COLUMN scope_id TEXT NOT NULL DEFAULT ''")
+                        try:
+                            con.execute("ALTER TABLE writer_fence_leases ADD COLUMN scope_id TEXT NOT NULL DEFAULT ''")
+                        except sqlite3.OperationalError:
+                            pass
                     con.execute("UPDATE writer_fence_leases SET scope_id=resource WHERE scope_id='' ")
                     con.execute(
                         """CREATE TABLE IF NOT EXISTS writer_fence_attempts (
@@ -218,7 +232,10 @@ class FencingLeaseStore:
                         str(row[1]) for row in con.execute("PRAGMA table_info(writer_fence_attempts)")
                     }
                     if "scope_id" not in attempt_columns:
-                        con.execute("ALTER TABLE writer_fence_attempts ADD COLUMN scope_id TEXT NOT NULL DEFAULT ''")
+                        try:
+                            con.execute("ALTER TABLE writer_fence_attempts ADD COLUMN scope_id TEXT NOT NULL DEFAULT ''")
+                        except sqlite3.OperationalError:
+                            pass
                     con.execute("UPDATE writer_fence_attempts SET scope_id=resource WHERE scope_id='' ")
                     con.execute(
                         "CREATE INDEX IF NOT EXISTS idx_writer_attempt_scope "

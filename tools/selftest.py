@@ -87,7 +87,7 @@ def main() -> int:
         repo = temp / "repo"
         (repo / "src").mkdir(parents=True)
         (repo / "src" / "main.py").write_text("def main(): return 1\n", encoding="utf-8")
-        for hidden in (".serena", ".codegraphcontext", ".local-ai-hub"):
+        for hidden in (".serena", ".local-ai-hub"):
             d = repo / hidden
             d.mkdir()
             (d / "generated.py").write_text("generated=True\n", encoding="utf-8")

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from local_ai_hub import http_server
 from local_ai_hub.leases import ScopeLeaseStore
 from local_ai_hub.process_utils import run_hidden
+from local_ai_hub.resilience import RecoveryJournal
 
 
 def _linked_worktrees(parent: Path, name: str) -> tuple[Path, Path]:
@@ -50,6 +51,7 @@ def test_http_lease_routes_resolve_namespace_and_isolate_linked_worktrees(tmp_pa
             },
         },
         leases=ScopeLeaseStore(state_dir),
+        recovery=RecoveryJournal(state_dir),
     )
     previous_app = http_server.APP
     http_server.APP = app

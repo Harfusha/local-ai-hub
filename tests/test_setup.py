@@ -81,7 +81,7 @@ def test_compact_agent_config_is_default(tmp_path: Path):
     install = tmp_path / "install"
     py = tmp_path / "python"
     serena = tmp_path / "serena"
-    cfg = {"code_intelligence": {"direct_agent_mcp": False, "serena_enabled": True, "codegraph_enabled": True}}
+    cfg = {"code_intelligence": {"direct_agent_mcp": False, "serena_enabled": True}}
     entries = setup.build_mcp_entries(install, py, serena, "codex", cfg)
     assert set(entries) == {"local-ai"}
     assert entries["local-ai"]["env"]["LOCAL_AI_AGENT"] == "codex"
@@ -106,8 +106,26 @@ def test_global_policy_has_explicit_read_only_and_fallback_contract() -> None:
         assert phrase in policy
 
 
+@pytest.mark.parametrize("relative_path", ["AGENTS.md", "docs/INSTALL_PROMPT.md", "docs/UPDATE_PROMPT.md"])
+def test_instruction_policy_blocks_match_generated_policy_sources(relative_path: str) -> None:
+    text = (ROOT / relative_path).read_text(encoding="utf-8")
+    expected_agent = setup.generate_global_policy({})
+    expected_token = setup.generate_token_economy_policy({})
+
+    def block(begin: str, end: str) -> str:
+        start = text.find(begin)
+        assert start >= 0, f"{relative_path} missing {begin}"
+        assert text.find(begin, start + len(begin)) < 0, f"{relative_path} repeats {begin}"
+        finish = text.find(end, start + len(begin))
+        assert finish >= 0, f"{relative_path} missing {end}"
+        return text[start:finish + len(end)]
+
+    assert block(setup.GLOBAL_POLICY_BEGIN, setup.GLOBAL_POLICY_END) == expected_agent
+    assert block(setup.TOKEN_ECONOMY_POLICY_BEGIN, setup.TOKEN_ECONOMY_POLICY_END) == expected_token
+
+
 def test_direct_serena_is_explicit_opt_in(tmp_path: Path):
-    cfg = {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True, "codegraph_enabled": True}}
+    cfg = {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True}}
     entries = setup.build_mcp_entries(tmp_path, tmp_path / "python", tmp_path / "serena", "codex", cfg)
     assert set(entries) == {"local-ai", "serena"}
     assert "--project-from-cwd" in entries["serena"]["args"]
@@ -315,6 +333,52 @@ def test_setup_clean_checkout_bootstraps_from_example_config(tmp_path: Path, mon
     assert selected == example.resolve()
     assert selected_install == install.resolve()
     assert cfg["hardware"]["profile"] == "cpu"
+
+
+def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    install = tmp_path / "installed"
+    source.mkdir()
+    install.mkdir()
+    config_text = (
+        f'[setup]\ninstall_dir="{install.as_posix()}"\n'
+        "install_agent_configs=false\ninstall_optional_tools=false\n"
+        "[server]\nauto_start_ollama=false\n"
+        "[features]\ninstall_local_nlp_dependencies=false\n"
+        "install_openvino_dependencies=false\npull_models_during_setup=false\n"
+    )
+    source_config = source / "config.toml"
+    source_config.write_text(config_text, encoding="utf-8")
+    (install / "config.toml").write_text(config_text, encoding="utf-8")
+    monkeypatch.setattr(setup, "SOURCE_ROOT", source)
+    monkeypatch.setattr(setup, "copy_install_tree", lambda *_args: None)
+    monkeypatch.setattr(setup, "ensure_venv", lambda _venv: tmp_path / "python.exe")
+    monkeypatch.setattr(setup, "install_requirements", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(setup, "ensure_ollama_for_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "ensure_llama_cpp_for_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
+    commands = []
+    monkeypatch.setattr(setup, "run", lambda command, **_kwargs: commands.append(command))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "setup.py", "--profile", "cpu", "--skip-service", "--skip-model-pull",
+            "--skip-tools", "--skip-agent-config", "--skip-ollama-install",
+            "--skip-local-nlp-preload", "--skip-token-economy", "--skip-companion-skills",
+        ],
+    )
+
+    assert setup.main() == 0
+    assert sum(
+        len(command) >= 2 and Path(command[-2]).name == "hubctl.py" and command[-1] == "restart"
+        for command in commands
+    ) == 1
+    assert not any(
+        len(command) >= 2 and Path(command[-2]).name == "service.py" and command[-1] == "install"
+        for command in commands
+    )
 
 
 def test_copy_install_tree_copies_only_current_package_roots(tmp_path: Path, monkeypatch):

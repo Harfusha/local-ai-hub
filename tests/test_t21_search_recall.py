@@ -1,0 +1,75 @@
+"""Root-current T21 acceptance: path hints rank, never narrow recall."""
+from __future__ import annotations
+
+import inspect
+import os
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+import local_ai_hub.project_config as project_config
+from local_ai_hub.project_config import PathHint, resolve_project_context
+from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.services import LocalAIServices
+
+
+@pytest.mark.parametrize("hint_revision", ["workspace-1", "stale-workspace"])
+def test_root_search_hint_preserves_broad_recall_and_project_excludes(
+    tmp_path: Path, monkeypatch, hint_revision: str
+) -> None:
+    expected_source_root = os.environ.get("T21_EXPECT_SOURCE_ROOT")
+    if expected_source_root:
+        source = Path(inspect.getfile(LocalAIServices)).resolve()
+        assert source.is_relative_to(Path(expected_source_root).resolve()), source
+    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, timeout=10)
+    for relative in (
+        "templates/element/button.php", "src/indexed.py",
+        "src/discovered.py", "private/excluded.py",
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"needle = 1\n")
+    (tmp_path / ".local-ai.toml").write_text(
+        'exclude_paths = ["private/**"]\n', encoding="utf-8"
+    )
+    state_dir = tmp_path / "runtime"
+    context = resolve_project_context(tmp_path, state_dir)
+    context.save_path_hint(PathHint(
+        path="templates/element", purpose="repository_search", scope="repo_search",
+        evidence_id="t21-verified-button", provenance="verified_search",
+        repository_revision=hint_revision, config_digest=context.config_digest,
+    ))
+    config = {"server": {"state_dir": str(state_dir)}, "search": {}, "rag": {}}
+    tools = RepositoryTools(config)
+    calls: list[int] = []
+    original_search = tools.search
+
+    def counted_search(*args, **kwargs):
+        calls.append(1)
+        return original_search(*args, **kwargs)
+
+    monkeypatch.setattr(tools, "search", counted_search)
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = config
+    services.repo_tools = tools
+    services.learner = services.code_index = services.preprocessor = None
+    services.evidence_store = None
+    services.deterministic = SimpleNamespace(
+        related_paths=lambda *_args: ["src/indexed.py"]
+    )
+    services._repo_cache_state = lambda _root: {
+        "fingerprint": "workspace-1", "stale": False, "degraded": False,
+    }
+    services._repo_cached = lambda _operation, _root, _params, compute: compute()
+
+    result = services.repo_search(str(tmp_path), "needle", top_k=10)
+
+    assert result["success"] is True
+    assert len(calls) == 1, "Hints must not bypass the bounded broader search"
+    assert {hit["path"] for hit in result["results"]} == {
+        "templates/element/button.php", "src/indexed.py", "src/discovered.py",
+    }
+    assert len(result["results"]) <= 10
