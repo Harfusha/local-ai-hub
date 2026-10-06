@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import fnmatch
 import json
+import math
 import os
 import re
 import shutil
@@ -11,7 +13,7 @@ import time
 from collections import Counter, OrderedDict
 from queue import Empty, Queue
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
@@ -21,6 +23,9 @@ from .process_utils import canonical_root, hidden_run_kwargs, terminate_tree
 
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
+_MAX_DIRECTORY_HINT_FILES = 64
+_MAX_PATH_CONTROLS = 64
+_HARD_SEARCH_DIRS = frozenset({".git", ".local-ai-hub", ".serena"})
 _SYMBOL_PATTERNS = [
     re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)"),
     re.compile(r"^\s*class\s+([A-Za-z_]\w*)"),
@@ -91,7 +96,7 @@ class RepositoryTools:
             ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
             "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
             "library", "temp", "logs", "usersettings", "packagestore", "memorycaptures", "builds",
-                ".serena", ".local-ai-hub",
+            ".serena", ".local-ai-hub",
         }
         self.ignore_dirs = {str(name).lower() for name in rag.get("ignore_dirs", [])} | default_ignore_dirs
         self.ignore_extensions = {str(x).lower() for x in rag.get("ignore_extensions", [
@@ -103,6 +108,9 @@ class RepositoryTools:
         ])}
         self.max_file_bytes = int(rag.get("max_file_bytes", 2_000_000))
         self.max_files = int(search.get("max_files", 8000))
+        self.python_fallback_max_files = max(
+            1, min(max(1, self.max_files), int(search.get("python_fallback_max_files", self.max_files)))
+        )
         self.max_hits = int(search.get("max_hits", 80))
         self.max_search_terms = max(4, int(search.get("max_terms", 12)))
         self.snippet_lines = int(search.get("snippet_lines", 5))
@@ -124,7 +132,7 @@ class RepositoryTools:
         self._git_files_slow_until: dict[str, float] = {}
         self._git_files_flights: dict[str, threading.Lock] = {}
         self._git_grep_slow_until: dict[str, float] = {}
-        self._git_stats = {"file_list_hits": 0, "file_list_misses": 0, "file_list_timeouts": 0, "file_list_coalesced": 0, "grep_timeouts": 0, "grep_cooldown_skips": 0, "snapshot_hits": 0, "snapshot_misses": 0, "snapshot_degraded": 0}
+        self._git_stats = {"file_list_hits": 0, "file_list_misses": 0, "file_list_timeouts": 0, "file_list_coalesced": 0, "grep_timeouts": 0, "grep_cooldown_skips": 0, "ripgrep_timeouts": 0, "python_search_fallbacks": 0, "snapshot_hits": 0, "snapshot_misses": 0, "snapshot_degraded": 0}
         snap = config.get("snapshot_cache", {})
         self.snapshot_max_entries = max(64, int(snap.get("max_entries", 4096)))
         self.snapshot_max_bytes = max(8_000_000, int(snap.get("max_bytes", 256_000_000)))
@@ -135,6 +143,7 @@ class RepositoryTools:
         self._snapshot_bytes = 0
         self.snapshot_hits = 0
         self.snapshot_misses = 0
+        self.snapshot_verified_rehashes = 0
 
     @staticmethod
     def _root(root: str) -> Path:
@@ -144,7 +153,7 @@ class RepositoryTools:
             raise ValueError(f"root directory does not exist: {path}")
         return path
 
-    def _git_files(self, root: Path) -> list[Path] | None:
+    def _git_files(self, root: Path, *, max_files: int | None = None) -> list[Path] | None:
         """Return tracked + untracked files using bounded, coalesced Git probes.
 
         A short cache absorbs bursts, a per-root flight lock prevents concurrent
@@ -154,13 +163,16 @@ class RepositoryTools:
         """
         if not self.prefer_git or not (root / ".git").exists():
             return None
+        limit = self.max_files if max_files is None else max(0, int(max_files))
         key = str(root)
         now = time.monotonic()
         with self._git_files_lock:
             cached = self._git_files_cache.get(key)
             if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
-                self._git_stats["file_list_hits"] += 1
-                return [(root / rel).resolve(strict=False) for rel in cached[1]]
+                cache_is_complete = len(cached[1]) < self.max_files
+                if max_files is None or cache_is_complete or len(cached[1]) >= limit:
+                    self._git_stats["file_list_hits"] += 1
+                    return [(root / rel).resolve(strict=False) for rel in cached[1][:limit]]
             if now < self._git_files_slow_until.get(key, 0.0):
                 return None
             flight = self._git_files_flights.setdefault(key, threading.Lock())
@@ -175,9 +187,11 @@ class RepositoryTools:
             with self._git_files_lock:
                 cached = self._git_files_cache.get(key)
                 if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
-                    self._git_stats["file_list_hits"] += 1
-                    self._git_stats["file_list_coalesced"] += 1
-                    return [(root / rel).resolve(strict=False) for rel in cached[1]]
+                    cache_is_complete = len(cached[1]) < self.max_files
+                    if max_files is None or cache_is_complete or len(cached[1]) >= limit:
+                        self._git_stats["file_list_hits"] += 1
+                        self._git_stats["file_list_coalesced"] += 1
+                        return [(root / rel).resolve(strict=False) for rel in cached[1][:limit]]
                 if now < self._git_files_slow_until.get(key, 0.0):
                     return None
                 self._git_stats["file_list_misses"] += 1
@@ -199,15 +213,29 @@ class RepositoryTools:
                         candidate.relative_to(root)
                     except ValueError:
                         continue
+                    if max_files is not None:
+                        relative = Path(rel)
+                        if any(part.lower() in self.ignore_dirs for part in relative.parts[:-1]):
+                            continue
+                        if candidate.suffix.lower() in self.ignore_extensions:
+                            continue
+                        if self.extensions and candidate.suffix.lower() not in self.extensions and candidate.name.lower() not in self.special_filenames:
+                            continue
+                        try:
+                            if candidate.stat().st_size > self.max_file_bytes:
+                                continue
+                        except OSError:
+                            continue
                     rels.append(rel)
-                    if len(rels) >= self.max_files:
+                    if len(rels) >= limit:
                         break
                 with self._git_files_lock:
-                    self._git_files_cache[key] = (time.monotonic(), tuple(rels))
+                    if max_files is None:
+                        self._git_files_cache[key] = (time.monotonic(), tuple(rels))
+                        if len(self._git_files_cache) > 64:
+                            for k in list(self._git_files_cache.keys())[:-32]:
+                                self._git_files_cache.pop(k, None)
                     self._git_files_slow_until.pop(key, None)
-                    if len(self._git_files_cache) > 64:
-                        for k in list(self._git_files_cache.keys())[:-32]:
-                            self._git_files_cache.pop(k, None)
                 return [(root / rel).resolve(strict=False) for rel in rels]
             except subprocess.TimeoutExpired:
                 with self._git_files_lock:
@@ -221,9 +249,21 @@ class RepositoryTools:
         finally:
             flight.release()
 
-    def iter_files(self, root: str, max_depth: int = 25) -> Iterable[Path]:
+    def iter_files(
+        self, root: str, max_depth: int = 25, *, project_settings: Any | None = None,
+        max_files: int | None = None,
+    ) -> Iterable[Path]:
         base = self._root(root)
-        git_files = self._git_files(base)
+        limit = self.max_files if max_files is None else max(0, int(max_files))
+        if project_settings is not None:
+            yielded = 0
+            for path in self._iter_project_search_files(base, project_settings, max_depth):
+                if yielded >= limit:
+                    break
+                yielded += 1
+                yield path
+            return
+        git_files = self._git_files(base, max_files=limit) if max_files is not None else self._git_files(base)
         if git_files is not None:
             candidates = git_files
         else:
@@ -262,14 +302,20 @@ class RepositoryTools:
                         continue
                     if self.extensions and p.suffix.lower() not in self.extensions and p.name.lower() not in self.special_filenames:
                         continue
+                    if max_files is not None:
+                        try:
+                            if p.stat().st_size > self.max_file_bytes:
+                                continue
+                        except OSError:
+                            continue
                     candidates.append(p)
-                    if len(candidates) >= self.max_files:
+                    if len(candidates) >= limit:
                         break
-                if len(candidates) >= self.max_files:
+                if len(candidates) >= limit:
                     break
         count = 0
         for path in candidates:
-            if count >= self.max_files:
+            if count >= limit:
                 break
             try:
                 relative = path.relative_to(base)
@@ -292,28 +338,42 @@ class RepositoryTools:
             count += 1
             yield path
 
-    def _read_snapshot(self, path: Path) -> tuple[str, list[str]]:
+    def _read_snapshot(self, path: Path, *, force: bool = False) -> tuple[str, list[str]]:
         """Cache decoded file content/hash by stat identity across different repo queries."""
         stat = path.stat()
         key = str(path)
+        identity, verify_content = self._cache_identity(path, stat)
+        cached = None
         with self._snapshot_lock:
             item = self._snapshots.get(key)
-            identity = (int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)))
             if item is not None and item[:4] == identity:
                 self._snapshots.move_to_end(key)
-                self.snapshot_hits += 1
-                return item[4], item[5]
+                if not verify_content and not force:
+                    self.snapshot_hits += 1
+                    return item[4], item[5]
+                cached = item
         raw = path.read_bytes()
         digest = hashlib.sha256(raw).hexdigest()
+        if cached is not None and cached[4] == digest:
+            with self._snapshot_lock:
+                self.snapshot_verified_rehashes += 1
+                self._hash_only_cache[key] = (*identity, digest)
+                self._hash_only_cache.move_to_end(key)
+                while len(self._hash_only_cache) > self._hash_only_max_entries:
+                    self._hash_only_cache.popitem(last=False)
+            return cached[4], cached[5]
         lines = raw.decode("utf-8", errors="replace").splitlines()
         size = len(raw)
         with self._snapshot_lock:
+            if cached is not None:
+                self.snapshot_verified_rehashes += 1
             old = self._snapshots.pop(key, None)
             if old:
                 self._snapshot_bytes -= old[6]
-            self._snapshots[key] = (int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)), digest, lines, size)
+            self._snapshots[key] = (*identity, digest, lines, size)
             self._snapshot_bytes += size
-            self._hash_only_cache[key] = (int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)), digest)
+            self._hash_only_cache[key] = (*identity, digest)
+            self._hash_only_cache.move_to_end(key)
             if len(self._hash_only_cache) > self._hash_only_max_entries:
                 self._hash_only_cache.popitem(last=False)
             self.snapshot_misses += 1
@@ -321,6 +381,78 @@ class RepositoryTools:
                 _k, evicted = self._snapshots.popitem(last=False)
                 self._snapshot_bytes -= evicted[6]
         return digest, lines
+
+    @staticmethod
+    def _windows_change_time(path: Path) -> int | None:
+        """Return NTFS change time, which remains distinct when mtime is restored."""
+        if os.name != "nt":
+            return None
+        handle = None
+        close_handle = None
+        invalid_handle = -1
+        kernel32 = None
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _FileBasicInfo(ctypes.Structure):
+                _fields_ = [
+                    ("CreationTime", ctypes.c_longlong),
+                    ("LastAccessTime", ctypes.c_longlong),
+                    ("LastWriteTime", ctypes.c_longlong),
+                    ("ChangeTime", ctypes.c_longlong),
+                    ("FileAttributes", wintypes.DWORD),
+                ]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            create_file = kernel32.CreateFileW
+            create_file.argtypes = [
+                wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+            ]
+            create_file.restype = wintypes.HANDLE
+            get_info = kernel32.GetFileInformationByHandleEx
+            get_info.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+            get_info.restype = wintypes.BOOL
+            close_handle = kernel32.CloseHandle
+            close_handle.argtypes = [wintypes.HANDLE]
+            close_handle.restype = wintypes.BOOL
+
+            invalid_handle = ctypes.c_void_p(-1).value
+            native_path = os.path.abspath(os.fspath(path))
+            if native_path.startswith("\\\\"):
+                native_path = "\\\\?\\UNC\\" + native_path[2:]
+            elif not native_path.startswith("\\\\?\\"):
+                native_path = "\\\\?\\" + native_path
+            handle = create_file(native_path, 0x80, 0x7, None, 3, 0x80, None)
+            if handle == ctypes.c_void_p(-1).value:
+                return None
+            info = _FileBasicInfo()
+            if not get_info(handle, 0, ctypes.byref(info), ctypes.sizeof(info)):
+                return None
+            return int(info.ChangeTime)
+        except Exception:
+            return None
+        finally:
+            if close_handle is not None and handle is not None and handle != invalid_handle:
+                try:
+                    close_handle(handle)
+                except Exception:
+                    pass
+
+    def _cache_identity(self, path: Path, stat: os.stat_result) -> tuple[tuple[int, int, int, int], bool]:
+        change_time = self._windows_change_time(path)
+        if os.name == "nt" and change_time is None:
+            # Windows st_ctime_ns is creation time; hash when native change time is unavailable.
+            return (
+                int(stat.st_mtime_ns), int(stat.st_size),
+                int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)),
+            ), True
+        return (
+            int(stat.st_mtime_ns), int(stat.st_size),
+            int(change_time if change_time is not None else getattr(stat, "st_ctime_ns", 0)),
+            int(getattr(stat, "st_ino", 0)),
+        ), False
 
     def _hash_file_only(self, path: Path) -> str:
         """Return SHA-256 without decoding source text or populating the decoded snapshot LRU.
@@ -330,18 +462,25 @@ class RepositoryTools:
         """
         stat = path.stat()
         key = str(path)
-        identity = (int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0)))
+        identity, verify_content = self._cache_identity(path, stat)
+        cached_digest = None
         with self._snapshot_lock:
             item = self._snapshots.get(key)
             if item is not None and item[:4] == identity:
                 self._snapshots.move_to_end(key)
-                self.snapshot_hits += 1
-                return item[4]
+                if verify_content:
+                    cached_digest = item[4]
+                else:
+                    self.snapshot_hits += 1
+                    return item[4]
             h_item = self._hash_only_cache.get(key)
             if h_item is not None and h_item[:4] == identity:
                 self._hash_only_cache.move_to_end(key)
-                self.snapshot_hits += 1
-                return h_item[4]
+                if verify_content:
+                    cached_digest = cached_digest or h_item[4]
+                else:
+                    self.snapshot_hits += 1
+                    return h_item[4]
         h = hashlib.sha256()
         with path.open("rb") as fh:
             while True:
@@ -351,10 +490,28 @@ class RepositoryTools:
                 h.update(chunk)
         digest = h.hexdigest()
         with self._snapshot_lock:
+            snapshot = self._snapshots.get(key)
+            if snapshot is not None and snapshot[:4] == identity and snapshot[4] != digest:
+                self._snapshots.pop(key, None)
+                self._snapshot_bytes -= snapshot[6]
+            elif snapshot is not None and snapshot[:4] == identity:
+                self._snapshots.move_to_end(key)
+            if cached_digest is not None:
+                self.snapshot_verified_rehashes += 1
             self._hash_only_cache[key] = (identity[0], identity[1], identity[2], identity[3], digest)
+            self._hash_only_cache.move_to_end(key)
             if len(self._hash_only_cache) > self._hash_only_max_entries:
                 self._hash_only_cache.popitem(last=False)
         return digest
+
+    def invalidate_snapshot(self, path: Path) -> None:
+        """Drop cached identities when a caller has independent change evidence."""
+        key = str(path)
+        with self._snapshot_lock:
+            item = self._snapshots.pop(key, None)
+            if item is not None:
+                self._snapshot_bytes -= item[6]
+            self._hash_only_cache.pop(key, None)
 
     @staticmethod
     def _git_empty_snapshot(root: str, error: str) -> GitSnapshot:
@@ -736,48 +893,98 @@ class RepositoryTools:
         cmd.extend(["--", *self._git_grep_pathspecs()])
         return cmd
 
-    def _ripgrep_candidates(self, base: Path, terms: list[str], max_matches: int) -> tuple[list[tuple[str, int]] | None, bool]:
+    def _ripgrep_candidates(
+        self, base: Path, terms: list[str], max_matches: int,
+        *, candidate_paths: list[Path] | None = None,
+    ) -> tuple[list[tuple[str, int]] | None, bool]:
         if not self._rg or not terms:
             return None, False
-        cmd = [self._rg, "--json", "--ignore-case", "--max-count", str(max(2, self.max_snippets_per_file * 3))]
-        for term in terms[:12]:
-            cmd.extend(["-e", term])
-        cmd.append(str(base))
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.ripgrep_timeout, check=False, encoding="utf-8", errors="replace", **hidden_run_kwargs())
-        except Exception:
-            return None, True
-        # rg returns 1 when there are no matches; both 0/1 are successful searches.
-        # Preserve the distinction between an empty successful result and an engine
-        # failure so a miss never falls back to an O(repository) Python scan.
-        if proc.returncode not in {0, 1}:
-            return None, True
         out: list[tuple[str, int]] = []
         seen: set[tuple[str, int]] = set()
-        for raw in proc.stdout.splitlines():
+        batches: list[list[str] | None]
+        if candidate_paths is None:
+            batches = [None]
+        else:
+            if not candidate_paths:
+                return [], False
+            batches = []
+            current: list[str] = []
+            current_chars = 0
+            fixed_chars = sum(len(term) + 4 for term in terms[:12]) + 256
+            for path in candidate_paths:
+                try:
+                    relative = path.resolve(strict=False).relative_to(base).as_posix()
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                added_chars = len(relative) + 4
+                if added_chars + fixed_chars > 20_000:
+                    return None, True
+                if current and (len(current) >= 192 or current_chars + added_chars + fixed_chars > 20_000):
+                    batches.append(current)
+                    current = []
+                    current_chars = 0
+                current.append(relative)
+                current_chars += added_chars
+            if current:
+                batches.append(current)
+            if not batches:
+                return [], False
+
+        deadline = time.monotonic() + self.ripgrep_timeout
+        for batch in batches:
+            cmd = [self._rg, "--json", "--ignore-case", "--max-count", str(max(2, self.max_snippets_per_file * 3))]
+            for term in terms[:12]:
+                cmd.extend(["-e", term])
+            if batch is None:
+                cmd.append(str(base))
+            else:
+                cmd.extend(["--", *batch])
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                with self._git_files_lock:
+                    self._git_stats["ripgrep_timeouts"] = min(1_000_000, self._git_stats["ripgrep_timeouts"] + 1)
+                return None, True
             try:
-                event = json.loads(raw)
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=remaining, check=False,
+                    encoding="utf-8", errors="replace",
+                    cwd=str(base) if batch is not None else None, **hidden_run_kwargs(),
+                )
+            except subprocess.TimeoutExpired:
+                with self._git_files_lock:
+                    self._git_stats["ripgrep_timeouts"] = min(1_000_000, self._git_stats["ripgrep_timeouts"] + 1)
+                return None, True
             except Exception:
-                continue
-            if event.get("type") != "match":
-                continue
-            data = event.get("data", {})
-            path_data = data.get("path", {}) if isinstance(data, dict) else {}
-            path_text = path_data.get("text") if isinstance(path_data, dict) else None
-            line_no = int(data.get("line_number", 0) or 0) if isinstance(data, dict) else 0
-            if not path_text or line_no <= 0:
-                continue
-            try:
-                path = Path(str(path_text)).resolve(strict=False)
-                rel = str(path.relative_to(base)).replace("\\", "/")
-            except Exception:
-                continue
-            match_key = (rel, line_no)
-            if match_key in seen:
-                continue
-            seen.add(match_key); out.append(match_key)
-            if len(out) >= max_matches:
-                break
+                return None, True
+            # rg returns 1 when there are no matches; both 0/1 are successful searches.
+            if proc.returncode not in {0, 1}:
+                return None, True
+            for raw in proc.stdout.splitlines():
+                try:
+                    event = json.loads(raw)
+                except Exception:
+                    continue
+                if event.get("type") != "match":
+                    continue
+                data = event.get("data", {})
+                path_data = data.get("path", {}) if isinstance(data, dict) else {}
+                path_text = path_data.get("text") if isinstance(path_data, dict) else None
+                line_no = int(data.get("line_number", 0) or 0) if isinstance(data, dict) else 0
+                if not path_text or line_no <= 0:
+                    continue
+                try:
+                    raw_path = Path(str(path_text))
+                    path = (base / raw_path).resolve(strict=False) if not raw_path.is_absolute() else raw_path.resolve(strict=False)
+                    rel = str(path.relative_to(base)).replace("\\", "/")
+                except Exception:
+                    continue
+                match_key = (rel, line_no)
+                if match_key in seen:
+                    continue
+                seen.add(match_key)
+                out.append(match_key)
+                if len(out) >= max(1, int(max_matches)):
+                    return out, False
         return out, False
 
     def _git_grep_candidates(self, base: Path, terms: list[str], max_matches: int) -> tuple[list[tuple[str, int]] | None, bool]:
@@ -873,7 +1080,199 @@ class RepositoryTools:
             return None, True
         return out, False
 
-    def search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None) -> dict[str, Any]:
+    @staticmethod
+    def _project_settings_values(project_settings: Any | None) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], int | None]:
+        if project_settings is None:
+            return (), (), (), None
+        text_extensions = tuple(
+            str(value).casefold() for value in getattr(project_settings, "text_extensions", ())
+            if isinstance(value, str)
+        )
+        binary_extensions = tuple(
+            str(value).casefold() for value in getattr(project_settings, "binary_extensions", ())
+            if isinstance(value, str)
+        )
+        forced = [
+            str(value) for value in getattr(project_settings, "force_include_paths", ())
+            if isinstance(value, str)
+        ]
+        overrides = getattr(project_settings, "path_overrides", {})
+        if isinstance(overrides, Mapping):
+            forced.extend(str(path) for path, action in tuple(overrides.items()) if action == "include")
+        maximum = getattr(project_settings, "max_file_size_bytes", None)
+        if isinstance(maximum, bool) or (maximum is not None and not isinstance(maximum, int)):
+            maximum = 0
+        return text_extensions, binary_extensions, tuple(forced), maximum
+
+    @staticmethod
+    def _project_path_matches(relative: str, patterns: tuple[str, ...]) -> bool:
+        from .project_config import path_matches_pattern
+
+        return any(path_matches_pattern(relative, pattern) for pattern in patterns)
+
+    def _project_file_allowed(
+        self, base: Path, path: Path, project_settings: Any, *, force_include: bool = False,
+    ) -> bool:
+        try:
+            if path.is_symlink():
+                return False
+            lexical_relative = Path(os.path.abspath(path)).relative_to(base)
+            current = base
+            for part in lexical_relative.parts:
+                current = current / part
+                if current.is_symlink():
+                    return False
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(base)
+            relative_path = resolved.relative_to(base)
+            relative = relative_path.as_posix()
+            if any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
+                return False
+            if resolved.name in {".local-ai.toml", ".local-ai.worktree.toml"}:
+                return False
+            size_bytes = resolved.stat().st_size
+            if size_bytes > self.max_file_bytes:
+                return False
+            _text, _binary, forced_patterns, _maximum = self._project_settings_values(project_settings)
+            force_include = force_include or self._project_path_matches(relative, forced_patterns)
+            soft_ignored = any(part.casefold() in self.ignore_dirs for part in relative_path.parts[:-1])
+            if soft_ignored and not force_include:
+                return False
+            from .project_config import path_is_allowed
+
+            if not path_is_allowed(
+                base, resolved, project_settings, phase="search",
+                soft_ignored=soft_ignored, size_bytes=size_bytes,
+            ):
+                return False
+            return self._path_extension_is_searchable(resolved, project_settings=project_settings)
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def _expand_project_force_paths(
+        self, base: Path, project_settings: Any, limit: int,
+    ) -> list[Path]:
+        _text, _binary, patterns, _maximum = self._project_settings_values(project_settings)
+        found: dict[str, Path] = {}
+        entry_budget = max(256, min(65_536, max(1, limit) * 32))
+        deadline = time.monotonic() + min(2.0, self.git_files_timeout)
+        entries_seen = 0
+        for raw_pattern in patterns[:_MAX_PATH_CONTROLS]:
+            pattern = raw_pattern.replace("\\", "/").strip()
+            pure = PureWindowsPath(pattern)
+            parts = tuple(part for part in pattern.split("/") if part not in {"", "."})
+            if not parts or pure.is_absolute() or pure.drive or any(part == ".." for part in parts):
+                continue
+            stack: list[tuple[Path, int]] = [(base, 0)]
+            visited: set[tuple[str, int]] = set()
+            while stack and len(found) < limit and entries_seen < entry_budget and time.monotonic() < deadline:
+                directory, index = stack.pop()
+                try:
+                    directory.resolve(strict=True).relative_to(base)
+                    key = (str(directory), index)
+                    if key in visited:
+                        continue
+                    visited.add(key)
+                    if index >= len(parts):
+                        if directory.is_file():
+                            found[str(directory)] = directory
+                        continue
+                    segment = parts[index]
+                    with os.scandir(directory) as scanner:
+                        for entry in scanner:
+                            entries_seen += 1
+                            if entries_seen > entry_budget or time.monotonic() >= deadline:
+                                break
+                            if entry.is_symlink():
+                                continue
+                            child = Path(entry.path)
+                            relative_parts = child.relative_to(base).parts
+                            denied_parts = relative_parts if entry.is_dir(follow_symlinks=False) else relative_parts[:-1]
+                            if any(part.casefold() in _HARD_SEARCH_DIRS for part in denied_parts):
+                                continue
+                            if segment == "**":
+                                stack.append((directory, index + 1))
+                                if entry.is_dir(follow_symlinks=False):
+                                    stack.append((child, index))
+                                elif index == len(parts) - 1 and entry.is_file(follow_symlinks=False):
+                                    found[str(child)] = child
+                            elif fnmatch.fnmatchcase(entry.name, segment):
+                                if index == len(parts) - 1 and entry.is_file(follow_symlinks=False):
+                                    found[str(child)] = child
+                                elif entry.is_dir(follow_symlinks=False):
+                                    stack.append((child, index + 1))
+                except (OSError, RuntimeError, ValueError):
+                    continue
+        return list(found.values())[:limit]
+
+    def _iter_project_search_files(
+        self, base: Path, project_settings: Any, max_depth: int,
+    ) -> Iterable[Path]:
+        limit = max(1, min(int(self.max_files), 100_000))
+        _text, _binary, _forced, maximum = self._project_settings_values(project_settings)
+        forced_paths = self._expand_project_force_paths(base, project_settings, limit)
+        seen: set[str] = set()
+        yielded = 0
+        for path in forced_paths:
+            key = str(path.resolve(strict=False))
+            if key in seen or not self._project_file_allowed(base, path, project_settings, force_include=True):
+                continue
+            seen.add(key)
+            yielded += 1
+            yield path
+            if yielded >= limit:
+                return
+
+        git_files = self._git_files(base)
+        if git_files is not None:
+            candidates = git_files
+        else:
+            candidates = []
+            entry_budget = max(256, min(65_536, limit * 16))
+            entries_seen = 0
+            try:
+                for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+                    relative_dir = Path(dirpath).relative_to(base)
+                    depth = len(relative_dir.parts)
+                    dirnames[:] = [
+                        name for name in dirnames
+                        if name.casefold() not in _HARD_SEARCH_DIRS
+                        and name.casefold() not in self.ignore_dirs
+                        and depth < max_depth
+                    ]
+                    for name in filenames:
+                        entries_seen += 1
+                        if entries_seen > entry_budget:
+                            break
+                        candidates.append(Path(dirpath) / name)
+                    if entries_seen > entry_budget:
+                        break
+            except (OSError, RuntimeError, ValueError):
+                pass
+
+        for path in candidates:
+            if yielded >= limit:
+                break
+            try:
+                relative_path = path.relative_to(base)
+                _ = relative_path.as_posix()
+            except ValueError:
+                continue
+            key = str(path.resolve(strict=False))
+            if key in seen or any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
+                continue
+            if any(part.casefold() in self.ignore_dirs for part in relative_path.parts[:-1]):
+                continue
+            if not self._project_file_allowed(base, path, project_settings):
+                continue
+            seen.add(key)
+            yielded += 1
+            yield path
+
+    def search(
+        self, root: str, query: str, top_k: int = 12, context_lines: int | None = None,
+        *, project_settings: Any | None = None,
+    ) -> dict[str, Any]:
         base = self._root(root)
         terms = self._terms(query)
         phrase = query.strip().lower()
@@ -882,17 +1281,39 @@ class RepositoryTools:
         effective_snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
         hits: list[dict[str, Any]] = []
         scanned = 0
+        python_fallback_scanned: int | None = None
+        read_errors = 0
+        truncation_reasons: list[str] = []
+        candidate_limit = max(1, self.max_hits * 4)
         candidate_engine = "python"
-        candidates, accelerator_failed = self._ripgrep_candidates(base, terms, self.max_hits * 4)
+        project_candidates = (
+            list(self.iter_files(
+                str(base), project_settings=project_settings, max_files=candidate_limit + 1,
+            ))
+            if project_settings is not None else None
+        )
+        if project_candidates is None:
+            candidates, accelerator_failed = self._ripgrep_candidates(
+                base, terms, candidate_limit + 1,
+            )
+        else:
+            candidates, accelerator_failed = self._ripgrep_candidates(
+                base, terms, candidate_limit + 1, candidate_paths=project_candidates,
+            )
         accelerated = candidates is not None
         if accelerated:
             candidate_engine = "ripgrep"
         else:
-            candidates, git_grep_failed = self._git_grep_candidates(base, terms, self.max_hits * 4)
+            git_grep_failed = False
+            if project_settings is None:
+                candidates, git_grep_failed = self._git_grep_candidates(base, terms, candidate_limit + 1)
             accelerator_failed = accelerator_failed or git_grep_failed
             accelerated = candidates is not None
             if accelerated:
                 candidate_engine = "git-grep"
+        if candidates is not None and len(candidates) > candidate_limit:
+            truncation_reasons.append("result_limit")
+            candidates = candidates[:candidate_limit]
         if candidates:
             per_path_lines: dict[str, list[int]] = {}
             for rel, line_no in candidates:
@@ -901,7 +1322,8 @@ class RepositoryTools:
                 path = (base / rel).resolve(strict=False)
                 try:
                     file_hash, lines = self._read_snapshot(path)
-                except Exception:
+                except OSError:
+                    read_errors += 1
                     continue
                 scanned += 1
                 path_lower = rel.lower()
@@ -930,13 +1352,28 @@ class RepositoryTools:
                 "retryable": True,
             }
         if not hits and not accelerated:
-            for path in self.iter_files(str(base)):
+            python_fallback_scanned = 0
+            with self._git_files_lock:
+                self._git_stats["python_search_fallbacks"] = min(
+                    1_000_000, self._git_stats["python_search_fallbacks"] + 1
+                )
+            fallback_paths = (
+                project_candidates if project_candidates is not None else self.iter_files(
+                    str(base), max_files=self.python_fallback_max_files + 1,
+                )
+            )
+            for path in fallback_paths:
+                if python_fallback_scanned >= self.python_fallback_max_files:
+                    truncation_reasons.append("file_limit")
+                    break
                 scanned += 1
+                python_fallback_scanned += 1
                 rel = str(path.relative_to(base)).replace("\\", "/")
                 path_lower = rel.lower()
                 try:
                     file_hash, lines = self._read_snapshot(path)
-                except Exception:
+                except OSError:
+                    read_errors += 1
                     continue
                 for idx, line in enumerate(lines):
                     low = line.lower()
@@ -955,12 +1392,18 @@ class RepositoryTools:
                         "path": rel, "start_line": start + 1, "end_line": end,
                         "score": round(score, 3), "text": snippet, "file_sha256": file_hash,
                     })
-                    if len(hits) >= self.max_hits * 4:
+                    if len(hits) > candidate_limit:
+                        hits.pop()
+                        if "result_limit" not in truncation_reasons:
+                            truncation_reasons.append("result_limit")
                         break
+                if "result_limit" in truncation_reasons:
+                    break
         hits.sort(key=lambda x: (-x["score"], x["path"], x["start_line"]))
         dedup: list[dict[str, Any]] = []
         seen: set[tuple[str, int]] = set()
         per_file: Counter[str] = Counter()
+        result_limit = max(1, int(top_k))
         for hit in hits:
             key = (hit["path"], hit["start_line"] // max(1, self.snippet_lines))
             if key in seen or per_file[hit["path"]] >= self.max_snippets_per_file:
@@ -968,11 +1411,29 @@ class RepositoryTools:
             seen.add(key)
             per_file[hit["path"]] += 1
             dedup.append(hit)
-            if len(dedup) >= max(1, int(top_k)):
+            if len(dedup) > result_limit:
+                if "result_limit" not in truncation_reasons:
+                    truncation_reasons.append("result_limit")
                 break
+        dedup = dedup[:result_limit]
         candidate_pool = hits[: max(len(dedup), max(1, int(top_k)) * 4)]
         candidate_tokens = sum(estimate_tokens(str(item.get("text", ""))) for item in candidate_pool)
-        result = {"success": True, "root": str(base), "scanned_files": scanned, "terms": terms, "results": dedup, "engine": candidate_engine}
+        if read_errors:
+            truncation_reasons.append("read_errors")
+        result = {
+            "success": True,
+            "root": str(base),
+            "scanned_files": scanned,
+            "terms": terms,
+            "results": dedup,
+            "engine": candidate_engine,
+            "truncated": bool(truncation_reasons or read_errors),
+            "truncation_reasons": truncation_reasons,
+            "read_errors": read_errors,
+        }
+        if python_fallback_scanned is not None:
+            result["python_fallback_files_scanned"] = python_fallback_scanned
+            result["python_fallback_file_limit"] = self.python_fallback_max_files
         if candidate_tokens:
             # Diagnostic only. Local RG-like filtering is not proof that a cloud
             # agent would otherwise have paid for the candidate snippets.
@@ -1558,26 +2019,275 @@ class RepositoryTools:
 
 
 
-    def search_paths(self, root: str, query: str, paths: list[str], top_k: int = 10, context_lines: int | None = None) -> dict[str, Any]:
-        """Search only preselected files. Used with preprocessed semantic cards to avoid full-repo scans."""
+    @staticmethod
+    def _path_control_matches(path: str, prefixes: tuple[str, ...]) -> bool:
+        normalized = path.replace("\\", "/").strip("/").casefold()
+        basename = normalized.rsplit("/", 1)[-1]
+        for prefix in prefixes:
+            pattern = prefix.replace("\\", "/").strip("/").casefold()
+            if not pattern:
+                continue
+            if any(char in pattern for char in "*?["):
+                if fnmatch.fnmatchcase(normalized, pattern) or fnmatch.fnmatchcase(basename, pattern):
+                    return True
+            elif normalized == pattern or normalized.startswith(pattern + "/"):
+                return True
+        return False
+
+    def _validated_context_path(
+        self, base: Path, value: Any, field: str, *, reject_symlink: bool = True
+    ) -> tuple[str, Path]:
+        if not isinstance(value, str):
+            raise ValueError(f"{field} paths must be strings")
+        raw = value.strip().replace("\\", "/")
+        windows_path = PureWindowsPath(value.strip())
+        project_rooted = raw.startswith("/") and not raw.startswith("//")
+        if project_rooted:
+            raw = raw[1:]
+        if (
+            not raw or len(raw) > 240 or not raw.isprintable() or raw.startswith("/")
+            or (windows_path.is_absolute() and not project_rooted) or windows_path.drive
+            or any(part == ".." for part in raw.split("/"))
+        ):
+            raise ValueError(f"{field} paths must be repository-relative")
+        parts = [part for part in raw.split("/") if part not in {"", "."}]
+        if not parts:
+            raise ValueError(f"{field} paths must name a repository path")
+        relative = "/".join(parts)
+        candidate = base.joinpath(*parts)
+        if reject_symlink:
+            current = base
+            for part in parts:
+                current = current / part
+                if current.is_symlink():
+                    raise ValueError(f"{field} paths cannot traverse symlinks")
+        try:
+            candidate.resolve(strict=False).relative_to(base)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"{field} paths must remain inside the repository root") from exc
+        return relative, candidate
+
+    def _path_extension_is_searchable(
+        self, path: str | os.PathLike[str], *, project_settings: Any | None = None,
+    ) -> bool:
+        candidate = Path(path)
+        name = candidate.name.casefold()
+        if name in {".local-ai.toml", ".local-ai.worktree.toml"}:
+            return False
+        suffix = candidate.suffix.casefold()
+        text_extensions, binary_extensions, _forced, _maximum = self._project_settings_values(project_settings)
+        if suffix in self.ignore_extensions or any(name.endswith(item) for item in binary_extensions):
+            return False
+        if any(name.endswith(item) for item in text_extensions):
+            return True
+        return not (
+            self.extensions
+            and suffix not in self.extensions
+            and name not in self.special_filenames
+        )
+
+    def _searchable_context_file(
+        self, base: Path, path: Path, *, force_include: bool = False,
+        project_settings: Any | None = None,
+    ) -> bool:
+        try:
+            relative = path.relative_to(base)
+            parent_parts = tuple(part.casefold() for part in relative.parts[:-1])
+            _text, _binary, forced_patterns, _maximum = self._project_settings_values(project_settings)
+            policy_forced = self._project_path_matches(relative.as_posix(), forced_patterns)
+            if path.is_symlink() or any(part in _HARD_SEARCH_DIRS for part in parent_parts) or (
+                not (force_include or policy_forced)
+                and any(part in self.ignore_dirs for part in parent_parts)
+            ):
+                return False
+            if not self._path_extension_is_searchable(path, project_settings=project_settings):
+                return False
+            if not path.is_file():
+                return False
+            size_bytes = path.stat().st_size
+            if size_bytes > self.max_file_bytes:
+                return False
+            if project_settings is not None and not self._project_file_allowed(
+                base, path, project_settings, force_include=force_include,
+            ):
+                return False
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def _expand_context_directory(
+        self, base: Path, relative: str, directory: Path, limit: int,
+        *, project_settings: Any | None = None,
+    ) -> list[tuple[str, Path]]:
+        """Enumerate only one explicitly hinted directory, with bounded Git ignores."""
+        if limit <= 0:
+            return []
+        collected: list[tuple[str, Path]] = []
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(base), "ls-files", "-co", "--exclude-standard", "-z", "--", relative],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=self.git_files_timeout,
+                check=False, **hidden_run_kwargs(),
+            )
+            if completed.returncode == 0:
+                listed = sorted({raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
+                                 for raw in completed.stdout.split(b"\0") if raw})
+                for item in listed:
+                    if not (item == relative or item.startswith(relative.rstrip("/") + "/")):
+                        continue
+                    candidate = base.joinpath(*item.split("/"))
+                    if self._searchable_context_file(
+                        base, candidate, project_settings=project_settings,
+                    ):
+                        collected.append((item, candidate))
+                        if len(collected) >= limit:
+                            break
+                return collected
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+        for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
+            current = Path(dirpath)
+            dirnames[:] = sorted(
+                name for name in dirnames
+                if name.lower() not in self.ignore_dirs and not (current / name).is_symlink()
+            )
+            if len(current.relative_to(directory).parts) >= 25:
+                dirnames.clear()
+            for name in sorted(filenames):
+                candidate = current / name
+                if not self._searchable_context_file(base, candidate, project_settings=project_settings):
+                    continue
+                try:
+                    rel = candidate.relative_to(base).as_posix()
+                except ValueError:
+                    continue
+                collected.append((rel, candidate))
+                if len(collected) >= limit:
+                    return collected
+        return collected
+
+    def search_paths(
+        self, root: str, query: str, paths: list[str], top_k: int = 10,
+        context_lines: int | None = None, *, directory_hints: list[str] | tuple[str, ...] = (),
+        exclude_paths: list[str] | tuple[str, ...] = (),
+        force_include_paths: list[str] | tuple[str, ...] = (),
+        max_directory_files: int = _MAX_DIRECTORY_HINT_FILES,
+        project_settings: Any | None = None,
+    ) -> dict[str, Any]:
+        """Search explicit files and bounded content below caller-supplied directories."""
+        from .project_config import path_is_allowed, resolve_project_context
+        from .state_paths import configured_state_dir
+
         base = self._root(root)
+        try:
+            project_context = resolve_project_context(base, configured_state_dir(self.config))
+            if project_context.resolution.error_codes:
+                raise ValueError("project_policy_unavailable")
+            if project_settings is None:
+                project_settings = project_context.settings
+        except (OSError, RuntimeError, ValueError):
+            return {
+                "success": False, "root": str(base), "error": "project_policy_unavailable",
+                "results": [], "scanned_files": 0, "targeted": True,
+            }
+        git_inventory = self._git_files(base)
+        if git_inventory is None and (base / ".git").exists():
+            return {
+                "success": False, "root": str(base), "error": "git_inventory_unavailable",
+                "results": [], "scanned_files": 0, "targeted": True,
+            }
+        git_paths = None
+        if git_inventory is not None:
+            git_paths = set()
+            for candidate in git_inventory:
+                try:
+                    git_paths.add(candidate.resolve(strict=False).relative_to(base).as_posix())
+                except (OSError, RuntimeError, ValueError):
+                    continue
+        if not isinstance(paths, (list, tuple)):
+            return {"success": False, "error": "paths must be a list"}
+        controls: list[tuple[str, tuple[str, ...]]] = []
+        for field, values in (("directory_hints", directory_hints), ("exclude_paths", exclude_paths), ("force_include_paths", force_include_paths)):
+            if not isinstance(values, (list, tuple)):
+                return {"success": False, "error": f"{field} must be a list"}
+            if len(values) > _MAX_PATH_CONTROLS:
+                return {"success": False, "error": f"{field} exceeds the path limit"}
+            try:
+                normalized = tuple(
+                    self._validated_context_path(base, value, field, reject_symlink=field == "directory_hints")[0]
+                    for value in values
+                )
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+            controls.append((field, normalized))
+        directory_values, excluded_values, forced_values = (item[1] for item in controls)
+        try:
+            normalized_inputs = [
+                self._validated_context_path(base, value, "paths") for value in paths[:_MAX_PATH_CONTROLS]
+            ]
+            normalized_inputs.extend(
+                self._validated_context_path(base, value, "force_include_paths") for value in forced_values
+            )
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+        if isinstance(max_directory_files, bool):
+            return {"success": False, "error": "max_directory_files must be an integer"}
+        try:
+            expansion_cap = max(0, min(int(max_directory_files), _MAX_DIRECTORY_HINT_FILES))
+        except (TypeError, ValueError, OverflowError):
+            return {"success": False, "error": "max_directory_files must be an integer"}
+        if isinstance(max_directory_files, float) and max_directory_files != int(max_directory_files):
+            return {"success": False, "error": "max_directory_files must be an integer"}
+
+        hinted_directories = {value.casefold() for value in directory_values}
+        targets: list[tuple[str, Path]] = []
+        seen_targets: set[str] = set()
+        expanded = 0
+        for rel, candidate in normalized_inputs:
+            key = rel.casefold()
+            if key in seen_targets:
+                continue
+            seen_targets.add(key)
+            if candidate.is_symlink():
+                return {"success": False, "error": "paths cannot traverse symlinks"}
+            if candidate.is_file():
+                forced = self._path_control_matches(rel, forced_values)
+                if not self._path_control_matches(rel, excluded_values) and self._searchable_context_file(
+                    base, candidate, force_include=forced, project_settings=project_settings,
+                ):
+                    targets.append((rel, candidate))
+            elif candidate.is_dir() and key in hinted_directories:
+                children = self._expand_context_directory(
+                    base, rel, candidate, expansion_cap - expanded,
+                    project_settings=project_settings,
+                )
+                for child_rel, child_path in children:
+                    expanded += 1
+                    forced = self._path_control_matches(child_rel, forced_values)
+                    if self._path_control_matches(child_rel, excluded_values):
+                        continue
+                    child_key = child_rel.casefold()
+                    if child_key not in seen_targets:
+                        targets.append((child_rel, child_path))
+                        seen_targets.add(child_key)
+                if expanded >= expansion_cap:
+                    break
         terms = self._terms(query)
         phrase = query.strip().lower()
         effective_snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
         hits: list[dict[str, Any]] = []
         scanned = 0
         seen_paths: set[str] = set()
-        for rel in paths[: max(1, min(len(paths), 64))]:
-            rel = str(rel).replace("\\", "/")
+        path_rank = {rel: rank for rank, (rel, _path) in enumerate(targets)}
+        for rel, path in targets:
             if rel in seen_paths:
                 continue
             seen_paths.add(rel)
-            path = (base / rel).resolve(strict=False)
-            try:
-                path.relative_to(base)
-            except ValueError:
-                continue
-            if not path.is_file():
+            if git_paths is not None and rel not in git_paths and not path_is_allowed(
+                base, rel, project_settings, phase="search", soft_ignored=True,
+            ):
                 continue
             scanned += 1
             try:
@@ -1602,7 +2312,14 @@ class RepositoryTools:
                     "path": rel, "start_line": start + 1, "end_line": end,
                     "score": round(score, 3), "text": snippet, "file_sha256": file_hash,
                 })
-        hits.sort(key=lambda x: (-x["score"], x["path"], x["start_line"]))
+        hits.sort(
+            key=lambda x: (
+                -x["score"],
+                path_rank.get(x["path"], len(path_rank)),
+                x["path"],
+                x["start_line"],
+            )
+        )
         dedup: list[dict[str, Any]] = []
         per_file: Counter[str] = Counter()
         for hit in hits:
@@ -1619,37 +2336,62 @@ class RepositoryTools:
             result["candidate_context_tokens_est"] = candidate_tokens
         return result
 
-    def context_pack_paths(self, root: str, query: str, paths: list[str], max_tokens: int = 2600, top_k: int = 10) -> dict[str, Any]:
-        search = self.search_paths(root, query, paths, top_k=top_k)
+    def context_pack_paths(
+        self, root: str, query: str, paths: list[str], max_tokens: int = 2600, top_k: int = 10, *,
+        directory_hints: list[str] | tuple[str, ...] = (),
+        exclude_paths: list[str] | tuple[str, ...] = (),
+        force_include_paths: list[str] | tuple[str, ...] = (),
+        max_directory_files: int = _MAX_DIRECTORY_HINT_FILES,
+    ) -> dict[str, Any]:
+        search = self.search_paths(
+            root, query, paths, top_k=top_k, directory_hints=directory_hints,
+            exclude_paths=exclude_paths, force_include_paths=force_include_paths,
+            max_directory_files=max_directory_files,
+        )
         if not search.get("success"):
             return search
-        budget_chars = chars_for_tokens(max_tokens)
+        return self._pack_ranked_context(search, query, max_tokens, targeted=True)
+
+    def _pack_ranked_context(
+        self, search: dict[str, Any], query: str, max_tokens: int, *, targeted: bool = False,
+    ) -> dict[str, Any]:
+        """Render ranked evidence once; keep snippets whole and provenance aligned.
+
+        ``max_tokens`` limits context text. HTTP/MCP callers enforce their separate
+        serialized-envelope budget at the transport boundary.
+        """
         pieces: list[str] = []
         evidence: list[dict[str, Any]] = []
-        used = 0
         candidate_tokens = 0
-        for item in search.get("results", []):
+        context_bytes = 0
+        results = search.get("results", [])
+        token_limit = max(0, int(max_tokens)) if results else 0
+        for item in results:
+            header = f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
+            candidate_tokens += estimate_tokens(header + item["text"] + "\n")
+        for item in results:
             header = f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
             piece = header + item["text"] + "\n"
-            candidate_tokens += estimate_tokens(piece)
-            if used + len(piece) > budget_chars:
-                remaining = budget_chars - used
-                if remaining <= 500:
-                    break
-                piece = piece[:remaining] + "\n[snippet truncated]\n"
-            pieces.append(piece); used += len(piece)
+            trial_bytes = context_bytes + (1 if pieces else 0) + len(piece.encode("utf-8"))
+            if max(1, math.ceil(trial_bytes / 3.4)) > token_limit:
+                # Ranked order is authoritative; lower-ranked short snippets must
+                # not jump ahead of a higher-ranked excerpt that did not fit.
+                break
+            pieces.append(piece)
+            context_bytes = trial_bytes
             ev = {k: item[k] for k in ("path", "start_line", "end_line", "score", "file_sha256")}
             ev["raw"] = item.get("text", "")
             evidence.append(ev)
-            if used >= budget_chars:
-                break
         packed = "\n".join(pieces)
-        return {
+        result = {
             "success": True, "root": search["root"], "query": query, "context": packed,
             "evidence": evidence, "estimated_tokens": estimate_tokens(packed),
             "original_estimated_tokens": max(candidate_tokens, estimate_tokens(packed)),
-            "scanned_files": search.get("scanned_files", 0), "targeted": True,
+            "scanned_files": search.get("scanned_files", 0),
         }
+        if targeted:
+            result["targeted"] = True
+        return result
 
     def file_inventory(self, root: str, include_hashes: bool = True) -> dict[str, Any]:
         """Return a deterministic file inventory backed by the shared snapshot cache.
@@ -1715,32 +2457,4 @@ class RepositoryTools:
         search = self.search(root, query, top_k=top_k)
         if not search.get("success"):
             return search
-        budget_chars = chars_for_tokens(max_tokens)
-        pieces: list[str] = []
-        evidence: list[dict[str, Any]] = []
-        used = 0
-        candidate_tokens = 0
-        for item in search.get("results", []):
-            header = f"--- {item['path']}:{item['start_line']}-{item['end_line']} score={item['score']} ---\n"
-            piece = header + item["text"] + "\n"
-            candidate_tokens += estimate_tokens(piece)
-            if used + len(piece) > budget_chars:
-                remaining = budget_chars - used
-                if remaining > 500:
-                    piece = piece[:remaining] + "\n[snippet truncated]\n"
-                else:
-                    break
-            pieces.append(piece)
-            used += len(piece)
-            ev = {k: item[k] for k in ("path", "start_line", "end_line", "score", "file_sha256")}
-            ev["raw"] = item.get("text", "")
-            evidence.append(ev)
-            if used >= budget_chars:
-                break
-        packed = "\n".join(pieces)
-        return {
-            "success": True, "root": search["root"], "query": query, "context": packed,
-            "evidence": evidence, "estimated_tokens": estimate_tokens(packed),
-            "original_estimated_tokens": max(candidate_tokens, estimate_tokens(packed)),
-            "scanned_files": search.get("scanned_files", 0),
-        }
+        return self._pack_ranked_context(search, query, max_tokens)

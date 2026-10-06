@@ -26,3 +26,4 @@ prune data
 prune generated
 
 recursive-include docs *.md
+prune docs/superpowers

@@ -1,3 +1,8 @@
+"""Archived T18 candidate coverage; master deliberately split the old monolith.
+
+Paging, event-provider, and inline admin-route expectations remain candidate
+contracts. They are retained for reconciliation, not verified master behavior.
+"""
 from __future__ import annotations
 
 import json

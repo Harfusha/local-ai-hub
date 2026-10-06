@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
+import math
 
 
 def fuse_ranked_paths(
@@ -9,25 +10,36 @@ def fuse_ranked_paths(
     *,
     limit: int = 24,
     max_per_path: int = 1,
+    source_weights: Mapping[str, float] | None = None,
 ) -> list[tuple[str, float]]:
     """Fuse bounded path rankings from independent retrieval backends.
 
     Reciprocal-rank fusion rewards agreement without allowing one noisy backend
     to dominate. The returned ordering is deterministic for reproducible packs.
     """
-    source_weights = {
+    backend_weights = {
         "deterministic": 1.25,
         "code_index": 1.20,
         "serena": 1.15,
-        "codegraph": 0.0,
         "preprocessor": 1.00,
         "rag": 0.90,
         "lexical": 0.80,
     }
+    if isinstance(source_weights, Mapping):
+        for source, configured in source_weights.items():
+            if (
+                str(source) not in {"deterministic", "code_index"}
+                and str(source) in backend_weights
+                and not isinstance(configured, bool)
+                and isinstance(configured, (int, float))
+                and math.isfinite(float(configured))
+                and 0.0 <= float(configured) <= 1.0
+            ):
+                backend_weights[str(source)] *= float(configured)
     scores: dict[str, float] = defaultdict(float)
     sources: dict[str, set[str]] = defaultdict(set)
     for source, paths in groups.items():
-        weight = source_weights.get(str(source), 0.75)
+        weight = backend_weights.get(str(source), 0.75)
         seen: set[str] = set()
         for rank, raw_path in enumerate(paths):
             path = str(raw_path or "").replace("\\", "/").strip()

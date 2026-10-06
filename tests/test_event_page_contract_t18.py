@@ -66,10 +66,10 @@ def test_future_cursor_replays_first_retained_event_after_reset(tmp_path):
     page = store.event_page(stream_id, after_seq=99, limit=10)
 
     assert page["success"] is True
-    assert [event.seq for event in page["events"]] == [3]
-    assert page["events"][0].stream_id == stream_id
-    assert page["events"][0].kind == "task.progress"
-    assert page["events"][0].payload == {"step": 3}
+    assert [event["seq"] for event in page["events"]] == [3]
+    assert page["events"][0]["stream_id"] == stream_id
+    assert page["events"][0]["kind"] == "task.progress"
+    assert page["events"][0]["payload"] == {"step": 3}
     assert page["next_seq"] == 3
     assert page["first_retained_seq"] == 3
     assert page["last_seq"] == 3
@@ -104,7 +104,7 @@ def test_next_seq_advances_through_trailing_gap_after_visible_events(tmp_path):
 
     page = store.event_page(stream_id, after_seq=0, limit=10)
 
-    assert [event.seq for event in page["events"]] == [1, 3]
+    assert [event["seq"] for event in page["events"]] == [1, 3]
     assert page["gap_ranges"] == [
         {"from_seq": 2, "to_seq": 2},
         {"from_seq": 4, "to_seq": 4},

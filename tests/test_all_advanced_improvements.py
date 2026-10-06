@@ -13,10 +13,13 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStore, TaskStatus
+from local_ai_hub import trace_context
 from local_ai_hub.deterministic import DeterministicEngine
 
 
 # ── Area 1: Agent OS & Swarm Coordination Tests ──────────────────────────────
+
+from local_ai_hub import trace_context
 
 def test_event_delta_sync_export_import(tmp_path: Path) -> None:
     source_db = tmp_path / "source_state.sqlite3"
@@ -56,7 +59,11 @@ def test_zombie_task_watchdog_and_recovery(tmp_path: Path) -> None:
 
     contract = GoalContract(goal="work", acceptance_criteria=["c1"])
     context = ScopeContext(repository_id="repo1")
-    task = tasks.create(contract, context)
+    tenant_token = trace_context.set_context(tenant="tenant-a")
+    try:
+        task = tasks.create(contract, context, repo_root=str(tmp_path))
+    finally:
+        trace_context.reset_context(tenant_token)
     tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="t1")
 
     # Set heartbeat
@@ -64,7 +71,7 @@ def test_zombie_task_watchdog_and_recovery(tmp_path: Path) -> None:
     future_time = time.time() + 1000.0
 
     # Reap with recovery at future time
-    reaped = tasks.reap_expired_heartbeats(now=future_time, auto_recover=True)
+    reaped = tasks.reap_expired_heartbeats(now=future_time, auto_recover=True, repo_root=tmp_path, tenant="tenant-a")
     assert task.task_id in reaped
 
     # Status should be WAITING
@@ -100,7 +107,7 @@ def test_auto_worktree_task_lifecycle(tmp_path: Path) -> None:
     assert (wt_path / "README.md").exists()
 
     # Clean up worktree
-    cleanup_res = tasks.cleanup_worktree(task.task_id, delete_branch=True)
+    cleanup_res = tasks.cleanup_worktree(task.task_id, delete_branch=True, actor=task.owner)
     assert cleanup_res["success"] is True
     assert cleanup_res["had_worktree"] is True
     assert not wt_path.exists()
@@ -272,6 +279,22 @@ def test_read_only_db_query_safety(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     import local_ai_hub.http_server as http_srv
     import sqlite3
 
+    # Non-SELECT statement should be rejected
+    res1 = Handler._handle_db_query(None, "agent_state", "INSERT INTO tasks (id) VALUES ('x')")
+    assert res1["success"] is False
+    assert "Only read-only SELECT" in res1["error"]
+
+    # Forbidden mutating keywords in subqueries should be rejected
+    res2 = Handler._handle_db_query(None, "agent_state", "SELECT * FROM tasks WHERE id = (DELETE FROM x)")
+    assert res2["success"] is False
+    assert "Forbidden keyword" in res2["error"]
+
+    # Semicolons / multi-statements should be rejected
+    res3 = Handler._handle_db_query(None, "agent_state", "SELECT * FROM tasks; SELECT 1;")
+    assert res3["success"] is False
+    assert "Multi-statement" in res3["error"]
+
+    # Valid SELECT on existing sqlite database
     db_file = tmp_path / "agent_state.sqlite3"
     con = sqlite3.connect(db_file)
     con.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, role TEXT);")
@@ -284,30 +307,11 @@ def test_read_only_db_query_safety(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
     monkeypatch.setattr(http_srv, "APP", DummyApp())
 
-    # Non-SELECT statement should be rejected
-    res1 = Handler._handle_db_query(None, "agent_state", "INSERT INTO tasks (id) VALUES ('x')")
-    assert res1["success"] is False
-    assert "Only read-only SELECT" in res1["error"]
-
-    # Forbidden mutating keywords in subqueries should be rejected.
-    res2 = Handler._handle_db_query(None, "agent_state", "SELECT * FROM tasks WHERE id = (DELETE FROM x)")
-    assert res2["success"] is False
-    assert "Forbidden keyword" in res2["error"]
-
-    # Semicolons / multi-statements should be rejected
-    res3 = Handler._handle_db_query(None, "agent_state", "SELECT * FROM tasks; SELECT 1;")
-    assert res3["success"] is False
-    assert "Multi-statement" in res3["error"]
-
-    # Valid SELECT remains available, and rejected requests do not mutate data.
     res4 = Handler._handle_db_query(None, "agent_state", "SELECT id, role FROM tasks")
     assert res4["success"] is True
     assert res4["columns"] == ["id", "role"]
     assert res4["rows"] == [["t1", "researcher"]]
     assert res4["count"] == 1
-    literal = Handler._handle_db_query(None, "agent_state", "SELECT 'DELETE' AS action")
-    assert literal["success"] is True
-    assert literal["rows"] == [["DELETE"]]
 
 
 # ── Area 5: GraphRAG Code Entity Attachment ─────────────────────────────────

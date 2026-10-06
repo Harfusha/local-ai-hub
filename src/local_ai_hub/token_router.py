@@ -36,7 +36,7 @@ class LosslessTokenRouter:
         self.max_output_lines = max(20, int(cfg.get("max_output_lines", 140)))
         state_dir = Path(config["server"]["state_dir"])
         self.cache = TieredCache(
-            SQLiteCache(state_dir / "cache.sqlite3", "lossless-router", int(cfg.get("ttl_seconds", 604800)), int(cfg.get("max_entries", 10000))),
+            SQLiteCache(state_dir / "cache.sqlite", "lossless-router", int(cfg.get("ttl_seconds", 604800)), int(cfg.get("max_entries", 10000))),
             int(cfg.get("l1_entries", 256)), int(cfg.get("l1_ttl_seconds", 1800)),
         )
         self.hits = 0
