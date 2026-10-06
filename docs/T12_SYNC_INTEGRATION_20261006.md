@@ -39,4 +39,12 @@
 
 ## Final identity and inventory
 
-Final merge target, commit identity, additional checks, master ancestry, unresolved-file count, and complete changed-file inventory are appended after reconciliation.
+- Initial resolved merge commit: `a3cc6ea13ee478a182eeadc40eba9679d1524cb2`.
+- Follow-up merge target: `419474e41a9df79691671189f5c20f613616f511`. Git merged it without conflicts; no further moving-master chase, per explicit user instruction. Central owner performs final fast-forward/integration.
+- The follow-up imports current master identity/memory/receipt and T14 response-budget work intact. No T14 endpoint redesign or safety weakening.
+- Benchmark source/test AST parse: **2 passed**. Scoped benchmark `git diff --check`: passed.
+- Bounded benchmark check after follow-up: **10 passed, 6 failed, 75 deselected**, 5.50 seconds. Command: `python -B -m pytest -q -p no:cacheprovider --tb=short --basetemp=state/t12-sync-20261006/check3 tests/test_surface_benchmarks.py -k 't12 or cleanup or late_worker or wall_timeout or full_matrix' tests/test_context_pack_snippet_budget.py tests/test_t05_memory_fts_atomicity.py`.
+- All six failures occur before benchmark execution: `ValueError: state_dir must be outside the repository`. The user restricted writes to this checkout, so pytest temporary directories stayed under its ignored state directory. Master's external-state guard remains intact. Lifecycle/full-matrix integration acceptance is therefore **NOT VERIFIED** under this constrained check. The global `-k` selector deselected the unrelated context/memory tests; no pass is claimed for them.
+- Follow-up scoped whitespace check found inherited master EOF blank lines in `tests/test_agent_memory.py:2521` and `tests/test_agent_memory_http_identity.py:958`; no unrelated reformatting.
+- Changed paths versus the pinned master are listed in `T12_SYNC_CHANGED_FILES_20261006.txt`. Archived overlays and dated receipts are ordinary preserved handoff material, not current executable/runtime proof.
+- Final acceptance for this task is committed preservation and synchronization, not release readiness. Open runtime/test behavior above remains committed and visible.

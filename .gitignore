@@ -68,3 +68,5 @@ config.runtime.toml
 
 # Isolated state and temporary files from T01 manual merge verification.
 /.sync-t01-runtime/
+# T14 reconciliation-only pytest runtime; keep out of committed source handoff.
+/.t14-sync-runtime-20261006/

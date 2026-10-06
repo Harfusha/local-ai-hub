@@ -773,6 +773,7 @@ class TaskStore:
     def set_policy_engine(self, policy_engine: Any) -> None:
         self.policy_engine = policy_engine
 
+
     def _db_path_available(self) -> bool:
         """Return whether the projection database path is usable.
 

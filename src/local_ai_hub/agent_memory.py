@@ -447,25 +447,26 @@ class MemoryRecord:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        safe = _sanitise_memory_record(self, reject_sensitive=False)
         return {
-            "record_id": self.record_id,
-            "kind": self.kind.value,
-            "scope": self.scope.value,
-            "scope_id": self.scope_id,
-            "key": self.key,
-            "value": self.value,
-            "confidence": self.confidence,
-            "status": self.status.value,
-            "source": self.source,
-            "evidence_ids": list(self.evidence_ids),
-            "sensitivity": self.sensitivity,
-            "contradicts_record_id": self.contradicts_record_id,
-            "supersedes_record_id": self.supersedes_record_id,
-            "quarantine_reason": self.quarantine_reason,
-            "provenance": dict(self.provenance),
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "expires_at": self.expires_at,
+            "record_id": safe.record_id,
+            "kind": safe.kind.value,
+            "scope": safe.scope.value,
+            "scope_id": safe.scope_id,
+            "key": safe.key,
+            "value": safe.value,
+            "confidence": safe.confidence,
+            "status": safe.status.value,
+            "source": safe.source,
+            "evidence_ids": list(safe.evidence_ids),
+            "sensitivity": safe.sensitivity,
+            "contradicts_record_id": safe.contradicts_record_id,
+            "supersedes_record_id": safe.supersedes_record_id,
+            "quarantine_reason": safe.quarantine_reason,
+            "provenance": dict(safe.provenance),
+            "created_at": safe.created_at,
+            "updated_at": safe.updated_at,
+            "expires_at": safe.expires_at,
         }
 
     @classmethod
@@ -905,7 +906,12 @@ class MemoryStore:
             ),
         ).fetchall()
         for row in rows:
-            existing = self._row_to_record(row)
+            try:
+                existing = self._row_to_record(row)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not isinstance(existing.provenance, Mapping):
+                continue
             if not _memory_conflict_context_matches(existing, record):
                 continue
             if existing.confidence >= 0.8 and record.confidence >= 0.8 and existing.value != record.value:
@@ -960,6 +966,35 @@ class MemoryStore:
         except Exception:
             pass
 
+    def _save_record_mutation(self, record: MemoryRecord, event: AgentEvent) -> MemoryRecord:
+        """Persist a memory mutation and its event in the durable transaction."""
+        if not self.state_store.enabled:
+            self._save_record(record)
+            return record
+
+        self._init_table()
+        con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        try:
+            # T08 contract: enter publication before BEGIN; projection, cursor, and
+            # outbox event commit together; publish only the committed row.
+            with self.state_store.ordered_event_publication(con) as publish:
+                con.execute("BEGIN IMMEDIATE")
+                appended = self.state_store.append_in_transaction(
+                    con,
+                    event,
+                    strict_idempotency=False,
+                )
+                self._save_record_row(con, record)
+                con.execute("COMMIT")
+                publish([appended.event])
+            return record
+        except Exception:
+            if con.in_transaction:
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
     def promote(
         self,
         record_id: str,
@@ -1003,9 +1038,7 @@ class MemoryStore:
             idempotency_key=f"promote_{record_id}_{target_scope.value}",
             actor=approver,
         )
-        self.state_store.append(event)
-        self._save_record(promoted)
-        return promoted
+        return self._save_record_mutation(promoted, event)
 
     def quarantine(
         self,
@@ -1013,6 +1046,8 @@ class MemoryStore:
         reason: str,
         *,
         actor: str,
+        scope: AgentScope | str | None = None,
+        scope_id: str | None = None,
         root: str | None = None,
         repository_id: str | None = None,
         tenant: str | None = None,
@@ -1023,6 +1058,8 @@ class MemoryStore:
         branch: str | None = None,
     ) -> MemoryRecord:
         identity = {
+            "scope": scope,
+            "scope_id": scope_id,
             "root": root,
             "repository_id": repository_id,
             "tenant": tenant,
@@ -1439,9 +1476,23 @@ class MemoryStore:
                 "SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source, "
                 "evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id, "
                 "quarantine_reason, provenance, created_at, updated_at, expires_at "
-                "FROM agent_memory_records WHERE record_id = ?"
+                "FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = '' "
+                "AND sensitivity = 'normal' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.root'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.tenant'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.repository_id'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.task_id'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.session_id'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.clone_id'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.worktree_id'), '') = '' "
+                "AND COALESCE(json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.branch'), '') = '' "
+                "AND (value IS NULL OR value = '' OR json_valid(value)) "
+                "AND (evidence_ids IS NULL OR evidence_ids = '' OR "
+                "json_type(CASE WHEN json_valid(evidence_ids) THEN evidence_ids ELSE 'null' END) = 'array') "
+                "AND (provenance IS NULL OR provenance = '' OR "
+                "json_type(CASE WHEN json_valid(provenance) THEN provenance ELSE 'null' END) = 'object')"
             )
-            params: list[Any] = [record_id]
+            params: list[Any] = [record_id, AgentScope.GLOBAL.value]
             if not include_expired:
                 sql += " AND (expires_at IS NULL OR expires_at > ?)"
                 params.append(time.time())
@@ -1457,7 +1508,11 @@ class MemoryStore:
             row = con.execute(sql, tuple(params)).fetchone()
             if not row:
                 return None
-            return self._row_to_record(row)
+            try:
+                record = self._row_to_record(row)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            return _sanitise_memory_record(record, reject_sensitive=False)
         finally:
             con.close()
 
@@ -1474,7 +1529,7 @@ class MemoryStore:
         include_kinds: Collection[str] = (),
         limit: int = 20,
     ) -> list[MemoryRecord]:
-        """Find bounded authoritative memory with status and scope filtering in SQL."""
+        """Find bounded memory for exact context identity; GLOBAL remains cross-project, never cross-tenant."""
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
         self._init_table()
@@ -1491,10 +1546,27 @@ class MemoryStore:
             "SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source, "
             "evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id, "
             "quarantine_reason, provenance, created_at, updated_at, expires_at "
-            "FROM agent_memory_records WHERE sensitivity = 'normal' AND status IN (?, ?) AND (expires_at IS NULL OR expires_at > ?) "
-            f"AND {scope_sql}"
+                "FROM agent_memory_records WHERE sensitivity = 'normal' "
+                "AND status IN (?, ?) AND (expires_at IS NULL OR expires_at > ?) "
+            f"AND {scope_sql} "
+            "AND (value IS NULL OR value = '' OR json_valid(value)) "
+            "AND (evidence_ids IS NULL OR evidence_ids = '' OR "
+            "json_type(CASE WHEN json_valid(evidence_ids) THEN evidence_ids ELSE 'null' END) = 'array') "
+            "AND (provenance IS NULL OR provenance = '' OR "
+            "json_type(CASE WHEN json_valid(provenance) THEN provenance ELSE 'null' END) = 'object') "
+            "AND typeof(confidence) IN ('integer', 'real') "
+            "AND typeof(created_at) IN ('integer', 'real') "
+            "AND typeof(updated_at) IN ('integer', 'real') "
+            "AND (expires_at IS NULL OR typeof(expires_at) IN ('integer', 'real')) "
+            f"AND kind IN ({', '.join('?' for _ in MemoryKind)})"
         )
-        params: list[Any] = [MemoryStatus.ACTIVE.value, MemoryStatus.CONFIRMED.value, time.time(), *scope_params]
+        params: list[Any] = [
+            MemoryStatus.ACTIVE.value,
+            MemoryStatus.CONFIRMED.value,
+            time.time(),
+            *scope_params,
+            *(kind.value for kind in MemoryKind),
+        ]
         kinds = tuple(
             kind.value if hasattr(kind, "value") else str(kind).strip().lower()
             for kind in include_kinds
@@ -1513,7 +1585,18 @@ class MemoryStore:
                 1,
                 lambda value: _normalise_scope_root(str(value)) if value else "",
             )
-            return [self._row_to_record(row) for row in con.execute(sql, tuple(params)).fetchall()]
+            records: list[MemoryRecord] = []
+            for row in con.execute(sql, tuple(params)).fetchall():
+                try:
+                    record = self._row_to_record(row)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if not isinstance(record.provenance, Mapping):
+                    continue
+                if any(not isinstance(evidence_id, str) for evidence_id in record.evidence_ids):
+                    continue
+                records.append(_sanitise_memory_record(record, reject_sensitive=False))
+            return records
         finally:
             con.close()
 
@@ -1549,7 +1632,12 @@ class MemoryStore:
             "SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source, "
             "evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id, "
             "quarantine_reason, provenance, created_at, updated_at, expires_at "
-            "FROM agent_memory_records WHERE 1=1"
+            "FROM agent_memory_records WHERE sensitivity = 'normal' "
+            "AND (value IS NULL OR value = '' OR json_valid(value)) "
+            "AND (evidence_ids IS NULL OR evidence_ids = '' OR "
+            "json_type(CASE WHEN json_valid(evidence_ids) THEN evidence_ids ELSE 'null' END) = 'array') "
+            "AND (provenance IS NULL OR provenance = '' OR "
+            "json_type(CASE WHEN json_valid(provenance) THEN provenance ELSE 'null' END) = 'object')"
         )
         params: list[Any] = []
         scope_val: str | None = None
