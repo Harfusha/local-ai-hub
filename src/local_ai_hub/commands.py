@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import ast
+import codecs
 import getpass
 import hashlib
 import http.client
+import io
 import ipaddress
 import json
 import math
 import os
 import re
 import ntpath
+import queue
+import signal
 import shlex
 import shutil
 import socket
@@ -21,7 +25,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +49,38 @@ from .state_paths import configured_state_dir
 from .json_utils import dumps as json_dumps
 
 _GLOBAL_WINDOWS_JOB = create_job_object_kill_on_close() if os.name == "nt" else None
+_PROJECT_COMMAND_ALIAS_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+_PROJECT_COMMAND_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PROJECT_COMMAND_ENV_BLOCKED = {
+    "BASH_ENV",
+    "COMSPEC",
+    "ENV",
+    "GIT_COMMON_DIR",
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_PREFIX",
+    "GIT_WORK_TREE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "DYLD_FRAMEWORK_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "PATH",
+    "PATHEXT",
+    "SHELL",
+}
+
+
+def _is_unsafe_project_command_env_key(key: str) -> bool:
+    normalized = key.upper()
+    return normalized in _PROJECT_COMMAND_ENV_BLOCKED or normalized.startswith("GIT_CONFIG_")
+_MAX_PROJECT_COMMAND_ARGS = 128
+_MAX_PROJECT_COMMAND_ENV_ENTRIES = 128
+_MAX_PROJECT_COMMAND_ENV_BYTES = 65_536
+_COMMAND_LOG_QUEUE_MAX_CHUNKS = 256
 
 _NETWORK_RESPONSE_HEADER_ALLOWLIST = {
     "cache-control",
@@ -65,12 +101,27 @@ _MAX_CASSETTE_BYTES = 1_048_576
 class _RecoveredDaemonProcess:
     """Minimal poll/wait/kill facade for a daemon verified after a Hub restart."""
 
-    def __init__(self, pid: int, identity: dict[str, Any]):
+    def __init__(
+        self,
+        pid: int,
+        identity: dict[str, Any],
+        process_group_id: int | None = None,
+    ):
         self.pid = pid
         self.identity = identity
+        self.process_group_id = process_group_id
 
     def poll(self) -> int | None:
-        return None if process_identity(self.pid) == self.identity else 0
+        current_identity = process_identity(self.pid)
+        if current_identity == self.identity:
+            return None
+        if (
+            current_identity is None
+            and self.process_group_id == self.pid
+            and _process_group_alive(self.process_group_id)
+        ):
+            return None
+        return 0
 
     def wait(self, timeout: float | None = None) -> int:
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -82,7 +133,90 @@ class _RecoveredDaemonProcess:
 
     def kill(self) -> None:
         if self.poll() is None:
-            terminate_tree(self.pid, grace_seconds=0.1)
+            if self.process_group_id == self.pid:
+                _terminate_process_group(
+                    self.process_group_id, self.pid, self.identity, grace_seconds=0.1
+                )
+            else:
+                terminate_tree(self.pid, grace_seconds=0.1)
+
+
+def _process_group_status(process_group_id: int | None) -> bool | None:
+    """Return whether a POSIX process group exists, or None when unverifiable."""
+    if (
+        os.name == "nt"
+        or isinstance(process_group_id, bool)
+        or not isinstance(process_group_id, int)
+        or process_group_id <= 0
+    ):
+        return False
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return None
+    except OSError:
+        return None
+    return True
+
+
+def _process_group_alive(process_group_id: int | None) -> bool:
+    """Return true only when a POSIX process group is verified to exist."""
+    return _process_group_status(process_group_id) is True
+
+
+def _terminate_process_group(
+    process_group_id: int,
+    leader_pid: int,
+    leader_identity: dict[str, Any] | None,
+    *,
+    grace_seconds: float = 1.5,
+) -> bool:
+    """Stop a verified process group, including descendants of an exited leader."""
+    if (
+        os.name == "nt"
+        or isinstance(process_group_id, bool)
+        or not isinstance(process_group_id, int)
+        or process_group_id <= 0
+        or process_group_id != leader_pid
+        or not isinstance(leader_identity, dict)
+        or leader_identity.get("pid") != leader_pid
+    ):
+        return False
+    current_identity = process_identity(leader_pid)
+    if current_identity is not None and current_identity != leader_identity:
+        return False
+    group_status = _process_group_status(process_group_id)
+    if group_status is False:
+        return True
+    if group_status is None:
+        return False
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+
+    deadline = time.monotonic() + max(0.0, grace_seconds)
+    while _process_group_status(process_group_id) is True and time.monotonic() < deadline:
+        time.sleep(0.025)
+    group_status = _process_group_status(process_group_id)
+    if group_status is False:
+        return True
+    if group_status is None:
+        return False
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    deadline = time.monotonic() + 1.0
+    while _process_group_status(process_group_id) is True and time.monotonic() < deadline:
+        time.sleep(0.025)
+    return _process_group_status(process_group_id) is False
 
 _SECRET_PATTERNS = [
     re.compile(r"(?i)(--?(?:password|token|secret|api[-_]?key)\s*[= ]\s*)([^\s]+)"),
@@ -589,6 +723,14 @@ def _stop_daemon_tree(info: dict[str, Any]) -> bool:
             return True
         if expected and current != expected:
             return False
+    else:
+        process_group_id = info.get("process_group_id")
+        if process_group_id == info.get("pid"):
+            return _terminate_process_group(
+                int(process_group_id),
+                int(info["pid"]),
+                info.get("identity"),
+            )
     try:
         return bool(terminate_tree(int(info["pid"]), grace_seconds=1.5))
     except Exception:
@@ -785,6 +927,181 @@ class CommandInvocation:
     argv: list[str]
     cwd: str | None = None
     shell: bool = False
+
+
+@dataclass(frozen=True)
+class _ResolvedProjectCommand:
+    alias: str
+    command: str | CommandInvocation
+    environment: dict[str, str]
+    config_digest: str
+    cache_context: str
+
+
+def _project_config_cache_key(root: Path) -> str | None:
+    """Fingerprint project config files and the exact Git HEAD without storing paths."""
+    try:
+        project_root = root.expanduser().resolve(strict=True)
+        root_identity = hashlib.sha256(os.fsencode(str(project_root))).hexdigest()
+
+        git_marker: Path | None = None
+        for parent in (project_root, *project_root.parents):
+            marker = parent / ".git"
+            if marker.exists() or marker.is_symlink():
+                git_marker = marker
+                break
+
+        common_dir: Path | None = None
+        git_dir: Path | None = None
+        git_revision: str | None = None
+        git_signatures: list[tuple[str, tuple[Any, ...]]] = []
+        primary_root: Path | None = None
+        if git_marker is not None:
+            marker_signature = _project_file_signature(git_marker)
+            if marker_signature is None:
+                return None
+            git_signatures.append(("git-marker", marker_signature))
+            if git_marker.is_dir():
+                git_dir = git_marker.resolve(strict=True)
+            elif git_marker.is_file():
+                marker_text = git_marker.read_text(encoding="utf-8", errors="replace")[:4096]
+                prefix, separator, raw_git_dir = marker_text.partition(":")
+                if prefix.strip().lower() != "gitdir" or not separator:
+                    return None
+                git_dir = Path(raw_git_dir.strip())
+                if not git_dir.is_absolute():
+                    git_dir = git_marker.parent / git_dir
+                git_dir = git_dir.resolve(strict=True)
+            else:
+                return None
+
+            common_file = git_dir / "commondir"
+            if common_file.exists():
+                common_signature = _project_file_signature(common_file)
+                if common_signature is None:
+                    return None
+                git_signatures.append(("git-common-dir", common_signature))
+                raw_common_dir = common_file.read_text(
+                    encoding="utf-8", errors="replace"
+                )[:4096].strip()
+                common_dir = Path(raw_common_dir)
+                if not common_dir.is_absolute():
+                    common_dir = git_dir / common_dir
+                common_dir = common_dir.resolve(strict=True)
+            else:
+                common_dir = git_dir
+            if common_dir.name.lower() != ".git":
+                return None
+            primary_root = common_dir.parent
+            primary_marker = primary_root / ".git"
+            if not primary_marker.is_dir() or primary_marker.resolve(strict=True) != common_dir:
+                return None
+
+            head_file = git_dir / "HEAD"
+            head_signature = _project_file_signature(head_file)
+            if head_signature is None:
+                return None
+            git_signatures.append(("git-head", head_signature))
+            head_value = head_file.read_text(encoding="ascii", errors="replace")[:4096].strip()
+            if head_value.startswith("ref: "):
+                ref_name = head_value[5:].strip()
+                parts = ref_name.split("/")
+                if not ref_name.startswith("refs/") or any(part in {"", ".", ".."} for part in parts):
+                    return None
+                ref_file: Path | None = None
+                for base in (git_dir, common_dir):
+                    candidate = base.joinpath(*parts)
+                    try:
+                        resolved_ref = candidate.resolve(strict=True)
+                        resolved_ref.relative_to(base.resolve(strict=True))
+                        ref_file = resolved_ref
+                        break
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                if ref_file is not None:
+                    ref_signature = _project_file_signature(ref_file)
+                    if ref_signature is None:
+                        return None
+                    git_signatures.append(("git-ref", ref_signature))
+                    git_revision = ref_file.read_text(encoding="ascii", errors="replace")[:128].strip()
+                else:
+                    packed_refs = common_dir / "packed-refs"
+                    packed_signature = _project_file_signature(packed_refs)
+                    if packed_signature is None:
+                        return None
+                    if packed_refs.stat().st_size > 4 * 1024 * 1024:
+                        return None
+                    git_signatures.append(("git-packed-refs", packed_signature))
+                    packed_text = packed_refs.read_text(encoding="ascii", errors="replace")
+                    for line in packed_text.splitlines():
+                        fields = line.split(" ", 1)
+                        if len(fields) == 2 and fields[1] == ref_name:
+                            git_revision = fields[0]
+                            break
+            else:
+                git_revision = head_value
+            if not isinstance(git_revision, str) or not re.fullmatch(
+                r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", git_revision
+            ):
+                return None
+
+        config_paths = [
+            ("project", project_root / ".local-ai.toml"),
+            ("worktree", project_root / ".local-ai.worktree.toml"),
+        ]
+        if primary_root is not None and primary_root != project_root:
+            config_paths.append(("primary", primary_root / ".local-ai.toml"))
+        if common_dir is not None:
+            config_paths.append(("machine", common_dir / "info" / "local-ai.toml"))
+        config_signatures: list[tuple[str, tuple[Any, ...]]] = []
+        for label, path in config_paths:
+            signature = _project_file_signature(path, missing_ok=True)
+            if signature is None:
+                return None
+            config_signatures.append((label, signature))
+        payload = {
+            "root": root_identity,
+            "git_revision": git_revision,
+            "git_signatures": git_signatures,
+            "config_signatures": config_signatures,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    except (OSError, RuntimeError, ValueError, UnicodeError):
+        return None
+
+
+def _project_file_signature(
+    path: Path, *, missing_ok: bool = False
+) -> tuple[Any, ...] | None:
+    try:
+        link_info = path.lstat()
+    except FileNotFoundError:
+        return ("missing",) if missing_ok else None
+    except OSError:
+        return None
+    try:
+        resolved = path.resolve(strict=True)
+        target_info = resolved.stat()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return (
+        "file",
+        link_info.st_dev,
+        link_info.st_ino,
+        link_info.st_size,
+        link_info.st_mtime_ns,
+        link_info.st_ctime_ns,
+        link_info.st_mode,
+        hashlib.sha256(os.fsencode(str(resolved))).hexdigest(),
+        target_info.st_dev,
+        target_info.st_ino,
+        target_info.st_size,
+        target_info.st_mtime_ns,
+        target_info.st_ctime_ns,
+        target_info.st_mode,
+    )
 
 
 def _patch_write_paths(root: Path, patch: bytes, timeout: float) -> list[str]:
@@ -1067,6 +1384,8 @@ class CommandBroker:
     def __init__(self, config: dict[str, Any], artifacts: Any = None, repo_state: Any = None):
         self.config = config
         self.artifacts = artifacts
+        self._project_config_resolution_cache: OrderedDict[str, Any] = OrderedDict()
+        self._project_config_resolution_cache_lock = threading.Lock()
         if repo_state is None:
             from .repo_state import RepoStateTracker
             repo_state = RepoStateTracker(config)
@@ -1090,9 +1409,54 @@ class CommandBroker:
         self._daemon_state_dir = state_dir / "daemons"
         self._daemon_registry_path = self._daemon_state_dir / "registry.json"
         l1_entries = int(cfg.get("l1_entries", 128))
-        self.success_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:success", int(cfg.get("success_ttl_seconds", 43200)), int(cfg.get("max_entries", 5000))), l1_entries, int(cfg.get("l1_ttl_seconds", 900)))
-        self.failure_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:failure", int(cfg.get("failure_ttl_seconds", 180)), int(cfg.get("max_failure_entries", 1000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
-        self.suppression_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:suppression", int(cfg.get("suppression_ttl_seconds", 900)), int(cfg.get("max_suppression_entries", 2000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
+        configured_l1_ttl = max(0, int(cfg.get("l1_ttl_seconds", 900)))
+
+        def effective_l1_ttl(
+            persistent_ttl: int, *, max_l1_ttl: int | None = None
+        ) -> int:
+            l1_ttl = configured_l1_ttl
+            if max_l1_ttl is not None:
+                l1_ttl = min(l1_ttl, max_l1_ttl)
+            persistent_ttl = max(0, int(persistent_ttl))
+            if persistent_ttl == 0:
+                return l1_ttl
+            if l1_ttl == 0:
+                return persistent_ttl
+            return min(l1_ttl, persistent_ttl)
+
+        success_ttl = max(0, int(cfg.get("success_ttl_seconds", 43200)))
+        failure_ttl = max(0, int(cfg.get("failure_ttl_seconds", 180)))
+        suppression_ttl = max(0, int(cfg.get("suppression_ttl_seconds", 900)))
+        self.success_cache = TieredCache(
+            SQLiteCache(
+                state_dir / "cache.sqlite3",
+                "command:success",
+                success_ttl,
+                int(cfg.get("max_entries", 5000)),
+            ),
+            l1_entries,
+            effective_l1_ttl(success_ttl),
+        )
+        self.failure_cache = TieredCache(
+            SQLiteCache(
+                state_dir / "cache.sqlite3",
+                "command:failure",
+                failure_ttl,
+                int(cfg.get("max_failure_entries", 1000)),
+            ),
+            max(32, l1_entries // 2),
+            effective_l1_ttl(failure_ttl, max_l1_ttl=300),
+        )
+        self.suppression_cache = TieredCache(
+            SQLiteCache(
+                state_dir / "cache.sqlite3",
+                "command:suppression",
+                suppression_ttl,
+                int(cfg.get("max_suppression_entries", 2000)),
+            ),
+            max(32, l1_entries // 2),
+            effective_l1_ttl(suppression_ttl, max_l1_ttl=300),
+        )
         self._lock = threading.Lock()
         self._inflight: dict[str, threading.Event] = {}
         self._last: dict[str, dict[str, Any]] = {}
@@ -1571,8 +1935,9 @@ class CommandBroker:
                 payload = json.load(stream)
         except (OSError, ValueError, TypeError):
             return
-        if not isinstance(payload, dict) or payload.get("version") != 2:
+        if not isinstance(payload, dict) or payload.get("version") not in {2, 3}:
             return
+        registry_version = payload["version"]
         rows = payload.get("daemons")
         if not isinstance(rows, list):
             return
@@ -1583,6 +1948,7 @@ class CommandBroker:
             daemon_id = row.get("daemon_id")
             pid = row.get("pid")
             identity = row.get("identity")
+            process_group_id = row.get("process_group_id")
             if (
                 not isinstance(daemon_id, str)
                 or not re.fullmatch(r"dmn_[0-9a-f]{32}", daemon_id)
@@ -1591,14 +1957,37 @@ class CommandBroker:
                 or not isinstance(identity, dict)
                 or identity.get("pid") != pid
                 or row.get("owner_id") != self._daemon_owner_id
-                or process_identity(pid) != identity
             ):
                 continue
+            current_identity = process_identity(pid)
+            leader_matches = current_identity == identity
+            valid_process_group_id = (
+                isinstance(process_group_id, int)
+                and not isinstance(process_group_id, bool)
+                and process_group_id == pid
+            )
+            group_matches = (
+                registry_version == 3
+                and os.name != "nt"
+                and current_identity is None
+                and valid_process_group_id
+                and _process_group_alive(process_group_id)
+            )
+            if not leader_matches and not group_matches:
+                continue
             if not self._daemon_slots.acquire(blocking=False):
-                try:
-                    terminate_tree(pid, grace_seconds=self.terminate_grace_seconds)
-                except Exception:
-                    pass
+                if group_matches:
+                    _terminate_process_group(
+                        process_group_id,
+                        pid,
+                        identity,
+                        grace_seconds=self.terminate_grace_seconds,
+                    )
+                else:
+                    try:
+                        terminate_tree(pid, grace_seconds=self.terminate_grace_seconds)
+                    except Exception:
+                        pass
                 continue
             log_path = self._daemon_state_dir / f"{daemon_id}.log"
             try:
@@ -1628,9 +2017,16 @@ class CommandBroker:
             command = row.get("command")
             info = {
                 "daemon_id": daemon_id,
-                "process": _RecoveredDaemonProcess(pid, identity),
+                "process": _RecoveredDaemonProcess(
+                    pid,
+                    identity,
+                    process_group_id if registry_version == 3 and valid_process_group_id else None,
+                ),
                 "pid": pid,
                 "identity": identity,
+                "process_group_id": (
+                    process_group_id if registry_version == 3 and valid_process_group_id else None
+                ),
                 "owner_id": self._daemon_owner_id,
                 "name": self._safe_label(name) if isinstance(name, str) else daemon_id,
                 "command": self._safe_label(command) if isinstance(command, str) else "",
@@ -1672,6 +2068,7 @@ class CommandBroker:
                     {
                         "daemon_id": daemon_id,
                         "pid": int(info["pid"]),
+                        "process_group_id": info.get("process_group_id"),
                         "identity": identity,
                         "owner_id": info["owner_id"],
                         "name": self._safe_label(str(info.get("name", daemon_id)))[:128],
@@ -1682,7 +2079,7 @@ class CommandBroker:
                 )
                 if len(rows) >= 50:
                     break
-            payload = json.dumps({"version": 2, "daemons": rows}, ensure_ascii=True, separators=(",", ":"))
+            payload = json.dumps({"version": 3, "daemons": rows}, ensure_ascii=True, separators=(",", ":"))
             temp_path = registry.with_name(f"registry.{os.getpid()}.{uuid.uuid4().hex}.tmp")
             fd = os.open(temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             try:
@@ -2241,24 +2638,63 @@ class CommandBroker:
         except Exception:
             return {"path": str(resolved)}
 
-    def _key(self, command: str, cwd: str, classification: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    def _key(
+        self,
+        command: str,
+        cwd: str,
+        classification: dict[str, Any],
+        *,
+        cache_context: str = "",
+    ) -> tuple[str, dict[str, Any]]:
         state = self.repo_state.fingerprint(cwd)
-        env_keys = self.config.get("commands", {}).get("environment_keys", ["CI", "NODE_ENV", "APP_ENV", "PYTHONPATH"])
+        commands_config = self.config.get("commands", {})
+        env_keys = commands_config.get("environment_keys", ["CI", "NODE_ENV", "APP_ENV", "PYTHONPATH"])
         env = {str(k): os.environ.get(str(k), "") for k in env_keys}
-        key = stable_hash({
+        payload = {
             "command": command.strip(), "cwd": str(Path(cwd).resolve()), "class": classification.get("class"),
             "repo": state.get("fingerprint"), "env": env, "python": sys.version_info[:3], "tool": self._tool_identity(command, cwd),
-        })
+            "policy": {
+                "blocking": self.policy_blocking,
+                "allow_read": bool(commands_config.get("allow_read", True)),
+                "allow_validation": bool(commands_config.get("allow_validation", True)),
+                "allow_build": bool(commands_config.get("allow_build", True)),
+                "allow_mutating": bool(commands_config.get("allow_mutating", False)),
+                "allow_unknown": bool(commands_config.get("allow_unknown", False)),
+                "extra_allowed_tools": sorted(
+                    str(tool).strip().lower()
+                    for tool in commands_config.get("extra_allowed_tools", [])
+                ),
+            },
+        }
+        if cache_context:
+            payload["context"] = cache_context
+        key = stable_hash(payload)
         return key, state
 
-    def _attempt_key(self, command: str, cwd: str) -> str:
+    def _attempt_key(self, command: str, cwd: str, *, cache_context: str = "") -> str:
         tokens = self._tokens(command)
         cmd_str = " ".join(tokens) if tokens else command.strip()
-        return stable_hash({
+        commands_config = self.config.get("commands", {})
+        payload = {
             "command": cmd_str,
             "cwd": str(Path(cwd).resolve()),
             "tool": self._tool_identity(command, cwd),
-        })
+            "policy": {
+                "blocking": self.policy_blocking,
+                "allow_read": bool(commands_config.get("allow_read", True)),
+                "allow_validation": bool(commands_config.get("allow_validation", True)),
+                "allow_build": bool(commands_config.get("allow_build", True)),
+                "allow_mutating": bool(commands_config.get("allow_mutating", False)),
+                "allow_unknown": bool(commands_config.get("allow_unknown", False)),
+                "extra_allowed_tools": sorted(
+                    str(tool).strip().lower()
+                    for tool in commands_config.get("extra_allowed_tools", [])
+                ),
+            },
+        }
+        if cache_context:
+            payload["context"] = cache_context
+        return stable_hash(payload)
 
     def _unavailable_executable(self, command: str, cwd: str) -> str | None:
         if self._needs_shell(command):
@@ -2311,10 +2747,15 @@ class CommandBroker:
         timeout: int,
         cancel_event: threading.Event | None = None,
         log_callback: Any | None = None,
+        *,
+        argv_override: Sequence[str] | None = None,
+        environment_overrides: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        tokens = self._tokens(command)
         started = time.perf_counter()
-        if self._needs_shell(command):
+        tokens = self._tokens(command)
+        if argv_override is not None:
+            argv = list(argv_override)
+        elif self._needs_shell(command):
             if os.name == "nt":
                 shell_bin = shutil.which("pwsh") or shutil.which("powershell") or "powershell.exe"
                 argv = [shell_bin, "-NoProfile", "-NonInteractive", "-Command", command]
@@ -2341,10 +2782,11 @@ class CommandBroker:
         proc_env = os.environ.copy()
         proc_env["PYTHONDONTWRITEBYTECODE"] = "1"
         proc_env["PYTHONIOENCODING"] = "utf-8"
+        if environment_overrides:
+            proc_env.update(environment_overrides)
         kwargs: dict[str, Any] = {
             "cwd": str(Path(cwd).resolve()), "stdin": subprocess.DEVNULL,
             "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
-            "text": True, "encoding": "utf-8", "errors": "replace",
             "env": proc_env,
         }
         if os.name == "nt":
@@ -2367,44 +2809,91 @@ class CommandBroker:
 
         out_buf = _BoundedStreamBuffer(self.max_output_chars)
         err_buf = _BoundedStreamBuffer(self.max_output_chars)
+        callback_queue: queue.Queue[tuple[str, str] | None] | None = (
+            queue.Queue(maxsize=_COMMAND_LOG_QUEUE_MAX_CHUNKS)
+            if log_callback is not None
+            else None
+        )
+        callback_dropped = 0
+        callback_drop_lock = threading.Lock()
+        readers_remaining = 2
+        readers_lock = threading.Lock()
+        readers_done = threading.Event()
+
+        def _dispatch_logs() -> None:
+            assert callback_queue is not None and log_callback is not None
+            while True:
+                item = callback_queue.get()
+                if item is None:
+                    callback_queue.task_done()
+                    return
+                try:
+                    log_callback(*item)
+                except Exception:
+                    pass
+                finally:
+                    callback_queue.task_done()
+                if readers_done.is_set() and callback_queue.empty():
+                    return
+
+        log_dispatcher = (
+            threading.Thread(target=_dispatch_logs, name="command-log-dispatch", daemon=True)
+            if callback_queue is not None
+            else None
+        )
+        if log_dispatcher is not None:
+            log_dispatcher.start()
+
+        def _publish_log(stream_name: str, text: str) -> None:
+            nonlocal callback_dropped
+            if callback_queue is None:
+                return
+            try:
+                callback_queue.put_nowait((stream_name, text))
+            except queue.Full:
+                with callback_drop_lock:
+                    callback_dropped += 1
 
         def _reader(stream: Any, buf: _BoundedStreamBuffer, stream_name: str) -> None:
             last_callback_time = 0.0
             callback_min_interval = 0.005  # Max ~200 callbacks/sec to prevent downstream lock/choking
             pending_batch: list[str] = []
+            decoder = io.IncrementalNewlineDecoder(
+                codecs.getincrementaldecoder("utf-8")(errors="replace"),
+                translate=True,
+            )
+            read_chunk = getattr(stream, "read1", stream.read)
             try:
-                for line in iter(lambda: stream.readline(65536), ""):
-                    if not line:
+                for raw_chunk in iter(lambda: read_chunk(65536), b""):
+                    if not raw_chunk:
                         break
-                    buf.append(line)
+                    chunk = decoder.decode(raw_chunk)
+                    if not chunk:
+                        continue
+                    buf.append(chunk)
                     if log_callback:
                         now = time.monotonic()
                         if now - last_callback_time >= callback_min_interval:
                             if pending_batch:
-                                text = "".join(pending_batch) + line
+                                text = "".join(pending_batch) + chunk
                                 pending_batch.clear()
                             else:
-                                text = line
+                                text = chunk
                             last_callback_time = now
-                            try:
-                                log_callback(stream_name, text)
-                            except Exception:
-                                pass
+                            _publish_log(stream_name, text)
                         else:
-                            pending_batch.append(line)
+                            pending_batch.append(chunk)
                             if len(pending_batch) >= 50:
                                 text = "".join(pending_batch)
                                 pending_batch.clear()
                                 last_callback_time = now
-                                try:
-                                    log_callback(stream_name, text)
-                                except Exception:
-                                    pass
+                                _publish_log(stream_name, text)
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    buf.append(tail)
+                    pending_batch.append(tail)
                 if log_callback and pending_batch:
-                    try:
-                        log_callback(stream_name, "".join(pending_batch))
-                    except Exception:
-                        pass
+                    _publish_log(stream_name, "".join(pending_batch))
             except Exception:
                 pass
             finally:
@@ -2412,6 +2901,17 @@ class CommandBroker:
                     stream.close()
                 except Exception:
                     pass
+                nonlocal readers_remaining
+                with readers_lock:
+                    readers_remaining -= 1
+                    if readers_remaining == 0:
+                        readers_done.set()
+                        if callback_queue is not None:
+                            try:
+                                callback_queue.put_nowait(None)
+                            except queue.Full:
+                                # The dispatcher drains queued logs then observes readers_done.
+                                pass
 
         t_out = threading.Thread(target=_reader, args=(process.stdout, out_buf, "stdout"), daemon=True)
         t_err = threading.Thread(target=_reader, args=(process.stderr, err_buf, "stderr"), daemon=True)
@@ -2464,6 +2964,8 @@ class CommandBroker:
         drain_deadline = time.monotonic() + drain_seconds
         t_out.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         t_err.join(timeout=max(0.0, drain_deadline - time.monotonic()))
+        if log_dispatcher is not None:
+            log_dispatcher.join(timeout=max(0.0, drain_deadline - time.monotonic()))
         try:
             if process.stdout and not process.stdout.closed:
                 process.stdout.close()
@@ -2487,6 +2989,8 @@ class CommandBroker:
             "exit_code": -9 if (timed_out or cancelled or aborted_interactive) else int(process.returncode or 0),
             "timed_out": timed_out, "cancelled": cancelled, "aborted_interactive": aborted_interactive,
             "stdout": stdout, "stderr": stderr,
+            "log_chunks_dropped": callback_dropped,
+            "log_dispatch_incomplete": bool(log_dispatcher and log_dispatcher.is_alive()),
             "duration_ms": round((time.perf_counter() - started) * 1000, 1),
             **({"error": "interactive_prompt_detected: command aborted because it requested interactive input"} if aborted_interactive else {"error": "command cancelled"} if cancelled else {"error": f"command timed out after {timeout}s"} if timed_out else {}),
         }
@@ -2679,9 +3183,193 @@ class CommandBroker:
             distilled = distilled.get("text", distilled.get("summary", ""))
         return str(distilled or "").strip()[:300]
 
+    def _resolve_project_command(
+        self,
+        alias: str,
+        cwd: str,
+        *,
+        args: Sequence[str] = (),
+    ) -> _ResolvedProjectCommand:
+        """Resolve one explicit project alias without invoking a process."""
+        from .project_config import (
+            CommandDefinition,
+            ProjectConfigError,
+        )
+
+        if not isinstance(alias, str) or not _PROJECT_COMMAND_ALIAS_RE.fullmatch(alias):
+            raise ProjectConfigError("invalid_command_alias")
+        if isinstance(args, (str, bytes)) or not isinstance(args, (list, tuple)):
+            raise ProjectConfigError("invalid_command_arguments")
+        if len(args) > _MAX_PROJECT_COMMAND_ARGS or any(
+            not isinstance(item, str) or len(item) > 4096 or "\x00" in item
+            for item in args
+        ):
+            raise ProjectConfigError("invalid_command_arguments")
+
+        command_root = Path(cwd).expanduser().resolve(strict=True)
+        if not command_root.is_dir():
+            raise ProjectConfigError("invalid_root")
+        resolution = self._cached_project_config_resolution(
+            command_root
+        )
+
+        if not isinstance(resolution.config_digest, str) or not resolution.config_digest:
+            raise ProjectConfigError("invalid_config")
+        definition = resolution.settings.commands.get(alias)
+        if definition is None:
+            raise ProjectConfigError("command_alias_not_found")
+
+        command_env_references = dict(resolution.settings.env_references)
+        if isinstance(definition, str):
+            if args:
+                raise ProjectConfigError("string_command_does_not_accept_arguments")
+            command: str | CommandInvocation = definition
+        elif isinstance(definition, CommandDefinition):
+            command_env_references.update(definition.env_references)
+            invocation = CommandInvocation(
+                argv=[*definition.argv, *args],
+                cwd=str(command_root),
+                shell=False,
+            )
+            invocation_result = validate_invocation(invocation)
+            if not invocation_result.get("safe"):
+                raise ProjectConfigError("invalid_command_definition")
+            command = invocation
+        else:
+            raise ProjectConfigError("invalid_command_definition")
+
+        project_environment = dict(resolution.settings.env)
+        if len(project_environment) + len(command_env_references) > _MAX_PROJECT_COMMAND_ENV_ENTRIES:
+            raise ProjectConfigError("invalid_command_environment")
+        environment: dict[str, str] = {}
+        environment_size = 0
+        for target_name, value in project_environment.items():
+            if (
+                not isinstance(target_name, str)
+                or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(target_name)
+                or _is_unsafe_project_command_env_key(target_name)
+                or not isinstance(value, str)
+                or "\x00" in value
+            ):
+                raise ProjectConfigError("invalid_command_environment")
+            environment_size += len(target_name.encode("utf-8")) + len(value.encode("utf-8"))
+            if environment_size > _MAX_PROJECT_COMMAND_ENV_BYTES:
+                raise ProjectConfigError("command_environment_too_large")
+            environment[target_name] = value
+
+        for target_name, source_name in command_env_references.items():
+            if (
+                not isinstance(target_name, str)
+                or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(target_name)
+                or _is_unsafe_project_command_env_key(target_name)
+                or not isinstance(source_name, str)
+                or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(source_name)
+            ):
+                raise ProjectConfigError("invalid_command_environment")
+            if source_name not in os.environ:
+                raise ProjectConfigError("command_environment_unavailable")
+            value = os.environ[source_name]
+            if not isinstance(value, str) or "\x00" in value:
+                raise ProjectConfigError("invalid_command_environment")
+            environment_size += len(target_name.encode("utf-8")) + len(value.encode("utf-8"))
+            if environment_size > _MAX_PROJECT_COMMAND_ENV_BYTES:
+                raise ProjectConfigError("command_environment_too_large")
+            environment[target_name] = value
+
+        cache_context = stable_hash(
+            {
+                "alias": alias,
+                "config_digest": resolution.config_digest,
+                "environment": environment,
+            }
+        )
+        return _ResolvedProjectCommand(
+            alias=alias,
+            command=command,
+            environment=environment,
+            config_digest=resolution.config_digest,
+            cache_context=cache_context,
+        )
+
+    def _cached_project_config_resolution(self, root: Path) -> Any:
+        from .project_config import resolve_project_config
+
+        cache_key = _project_config_cache_key(root)
+        if cache_key is not None:
+            with self._project_config_resolution_cache_lock:
+                resolution = self._project_config_resolution_cache.get(cache_key)
+                if resolution is not None:
+                    self._project_config_resolution_cache.move_to_end(cache_key)
+                    return resolution
+
+        resolution = resolve_project_config(root)
+        if cache_key is not None and _project_config_cache_key(root) == cache_key:
+            with self._project_config_resolution_cache_lock:
+                self._project_config_resolution_cache[cache_key] = resolution
+                self._project_config_resolution_cache.move_to_end(cache_key)
+                while len(self._project_config_resolution_cache) > 64:
+                    self._project_config_resolution_cache.popitem(last=False)
+        return resolution
+
+    def run_project_command(
+        self,
+        alias: str,
+        cwd: str,
+        tenant: str = "agent",
+        *,
+        args: Sequence[str] = (),
+        timeout: int | None = None,
+        force: bool = False,
+        task_id: str = "",
+        criterion: str = "",
+        log_callback: Any | None = None,
+        snapshot: bool = False,
+        rollback_on_failure: bool = False,
+        rollback_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Run an explicit project command alias through normal broker policy."""
+        from .project_config import ProjectConfigError
+
+        try:
+            resolved = self._resolve_project_command(alias, cwd, args=args)
+        except ProjectConfigError as exc:
+            return {
+                "success": False,
+                "error": f"project command unavailable: {exc.code}",
+                "project_command_error": exc.code,
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return {
+                "success": False,
+                "error": "project command configuration could not be resolved",
+                "project_command_error": "configuration_resolution_failed",
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+
+        return self.run(
+            resolved.command,
+            cwd,
+            tenant,
+            timeout=timeout,
+            force=force,
+            task_id=task_id,
+            criterion=criterion,
+            log_callback=log_callback,
+            snapshot=snapshot,
+            rollback_on_failure=rollback_on_failure,
+            rollback_paths=rollback_paths,
+            _environment_overrides=resolved.environment,
+            _cache_context=resolved.cache_context,
+        )
+
     def run(
         self,
-        command: str,
+        command: str | CommandInvocation,
         cwd: str,
         tenant: str = "agent",
         *,
@@ -2699,9 +3387,87 @@ class CommandBroker:
         docker_image: str = "python:3.11-slim",
         bypass_cache: bool = False,
         rollback_paths: list[str] | None = None,
+        _environment_overrides: Mapping[str, str] | None = None,
+        _cache_context: str = "",
     ) -> dict[str, Any]:
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
+        argv_override: list[str] | None = None
+        if isinstance(command, CommandInvocation):
+            invocation_result = validate_invocation(command)
+            if not invocation_result.get("safe"):
+                return {**invocation_result, "success": False, "preflight": True}
+            argv_override = list(invocation_result["argv"])
+            invocation_cwd = invocation_result.get("cwd")
+            if invocation_cwd is not None:
+                try:
+                    if Path(invocation_cwd).resolve(strict=False) != Path(cwd).resolve(strict=False):
+                        return {
+                            "success": False,
+                            "error": "structured invocation working directory does not match command working directory",
+                            "preflight": True,
+                            "terminal": True,
+                            "retryable": False,
+                        }
+                except (OSError, TypeError, ValueError):
+                    return {
+                        "success": False,
+                        "error": "structured invocation working directory is invalid",
+                        "preflight": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }
+            command = shlex.join(argv_override)
+        if not isinstance(command, str):
+            return {
+                "success": False,
+                "error": "command must be a string or validated argv invocation",
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        if not isinstance(_cache_context, str):
+            return {
+                "success": False,
+                "error": "project command cache context is invalid",
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+        if _environment_overrides is not None:
+            if not isinstance(_environment_overrides, Mapping) or len(_environment_overrides) > _MAX_PROJECT_COMMAND_ENV_ENTRIES:
+                return {
+                    "success": False,
+                    "error": "project command environment is invalid",
+                    "preflight": True,
+                    "terminal": True,
+                    "retryable": False,
+                }
+            environment_size = 0
+            for name, value in _environment_overrides.items():
+                if (
+                    not isinstance(name, str)
+                    or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(name)
+                    or name.upper() in _PROJECT_COMMAND_ENV_BLOCKED
+                    or not isinstance(value, str)
+                    or "\x00" in value
+                ):
+                    return {
+                        "success": False,
+                        "error": "project command environment is invalid",
+                        "preflight": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }
+                environment_size += len(name.encode("utf-8")) + len(value.encode("utf-8"))
+                if environment_size > _MAX_PROJECT_COMMAND_ENV_BYTES:
+                    return {
+                        "success": False,
+                        "error": "project command environment is too large",
+                        "preflight": True,
+                        "terminal": True,
+                        "retryable": False,
+                    }
         if rollback_on_failure and auto_fix:
             return {"success": False, "error": "rollback_on_failure is supported only for direct run actions", "rollback_unsupported_action": True, "terminal": True, "retryable": False}
         rollback_state: RollbackSnapshot | None = None
@@ -2749,7 +3515,11 @@ class CommandBroker:
                     "retryable": False,
                     "budget_exhausted": True,
                 }
-        attempt_key = self._attempt_key(command, cwd)
+        attempt_key = (
+            self._attempt_key(command, cwd, cache_context=_cache_context)
+            if _cache_context
+            else self._attempt_key(command, cwd)
+        )
         if not force and not bypass_cache and not is_mutating:
             suppressed = self.suppression_cache.get(attempt_key)
             if isinstance(suppressed, dict):
@@ -2767,7 +3537,7 @@ class CommandBroker:
                 "success": False, "error": f"command blocked: {classification['reason']}",
                 "classification": classification, "policy_blocked": True, "terminal": True, "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return result
         cwd_path = Path(cwd).expanduser().resolve(strict=False)
@@ -2779,7 +3549,7 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return result
         unavailable = self._unavailable_executable(command, cwd)
@@ -2788,7 +3558,7 @@ class CommandBroker:
                 "success": False, "error": f"command executable is unavailable: {unavailable}",
                 "exit_code": 127, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         if not Path(cwd).is_dir():
@@ -2796,11 +3566,16 @@ class CommandBroker:
                 "success": False, "error": f"working directory does not exist: {cwd}",
                 "exit_code": 1, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         try:
-            key, state = self._key(command, cwd, classification)
+            if _cache_context:
+                key, state = self._key(
+                    command, cwd, classification, cache_context=_cache_context
+                )
+            else:
+                key, state = self._key(command, cwd, classification)
         except ValueError as exc:
             result = {
                 "success": False,
@@ -2810,11 +3585,11 @@ class CommandBroker:
                 "terminal": True,
                 "retryable": False,
             }
-            if not force and not is_mutating:
+            if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
         cacheable = bool(classification["cacheable"]) and not is_mutating
-        if cacheable and not force:
+        if cacheable and not force and not bypass_cache:
             cached = self.success_cache.get(key) or self.failure_cache.get(key)
             if isinstance(cached, dict):
                 self.hits += 1
@@ -2898,7 +3673,19 @@ class CommandBroker:
             except Exception:
                 pass
         try:
-            result = self._execute(command, cwd, int(timeout or self.timeout), cancel_event, log_callback=log_callback)
+            execute_options: dict[str, Any] = {}
+            if argv_override is not None:
+                execute_options["argv_override"] = argv_override
+            if _environment_overrides:
+                execute_options["environment_overrides"] = _environment_overrides
+            result = self._execute(
+                command,
+                cwd,
+                int(timeout or self.timeout),
+                cancel_event,
+                log_callback=log_callback,
+                **execute_options,
+            )
             # CPython compileall reports missing targets as a diagnostic while
             # still exiting 0. A green exit code must not hide that no target
             # was compiled.
@@ -2982,7 +3769,7 @@ class CommandBroker:
                     pass
 
             raw = dict(result)
-            if cacheable and not result.get("cancelled"):
+            if cacheable and not bypass_cache and not result.get("cancelled") and not result.get("timed_out"):
                 (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)
             self._record_command_verification(
                 result,
@@ -2995,7 +3782,7 @@ class CommandBroker:
                 repository_revision=str(state.get("fingerprint", "")),
                 duration_ms=float(result.get("duration_ms", 0) or 0),
             )
-            if not force and not is_mutating and self._non_retryable_failure(raw):
+            if not force and not bypass_cache and not is_mutating and self._non_retryable_failure(raw):
                 raw.update({"terminal": True, "retryable": False})
                 self.suppression_cache.set(attempt_key, raw)
             if singleflight:
@@ -3015,6 +3802,12 @@ class CommandBroker:
                 except Exception as rb_exc:
                     timeout_result["rollback_error"] = str(rb_exc)[:512]
                     timeout_result["rolled_back"] = False
+            if singleflight:
+                with self._lock:
+                    if len(self._last) > 128:
+                        for old_key in list(self._last.keys())[:64]:
+                            self._last.pop(old_key, None)
+                    self._last[key] = dict(timeout_result)
             return timeout_result
         finally:
             if rollback_state is not None:
@@ -3331,15 +4124,14 @@ class CommandBroker:
 
         if py_files:
             checker = "py_compile"
-            import py_compile
             for pf in py_files:
                 p_path = cwd_path / pf
                 try:
-                    py_compile.compile(str(p_path), doraise=True)
-                except py_compile.PyCompileError as err:
+                    compile(p_path.read_bytes(), str(p_path), "exec")
+                except SyntaxError as err:
                     errors.append({
                         "file": pf,
-                        "line": getattr(err, "lineno", 1) or 1,
+                        "line": err.lineno or 1,
                         "message": str(err.msg),
                         "level": "syntax_error",
                     })
@@ -3835,6 +4627,7 @@ class CommandBroker:
             "daemon_id": daemon_id,
             "process": process,
             "pid": process.pid,
+            "process_group_id": process.pid if os.name != "nt" else None,
             "identity": process_identity(process.pid),
             "owner_id": self._daemon_owner_id,
             "name": name or daemon_id,

@@ -6,6 +6,7 @@ import base64
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -3121,6 +3122,70 @@ class LocalAIServices:
             path for path in result.get("test_files", []) if isinstance(path, str)
         ]
         changed_for_mapping = changed_paths or result.get("changed_files", [])
+        changed_for_graph = sorted(
+            {
+                path.replace("\\", "/").lstrip("./")
+                for path in changed_for_mapping
+                if isinstance(path, str) and path
+            }
+        )
+        graph_complete = False
+        graph_tests: list[str] = []
+        graph_missing_candidates = 0
+        try:
+            impact = (
+                self.code_index.impact(root, changed_for_graph, max_dependents=100)
+                if self.code_index is not None and changed_for_graph
+                else None
+            )
+            if isinstance(impact, dict):
+                likely_dependents = impact.get("likely_dependents", [])
+                suggested_tests = impact.get("suggested_tests", [])
+                confidence = impact.get("confidence")
+                graph_complete = (
+                    impact.get("success") is True
+                    and isinstance(confidence, (int, float))
+                    and not isinstance(confidence, bool)
+                    and math.isfinite(float(confidence))
+                    and float(confidence) >= 0.94
+                    and impact.get("indexed_changed_files") == len(changed_for_graph)
+                    and impact.get("changed_files_count") == len(changed_for_graph)
+                    and isinstance(likely_dependents, list)
+                    and len(likely_dependents) < 100
+                    and isinstance(suggested_tests, list)
+                    and len(suggested_tests) < 20
+                )
+                if graph_complete:
+                    for item in suggested_tests:
+                        candidate = item.get("path") if isinstance(item, dict) else None
+                        if isinstance(candidate, str):
+                            graph_tests.append(candidate.replace("\\", "/"))
+                    for item in likely_dependents:
+                        candidate = item.get("path") if isinstance(item, dict) else None
+                        if (
+                            isinstance(candidate, str)
+                            and self.code_index._is_test_path(candidate)
+                        ):
+                            graph_tests.append(candidate.replace("\\", "/"))
+                    graph_tests = list(dict.fromkeys(graph_tests))
+                    graph_missing_candidates = len(set(graph_tests) - set(candidates))
+                    candidates.extend(
+                        path for path in graph_tests if path not in candidates
+                    )
+        except Exception:
+            graph_complete = False
+        selection_uncertain = not graph_complete
+        matrix: dict[str, Any] | None = None
+        complete_matrix_paths: list[str] = []
+        if selection_uncertain:
+            matrix = self.test_matrix(root)
+            for item in matrix.get("test_files", []):
+                candidate = item.get("path") if isinstance(item, dict) else item
+                if isinstance(candidate, str):
+                    complete_matrix_paths.append(candidate)
+            candidates.extend(complete_matrix_paths)
+            if not complete_matrix_paths:
+                candidates = []
         target_patterns = tuple(
             target_pattern
             for source_pattern, targets in context.settings.affected_tests_mapping.items()
@@ -3132,7 +3197,8 @@ class LocalAIServices:
             for target_pattern in targets
         )
         if target_patterns:
-            matrix = self.test_matrix(root)
+            if matrix is None:
+                matrix = self.test_matrix(root)
             for item in matrix.get("test_files", []):
                 candidate = item.get("path") if isinstance(item, dict) else item
                 if (
@@ -3196,6 +3262,17 @@ class LocalAIServices:
             suggested_command = f"pytest {' '.join(quoted_tests)}"
         result["suggested_command"] = suggested_command
         result["project_config_digest"] = context.config_digest
+        if graph_complete:
+            result["dependency_graph_complete"] = True
+            result["dependency_graph_test_count"] = len(graph_tests)
+            result["dependency_graph_missing_candidates"] = graph_missing_candidates
+        if selection_uncertain:
+            result["selection_uncertain"] = True
+            result["selection_fallback"] = (
+                "complete_test_matrix"
+                if complete_matrix_paths
+                else "unavailable_test_matrix"
+            )
         result["path_hint_usage"] = {
             "hint_used": usage.hint_used,
             "fallback_used": usage.fallback_used,
@@ -5453,6 +5530,19 @@ class LocalAIServices:
             )
             cmd = aff.get("suggested_command", "")
             if not cmd:
+                if aff.get("selection_uncertain"):
+                    fallback = aff.get("selection_fallback")
+                    error = (
+                        "affected test selection is uncertain and no complete test matrix is available"
+                        if fallback == "unavailable_test_matrix"
+                        else "affected test selection is uncertain and no allowed test command is available"
+                    )
+                    return {
+                        "success": False,
+                        "error": error,
+                        "selection_uncertain": True,
+                        "changed_files": aff.get("changed_files", []),
+                    }
                 return {
                     "success": True,
                     "message": "No affected tests found for current changes",

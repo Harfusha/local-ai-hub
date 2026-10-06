@@ -415,15 +415,14 @@ def test_12_git_precommit_hooks(tmp_path: Path):
 
 def test_13_mock_recorder_and_replayer(tmp_path: Path):
     broker = CommandBroker(config={"server": {"state_dir": str(tmp_path)}})
-    with patch("urllib.request.urlopen") as mock_url:
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.headers = {"Content-Type": "application/json"}
-        mock_resp.read.return_value = b'{"mocked": true}'
-        mock_url.return_value.__enter__.return_value = mock_resp
+    with patch(
+        "local_ai_hub.commands._perform_network_request",
+        return_value=(200, {"content-type": "application/json"}, b'{"mocked": true}'),
+    ) as mock_request:
 
         res_rec = broker.record_mock("http://example.com/api", "test_cassette")
         assert res_rec["success"] is True
+        mock_request.assert_called_once()
 
         res_rep = broker.replay_mock("test_cassette")
         assert res_rep["success"] is True
