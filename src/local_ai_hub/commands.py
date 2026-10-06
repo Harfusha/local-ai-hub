@@ -743,9 +743,9 @@ class CommandBroker:
         self._daemon_state_dir = state_dir / "daemons"
         self._daemon_registry_path = self._daemon_state_dir / "registry.json"
         l1_entries = int(cfg.get("l1_entries", 128))
-        self.success_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:success", int(cfg.get("success_ttl_seconds", 43200)), int(cfg.get("max_entries", 5000))), l1_entries, int(cfg.get("l1_ttl_seconds", 900)))
-        self.failure_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:failure", int(cfg.get("failure_ttl_seconds", 180)), int(cfg.get("max_failure_entries", 1000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
-        self.suppression_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite3", "command:suppression", int(cfg.get("suppression_ttl_seconds", 900)), int(cfg.get("max_suppression_entries", 2000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
+        self.success_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite", "command:success", int(cfg.get("success_ttl_seconds", 43200)), int(cfg.get("max_entries", 5000))), l1_entries, int(cfg.get("l1_ttl_seconds", 900)))
+        self.failure_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite", "command:failure", int(cfg.get("failure_ttl_seconds", 180)), int(cfg.get("max_failure_entries", 1000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
+        self.suppression_cache = TieredCache(SQLiteCache(state_dir / "cache.sqlite", "command:suppression", int(cfg.get("suppression_ttl_seconds", 900)), int(cfg.get("max_suppression_entries", 2000))), max(32, l1_entries // 2), min(300, int(cfg.get("l1_ttl_seconds", 900))))
         self._lock = threading.Lock()
         self._inflight: dict[str, threading.Event] = {}
         self._last: dict[str, dict[str, Any]] = {}
@@ -2348,6 +2348,8 @@ class CommandBroker:
                         error=str(result.get("error") or result.get("stderr") or ("exit code " + str(result.get("exit_code", 1)))),
                         exit_code=int(result.get("exit_code", 1)),
                         state_revision=str(state.get("fingerprint", "")),
+                        repository_root=cwd,
+                        tenant=tenant,
                         timed_out=bool(result.get("timed_out")),
                         cancelled=bool(result.get("cancelled")),
                         affected_paths=tuple(set(diag_paths)),

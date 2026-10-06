@@ -386,6 +386,17 @@ def vram_priority(is_generation: bool = True):
         yield
 
 
+def _active_sqlite_databases(state_dir: Path) -> list[Path]:
+    legacy_names = {"agent_state.sqlite3", "cache.sqlite3", "leases.sqlite3", "agent_blackboard.sqlite3"}
+    recovery_markers = (".path-migration-", ".schema-mismatch-", ".corrupt-")
+    return sorted(
+        db
+        for pattern in ("*.sqlite", "*.sqlite3")
+        for db in state_dir.glob(pattern)
+        if db.name not in legacy_names and not any(marker in db.name for marker in recovery_markers)
+    )
+
+
 class LocalAIServices:
     commands: Any = None
     task_store: Any = None
@@ -457,7 +468,7 @@ class LocalAIServices:
 
         cache_cfg = config.get("cache", {})
         persistent = SQLiteCache(
-            Path(config["server"]["state_dir"]) / "cache.sqlite3",
+            Path(config["server"]["state_dir"]) / "cache.sqlite",
             namespace="generation",
             ttl_seconds=int(cache_cfg.get("generation_ttl_seconds", 7 * 86400)),
             max_entries=int(cache_cfg.get("generation_max_entries", 5000)),
@@ -469,7 +480,7 @@ class LocalAIServices:
         )
         self.generation_cache = SingleFlightCache(generation_tier, enabled=bool(cache_cfg.get("generation", True)), wait_timeout_seconds=float(config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 45)))
         embedding_cache = SQLiteCache(
-            Path(config["server"]["state_dir"]) / "cache.sqlite3",
+            Path(config["server"]["state_dir"]) / "cache.sqlite",
             namespace="embeddings",
             ttl_seconds=int(cache_cfg.get("embedding_ttl_seconds", 30 * 86400)),
             max_entries=int(cache_cfg.get("embedding_max_entries", 100000)),
@@ -483,7 +494,7 @@ class LocalAIServices:
         workspace_cfg = config.get("workspace_cache", {})
         self.repo_cache = TieredCache(
             SQLiteCache(
-                Path(config["server"]["state_dir"]) / "cache.sqlite3",
+                Path(config["server"]["state_dir"]) / "cache.sqlite",
                 namespace="repo-results",
                 ttl_seconds=int(workspace_cfg.get("repo_result_ttl_seconds", 7 * 86400)),
                 max_entries=int(workspace_cfg.get("repo_result_max_entries", 20000)),
@@ -499,7 +510,7 @@ class LocalAIServices:
             cooldown_seconds=float(resilience.get("circuit_cooldown_seconds", 20)),
         )
         self.stale_generation_cache = SQLiteCache(
-            Path(config["server"]["state_dir"]) / "cache.sqlite3",
+            Path(config["server"]["state_dir"]) / "cache.sqlite",
             namespace="generation-stale",
             ttl_seconds=int(resilience.get("stale_generation_ttl_seconds", 30 * 86400)),
             max_entries=int(resilience.get("stale_generation_max_entries", 10000)),
@@ -564,6 +575,8 @@ class LocalAIServices:
 
     def set_agent_state(self, store: Any) -> None:
         self.agent_state = store
+        from .agent_events import SwarmPubSub
+        SwarmPubSub.get_default(state_store=store)
 
     def set_consistency_guard(self, guard: Any) -> None:
         self.consistency_guard = guard
@@ -3255,11 +3268,19 @@ class LocalAIServices:
 
     def pubsub_publish(self, topic: str, message: dict[str, Any] | str, sender: str = "agent") -> dict[str, Any]:
         from .agent_events import SwarmPubSub
-        return SwarmPubSub.get_default().publish(topic, message, sender=sender)
+        return SwarmPubSub.get_default(state_store=self.agent_state).publish(topic, message, sender=sender)
 
-    def pubsub_poll(self, topic: str, since_timestamp: float = 0.0, limit: int = 50) -> dict[str, Any]:
+    def pubsub_poll(
+        self,
+        topic: str,
+        since_timestamp: float = 0.0,
+        limit: int = 50,
+        after_seq: int = 0,
+    ) -> dict[str, Any]:
         from .agent_events import SwarmPubSub
-        return SwarmPubSub.get_default().poll(topic, since_timestamp=since_timestamp, limit=limit)
+        return SwarmPubSub.get_default(state_store=self.agent_state).poll(
+            topic, since_timestamp=since_timestamp, limit=limit, after_seq=after_seq
+        )
 
     def synthesize_commit(self, root: str, hint: str = "", task_id: str = "") -> dict[str, Any]:
         tasks_data: list[dict[str, Any]] = []
@@ -3433,7 +3454,7 @@ class LocalAIServices:
         try:
             compiler = ContextCompiler(
                 AgentStateStore(
-                    configured_state_dir(getattr(self, "config", {}), create=False) / "agent_state.sqlite3",
+                    configured_state_dir(getattr(self, "config", {}), create=False) / "agent_state.sqlite",
                     enabled=False,
                 ),
                 config=getattr(self, "config", {}),
@@ -5568,7 +5589,7 @@ class LocalAIServices:
     def optimize_databases(self) -> dict[str, Any]:
         """Perform WAL checkpointing, page pruning and VACUUM/optimize across all SQLite stores."""
         state_dir = Path(self.config["server"]["state_dir"])
-        db_files = list(state_dir.glob("*.sqlite3"))
+        db_files = _active_sqlite_databases(state_dir)
         optimized = []
         bytes_freed = 0
         for db in db_files:
@@ -5594,7 +5615,7 @@ class LocalAIServices:
         """Purge cache entries older than N days to free disk space."""
         state_dir = Path(self.config["server"]["state_dir"])
         cutoff = time.time() - (days * 86400)
-        cache_db = state_dir / "cache.sqlite3"
+        cache_db = state_dir / "cache.sqlite"
         deleted_entries = 0
         if cache_db.is_file():
             try:
@@ -5675,7 +5696,7 @@ class LocalAIServices:
         })
         
         state_dir = Path(self.config["server"]["state_dir"])
-        dbs = list(state_dir.glob("*.sqlite3"))
+        dbs = _active_sqlite_databases(state_dir)
         checks.append({"component": "SQLite Databases", "status": "OK", "detail": f"{len(dbs)} active databases in {state_dir.name}"})
         
         prep_status = self.preprocessor.status() if self.preprocessor else {}

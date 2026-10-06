@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub import trace_context
 from local_ai_hub.agent_learning import (
     CandidateStatus,
     ImprovementCandidate,
@@ -126,6 +127,7 @@ def test_verification_store_indexes_and_retry(tmp_path: Path):
         criterion="test_pass",
         passed=True,
         evidence_id="ev_test",
+        command_id="cmd-verification-test",
     )
     vstore.record(rcpt)
 
@@ -204,10 +206,13 @@ def test_task_store_lock_and_retry(tmp_path: Path):
     assert hasattr(tstore, "_lock")
     assert isinstance(tstore._lock, type(threading.RLock()))
 
+    tenant_token = trace_context.set_context(tenant="tenant-a")
     task = tstore.create(
         contract=GoalContract(goal="test goal", acceptance_criteria=("crit1",)),
         context=ScopeContext(repository_id="repo1"),
+        repo_root=str(tmp_path),
     )
+    trace_context.reset_context(tenant_token)
 
     assert tstore.count() == 1
     assert tstore.count(TaskStatus.PLANNED) == 1
@@ -225,7 +230,9 @@ def test_task_store_lock_and_retry(tmp_path: Path):
     tstore.heartbeat(task.task_id, ttl_seconds=10.0)
 
     # Advance time to expire heartbeat
-    reaped = tstore.reap_expired_heartbeats(now=time.time() + 100.0)
+    reaped = tstore.reap_expired_heartbeats(
+        now=time.time() + 100.0, repo_root=tmp_path, tenant="tenant-a"
+    )
     assert task.task_id in reaped
 
     after_reap = tstore.get(task.task_id)

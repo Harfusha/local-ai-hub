@@ -149,7 +149,7 @@ class DeterministicEngine:
         self._query_l2_max_per_root = int(cfg.get("query_cache_l2_max_entries_per_root", 4000))
         audit_cfg = config.get("dependency_audit", {})
         self._osv_cache = SQLiteCache(
-            configured_state_dir(config) / "cache.sqlite3", "dependency-audit:osv",
+            configured_state_dir(config) / "cache.sqlite", "dependency-audit:osv",
             ttl_seconds=max(60, int(audit_cfg.get("osv_cache_ttl_seconds", 6 * 3600))), max_entries=20000,
         )
         self._fact_blob_max = int(cfg.get("fact_blob_max_entries", 100000))

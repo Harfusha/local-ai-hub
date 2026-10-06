@@ -8,9 +8,10 @@ import sqlite3
 import threading
 import time
 import uuid
-from contextlib import closing
+from contextvars import ContextVar
+from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from .cache import stable_hash
 from .debug_traces import DebugTraceObserver
@@ -23,7 +24,15 @@ class AsyncJobManager:
     """Durable, tenant-scoped orchestration whose model calls use the scheduler."""
 
     ACTIONS = {"delegate", "reason", "review", "review_diff", "second_opinion", "compress", "route", "batch", "speculative_lint"}
+    INFERENCE_ACTIONS = frozenset(ACTIONS - {"speculative_lint"})
+    DIRECT_INFERENCE_ACTIONS = frozenset({
+        "embed", "rerank", "transcribe", "vision", "benchmark", "complete_code",
+        "scaffold", "speculative_draft", "generate_tests", "solve", "eval_suite",
+        "prompt_eval", "eval_drift",
+    })
+    INFERENCE_ADMISSION_ACTIONS = INFERENCE_ACTIONS | DIRECT_INFERENCE_ACTIONS
     TERMINAL_STATES = frozenset({"done", "failed", "cancelled", "expired", "outcome_unknown"})
+    REQUEST_ID_SUPPLIED_MARKER = "_async_request_id_supplied"
 
     def __init__(
         self,
@@ -51,6 +60,18 @@ class AsyncJobManager:
         self.path = Path(config["server"]["state_dir"]) / "async_jobs.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._mode_transition_lock = threading.RLock()
+        self._inference_admissions: set[str] = set()
+        self._inference_admission_actions: dict[str, str] = {}
+        self._inference_admission_job_ids: dict[str, str | None] = {}
+        self._inference_condition = threading.Condition(self._lock)
+        self._inference_drain_waiters: list[tuple[frozenset[str], Callable[[], Any]]] = []
+        self._resource_release_tokens: set[str] = set()
+        self._resource_release_workers: dict[str, threading.Thread] = {}
+        self._resource_release_waiters: set[str] = set()
+        self._inference_admission_actions_context: ContextVar[tuple[str, ...]] = ContextVar(
+            f"async_job_inference_admission_actions_{id(self)}", default=()
+        )
         self._events: dict[str, threading.Event] = {}
         self._delayed_dispatch: dict[str, threading.Timer] = {}
         self._dispatchers: set[threading.Thread] = set()
@@ -60,6 +81,418 @@ class AsyncJobManager:
         self._stats = {"submitted": 0, "coalesced": 0, "completed": 0, "failed": 0, "cancelled": 0, "recovered": 0, "expired": 0}
         self._initialized = False
         self._init_db()
+
+
+
+
+    @staticmethod
+    def _operational_mode_api() -> tuple[Callable[..., Any] | None, Callable[..., Any] | None]:
+        loader = globals().get("load_operational_mode")
+        gate_error = globals().get("operational_mode_gate_error")
+        if callable(loader):
+            return loader, gate_error if callable(gate_error) else None
+        try:
+            from importlib import import_module
+
+            module = import_module(".operational_mode", package=__package__)
+        except Exception:
+            return None, None
+        loader = getattr(module, "load_operational_mode", None)
+        gate_error = getattr(module, "operational_mode_gate_error", None)
+        return (
+            loader if callable(loader) else None,
+            gate_error if callable(gate_error) else None,
+        )
+
+    def _operational_mode_snapshot(self) -> dict[str, Any]:
+        loader, gate_error = self._operational_mode_api()
+        try:
+            if not callable(loader):
+                raise RuntimeError("operational mode loader is not available")
+            snapshot = loader(self.path.parent)
+        except Exception as exc:
+            return self._normalize_operational_mode_snapshot(
+                None, gate_error, error=str(exc)
+            )
+        return self._normalize_operational_mode_snapshot(snapshot, gate_error)
+
+    @staticmethod
+    def _normalize_operational_mode_snapshot(
+        snapshot: Any,
+        gate_error: Callable[..., Any] | None,
+        *,
+        error: str = "",
+    ) -> dict[str, Any]:
+        try:
+            mode = str(getattr(snapshot, "mode", "") or "").strip().lower()
+            revision = max(0, int(getattr(snapshot, "revision", 0) or 0))
+            degraded = bool(getattr(snapshot, "degraded", False))
+            error = error or str(getattr(snapshot, "error", "") or "")[:240]
+        except Exception as exc:
+            mode, revision, degraded = "maintenance", -1, True
+            error = str(exc)[:240]
+        if mode not in {"active", "gaming", "maintenance"}:
+            mode, degraded = "maintenance", True
+        if degraded:
+            mode = "maintenance"
+        return {
+            "mode": mode,
+            "revision": revision,
+            "degraded": degraded,
+            "error": error,
+            "snapshot": snapshot,
+            "gate_error": gate_error,
+        }
+
+    def on_operational_mode_changed(self, snapshot: Any) -> dict[str, Any]:
+        """Cancel blocked jobs and report whether inference is still in flight.
+
+        A cancellation request is not a completion receipt. Callers must defer model
+        unload while ``inference_active`` is true and must not claim models unloaded
+        from this callback alone.
+        """
+        _, gate_error = self._operational_mode_api()
+        normalized = self._normalize_operational_mode_snapshot(snapshot, gate_error)
+        with self._mode_transition_lock:
+            return self._cancel_jobs_blocked_by_mode(normalized)
+
+    @contextmanager
+    def operational_mode_change_guard(self):
+        """Serialize mode persistence against async executor admission.
+
+        The mode setter must hold this guard while it persists the new snapshot
+        and calls ``on_operational_mode_changed`` with that snapshot.
+        """
+        with self._mode_transition_lock:
+            yield
+
+    @classmethod
+    def _mode_blocked_actions(cls, snapshot: dict[str, Any]) -> frozenset[str]:
+        mode = str(snapshot.get("mode", "maintenance"))
+        if snapshot.get("degraded") or mode == "maintenance":
+            return frozenset(cls.ACTIONS | cls.DIRECT_INFERENCE_ACTIONS)
+        if mode == "gaming":
+            return cls.INFERENCE_ADMISSION_ACTIONS
+        return frozenset()
+
+    def _mode_blocked_result(self, action: str, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+        if action not in self._mode_blocked_actions(snapshot):
+            return None
+        gate_error = snapshot.get("gate_error")
+        raw_snapshot = snapshot.get("snapshot")
+        response = (
+            gate_error(raw_snapshot, action)
+            if callable(gate_error) and raw_snapshot is not None
+            else None
+        )
+        if not isinstance(response, dict):
+            response = {
+                "success": False,
+                "error": f"async job blocked by operational mode: {snapshot['mode']}",
+                "error_code": "operational_mode_blocked",
+            }
+        retry_after = max(1, int(response.get("retry_after_seconds", 5)))
+        admission = self._admission("rejected", "operational_mode_blocked", retryable=True)
+        return {
+            **response,
+            "success": False,
+            "state": "rejected",
+            "code": str(response.get("error_code") or "operational_mode_blocked"),
+            "status_code": 423,
+            "operational_mode": snapshot["mode"],
+            "operational_mode_revision": snapshot["revision"],
+            "operational_mode_degraded": snapshot["degraded"],
+            "admission": admission,
+            "admission_state": admission["state"],
+            "terminal": False,
+            "retryable": True,
+            "retry_after_seconds": retry_after,
+            "coalesced": False,
+        }
+
+    def _cancel_jobs_blocked_by_mode(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        blocked = self._mode_blocked_actions(snapshot)
+        rows = []
+        if blocked and not self._shutdown.is_set():
+            with self._lock, closing(self._connect()) as con:
+                rows = con.execute(
+                    "SELECT job_id,tenant,action FROM async_jobs "
+                    "WHERE state IN ('queued','running') AND cancel_requested=0"
+                ).fetchall()
+        requested = 0
+        for job_id, tenant, action in rows:
+            if str(action) in blocked:
+                # Reuse the regular cancellation path, including bounded process cleanup.
+                receipt = self.cancel(str(tenant), str(job_id))
+                requested += int(bool(receipt.get("cancel_requested")))
+        inference_actions = sorted(self.INFERENCE_ACTIONS)
+        placeholders = ",".join("?" for _ in inference_actions)
+        with self._lock, closing(self._connect()) as con:
+            active_job_ids = {
+                str(row[0])
+                for row in con.execute(
+                    f"SELECT job_id FROM async_jobs WHERE state='running' AND action IN ({placeholders})",
+                    inference_actions,
+                ).fetchall()
+            } if inference_actions else set()
+            tracked_job_ids = {
+                job_id
+                for token, job_id in self._inference_admission_job_ids.items()
+                if token in self._inference_admissions and job_id is not None
+            }
+            active_direct_admissions = sum(
+                1
+                for token, job_id in self._inference_admission_job_ids.items()
+                if token in self._inference_admissions and job_id is None
+            )
+            active_inference_jobs = len(active_job_ids | tracked_job_ids) + active_direct_admissions
+        mode = str(snapshot.get("mode", "maintenance"))
+        inference_active = active_inference_jobs > 0
+        with self._lock:
+            active_resource_releases = len(self._resource_release_tokens)
+        inference_active = inference_active or active_resource_releases > 0
+        return {
+            "success": True,
+            "operational_mode": mode,
+            "operational_mode_revision": int(snapshot.get("revision", 0)),
+            "cancel_requests_issued": requested,
+            "active_inference_jobs": active_inference_jobs,
+            "active_resource_releases": active_resource_releases,
+            "inference_active": inference_active,
+            "models_unloaded": False,
+            "model_unload_state": (
+                "deferred" if inference_active else "ready"
+            ) if mode == "gaming" else "not_requested",
+        }
+
+    def begin_resource_release(self) -> str:
+        """Reserve accelerator ownership until every bounded release worker exits."""
+        token = uuid.uuid4().hex
+        with self._mode_transition_lock, self._lock:
+            if self._shutdown.is_set():
+                raise RuntimeError("async job manager is closing")
+            self._resource_release_tokens.add(token)
+        return token
+
+    def register_resource_release_worker(
+        self, token: str, worker: threading.Thread
+    ) -> bool:
+        with self._lock:
+            if self._shutdown.is_set() or str(token) not in self._resource_release_tokens:
+                return False
+            self._resource_release_workers[str(token)] = worker
+            return True
+
+    def end_resource_release(self, token: str) -> None:
+        """Release ownership and wake queued jobs only after the final cleanup exits."""
+        with self._mode_transition_lock, self._lock:
+            token = str(token)
+            self._resource_release_tokens.discard(token)
+            self._resource_release_workers.pop(token, None)
+            if self._resource_release_tokens:
+                return
+            waiters = sorted(self._resource_release_waiters)
+            self._resource_release_waiters.clear()
+        for job_id in waiters:
+            self._reset_event_for_resume(job_id)
+            self._dispatch_background(job_id)
+
+    def resource_release_active(self) -> bool:
+        with self._lock:
+            return bool(self._resource_release_tokens)
+
+    def wait_for_inference_actions(self, actions: set[str] | frozenset[str], timeout_seconds: float) -> bool:
+        """Wait until direct HTTP admissions for the named actions have exited."""
+        wanted = frozenset(str(action) for action in actions)
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        with self._inference_condition:
+            while any(
+                token in self._inference_admissions and action in wanted
+                for token, action in self._inference_admission_actions.items()
+            ):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._inference_condition.wait(remaining)
+            return True
+
+    def when_inference_actions_drained(
+        self, actions: set[str] | frozenset[str], callback: Callable[[], Any]
+    ) -> None:
+        """Run callback after direct HTTP admissions for the named actions exit."""
+        wanted = frozenset(str(action) for action in actions)
+        with self._inference_condition:
+            if any(
+                token in self._inference_admissions and action in wanted
+                for token, action in self._inference_admission_actions.items()
+            ):
+                self._inference_drain_waiters.append((wanted, callback))
+                return
+        callback()
+
+    def inference_actions_active(self, *, exclude_actions: set[str] | frozenset[str] = frozenset()) -> bool:
+        """Return active inference ownership, optionally excluding a completed direct action."""
+        excluded = {str(action) for action in exclude_actions}
+        with self._lock:
+            if any(
+                action not in excluded
+                for token, action in self._inference_admission_actions.items()
+                if token in self._inference_admissions
+            ):
+                return True
+        inference_actions = sorted(set(self.INFERENCE_ACTIONS) - excluded)
+        if not inference_actions:
+            return False
+        placeholders = ",".join("?" for _ in inference_actions)
+        with closing(self._connect()) as con:
+            active_jobs = int(
+                con.execute(
+                    f"SELECT COUNT(*) FROM async_jobs WHERE state='running' AND action IN ({placeholders})",
+                    inference_actions,
+                ).fetchone()[0]
+            )
+        return active_jobs > 0
+
+    def _reset_event_for_resume(self, job_id: str) -> None:
+        event = self._event(str(job_id))
+        event.clear()
+        with closing(self._connect()) as con:
+            row = con.execute(
+                "SELECT state FROM async_jobs WHERE job_id=?", (str(job_id),)
+            ).fetchone()
+        if row and str(row[0]) in self.TERMINAL_STATES:
+            event.set()
+
+    def _defer_until_resource_release_finishes(self, job_id: str) -> None:
+        should_dispatch = False
+        with self._mode_transition_lock, self._lock:
+            if self._shutdown.is_set():
+                return
+            if self._resource_release_tokens:
+                self._resource_release_waiters.add(str(job_id))
+            else:
+                should_dispatch = True
+        if should_dispatch:
+            self._reset_event_for_resume(str(job_id))
+            self._dispatch_background(str(job_id))
+
+    @contextmanager
+    def inference_admission(
+        self, action: str, *, job_id: str | None = None
+    ) -> Iterator[dict[str, Any] | None]:
+        """Admit work under the mode lock, then track it without holding that lock."""
+        action = str(action).strip().lower().replace("-", "_")
+        active_token: str | None = None
+        context_token = None
+        rejection: dict[str, Any] | None = None
+        with self._mode_transition_lock:
+            snapshot = self._operational_mode_snapshot()
+            with self._lock:
+                release_in_progress = bool(self._resource_release_tokens)
+            if release_in_progress and action in self.INFERENCE_ADMISSION_ACTIONS:
+                rejection = {
+                    "success": False,
+                    "error": "in-process accelerator release is still in progress",
+                    "error_code": "resource_release_in_progress",
+                    "status_code": 423,
+                    "operational_mode": snapshot["mode"],
+                    "terminal": False,
+                    "retryable": True,
+                    "retry_after_seconds": 5,
+                }
+            else:
+                rejection = self._mode_blocked_result(action, snapshot)
+            if rejection is not None:
+                self._cancel_jobs_blocked_by_mode(snapshot)
+            elif job_id is not None:
+                with self._lock, closing(self._connect()) as con:
+                    row = con.execute(
+                        "SELECT state,cancel_requested FROM async_jobs WHERE job_id=?",
+                        (job_id,),
+                    ).fetchone()
+                    if not row or str(row[0]) != "running" or bool(row[1]):
+                        rejection = {
+                            "success": False,
+                            "error": "async job cancelled before executor start",
+                            "terminal": True,
+                            "retryable": False,
+                        }
+                    else:
+                        admitted_at = time.time()
+                        updated = con.execute(
+                            "UPDATE async_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='running' AND cancel_requested=0",
+                            (admitted_at + self.lease_seconds, admitted_at, job_id),
+                        )
+                        if updated.rowcount != 1:
+                            rejection = {
+                                "success": False,
+                                "error": "async job cancelled before executor start",
+                                "terminal": True,
+                                "retryable": False,
+                            }
+                        else:
+                            con.commit()
+            if rejection is None and action in self.INFERENCE_ADMISSION_ACTIONS:
+                active_actions = self._inference_admission_actions_context.get()
+                if action not in active_actions:
+                    active_token = uuid.uuid4().hex
+                    with self._inference_condition:
+                        self._inference_admissions.add(active_token)
+                        self._inference_admission_actions[active_token] = str(action)
+                        self._inference_admission_job_ids[active_token] = (
+                            str(job_id) if job_id is not None else None
+                        )
+                        self._inference_condition.notify_all()
+                context_token = self._inference_admission_actions_context.set(
+                    (*active_actions, action)
+                )
+
+        if rejection is not None:
+            yield rejection
+            return
+        try:
+            yield None
+        finally:
+            if context_token is not None:
+                self._inference_admission_actions_context.reset(context_token)
+            if active_token is not None:
+                callbacks: list[Callable[[], Any]] = []
+                with self._inference_condition:
+                    self._inference_admissions.discard(active_token)
+                    self._inference_admission_actions.pop(active_token, None)
+                    self._inference_admission_job_ids.pop(active_token, None)
+                    remaining_waiters: list[tuple[frozenset[str], Callable[[], Any]]] = []
+                    for actions, callback in self._inference_drain_waiters:
+                        if any(
+                            token in self._inference_admissions and action in actions
+                            for token, action in self._inference_admission_actions.items()
+                        ):
+                            remaining_waiters.append((actions, callback))
+                        else:
+                            callbacks.append(callback)
+                    self._inference_drain_waiters = remaining_waiters
+                    self._inference_condition.notify_all()
+                for callback in callbacks:
+                    try:
+                        callback()
+                    except Exception:
+                        pass
+
+    def foreground_busy(self) -> bool:
+        """Return whether admitted inference still owns the runtime."""
+        with self._lock:
+            if self._inference_admissions or self._resource_release_tokens:
+                return True
+        inference_actions = sorted(self.INFERENCE_ACTIONS)
+        placeholders = ",".join("?" for _ in inference_actions)
+        with closing(self._connect()) as con:
+            active_jobs = int(
+                con.execute(
+                    f"SELECT COUNT(*) FROM async_jobs WHERE state='running' AND action IN ({placeholders})",
+                    inference_actions,
+                ).fetchone()[0]
+            ) if inference_actions else 0
+        return active_jobs > 0
 
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=0.75)
@@ -101,7 +534,7 @@ class AsyncJobManager:
     @staticmethod
     def _safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
         allowed = {
-            "task", "context", "candidate", "complexity", "max_tokens", "tasks", "task_id", "root", "paths", "command",
+            "task", "context", "candidate", "complexity", "max_tokens", "tasks", "task_id", "root", "cwd", "paths", "command",
             "instructions", "base", "staged", "mode", "diff_tokens", "consensus", "_async_job", "request_id",
         }
         return {key: payload[key] for key in allowed if key in payload}
@@ -113,6 +546,18 @@ class AsyncJobManager:
         except Exception:
             return ""
         return value.strip() if isinstance(value, str) else ""
+
+    @classmethod
+    def _replay_request_id(cls, payload: Any) -> str:
+        try:
+            decoded = json.loads(payload) if isinstance(payload, str) else payload
+        except Exception:
+            return ""
+        if not isinstance(decoded, dict):
+            return ""
+        if cls.REQUEST_ID_SUPPLIED_MARKER in decoded and decoded.get(cls.REQUEST_ID_SUPPLIED_MARKER) is not True:
+            return ""
+        return cls._request_id(decoded)
 
     def _result_artifact_available(self, artifact_id: str, tenant: str) -> bool:
         artifact_id = str(artifact_id or "").strip()
@@ -218,18 +663,25 @@ class AsyncJobManager:
         if action not in self.ACTIONS:
             return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}
         clean = self._safe_payload(payload)
-        encoded = json_dumps(clean, ensure_ascii=False, separators=(",", ":"))
+        clean.pop(self.REQUEST_ID_SUPPLIED_MARKER, None)
+        caller_request_id = self._request_id(clean)
+        request_hash = stable_hash({"tenant": tenant, "action": action, "payload": clean})
+        stored_payload = dict(clean)
+        if not caller_request_id:
+            stored_payload["request_id"] = uuid.uuid4().hex
+        stored_payload[self.REQUEST_ID_SUPPLIED_MARKER] = bool(caller_request_id)
+        encoded = json_dumps(stored_payload, ensure_ascii=False, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > 2_000_000:
             return {"success": False, "error": "async task payload exceeds 2MB", "terminal": True, "retryable": False}
-        request_hash = stable_hash({"tenant": tenant, "action": action, "payload": clean})
-        request_id = self._request_id(clean)
         task_id = str(clean.get("task_id") or "")
+        delay = max(0.0, min(30.0, float(dispatch_delay_seconds or 0.0)))
         now = time.time()
-        with self._lock, closing(self._connect()) as con:
-            if request_id:
+        dispatch_not_before = now + delay if delay else 0.0
+        with self._mode_transition_lock, self._lock, closing(self._connect()) as con:
+            if caller_request_id:
                 identified = con.execute(
                     "SELECT job_id,action,request_hash,state,trace_id,task_id,expires_at,created_at,error,artifact_id FROM async_jobs WHERE tenant=? AND json_valid(payload_json) AND json_extract(payload_json,'$.request_id')=? ORDER BY created_at LIMIT 1",
-                    (tenant, request_id),
+                    (tenant, caller_request_id),
                 ).fetchone()
                 if identified:
                     job_id, old_action, old_hash, old_state, trace_id, old_task_id, expires_at, created_at, old_error, artifact_id = identified
@@ -255,6 +707,10 @@ class AsyncJobManager:
                 age_ms = max(0.0, (now - float(con.execute("SELECT created_at FROM async_jobs WHERE job_id=?", (existing[0],)).fetchone()[0])) * 1000.0)
                 admission = self._admission("coalesced", "duplicate_active_job", retryable=False, queue_age_ms=age_ms)
                 return {"success": True, "job_id": existing[0], "trace_id": str(existing[2] or ""), "task_id": str(existing[3] or ""), "state": existing[1], "coalesced": True, "admission": admission, "admission_state": admission["state"]}
+            mode_snapshot = self._operational_mode_snapshot()
+            mode_rejection = self._mode_blocked_result(action, mode_snapshot)
+            if mode_rejection is not None:
+                return mode_rejection
             admission = self._resource_admission()
             if admission["state"] == "rejected":
                 return {"success": False, "state": "rejected", "error": "async job admission rejected by resource pressure", "admission": admission, "admission_state": admission["state"], "terminal": False, "retryable": True, "coalesced": False}
@@ -263,7 +719,9 @@ class AsyncJobManager:
                 admission = self._admission("rejected", "queue_limit", retryable=True)
                 return {"success": False, "state": "rejected", "error": "async job queue limit reached", "admission": admission, "admission_state": admission["state"], "terminal": False, "retryable": True, "coalesced": False}
             job_id = uuid.uuid4().hex
-            con.execute("INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,task_id) VALUES(?,?,?,?,?,'queued',?,?,?,?)", (job_id, tenant, action, request_hash, encoded, now, now, now + self.result_ttl_seconds, task_id))
+            # Persist the delay before commit so tick/recovery cannot claim this
+            # queued row before its timer has been registered in this process.
+            con.execute("INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,task_id,lease_until) VALUES(?,?,?,?,?,'queued',?,?,?,?,?)", (job_id, tenant, action, request_hash, encoded, now, now, now + self.result_ttl_seconds, task_id, dispatch_not_before))
             con.commit()
             self._stats["submitted"] += 1
         trace_id = ""
@@ -277,7 +735,6 @@ class AsyncJobManager:
             except Exception:
                 trace_id = ""
         self._event(job_id)
-        delay = max(0.0, min(30.0, float(dispatch_delay_seconds or 0.0)))
         if delay:
             timer = threading.Timer(delay, self._dispatch, args=(job_id,))
             timer.daemon = True
@@ -294,19 +751,34 @@ class AsyncJobManager:
                 con.row_factory = sqlite3.Row
                 return con.execute("SELECT * FROM async_jobs WHERE job_id=? AND tenant=?", (job_id, tenant)).fetchone()
         return retry_busy(read, retries=3)
-
     def _dispatch(self, job_id: str) -> None:
         if self._shutdown.is_set():
             return
-        with self._lock:
-            self._delayed_dispatch.pop(job_id, None)
-        with self._lock, closing(self._connect()) as con:
-            con.row_factory = sqlite3.Row
-            row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
-            if not row or row["state"] != "queued" or row["cancel_requested"] or float(row["lease_until"] or 0) > time.time():
-                return
-            con.execute("UPDATE async_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='queued'", (time.time() + self.lease_seconds, time.time(), job_id))
-            con.commit()
+        with self._mode_transition_lock:
+            self._cancel_jobs_blocked_by_mode(self._operational_mode_snapshot())
+            with self._lock:
+                self._delayed_dispatch.pop(job_id, None)
+            with self._lock, closing(self._connect()) as con:
+                con.row_factory = sqlite3.Row
+                row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
+                now = time.time()
+                if (
+                    not row
+                    or row["state"] != "queued"
+                    or row["cancel_requested"]
+                    or float(row["lease_until"] or 0) > now
+                ):
+                    return
+                if self._resource_release_tokens:
+                    self._resource_release_waiters.add(str(job_id))
+                    return
+                claimed = con.execute(
+                    "UPDATE async_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='queued' AND cancel_requested=0 AND lease_until<=?",
+                    (now + self.lease_seconds, now, job_id, now),
+                ).rowcount
+                con.commit()
+                if not claimed:
+                    return
 
         def run() -> None:
             try:
@@ -324,6 +796,7 @@ class AsyncJobManager:
             self._workers.add(worker)
         worker.start()
 
+
     def _release_for_retry(self, job_id: str, error: str) -> None:
         trace_id = ""
         with self._lock, closing(self._connect()) as con:
@@ -332,7 +805,7 @@ class AsyncJobManager:
                 return
             attempts, cancelled = int(row[0] or 0) + 1, bool(row[1])
             trace_id = str(row[2] or "") if len(row) > 2 and row[2] else ""
-            can_retry = bool(self._request_id(row[3])) and attempts < self.max_attempts
+            can_retry = bool(self._replay_request_id(row[3])) and attempts < self.max_attempts
             state = "cancelled" if cancelled else "queued" if can_retry else "outcome_unknown"
             detail = error[:500] if state in {"queued", "cancelled"} else f"async job outcome unknown after interrupted attempt: {error}"[:500]
             con.execute("UPDATE async_jobs SET state=?,attempts=?,lease_until=0,error=?,updated_at=? WHERE job_id=?", (state, attempts, detail, time.time(), job_id))
@@ -347,6 +820,22 @@ class AsyncJobManager:
                 pass
         self._event(job_id).set()
 
+    def _invoke_executor_if_allowed(
+        self, job_id: str, action: str, payload: dict[str, Any], tenant: str
+    ) -> dict[str, Any]:
+        """Admit atomically, then run executor while reservation keeps unload deferred."""
+        with self.inference_admission(action, job_id=job_id) as rejection:
+            if rejection is not None:
+                if rejection.get("error_code") == "resource_release_in_progress":
+                    return {**rejection, "state": "queued"}
+                return {
+                    "success": False,
+                    "error": "async job cancelled before executor start",
+                    "terminal": True,
+                    "retryable": False,
+                }
+            return self.executor(action, payload, tenant)
+
     def _execute(self, job_id: str) -> dict[str, Any]:
         with self._lock, closing(self._connect()) as con:
             con.row_factory = sqlite3.Row
@@ -360,8 +849,16 @@ class AsyncJobManager:
                 return {"success": False, "job_id": job_id, "state": state, "error": "async job cancelled before execution" if cancelled else "async job is not queued", "outcome_unknown": state == "outcome_unknown", "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}, "admission": self._admission("accepted", "capacity_available", retryable=False)}
             con.execute("UPDATE async_jobs SET state='running',attempts=attempts+1,lease_until=?,updated_at=? WHERE job_id=?", (time.time() + self.lease_seconds, time.time(), job_id))
             con.commit()
-            tenant, action, payload, trace_id = str(row["tenant"]), str(row["action"]), json.loads(str(row["payload_json"])), str(row["trace_id"] or "")
-            request_id = self._request_id(payload)
+            tenant, action, stored_payload, trace_id = str(row["tenant"]), str(row["action"]), json.loads(str(row["payload_json"])), str(row["trace_id"] or "")
+            if not isinstance(stored_payload, dict):
+                stored_payload = {}
+            request_id = self._replay_request_id(stored_payload)
+            payload = {
+                key: value
+                for key, value in stored_payload.items()
+                if key != self.REQUEST_ID_SUPPLIED_MARKER
+                and (key != "request_id" or bool(request_id))
+            }
             task_id = str(row["task_id"] or "") if "task_id" in row.keys() else ""
         if task_id and self.task_store is not None:
             try:
@@ -378,7 +875,7 @@ class AsyncJobManager:
         observer = DebugTraceObserver(self.debug_traces, trace_id) if self.debug_traces is not None and trace_id else None
         observer_token = set_observer(observer)
         try:
-            result = self.executor(action, payload, tenant)
+            result = self._invoke_executor_if_allowed(job_id, action, payload, tenant)
             if not isinstance(result, dict):
                 result = {
                     "success": False,
@@ -390,6 +887,7 @@ class AsyncJobManager:
         finally:
             reset_observer(observer_token)
             self._cleanup_processes(job_id)
+        deferred_for_resource_release = False
         if result.get("success") and str(result.get("state", "")) in {"queued", "running"}:
             result = {"success": False, "error": "async executor returned non-terminal state", "retryable": True}
         with self._lock, closing(self._connect()) as con:
@@ -404,6 +902,18 @@ class AsyncJobManager:
                         self.task_store.fail(task_id, reason="async job cancelled")
                     except Exception:
                         pass
+            elif result.get("error_code") == "resource_release_in_progress":
+                final = {
+                    **result,
+                    "state": "queued",
+                    "terminal": False,
+                    "retryable": True,
+                }
+                con.execute(
+                    "UPDATE async_jobs SET state='queued',attempts=CASE WHEN attempts>0 THEN attempts-1 ELSE 0 END,result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?",
+                    (json_dumps(final, ensure_ascii=False, separators=(",", ":")), str(final.get("error", "resource release in progress"))[:500], time.time(), job_id),
+                )
+                deferred_for_resource_release = True
             elif result.get("success"):
                 artifact_id = ""
                 try:
@@ -472,6 +982,8 @@ class AsyncJobManager:
             except Exception:
                 pass
         self._event(job_id).set()
+        if deferred_for_resource_release:
+            self._defer_until_resource_release_finishes(job_id)
         return final
 
     def status(self, tenant: str, job_id: str) -> dict[str, Any]:
@@ -573,16 +1085,20 @@ class AsyncJobManager:
             return 0
         cancelled_ids: list[tuple[str, str]] = []
         unknown_ids: list[tuple[str, str]] = []
+        now = time.time()
         with self._lock, closing(self._connect()) as con:
-            rows = con.execute("SELECT job_id,state,attempts,cancel_requested,trace_id,payload_json FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
-            for job_id, state, attempts, cancelled, trace_id, payload_json in rows:
+            rows = con.execute("SELECT job_id,state,attempts,cancel_requested,trace_id,payload_json,lease_until FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
+            for job_id, state, attempts, cancelled, trace_id, payload_json, lease_until in rows:
                 if cancelled:
                     con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                     cancelled_ids.append((str(job_id), str(trace_id or "")))
-                elif (state == "running" or int(attempts or 0) > 0) and (not self._request_id(payload_json) or int(attempts or 0) >= self.max_attempts):
+                elif (state == "running" or int(attempts or 0) > 0) and (not self._replay_request_id(payload_json) or int(attempts or 0) >= self.max_attempts):
                     error = "async job outcome unknown after restart; safe replay unavailable"
                     con.execute("UPDATE async_jobs SET state='outcome_unknown',lease_until=0,error=?,updated_at=? WHERE job_id=?", (error, time.time(), job_id))
                     unknown_ids.append((str(job_id), str(trace_id or "")))
+                elif state == "queued" and float(lease_until or 0) > now:
+                    # Keep persisted dispatch/worker lease; tick will claim it when due.
+                    continue
                 else:
                     con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id)); ids.append((str(job_id), str(trace_id or "")))
             con.commit()
@@ -618,7 +1134,7 @@ class AsyncJobManager:
             stuck = con.execute("SELECT job_id, attempts, cancel_requested, payload_json FROM async_jobs WHERE state='running' AND lease_until<?", (now,)).fetchall()
             for s_id, s_att, s_canc, payload_json in stuck:
                 s_attempts = int(s_att or 0)
-                request_id = self._request_id(payload_json)
+                request_id = self._replay_request_id(payload_json)
                 if s_canc or s_attempts >= self.max_attempts or not request_id:
                     state = "cancelled" if s_canc else "outcome_unknown"
                     error = "async job cancelled" if s_canc else "async job outcome unknown after lease expiry; safe replay unavailable"

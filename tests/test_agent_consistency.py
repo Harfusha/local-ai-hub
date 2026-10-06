@@ -711,11 +711,15 @@ def test_guard_records_unknown_and_validation_receipt(repository: Path):
     request = _request(repository)
 
     unknown = guard.record_unknown(request, claim="PaymentGateway exists", evidence_ids=("synthetic-claim-1",))
-    validation = guard.record_validation(request, criterion="tests", passed=True, evidence_ids=("ev-tests",))
+    validation = guard.record_validation(
+        request, criterion="tests", passed=True, evidence_ids=("ev-tests",), command_id="cmd-tests"
+    )
 
     assert unknown is not None and unknown.kind is MemoryKind.UNKNOWN
     assert validation is not None and validation.kind is MemoryKind.VALIDATION
-    assert verification.completion(request.task_id).receipts[0].evidence_id == "ev-tests"
+    receipt = verification.completion(request.task_id).receipts[0]
+    assert receipt.evidence_id == "ev-tests"
+    assert receipt.command_id == "cmd-tests"
 
 
 def test_record_validation_verifier_exception_records_failure_without_passed_receipt(repository: Path):
@@ -759,7 +763,7 @@ def test_record_validation_verifier_true_records_matching_passed_receipt(reposit
     request = _request(repository)
 
     validation = guard.record_validation(
-        request, criterion="tests", verifier=lambda: True, evidence_ids=("ev-tests",)
+        request, criterion="tests", verifier=lambda: True, evidence_ids=("ev-tests",), command_id="cmd-tests"
     )
 
     assert validation is not None and validation.value["passed"] is True
@@ -769,6 +773,22 @@ def test_record_validation_verifier_true_records_matching_passed_receipt(reposit
     assert receipts[0].task_id == request.task_id
     assert receipts[0].criterion == "tests"
     assert receipts[0].evidence_id == "ev-tests"
+    assert receipts[0].command_id == "cmd-tests"
+
+
+def test_record_validation_requires_command_id_for_passed_receipt(repository: Path):
+    state = AgentStateStore(repository.parent / "guard-verifier-missing-command.sqlite3")
+    memory = MemoryStore(state)
+    verification = VerificationStore(state)
+    guard = AgentConsistencyGuard(memory_store=memory, verification_store=verification)
+    request = _request(repository)
+
+    with pytest.raises(ValueError, match="passed validation receipt requires command_id"):
+        guard.record_validation(
+            request, criterion="tests", verifier=lambda: True, evidence_ids=("ev-tests",)
+        )
+
+    assert verification.completion(request.task_id).receipts == ()
 
 
 def test_guard_metrics_store_categories_without_raw_prompt_or_source(repository: Path):
