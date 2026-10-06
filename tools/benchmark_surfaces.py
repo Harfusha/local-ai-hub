@@ -3024,7 +3024,7 @@ def run_benchmark(
                 raise RuntimeError("Hub CodeIndex did not accept synthetic files")
             return {
                 "files_processed": int(result.get("files_processed", 0)),
-                "files_seeded": int(result.get("files_processed", 0)) + int(result.get("cached", 0)),
+                "files_seeded": int(result.get("files_processed", 0)) + int(result.get("cached") or 0),
                 "symbols_indexed": int(result.get("symbols", 0)),
             }
 

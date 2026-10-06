@@ -50,6 +50,74 @@ def live_client(tmp_path, monkeypatch):
         app.close()
 
 
+@pytest.fixture
+def root_scoped_live_client(tmp_path, monkeypatch):
+    from local_ai_hub import http_server
+    from local_ai_hub.app import LocalAIApp
+    from local_ai_hub.client import HubClient
+
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    state_dir = tmp_path / "state"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = tmp_path / "root-scoped-config.toml"
+    config.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
+        f'state_dir = "{state_dir.as_posix()}"\n'
+        '[agent_state]\nenabled = true\n'
+        '[security]\n'
+        'api_token_tenant = "sdk-root-test"\n'
+        'tenant_derivation_key = "t04-test-root-key-0123456789-abcdef"\n'
+        f'allowed_roots = ["{workspace.as_posix()}"]\n',
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(config))
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server, "_completion_revision_or_stop", lambda *_args: ("test-revision", None))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = HubClient(tenant="sdk-root-test", config_path=str(config), auto_start=False)
+    try:
+        yield app, client, workspace
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+        app.close()
+
+
+def test_verification_sdk_methods_forward_root_through_allowed_http_route(root_scoped_live_client, tmp_path):
+    _app, client, workspace = root_scoped_live_client
+    root = str(workspace)
+    created = client.create_task(
+        "Verify a root-scoped SDK task",
+        acceptance_criteria=["receipt accepted"],
+        task_id="sdk-root-verification",
+        root=root,
+    )
+    assert created.get("success") is True
+
+    receipt = client.verify_receipt(
+        "sdk-root-verification",
+        "receipt accepted",
+        passed=False,
+        repository_revision="rev-sdk-test",
+        root=root,
+    )
+    completion = client.verify_completion("sdk-root-verification", root=root)
+
+    assert receipt.get("success") is True
+    assert receipt["receipt"]["repository_revision"] == "rev-sdk-test"
+    assert completion.get("success") is True
+    rejected = client.verify_receipt(
+        "sdk-root-verification",
+        "receipt accepted",
+        root=str(tmp_path / "outside-allowlist"),
+    )
+    assert rejected.get("success") is False
+
+
 def test_sdk_convenience_methods_map_to_production_http_handlers(live_client, tmp_path, http_post_paths):
     app, client = live_client
     routes = []
