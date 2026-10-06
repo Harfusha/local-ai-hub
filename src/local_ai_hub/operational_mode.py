@@ -1,105 +1,209 @@
-"""Persist and enforce lightweight Hub operating modes."""
+"""Atomic persistence for the Hub's process-wide operational mode."""
 
 from __future__ import annotations
 
 import json
-import math
+import errno
 import os
 import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 
 
-MODE_STATE_FILENAME = "operational_mode.json"
-OperationalModeName = Literal["active", "gaming", "maintenance"]
-OperationClass = Literal["deterministic_read", "inference", "preprocess"]
-_MODES = frozenset({"active", "gaming", "maintenance"})
-_OPERATIONS = frozenset({"deterministic_read", "inference", "preprocess"})
+OperationalMode = Literal["active", "gaming", "maintenance"]
+_ALLOWED_MODES = frozenset({"active", "gaming", "maintenance"})
+_STATE_FILENAME = "operational_mode.json"
+_LOCK_FILENAME = "operational_mode.lock"
+_LOCK = threading.RLock()
+_WRITER_LOCK_TIMEOUT_SECONDS = 5.0
+_REPLACE_RETRY_SECONDS = 1.0
+
+
+@contextmanager
+def _state_writer_lock(state_dir: str | Path) -> Iterator[None]:
+    """Serialize state updates across Hub, MCP, and CLI processes."""
+    lock_path = Path(state_dir) / _LOCK_FILENAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as stream:
+        stream.seek(0, os.SEEK_END)
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+        deadline = time.monotonic() + _WRITER_LOCK_TIMEOUT_SECONDS
+        if os.name == "nt":
+            import msvcrt
+
+            while True:
+                try:
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) not in {33, 36} and exc.errno not in {errno.EACCES, errno.EDEADLK, errno.EAGAIN}:
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("timed out waiting for operational mode writer lock") from exc
+                    time.sleep(0.02)
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("timed out waiting for operational mode writer lock") from exc
+                    time.sleep(0.02)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _replace_state_file(source: str, destination: Path) -> None:
+    deadline = time.monotonic() + _REPLACE_RETRY_SECONDS
+    while True:
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            windows_lock_conflict = getattr(exc, "winerror", None) in {32, 33}
+            if not isinstance(exc, PermissionError) and not windows_lock_conflict:
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
 
 
 @dataclass(frozen=True)
-class OperationalMode:
-    mode: OperationalModeName
+class OperationalModeSnapshot:
+    mode: OperationalMode
+    revision: int
+    updated_at: str | None
     degraded: bool = False
-    reason: str = ""
-    updated_at: float = 0.0
+    error: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mode": self.mode,
+            "revision": self.revision,
+            "updated_at": self.updated_at,
+            "degraded": self.degraded,
+            "error": self.error,
+        }
 
 
-def _state_path(state_dir: str | os.PathLike[str]) -> Path:
-    return Path(state_dir) / MODE_STATE_FILENAME
+def _state_path(state_dir: str | Path) -> Path:
+    return Path(state_dir) / _STATE_FILENAME
 
 
-def load_operational_mode(state_dir: str | os.PathLike[str]) -> OperationalMode:
-    """Read mode without creating state. Missing state preserves legacy active mode."""
-    path = _state_path(state_dir)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return OperationalMode(mode="active")
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return OperationalMode(mode="maintenance", degraded=True, reason=f"invalid mode state: {type(exc).__name__}")
-    if not isinstance(data, dict) or data.get("mode") not in _MODES:
-        return OperationalMode(mode="maintenance", degraded=True, reason="invalid mode state")
-    try:
-        updated_at = float(data.get("updated_at", 0.0) or 0.0)
-    except (TypeError, ValueError, OverflowError):
-        return OperationalMode(mode="maintenance", degraded=True, reason="invalid mode timestamp")
-    if not math.isfinite(updated_at):
-        return OperationalMode(mode="maintenance", degraded=True, reason="invalid mode timestamp")
-    return OperationalMode(
-        mode=data["mode"],
-        degraded=bool(data.get("degraded", False)),
-        reason=str(data.get("reason", ""))[:240],
-        updated_at=updated_at,
+def _degraded_snapshot(error: str) -> OperationalModeSnapshot:
+    return OperationalModeSnapshot(
+        mode="maintenance", revision=0, updated_at=None, degraded=True, error=error
     )
 
 
-def set_operational_mode(state_dir: str | os.PathLike[str], mode: str) -> OperationalMode:
-    normalized = str(mode).strip().lower()
-    if normalized not in _MODES:
-        raise ValueError(f"unsupported operational mode: {mode}")
-    state = OperationalMode(mode=normalized, updated_at=time.time())
+def load_operational_mode(state_dir: str | Path) -> OperationalModeSnapshot:
+    """Read the current snapshot; missing state defaults to active, bad state fails closed."""
     path = _state_path(state_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump({"mode": state.mode, "updated_at": state.updated_at}, stream, separators=(",", ":"))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temp_name, path)
-    except BaseException:
+    with _LOCK:
         try:
-            os.unlink(temp_name)
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return OperationalModeSnapshot("active", 0, None)
         except OSError:
-            pass
-        raise
-    return state
+            return _degraded_snapshot("operational mode state is unreadable")
+        except UnicodeError:
+            return _degraded_snapshot("operational mode state is invalid")
+
+        try:
+            value = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeError):
+            return _degraded_snapshot("operational mode state is invalid")
+        if not isinstance(value, dict):
+            return _degraded_snapshot("operational mode state is invalid")
+
+        mode = value.get("mode")
+        revision = value.get("revision")
+        updated_at = value.get("updated_at")
+        if (
+            not isinstance(mode, str)
+            or mode not in _ALLOWED_MODES
+            or isinstance(revision, bool)
+            or not isinstance(revision, int)
+            or revision < 1
+            or not isinstance(updated_at, str)
+            or not updated_at
+        ):
+            return _degraded_snapshot("operational mode state is invalid")
+        return OperationalModeSnapshot(mode, revision, updated_at)  # type: ignore[arg-type]
 
 
-def mode_allows(state: OperationalMode | str, operation: str) -> bool:
-    if operation not in _OPERATIONS:
-        raise ValueError(f"unknown operation class: {operation}")
-    if isinstance(state, OperationalMode) and state.degraded:
-        return operation == "deterministic_read"
-    mode = state if isinstance(state, str) else state.mode
-    if mode not in _MODES:
-        return operation == "deterministic_read"
-    if mode == "active":
-        return True
-    return operation == "deterministic_read"
+def set_operational_mode(state_dir: str | Path, mode: str) -> OperationalModeSnapshot:
+    """Persist a new mode by replacing a fully flushed file in the same directory."""
+    if not isinstance(mode, str) or mode not in _ALLOWED_MODES:
+        raise ValueError("mode must be active, gaming, or maintenance")
+
+    path = _state_path(state_dir)
+    with _LOCK, _state_writer_lock(state_dir):
+        prior = load_operational_mode(state_dir)
+        snapshot = OperationalModeSnapshot(
+            mode=mode,  # type: ignore[arg-type]
+            revision=prior.revision + 1,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        payload = json.dumps(snapshot.to_dict(), separators=(",", ":"), sort_keys=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(prefix=".operational_mode-", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            _replace_state_file(temporary_name, path)
+        except BaseException:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
+            raise
+        return snapshot
 
 
-def blocked_operation(state: OperationalMode, operation: OperationClass) -> dict[str, object]:
+def operational_mode_gate_error(
+    snapshot: OperationalModeSnapshot | None,
+    action: str = "",
+    *,
+    requires_heavy_work: bool = True,
+) -> dict[str, object] | None:
+    """Return a bounded, retryable pause response when work is temporarily gated."""
+    if snapshot is not None and snapshot.mode == "active" and not snapshot.degraded:
+        return None
+    mode = snapshot.mode if snapshot is not None else "maintenance"
+    degraded = snapshot is None or snapshot.degraded
+    safe_job_actions = {"status", "wait", "result", "cancel", "evaluation_report"}
+    if not degraded and mode in {"gaming", "maintenance"} and action.strip().lower().replace("-", "_") in safe_job_actions:
+        return None
+    if not degraded and mode == "gaming" and not requires_heavy_work:
+        return None
     return {
         "success": False,
-        "blocked": True,
-        "operation": operation,
-        "operational_mode": state.mode,
-        "degraded": state.degraded,
-        "error": f"{operation} blocked while operational mode is {state.mode}",
-        "terminal": True,
-        "retryable": False,
+        "mode": mode,
+        "operational_mode": mode,
+        "error_code": "operational_mode_blocked",
+        "action": action.strip().lower().replace("-", "_"),
+        "error": f"hub paused: {mode} mode active",
+        "terminal": False,
+        "retryable": True,
+        "retry_after_seconds": 5,
     }

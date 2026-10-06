@@ -29,7 +29,7 @@ class _Runtime:
     def unload_model(self, _model: str) -> bool:
         return True
 
-    def prepare_model(self, _model: str) -> list[str]:
+    def prepare_model(self, _model: str, **_kwargs: object) -> list[str]:
         return []
 
 
