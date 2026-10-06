@@ -664,14 +664,80 @@ The WorkOrchestrator queue is now repaired in root: evidence-required test or
 benchmark criteria trigger final validation without file changes; handoff
 artifacts and cancelled terminal payloads include collected verification
 receipts. Regression suite `tests/test_work_orchestrator.py` passed **24/24**
-in 22.43 s, and `git diff --check` passed. The other six queues remain pending
-scoped implementation and acceptance. Ownership is now assigned in existing
-worker checkouts: Russell (`hub-audit-repairs`) owns `agent_tasks.py` queues
-TTL/list/revalidation and generation V03-H036; Helmholtz
-(`t13-lifecycle-8429`) owns `agent_verification.py` strict receipt parsing and
-generation V04-H041; Tesla (`t17-multimodal-resume`) owns
-the `agent_memory.py` task-provenance guard. They must first reconcile/sync
-their preserved work to master `f140b96c4d3a451651436136405de7a931faf533`;
-no worker may edit the concurrently dirty root `http_server.py` or
-`async_jobs.py`. The T05 scope note is not proof of an observed live leak.
+in 22.43 s, and `git diff --check` passed. Remaining TaskStore requirements
+and event-schema compatibility still need scoped implementation/acceptance.
+
+T08 receipt/generation source packet from Helmholtz (`t13-lifecycle-8429`)
+was verified and cherry-picked as master commit `ba538f65`. The immutable-pin
+post-pin ledger `495e4d88dbb621ba991e7e9749cf5a02c8654d4d` records that this
+packet's V04-H018 outer `Mapping` guard was still absent at pin; H020/H021
+typed-field checks and H041 narrow error propagation were restored, H036
+blockers remain open. Root then added the top-level guard: a regression first
+failed for all four non-mapping inputs with `AttributeError`, then passed after
+the fix.
+The parser rejects non-mapping payloads, malformed `passed`, generation, and
+`details`; generation checkpoint handling tolerates only `KeyError`. Packet
+RED showed 33 failed / 17 passed; owner GREEN 50 passed; after the extra guard,
+the root targeted set passed **61/61**. Root command:
+`python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_verification_input_safety.py tests/test_agent_verification.py::test_verification_receipt_parser_requires_explicit_boolean_passed 'tests/test_agent_verification.py::test_verifier_projection_rolls_back_when_event_projection_write_fails[change]' tests/test_agent_verification.py::test_recorded_change_advances_generation_and_invalidates_existing_receipt`.
+
+Four bounded TaskStore source queues remain. Russell (`hub-audit-repairs`) owns
+`agent_tasks.py`: TTL, terminal listing, repeated completion revalidation,
+and V03-H036 generation checkpoint preservation. Tesla's T05 task-provenance
+guard from `agent_memory.py` is integrated as master commit `db07ff06`.
+Focused owner and root test command produced **44 passed**:
+`python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t05_memory_task_scope_guard.py tests/test_agent_memory.py::test_task_memory_find_requires_matching_root_tenant_and_provenance tests/test_agent_memory.py::test_task_lookup_rejects_rootless_and_tenantless_memory tests/test_agent_memory.py::test_get_requires_identity_scope_for_non_global_records`.
+Task lookup now requires both trusted repository root and tenant with matching
+record provenance; `repository_id` cannot substitute. Broader owner check had
+**90 passed / 8 failed**; the owner reports all eight reproduce on original
+pin `7729c814` and concern GLOBAL/repository/session semantics, not the new
+TASK guard. These failures remain an open compatibility triage; no test
+expectations were changed and T05 isn't release-complete. Tesla has a
+read-only follow-up to adjudicate those eight failures; no code/test changes
+authorized in that triage. The static T05 gap did not prove a live
+cross-tenant leak. No worker may edit concurrently dirty root `http_server.py`
+or `async_jobs.py`.
 All original checkpoint refs/stash objects remain preserved.
+
+The tracked/index disposition owner supplied a doc-only follow-up, commit
+`b7757a77d57374d8ef04971d417f81ac42d1d57a` (parent
+`19ff3fc27268243f7d9a63059b17528eccafca3e`), merged into master. It refines
+three prior conflict classifications: V04-H062, V27-H002, and V27-H010 are
+master-improved. A later tracked/index update supersedes its interim totals;
+see the latest follow-up below. Source remains unchanged. This is static
+documentation evidence only, not runtime or release acceptance.
+
+#### Agent event schema review (read-only owner queue)
+
+The initial fingerprint comparison was incomplete: it parsed only the base
+`_EXPECTED_OBJECT_SQL_HASHES` literal and omitted its `.update(...)` and
+`_ALTERNATE_OBJECT_SQL_HASHES` union. Current root blob
+`aa6dc82c8582805f174b22323f34f014d9d7e21d` already accepts all three cited
+definitions: `lease_waits` hash
+`a866368052df7b9433b7a44d47dc262c5a76a06058b878e0249ccee791dfb17c` and
+`leases` hash `f7a165f4f68106fb33b5855d0a66532e63fde78b2675380b67fe8112096f8edd`
+are explicit alternate hashes; `agent_event_cursors` hash
+`0ecf2e08637aef9d2f4a9167feb61de083e1a9d9b8b927f79ae7a58e74b2ef71` is in
+the expected-map update. Therefore these are not missing whitelist entries
+and must not be added again. V02-H006 remains an owner conflict only for
+whole-schema/migration/process-safety adjudication; static hash acceptance is
+not proof of successful DB initialization or row preservation. V13-H005 is
+master-improved: all 53 original accepted object hashes remain among the
+current 61. T18's read-only review found `_reserve_backup_destination`
+swallows Windows account/ACL subprocess exceptions; this is a separate
+fail-closed confidentiality issue for the exception-handling queue. No
+runtime, import, model, DB, or source changes/tests were run in this review.
+Five additional event hunks have manual counterparts, now dispositioned in follow-up commit
+`088f9b3300b36f46ba131652082040b1d46339a6` (parent
+`b7757a77d57374d8ef04971d417f81ac42d1d57a`), merged into master. The report
+now counts 333 behavior-preserved, 85 master-improved, 17 missing, and 98
+owner-conflict hunks across 533 total. It adjudicates six conflicts: V02-H007
+shared canonical DB lock, H026 docstring/parsing guards, H028 reset/cursor
+upper bound, H029 replay gap/JSON envelope, H031 timeout/error/list wrapper,
+and V13-H005 accepted-object map. V02-H027 retains the current fail-closed
+disabled sentinel semantics. V02-H006 remains open only for whole-layout,
+migration, process-safety, backup, and runtime acceptance—not for missing
+hashes. No runtime, import, model, DB, or
+source changes; this follow-up changes only the disposition document. Original
+refs/stash IDs remain retained. Counts are static review, not release
+acceptance.
