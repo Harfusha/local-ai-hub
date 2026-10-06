@@ -1333,10 +1333,8 @@ class VerificationStore:
             change.rollback_description,
             change.created_at,
         )
-        published: list[AgentEvent] = []
-
-        def _do_save() -> None:
-            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        def _do_save(con: Any) -> list[AgentEvent]:
+            published: list[AgentEvent] = []
             try:
                 con.execute("BEGIN IMMEDIATE")
                 appended = self.state_store.append_in_transaction(
@@ -1371,18 +1369,22 @@ class VerificationStore:
                 if not saved or tuple(saved) != expected:
                     raise ValueError("change_id already belongs to different change intent")
                 con.execute("COMMIT")
+                return published
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-            finally:
-                con.close()
-
-        retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
-        for persisted in published:
-            self.state_store._publish(persisted)
+        con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        try:
+            with self.state_store.ordered_event_publication(con) as publish_committed:
+                published = retry_busy(
+                    lambda: _do_save(con), retries=5, base_delay_seconds=0.02
+                )
+                publish_committed(published)
+        finally:
+            con.close()
         if self.task_store is not None and change.task_id:
             try:
                 task = self.task_store.get(change.task_id)
@@ -1424,10 +1426,8 @@ class VerificationStore:
             json_dumps(outcome.details),
             outcome.created_at,
         )
-        published: list[AgentEvent] = []
-
-        def _do_save() -> None:
-            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        def _do_save(con: Any) -> list[AgentEvent]:
+            published: list[AgentEvent] = []
             try:
                 con.execute("BEGIN IMMEDIATE")
                 appended = self.state_store.append_in_transaction(
@@ -1461,18 +1461,22 @@ class VerificationStore:
                 if not saved or tuple(saved) != expected:
                     raise ValueError("outcome_id already belongs to different outcome")
                 con.execute("COMMIT")
+                return published
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-            finally:
-                con.close()
-
-        retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
-        for persisted in published:
-            self.state_store._publish(persisted)
+        con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        try:
+            with self.state_store.ordered_event_publication(con) as publish_committed:
+                published = retry_busy(
+                    lambda: _do_save(con), retries=5, base_delay_seconds=0.02
+                )
+                publish_committed(published)
+        finally:
+            con.close()
         return outcome
 
     def completion(

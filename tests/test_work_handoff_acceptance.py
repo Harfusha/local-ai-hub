@@ -321,6 +321,50 @@ def test_recovery_requeues_after_crash_between_journal_clear_and_state_update(
         recovered.close()
 
 
+def test_partial_git_apply_failure_restores_all_preimages_and_clears_journal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
+    first = root / "first.txt"
+    second = root / "second.txt"
+    first.write_text("first before\n", encoding="utf-8")
+    second.write_text("second before\n", encoding="utf-8")
+    patch = (
+        "diff --git a/first.txt b/first.txt\n"
+        "--- a/first.txt\n+++ b/first.txt\n@@ -1 +1 @@\n"
+        "-first before\n+first after\n"
+        "diff --git a/second.txt b/second.txt\n"
+        "--- a/second.txt\n+++ b/second.txt\n@@ -1 +1 @@\n"
+        "-second before\n+second after\n"
+    )
+    journal: list[_JournalEntry] = []
+    real_run = work_orchestrator_module.subprocess.run
+
+    def fail_after_partial_apply(command, *args, **kwargs):
+        if str(root) in command and "--check" not in command and command[-1] == "-":
+            first.write_text("first after\n", encoding="utf-8")
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="simulated partial apply failure",
+            )
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(work_orchestrator_module.subprocess, "run", fail_after_partial_apply)
+    try:
+        with pytest.raises(ValueError, match="simulated partial apply failure"):
+            orchestrator._apply_patch(
+                root, patch, "tenant", "work-apply-failure", journal
+            )
+
+        assert first.read_text(encoding="utf-8") == "first before\n"
+        assert second.read_text(encoding="utf-8") == "second before\n"
+        assert journal == []
+        assert orchestrator._load_journal("work-apply-failure") == []
+    finally:
+        orchestrator.close()
+
+
 def test_rollback_refuses_symlink_targets_without_touching_outside_file(
     tmp_path: Path,
 ) -> None:

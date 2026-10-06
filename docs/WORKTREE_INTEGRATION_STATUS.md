@@ -247,6 +247,75 @@ remain preserved. Generated runtime/cache data is not committed.
 
 ### Preservation rule
 
+T16 orchestration-recovery `75b8917f` is integrated as `f99619a4`.
+Reviewed production delta: import layout and blank-line-only differences;
+current fencing, private transaction and safe rollback behavior retained.
+Original checkpoint `49ced58f` preserves all 87 ordinary untracked files and
+the historical dirty work. Fresh root command `python -B -m pytest -q -p
+no:cacheprovider tests/test_work_fencing.py --tb=short --maxfail=3`: 12 passed,
+1 skipped in 4.33 seconds (Windows symlink privilege unavailable).
+Owner's rollback/command-policy/legacy lease-fixture failures remain open.
+Details: `handoff/T16-recovery-sync-20261006-integration.md`.
+
+Current Git ancestry inventory after these integrations: 60 registered
+worktrees, 55 HEADs reachable from master, five unique HEADs pending integration.
+Those five are owned by active workers: hub-audit-repairs, T13 lifecycle,
+T17 multimodal resume, T18 status dashboard and T17 browser flow. Reachability
+does not mean final fast-forward synchronization, clean runtime state or release
+acceptance. Remaining historical stashes still require coverage reconciliation;
+no stash was dropped, checkpoint ref deleted or worktree removed in this run.
+
+### Concurrent root edits discovered after integration
+
+The subsequent dirty inventory found new, unattributed tracked modifications in
+`src/local_ai_hub/agent_events.py` and `src/local_ai_hub/client.py`, besides the
+preserved runtime database. These edits were not made by the orchestrator's
+integration patches and are not staged, reverted or overwritten. Owner/handoff
+requested. Earlier targeted receipts do not certify this newly modified source.
+Reviewed concerns: Windows backup ACL application now catches/ignores all
+exceptions and substitutes USERNAME for whoami; durable backup confidentiality
+must remain fail-closed. Pubsub payload/sequence changes and SDK fixed-action
+payload ordering need the owner's regression receipts. Root is not clean;
+avoid merges across these two paths until attribution/reconciliation is ready.
+
+Untracked inventory of already-integrated checkouts primarily contains retained
+test state: T04 artifacts/t04-sync-pytest-20261006, T08 handoff test-temp,
+T16 resume .merge-checks, T17 vision .t17-merge-tmp and 4816 scratch checkout.
+These are preserved, not automatically staged or deleted. T15 historical JSON
+receipts remain enumerated separately. The registered temporary checkout
+lah_wt_worktree_e64978b4714c still has one tracked and one untracked change,
+with owner unresolved; it must not be silently classified as reconciled merely
+because its HEAD is reachable from master.
+
+T15 command-config `fdbf3ec3` is integrated as `fcbb1d6f`. Active runtime is
+identical to owner's pinned master; 44 original source/test/tool/handoff files
+are preserved, including benchmark source-pin and fixture tools. Fresh root:
+`python -B -m pytest -q -p no:cacheprovider
+tests/test_command_cache_singleflight_contract.py tests/test_project_command_broker.py
+--tb=short --maxfail=3`: 29 passed in 5.77 seconds. Owner's three remaining
+coalesced-cache/affected-test result contract failures are still open. Twenty-one
+historical runtime receipt JSONs remain preserved on disk and enumerated in
+`docs/integration/T15-COMMAND-CONFIG-SYNC-20261006.md`; not current evidence.
+
+069d `06204d01` is centrally reconciled against `fcbb1d6f`; original checkpoint
+`57ee7a49` preserves 187 tracked plus 295 ordinary untracked source, test,
+tool and historical handoff files. Manual conflicts retain current optional
+Serena/standalone CodeGraph guidance, synthesis scope caveat, duplicate-safe
+historical actor-idempotency test names and structural allowlisting of mandatory
+CodeGraph ignore markers. Repository memory tenant filtering remains applied
+once in the common scope clause (only redundant application removed); trusted
+promotion scope check remains. Ordered receipt/memory publication retained.
+
+Fresh root checks: `python -B -m pytest -q -p no:cacheprovider
+tests/test_t10_like_suffix_escape.py tests/test_telemetry_privacy.py
+tests/test_agent_receipt_completion_t09.py tests/test_agent_task_memory_adoption.py
+tests/test_sync_codegraph_scan_ignore.py --tb=short --maxfail=4`: 40 passed in
+23.78 seconds. `python -B -m pytest -q -p no:cacheprovider tests/test_agent_tasks.py
+-k 'idempotency' --tb=short --maxfail=3`: 6 passed, 38 deselected in 1.00 second.
+Owner's memory promotion fixture and legacy AGENTS text failures remain open;
+no source/runtime/provider/release completion inferred. Details:
+`handoff/SYNC-069D-20261006.md`.
+
 T17 vision-refactor packet `04bbeb19` is integrated as `0aebfbd9`.
 Reviewed preservation of process safety, cancellation/preflight checks, bounded
 prompt/output, evidence-grounded DOM facts and current T14 retrieval. Fresh

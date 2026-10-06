@@ -1244,6 +1244,7 @@ def test_check_cli_accepts_coverage_without_writing_it(tmp_path):
     write(tmp_path, "docs/API_COVERAGE.md", expected)
     coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
     before_bytes = coverage_path.read_bytes()
+    before_mtime = coverage_path.stat().st_mtime_ns
     command = [sys.executable, "tools/surface_inventory.py", "--root", str(tmp_path), "--check"]
 
     result = subprocess.run(
@@ -1256,10 +1257,11 @@ def test_check_cli_accepts_coverage_without_writing_it(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert coverage_path.read_bytes() == before_bytes
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert coverage_path.stat().st_mtime_ns == before_mtime
     summary = json.loads(result.stdout)
     assert summary["coverage_matches"] is True
     assert "written" not in summary
+
 
 
 def test_check_cli_reports_drift_without_rewriting_coverage(tmp_path):
