@@ -51,6 +51,65 @@ def test_conversation_store_rejects_active_and_expired_turns() -> None:
     assert error == "conversation not found"
 
 
+def test_expired_active_conversation_cannot_be_completed_or_revived_by_abort() -> None:
+    from local_ai_hub.conversations import ConversationStore
+
+    for finish in ("complete", "abort"):
+        now = [100.0]
+        store = ConversationStore(
+            idle_ttl_seconds=5,
+            active_ttl_seconds=8,
+            max_turns=2,
+            clock=lambda: now[0],
+        )
+        conversation = store.start("tenant-a", {"model": "fast"})
+        reserved, error = store.reserve(conversation.conversation_id, "tenant-a")
+        assert reserved is conversation
+        assert error == ""
+
+        now[0] += 9
+        if finish == "complete":
+            finished = store.complete(conversation.conversation_id, "tenant-a", "late prompt", "late answer")
+        else:
+            finished = store.abort(conversation.conversation_id, "tenant-a")
+
+        assert finished is False
+        assert conversation.conversation_id not in store._items
+
+
+def test_service_reserves_new_conversation_before_competing_start_can_evict_it() -> None:
+    from local_ai_hub.conversations import ConversationStore
+    from local_ai_hub.services import LocalAIServices
+
+    class InterleavingConversationStore(ConversationStore):
+        competing_start = "not attempted"
+
+        def start(self, tenant, settings):
+            conversation = super().start(tenant, settings)
+            if conversation is not None:
+                self.competing_start = super().start(tenant, settings)
+            return conversation
+
+        def start_reserved(self, tenant, settings):
+            conversation = super().start_reserved(tenant, settings)
+            self.competing_start = super().start(tenant, settings)
+            return conversation
+
+    services = object.__new__(LocalAIServices)
+    services.config = {"token_saving": {"max_local_input_tokens": 4000}}
+    services.conversations = InterleavingConversationStore(idle_ttl_seconds=1000, max_conversations=1)
+    services._generate = lambda *args, **kwargs: {"success": True, "text": "answer"}
+
+    result = services._start_conversation(
+        tenant="tenant-a", prompt="question", route={"model": "m"}, system="system",
+        max_tokens=32, temperature=0.0, source="delegate:general", priority=0,
+    )
+
+    assert result["success"] is True
+    assert result["conversation_id"] in services.conversations._items
+    assert services.conversations.competing_start is None
+
+
 def test_service_continues_with_pinned_route_without_persistent_cache() -> None:
     from local_ai_hub.conversations import ConversationStore
     from local_ai_hub.router import ModelRouter

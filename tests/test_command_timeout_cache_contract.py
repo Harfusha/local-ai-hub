@@ -27,7 +27,7 @@ def test_timeout_and_cancelled_repeatable_commands_are_not_cached(tmp_path, monk
     )
     executions: list[str] = []
 
-    def execute(command, cwd, timeout, cancel_event=None, log_callback=None):
+    def execute(command, cwd, timeout, cancel_event=None, log_callback=None, **_kwargs):
         executions.append(command)
         return {
             "success": False,

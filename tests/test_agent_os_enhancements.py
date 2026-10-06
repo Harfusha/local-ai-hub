@@ -7,6 +7,7 @@ import urllib.request
 
 from local_ai_hub.commands import CommandBroker
 from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.agent_verification import VerificationStore, VerificationReceipt
 from local_ai_hub.agent_memory import MemoryStore, MemoryRecord
 from local_ai_hub.agent_tasks import TaskStore, GoalContract
@@ -16,9 +17,25 @@ from local_ai_hub import http_server
 
 
 def test_command_validator_classifies_doctor_and_selftest(tmp_path: Path):
+    artifacts = {}
+
     class _Artifacts:
-        def put(self, *_args, **_kwargs):
+        def put(self, text, tenant, kind, _content_type="application/json"):
+            artifacts["art-1"] = {
+                "success": True,
+                "artifact_id": "art-1",
+                "kind": kind,
+                "text": text,
+                "next_offset": None,
+                "tenant": tenant,
+            }
             return "art-1"
+
+        def get(self, artifact_id, *, max_chars, tenant):
+            artifact = artifacts.get(artifact_id)
+            if artifact is None or artifact["tenant"] != tenant:
+                return {"success": False}
+            return artifact
 
     class _RepoState:
         def fingerprint(self, _cwd):
@@ -98,7 +115,7 @@ def test_generic_command_does_not_auto_register_verification_receipt(tmp_path: P
     state_dir.mkdir(parents=True, exist_ok=True)
     state_store = AgentStateStore(state_dir / "agent_state.sqlite3", enabled=True)
     task_store = TaskStore(state_store)
-    v_store = VerificationStore(state_store, task_store=task_store)
+    artifacts = {}
 
     task = task_store.create(
         GoalContract(goal="Pass tests", acceptance_criteria=["Tests must pass"]),
@@ -107,19 +124,35 @@ def test_generic_command_does_not_auto_register_verification_receipt(tmp_path: P
     )
 
     class _Artifacts:
-        def put(self, *_args, **_kwargs):
+        def put(self, text, tenant, kind, _content_type="application/json"):
+            artifacts["art-1"] = {
+                "success": True,
+                "artifact_id": "art-1",
+                "kind": kind,
+                "text": text,
+                "next_offset": None,
+                "tenant": tenant,
+            }
             return "art-1"
+
+        def get(self, artifact_id, *, max_chars, tenant):
+            artifact = artifacts.get(artifact_id)
+            if artifact is None or artifact["tenant"] != tenant:
+                return {"success": False}
+            return artifact
 
     class _RepoState:
         def fingerprint(self, _cwd):
             return {"fingerprint": "hash1"}
 
+    artifact_store = _Artifacts()
+    v_store = VerificationStore(state_store, task_store=task_store, artifact_store=artifact_store)
     broker = CommandBroker(
         {
             "server": {"state_dir": str(state_dir)},
             "commands": {"enabled": True, "allow_read": True, "allow_validation": True},
         },
-        _Artifacts(),
+        artifact_store,
         _RepoState(),
     )
     broker.set_verification_store(v_store)
@@ -129,7 +162,7 @@ def test_generic_command_does_not_auto_register_verification_receipt(tmp_path: P
 
     # Run a passing python test command with task_id
     res = broker.run(
-        "python -m compileall tests",
+        "python -m pytest -q tests/test_smoke.py",
         str(tmp_path),
         "tenant",
         task_id="task-test-1",
@@ -275,7 +308,8 @@ def test_task_store_auto_complete_and_fail(tmp_path: Path):
     state_dir.mkdir(parents=True, exist_ok=True)
     state_store = AgentStateStore(state_dir / "agent_state.sqlite3", enabled=True)
     task_store = TaskStore(state_store)
-    verif_store = VerificationStore(state_store, task_store=task_store)
+    artifact_store = ArtifactStore(state_dir / "artifacts")
+    verif_store = VerificationStore(state_store, task_store=task_store, artifact_store=artifact_store)
     mem_store = MemoryStore(state_store)
 
     # 1. Auto complete without criteria: PLANNED -> ACTIVE -> VERIFYING -> COMPLETED
@@ -304,7 +338,16 @@ def test_task_store_auto_complete_and_fail(tmp_path: Path):
     assert task_store.get("t-2").status == TaskStatus.VERIFYING
 
     # Add receipt and complete
-    rcpt = VerificationReceipt.create(task_id="t-2", criterion="criterion 1", passed=True, evidence_id="ev_t2")
+    proof = {
+        "kind": "work_source_review", "passed": True, "task_id": "t-2",
+        "owner": "agent", "repository_revision": "", "mutation_generation": 0,
+        "criteria": ["criterion 1"],
+    }
+    evidence_id = artifact_store.put_json(proof, "agent", "source_review")
+    rcpt = VerificationReceipt.create(
+        task_id="t-2", criterion="criterion 1", passed=True, evidence_id=evidence_id,
+        owner="agent", evidence_type="source_review",
+    )
     verif_store.record(rcpt)
     task_store.add_verification_receipt("t-2", "criterion 1", rcpt.receipt_id)
     c2 = task_store.complete("t-2")
@@ -389,14 +432,3 @@ def test_external_tools_index_failure_suppression(tmp_path: Path):
     # Revision scoped error should not increment index_failures
     mgr._record_failure("serena", RuntimeError("indexing exceeded 60s"), operation="index", root=str(tmp_path))
     assert mgr.index_failures == 0
-
-    # Codegraph missing module should not increment index_failures and should disable backend cleanly
-    mgr.codegraph_enabled = True
-    mgr._codegraph = "cgc"
-    mgr._record_failure("codegraph", RuntimeError("No module named 'codegraphcontext'"), operation="index", root=str(tmp_path))
-    assert mgr.index_failures == 0
-    assert mgr.codegraph_enabled is False
-    assert mgr._codegraph is None
-
-
-

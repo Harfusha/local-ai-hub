@@ -117,6 +117,23 @@ def test_primary_poison_publication_failure_uses_shared_fallback(
     assert json.loads(result.stdout) is None
 
 
+def test_clear_primary_publication_failure_invalidates_other_instance_l1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = _cache(tmp_path, "command:success")
+    second = _cache(tmp_path, "command:success")
+    first.set("key", "stale")
+    assert second.get("key") == "stale"
+    assert first._coordinator is not None
+
+    def fail_publication(*_args, **_kwargs):
+        raise OSError("coordination sidecar write failed")
+
+    monkeypatch.setattr(first._coordinator, "write_locked", fail_publication)
+    assert first.clear() == 1
+    assert second.get("key") is None
+
+
 def test_secondary_process_does_not_serve_stale_l1_or_l2_after_primary_marker_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -173,23 +190,6 @@ def test_secondary_process_does_not_serve_stale_l1_or_l2_after_primary_marker_lo
         if reader.poll() is None:
             reader.terminate()
             reader.wait(timeout=5)
-
-
-def test_clear_primary_publication_failure_invalidates_other_instance_l1(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    first = _cache(tmp_path, "command:success")
-    second = _cache(tmp_path, "command:success")
-    first.set("key", "stale")
-    assert second.get("key") == "stale"
-    assert first._coordinator is not None
-
-    def fail_publication(*_args, **_kwargs):
-        raise OSError("coordination sidecar write failed")
-
-    monkeypatch.setattr(first._coordinator, "write_locked", fail_publication)
-    assert first.clear() == 1
-    assert second.get("key") is None
 
 
 def test_successful_delete_is_visible_to_another_process(tmp_path: Path) -> None:
@@ -499,7 +499,8 @@ def test_posix_lock_timeout_clears_stale_l1_and_returns_miss(
     assert observed == [None]
     assert second.l1.get("key") is None
 
-def test_both_poison_sidecar_writes_failing_does_not_leave_cross_process_stale_l1(
+
+def test_both_sidecar_atomic_replacements_failing_keep_cross_process_l1_safe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first = _cache(tmp_path, "command:failure")

@@ -218,8 +218,7 @@ def test_mutating_run_requires_enforced_docker_boundary_before_spawn(
     )
 
     result = broker.run(
-        "git add owned.txt", str(source), force=True, task_id="task-owned",
-        rollback_paths=["owned.txt"],
+        "git add owned.txt", str(source), force=True, task_id="task-owned", paths=["owned.txt"]
     )
 
     assert result["success"] is False
@@ -400,16 +399,22 @@ def test_patch_and_verify_runs_and_imports_inside_private_transaction(
     assert executed_roots[0] != source.resolve()
 
 
-def _write_recovery_journal(broker: CommandBroker, source: Path, transaction_root: Path) -> Path:
+def _write_recovery_journal(broker: CommandBroker, source: Path, transaction_root: Path) -> tuple[Path, object]:
+    from local_ai_hub.work_fencing import FencingLeaseStore
+
     paths = ["owned.txt", "tracked.txt"]
-    fencing_store = FakeFencingLeaseStore()
-    broker.set_fencing_lease_store(fencing_store)
-    original_attempt = fencing_store.claim_attempt(
-        str(source.resolve()), "task-owned", "original-transaction", ttl_seconds=300.0
+    fencing_store = FencingLeaseStore(
+        broker._transaction_state_dir / "work-fencing.sqlite3"
     )
-    original_fence = fencing_store.acquire(
-        str(source.resolve()), "original-transaction", paths, ttl_seconds=300.0,
-        attempt=original_attempt,
+    broker.set_fencing_lease_store(fencing_store)
+    namespace_kwargs = broker._transaction_namespace_kwargs(source, fencing_store)
+    original_attempt = fencing_store.claim_attempt(
+        str(source), "task-owned", "crashed-writer", ttl_seconds=300,
+        **namespace_kwargs,
+    )
+    original_writer = fencing_store.acquire(
+        str(source), "crashed-writer", paths, ttl_seconds=300,
+        attempt=original_attempt, **namespace_kwargs,
     )
     before, error = commands_module._snapshot_rollback_scope(str(source), paths)
     assert error is None and before is not None
@@ -424,8 +429,8 @@ def _write_recovery_journal(broker: CommandBroker, source: Path, transaction_roo
             "transaction_root": str(transaction_root.resolve()),
             "paths": paths,
             "fencing": {
-                "lease_id": original_fence.lease_id,
-                "fencing_token": original_fence.fencing_token,
+                "lease_id": original_writer.lease_id,
+                "fencing_token": original_writer.fencing_token,
             },
             "attempt_fence": broker._work_attempt_fence_payload(original_attempt),
             "files": {
@@ -442,9 +447,13 @@ def _write_recovery_journal(broker: CommandBroker, source: Path, transaction_roo
     broker._transaction_state_dir.mkdir(parents=True, exist_ok=True)
     journal = broker._transaction_state_dir / "crashed-transaction.journal.json"
     broker._persist_transaction_journal(journal, payload)
-    fencing_store.release(original_fence)
+    fencing_store.release(original_writer)
     fencing_store.release_attempt(original_attempt)
-    return journal
+    recovery_attempt = fencing_store.claim_attempt(
+        str(source), "task-owned", "test-recovery", ttl_seconds=300,
+        **namespace_kwargs,
+    )
+    return journal, recovery_attempt
 
 
 def test_fenced_transaction_recovery_requires_current_work_attempt(
@@ -484,7 +493,9 @@ def test_fenced_transaction_recovery_requires_current_work_attempt(
     assert (source / "tracked.txt").read_text(encoding="utf-8") == "committed\n"
 
 
-def test_transaction_recovery_completes_outputs_from_persisted_journal(tmp_path: Path) -> None:
+def test_transaction_recovery_completes_outputs_from_persisted_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "source"
     _make_source_repo(source)
     transaction_parent = tmp_path / "state" / "command-transactions"
@@ -497,11 +508,18 @@ def test_transaction_recovery_completes_outputs_from_persisted_journal(tmp_path:
     broker = CommandBroker(
         {"server": {"state_dir": str(tmp_path / "state")}}, artifacts=None
     )
-    journal = _write_recovery_journal(broker, source, transaction_root)
-
-    recovery_attempt = broker.fencing_lease_store.claim_attempt(
-        str(source.resolve()), "task-owned", "recovery", ttl_seconds=300.0
+    journal, recovery_attempt = _write_recovery_journal(broker, source, transaction_root)
+    monkeypatch.setattr(
+        CommandBroker,
+        "_fsync_transaction_directory",
+        staticmethod(lambda _directory: True),
     )
+    monkeypatch.setattr(
+        CommandBroker,
+        "_fsync_rollback_directories",
+        staticmethod(lambda _root, _paths: True),
+    )
+
     recovery = broker._recover_transaction_journals(
         source, "task-owned", broker._transaction_state_dir, "test-recovery",
         recovery_attempt,
@@ -512,6 +530,64 @@ def test_transaction_recovery_completes_outputs_from_persisted_journal(tmp_path:
     assert (source / "owned.txt").read_text(encoding="utf-8") == "recovered owned\n"
     assert (source / "tracked.txt").read_text(encoding="utf-8") == "recovered tracked\n"
 
+
+@pytest.mark.parametrize("directory_sync", ["unsupported", "error"])
+def test_transaction_recovery_reports_durability_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory_sync: str
+) -> None:
+    source = tmp_path / "source"
+    _make_source_repo(source)
+    transaction_parent = tmp_path / "state" / "command-transactions"
+    transaction_parent.mkdir(parents=True)
+    transaction_root, _baseline = create_private_transaction_snapshot_with_manifest(
+        source, transaction_parent / "crashed-transaction"
+    )
+    (transaction_root / "owned.txt").write_text("recovered owned\n", encoding="utf-8")
+    (transaction_root / "tracked.txt").write_text("recovered tracked\n", encoding="utf-8")
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path / "state")}}, artifacts=None
+    )
+    journal, recovery_attempt = _write_recovery_journal(broker, source, transaction_root)
+
+    if directory_sync == "unsupported":
+        monkeypatch.setattr(
+            CommandBroker,
+            "_fsync_transaction_directory",
+            staticmethod(lambda _directory: False),
+        )
+    else:
+        def fail_source_sync(_root: Path, _paths: list[str]) -> bool:
+            raise OSError("simulated source directory sync failure")
+
+        monkeypatch.setattr(
+            CommandBroker,
+            "_fsync_rollback_directories",
+            staticmethod(fail_source_sync),
+        )
+
+    recovery = broker._recover_transaction_journals(
+        source, "task-owned", broker._transaction_state_dir, "test-recovery",
+        recovery_attempt,
+    )
+
+    assert recovery is not None
+    assert (source / "owned.txt").read_text(encoding="utf-8") == "recovered owned\n"
+    assert (source / "tracked.txt").read_text(encoding="utf-8") == "recovered tracked\n"
+    if directory_sync == "unsupported":
+        assert recovery["success"] is True
+        assert recovery["transaction_status"] == "recovered"
+        assert recovery["rollback_paths"] == ["owned.txt", "tracked.txt"]
+        assert recovery["command_not_run"] is True
+        assert recovery["directory_fsync_supported"] is False
+        assert "crash durability is not guaranteed" in recovery["durability_warning"]
+        assert not journal.exists()
+    else:
+        assert recovery["success"] is False
+        assert recovery["transaction_status"] == "recovery_required"
+        assert recovery["outcome_unknown"] is True
+        assert recovery["retryable"] is False
+        assert recovery["terminal"] is True
+        assert journal.exists()
 
 def test_transaction_recovery_preserves_foreign_change_and_keeps_journal(tmp_path: Path) -> None:
     source = tmp_path / "source"
@@ -525,12 +601,9 @@ def test_transaction_recovery_preserves_foreign_change_and_keeps_journal(tmp_pat
     broker = CommandBroker(
         {"server": {"state_dir": str(tmp_path / "state")}}, artifacts=None
     )
-    journal = _write_recovery_journal(broker, source, transaction_root)
+    journal, recovery_attempt = _write_recovery_journal(broker, source, transaction_root)
     (source / "owned.txt").write_text("foreign edit\n", encoding="utf-8")
 
-    recovery_attempt = broker.fencing_lease_store.claim_attempt(
-        str(source.resolve()), "task-owned", "recovery", ttl_seconds=300.0
-    )
     recovery = broker._recover_transaction_journals(
         source, "task-owned", broker._transaction_state_dir, "test-recovery",
         recovery_attempt,

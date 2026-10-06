@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
+from local_ai_hub.work_fencing import WorkAttemptFence
+
 
 class FakeFencingLeaseStore:
     """Deterministic in-process stand-in for T16's cross-process fencing API."""
@@ -37,7 +39,7 @@ class FakeFencingLeaseStore:
                 raise RuntimeError("work attempt is already active")
             token = self.attempt_generations.get(resource, 0) + 1
             self.attempt_generations[resource] = token
-            attempt = SimpleNamespace(
+            attempt = WorkAttemptFence(
                 resource=resource,
                 work_id=work_id,
                 attempt_id=f"attempt-{uuid.uuid4().hex}",
@@ -51,7 +53,7 @@ class FakeFencingLeaseStore:
     def renew_attempt(self, attempt, *, ttl_seconds):
         with self.lock:
             self.assert_attempt_current(attempt)
-            renewed = SimpleNamespace(
+            renewed = WorkAttemptFence(
                 resource=attempt.resource,
                 work_id=attempt.work_id,
                 attempt_id=attempt.attempt_id,
@@ -82,7 +84,7 @@ class FakeFencingLeaseStore:
         ):
             raise RuntimeError("work attempt fence is expired or stale")
 
-    def acquire(self, resource, owner_id, paths, *, ttl_seconds, attempt=None):
+    def acquire(self, resource, owner_id, paths, *, ttl_seconds, attempt=None, coordination_id=None):
         normalized = self._normalize(paths)
         with self.lock:
             now = self.clock()
@@ -166,10 +168,21 @@ def install_test_work_attempt_fence(broker, store, *, work_id="task-owned", owne
         original = getattr(broker, method_name)
 
         def invoke(*args, **kwargs):
-            if kwargs.get("_work_attempt_fence") is None:
+            task_id = kwargs.get("task_id")
+            if kwargs.get("_work_attempt_fence") is None and isinstance(task_id, str) and task_id:
+                if method_name == "run":
+                    command = args[0] if args else kwargs.get("command", "")
+                    classification = broker.classify(command)
+                    declared_mutation = bool(
+                        kwargs.get("rollback_on_failure")
+                        or kwargs.get("rollback_paths")
+                        or kwargs.get("paths")
+                    )
+                    if classification.get("class") != "mutating" and not declared_mutation:
+                        return original(*args, **kwargs)
                 root = str(root_getter(args, kwargs))
                 resource = str(Path(root).resolve())
-                current_work_id = str(kwargs.get("task_id") or work_id)
+                current_work_id = str(task_id)
                 key = (resource, current_work_id)
                 attempt = attempts.get(key)
                 if attempt is None:

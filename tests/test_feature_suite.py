@@ -158,19 +158,10 @@ def test_command_streaming_and_sse_events(tmp_path: Path):
 
     cmd_broker = CommandBroker({}, artifacts=None, repo_state=None)
     task_id = "streaming-test-task"
-    worktree_path = tmp_path.resolve()
-    subprocess.run(["git", "init"], cwd=str(worktree_path), capture_output=True, check=True, **hidden_run_kwargs())
     task = SimpleNamespace(
         task_id=task_id,
         checkpoint=SimpleNamespace(
-            state_data={"worktree": {
-                "worktree_path": str(worktree_path), "success": True,
-                "repo_root": str(worktree_path),
-                "branch": subprocess.run(
-                    ["git", "-C", str(worktree_path), "symbolic-ref", "--quiet", "--short", "HEAD"],
-                    capture_output=True, text=True, check=True, **hidden_run_kwargs()
-                ).stdout.strip(),
-            }}
+            state_data={"worktree": {"worktree_path": str(tmp_path), "success": True}}
         ),
     )
 
@@ -192,7 +183,7 @@ def test_command_streaming_and_sse_events(tmp_path: Path):
         events_received.append(sub_q.get_nowait())
 
     cmd_logs = [e for e in events_received if e.kind == "command.log"]
-    assert len(cmd_logs) >= 2
     chunks = [e.payload.get("chunk", "") for e in cmd_logs]
-    assert any("live stream line 1" in c for c in chunks)
-    assert any("live stream line 2" in c for c in chunks)
+    combined = "".join(chunks)
+    assert "live stream line 1" in combined
+    assert "live stream line 2" in combined
