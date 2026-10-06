@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import ast
 import json
+import math
 import os
 import re
 import sqlite3
@@ -201,6 +202,17 @@ class DeterministicEngine:
               content_hash TEXT NOT NULL,analyzer_version TEXT NOT NULL,filename TEXT NOT NULL,deps_json TEXT NOT NULL,scripts_json TEXT NOT NULL,updated_at REAL NOT NULL,
               PRIMARY KEY(content_hash,analyzer_version,filename));
             CREATE INDEX IF NOT EXISTS idx_manifest_blobs_updated ON manifest_blobs(updated_at);
+
+            CREATE TABLE IF NOT EXISTS test_source_links(
+              root TEXT NOT NULL, source_path TEXT NOT NULL, test_path TEXT NOT NULL,
+              confidence REAL NOT NULL DEFAULT 1.0, updated_at REAL NOT NULL,
+              PRIMARY KEY(root, source_path, test_path));
+            CREATE INDEX IF NOT EXISTS idx_test_source_links_src ON test_source_links(root, source_path);
+            CREATE INDEX IF NOT EXISTS idx_test_source_links_test ON test_source_links(root, test_path);
+
+            CREATE TABLE IF NOT EXISTS hotspots_cache(
+              root TEXT NOT NULL, days INTEGER NOT NULL, cached_at REAL NOT NULL,
+              data_json TEXT NOT NULL, PRIMARY KEY(root, days));
             """
         )
         try:
@@ -208,6 +220,70 @@ class DeterministicEngine:
         except sqlite3.OperationalError:
             pass
         
+    def record_test_source_links(self, root: str, links: list[tuple[str, str, float]]) -> None:
+        if not links:
+            return
+        resolved = str(self._root(root))
+        now = time.time()
+        with self._lock, closing(self._connect()) as con:
+            con.executemany(
+                "INSERT OR REPLACE INTO test_source_links(root, source_path, test_path, confidence, updated_at) VALUES(?, ?, ?, ?, ?)",
+                [(resolved, src.replace("\\", "/"), test.replace("\\", "/"), float(conf), now) for src, test, conf in links],
+            )
+            con.commit()
+
+    def get_test_source_links(self, root: str, source_paths: list[str]) -> list[str]:
+        if not source_paths:
+            return []
+        resolved = str(self._root(root))
+        norm_sources = [p.replace("\\", "/").lstrip("./") for p in source_paths if p]
+        if not norm_sources:
+            return []
+        placeholders = ",".join("?" for _ in norm_sources)
+        basenames = [Path(p).name for p in norm_sources]
+        b_placeholders = ",".join("?" for _ in basenames)
+        with self._lock, closing(self._connect()) as con:
+            rows = con.execute(
+                f"SELECT DISTINCT test_path FROM test_source_links WHERE root=? AND (source_path IN ({placeholders}) OR source_path IN ({b_placeholders}))",
+                (resolved, *norm_sources, *basenames),
+            ).fetchall()
+        return [str(r[0]) for r in rows]
+
+    def precompute_test_mappings(self, root: str) -> int:
+        """Scan repository files and precompute bidirectional source-to-test links into SQLite."""
+        resolved = str(self._root(root))
+        try:
+            inv = self.repo_tools.file_inventory(resolved, include_hashes=False)
+            files = [str(x["path"]).replace("\\", "/") for x in inv.get("files", [])]
+        except Exception:
+            return 0
+        if not files:
+            return 0
+
+        test_files: list[str] = []
+        source_by_stem: dict[str, list[str]] = defaultdict(list)
+        for p in files:
+            p_lower = p.lower()
+            stem = Path(p).stem.lower()
+            if any(marker in p_lower for marker in ("/test/", "/tests/", "_test.", ".test.", "_spec.", ".spec.", "test_")) or stem.endswith("tests") or stem.endswith("test"):
+                test_files.append(p)
+            else:
+                source_by_stem[stem].append(p)
+
+        links: list[tuple[str, str, float]] = []
+        for t in test_files:
+            t_stem = Path(t).stem.lower()
+            clean_stem = re.sub(r"^(test_|tests_)|(_test|_tests|\.test|\.spec|tests|test)$", "", t_stem)
+            if not clean_stem:
+                continue
+            candidates = source_by_stem.get(clean_stem, [])
+            for c in candidates:
+                links.append((c, t, 1.0))
+                links.append((Path(c).name, t, 0.95))
+
+        self.record_test_source_links(resolved, links)
+        return len(links)
+
     def _init_db(self) -> None:
         try:
             with self._lock, closing(self._connect()) as con:
@@ -3643,6 +3719,19 @@ class DeterministicEngine:
         resolved = self._root(root)
         git_exe = shutil.which("git") or "git"
 
+        with self._lock, closing(self._connect()) as con:
+            row = con.execute("SELECT cached_at, data_json FROM hotspots_cache WHERE root=? AND days=?", (str(resolved), int(days))).fetchone()
+            if row and (time.time() - float(row[0])) < 1800.0:
+                try:
+                    data = json.loads(str(row[1]))
+                    if isinstance(data, dict) and data.get("success"):
+                        data["hotspots"] = data.get("hotspots", [])[:limit]
+                        data["count"] = len(data["hotspots"])
+                        data["cached"] = True
+                        return data
+                except Exception:
+                    pass
+
         churn_counts: dict[str, int] = defaultdict(int)
         try:
             res = subprocess.run(
@@ -3703,13 +3792,23 @@ class DeterministicEngine:
 
         hotspots.sort(key=lambda x: x["hotspot_score"], reverse=True)
         hotspots = hotspots[:limit]
-        return {
+        res_data = {
             "success": True,
             "root": resolved,
             "days": days,
             "count": len(hotspots),
             "hotspots": hotspots,
         }
+        try:
+            with self._lock, closing(self._connect()) as con:
+                con.execute(
+                    "INSERT OR REPLACE INTO hotspots_cache(root, days, cached_at, data_json) VALUES(?, ?, ?, ?)",
+                    (str(resolved), int(days), time.time(), json_dumps(res_data)),
+                )
+                con.commit()
+        except Exception:
+            pass
+        return res_data
 
     def generate_tests_for_diff(
         self,
@@ -4049,7 +4148,7 @@ def test_{sym}_regression_edge_cases():
             # Fallback to repo_tools iter_files which respects .gitignore and ignores Library/node_modules
             all_files = [str(p.relative_to(resolved_root)).replace("\\", "/") for p in self.repo_tools.iter_files(str(resolved_root))]
             for rel in all_files:
-                f_lower = rel.lower()
+                _ = rel.lower()
                 if is_test_source(rel):
                     db_test_paths.append(rel)
                     if len(db_test_paths) >= 50:
@@ -4121,6 +4220,8 @@ def test_{sym}_regression_edge_cases():
             }
 
         test_paths_set: set[str] = set()
+        for t_linked in self.get_test_source_links(str(resolved_root), norm_changed):
+            test_paths_set.add(t_linked)
         for p in norm_changed:
             p_lower = p.lower()
             if "test" in p_lower or "spec" in p_lower:
@@ -4134,9 +4235,28 @@ def test_{sym}_regression_edge_cases():
                 if s and (s == t_stem or s in t_stem or t_stem in s):
                     test_paths_set.add(t_path)
 
-        if self.code_index is not None:
+        code_index = self.code_index
+        if code_index is None:
+            # Direct DeterministicEngine callers may not receive the shared index
+            # that services inject. Build it lazily from RepositoryTools' bounded
+            # inventory so dependency traversal still selects transitive tests.
             try:
-                imp = self.code_index.impact(str(resolved_root), norm_changed)
+                from .code_index import CodeIndex
+
+                candidate_index = CodeIndex(self.config, self.repo_tools)
+                candidate_paths = [
+                    path.relative_to(resolved_root).as_posix()
+                    for path in self.repo_tools.iter_files(str(resolved_root))
+                ]
+                indexed = candidate_index.update_files_batch(str(resolved_root), candidate_paths)
+                if indexed.get("success"):
+                    self.code_index = candidate_index
+                    code_index = candidate_index
+            except Exception:
+                code_index = None
+        if code_index is not None:
+            try:
+                imp = code_index.impact(str(resolved_root), norm_changed)
                 for st in imp.get("suggested_tests", []):
                     test_paths_set.add(st["path"].replace("\\", "/"))
             except Exception:
@@ -4782,12 +4902,16 @@ def test_{sym}_regression_edge_cases():
         else:
             fields = {"id": "uuid", "name": "str", "status": "str"}
 
+        dataset_seed = repr(tuple(fields.items()))
         rows: list[dict[str, Any]] = []
         for i in range(1, n + 1):
             row: dict[str, Any] = {}
             for col, ctype in fields.items():
                 if "uuid" in ctype or col.lower() in ("id", "guid"):
-                    row[col] = f"{uuid.uuid4().hex[:12]}"
+                    row[col] = uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"{dataset_seed}:{col}:{i}",
+                    ).hex[:12]
                 elif "int" in ctype or col.lower() in ("age", "count", "seq", "index"):
                     row[col] = i * 10
                 elif "float" in ctype or col.lower() in ("price", "amount", "score", "rate"):
@@ -4865,21 +4989,37 @@ def test_{sym}_regression_edge_cases():
                 "top_functions": entries,
             }
         except Exception:
-            pass
+            entries.clear()
 
         try:
             raw = p.read_text(encoding="utf-8", errors="replace")
             data = json.loads(raw)
             if isinstance(data, dict) and "traceEvents" in data:
                 events = data.get("traceEvents", [])
+                if not isinstance(events, list):
+                    return {
+                        "success": False,
+                        "error": "failed to parse profile: traceEvents must be a JSON array",
+                    }
                 durations: dict[str, float] = {}
                 counts: dict[str, int] = {}
                 for ev in events:
+                    if not isinstance(ev, dict):
+                        continue
                     name = ev.get("name", "")
-                    dur = float(ev.get("dur", 0))
-                    if name and dur > 0:
-                        durations[name] = durations.get(name, 0.0) + dur
-                        counts[name] = counts.get(name, 0) + 1
+                    raw_duration = ev.get("dur", 0)
+                    if not isinstance(name, str) or not name.strip():
+                        continue
+                    if isinstance(raw_duration, bool) or not isinstance(raw_duration, (int, float)):
+                        continue
+                    duration = float(raw_duration)
+                    if not math.isfinite(duration) or duration <= 0:
+                        continue
+                    total_duration = durations.get(name, 0.0) + duration
+                    if not math.isfinite(total_duration):
+                        continue
+                    durations[name] = total_duration
+                    counts[name] = counts.get(name, 0) + 1
                 sorted_events = sorted(durations.items(), key=lambda kv: kv[1], reverse=True)
                 for name, total_dur in sorted_events[:limit]:
                     entries.append({
@@ -4894,7 +5034,7 @@ def test_{sym}_regression_edge_cases():
                     "top_functions": entries,
                 }
         except Exception:
-            pass
+            entries.clear()
 
         try:
             lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -4904,6 +5044,8 @@ def test_{sym}_regression_edge_cases():
                     entries.append({"summary": line.strip()})
                     if len(entries) >= limit:
                         break
+            if not entries:
+                return {"success": False, "error": "failed to parse profile: no profile records found"}
             return {
                 "success": True,
                 "profile_path": str(p),
@@ -6327,12 +6469,22 @@ def test_{sym}_regression_edge_cases():
         if not target_pattern:
             return {"success": False, "error": "pattern is required"}
 
+        output_limit = max(0, int(max_results))
+        result_probe_limit = output_limit + 1
+        file_limit = 400
         results: list[dict[str, Any]] = []
+        read_errors = 0
+        parse_errors = 0
         ignore_dirs = {".git", "node_modules", "vendor", "__pycache__", ".venv", "venv", "dist", "build"}
 
         if path:
             candidate = root_path / path
-            files_to_scan = [candidate] if candidate.is_file() else []
+            try:
+                candidate.relative_to(root_path)
+            except ValueError:
+                files_to_scan = []
+            else:
+                files_to_scan = [candidate] if candidate.is_file() else []
         else:
             files_to_scan = []
             for cur_root, dirs, filenames in os.walk(root_path):
@@ -6340,32 +6492,43 @@ def test_{sym}_regression_edge_cases():
                 for f in filenames:
                     if f.endswith((".py", ".ts", ".js", ".go", ".rs", ".cs")):
                         files_to_scan.append(Path(cur_root) / f)
-                        if len(files_to_scan) >= 400:
+                        if len(files_to_scan) > file_limit:
                             break
-                if len(files_to_scan) >= 400:
+                if len(files_to_scan) > file_limit:
                     break
+            file_limit_reached = len(files_to_scan) > file_limit
+            files_to_scan = files_to_scan[:file_limit]
+        if path:
+            file_limit_reached = False
 
+        files_scanned = 0
         for fpath in files_to_scan:
-            if len(results) >= max_results:
+            if len(results) >= result_probe_limit:
                 break
+            files_scanned += 1
             try:
                 rel_p = str(fpath.relative_to(root_path)).replace("\\", "/")
                 content = fpath.read_text(encoding="utf-8", errors="replace")
-            except Exception:
+            except OSError:
+                read_errors += 1
                 continue
 
             lines = content.splitlines()
+            file_result_start = len(results)
+            parse_failed = False
 
             if fpath.suffix == ".py":
                 try:
                     tree = ast.parse(content, filename=rel_p)
                     for node in ast.walk(tree):
-                        if len(results) >= max_results:
+                        if len(results) >= result_probe_limit:
                             break
 
                         if target_pattern in {"bare_except", "unhandled_exception", "missing_error_handling"}:
                             if isinstance(node, ast.Try):
                                 for handler in node.handlers:
+                                    if len(results) >= result_probe_limit:
+                                        break
                                     if handler.type is None:
                                         snip = lines[handler.lineno - 1].strip() if handler.lineno <= len(lines) else ""
                                         results.append({
@@ -6473,12 +6636,13 @@ def test_{sym}_regression_edge_cases():
                                         "description": f"Call to '{call_id}'",
                                         "snippet": snip,
                                     })
-                except Exception:
-                    pass
+                except SyntaxError:
+                    parse_errors += 1
+                    parse_failed = True
 
-            if not results or fpath.suffix != ".py":
+            if parse_failed or len(results) == file_result_start or fpath.suffix != ".py":
                 for idx, line in enumerate(lines, 1):
-                    if len(results) >= max_results:
+                    if len(results) >= result_probe_limit:
                         break
                     raw_line = line.strip()
                     if not raw_line or raw_line.startswith(("//", "#", "/*", "*")):
@@ -6563,12 +6727,27 @@ def test_{sym}_regression_edge_cases():
                             "snippet": raw_line[:120],
                         })
 
+        returned_matches = results[:output_limit]
+        truncation_reasons: list[str] = []
+        if file_limit_reached:
+            truncation_reasons.append("file_limit")
+        if len(results) > output_limit:
+            truncation_reasons.append("result_limit")
+        if read_errors:
+            truncation_reasons.append("read_errors")
+        if parse_errors:
+            truncation_reasons.append("parse_errors")
         return {
             "success": True,
             "root": str(root_path),
             "pattern": pattern,
-            "count": len(results),
-            "matches": results,
+            "count": len(returned_matches),
+            "matches": returned_matches,
+            "files_scanned": files_scanned,
+            "truncated": bool(truncation_reasons),
+            "truncation_reasons": truncation_reasons,
+            "read_errors": read_errors,
+            "parse_errors": parse_errors,
         }
 
     def context_budget(

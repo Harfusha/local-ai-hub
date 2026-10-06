@@ -85,16 +85,34 @@ def _expected_matches(output: Mapping[str, Any], expected: Mapping[str, Any]) ->
 
 
 def _schema_pass(output: Any, expected: Mapping[str, Any]) -> bool:
-    if not isinstance(output, Mapping):
-        return False
-    for key, expected_value in expected.items():
-        if str(key).casefold() in _CONTROL_KEYS:
-            continue
-        if key not in output:
-            return False
-        actual_value = output[key]
-        if expected_value is not None and not isinstance(actual_value, type(expected_value)):
-            return False
+    pending = [(output, expected)]
+    while pending:
+        actual, schema = pending.pop()
+        if isinstance(schema, Mapping):
+            if not isinstance(actual, Mapping):
+                return False
+            for key, expected_value in schema.items():
+                if str(key).casefold() in _CONTROL_KEYS:
+                    continue
+                if key not in actual:
+                    return False
+                pending.append((actual[key], expected_value))
+        elif isinstance(schema, list):
+            if not isinstance(actual, list):
+                return False
+            if schema:
+                if len(actual) < len(schema):
+                    return False
+                pending.extend(
+                    (item, schema[min(index, len(schema) - 1)])
+                    for index, item in enumerate(actual)
+                )
+        elif schema is not None:
+            if isinstance(schema, int) and not isinstance(schema, bool):
+                if isinstance(actual, bool) or not isinstance(actual, int):
+                    return False
+            elif not isinstance(actual, type(schema)):
+                return False
     return True
 
 
