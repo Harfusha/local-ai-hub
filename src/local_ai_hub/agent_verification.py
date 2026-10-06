@@ -184,6 +184,15 @@ class VerificationReceipt:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> VerificationReceipt:
+        passed = data.get("passed")
+        if type(passed) is not bool:
+            raise ValueError("verification receipt passed must be a boolean")
+        mutation_generation = data.get("mutation_generation", 0)
+        if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int) or mutation_generation < 0:
+            raise ValueError("verification receipt mutation_generation must be a non-negative integer")
+        details = data.get("details", {})
+        if not isinstance(details, Mapping):
+            raise ValueError("verification receipt details must be a mapping")
         return cls(
             receipt_id=str(data["receipt_id"]),
             task_id=str(data["task_id"]),
@@ -193,12 +202,12 @@ class VerificationReceipt:
             evidence_id=str(data.get("evidence_id", "")),
             command_id=str(data.get("command_id", "")),
             repository_revision=str(data.get("repository_revision", "")),
-            mutation_generation=int(data.get("mutation_generation", 0) or 0),
+            mutation_generation=mutation_generation,
             evidence_type=str(data.get("evidence_type", "source_review")),
             observed_at=float(data.get("observed_at", 0.0)),
             expires_at=float(data["expires_at"]) if data.get("expires_at") is not None else None,
-            passed=data.get("passed") is True,
-            details=dict(data.get("details") or {}),
+            passed=passed,
+            details=dict(details),
         )
 
 
@@ -1403,7 +1412,7 @@ class VerificationStore:
                         state_data=current_sd,
                     )
                     self.task_store.checkpoint(change.task_id, new_chk, actor="agent", idempotency_key=f"chg_gen_{change.change_id}")
-            except Exception:
+            except KeyError:
                 pass
         return change
 
