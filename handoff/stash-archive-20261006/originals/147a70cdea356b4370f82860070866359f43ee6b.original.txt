@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+ROOT_SOURCE = Path(r"C:\Users\Adam\.local-ai-hub\src")
+ROOT_REPO = ROOT_SOURCE.parent.parent
+CANDIDATE_ROOT = Path(__file__).resolve().parents[1]
+T06_PATCH = Path(
+    r"C:\Users\Adam\.codex\worktrees\t06-safe-commands\.local-ai-hub\handoff\T06-T09-validation-receipts-v6-root-namespace-current.patch"
+)
+TEST = CANDIDATE_ROOT / "tests" / "test_t09_t06_v6_real_broker.py"
+
+if not all(path.exists() for path in (ROOT_SOURCE, T06_PATCH, TEST)):
+    raise SystemExit("root source, T06 v6 patch, or integration test is unavailable")
+
+sys.path.insert(0, str(ROOT_SOURCE))
+import local_ai_hub
+
+for module_name in ("local_ai_hub.agent_verification", "local_ai_hub.verification_rules"):
+    path = CANDIDATE_ROOT / "src" / "local_ai_hub" / f"{module_name.rsplit('.', 1)[-1]}.py"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"T09 candidate module could not be loaded: {module_name}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+
+with tempfile.TemporaryDirectory(prefix="t09-t06-v6-") as temp_name:
+    temp_root = Path(temp_name)
+    commands_path = temp_root / "src" / "local_ai_hub" / "commands.py"
+    commands_path.parent.mkdir(parents=True)
+    shutil.copy2(ROOT_SOURCE / "local_ai_hub" / "commands.py", commands_path)
+    subprocess.run(["git", "init", "-q", str(temp_root)], check=True)
+    subprocess.run(
+        ["git", "-C", str(temp_root), "apply", str(T06_PATCH)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    spec = importlib.util.spec_from_file_location("local_ai_hub.commands", commands_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit("patched T06 command broker could not be loaded")
+    command_module = importlib.util.module_from_spec(spec)
+    sys.modules["local_ai_hub.commands"] = command_module
+    spec.loader.exec_module(command_module)
+
+    from local_ai_hub import app, http_server, project_config
+
+    print(
+        "root modules:", app.__file__, http_server.__file__, project_config.__file__,
+        "T06 v6 commands:", commands_path,
+        "T09 verifier:", sys.modules["local_ai_hub.agent_verification"].__file__,
+    )
+    import pytest
+
+    raise SystemExit(pytest.main([str(TEST), "-q", "--tb=short"]))

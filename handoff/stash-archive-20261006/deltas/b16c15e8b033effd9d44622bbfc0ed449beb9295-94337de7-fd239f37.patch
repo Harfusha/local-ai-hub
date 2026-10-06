@@ -1,0 +1,265 @@
+--- a/src/local_ai_hub/ollama.py
++++ b/src/local_ai_hub/ollama.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import json
++import math
+ import os
+ import re
+ import socket
+@@ -36,6 +37,10 @@
+     terminate_tree,
+ )
+ from .model_policy import ModelExecutionPolicy
++
++_GAMING_UNLOAD_MAX_TIMEOUT_SECONDS = 5.0
++
++
+ 
+ 
+ class RepetitionWatchdog:
+@@ -200,9 +205,18 @@
+             return "llama.cpp CPU" if mode == "none" else "llama.cpp SYCL" if mode else "llama.cpp"
+         return "llama.cpp external"
+ 
+-    def request(self, endpoint: str, payload: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
++    def request(
++        self,
++        endpoint: str,
++        payload: dict[str, Any] | None = None,
++        timeout: float | None = None,
++        *,
++        deadline: float | None = None,
++    ) -> dict[str, Any]:
+         if payload is not None and endpoint in {"/api/chat", "/api/generate"}:
+-            return self.request_stream(endpoint, payload, lambda _chunk: None, timeout)
++            if deadline is None:
++                return self.request_stream(endpoint, payload, lambda _chunk: None, timeout)
++            return self.request_stream(endpoint, payload, lambda _chunk: None, timeout, deadline=deadline)
+         if endpoint == "/api/show":
+             router = getattr(self, "llama_cpp", None)
+             describe = getattr(router, "model_capabilities", None)
+@@ -232,10 +246,12 @@
+         attempts = max(1, int(self.config.get("ollama", {}).get("request_attempts", 2)))
+         retry_delay = max(0.0, float(self.config.get("ollama", {}).get("retry_delay_seconds", 0.6)))
+         total_timeout = max(0.05, float(timeout if timeout is not None else self.timeout))
+-        deadline = time.monotonic() + total_timeout
++        request_deadline = time.monotonic() + total_timeout
++        if deadline is not None:
++            request_deadline = min(request_deadline, float(deadline))
+         last_error = "unknown Ollama error"
+         for attempt in range(1, attempts + 1):
+-            remaining = deadline - time.monotonic()
++            remaining = request_deadline - time.monotonic()
+             if remaining <= 0:
+                 break
+             req = Request(f"{self.base_url}{endpoint}", data=body, headers=headers)
+@@ -262,17 +278,37 @@
+                 last_error = f"{type(exc).__name__}: {exc}"
+                 if "timeout" in str(exc).lower() or "timed out" in str(exc).lower() or attempt >= attempts:
+                     break
+-            remaining = deadline - time.monotonic()
++            remaining = request_deadline - time.monotonic()
+             if remaining <= 0:
+                 break
+             if retry_delay:
+                 time.sleep(min(retry_delay, remaining))
+-        return {"error": last_error, "_lah_retry_count": max(0, attempts - 1), "timed_out": time.monotonic() >= deadline}
+-
+-    def request_stream(self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any, timeout: float | None = None, *, on_thinking: Any | None = None) -> dict[str, Any]:
++        return {"error": last_error, "_lah_retry_count": max(0, attempts - 1), "timed_out": time.monotonic() >= request_deadline}
++
++    def request_stream(
++        self,
++        endpoint: str,
++        payload: dict[str, Any] | None,
++        on_chunk: Any,
++        timeout: float | None = None,
++        *,
++        on_thinking: Any | None = None,
++        deadline: float | None = None,
++    ) -> dict[str, Any]:
+         llama_router = getattr(self, "llama_cpp", None)
+         llama_selected = not bool(self.config.get("ollama", {}).get("enabled", False))
+-        llama_result = llama_router.request_stream(endpoint, payload, on_chunk, timeout=timeout, on_thinking=on_thinking) if llama_selected and llama_router is not None else None
++        llama_timeout = timeout
++        if deadline is not None:
++            remaining = float(deadline) - time.monotonic()
++            if remaining <= 0:
++                provider = "llama.cpp" if llama_selected else "ollama"
++                return {"error": "Ollama request deadline expired", "timed_out": True, "_lah_provider": provider}
++            timeout_budget = max(0.05, float(timeout if timeout is not None else self.timeout))
++            llama_timeout = min(timeout_budget, remaining)
++        llama_result = llama_router.request_stream(endpoint, payload, on_chunk, timeout=llama_timeout, on_thinking=on_thinking) if llama_selected and llama_router is not None else None
++        if deadline is not None and time.monotonic() >= float(deadline):
++            provider = "llama.cpp" if llama_selected else "ollama"
++            return {"error": "Ollama request deadline expired", "timed_out": True, "_lah_provider": provider}
+         if llama_result is not None:
+             if "_lah_backend_unavailable" not in llama_result:
+                 if llama_cpp_managed_selected(self.config):
+@@ -293,10 +329,13 @@
+         attempts = max(1, int(self.config.get("ollama", {}).get("request_attempts", 2)))
+         retry_delay = max(0.0, float(self.config.get("ollama", {}).get("retry_delay_seconds", 0.6)))
+         total_timeout = max(0.05, float(timeout if timeout is not None else self.timeout))
+-        deadline = time.monotonic() + total_timeout
++        request_deadline = time.monotonic() + total_timeout
++        if deadline is not None:
++            request_deadline = min(request_deadline, float(deadline))
++            total_timeout = max(0.0, request_deadline - time.monotonic())
+         last_error = "unknown Ollama error"
+         for attempt in range(1, attempts + 1):
+-            remaining = deadline - time.monotonic()
++            remaining = request_deadline - time.monotonic()
+             if remaining <= 0:
+                 break
+             generated: list[str] = []
+@@ -308,7 +347,7 @@
+             try:
+                 with urlopen(req, timeout=max(0.05, remaining)) as response:
+                     for raw_line in response:
+-                        if time.monotonic() >= deadline:
++                        if time.monotonic() >= request_deadline:
+                             last_error = f"Ollama request timed out after {total_timeout:g}s"
+                             break
+                         raw_line = raw_line.strip()
+@@ -397,10 +436,10 @@
+                 last_error = f"{type(exc).__name__}: {exc}"
+                 if "timeout" in str(exc).lower() or "timed out" in str(exc).lower():
+                     break
+-            remaining = deadline - time.monotonic()
++            remaining = request_deadline - time.monotonic()
+             if attempt < attempts and remaining > 0 and retry_delay:
+                 time.sleep(min(retry_delay, remaining))
+-        return {"error": last_error, "_lah_retry_count": max(0, attempts - 1), "timed_out": time.monotonic() >= deadline}
++        return {"error": last_error, "_lah_retry_count": max(0, attempts - 1), "timed_out": time.monotonic() >= request_deadline}
+ 
+     def request_interruptible(
+         self,
+@@ -966,6 +1005,126 @@
+             self._invalidate_loaded_cache()
+         return ok
+ 
++
++    def unload_configured_models(self, *, timeout_seconds: float = 3.0) -> dict[str, Any]:
++        """Best-effort, bounded unload of configured models that are currently loaded.
++
++        Pause never starts a backend or loads a model. A single deadline covers the
++        loaded-model query and every unload request. The helper does not issue an
++        inference-cancel request; the backend decides how an in-flight runner reacts.
++        Failed or timed-out unloads are reported without retrying at this layer.
++        """
++        if (
++            isinstance(timeout_seconds, bool)
++            or not isinstance(timeout_seconds, (int, float))
++            or not math.isfinite(timeout_seconds)
++            or timeout_seconds <= 0
++        ):
++            raise ValueError("timeout_seconds must be a finite positive number")
++
++        timeout = min(float(timeout_seconds), _GAMING_UNLOAD_MAX_TIMEOUT_SECONDS)
++        deadline = time.monotonic() + timeout
++        unloaded: list[str] = []
++        failed: dict[str, str] = {}
++        ollama_enabled = bool(self.config.get("ollama", {}).get("enabled", False))
++
++        if ollama_enabled:
++            try:
++                response = self.request("/api/ps", timeout=timeout, deadline=deadline)
++            except Exception:
++                response = {"error": "backend unavailable"}
++            if (
++                not isinstance(response, dict)
++                or "error" in response
++                or not isinstance(response.get("models"), list)
++            ):
++                return {
++                    "success": False,
++                    "backend_available": False,
++                    "unloaded": unloaded,
++                    "failed": {"backend": "backend unavailable"},
++                }
++            loaded_rows = response["models"]
++            backend_available = True
++        else:
++            adapter_models = self.config.get("llama_cpp", {}).get("models", {})
++            if not isinstance(adapter_models, dict) or not adapter_models:
++                return {
++                    "success": True,
++                    "backend_available": False,
++                    "unloaded": unloaded,
++                    "failed": failed,
++                }
++            try:
++                available_models = self.llama_cpp.available_models(deadline=deadline)
++                if not available_models or time.monotonic() >= deadline:
++                    raise TimeoutError("backend unavailable")
++                loaded_rows = self.llama_cpp.loaded_model_details(deadline=deadline)
++            except Exception:
++                return {
++                    "success": False,
++                    "backend_available": False,
++                    "unloaded": unloaded,
++                    "failed": {"backend": "backend unavailable"},
++                }
++            backend_available = True
++
++        loaded_models: list[str] = []
++        for row_index, row in enumerate(loaded_rows):
++            if not isinstance(row, dict):
++                failed[f"model_row_{row_index}"] = "loaded model row is not an object"
++                continue
++            model = ""
++            for field in ("name", "model"):
++                value = row.get(field)
++                if isinstance(value, str) and value.strip():
++                    model = value.strip()
++                    break
++            if not model:
++                failed[f"model_row_{row_index}"] = "loaded model row has no usable name or model"
++                continue
++            # Preserve model tags (`name:tag`) exactly; trim only outer whitespace.
++            if model not in loaded_models:
++                loaded_models.append(model)
++
++        for model in loaded_models:
++            if time.monotonic() >= deadline:
++                failed[model] = "unload deadline exceeded"
++                continue
++            try:
++                if ollama_enabled:
++                    remaining = max(0.05, deadline - time.monotonic())
++                    response = self.request(
++                        "/api/generate",
++                        {"model": model, "prompt": "", "keep_alive": 0},
++                        timeout=remaining,
++                        deadline=deadline,
++                    )
++                    ok = (
++                        isinstance(response, dict)
++                        and "error" not in response
++                        and response.get("done_reason") == "unload"
++                    )
++                    if ok:
++                        self._invalidate_loaded_cache()
++                else:
++                    ok = self.llama_cpp.unload_model(model, deadline=deadline)
++            except Exception as exc:
++                failed[model] = type(exc).__name__
++                continue
++
++            if ok:
++                unloaded.append(model)
++            else:
++                failed[model] = "unload failed or timed out"
++
++        return {
++            "success": not failed,
++            "backend_available": backend_available,
++            "unloaded": unloaded,
++            "failed": failed,
++        }
++
+     def generate(self, model: str, prompt: str, *, system: str | None = None, options: dict[str, Any] | None = None, keep_alive: str | None = None) -> dict[str, Any]:
+         options = dict(options or {})
+         payload: dict[str, Any] = {"model": model, "prompt": prompt, "stream": False, "options": options}

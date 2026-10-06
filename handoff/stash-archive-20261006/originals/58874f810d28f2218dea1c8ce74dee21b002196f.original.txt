@@ -1,0 +1,911 @@
+diff --git a/tests/test_hubctl_unlinked_operations.py b/tests/test_hubctl_unlinked_operations.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_hubctl_unlinked_operations.py
+@@ -0,0 +1,185 @@
++"""Focused CLI behavior checks for hubctl actions missing inventory links."""
++
++import json
++import sys
++from pathlib import Path
++
++from tools import hubctl
++
++
++def test_hubctl_clean_dispatches_cleanup_and_json_output(monkeypatch, capsys, tmp_path):
++    calls = []
++
++    def clean(root, *, all_clean=False, dry_run=False):
++        calls.append((root, all_clean, dry_run))
++        return 2, 3
++
++    monkeypatch.setattr(hubctl, "ROOT", tmp_path)
++    monkeypatch.setattr("tools.clean.clean", clean)
++    monkeypatch.setattr(sys, "argv", ["hubctl.py", "clean", "--json"])
++
++    result = hubctl.main()
++
++    assert result == 0
++    assert calls == [(tmp_path, False, False)]
++    assert json.loads(capsys.readouterr().out) == {
++        "success": True,
++        "dirs_removed": 2,
++        "files_removed": 3,
++    }
++
++
++def test_hubctl_dashboard_prints_configured_url(monkeypatch, capsys):
++    class Client:
++        base_url = "http://127.0.0.1:11436"
++
++    calls = []
++    monkeypatch.setattr(hubctl, "client", lambda: calls.append("client") or Client())
++    monkeypatch.setattr(sys, "argv", ["hubctl.py", "dashboard"])
++
++    result = hubctl.main()
++
++    assert result == 0
++    assert calls == ["client"]
++    assert capsys.readouterr().out == "http://127.0.0.1:11436/dashboard\n"
++
++
++def test_hubctl_generate_dispatches_writers_and_optional_agent_install(
++    monkeypatch, capsys, tmp_path
++):
++    config_path = tmp_path / "config.toml"
++    install_dir = tmp_path / "agent-install"
++    root = tmp_path / "hub-root"
++    python_bin = tmp_path / "missing-venv-python"
++    config = {"setup": {"install_dir": str(install_dir), "install_agent_configs": False}}
++    writes = []
++    installs = []
++    monkeypatch.setattr(hubctl, "ROOT", root)
++    monkeypatch.setattr(hubctl, "load_config", lambda path: config)
++    monkeypatch.setattr(sys, "argv", ["hubctl.py", "generate", "--config", str(config_path), "--install"])
++
++    from local_ai_hub import generator
++    from tools import setup as setup_mod
++
++    monkeypatch.setattr(generator, "write_all_generated", lambda cfg, dest, py: writes.append((cfg, dest, py)) or {"written": 1})
++    monkeypatch.setattr(setup_mod, "venv_python", lambda venv: python_bin)
++    monkeypatch.setattr(setup_mod, "expand", lambda value: install_dir)
++    monkeypatch.setattr(
++        setup_mod,
++        "configure_agents",
++        lambda dest, py, *args: installs.append((dest, py, args)),
++    )
++
++    result = hubctl.main()
++
++    assert result == 0
++    assert writes == [
++        (config, root, Path(sys.executable)),
++        (config, install_dir, Path(sys.executable)),
++    ]
++    assert installs == [(install_dir, Path(sys.executable), (None, None, config))]
++    assert json.loads(capsys.readouterr().out) == {
++        "success": True,
++        "generated": {"written": 1},
++    }
++
++
++def test_hubctl_restart_stops_then_starts_and_reports_result(monkeypatch, capsys):
++    calls = []
++    monkeypatch.setattr(hubctl, "stop", lambda: calls.append("stop") or True)
++    monkeypatch.setattr(hubctl, "start", lambda: calls.append("start") or True)
++    monkeypatch.setattr(sys, "argv", ["hubctl.py", "restart"])
++
++    result = hubctl.main()
++
++    assert result == 0
++    assert calls == ["stop", "start"]
++    assert capsys.readouterr().out == "restarted\n"
++
++
++def test_hubctl_service_status_reads_configured_supervisor_file(
++    monkeypatch, capsys, tmp_path
++):
++    config_path = tmp_path / "config.toml"
++    state_dir = tmp_path / "state"
++    state_dir.mkdir()
++    payload = '{"running": true, "pid": 42}'
++    (state_dir / "supervisor.status.json").write_text(payload, encoding="utf-8")
++    monkeypatch.setattr(
++        hubctl,
++        "load_config",
++        lambda path: {"server": {"state_dir": str(state_dir)}},
++    )
++    monkeypatch.setattr(
++        sys,
++        "argv",
++        ["hubctl.py", "service-status", "--config", str(config_path)],
++    )
++
++    result = hubctl.main()
++
++    assert result == 0
++    assert capsys.readouterr().out == payload + "\n"
++
++
++def test_hubctl_start_dispatches_start_and_reports_success(monkeypatch, capsys):
++    calls = []
++    monkeypatch.setattr(hubctl, "start", lambda: calls.append("start") or True)
++    monkeypatch.setattr(sys, "argv", ["hubctl.py", "start"])
++
++    result = hubctl.main()
++
++    assert result == 0
++    assert calls == ["start"]
++    assert capsys.readouterr().out == "started\n"
++
++
++def test_hubctl_status_reports_offline_without_starting_service(
++    monkeypatch, capsys, tmp_path
++):
++    config_path = tmp_path / "config.toml"
++    calls = []
++    monkeypatch.setattr(hubctl, "status", lambda: calls.append("status") or {"running": False})
++    monkeypatch.setattr(hubctl, "load_config", lambda path: {})
++    monkeypatch.setattr(
++        sys,
++        "argv",
++        ["hubctl.py", "status", "--config", str(config_path)],
++    )
++
++    result = hubctl.main()
++
++    assert result == 0
++    assert calls == ["status"]
++    assert capsys.readouterr().out == "Local AI Hub: Offline (stopped)\n"
++
++
++def test_hubctl_stop_dispatches_stop_and_reports_success(monkeypatch, capsys):
++    calls = []
++    monkeypatch.setattr(hubctl, "stop", lambda: calls.append("stop") or True)
++    monkeypatch.setattr(sys, "argv", ["hubctl.py", "stop"])
++
++    result = hubctl.main()
++
++    assert result == 0
++    assert calls == ["stop"]
++    assert capsys.readouterr().out == "stopped\n"
++
++
++def test_hubctl_watch_dispatches_monitor_and_returns_its_exit_code(
++    monkeypatch, tmp_path
++):
++    root = tmp_path / "hub-root"
++    calls = []
++    monkeypatch.setattr(hubctl, "ROOT", root)
++    monkeypatch.setattr(sys, "argv", ["hubctl.py", "watch"])
++    monkeypatch.setattr(
++        hubctl.subprocess,
++        "call",
++        lambda argv: calls.append(argv) or 7,
++    )
++
++    result = hubctl.main()
++
++    assert result == 7
++    assert calls == [[sys.executable, str(root / "tools" / "monitor.py")]]
+diff --git a/tests/test_rag_work_operation_acceptance.py b/tests/test_rag_work_operation_acceptance.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_rag_work_operation_acceptance.py
+@@ -0,0 +1,382 @@
++from __future__ import annotations
++
++from typing import Any
++
++from local_ai_hub import mcp_server
++
++
++class _Backend:
++    def __init__(self, response: dict[str, Any]) -> None:
++        self.response = response
++        self.calls: list[tuple[str, str, dict[str, Any] | None, dict[str, Any]]] = []
++
++    def post(self, path: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
++        self.calls.append(("POST", path, payload, kwargs))
++        return self.response
++
++    def get(self, path: str, **kwargs: Any) -> dict[str, Any]:
++        self.calls.append(("GET", path, None, kwargs))
++        return self.response
++
++
++def _enable_rag(monkeypatch: Any, backend: _Backend) -> None:
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++    monkeypatch.setattr(mcp_server.FEATURES, "rag", True)
++    monkeypatch.setattr(mcp_server.FEATURES, "tasks", False)
++    monkeypatch.setattr(mcp_server, "_timeout", lambda kind: {"quick": 11.0, "long": 77.0}[kind])
++
++
++def _enable_work(monkeypatch: Any, backend: _Backend) -> None:
++    monkeypatch.setattr(mcp_server, "CLIENT", backend)
++    monkeypatch.setattr(mcp_server.FEATURES, "work_orchestrator", True)
++    monkeypatch.setattr(mcp_server.FEATURES, "tasks", False)
++    monkeypatch.setattr(mcp_server, "_timeout", lambda kind: {"quick": 11.0, "long": 77.0}[kind])
++
++
++def test_mcp_rag_index_forwards_root_and_workspace(monkeypatch: Any, tmp_path: Any) -> None:
++    response = {"success": True, "indexed_files": 4, "revision": "rag-rev-4"}
++    backend = _Backend(response)
++    _enable_rag(monkeypatch, backend)
++
++    result = mcp_server.local_ai_rag(action="index", root=str(tmp_path))
++
++    assert backend.calls == [
++        ("POST", "/api/rag/index", {"root": str(tmp_path), "workspace": str(tmp_path)}, {"timeout": 77.0})
++    ]
++    assert result == response
++
++
++def test_mcp_rag_search_clamps_top_k_and_uses_root_workspace_default(monkeypatch: Any, tmp_path: Any) -> None:
++    response = {"success": True, "results": [{"path": "guide.md", "score": 0.91, "text": "match"}]}
++    backend = _Backend(response)
++    _enable_rag(monkeypatch, backend)
++
++    result = mcp_server.local_ai_rag(action="search", root=str(tmp_path), query="release gate", top_k=99)
++
++    assert backend.calls == [
++        (
++            "POST",
++            "/api/rag/search",
++            {"query": "release gate", "workspace": str(tmp_path), "top_k": 12, "use_reranker": True},
++            {},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_rag_list_returns_available_workspace_records(monkeypatch: Any) -> None:
++    response = {"success": True, "workspaces": [{"name": "docs", "documents": 3}]}
++    backend = _Backend(response)
++    _enable_rag(monkeypatch, backend)
++
++    result = mcp_server.local_ai_rag(action="list")
++
++    assert backend.calls == [("GET", "/api/rag/workspaces", None, {})]
++    assert result == response
++
++
++def test_mcp_rag_docset_index_uses_query_as_name_and_returns_index_receipt(
++    monkeypatch: Any, tmp_path: Any
++) -> None:
++    response = {"success": True, "docset": "release-notes", "indexed_documents": 2}
++    backend = _Backend(response)
++    _enable_rag(monkeypatch, backend)
++
++    result = mcp_server.local_ai_rag(action="docset_index", root=str(tmp_path), query="release-notes")
++
++    assert backend.calls == [
++        ("POST", "/api/rag/docset/index", {"name": "release-notes", "root": str(tmp_path)}, {"timeout": 77.0})
++    ]
++    assert result == response
++
++
++def test_mcp_rag_docset_search_defaults_name_and_clamps_top_k(monkeypatch: Any) -> None:
++    response = {"success": True, "matches": [{"document_id": "d-2", "text": "verified release"}]}
++    backend = _Backend(response)
++    _enable_rag(monkeypatch, backend)
++
++    result = mcp_server.local_ai_rag(action="docset_search", query="verified release", top_k=0)
++
++    assert backend.calls == [
++        (
++            "POST",
++            "/api/rag/docset/search",
++            {"name": "default", "query": "verified release", "top_k": 1},
++            {},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_rag_ingest_document_forwards_content_and_quick_timeout(monkeypatch: Any) -> None:
++    response = {"success": True, "status": "queued", "document_id": "doc-17"}
++    backend = _Backend(response)
++    _enable_rag(monkeypatch, backend)
++
++    result = mcp_server.local_ai_rag(
++        action="ingest_document", workspace="manuals", query="Operator approved release procedure."
++    )
++
++    assert backend.calls == [
++        (
++            "POST",
++            "/api/rag/ingest_document",
++            {"workspace": "manuals", "content": "Operator approved release procedure."},
++            {"timeout": 11.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_rag_ingest_diagram_forwards_image_path_and_caption(monkeypatch: Any) -> None:
++    response = {"success": True, "status": "ingested", "diagram_id": "diagram-5"}
++    backend = _Backend(response)
++    _enable_rag(monkeypatch, backend)
++
++    result = mcp_server.local_ai_rag(
++        action="ingest_diagram",
++        workspace="architecture",
++        query="artifacts/system-map.png",
++        extra_fields=["Gateway routes to worker pool"],
++    )
++
++    assert backend.calls == [
++        (
++            "POST",
++            "/api/rag/ingest_diagram",
++            {
++                "workspace": "architecture",
++                "image_path": "artifacts/system-map.png",
++                "caption": "Gateway routes to worker pool",
++            },
++            {"timeout": 11.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_work_submit_forwards_closed_task_contract(monkeypatch: Any, tmp_path: Any) -> None:
++    response = {"success": True, "work_id": "work-101", "status": "queued", "task_id": "task-101"}
++    backend = _Backend(response)
++    _enable_work(monkeypatch, backend)
++
++    result = mcp_server.local_ai_work(
++        action="submit",
++        root=str(tmp_path),
++        task="Implement release receipt handling",
++        acceptance_criteria=["Receipt verifies", "Failure remains terminal"],
++        constraints=["No network writes"],
++        mode="plan_then_execute",
++        permissions={"allow_network": False},
++        budget={"max_steps": 4},
++        timeout_seconds=45,
++    )
++
++    assert backend.calls == [
++        (
++            "POST",
++            "/api/work-orders",
++            {
++                "action": "submit",
++                "root": str(tmp_path),
++                "task": "Implement release receipt handling",
++                "work_id": "",
++                "acceptance_criteria": ["Receipt verifies", "Failure remains terminal"],
++                "constraints": ["No network writes"],
++                "mode": "plan_then_execute",
++                "permissions": {"allow_network": False},
++                "budget": {"max_steps": 4},
++                "timeout_seconds": 45,
++                "answer": "",
++                "response_profile": "compact",
++                "return_fields": [],
++                "max_output_tokens": 0,
++                "keep_failed_workspace": False,
++            },
++            {"timeout": 11.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_work_status_forwards_work_identity(monkeypatch: Any) -> None:
++    response = {"success": True, "work_id": "work-202", "status": "running", "completed_steps": 2}
++    backend = _Backend(response)
++    _enable_work(monkeypatch, backend)
++
++    result = mcp_server.local_ai_work(action="status", work_id="work-202")
++
++    assert backend.calls == [
++        (
++            "POST",
++            "/api/work-orders",
++            {
++                "action": "status",
++                "root": mcp_server._workspace,
++                "task": "",
++                "work_id": "work-202",
++                "acceptance_criteria": [],
++                "constraints": [],
++                "mode": "execute",
++                "permissions": {},
++                "budget": {},
++                "timeout_seconds": 90.0,
++                "answer": "",
++                "response_profile": "compact",
++                "return_fields": [],
++                "max_output_tokens": 0,
++                "keep_failed_workspace": False,
++            },
++            {"timeout": 11.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_work_wait_forwards_timeout_and_uses_long_transport_timeout(monkeypatch: Any) -> None:
++    response = {"success": True, "work_id": "work-303", "status": "completed", "waited": True}
++    backend = _Backend(response)
++    _enable_work(monkeypatch, backend)
++
++    result = mcp_server.local_ai_work(action="wait", work_id="work-303", timeout_seconds=23.5)
++
++    assert backend.calls == [
++        (
++            "POST",
++            "/api/work-orders",
++            {
++                "action": "wait",
++                "root": mcp_server._workspace,
++                "task": "",
++                "work_id": "work-303",
++                "acceptance_criteria": [],
++                "constraints": [],
++                "mode": "execute",
++                "permissions": {},
++                "budget": {},
++                "timeout_seconds": 23.5,
++                "answer": "",
++                "response_profile": "compact",
++                "return_fields": [],
++                "max_output_tokens": 0,
++                "keep_failed_workspace": False,
++            },
++            {"timeout": 77.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_work_get_forwards_projection_options(monkeypatch: Any) -> None:
++    response = {"success": True, "work_id": "work-404", "status": "completed", "receipt": "receipt-404"}
++    backend = _Backend(response)
++    _enable_work(monkeypatch, backend)
++
++    result = mcp_server.local_ai_work(
++        action="get",
++        work_id="work-404",
++        response_profile="minimal",
++        return_fields=["receipt", "status"],
++        max_output_tokens=321,
++    )
++
++    assert backend.calls == [
++        (
++            "POST",
++            "/api/work-orders",
++            {
++                "action": "get",
++                "root": mcp_server._workspace,
++                "task": "",
++                "work_id": "work-404",
++                "acceptance_criteria": [],
++                "constraints": [],
++                "mode": "execute",
++                "permissions": {},
++                "budget": {},
++                "timeout_seconds": 90.0,
++                "answer": "",
++                "response_profile": "minimal",
++                "return_fields": ["receipt", "status"],
++                "max_output_tokens": 321,
++                "keep_failed_workspace": False,
++            },
++            {"timeout": 11.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_work_cancel_returns_cancelled_state(monkeypatch: Any) -> None:
++    response = {"success": True, "work_id": "work-505", "status": "cancelled", "cancelled": True}
++    backend = _Backend(response)
++    _enable_work(monkeypatch, backend)
++
++    result = mcp_server.local_ai_work(action="cancel", work_id="work-505")
++
++    assert backend.calls == [
++        (
++            "POST",
++            "/api/work-orders",
++            {
++                "action": "cancel",
++                "root": mcp_server._workspace,
++                "task": "",
++                "work_id": "work-505",
++                "acceptance_criteria": [],
++                "constraints": [],
++                "mode": "execute",
++                "permissions": {},
++                "budget": {},
++                "timeout_seconds": 90.0,
++                "answer": "",
++                "response_profile": "compact",
++                "return_fields": [],
++                "max_output_tokens": 0,
++                "keep_failed_workspace": False,
++            },
++            {"timeout": 11.0},
++        )
++    ]
++    assert result == response
++
++
++def test_mcp_work_continue_forwards_answer_and_preserves_updated_state(monkeypatch: Any) -> None:
++    response = {
++        "success": True,
++        "work_id": "work-606",
++        "status": "running",
++        "continuation_id": "continuation-2",
++    }
++    backend = _Backend(response)
++    _enable_work(monkeypatch, backend)
++
++    result = mcp_server.local_ai_work(
++        action="continue", work_id="work-606", answer="Use the verified receipt from step two."
++    )
++
++    assert backend.calls == [
++        (
++            "POST",
++            "/api/work-orders",
++            {
++                "action": "continue",
++                "root": mcp_server._workspace,
++                "task": "",
++                "work_id": "work-606",
++                "acceptance_criteria": [],
++                "constraints": [],
++                "mode": "execute",
++                "permissions": {},
++                "budget": {},
++                "timeout_seconds": 90.0,
++                "answer": "Use the verified receipt from step two.",
++                "response_profile": "compact",
++                "return_fields": [],
++                "max_output_tokens": 0,
++                "keep_failed_workspace": False,
++            },
++            {"timeout": 11.0},
++        )
++    ]
++    assert result == response
+diff --git a/tests/test_client_operation_acceptance.py b/tests/test_client_operation_acceptance.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_client_operation_acceptance.py
+@@ -0,0 +1,329 @@
++"""Behavioral acceptance for selected HubClient HTTP target operations."""
++
++import json
++
++import pytest
++
++from local_ai_hub.client import HubClient
++
++
++@pytest.fixture
++def fake_http_transport(tmp_path):
++    (tmp_path / "missing-hub.toml").write_text("", encoding="utf-8")
++    captured = []
++    state = {"response": {"success": True, "operation": "accepted"}}
++
++    def open_request(method, path, body, headers, timeout):
++        captured.append(
++            {
++                "method": method,
++                "path": path,
++                "payload": json.loads(body.decode("utf-8")) if body else None,
++            }
++        )
++        return json.dumps(state["response"]).encode("utf-8")
++
++    return {"captured": captured, "state": state, "open": open_request}
++
++
++def test_client_create_task_targets_agent_state_tasks(tmp_path, monkeypatch, fake_http_transport):
++    client = HubClient(
++        tenant="acceptance-test",
++        config_path=str(tmp_path / "missing-hub.toml"),
++        auto_start=False,
++    )
++    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
++    reply = {"success": True, "task_id": "task-17"}
++    fake_http_transport["state"]["response"] = reply
++
++    result = client.create_task(
++        "Verify target mapping",
++        acceptance_criteria=["route and payload match"],
++        task_id="task-17",
++        scope="task",
++    )
++
++    assert result == reply
++    assert fake_http_transport["captured"] == [
++        {
++            "method": "POST",
++            "path": "/api/agent-state/tasks",
++            "payload": {
++                "action": "create",
++                "goal": "Verify target mapping",
++                "acceptance_criteria": ["route and payload match"],
++                "task_id": "task-17",
++                "scope": "task",
++            },
++        }
++    ]
++
++
++def test_client_context_compile_targets_agent_state_context(
++    tmp_path, monkeypatch, fake_http_transport
++):
++    client = HubClient(
++        tenant="acceptance-test",
++        config_path=str(tmp_path / "missing-hub.toml"),
++        auto_start=False,
++    )
++    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
++    reply = {"success": True, "context_id": "ctx-17"}
++    fake_http_transport["state"]["response"] = reply
++
++    result = client.context_compile(
++        "task-17", token_budget=1200, changed_paths=["src/a.py"], since_hash="abc", compact=True
++    )
++
++    assert result == reply
++    assert fake_http_transport["captured"] == [
++        {
++            "method": "POST",
++            "path": "/api/agent-state/context",
++            "payload": {
++                "action": "compile",
++                "task_id": "task-17",
++                "token_budget": 1200,
++                "changed_paths": ["src/a.py"],
++                "compact": True,
++                "since_hash": "abc",
++            },
++        }
++    ]
++
++
++def test_client_verify_receipt_targets_agent_state_verification(
++    tmp_path, monkeypatch, fake_http_transport
++):
++    client = HubClient(
++        tenant="acceptance-test",
++        config_path=str(tmp_path / "missing-hub.toml"),
++        auto_start=False,
++    )
++    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
++    reply = {"success": True, "receipt_id": "receipt-17"}
++    fake_http_transport["state"]["response"] = reply
++
++    result = client.verify_receipt(
++        "task-17",
++        "route assertion",
++        passed=False,
++        command_id="cmd-17",
++        evidence_id="ev-17",
++        details={"source": "acceptance"},
++    )
++
++    assert result == reply
++    assert fake_http_transport["captured"] == [
++        {
++            "method": "POST",
++            "path": "/api/agent-state/verification",
++            "payload": {
++                "action": "receipt",
++                "receipt": {
++                    "task_id": "task-17",
++                    "criterion": "route assertion",
++                    "passed": False,
++                    "command_id": "cmd-17",
++                    "evidence_id": "ev-17",
++                    "details": {"source": "acceptance"},
++                },
++            },
++        }
++    ]
++
++
++def test_client_record_memory_targets_agent_state_memory(
++    tmp_path, monkeypatch, fake_http_transport
++):
++    client = HubClient(
++        tenant="acceptance-test",
++        config_path=str(tmp_path / "missing-hub.toml"),
++        auto_start=False,
++    )
++    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
++    reply = {"success": True, "record_id": "memory-17"}
++    fake_http_transport["state"]["response"] = reply
++
++    result = client.record_memory(
++        "decision-17", {"choice": "bounded"}, scope="task", kind="fact", task_id="task-17"
++    )
++
++    assert result == reply
++    assert fake_http_transport["captured"] == [
++        {
++            "method": "POST",
++            "path": "/api/agent-state/memory",
++            "payload": {
++                "action": "record",
++                "key": "decision-17",
++                "value": {"choice": "bounded"},
++                "scope": "task",
++                "kind": "fact",
++                "task_id": "task-17",
++            },
++        }
++    ]
++
++
++def test_client_incident_decision_targets_agent_state_incidents(
++    tmp_path, monkeypatch, fake_http_transport
++):
++    client = HubClient(
++        tenant="acceptance-test",
++        config_path=str(tmp_path / "missing-hub.toml"),
++        auto_start=False,
++    )
++    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
++    reply = {"success": True, "revision": "rev-18"}
++    fake_http_transport["state"]["response"] = reply
++
++    result = client.coord(
++        "incident_decision",
++        fingerprint={"kind": "test", "value": "case-17"},
++        state_revision="rev-17",
++    )
++
++    assert result == reply
++    assert fake_http_transport["captured"] == [
++        {
++            "method": "POST",
++            "path": "/api/agent-state/incidents",
++            "payload": {
++                "action": "decision",
++                "fingerprint": {"kind": "test", "value": "case-17"},
++                "state_revision": "rev-17",
++            },
++        }
++    ]
++
++
++def test_client_worktree_lease_targets_coord_worktree_lease(
++    tmp_path, monkeypatch, fake_http_transport
++):
++    client = HubClient(
++        tenant="acceptance-test",
++        config_path=str(tmp_path / "missing-hub.toml"),
++        auto_start=False,
++    )
++    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
++    reply = {"success": True, "lease_id": "lease-17"}
++    fake_http_transport["state"]["response"] = reply
++
++    result = client.coord("worktree_lease", root="C:/repo", branch="feature/t01")
++
++    assert result == reply
++    assert fake_http_transport["captured"] == [
++        {
++            "method": "POST",
++            "path": "/api/coord/worktree_lease",
++            "payload": {"root": "C:/repo", "branch": "feature/t01"},
++        }
++    ]
++
++
++def test_client_complexity_targets_repo_complexity(tmp_path, monkeypatch, fake_http_transport):
++    client = HubClient(
++        tenant="acceptance-test",
++        config_path=str(tmp_path / "missing-hub.toml"),
++        auto_start=False,
++    )
++    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
++    reply = {"success": True, "modules": 3}
++    fake_http_transport["state"]["response"] = reply
++
++    result = client.complexity(root="C:/repo", path="src/module.py", max_results=7)
++
++    assert result == reply
++    assert fake_http_transport["captured"] == [
++        {
++            "method": "POST",
++            "path": "/api/repo/complexity",
++            "payload": {"root": "C:/repo", "path": "src/module.py", "max_results": 7},
++        }
++    ]
++
++
++def test_client_package_audit_returns_target_error(tmp_path, monkeypatch, fake_http_transport):
++    client = HubClient(
++        tenant="acceptance-test",
++        config_path=str(tmp_path / "missing-hub.toml"),
++        auto_start=False,
++    )
++    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
++    reply = {"success": False, "error": "lockfile unsupported", "status_code": 422}
++    fake_http_transport["state"]["response"] = reply
++
++    result = client.package_audit(root="C:/repo", lockfile_path="pnpm-lock.yaml")
++
++    assert result == reply
++    assert fake_http_transport["captured"] == [
++        {
++            "method": "POST",
++            "path": "/api/repo/package_audit",
++            "payload": {"root": "C:/repo", "lockfile_path": "pnpm-lock.yaml"},
++        }
++    ]
++
++
++def test_client_mock_server_targets_command_mock_server(tmp_path, monkeypatch, fake_http_transport):
++    client = HubClient(
++        tenant="acceptance-test",
++        config_path=str(tmp_path / "missing-hub.toml"),
++        auto_start=False,
++    )
++    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
++    reply = {"success": True, "server": {"port": 11441}}
++    fake_http_transport["state"]["response"] = reply
++
++    result = client.mock_server(
++        action="start", root="C:/repo", spec_path="openapi.yaml", port=11441
++    )
++
++    assert result == reply
++    assert fake_http_transport["captured"] == [
++        {
++            "method": "POST",
++            "path": "/api/command/mock_server",
++            "payload": {
++                "action": "start",
++                "root": "C:/repo",
++                "spec_path": "openapi.yaml",
++                "port": 11441,
++            },
++        }
++    ]
++
++
++def test_client_ingest_diagram_targets_rag_artifact_operation(
++    tmp_path, monkeypatch, fake_http_transport
++):
++    client = HubClient(
++        tenant="acceptance-test",
++        config_path=str(tmp_path / "missing-hub.toml"),
++        auto_start=False,
++    )
++    monkeypatch.setattr(client, "_pooled_open", fake_http_transport["open"])
++    reply = {"success": True, "document_id": "diagram-17"}
++    fake_http_transport["state"]["response"] = reply
++
++    result = client.ingest_diagram(
++        workspace="design-system",
++        image_path="diagrams/system.svg",
++        caption="Service topology",
++        metadata={"task_id": "task-17"},
++    )
++
++    assert result == reply
++    assert fake_http_transport["captured"] == [
++        {
++            "method": "POST",
++            "path": "/api/rag/ingest_diagram",
++            "payload": {
++                "workspace": "design-system",
++                "image_path": "diagrams/system.svg",
++                "caption": "Service topology",
++                "metadata": {"task_id": "task-17"},
++            },
++        }
++    ]

@@ -1,0 +1,12 @@
+# T09 root HTTP receipt matrix broker fixture v1
+
+- Root: `C:\Users\Adam\.local-ai-hub`
+- Root HEAD: `7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf`
+- Patch target: `tests/test_t09_http_task_completion_matrix.py`
+- Root preimage SHA-256: `74F488C9B1B21B692DF2AC22EF2211889529CD1AF408A37C9F3AF1C4BFEDB465`
+- Proposed postimage SHA-256: `30D6056D6085005A183C940AF0D8181028155EDE32AF2DFAC63042BABCCA9572`
+- Immutable patch: `t09-root-http-receipt-matrix-real-broker-v1.patch`
+- Patch SHA-256: `CEC80EA6D6DE68CE6999DABB956CE9EEAB82C976CD859A884CEAE79221DDED0F`
+- Scope: test only. Valid project receipts come from `app.commands.run_project_command`; forged proof remains for negative cases. Real test and pyflakes commands run in a temporary Git project. Assertions unchanged.
+- Root checkout not modified. Packet not applied.
+- Targeted overlay result: 11 passed in 35.59s, using root source and patched test copy.

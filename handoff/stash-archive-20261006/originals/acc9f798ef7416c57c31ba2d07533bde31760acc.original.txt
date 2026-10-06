@@ -1,0 +1,62 @@
+# T09 release cutline — 2026-10-05
+
+## Checkout and ownership
+
+- Managed T09 checkout: `C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub`.
+- Base HEAD: `2b33602adef0d030fea66cdcc04ca742c60b2e32`.
+- Root: `C:\Users\Adam\.local-ai-hub`, HEAD `7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf`; T09 made no root edits.
+- Current-turn T09-owned new files: `handoff/t09-t08-swarm-receipt-list-contract-v1.patch`, `handoff/t09-t08-swarm-receipt-list-contract-v1.md`, this cutline.
+- Prior T09 root-current test packet: `handoff/t09-root-http-receipt-matrix-real-broker-v1.patch` plus its manifest. Patch SHA-256 `CEC80EA6D6DE68CE6999DABB956CE9EEAB82C976CD859A884CEAE79221DDED0F`; root test preimage `74F488C9B1B21B692DF2AC22EF2211889529CD1AF408A37C9F3AF1C4BFEDB465`; postimage `30D6056D6085005A183C940AF0D8181028155EDE32AF2DFAC63042BABCCA9572`.
+- Current-turn API adaptation packet SHA-256 `516D3C09F70C93782A66D26DA8095876F2D4FA0089151F090A214FF8D0292675`; root `swarm.py` preimage `8E2E0A4A7289B1308295A6B87A988921FFA56271C6079752CA361FD39C950513`; simulated postimage `59ECC036D292693386055B7297EFEF0CD8D933AD941D6F44502BB5DFAC8BCA2C`. It targets T08-owned `swarm.py`; no T09-owned source edit.
+- Both root packets passed `git apply --check` against the noted root HEAD. Neither packet was applied.
+
+## Inherited dirty baseline
+
+Pre-existing at continuation start; preserved, not claimed as current-turn T09-owned changes:
+
+- Modified: `src/local_ai_hub/agent_events.py`, `agent_tasks.py`, `agent_verification.py`, `app.py`, `http_server.py`, `process_utils.py`, `sqlite_support.py`, `work_orchestrator.py`.
+- Modified tests: `tests/test_agent_state_e2e.py`, `test_agent_tasks.py`, `test_agent_verification.py`, `test_work_orchestrator.py`.
+- Untracked: `src/local_ai_hub/verification_rules.py`; `tests/t09_project_config_test_fixture.py`, `test_agent_receipt_ordering_t09.py`, `test_agent_t08_crash_after_commit.py`, `test_agent_t08_durable_contract.py`, `test_agent_t08_live_order.py`, `test_lease_path_normalization.py`, `test_project_completion_root.py`, `test_project_memory_audit_completion.py`, `test_t09_http_task_completion_matrix.py`, `test_t09_http_task_completion_persisted_receipts.py`, `test_t09_t06_v6_real_broker.py`, `test_verified_handoff.py`; inherited `handoff/` contents.
+
+## Exact validation receipts
+
+- Candidate: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t09_http_task_completion_persisted_receipts.py tests/test_t09_http_task_completion_matrix.py::test_task_completion_http_receipt_and_memory_matrix` — exit 0, **12 passed in 27.32s**.
+- Root persisted receipt: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t09_http_task_completion_persisted_receipts.py` — exit 0, **1 passed in 4.64s**.
+- Root-source matrix overlay: `python -B -m pytest -q -p no:cacheprovider --tb=short -c 'C:\Users\Adam\.local-ai-hub\pyproject.toml' --rootdir='C:\Users\Adam\.local-ai-hub' 'C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub\handoff\t09-root-matrix-overlay\test_t09_http_task_completion_matrix_root_candidate.py::test_task_completion_http_receipt_and_memory_matrix'` — exit 0, **11 passed in 35.59s**. Temporary overlay was removed afterward.
+- T08 swarm adaptation runtime test: **not run by T09**. T08 reported the failure; T09 supplied a one-line consumer packet only.
+
+## Release blockers
+
+- T06 producer checkout missing: latest T06 report says archived snapshot missing and attach rejected. Producer seam is not verified in its owner candidate.
+- T09 logical lease receipt unavailable; ownership evidence **UNKNOWN**.
+- Full root integration and release suite remain unverified. Release status: **NO-GO**.
+
+## T09 continuation closeout update
+
+- T09-owned completion-owner guard and state-stability regression are integrated in root by the orchestrator; exact root pre/post hashes and root focused receipt are in `t09-task-completion-owner-guard-root-current-v2.md`. T09 did not write root.
+- Fresh candidate T09 boundary/handoff selectors: **45 passed in 47.14s**. Fresh focused receipt-gate selectors: **18 passed in 2.54s**. Exact command scopes recorded in the v2 manifest.
+- Current owned code paths for the owner-guard slice: `src/local_ai_hub/http_server.py` (one guard hunk within inherited completion-gate diff) and `tests/test_t09_http_task_completion_persisted_receipts.py` (cross-tenant state-stability assertion). Base `2b33602adef0d030fea66cdcc04ca742c60b2e32`; patch SHA-256 `C17D37E1CFCCF6D10C223208D7376826FA1283F862A1ACFAFEA66AFD379C3E57`.
+- Existing Hub command receipt is `t09-receipt-idempotence-hub-receipt-20261005.md` (request `req_d5dea79b907a`, execution `091798e0b5e3486a8573ec40c78fce0d`); it proves one test command only, not an Agent OS task-completion or lease receipt. T09 Agent OS task/lease remains **UNKNOWN**.
+- Broader `X-LocalAI-Tenant`/agent header binding belongs to T05 trust-boundary scope; T06 producer seam still lacks an owner checkout/receipt. These prevent T09 release acceptance closure.
+- Latest coordinated continuation: registered worktree artifact re-confirmed; HEAD remains `2b33602adef0d030fea66cdcc04ca742c60b2e32`. Existing targeted receipts remain valid because no code changed. Hub gaming-mode response was reported retryable; no poll or identical retry issued.
+- Actor-guard limit: current check compares task owner with `_agent()` header. It rejects a mismatching actor and preserves task/events; it does not authenticate the header against the shared API token. Do not call this authenticated tenant identity; T05 identity binding remains a release blocker.
+- No Agent OS task-completion/lease receipt found in registered handoff artifacts. Existing Hub command receipt is only a test execution receipt; logical ownership lease remains **UNKNOWN**.
+
+## Identity audit note
+
+- Candidate `_tenant()` still trusts caller tenant labels and `_agent()` trusts caller agent header; broad identity binding remains outside this assigned branch.
+- Root orchestrator transferred exclusive ownership of the task completion guard branch to T09; T05 was notified not to edit this exact branch. No Hub lease available.
+- Regression proved cross-tenant `local_ai_coord(task_complete)` was rejected only after mutating task state from `PLANNED` to `VERIFYING` and changing owner fields. Guard now checks stored task owner against request actor before the completion helper.
+
+## Current-turn owned change and receipts
+
+- Base remains `2b33602adef0d030fea66cdcc04ca742c60b2e32`. `http_server.py` was already dirty at turn start: inherited diff replaced direct completion with project receipt gating. Current owned production delta is only the early owner guard in that branch; no other HTTP routes touched.
+- T09-owned test file was already untracked at turn start (preimage SHA-256 `BA3E2796BC75A9F0425038ED1FB9733AAFFCC1699015F10CB428AF222EE4B06D`). Current file SHA-256 `73BB4D91229ADC85F162892241C9F2EF6B9E0F6DC5627412C82B6FBA791108F2`.
+- Owner-only patch: `handoff/t09-task-completion-owner-guard-v1.patch`, SHA-256 `00719E8CF535CD25CBA0F59137D7A1C2FBE30A908F87E73F6ACE45B79D757359`; `git apply --check --reverse` **PASS** against current candidate. `http_server.py` dirty preimage SHA-256 `531992E2BE49B3C4EB976D1F28869C3360CC7A5638C95EE3D6904B14AAE45EAD`; postimage SHA-256 `4D761DE8A916D6FA571C53C48C71DB63D4DFDCA8855B1ACF0788438CB1E41159`.
+- Test preimage SHA-256 `BA3E2796BC75A9F0425038ED1FB9733AAFFCC1699015F10CB428AF222EE4B06D`; postimage SHA-256 `73BB4D91229ADC85F162892241C9F2EF6B9E0F6DC5627412C82B6FBA791108F2`.
+- MCP `local_ai_coord(action="task_complete")` maps through `HubClient.coord` to `POST /api/agent-state/tasks`, action `complete`, handled by `Handler.do_POST`; owned change stays inside this completion guard.
+- RED: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t09_http_task_completion_persisted_receipts.py::test_http_task_complete_uses_persisted_tenant_scoped_receipts` — exit 1, assertion showed status `VERIFYING` vs `PLANNED` after cross-tenant request.
+- GREEN: same command after guard — exit 0, **1 passed in 5.65s**; rightful owner completes and replay succeeds.
+- Matrix/identity/lease: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t09_http_task_completion_matrix.py::test_task_completion_http_receipt_and_memory_matrix tests/test_identity_contracts.py::test_tenant_label_does_not_authenticate_http_request tests/test_identity_contracts.py::test_privileged_lease_tenant_label_cannot_spoof_owner` — exit 0, **16 passed in 42.87s**.
+- Owned child + identity + leases selectors in prior command: **7 passed**. Denied-daemon original selector has stale test lambda signature (`_online()` vs current `_online(timeout)`); one-line temporary test overlay changed lambda to `lambda *_args: False` and passed **1 test in 1.44s**, then was removed.
+- Probe and test used disposable `pytest tmp_path` DB, not shared Hub state. No cleanup/reset of that database claimed. Root unchanged.

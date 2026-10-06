@@ -1,0 +1,136 @@
+{
+  "packet_version": 2,
+  "task": "T03 continuation owner evidence",
+  "status": "partial_unverified",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\e809\\.local-ai-hub",
+    "head": "9a5a6e2cb977a58bb86c9eb2d44d719a7d8e9379",
+    "head_subject": "Codex worktree snapshot: archive-cleanup",
+    "parent": "d68ee694c6d3f75db5c1ab2f63497226880e5010",
+    "merge_base_with_master": "9b6e6fb71fa5262b056bcf092b105247c1da5579",
+    "master": "b947d76fdfb7ed592b72e55587d5c83cfa352c35",
+    "worktree_status": [
+      "?? handoff/T03-owner-scope-acceptance-20261006.json"
+    ]
+  },
+  "comparison": {
+    "scoped_files": [
+      {
+        "path": "src/local_ai_hub/client.py",
+        "merge_base": "78de5eef61fb6ffe51ad7a553c8bb304b211f2c36e32c6841827e780212dcd5f",
+        "candidate": "656cc86534f94d1e0dfeb83568d917da2ae1d2d07e1e137daaf1f60136c1b248",
+        "master": "ddaf50596be18cd37ca84a29ffae83b06dd2075f02a20332f6eb2262b4bf96a2",
+        "working_tree_sha256": "a4bd97c027113058501b40d528591d68fe77ba8b7786fa548f9b7c98a9998f2b"
+      },
+      {
+        "path": "src/local_ai_hub/generator.py",
+        "merge_base": "41ee39fb40d14b1776df778b863cd16f580e37a4c255a36fc0cd52e03748eca4",
+        "candidate": "cc2dc47c3c4da9cc9745b858faf60003d2c1dbcff384a2b8667808f7c352cb07",
+        "master": "f259a88903de79d1c6afa5690e080f35b98d66b9df78d3edfc117dec8c004dab",
+        "working_tree_sha256": "fd4d59c12e5a5e41f9fcd3c481792d01d808bc128d831ede67eae0ef89800336"
+      },
+      {
+        "path": "src/local_ai_hub/http_server.py",
+        "merge_base": "88f337207635097783529957ddbd435f37040eca255a5aad8236f428a96a7329",
+        "candidate": "cfeec3df1c022af083d9c94874b3c83339c523bca9ad0a42fbe7a9024c49e826",
+        "master": "426601ea78dd4b240376076ff7833cde4491b5bd831d64a8622069072528d0bd",
+        "working_tree_sha256": "bbc2510ed6365ce52de207869f72c715f16345e7f216ac8050842278a5f2742b"
+      },
+      {
+        "path": "src/local_ai_hub/mcp_server.py",
+        "merge_base": "fc54925fc965f4fffe0be6b3de1628ae6bfa3e8bb95a8b9345ce1b6e0ed95a8e",
+        "candidate": "64ae83208096e520c24b395c1463c51a70242306023898ef101b77332d0e688d",
+        "master": "b6d20db16329ff641c3f41179f150c329130551b1ff85bb226540b6d1d5c285e",
+        "working_tree_sha256": "225e973b970df88d7665b628ab29e44e5fb10a01fbe20c89d096814767982ac9"
+      },
+      {
+        "path": "src/local_ai_hub/operation_contracts.py",
+        "merge_base": "a7d76563d60cd20ec49c316f7ca860477f6f8dbb0bf1f32bba42bfb5852deca7",
+        "candidate": "8c0d22e61d5a1584f7112f28daa14058b8228fb533df5c59447564a0e7db7510",
+        "master": "8cd9b32f5d45bf9ec6b5ef4425b788c58f08cbd4a885072240b0947fa83b5c29",
+        "working_tree_sha256": "5441f4d502c9d91603d9017d2b6d519fe499f996205c4b6d92e93e0efc3458cd"
+      },
+      {
+        "path": "tests/test_features.py",
+        "merge_base": "7cb5516ba6aec96bef7310657f86e919fa5015503aeca4caf529ab3e22600c40",
+        "candidate": "c9b771f47f1097a2c5d8336cac1746ddde12d837afe1c36d49981c65cb0652cc",
+        "master": "c81c459129411aee268da3338979286c93c0ed2e5ad8fdd0a15c8829491b89e2",
+        "working_tree_sha256": "7e02e22209c6198220935a5182dea6068e9402d8f36f286d5a08aa121169d256"
+      },
+      {
+        "path": "tests/test_mcp_compact_transport.py",
+        "merge_base": "569d848e8f2192d2ab51b5f7392e1294f01602e911378bc09a519087855102b8",
+        "candidate": "4506f773e442781d14c2b177c661afe9fd3e0f2484c128b8f0f517920ba67277",
+        "master": "9cd762a3c7bdfc46cc41d5e0cef9103476b6db6617548ab9b4c80b55444f950f",
+        "working_tree_sha256": "52b87fb4f28aa1a6381924c86463e8412a53d7a4d873773cbae8e43e64f24e74"
+      },
+      {
+        "path": "tests/test_mcp_stdio_contract.py",
+        "merge_base": null,
+        "candidate": "5ccb694458523b49d2e08060f7e402ddd1a40db048b73a3d37e3d130cef20894",
+        "master": null,
+        "working_tree_sha256": "1baed48579ec7dfc50d1d93686975158c8ac642bb2926a10bd523813d43f93ba"
+      },
+      {
+        "path": "tests/test_operation_contracts.py",
+        "merge_base": "caabcb0f27d43a1138b8a7ccaa6a7f613f29f611b8f13f90ad848316ead7944c",
+        "candidate": "af7b8e35f775e4bcb23347e5b46a323b9a8e2c0c40ca4b449f863aceb6d29bc7",
+        "master": "024672e550db87006ac2f0691663744656323dea46bf18075d14b325bacf3c75",
+        "working_tree_sha256": "6bb806742dce766f13a1601bc638c036e508c56b2d694f26b9186abdd2e11234"
+      },
+      {
+        "path": "tests/test_t03_alias_contract.py",
+        "merge_base": null,
+        "candidate": "762001f41b6777d63eb4a35dc6db532f9a546086f1bb9a9915da048d42b75537",
+        "master": null,
+        "working_tree_sha256": "b3a98caf260b886db00b6d81817e1ccca8ac69799612948218b4dbb555895c37"
+      }
+    ],
+    "scoped_delta_from_merge_base": "9 tracked paths changed; 5890 insertions, 244 deletions",
+    "full_repo_master_delta": "644 changed paths; do not port whole files",
+    "master_findings": [
+      "Master includes public output_schema generation and registration; candidate snapshot also includes it.",
+      "Master path_hints allows search and context, while T03 approved search-only. Preserve T14 context ownership.",
+      "Candidate operational_mode absence and T04 client cleanup are outside T03 source ownership."
+    ]
+  },
+  "test_receipts": {
+    "current_head": {
+      "command": "$env:PYTHONPATH='src'; python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t03_alias_contract.py::test_mcp_action_alias_schema_and_dispatch_use_canonical_contract",
+      "result": "NOT RUN on current HEAD",
+      "reason": "Archive snapshot blob hashes differ from the hashes present at the prior 1-pass run; prior receipt cannot be attributed to HEAD 9a5a6e2. Hub context failed terminal=true/retryable=false; one permitted fallback already used earlier in task; command broker previously returned retryable gaming block. No further retry."
+    },
+    "historical_alias_selector": {
+      "result": "1 passed in 2.53s",
+      "head_at_run": "d68ee694c6d3f75db5c1ab2f63497226880e5010",
+      "current_receipt_valid_for_head": false
+    },
+    "aggregate_diagnostic": {
+      "result": "274 passed, 17 failed, 1 skipped in 17.67s",
+      "is_green": false,
+      "rerun": false
+    }
+  },
+  "scope": {
+    "T03": [
+      "operation contracts; MCP contract registration/dispatch; generator schemas; HTTP request-ID/SSE and explicitly released /api/search seams; T03 tests"
+    ],
+    "excluded": [
+      "client.py cleanup: T04 overlap",
+      "services adapter/project config: T21",
+      "/api/context/pack: T14",
+      "operational_mode module: T13",
+      "root checkout/tests: untouched"
+    ]
+  },
+  "remaining_gaps": [
+    "Current HEAD has no fresh focused test receipt.",
+    "T13 operational_mode dependency blocks heavy MCP dispatch.",
+    "Full action output coverage remains partially deferred under prior user decision; generic schema test failure not closed.",
+    "Task-list query and memory payload fixture failures from aggregate run not resolved.",
+    "T04 timeout cleanup unverified; frozen.",
+    "30-client result outcome_unknown; no retry.",
+    "No root integration or validation."
+  ],
+  "tooling": "Configured token-economizer ensure-tools.ps1 is absent; no installation attempted."
+}

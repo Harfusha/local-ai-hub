@@ -1,0 +1,12 @@
+# T09/T08 receipt API compatibility packet v1
+
+- Canonical API: `VerificationStore.record_in_transaction(con, receipt, ...) -> list[AgentEvent]`.
+- T09 candidate source SHA-256: `24A677767D0E205FB8159604256C6EC35195E362244F14815DBE911643073765`.
+- Root source SHA-256: `26776888F4A6887A1A1BD56650CB636FCAE92B208ECB9335D9CEA8A03C770295`.
+- T09 test callsites consume the list as events for publication and assertions.
+- Root `swarm.py:620` currently tuple-destructures the list. Proposed T08-owned one-line adaptation assigns the returned list directly.
+- Patch target: `src/local_ai_hub/swarm.py` only; no T09 production source or root file changed.
+- Patch SHA-256: `516D3C09F70C93782A66D26DA8095876F2D4FA0089151F090A214FF8D0292675`.
+- Root swarm preimage SHA-256: `8E2E0A4A7289B1308295A6B87A988921FFA56271C6079752CA361FD39C950513`.
+- `git apply --check` against current root HEAD `7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf`: PASS. Root remains unmodified by T09.
+- Runtime receipt: supplied by T08 report; T09 has not independently rerun its swarm test.

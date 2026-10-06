@@ -1,0 +1,32 @@
+{
+  "candidate_head": "689165fbe18101feacf5f489847a4890fc27ed1f",
+  "candidate_tool_sha256": "836e2c899c7c4e6a5fe4d316ca3c61757e2da342db82c8587beaf37d090dddfe",
+  "candidate_test_sha256": "1137c5ac9c4727278bae4bf8cacc761aded01af83dfbc56ab4040dffc464f759",
+  "coverage_document_sha256": "4b83315c990b6fc74f3bf89cbb49337cff9aa085266fe3da4004eea72ac80c72",
+  "csv_path": "C:\\Users\\Adam\\.codex\\worktrees\\t01-coverage-main-verify\\.local-ai-hub\\handoff\\T01-MCP-HTTP-CLI-operation-evidence-20261001-v1.csv",
+  "csv_sha256": "fcfffab03b34fcc517dd94e420682968074a79e6f9ffd95b8b1e7133b5369a08",
+  "csv_rows": 530,
+  "coverage": {
+    "MCP": {
+      "rows": 225,
+      "behavioral_linked": 53,
+      "metadata_or_unverified": 172
+    },
+    "HTTP": {
+      "rows": 290,
+      "behavioral_linked": 18,
+      "metadata_or_unverified": 272
+    },
+    "CLI": {
+      "rows": 15,
+      "behavioral_linked": 15,
+      "metadata_or_unverified": 0
+    }
+  },
+  "states": {
+    "verified": 526,
+    "unsupported": 2,
+    "conditional": 2
+  },
+  "note": "verified means static inventory evidence only; behavior evidence is represented separately by test_coverage and behavioral_disposition. Do not treat metadata selectors as behavior acceptance."
+}

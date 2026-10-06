@@ -1,0 +1,36 @@
+# T09 release-critical root-current bundle v2
+
+Root checkout: `C:\Users\Adam\.local-ai-hub`
+Root HEAD at capture: `98a9a1a7611af574caf20a88620c4aa3eb2e918a`
+
+## Artifacts
+
+- `t09-worktree-ownership-root-current.patch` SHA-256 `cfe2ee69189a3556a77bf9742ac70de91bab16156549730a152608690d0b6834`
+- `t09-trusted-root-terminal-v4-root-current.patch` SHA-256 `1dda1045e9325937f8f2d3cd5dad5ebcde7f4d380f4901df79af7bc01f80dbc9`
+- `t09-release-critical-bundle-v2-root-current.patch` SHA-256 `7761c905db251843ba254b88818f0fe94a0cc6564df3a9f2dfd63422cda79b61`
+
+## Root preimages at capture
+
+- `src/local_ai_hub/agent_tasks.py` SHA-256 `a6d9c0b84fde026a3f22ccad0f8c20aa33fd146de3941cb6a1e5ef5ca6c6f666`
+- `src/local_ai_hub/verification_rules.py` SHA-256 `157129234e47605307d208bb586e2d8351e619271e79720ba7d0555569fa61b3`
+- `src/local_ai_hub/agent_verification.py` SHA-256 `fde1cf9ebc4d76324c33fdaa78190faadbccd7e953d8be9d292a7affd96fdc73`
+- `src/local_ai_hub/process_utils.py` SHA-256 `154f31d202994038a56bdbb5b0a1ab6b1101b65dbfd2e2627a225e5b78b0f8fe`
+- `src/local_ai_hub/commands.py` SHA-256 `39e92b34a7185c2dbc3f38bcf507627276b049bb9a5d145ead7c9574a87d949e`
+- `tests/test_agent_verification.py` SHA-256 `e1a79b8f28011bc90f46cdafefbd5ca0e362854e46b3a4ee2905c8769c71f788`
+- `tests/test_t09_http_task_completion_matrix.py` SHA-256 `1227942b236965e1f18b5c6824d618d4c8626b69f512ea998e1d3158af8fb4fb`
+- `tests/test_t09_http_task_completion_persisted_receipts.py` SHA-256 `76438cf7ff6ee27b9f1d1f177474a17f9efd245b9c59a09961109ee288bfb8f9`
+
+T06 v6 producer dependency: `T06-T09-validation-receipts-v6-root-namespace-current.patch` SHA-256 `2bc2aaed85a83126906d0f347c25bfd059fff816b413093d09e3242804d22982`. It is not in this bundle. The positive producer-to-consumer test applies that producer patch only to a temporary copy of root `commands.py`.
+
+The terminal patch changes only `TaskStore._verify_completion` in the T08-owned root file. It calls the existing memory-audit validator when present and does not alter checkpoint or terminal-transition implementations. `agent_verification.py` changes are limited to command classification, receipt proof validation/evaluation, and the completion entrypoint; receipt/outbox publication methods remain root-current. The prior checkpoint-root adapter patch is superseded and must not be used.
+
+## Validation
+
+- `git apply --check` passed on the combined bundle against the captured root working tree.
+- Candidate verifier/task/orchestrator modules: **117 passed in 27.81s**.
+- Root HTTP receipt and persisted-route overlay: **12 passed in 35.09s**.
+- Root checkpoint/root-tampering overlay: **4 passed in 5.63s**.
+- T06 v6 real-broker project receipt overlay: **1 passed in 10.90s**; positive configured structured argv + private env completed through the T09 consumer; `--help` and generic execution produced no project receipt.
+- Root and T06 source worktrees were not modified by these checks. Root already contained other owners’ dirty edits; this bundle targets their captured file bytes.
+
+This is a frozen SHA-identified review artifact. Do not apply over a root checkout whose targeted file hashes differ from the preimages above. Full repository release acceptance remains outside this bounded T09 slice.

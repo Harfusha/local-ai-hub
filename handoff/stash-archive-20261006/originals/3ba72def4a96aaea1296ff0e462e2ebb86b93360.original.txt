@@ -1,0 +1,13 @@
+# T09 MCP persisted receipt — immutable packet v2
+
+- Patch: handoff/t09-mcp-persisted-receipt-root-current-v2.patch
+- Patch SHA-256: $patchHash
+- Root preimage SHA-256: 454C23D473D95102F130C09C5FCD4CBBCEE5F99F45D80DED21FF15C5360182AD
+- Simulated root postimage SHA-256: 7637B4985248AFEA738E4A526D605528C997F851B3167EB289DBA2A96A5BB9C4
+- Candidate test: 	ests/test_t09_http_task_completion_persisted_receipts.py
+- Candidate test SHA-256: BA3E2796BC75A9F0425038ED1FB9733AAFFCC1699015F10CB428AF222EE4B06D
+- Candidate result: python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t09_http_task_completion_persisted_receipts.py — exit 0, 1 passed in 5.30s.
+- Covers invalid API token 401 with unchanged task state, authenticated MCP → HTTP completion using persisted receipt, and duplicate completion.
+- Root patch check result preserved from this turn: git apply --check passed; no apply and no tests.
+- Root validation is paused by current instruction. Do not repeat root checks until T20 reconciles dirty fingerprint.
+- T09 remains open: broker producer/HTTP integration blocked by missing candidate CommandBroker.run_project_command; foreign-agent rejection and lease receipt remain unverified/UNKNOWN.

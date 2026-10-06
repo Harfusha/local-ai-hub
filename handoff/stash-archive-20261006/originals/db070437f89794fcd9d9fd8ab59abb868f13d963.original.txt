@@ -1,0 +1,8 @@
+# T09 root-current split patch pins
+
+- Target checkout: `C:\Users\Adam\.local-ai-hub`, HEAD `7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf`; target has shared edits.
+- Patch paths: new T09-owned `tests/test_agent_receipt_completion_t09.py` plus `tests/test_t09_http_task_completion_matrix.py` and `tests/test_t09_http_task_completion_persisted_receipts.py`. Shared T08 `tests/test_agent_tasks.py` and `tests/test_agent_verification.py` are excluded.
+- T08 owner confirmed overlap in `tests/test_agent_tasks.py` (+674/-9) and approved the split into a T09-owned module with a local store fixture. T08 reports both HTTP test paths absent from its worktree; this does not prove integration against other owners.
+- Root `agent_events.py` SHA-256 `1B8E63A5FF329090801CD7F19E7DF7A95E42AC0034465AC5FA06D566B279CCF4` includes schema pin `idx_agent_task_search_grams_gram=47289e8fa6b5eb7e6837a56d77ad684e26fbc466f43f0f7af252e77fb8af5e0a`. Isolated T08 fingerprint differs; event source excluded.
+- Root T21 parser SHA-256 `4238B6A6DE1DE00F55F4679CE0DF7D431522EC1BAFABFA272258C1662F13F713`; tests use real `resolve_project_context` and broker sidecar format. Candidate shim excluded.
+- Split patch passes `git apply --check` against root current. No tests run; T04 owns the test slot.

@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+import sys
+
+
+ROOT_SOURCE = Path(r"C:\Users\Adam\.local-ai-hub\src")
+CANDIDATE_ROOT = Path(__file__).resolve().parents[1]
+CANDIDATE_VERIFIER = (
+    CANDIDATE_ROOT / "src" / "local_ai_hub" / "agent_verification.py"
+)
+CANDIDATE_ADAPTER = (
+    CANDIDATE_ROOT / "src" / "local_ai_hub" / "verification_rules.py"
+)
+MATRIX_TEST = CANDIDATE_ROOT / "tests" / "test_t09_http_task_completion_matrix.py"
+PERSISTED_TEST = (
+    CANDIDATE_ROOT / "tests" / "test_t09_http_task_completion_persisted_receipts.py"
+)
+if not all(
+    path.exists()
+    for path in (
+        ROOT_SOURCE,
+        CANDIDATE_VERIFIER,
+        CANDIDATE_ADAPTER,
+        MATRIX_TEST,
+        PERSISTED_TEST,
+    )
+):
+    raise SystemExit("root-source overlay inputs are unavailable")
+
+sys.path.insert(0, str(ROOT_SOURCE))
+import local_ai_hub
+
+module_name = "local_ai_hub.agent_verification"
+spec = importlib.util.spec_from_file_location(module_name, CANDIDATE_VERIFIER)
+if spec is None or spec.loader is None:
+    raise SystemExit("candidate verifier could not be loaded")
+candidate_verifier = importlib.util.module_from_spec(spec)
+sys.modules[module_name] = candidate_verifier
+spec.loader.exec_module(candidate_verifier)
+
+adapter_name = "local_ai_hub.verification_rules"
+adapter_spec = importlib.util.spec_from_file_location(adapter_name, CANDIDATE_ADAPTER)
+if adapter_spec is None or adapter_spec.loader is None:
+    raise SystemExit("candidate verification adapter could not be loaded")
+candidate_adapter = importlib.util.module_from_spec(adapter_spec)
+sys.modules[adapter_name] = candidate_adapter
+adapter_spec.loader.exec_module(candidate_adapter)
+
+from local_ai_hub import app, artifacts, http_server, project_config
+
+print(
+    "root modules:",
+    http_server.__file__,
+    app.__file__,
+    artifacts.__file__,
+    project_config.__file__,
+    "candidate modules:",
+    candidate_verifier.__file__,
+    candidate_adapter.__file__,
+)
+
+import pytest
+
+raise SystemExit(
+    pytest.main(
+        [str(MATRIX_TEST), str(PERSISTED_TEST), "-q", "--tb=short"]
+    )
+)

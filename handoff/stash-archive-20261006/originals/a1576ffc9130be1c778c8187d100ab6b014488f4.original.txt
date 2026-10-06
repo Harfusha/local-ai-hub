@@ -1,0 +1,61 @@
+{
+  "schema_version": "t02-admission-reproduction-manifest/v1",
+  "status": "proposed_surrogate_not_original_2of25_manifest",
+  "owner": "T20",
+  "execution_allowed_now": false,
+  "preconditions": [
+    "T13 reports GREEN for the delayed-dispatch fix and persisted-schema change",
+    "T20 explicitly assigns one bounded root correctness-test slot",
+    "T20 pins the exact root HEAD and SHA-256 values of the four selector input files before execution"
+  ],
+  "original_evidence": {
+    "receipt_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\codex-t02-flake-20260930T201729-b78b0be9.json",
+    "receipt_sha256": "F602295B4B953034F4DADACE78AF297E448FD4AA8DA28343BCB7C091B4D07FE2",
+    "candidate_head": "a7b0868ac964fd14e160001024e6e0ecaaf4e9db",
+    "recorded_command": [
+      "C:\\Python313\\python.exe",
+      "-m",
+      "pytest",
+      "-q",
+      "--tb=short",
+      "tests/test_benchmark_suite.py",
+      "tests/test_surface_benchmarks.py"
+    ],
+    "attempts_target": 25,
+    "attempts_recorded": 3,
+    "reverse_control": null,
+    "selector_manifest": "unavailable; recorded command targets two whole test files, not a 25-node list"
+  },
+  "selectors": {
+    "ordered": [
+      "tests/test_surface_benchmarks.py::test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race",
+      "tests/test_surface_benchmarks.py::test_run_benchmark_retains_busy_scratch_without_cleanup_watcher",
+      "tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data",
+      "tests/test_surface_benchmarks.py::test_component_baselines_measure_graph_rag_batch_parent_seed_and_serena"
+    ],
+    "reverse_control": [
+      "tests/test_surface_benchmarks.py::test_component_baselines_measure_graph_rag_batch_parent_seed_and_serena",
+      "tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data",
+      "tests/test_surface_benchmarks.py::test_run_benchmark_retains_busy_scratch_without_cleanup_watcher",
+      "tests/test_surface_benchmarks.py::test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race"
+    ],
+    "command_template": "C:\\Python313\\python.exe -B -m pytest -q --tb=long -p no:cacheprovider -p tools.t02_lifecycle_pytest_plugin -c pyproject.toml <ordered selectors or reverse_control selectors>"
+  },
+  "known_observations": [
+    "Historical attempt 2 failed the queue selector because cancellation observed state running instead of cancelled.",
+    "Historical attempt 1 recorded a live async-job-fe63de95 worker after manager close; subsequent scratch reaper calls rejected work with cleanup pending for that worker.",
+    "Historical attempt 3 repeated the queue failure and recorded cleanup pending for async-job-b6bb8fe2.",
+    "Attempt 1's two ERROR node IDs were test_run_benchmark_is_isolated_and_preserves_existing_scratch_data and test_component_baselines_measure_graph_rag_batch_parent_seed_and_serena; ResourceWarning reported unclosed sqlite3.Connection without an allocation traceback."
+  ],
+  "capture_requirements": [
+    "Preserve ordered and reverse-control stdout/stderr as separate immutable files and record their hashes.",
+    "Keep every failed node's full traceback and the exact queue failed_samples/error_reason data.",
+    "Record teardown worker/thread states, delayed IDs, retained scratch paths, and SQLite operational errors before and after cleanup.",
+    "Record the lifecycle plugin path and SHA-256; diagnostic output must remain on stderr so JSON-only stdout tests stay valid."
+  ],
+  "interpretation_boundary": [
+    "This four-selector surrogate is not the missing original 25-node manifest and must not be relabeled as such.",
+    "It is a bounded correctness reproduction only; it provides no performance, model-quality, or plan-grade baseline evidence.",
+    "Do not attribute the unrelated T02_TRACE JSON-capture failures to this admission/cleanup incident."
+  ]
+}

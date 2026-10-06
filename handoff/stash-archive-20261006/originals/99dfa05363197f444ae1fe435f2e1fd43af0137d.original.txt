@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-01",
+  "purpose": "Read-only benchmark pin preflight; not a benchmark measurement receipt.",
+  "baseline": {
+    "sha": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "source": "handoff/t15-acceptance.manifest.json base_head; T20 explicit confirmation",
+    "commit_exists": true,
+    "tree": "595d5469c9717c438b78348bd70f55e870e57b14",
+    "root_merge_base": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "root_ahead_commits": 4,
+    "source_blobs": {
+      "src/local_ai_hub/commands.py": {
+        "git_blob": "72d6bc2cf4fd8efef3f469eac594a241837325c3",
+        "sha256": "fdcf5432b154ff1ea2690bfe01016785c6dea85bda2b2f9a002e1a5e88cbb9ad"
+      },
+      "src/local_ai_hub/project_config.py": {
+        "git_blob": "ff7bf849ce6948d7f54876fe4ea779dfd45b0f6c",
+        "sha256": "03145095fac22f7a69454069d0c41b5206ac2c78a0508cf6c924339d0fd26d5e"
+      },
+      "src/local_ai_hub/services.py": {
+        "git_blob": "9e37b5b99991a668987d3811fe3f6decad37d0c2",
+        "sha256": "7a3b9c73073d47f26e55af876b7f080565c32228a8e1aa281c442ab090777df2"
+      }
+    },
+    "benchmark_harness_in_commit": false,
+    "clean_commit_tree": true,
+    "detached_worktree_created": false,
+    "clean_worktree_receipt": false
+  },
+  "candidate": {
+    "head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "worktree_dirty_paths": 13,
+    "integrated_clean_sha_assigned": false,
+    "harness_file": "C:\\Users\\Adam\\.codex\\worktrees\\t15-command-config\\.local-ai-hub\\tools\\benchmark_command_broker.py",
+    "harness_sha256": "e8fad3f7fa40c8472b14c71ae1b9999e9a68dc9a801294cf5db17305101f67eb",
+    "harness_tracked": false,
+    "clean_harness_sha_assigned": false
+  },
+  "measurement_gates": {
+    "exclusive_cpu_slot_assigned": false,
+    "second_hardware_profile_assigned": false,
+    "benchmark_run": false,
+    "root_tests_run": false
+  },
+  "historical_baseline_report_sha": "a77562e3210a175765eba914baa753f1b6a07c67",
+  "historical_baseline_commit_exists": false,
+  "t20_confirmation": "T20 confirmed 824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11 as acceptable baseline candidate given matching pinned source blobs.",
+  "performance_status": "pending",
+  "latest_snapshot": {
+    "date": "2026-10-01",
+    "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "root_dirty_path_count": 256,
+    "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "candidate_dirty_path_count": 14,
+    "current_harness_sha256": "8aef9b315b44b1a15bad0a52b79213f2f4a319e6bcd84dda240778f2c32930ab",
+    "harness_tracked": false,
+    "active_benchmark_processes_observed": 0,
+    "benchmark_process_query": "Get-CimInstance Win32_Process -Filter \"Name=python.exe\" filtered to benchmark_command_broker.py; snapshot returned 0",
+    "benchmark_launched_by_t15": false,
+    "candidate_or_harness_clean_pin_received": false,
+    "exclusive_cpu_slot_received": false,
+    "second_hardware_profile_received": false,
+    "measurement_status": "pending",
+    "root_current_file_sha256": {
+      "src/local_ai_hub/commands.py": "a242c5571f8bf75037b9d621a6f81a84d8ae046634694a460527292868318a8a",
+      "src/local_ai_hub/project_config.py": "6050453fa90c83f0282c4dd2588cac4454b5187f9c85521cf7aabf089e41c832",
+      "src/local_ai_hub/services.py": "3396d00de2ae5e382c70244243ca979efc40d2a8f8b4683dd0a61099e245d346",
+      "tests/test_command_concurrency_contract.py": "92d841f2b22d8d9480df0cf3189164ed86a4981cf8d4492f5735c73236e219a7",
+      "tests/test_project_command_broker.py": "169f086607ccd725c6514b15bc6a54baf66e9f6c096395801b6f0beaa23b8728",
+      "tools/benchmark_command_broker.py": "ad99e187f625eeebac64ff7d71be34ca63e850959e7ea4879ab62eb65b55aff0"
+    },
+    "root_harness_exists": true,
+    "root_harness_tracked": false,
+    "root_harness_sha256": "ad99e187f625eeebac64ff7d71be34ca63e850959e7ea4879ab62eb65b55aff0",
+    "candidate_commands_sha256": "12dde723016cc9d278b03cf0831898af449a766eaa2159f0471cc4fa7457f3b1",
+    "candidate_project_config_sha256": "eec7e2920ed905e902d3699a5259d19e23ef9d4b7f17a285e160e97f63ec4686",
+    "candidate_services_sha256": "7394f38919b5f3b421110c6cb88e841d386cc8b6c848c410b501549ab4029add",
+    "candidate_harness_sha256": "8aef9b315b44b1a15bad0a52b79213f2f4a319e6bcd84dda240778f2c32930ab",
+    "candidate_harness_tracked": false,
+    "t15_root_writes": false,
+    "t15_tests_or_benchmarks_run_this_continuation": false,
+    "clean_integrated_candidate_or_harness_pin_assigned": false,
+    "exclusive_benchmark_slot_assigned": false,
+    "second_hardware_profile_assigned": false,
+    "candidate_current_file_sha256": {
+      "src/local_ai_hub/commands.py": "1fe384b1f5498a8736c76c89974ace103cfe94f780aaa75b4022cc9893bbbcf0",
+      "src/local_ai_hub/project_config.py": "eec7e2920ed905e902d3699a5259d19e23ef9d4b7f17a285e160e97f63ec4686",
+      "src/local_ai_hub/services.py": "7394f38919b5f3b421110c6cb88e841d386cc8b6c848c410b501549ab4029add",
+      "tests/test_command_concurrency_contract.py": "fa895efb5f631dc2248233a41b006b7913111527911334cf198d3b082d09734d",
+      "tests/test_project_command_broker.py": "c59054823d3b6b6189463c870e707b827ce4c2872c4e1758505095f5832c818c",
+      "tools/benchmark_command_broker.py": "8aef9b315b44b1a15bad0a52b79213f2f4a319e6bcd84dda240778f2c32930ab",
+      "tests/test_benchmark_command_broker.py": "25b33ea6e03851175207e87296314991d3eee22c132933d717dd43f166f6d810",
+      "tools/prepare_command_broker_fixtures.py": "4c83e5472c55c790e8f767bf4f54aeadc5024bf76f4299cf0fdb581b70255a74"
+    },
+    "t02_exclusive_slot": "T02 waiting for slot; no T02 run active in observed owner update; T15 must not launch tests or benchmarks during that slot",
+    "exclusive_t15_benchmark_slot_assigned": false,
+    "root_harness_same_as_candidate_after_newline_normalization": true,
+    "candidate_harness_line_endings": "LF",
+    "root_harness_line_endings": "CRLF",
+    "candidate_dispatch_test": "written_not_run",
+    "candidate_dispatch_test_name": "test_log_dispatcher_waits_for_queue_signal_without_polling",
+    "candidate_dispatch_source_sha256": "1fe384b1f5498a8736c76c89974ace103cfe94f780aaa75b4022cc9893bbbcf0",
+    "t02_slot_waiting": true,
+    "preflight_metrics": "valid_and_invalid_syntax_fixtures_prepared_not_run",
+    "synthetic_repo_fixtures_generated": false
+  }
+}

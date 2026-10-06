@@ -1,0 +1,58 @@
+--- a/tests/test_mcp_command_operation_acceptance.py
++++ b/tests/test_mcp_command_operation_acceptance.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import copy
+ from typing import Any
+ 
+ from local_ai_hub import mcp_server
+@@ -11,7 +12,7 @@
+         self.calls: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+ 
+     def post(self, path: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+-        self.calls.append((path, payload, kwargs))
++        self.calls.append((path, copy.deepcopy(payload), kwargs))
+         return self.response
+ 
+ 
+@@ -80,7 +81,8 @@
+         auto_rollback=False,
+     )
+ 
+-    assert backend.calls == [
++    command_calls = [call for call in backend.calls if call[0] == "/api/command"]
++    assert command_calls == [
+         (
+             "/api/command",
+             _expected_payload(
+
+--- a/tests/test_rag_work_operation_acceptance.py
++++ b/tests/test_rag_work_operation_acceptance.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import copy
+ import inspect
+ from typing import Any
+ 
+@@ -12,7 +13,7 @@
+         self.calls: list[tuple[str, str, dict[str, Any] | None, dict[str, Any]]] = []
+ 
+     def post(self, path: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+-        self.calls.append(("POST", path, payload, kwargs))
++        self.calls.append(("POST", path, copy.deepcopy(payload), kwargs))
+         return self.response
+ 
+     def get(self, path: str, **kwargs: Any) -> dict[str, Any]:
+@@ -52,7 +53,8 @@
+ 
+     result = mcp_server.local_ai_rag(action="index", root=str(tmp_path))
+ 
+-    assert backend.calls == [
++    index_calls = [call for call in backend.calls if call[0] == "POST" and call[1] == "/api/rag/index"]
++    assert index_calls == [
+         ("POST", "/api/rag/index", {"root": str(tmp_path), "workspace": str(tmp_path)}, {"timeout": 77.0})
+     ]
+     _assert_response_fields(result, response)
+

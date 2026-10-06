@@ -1,0 +1,32 @@
+# T09 ordering-test transfer handoff — 2026-10-06
+
+- Source patch: `C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub\handoff\t09-latest-receipt-order-root-current.patch`
+- Full patch SHA-256: `547110F67AB5828ACCF465E0221207A0A163BFE95A751CF60271A1F941EF722E`.
+- Added file SHA-256: `tests/test_agent_receipt_ordering_t09.py` = `25FBF2EF18633E9144A1236924B691C2446F987264509EFF985E589C0CE12BDF`.
+- Root: `C:\Users\Adam\.local-ai-hub`, HEAD `744727887bb1027b1bc464534a1ab0280ddbc9fe`, descendant of `b947d76fdfb7ed592b72e55587d5c83cfa352c35` (Hub ancestor check exit 0).
+- Hub `git ls-tree HEAD -- tests/test_agent_receipt_ordering_t09.py`: exit 0, empty output (target absent). Hub `git status --short -- tests/test_agent_receipt_ordering_t09.py`: exit 0, empty output (target clean).
+- Hub owner-path test command, cwd root: `python -B -m pytest -q -p no:cacheprovider --tb=short C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub\tests\test_agent_receipt_ordering_t09.py` — exit 0, `1 passed in 0.23s`; request `req_a67adb800042`, execution `bf682a2f538c4336805e43ec3eb208b7`.
+- Import-origin probe returned `C:\Users\Adam\.local-ai-hub\src\local_ai_hub\agent_tasks.py` (probe result exit 0; Hub classified the inline import probe `allowed=false/class=unknown`).
+- **Apply check blocker:** Hub rejected `git apply --check <patch>` in root with `mutation_worktree_required`, `terminal=true`, `retryable=false`, request `req_8f64b19d1e9c`. No apply, copy, stage, commit, or root edit performed. Target absence/clean status and both hashes were verified through Hub.
+- Safe command pair, only in an authorized registered task-owned target worktree: `git apply --check "<absolute patch path>"` then, only if exit 0, `git apply "<absolute patch path>"`. Do not run in canonical root under this handoff.
+
+## Closed handoff state
+
+- Exact add-only delta: `tests/test_agent_receipt_ordering_t09.py`; patch SHA-256 `547110F67AB5828ACCF465E0221207A0A163BFE95A751CF60271A1F941EF722E`; added-file SHA-256 `25FBF2EF18633E9144A1236924B691C2446F987264509EFF985E589C0CE12BDF`.
+- Canonical-root behavior receipt already obtained: at root HEAD `744727887bb1027b1bc464534a1ab0280ddbc9fe`, exact owner-path pytest command above returned exit 0, `1 passed in 0.23s`; import-origin probe returned the canonical `C:\Users\Adam\.local-ai-hub\src\local_ai_hub\agent_tasks.py`.
+- Managed acceptance worktree attempt at exact `b947d76fdfb7ed592b72e55587d5c83cfa352c35` was refused with `Not a git repository`. No alternate checkout, native fallback, patch check retry, or source integration followed; original T09 checkout and root were left unchanged.
+- Remaining T09 blockers: Hub refused root `git apply --check` with `mutation_worktree_required`; shared `http_server.py` and `tests/test_agent_tasks.py` hunks need owner/T08 reconciliation; T06 producer evidence and Agent OS lease receipt remain unavailable. Status stays `OPEN / NO-GO`.
+
+## Additional root matrix receipt — 2026-10-06
+
+- Before test, Hub `git status --short -- src/local_ai_hub/http_server.py tests/test_t09_http_task_completion_matrix.py` returned `M src/local_ai_hub/http_server.py`; root source was already dirty. Root HEAD was `744727887bb1027b1bc464534a1ab0280ddbc9fe`.
+- Hub command, cwd `C:\Users\Adam\.local-ai-hub`, owner-worktree test path: `python -B -m pytest -q -p no:cacheprovider --tb=short C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub\tests\test_t09_http_task_completion_matrix.py::test_task_completion_http_receipt_and_memory_matrix` — exit `0`, `11 passed in 24.84s`; request `req_8c4a5e6015a9`, execution `d1f159e5334043c48ac3f8066a74feb2`.
+- Receipt is for canonical root working-tree code, with pre-existing dirty `http_server.py`; it is not a clean-HEAD-only receipt. No source/test copy, root edit, stage, or commit occurred. Broader T09 remains `OPEN / NO-GO` pending T06 producer and lease evidence plus shared-hunk reconciliation.
+
+## T09 receipt durability implementation — 2026-10-06
+
+- Added a verifier-recreation regression to the T09-owned `tests/test_agent_receipt_ordering_t09.py`: newer failed receipt remains authoritative after constructing a fresh `VerificationStore` over the persisted state store.
+- Test command: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_receipt_ordering_t09.py::test_newer_failed_receipt_stays_authoritative_after_verifier_recreation` — exit `0`, `1 passed in 2.66s`, in the owned checkout at HEAD `2b33602adef0d030fea66cdcc04ca742c60b2e32`.
+- Full add-only patch: `handoff/t09-ordering-tests-add-v2.patch`, SHA-256 `3A911755F2D5E1EE9F9C60642E45C963EFEA8C7165A883445EBB75A64B344354`; added test file SHA-256 `971D9FF9CA9F640E2A96DF59593FEE69D1B4D01D3D92259EE3FDDE72D7E31F59`.
+- An initial, broader variant that instantiated a second `AgentStateStore` failed in the inherited shared schema path: `unsupported agent_state schema object: index idx_agent_task_search_grams_gram`; no production/shared file was changed. Final test recreates only the verifier object and passes.
+- No source changes; no staging, commit, root write, or T14 edit. T09 overall remains `OPEN / NO-GO` pending T06 producer receipt, Agent OS lease receipt, and shared-hunk reconciliation.

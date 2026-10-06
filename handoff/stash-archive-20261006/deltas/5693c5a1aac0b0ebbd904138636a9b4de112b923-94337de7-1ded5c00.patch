@@ -1,0 +1,814 @@
+--- a/tests/test_command_rollback.py
++++ b/tests/test_command_rollback.py
+@@ -76,7 +76,10 @@
+     assert result["success"] is False
+     assert result.get("rolled_back") is False
+     assert "external aliases" in result.get("rollback_error", "")
+-    assert tracked.read_text(encoding="utf-8") == "user's dirty baseline"
++    # A same-path hardlink appeared after command exit. Treat it as a concurrent
++    # postimage and preserve it rather than replacing the user's current path.
++    assert tracked.read_text(encoding="utf-8") == "foreign bytes"
++    assert tracked.samefile(external_alias)
+     assert not (tmp_path / "unwanted.tmp").exists()
+     assert unrelated.read_text(encoding="utf-8") == "pre-existing user edit"
+     assert preexisting.read_text(encoding="utf-8") == "keep"
+@@ -84,6 +87,158 @@
+     assert external_alias.read_text(encoding="utf-8") == "foreign bytes"
+ 
+ 
++def test_command_rollback_restores_only_declared_write_set(tmp_path: Path) -> None:
++    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
++    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
++    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
++
++    owned = tmp_path / "owned.txt"
++    owned.write_text("before\n", encoding="utf-8")
++    subprocess.run(["git", "add", "owned.txt"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
++    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
++
++    user_file = tmp_path / "user-untracked.txt"
++    user_file.write_text("keep user data\n", encoding="utf-8")
++    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
++    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
++    command = (
++        'python -c "import pathlib, sys; '
++        'pathlib.Path(\'owned.txt\').write_text(\'corrupted\\n\'); '
++        'pathlib.Path(\'undeclared.txt\').write_text(\'outside write set\\n\'); '
++        'sys.exit(1)"'
++    )
++
++    result = broker.run(
++        command,
++        str(tmp_path),
++        force=True,
++        task_id="task-owned",
++        rollback_on_failure=True,
++        rollback_paths=["owned.txt"],
++    )
++
++    assert result["success"] is False
++    assert result["rolled_back"] is True
++    assert owned.read_text(encoding="utf-8") == "before\n"
++    assert user_file.read_text(encoding="utf-8") == "keep user data\n"
++    assert (tmp_path / "undeclared.txt").read_text(encoding="utf-8") == "outside write set\n"
++
++
++def test_rollback_oserror_marks_outcome_unknown_invalidates_caches_and_records_incident(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    repo = tmp_path / "repo"
++    repo.mkdir()
++    owned = repo / "owned.txt"
++    owned.write_text("before", encoding="utf-8")
++    unrelated = repo / "unrelated.txt"
++    unrelated.write_text("keep", encoding="utf-8")
++    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}}, artifacts=None, repo_state=None)
++    broker.set_task_store(_FakeTaskStore(str(repo)))
++
++    class _IncidentStore:
++        outcome = None
++
++        def capture(self, outcome):
++            self.outcome = outcome
++            return None
++
++        def find_regressions(self, *_args, **_kwargs):
++            return []
++
++        def find_negative_knowledge(self, **_kwargs):
++            return []
++
++    incidents = _IncidentStore()
++    broker.set_incident_store(incidents)
++    receipts: list[object] = []
++    monkeypatch.setattr(broker, "_record_command_verification", lambda *args, **kwargs: receipts.append((args, kwargs)))
++    deleted: dict[str, list[str]] = {"success": [], "failure": [], "suppression": []}
++    for name in deleted:
++        cache = getattr(broker, f"{name}_cache")
++        original_delete = cache.delete
++
++        def record_delete(key, *, _name=name, _delete=original_delete):
++            deleted[_name].append(key)
++            return _delete(key)
++
++        monkeypatch.setattr(cache, "delete", record_delete)
++
++    def fail_success_delete(key):
++        deleted["success"].append(key)
++        return False
++
++    monkeypatch.setattr(broker.success_cache, "delete", fail_success_delete)
++
++    def fail_restore(*_args, **_kwargs):
++        raise OSError("simulated rollback failure")
++
++    monkeypatch.setattr(commands_module, "_restore_rollback_scope", fail_restore)
++    command = 'python -c "import pathlib,sys; pathlib.Path(\'owned.txt\').write_text(\'after\'); sys.exit(2)"'
++    result = broker.run(
++        command, str(repo), force=True, task_id="task-owned", rollback_on_failure=True,
++        rollback_paths=["owned.txt"],
++    )
++
++    assert result["success"] is False
++    assert result.get("rolled_back") is False
++    assert result.get("outcome_unknown") is True
++    assert result.get("fail_closed") is True
++    assert result.get("incident_required") is True
++    assert "simulated rollback failure" in result.get("rollback_error", "")
++    assert result.get("cache_invalidation_failed") is True
++    assert result.get("cache_invalidation_errors")
++    assert result.get("rollback_paths") == ["owned.txt"]
++    assert incidents.outcome is not None
++    assert "rollback" in incidents.outcome.error.lower()
++    assert receipts == []
++    assert broker._attempt_key(command, str(repo)) in deleted["suppression"]
++    assert deleted["success"] and deleted["failure"]
++    assert owned.read_text(encoding="utf-8") == "after"
++    assert unrelated.read_text(encoding="utf-8") == "keep"
++
++
++def test_timeout_rollback_oserror_marks_outcome_unknown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    repo = tmp_path / "repo"
++    repo.mkdir()
++    owned = repo / "owned.txt"
++    owned.write_text("before", encoding="utf-8")
++    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}}, artifacts=None, repo_state=None)
++    broker.set_task_store(_FakeTaskStore(str(repo)))
++    incidents: list[object] = []
++
++    class _IncidentStore:
++        def capture(self, outcome):
++            incidents.append(outcome)
++            return None
++
++    broker.set_incident_store(_IncidentStore())
++    monkeypatch.setattr(
++        broker, "_execute",
++        lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("command", 1)),
++    )
++    monkeypatch.setattr(
++        commands_module, "_restore_rollback_scope",
++        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("restore blocked")),
++    )
++    receipts: list[object] = []
++    monkeypatch.setattr(broker, "_record_command_verification", lambda *args, **kwargs: receipts.append(args))
++
++    result = broker.run(
++        "python -c pass", str(repo), force=True, task_id="task-owned",
++        rollback_on_failure=True, rollback_paths=["owned.txt"],
++    )
++
++    assert result.get("timed_out") is True
++    assert result.get("outcome_unknown") is True
++    assert result.get("fail_closed") is True
++    assert result.get("incident_required") is True
++    assert result.get("retryable") is False
++    assert "restore blocked" in result.get("rollback_error", "")
++    assert incidents
++    assert receipts == []
++
++
+ def test_command_rollback_requires_explicit_scope(tmp_path: Path) -> None:
+     broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
+     broker.set_task_store(_FakeTaskStore(str(tmp_path)))
+@@ -92,6 +247,7 @@
+         'python -c "import pathlib, sys; pathlib.Path(\'keep.tmp\').write_text(\'keep\'); sys.exit(1)"',
+         str(tmp_path),
+         force=True,
++        task_id="task-owned",
+         rollback_on_failure=True,
+     )
+ 
+@@ -99,6 +255,70 @@
+     assert result.get("rolled_back") is not True
+     assert result.get("rollback_scope_required") is True
+     assert not (tmp_path / "keep.tmp").exists()
++
++
++def test_rollback_worktree_preflight_happens_before_snapshot_handle_acquisition(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
++    snapshot_calls: list[tuple[str, list[str] | None]] = []
++
++    def snapshot(cwd: str, paths: list[str] | None):
++        snapshot_calls.append((cwd, paths))
++        return SimpleNamespace(root_guard=123), None
++
++    monkeypatch.setattr(commands_module, "_snapshot_rollback_scope", snapshot)
++    result = broker.run(
++        'python -c "pass"',
++        str(tmp_path),
++        force=True,
++        task_id="task-without-registration",
++        rollback_on_failure=True,
++        rollback_paths=["owned.txt"],
++    )
++
++    assert result["mutation_worktree_required"] is True
++    assert snapshot_calls == []
++
++
++def test_command_rollback_preserves_concurrent_edit_to_declared_path(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    target = tmp_path / "owned.txt"
++    target.write_text("before\n", encoding="utf-8")
++    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
++    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
++
++    def fail_after_command_write(*_args: object, **_kwargs: object) -> dict[str, object]:
++        target.write_text("transaction postimage\n", encoding="utf-8")
++        return {"success": False, "exit_code": 1, "stdout": "", "stderr": "failed"}
++
++    original_restore = commands_module._restore_rollback_scope
++
++    def edit_after_postimage_capture(cwd: str, snapshot: object) -> None:
++        # run() captures the command's postimage before entering restore.
++        target.write_text("user concurrent edit\n", encoding="utf-8")
++        original_restore(cwd, snapshot)  # type: ignore[arg-type]
++
++    monkeypatch.setattr(broker, "_execute", fail_after_command_write)
++    monkeypatch.setattr(commands_module, "_restore_rollback_scope", edit_after_postimage_capture)
++
++    result = broker.run(
++        "python -c pass",
++        str(tmp_path),
++        force=True,
++        task_id="task-owned",
++        rollback_on_failure=True,
++        rollback_paths=[target.name],
++    )
++
++    assert result["success"] is False
++    assert result["rolled_back"] is False
++    assert result.get("outcome_unknown") is True
++    assert result.get("fail_closed") is True
++    assert result.get("incident_required") is True
++    assert "postimage" in result.get("rollback_error", "")
++    assert target.read_text(encoding="utf-8") == "user concurrent edit\n"
+ 
+ 
+ def test_patch_and_verify_rollback_preserves_concurrent_foreign_changes(
+@@ -258,6 +478,271 @@
+     assert target.stat().st_atime_ns == original_atime
+ 
+ 
++@pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point race regression")
++def test_rollback_snapshot_rejects_symlink_swapped_before_handle_open(tmp_path: Path, monkeypatch) -> None:
++    target = tmp_path / "race.txt"
++    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
++    target.write_bytes(b"inside")
++    outside.write_bytes(b"outside-secret")
++    original_open = commands_module._open_rollback_snapshot_file
++    swapped = False
++    snapshot = None
++
++    def swap_before_open(parent_handle: int, name: str):
++        nonlocal swapped
++        if name == target.name and not swapped:
++            swapped = True
++            target.unlink()
++            try:
++                os.symlink(outside, target)
++            except OSError as exc:
++                pytest.skip(f"file symlink creation unavailable: {exc}")
++        return original_open(parent_handle, name)
++
++    monkeypatch.setattr(commands_module, "_open_rollback_snapshot_file", swap_before_open)
++    try:
++        snapshot, error = commands_module._snapshot_rollback_scope(str(tmp_path), [target.name])
++        assert swapped is True
++        assert snapshot is None
++        assert error is not None and "reparse" in error.lower()
++        assert outside.read_bytes() == b"outside-secret"
++    finally:
++        if snapshot is not None:
++            commands_module._close_rollback_root(snapshot.root_guard)
++        target.unlink(missing_ok=True)
++        outside.unlink(missing_ok=True)
++        assert not outside.exists()
++
++
++@pytest.mark.skipif(os.name != "nt", reason="Windows junction race regression")
++def test_rollback_snapshot_rejects_junction_swapped_before_handle_open(tmp_path: Path, monkeypatch) -> None:
++    target = tmp_path / "race.txt"
++    outside = tmp_path.parent / f"{tmp_path.name}-outside"
++    outside.mkdir()
++    outside_secret = outside / "secret.txt"
++    outside_secret.write_bytes(b"outside-secret")
++    target.write_bytes(b"inside")
++    original_open = commands_module._open_rollback_snapshot_file
++    swapped = False
++    snapshot = None
++
++    def swap_before_open(parent_handle: int, name: str):
++        nonlocal swapped
++        if name == target.name and not swapped:
++            swapped = True
++            target.unlink()
++            result = subprocess.run(
++                ["cmd.exe", "/d", "/c", "mklink", "/J", str(target), str(outside)],
++                capture_output=True,
++                text=True,
++            )
++            if result.returncode != 0:
++                pytest.skip(f"junction creation unavailable: {result.stdout}{result.stderr}")
++        return original_open(parent_handle, name)
++
++    monkeypatch.setattr(commands_module, "_open_rollback_snapshot_file", swap_before_open)
++    try:
++        snapshot, error = commands_module._snapshot_rollback_scope(str(tmp_path), [target.name])
++        assert swapped is True
++        assert snapshot is None
++        assert error is not None and "reparse" in error.lower()
++        assert outside_secret.read_bytes() == b"outside-secret"
++    finally:
++        if snapshot is not None:
++            commands_module._close_rollback_root(snapshot.root_guard)
++        try:
++            os.rmdir(target)
++        except OSError:
++            target.unlink(missing_ok=True)
++        outside_secret.unlink(missing_ok=True)
++        outside.rmdir()
++        assert not target.exists()
++        assert not outside.exists()
++
++
++@pytest.mark.skipif(os.name != "nt", reason="Windows root-junction race regression")
++def test_rollback_snapshot_rejects_parent_junction_during_root_open(tmp_path: Path, monkeypatch) -> None:
++    parent = tmp_path / "project-parent"
++    root = parent / "repo"
++    parent.mkdir()
++    root.mkdir()
++    inside = root / "state.txt"
++    inside.write_bytes(b"inside")
++    outside_parent = tmp_path / "outside-parent"
++    outside_root = outside_parent / "repo"
++    outside_root.mkdir(parents=True)
++    outside = outside_root / "state.txt"
++    outside.write_bytes(b"outside-secret")
++    moved_parent = tmp_path / "project-parent-original"
++    original_acquire = commands_module._acquire_rollback_root
++    snapshot = None
++
++    def redirect_during_open(resolved_root: Path) -> int:
++        parent.rename(moved_parent)
++        junction_created = False
++        try:
++            result = subprocess.run(
++                ["cmd.exe", "/d", "/c", "mklink", "/J", str(parent), str(outside_parent)],
++                capture_output=True,
++                text=True,
++            )
++            if result.returncode != 0:
++                pytest.skip(f"junction creation unavailable: {result.stdout}{result.stderr}")
++            junction_created = True
++            return original_acquire(resolved_root)
++        finally:
++            if junction_created:
++                os.rmdir(parent)
++            moved_parent.rename(parent)
++
++    monkeypatch.setattr(commands_module, "_acquire_rollback_root", redirect_during_open)
++    try:
++        snapshot, error = commands_module._snapshot_rollback_scope(str(root), [inside.name])
++        assert snapshot is None
++        assert error is not None and "reparse" in error.lower()
++        assert outside.read_bytes() == b"outside-secret"
++        assert inside.read_bytes() == b"inside"
++    finally:
++        if snapshot is not None:
++            commands_module._close_rollback_root(snapshot.root_guard)
++        assert parent.is_dir()
++        assert not moved_parent.exists()
++
++
++@pytest.mark.skipif(os.name == "nt", reason="POSIX root-parent symlink race regression")
++def test_rollback_snapshot_rejects_parent_symlink_swapped_after_resolve(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    parent = tmp_path / "project-parent"
++    root = parent / "repo"
++    root.mkdir(parents=True)
++    inside = root / "state.txt"
++    inside.write_bytes(b"inside")
++    outside_parent = tmp_path / "outside-parent"
++    outside_root = outside_parent / "repo"
++    outside_root.mkdir(parents=True)
++    outside = outside_root / "state.txt"
++    outside.write_bytes(b"outside-secret")
++    moved_parent = tmp_path / "project-parent-original"
++    original_acquire = commands_module._acquire_rollback_root
++    snapshot = None
++
++    def redirect_during_open(resolved_root: Path) -> int:
++        parent.rename(moved_parent)
++        try:
++            try:
++                parent.symlink_to(outside_parent, target_is_directory=True)
++            except OSError as exc:
++                moved_parent.rename(parent)
++                pytest.skip(f"directory symlink creation unavailable: {exc}")
++            return original_acquire(resolved_root)
++        finally:
++            if parent.is_symlink():
++                parent.unlink()
++            if moved_parent.exists():
++                moved_parent.rename(parent)
++
++    monkeypatch.setattr(commands_module, "_acquire_rollback_root", redirect_during_open)
++    try:
++        snapshot, error = commands_module._snapshot_rollback_scope(str(root), [inside.name])
++        assert snapshot is None
++        assert error is not None
++        assert outside.read_bytes() == b"outside-secret"
++        assert inside.read_bytes() == b"inside"
++    finally:
++        if snapshot is not None:
++            commands_module._close_rollback_root(snapshot.root_guard)
++        assert parent.is_dir()
++        assert not moved_parent.exists()
++
++
++@pytest.mark.skipif(os.name != "nt", reason="Windows root handle identity regression")
++def test_rollback_snapshot_records_root_identity_from_pinned_handle(tmp_path: Path, monkeypatch) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    target = root / "state.txt"
++    target.write_bytes(b"content")
++    original_acquire = commands_module._acquire_rollback_root
++    original_stat = Path.stat
++
++    def acquire_then_disable_root_path_stat(resolved_root: Path) -> int:
++        handle = original_acquire(resolved_root)
++
++        def reject_path_identity(path: Path, *args, **kwargs):
++            if path == root:
++                raise AssertionError("root identity must come from the pinned handle")
++            return original_stat(path, *args, **kwargs)
++
++        monkeypatch.setattr(Path, "stat", reject_path_identity)
++        return handle
++
++    monkeypatch.setattr(commands_module, "_acquire_rollback_root", acquire_then_disable_root_path_stat)
++    snapshot = None
++    try:
++        snapshot, error = commands_module._snapshot_rollback_scope(str(root), [target.name])
++        assert error is None
++        assert snapshot is not None
++        assert snapshot.root_identity == commands_module._rollback_root_identity(snapshot.root_guard)
++        assert snapshot.files[target.name].content == b"content"
++    finally:
++        if snapshot is not None:
++            commands_module._close_rollback_root(snapshot.root_guard)
++
++
++@pytest.mark.skipif(os.name != "nt", reason="Windows handle cleanup regression")
++def test_rollback_snapshot_closes_file_handle_when_fstat_fails(tmp_path: Path, monkeypatch) -> None:
++    target = tmp_path / "fstat-failure.txt"
++    target.write_bytes(b"content")
++    real_open = commands_module._open_rollback_snapshot_file
++    real_fstat = os.fstat
++    real_close = os.close
++    opened: list[int] = []
++    closed: list[int] = []
++
++    def track_open(root_handle: int, name: str) -> int | None:
++        fd = real_open(root_handle, name)
++        if fd is not None:
++            opened.append(fd)
++        return fd
++
++    def fail_open_fstat(fd: int):
++        if fd in opened:
++            raise OSError("injected fstat failure")
++        return real_fstat(fd)
++
++    def track_close(fd: int) -> None:
++        if fd in opened:
++            closed.append(fd)
++        real_close(fd)
++
++    monkeypatch.setattr(commands_module, "_open_rollback_snapshot_file", track_open)
++    monkeypatch.setattr(commands_module.os, "fstat", fail_open_fstat)
++    monkeypatch.setattr(commands_module.os, "close", track_close)
++    try:
++        snapshot, error = commands_module._snapshot_rollback_scope(str(tmp_path), [target.name])
++        assert snapshot is None
++        assert error is not None and "injected fstat failure" in error
++        assert opened and set(opened) <= set(closed)
++    finally:
++        for fd in opened:
++            if fd not in closed:
++                real_close(fd)
++
++
++def test_rollback_snapshot_accepts_regular_file_control(tmp_path: Path) -> None:
++    target = tmp_path / "regular.txt"
++    target.write_bytes(b"inside-control")
++
++    snapshot, error = commands_module._snapshot_rollback_scope(str(tmp_path), [target.name])
++
++    assert error is None
++    assert snapshot is not None
++    try:
++        assert snapshot.files[target.name].content == b"inside-control"
++    finally:
++        commands_module._close_rollback_root(snapshot.root_guard)
++
++
+ def test_rollback_snapshot_requests_noatime_on_supported_posix(monkeypatch) -> None:
+     monkeypatch.setattr(commands_module.os, "name", "posix")
+     monkeypatch.setattr(commands_module.os, "O_NOATIME", 0x40000, raising=False)
+@@ -269,6 +754,7 @@
+ 
+ def test_command_rollback_rejects_path_escape(tmp_path: Path) -> None:
+     broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
++    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
+ 
+     result = broker.run(
+         'python -c "import pathlib, sys; pathlib.Path(\'must_not_run.tmp\').touch(); sys.exit(1)"',
+@@ -285,19 +771,265 @@
+     assert not (tmp_path / "must_not_run.tmp").exists()
+ 
+ 
+-def test_command_rollback_rejects_nested_paths(tmp_path: Path) -> None:
++def test_rollback_snapshot_and_restore_accept_nested_paths(tmp_path: Path) -> None:
++    subdir = tmp_path / "subdir"
++    subdir.mkdir()
++    target = subdir / "file.txt"
++    target.write_bytes(b"before")
++    created = subdir / "created.txt"
++    snapshot, error = commands_module._snapshot_rollback_scope(
++        str(tmp_path), ["subdir/file.txt", "subdir/created.txt"]
++    )
++    assert error is None and snapshot is not None
++    try:
++        target.write_bytes(b"after")
++        created.write_bytes(b"created")
++        commands_module._restore_rollback_scope(str(tmp_path), snapshot)
++        assert target.read_bytes() == b"before"
++        assert not created.exists()
++    finally:
++        commands_module._close_rollback_root(snapshot.root_guard)
++
++
++@pytest.mark.skipif(os.name == "nt", reason="POSIX root identity replacement regression")
++def test_rollback_restore_rejects_replaced_root_path(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    target = root / "state.txt"
++    target.write_bytes(b"before")
++    snapshot, error = commands_module._snapshot_rollback_scope(str(root), [target.name])
++    assert error is None and snapshot is not None
++    target.write_bytes(b"inside-mutated")
++
++    moved_root = tmp_path / "repo-original"
++    try:
++        root.rename(moved_root)
++        root.mkdir()
++        replacement = root / "state.txt"
++        replacement.write_bytes(b"replacement-secret")
++
++        with pytest.raises(OSError, match="rollback root changed since snapshot"):
++            commands_module._restore_rollback_scope(str(root), snapshot)
++
++        assert (moved_root / "state.txt").read_bytes() == b"inside-mutated"
++        assert replacement.read_bytes() == b"replacement-secret"
++    finally:
++        commands_module._close_rollback_root(snapshot.root_guard)
++        if root.exists():
++            replacement_target = root / "state.txt"
++            replacement_target.unlink(missing_ok=True)
++            root.rmdir()
++        if moved_root.exists():
++            moved_root.rename(root)
++
++
++def test_rollback_restore_rejects_current_path_identity_mismatch(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    target = tmp_path / "state.txt"
++    target.write_bytes(b"before")
++    snapshot, error = commands_module._snapshot_rollback_scope(str(tmp_path), [target.name])
++    assert error is None and snapshot is not None
++    target.write_bytes(b"after")
++
++    replacement_handle = 1_000_000_000
++    original_identity = commands_module._rollback_root_identity
++    original_close = commands_module._close_rollback_root
++
++    def acquire_replacement(_root: Path) -> int:
++        return replacement_handle
++
++    def identity_for_handle(handle: int) -> tuple[int, int]:
++        if handle == replacement_handle:
++            return (-1, -1)
++        return original_identity(handle)
++
++    def close_handle(handle: int) -> None:
++        if handle != replacement_handle:
++            original_close(handle)
++
++    monkeypatch.setattr(commands_module, "_acquire_rollback_root", acquire_replacement)
++    monkeypatch.setattr(commands_module, "_rollback_root_identity", identity_for_handle)
++    monkeypatch.setattr(commands_module, "_close_rollback_root", close_handle)
++    try:
++        with pytest.raises(OSError, match="rollback root changed since snapshot"):
++            commands_module._restore_rollback_scope(str(tmp_path), snapshot)
++        assert target.read_bytes() == b"after"
++    finally:
++        original_close(snapshot.root_guard)
++
++
++@pytest.mark.skipif(os.name == "nt", reason="POSIX pinned-root restore race regression")
++def test_rollback_restore_stays_inside_pinned_root_if_path_moves_after_check(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    target = root / "state.txt"
++    target.write_bytes(b"before")
++    snapshot, error = commands_module._snapshot_rollback_scope(str(root), [target.name])
++    assert error is None and snapshot is not None
++    target.write_bytes(b"inside-mutated")
++
++    moved_root = tmp_path / "repo-original"
++    original_open_parent = commands_module._open_rollback_parent_handle
++    replaced = False
++
++    def move_root_after_identity_check(root_handle: int, parts: list[str], **kwargs):
++        nonlocal replaced
++        if not replaced:
++            root.rename(moved_root)
++            root.mkdir()
++            (root / "state.txt").write_bytes(b"replacement-secret")
++            replaced = True
++        return original_open_parent(root_handle, parts, **kwargs)
++
++    monkeypatch.setattr(commands_module, "_open_rollback_parent_handle", move_root_after_identity_check)
++    try:
++        commands_module._restore_rollback_scope(str(root), snapshot)
++
++        assert replaced is True
++        assert (moved_root / "state.txt").read_bytes() == b"before"
++        assert (root / "state.txt").read_bytes() == b"replacement-secret"
++    finally:
++        commands_module._close_rollback_root(snapshot.root_guard)
++        if root.exists():
++            (root / "state.txt").unlink(missing_ok=True)
++            root.rmdir()
++        if moved_root.exists():
++            moved_root.rename(root)
++
++
++def test_command_rollback_rejects_nested_path_traversal(tmp_path: Path) -> None:
+     (tmp_path / "subdir").mkdir()
+     broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
++    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
+ 
+     result = broker.run(
+         'python -c "import sys; sys.exit(1)"',
+         str(tmp_path),
+         force=True,
++        task_id="task-owned",
+         rollback_on_failure=True,
+-        rollback_paths=["subdir/file.txt"],
++        rollback_paths=["subdir/../file.txt"],
+     )
+ 
+     assert result.get("rollback_scope_invalid") is True
++
++
++@pytest.mark.skipif(os.name != "nt", reason="Windows temporary-handle cleanup regression")
++@pytest.mark.parametrize("delete_failures", [1, 2])
++def test_rollback_temp_handle_closes_when_delete_by_handle_fails(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, delete_failures: int
++) -> None:
++    import msvcrt
++
++    target = tmp_path / "state.txt"
++    target.write_bytes(b"before")
++    snapshot, error = commands_module._snapshot_rollback_scope(str(tmp_path), [target.name])
++    assert error is None and snapshot is not None
++    target.write_bytes(b"after")
++
++    active_fds: set[int] = set()
++    original_open_osfhandle = msvcrt.open_osfhandle
++    original_close = os.close
++
++    def track_open_osfhandle(handle: int, flags: int) -> int:
++        fd = original_open_osfhandle(handle, flags)
++        active_fds.add(fd)
++        return fd
++
++    def track_close(fd: int) -> None:
++        active_fds.discard(fd)
++        original_close(fd)
++
++    def fail_rename(*_args: object) -> None:
++        raise OSError("injected rename failure")
++
++    delete_calls = 0
++    original_delete = commands_module._delete_windows_handle
++
++    def fail_delete(handle: int) -> None:
++        nonlocal delete_calls
++        delete_calls += 1
++        if delete_calls <= delete_failures:
++            raise OSError("injected delete failure")
++        original_delete(handle)
++
++    monkeypatch.setattr(msvcrt, "open_osfhandle", track_open_osfhandle)
++    monkeypatch.setattr(commands_module.os, "close", track_close)
++    monkeypatch.setattr(commands_module, "_rename_windows_handle", fail_rename)
++    monkeypatch.setattr(commands_module, "_delete_windows_handle", fail_delete)
++    try:
++        with pytest.raises(OSError, match="injected rename failure") as raised:
++            commands_module._restore_rollback_scope(str(tmp_path), snapshot)
++        assert active_fds == set()
++        assert delete_calls == 2
++        if delete_failures == 1:
++            assert list(tmp_path.glob(".local-ai-rollback-*")) == []
++        else:
++            notes = getattr(raised.value, "__notes__", ())
++            assert any("rollback temporary cleanup failed" in note for note in notes)
++    finally:
++        for fd in active_fds:
++            original_close(fd)
++        commands_module._close_rollback_root(snapshot.root_guard)
++        for temp_file in tmp_path.glob(".local-ai-rollback-*"):
++            temp_file.unlink(missing_ok=True)
++
++
++@pytest.mark.skipif(os.name != "nt", reason="Windows restore-junction race regression")
++def test_rollback_restore_stays_on_pinned_root_after_junction_swap(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    root = tmp_path / "repo"
++    parent = root / "subdir"
++    parent.mkdir(parents=True)
++    target = parent / "state.txt"
++    target.write_bytes(b"inside-before")
++    outside = tmp_path / "outside"
++    outside.mkdir()
++    outside_file = outside / "state.txt"
++    outside_file.write_bytes(b"outside-secret")
++    moved_parent = root / "subdir-original"
++    snapshot, error = commands_module._snapshot_rollback_scope(str(root), ["subdir/state.txt"])
++    assert error is None and snapshot is not None
++    target.write_bytes(b"inside-mutated")
++
++    original_identity = commands_module._rollback_root_identity
++    swapped = False
++    junction_created = False
++
++    def swap_after_root_check(handle: int) -> tuple[int, int]:
++        nonlocal swapped, junction_created
++        identity = original_identity(handle)
++        if not swapped:
++            swapped = True
++            parent.rename(moved_parent)
++            result = subprocess.run(
++                ["cmd.exe", "/d", "/c", "mklink", "/J", str(parent), str(outside)],
++                capture_output=True,
++                text=True,
++            )
++            if result.returncode != 0:
++                moved_parent.rename(parent)
++                pytest.skip(f"junction creation unavailable: {result.stdout}{result.stderr}")
++            junction_created = True
++        return identity
++
++    monkeypatch.setattr(commands_module, "_rollback_root_identity", swap_after_root_check)
++    try:
++        with pytest.raises((OSError, ValueError)):
++            commands_module._restore_rollback_scope(str(root), snapshot)
++        assert swapped is True
++        assert outside_file.read_bytes() == b"outside-secret"
++        assert (moved_parent / "state.txt").read_bytes() == b"inside-mutated"
++    finally:
++        commands_module._close_rollback_root(snapshot.root_guard)
++        if junction_created:
++            os.rmdir(parent)
++        if moved_parent.exists():
++            moved_parent.rename(parent)
+ 
+ 
+ def test_command_rollback_rejects_hardlinks(tmp_path: Path) -> None:
+@@ -308,11 +1040,13 @@
+     except OSError as exc:
+         pytest.skip(f"hard links unavailable: {exc}")
+     broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
++    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
+ 
+     result = broker.run(
+         'python -c "import sys; sys.exit(1)"',
+         str(tmp_path),
+         force=True,
++        task_id="task-owned",
+         rollback_on_failure=True,
+         rollback_paths=["owned.txt"],
+     )

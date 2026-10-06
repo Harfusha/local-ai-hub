@@ -1,0 +1,152 @@
+diff --git a/tests/test_t09_http_task_completion_persisted_receipts.py b/tests/test_t09_http_task_completion_persisted_receipts.py
+new file mode 100644
+index 0000000..4c5b9fb
+--- /dev/null
++++ b/tests/test_t09_http_task_completion_persisted_receipts.py
+@@ -0,0 +1,146 @@
++from __future__ import annotations
++
++import json
++from pathlib import Path
++import threading
++import urllib.error
++import urllib.request
++
++from local_ai_hub import http_server
++from local_ai_hub.agent_identity import ScopeContext
++from local_ai_hub.agent_tasks import GoalContract
++from local_ai_hub.agent_verification import VerificationReceipt
++from local_ai_hub.app import LocalAIApp
++
++
++def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
++    tmp_path: Path, monkeypatch
++) -> None:
++    tenant_id = "agent-t09"
++    task_id = "task-t09-http-receipts"
++    repository_revision = "rev-t09-http-acceptance"
++    project_root = tmp_path / "repo"
++    project_root.mkdir()
++    (project_root / ".local-ai.toml").write_text(
++        '[commands]\ntest = "python -m pytest -q tests/test_project_rules.py"\n'
++        '[verification_rules]\nrequired_commands = ["test"]\n',
++        encoding="utf-8",
++    )
++    state_dir = tmp_path / "state"
++    state_dir.mkdir()
++    config_path = tmp_path / "config.toml"
++    config_path.write_text(
++        f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
++        "\n[agent_state]\nenabled = true\n",
++        encoding="utf-8",
++    )
++
++    app = LocalAIApp(str(config_path))
++    app.agent_tasks.create(
++        GoalContract(
++            goal="complete task through production HTTP route",
++            acceptance_criteria=("test",),
++        ),
++        ScopeContext(repository_id=str(project_root), task_id=task_id),
++        task_id=task_id,
++        actor=tenant_id,
++        repo_root=str(project_root),
++    )
++
++    command_evidence = app.artifacts.put_json(
++        {
++            "kind": "work_command_verification",
++            "passed": True,
++            "task_id": task_id,
++            "owner": tenant_id,
++            "repository_revision": repository_revision,
++            "mutation_generation": 0,
++            "criterion": "test",
++            "command_id": "cmd-t09-http-test",
++            "exit_code": 0,
++            "result": {"success": True, "exit_code": 0},
++        },
++        tenant_id,
++        "command_verification",
++    )
++    app.agent_verification.record(
++        VerificationReceipt.create(
++            task_id,
++            "test",
++            evidence_id=command_evidence,
++            command_id="cmd-t09-http-test",
++            owner=tenant_id,
++            repository_revision=repository_revision,
++            mutation_generation=0,
++            evidence_type="test",
++        )
++    )
++    preflight = app.agent_verification.completion(
++        task_id, current_revision=repository_revision, current_mutation_generation=0
++    )
++    assert preflight.complete, (
++        preflight.unsatisfied_criteria,
++        preflight.stale_criteria,
++        preflight.consistency,
++        app.artifacts.get(command_evidence, max_chars=50_000, tenant=tenant_id),
++        app.agent_tasks.get(task_id).owner,
++    )
++
++    monkeypatch.setattr(
++        http_server,
++        "_completion_revision_or_stop",
++        lambda *_args: (repository_revision, None),
++    )
++    previous_app = http_server.APP
++    http_server.APP = app
++    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++    try:
++        request = urllib.request.Request(
++            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/tasks",
++            data=json.dumps(
++                {
++                    "action": "complete",
++                    "task_id": task_id,
++                    "root": str(project_root),
++                    "reason": "persisted project receipts verified",
++                }
++            ).encode("utf-8"),
++            headers={
++                "Content-Type": "application/json",
++                "X-LocalAI-Agent": tenant_id,
++                "X-LocalAI-Tenant": tenant_id,
++            },
++            method="POST",
++        )
++        try:
++            with urllib.request.urlopen(request, timeout=5) as response:
++                payload = json.loads(response.read().decode("utf-8"))
++        except urllib.error.HTTPError as error:
++            payload = json.loads(error.read().decode("utf-8"))
++    finally:
++        server.shutdown()
++        server.server_close()
++        thread.join(timeout=2)
++        http_server.APP = previous_app
++
++    assert payload["success"] is True, payload
++    assert payload["task"]["task_id"] == task_id
++    assert payload["task"]["status"] == "completed"
++    stored = app.agent_tasks.get(task_id)
++    assert stored is not None
++    assert stored.owner == tenant_id
++    assert stored.context.repository_id == str(project_root)
++    assert stored.checkpoint.state_data["repo_root"] == str(project_root.resolve())
++    assert stored.checkpoint.state_data["repository_revision"] == repository_revision
++
++    completion = app.agent_verification.completion(
++        task_id, current_revision=repository_revision, current_mutation_generation=0
++    )
++    assert completion.complete is True
++    assert {
++        (receipt.task_id, receipt.owner, receipt.criterion, receipt.repository_revision)
++        for receipt in completion.receipts
++    } == {(task_id, tenant_id, "test", repository_revision)}
++    assert {receipt.evidence_id for receipt in completion.receipts} == {command_evidence}

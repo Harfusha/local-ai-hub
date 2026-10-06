@@ -1,0 +1,86 @@
+--- a/tests/test_rag_work_operation_acceptance.py
++++ b/tests/test_rag_work_operation_acceptance.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import inspect
+ from typing import Any
+ 
+ from local_ai_hub import mcp_server
+@@ -128,16 +129,28 @@
+     response = {"success": True, "status": "queued", "document_id": "doc-17"}
+     backend = _Backend(response)
+     _enable_rag(monkeypatch, backend)
++    content = "Operator approved release procedure."
++    title = "Release procedure"
++    metadata = {"task_id": "task-17", "source": "operator"}
++    explicit_ingest = "content" in inspect.signature(mcp_server.local_ai_rag).parameters
++    ingest_args = (
++        {"content": content, "title": title, "metadata": metadata}
++        if explicit_ingest
++        else {"query": content}
++    )
+ 
+     result = mcp_server.local_ai_rag(
+-        action="ingest_document", workspace="manuals", query="Operator approved release procedure."
+-    )
+-
++        action="ingest_document", workspace="manuals", **ingest_args
++    )
++
++    expected_payload = {"workspace": "manuals", "content": content}
++    if explicit_ingest:
++        expected_payload.update({"title": title, "metadata": metadata})
+     assert backend.calls == [
+         (
+             "POST",
+             "/api/rag/ingest_document",
+-            {"workspace": "manuals", "content": "Operator approved release procedure."},
++            expected_payload,
+             {"timeout": 11.0},
+         )
+     ]
+@@ -149,23 +162,34 @@
+     response = {"success": True, "status": "ingested", "diagram_id": "diagram-5"}
+     backend = _Backend(response)
+     _enable_rag(monkeypatch, backend)
++    image_path = "artifacts/system-map.png"
++    caption = "Gateway routes to worker pool"
++    metadata = {"task_id": "task-17", "source": "architecture"}
++    explicit_ingest = "image_path" in inspect.signature(mcp_server.local_ai_rag).parameters
++    ingest_args = (
++        {"image_path": image_path, "caption": caption, "metadata": metadata}
++        if explicit_ingest
++        else {"query": image_path, "extra_fields": [caption]}
++    )
+ 
+     result = mcp_server.local_ai_rag(
+         action="ingest_diagram",
+         workspace="architecture",
+-        query="artifacts/system-map.png",
+-        extra_fields=["Gateway routes to worker pool"],
+-    )
+-
++        **ingest_args,
++    )
++
++    expected_payload = {
++        "workspace": "architecture",
++        "image_path": image_path,
++        "caption": caption,
++    }
++    if explicit_ingest:
++        expected_payload["metadata"] = metadata
+     assert backend.calls == [
+         (
+             "POST",
+             "/api/rag/ingest_diagram",
+-            {
+-                "workspace": "architecture",
+-                "image_path": "artifacts/system-map.png",
+-                "caption": "Gateway routes to worker pool",
+-            },
++            expected_payload,
+             {"timeout": 11.0},
+         )
+     ]

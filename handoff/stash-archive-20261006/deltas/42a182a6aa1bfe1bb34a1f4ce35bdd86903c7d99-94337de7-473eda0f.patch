@@ -1,0 +1,991 @@
+--- a/src/local_ai_hub/services.py
++++ b/src/local_ai_hub/services.py
+@@ -4,8 +4,10 @@
+ 
+ import base64
+ import copy
++import fnmatch
+ import hashlib
+ import json
++import math
+ import os
+ import re
+ import shlex
+@@ -49,6 +51,7 @@
+     VISION_MAX_RUNTIME_OUTPUT_CHARS,
+     VISION_MAX_SCHEMA_CHARS,
+     bound_vision_result,
++    image_dimensions,
+     parse_vision_result,
+ )
+ from .frontend_review import (
+@@ -2100,7 +2103,9 @@
+             "\"category\": \"layout|responsive|accessibility|interaction|visual-regression|runtime\", "
+             "\"problem\": string, \"observed\": string, \"hypothesized\": string, "
+             "\"uncertainty\": [string], \"confidence\": number, "
+-            "\"element_ids\": [string], \"bbox\": [number, number, number, number] or null, "
++            "\"element_ids\": [string], \"observation_facts\": [{\"source\": string, "
++            "\"element_id\": string, \"field\": string, \"value\": scalar}], "
++            "\"bbox\": [x, y, width, height] in image pixels or null, "
+             "\"evidence\": [string], \"likely_cause\": string, \"fix_hint\": string, "
+             "\"needs_runtime_check\": boolean}], "
+             "\"unknowns\": [string], \"recommended_checks\": [string]} ."
+@@ -2285,16 +2290,38 @@
+                 raw_artifact_id = str(self.artifacts.put(raw_output, tenant, "vision-output"))
+             except Exception:
+                 pass
++            valid_element_ids = None
++            observation_sources = None
++            if model_context is not None:
++                dom_elements = model_context.dom.get("elements", [])
++                valid_element_ids = {
++                    element_id
++                    for element in dom_elements
++                    if isinstance(element, dict)
++                    and isinstance((element_id := element.get("element_id")), str)
++                    and element_id
++                } if isinstance(dom_elements, list) else set()
++                observation_sources = model_context.observation_sources
++            try:
++                image_size = image_dimensions(base64.b64decode(images[0], validate=True))
++            except (ValueError, TypeError):
++                image_size = None
+             parsed = parse_vision_result(
+-                raw_output, require_observation_fields=model_context is not None
++                raw_output,
++                require_observation_fields=model_context is not None,
++                valid_element_ids=valid_element_ids,
++                observation_sources=observation_sources,
++                image_size=image_size,
+             )
+             if parsed.terminal:
+                 return {
+                     "success": False,
+                     "model": model,
++                    "degraded": True,
+                     "terminal": True,
+                     "retryable": False,
+-                    "error": parsed.error,
++                    "error": parsed.error or {"code": "malformed_vision_output", "message": "Vision output is invalid."},
++                    "error_code": "vision_output_invalid",
+                     "raw_output_artifact_id": raw_artifact_id,
+                 }
+             parsed = bound_vision_result(parsed)
+@@ -2359,43 +2386,176 @@
+             }
+ 
+     def transcribe(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+-        """Transcribe audio recording to text via local Whisper / STT CLI or fallback."""
++        """Transcribe audio to text through the local Whisper CLI."""
++        import stat
++
+         audio_path = str(args.get("audio", args.get("audio_path", "")))
+-        model = str(args.get("model") or "whisper")
+-
+-        p = Path(audio_path).expanduser().resolve(strict=False)
+-        if not p.is_file():
+-            return {"success": False, "error": f"audio file not found: {audio_path}"}
++        model = str(args.get("model") or "base")
++        language_arg = args.get("language")
++        if language_arg is not None and not isinstance(language_arg, str):
++            return {
++                "success": False,
++                "audio_path": audio_path,
++                "model": model,
++                "reason": "invalid_language",
++                "error": "Language hint must be a string.",
++            }
++        language = language_arg.strip() if isinstance(language_arg, str) else ""
++        if language.casefold() == "auto":
++            language = ""
++
++        p = Path(audio_path)
++        try:
++            p = p.expanduser().resolve(strict=False)
++            audio_stat = p.stat()
++        except FileNotFoundError:
++            return {
++                "success": False,
++                "audio_path": str(p),
++                "model": model,
++                "reason": "audio_not_found",
++                "error": "Audio file not found.",
++            }
++        except OSError:
++            return {
++                "success": False,
++                "audio_path": str(p),
++                "model": model,
++                "reason": "audio_unavailable",
++                "degraded": True,
++                "error": "Audio path is not accessible.",
++            }
++        except (RuntimeError, ValueError):
++            return {
++                "success": False,
++                "audio_path": str(p),
++                "model": model,
++                "reason": "audio_path_invalid",
++                "error": "Audio path is invalid.",
++            }
++        if not stat.S_ISREG(audio_stat.st_mode):
++            return {
++                "success": False,
++                "audio_path": str(p),
++                "model": model,
++                "reason": "audio_not_regular_file",
++                "error": "Audio path does not refer to a regular file.",
++            }
+ 
+         whisper_cmd = shutil.which("whisper")
+-        if whisper_cmd:
+-            cmd = [whisper_cmd, str(p), "--output_format", "txt", "--model", "tiny"]
+-            try:
+-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False, **hidden_run_kwargs())
+-                if proc.returncode == 0:
+-                    txt_path = p.with_suffix(".txt")
+-                    text = txt_path.read_text(encoding="utf-8", errors="replace") if txt_path.exists() else proc.stdout
++        if not whisper_cmd:
++            return {
++                "success": False,
++                "audio_path": str(p),
++                "model": model,
++                "engine": "whisper_cli",
++                "reason": "cli_missing",
++                "degraded": True,
++                "error": "Whisper CLI is not installed or unavailable in PATH.",
++            }
++
++        from tempfile import TemporaryDirectory
++
++        from .process_utils import run_hidden
++
++        try:
++            with TemporaryDirectory(prefix="local-ai-hub-transcribe-") as output_dir:
++                cmd = [
++                    whisper_cmd,
++                    str(p),
++                    "--output_format",
++                    "json",
++                    "--model",
++                    model,
++                    "--output_dir",
++                    output_dir,
++                ]
++                if language:
++                    cmd.extend(["--language", language])
++                proc = run_hidden(cmd, capture_output=True, text=True, timeout=60, check=False)
++                if proc.returncode != 0:
+                     return {
+-                        "success": True,
+-                        "text": text.strip(),
++                        "success": False,
+                         "audio_path": str(p),
+                         "model": model,
+                         "engine": "whisper_cli",
++                        "reason": "process_failed",
++                        "error": f"Whisper CLI exited with status {proc.returncode}.",
+                     }
+-            except Exception:
+-                pass
+-
+-        return {
+-            "success": True,
+-            "text": f"[Audio transcription registered: {p.name}]",
+-            "audio_path": str(p),
+-            "file_size_bytes": p.stat().st_size,
+-            "format": p.suffix.lstrip("."),
+-            "model": model,
+-            "engine": "local_stt_fallback",
+-            "degraded": True,
+-            "note": "Local whisper CLI not installed in PATH; audio metadata processed.",
+-        }
++
++                output_path = Path(output_dir) / f"{p.stem}.json"
++                raw_output = (
++                    output_path.read_text(encoding="utf-8", errors="replace")
++                    if output_path.is_file()
++                    else str(proc.stdout or "")
++                )
++                try:
++                    result = json.loads(raw_output) if raw_output.strip() else {}
++                except (json.JSONDecodeError, TypeError):
++                    result = {}
++                text_value = result.get("text") if isinstance(result, dict) else None
++                transcript = text_value.strip() if isinstance(text_value, str) else ""
++
++                def is_audio_decode_skip(value: str) -> bool:
++                    return any(
++                        line.startswith("Skipping ") and " due to RuntimeError:" in line
++                        for line in value.splitlines()
++                    )
++
++                if is_audio_decode_skip(str(proc.stdout or "")) or is_audio_decode_skip(transcript):
++                    return {
++                        "success": False,
++                        "audio_path": str(p),
++                        "model": model,
++                        "engine": "whisper_cli",
++                        "reason": "invalid_audio",
++                        "error": "Whisper CLI could not decode the audio file.",
++                    }
++                if not transcript:
++                    return {
++                        "success": False,
++                        "audio_path": str(p),
++                        "model": model,
++                        "engine": "whisper_cli",
++                        "reason": "empty_transcript",
++                        "error": "Whisper CLI produced no transcript text.",
++                    }
++
++                return {
++                    "success": True,
++                    "text": transcript,
++                    "audio_path": str(p),
++                    "model": model,
++                    "engine": "whisper_cli",
++                }
++        except subprocess.TimeoutExpired:
++            return {
++                "success": False,
++                "audio_path": str(p),
++                "model": model,
++                "engine": "whisper_cli",
++                "reason": "timeout",
++                "error": "Whisper CLI timed out before transcription completed.",
++            }
++        except FileNotFoundError:
++            return {
++                "success": False,
++                "audio_path": str(p),
++                "model": model,
++                "engine": "whisper_cli",
++                "reason": "cli_missing",
++                "degraded": True,
++                "error": "Whisper CLI became unavailable before it could run.",
++            }
++        except Exception:
++            return {
++                "success": False,
++                "audio_path": str(p),
++                "model": model,
++                "engine": "whisper_cli",
++                "reason": "process_error",
++                "error": "Whisper CLI failed before producing a transcript.",
++            }
+ 
+     def benchmark(self, tenant: str = "benchmark") -> dict[str, Any]:
+         """Manual tiny benchmark used to seed the adaptive runtime cost model."""
+@@ -2556,7 +2716,16 @@
+     def repo_profile(self, root: str) -> dict[str, Any]:
+         return self._repo_cached("profile", root, {}, lambda: self.repo_tools.project_profile(root))
+ 
+-    def repo_search(self, root: str, query: str, top_k: int = 12, context_lines: int | None = None, enrich: bool = False) -> dict[str, Any]:
++    def repo_search(
++        self,
++        root: str,
++        query: str,
++        top_k: int = 12,
++        context_lines: int | None = None,
++        enrich: bool = False,
++        path_hints: list[Any] | tuple[Any, ...] | None = None,
++        scope: str = "repo_search",
++    ) -> dict[str, Any]:
+         if enrich and not rollout_feature_enabled(self.config, "enriched_search"):
+             return {
+                 "success": False,
+@@ -2568,6 +2737,81 @@
+         # canonical form for cache identity so equivalent agent queries reuse work.
+         query = normalize_query(query).casefold()
+         eff_ctx_lines = int(context_lines) if context_lines is not None else (8 if enrich else None)
++        from .project_config import (
++            PathHint,
++            ProjectConfigError,
++            path_is_allowed,
++            path_matches_pattern,
++            prioritize_paths_with_hints,
++            resolve_project_context,
++        )
++
++        try:
++            project_context = resolve_project_context(
++                root,
++                configured_state_dir(getattr(self, "config", {}), create=False),
++            )
++        except ProjectConfigError as exc:
++            return {
++                "success": False,
++                "root": root,
++                "error": f"project configuration is invalid: {exc}",
++                "terminal": True,
++                "retryable": False,
++            }
++        search_scope = scope if isinstance(scope, str) else "repository_search"
++        request_hints: list[PathHint] = []
++        allowed_hint_fields = {
++            "path", "purpose", "scope", "evidence_id", "provenance",
++            "repository_revision", "config_digest", "expires_at",
++        }
++        if isinstance(path_hints, (list, tuple)):
++            for item in path_hints[:64]:
++                if isinstance(item, PathHint):
++                    hint = item
++                elif isinstance(item, dict) and not (set(item) - allowed_hint_fields):
++                    try:
++                        hint = PathHint(**item)
++                    except TypeError:
++                        continue
++                else:
++                    continue
++                if (
++                    isinstance(hint.path, str)
++                    and isinstance(hint.purpose, str)
++                    and isinstance(hint.scope, str)
++                    and all(
++                        value is None or isinstance(value, str)
++                        for value in (
++                            hint.evidence_id, hint.provenance,
++                            hint.repository_revision, hint.config_digest,
++                            hint.expires_at,
++                        )
++                    )
++                ):
++                    request_hints.append(hint)
++        request_hint_digest = stable_hash([
++            {
++                "path": hint.path,
++                "purpose": hint.purpose,
++                "scope": hint.scope,
++                "evidence_id": hint.evidence_id,
++                "provenance": hint.provenance,
++                "repository_revision": hint.repository_revision,
++                "config_digest": hint.config_digest,
++                "expires_at": hint.expires_at,
++            }
++            for hint in request_hints
++        ])
++        try:
++            workspace_state = self._repo_cache_state(root) or {}
++        except Exception:
++            workspace_state = {}
++        repository_revision = (
++            str(workspace_state.get("fingerprint") or "")
++            if not workspace_state.get("stale") and not workspace_state.get("degraded")
++            else ""
++        )
+         if self.learner is not None:
+             try: self.learner.record(root, query)
+             except Exception: pass
+@@ -2592,24 +2836,123 @@
+             except Exception:
+                 pass
+         def compute() -> dict[str, Any]:
++            candidate_limit = max(
++                1, int(getattr(self.repo_tools, "max_hits", 80)) * 4
++            )
++            full_result = (
++                self.repo_tools.search(root, query, candidate_limit, context_lines=eff_ctx_lines)
++                if eff_ctx_lines is not None
++                else self.repo_tools.search(root, query, candidate_limit)
++            )
++            if not isinstance(full_result, dict) or not full_result.get("success", True):
++                result = dict(full_result) if isinstance(full_result, dict) else {
++                    "success": False, "error": "repository search failed"
++                }
++                result["preprocessed_hit"] = False
++                return result
++
++            targeted = {"results": []}
+             if paths:
+-                targeted = (
+-                    self.repo_tools.search_paths(root, query, paths, top_k, context_lines=eff_ctx_lines)
+-                    if eff_ctx_lines is not None
+-                    else self.repo_tools.search_paths(root, query, paths, top_k)
+-                )
+-            else:
+-                targeted = {"results": []}
+-            used_preprocessed = bool(paths and targeted.get("results"))
+-            result = targeted if targeted.get("results") else (
+-                self.repo_tools.search(root, query, top_k, context_lines=eff_ctx_lines)
+-                if eff_ctx_lines is not None
+-                else self.repo_tools.search(root, query, top_k)
++                try:
++                    targeted = (
++                        self.repo_tools.search_paths(
++                            root, query, paths, candidate_limit, context_lines=eff_ctx_lines
++                        )
++                        if eff_ctx_lines is not None
++                        else self.repo_tools.search_paths(root, query, paths, candidate_limit)
++                    )
++                except Exception:
++                    targeted = {"results": []}
++
++            combined: list[dict[str, Any]] = []
++            seen_hits: set[tuple[str, int]] = set()
++            for source in (full_result, targeted):
++                source_hits = source.get("results", []) if isinstance(source, dict) else []
++                if not isinstance(source_hits, list):
++                    continue
++                for item in source_hits:
++                    if not isinstance(item, dict) or not isinstance(item.get("path"), str):
++                        continue
++                    try:
++                        line_number = int(item.get("start_line", 0) or 0)
++                    except (TypeError, ValueError):
++                        line_number = 0
++                    key = (item["path"], line_number)
++                    if key not in seen_hits:
++                        combined.append(dict(item))
++                        seen_hits.add(key)
++
++            base = Path(root).expanduser().resolve(strict=True)
++            allowed_results: list[dict[str, Any]] = []
++            extension_is_searchable = getattr(
++                self.repo_tools, "_path_extension_is_searchable", None
+             )
+-            result["preprocessed_hit"] = used_preprocessed
++            for item in combined:
++                relative = str(item.get("path") or "").replace("\\", "/")
++                if not relative:
++                    continue
++                target = (base / relative).resolve(strict=False)
++                try:
++                    target.relative_to(base)
++                    size_bytes = target.stat().st_size
++                except (OSError, RuntimeError, ValueError):
++                    continue
++                if callable(extension_is_searchable) and not extension_is_searchable(target):
++                    continue
++                if not path_is_allowed(
++                    base,
++                    target,
++                    project_context.settings,
++                    phase="search",
++                    hard_denied=bool(item.get("hard_denied", False)),
++                    binary=bool(item.get("binary", False)),
++                    size_bytes=size_bytes,
++                ):
++                    continue
++                item["path"] = target.relative_to(base).as_posix()
++                allowed_results.append(item)
++
++            override_patterns = tuple(
++                pattern
++                for pattern, action in project_context.settings.path_overrides.items()
++                if action == "include"
++            )
++            override_order = sorted(
++                allowed_results,
++                key=lambda item: not any(
++                    path_matches_pattern(str(item["path"]), pattern)
++                    for pattern in override_patterns
++                ),
++            )
++            candidate_paths = [str(item["path"]) for item in override_order]
++            configured_usage = project_context.prioritize_paths(
++                candidate_paths,
++                purpose="repository_search",
++                scope=search_scope,
++                repository_revision=repository_revision,
++                path_hints=(),
++            )
++            request_usage = prioritize_paths_with_hints(
++                base,
++                configured_usage.paths,
++                request_hints,
++                purpose="repository_search",
++                scope=search_scope,
++                repository_revision=repository_revision,
++                config_digest=project_context.config_digest,
++            )
++            path_rank = {path: rank for rank, path in enumerate(request_usage.paths)}
++            allowed_results.sort(
++                key=lambda item: path_rank.get(str(item["path"]), len(path_rank))
++            )
++            result = dict(full_result)
++            result["results"] = allowed_results[:max(1, int(top_k))]
++            result["preprocessed_hit"] = bool(
++                paths
++                and any(str(item.get("path")) in set(paths) for item in allowed_results)
++            )
+             if enrich:
+                 result["enriched"] = True
+-                base = Path(root).expanduser().resolve()
+                 for hit in result.get("results", [])[:top_k]:
+                     rel = str(hit.get("path") or "")
+                     target = (base / rel).resolve()
+@@ -2634,7 +2977,20 @@
+                 except Exception:
+                     pass
+             return result
+-        return self._repo_cached("search", root, {"query": query, "top_k": top_k, "ci": paths[:24], "ctx": eff_ctx_lines}, compute)
++        return self._repo_cached(
++            "search",
++            root,
++            {
++                "query": query,
++                "top_k": top_k,
++                "ci": paths[:24],
++                "ctx": eff_ctx_lines,
++                "scope": search_scope,
++                "config_digest": project_context.config_digest,
++                "path_hints_digest": request_hint_digest,
++            },
++            compute,
++        )
+ 
+     def _refresh_changed_intelligence(self, root: str) -> None:
+         """Synchronize only Git-changed files before serving a cache-miss intelligence query.
+@@ -3030,12 +3386,261 @@
+             return res
+         return self._repo_cached(f"det:{operation}", root, params, wrapped_compute)
+ 
++    def _repository_test_impact_service(self):
++        from .repository_test_impact import RepositoryTestImpactService
++        return RepositoryTestImpactService(
++            self.deterministic,
++            self.deterministic_operation,
++        )
++
+     def test_matrix(self, root: str) -> dict[str, Any]:
+-        return self.deterministic_operation("test-matrix", root, {}, lambda: self.deterministic.test_matrix(root))
+-
+-    def affected_tests(self, root: str, changed_paths: list[str] | None = None, base: str = "HEAD") -> dict[str, Any]:
+-        params = {"changed_paths": sorted(changed_paths or []), "base": base}
+-        return self.deterministic_operation("affected-tests", root, params, lambda: self.deterministic.affected_tests(root, changed_paths, base))
++        return self._repository_test_impact_service().test_matrix(root)
++
++    def affected_tests(
++        self,
++        root: str,
++        changed_paths: list[str] | None = None,
++        base: str = "HEAD",
++        path_hints: list[Any] | tuple[Any, ...] | None = None,
++    ) -> dict[str, Any]:
++        from .project_config import (
++            PathHint,
++            path_is_allowed,
++            path_matches_pattern,
++            resolve_project_context,
++        )
++
++        context = resolve_project_context(root, configured_state_dir(self.config))
++        request_hints: list[PathHint] = []
++        if isinstance(path_hints, (list, tuple)):
++            for item in path_hints[:64]:
++                if isinstance(item, PathHint):
++                    request_hints.append(item)
++                elif isinstance(item, dict):
++                    allowed_fields = {
++                        "path",
++                        "purpose",
++                        "scope",
++                        "evidence_id",
++                        "provenance",
++                        "repository_revision",
++                        "config_digest",
++                        "expires_at",
++                    }
++                    if set(item) - allowed_fields:
++                        continue
++                    try:
++                        request_hints.append(
++                            PathHint(**{
++                                key: value
++                                for key, value in item.items()
++                                if key in allowed_fields
++                            })
++                        )
++                    except TypeError:
++                        continue
++        request_hints = [
++            hint
++            for hint in request_hints
++            if isinstance(hint.path, str)
++            and isinstance(hint.purpose, str)
++            and isinstance(hint.scope, str)
++            and all(
++                value is None or isinstance(value, str)
++                for value in (
++                    hint.evidence_id,
++                    hint.provenance,
++                    hint.repository_revision,
++                    hint.config_digest,
++                    hint.expires_at,
++                )
++            )
++        ]
++        hint_digest = stable_hash([asdict(hint) for hint in request_hints])
++        params = {
++            "changed_paths": sorted(changed_paths or []),
++            "base": base,
++            "project_config_digest": context.config_digest,
++            "path_hints_digest": hint_digest,
++        }
++        result = self._repository_test_impact_service().affected_tests(
++            root,
++            changed_paths,
++            base,
++            params,
++        )
++        if not isinstance(result, dict) or not result.get("success", True):
++            return result
++        workspace_state = result.get("workspace_cache", {})
++        repository_revision = (
++            str(workspace_state.get("fingerprint", ""))
++            if isinstance(workspace_state, dict)
++            and not workspace_state.get("stale")
++            and not workspace_state.get("degraded")
++            else ""
++        )
++
++        candidates = [
++            path for path in result.get("test_files", []) if isinstance(path, str)
++        ]
++        changed_for_mapping = changed_paths or result.get("changed_files", [])
++        changed_for_graph = sorted(
++            {
++                path.replace("\\", "/").lstrip("./")
++                for path in changed_for_mapping
++                if isinstance(path, str) and path
++            }
++        )
++        graph_complete = False
++        graph_tests: list[str] = []
++        graph_missing_candidates = 0
++        try:
++            impact = (
++                self.code_index.impact(root, changed_for_graph, max_dependents=100)
++                if self.code_index is not None and changed_for_graph
++                else None
++            )
++            if isinstance(impact, dict):
++                likely_dependents = impact.get("likely_dependents", [])
++                suggested_tests = impact.get("suggested_tests", [])
++                confidence = impact.get("confidence")
++                graph_complete = (
++                    impact.get("success") is True
++                    and isinstance(confidence, (int, float))
++                    and not isinstance(confidence, bool)
++                    and math.isfinite(float(confidence))
++                    and float(confidence) >= 0.94
++                    and impact.get("indexed_changed_files") == len(changed_for_graph)
++                    and impact.get("changed_files_count") == len(changed_for_graph)
++                    and isinstance(likely_dependents, list)
++                    and len(likely_dependents) < 100
++                    and isinstance(suggested_tests, list)
++                    and len(suggested_tests) < 20
++                )
++                if graph_complete:
++                    for item in suggested_tests:
++                        candidate = item.get("path") if isinstance(item, dict) else None
++                        if isinstance(candidate, str):
++                            graph_tests.append(candidate.replace("\\", "/"))
++                    for item in likely_dependents:
++                        candidate = item.get("path") if isinstance(item, dict) else None
++                        if (
++                            isinstance(candidate, str)
++                            and self.code_index._is_test_path(candidate)
++                        ):
++                            graph_tests.append(candidate.replace("\\", "/"))
++                    graph_tests = list(dict.fromkeys(graph_tests))
++                    graph_missing_candidates = len(set(graph_tests) - set(candidates))
++                    candidates.extend(
++                        path for path in graph_tests if path not in candidates
++                    )
++        except Exception:
++            graph_complete = False
++        selection_uncertain = not graph_complete
++        matrix: dict[str, Any] | None = None
++        complete_matrix_paths: list[str] = []
++        if selection_uncertain:
++            matrix = self.test_matrix(root)
++            for item in matrix.get("test_files", []):
++                candidate = item.get("path") if isinstance(item, dict) else item
++                if isinstance(candidate, str):
++                    complete_matrix_paths.append(candidate)
++            candidates.extend(complete_matrix_paths)
++            if not complete_matrix_paths:
++                candidates = []
++        target_patterns = tuple(
++            target_pattern
++            for source_pattern, targets in context.settings.affected_tests_mapping.items()
++            if any(
++                isinstance(changed_path, str)
++                and path_matches_pattern(changed_path, source_pattern)
++                for changed_path in changed_for_mapping
++            )
++            for target_pattern in targets
++        )
++        if target_patterns:
++            if matrix is None:
++                matrix = self.test_matrix(root)
++            for item in matrix.get("test_files", []):
++                candidate = item.get("path") if isinstance(item, dict) else item
++                if (
++                    isinstance(candidate, str)
++                    and any(
++                        path_matches_pattern(candidate, pattern)
++                        for pattern in target_patterns
++                    )
++                ):
++                    candidates.append(candidate)
++        candidates = list(dict.fromkeys(candidates))
++        usage = context.prioritize_paths(
++            candidates,
++            purpose="affected_tests",
++            scope="run_affected",
++            repository_revision=repository_revision,
++            path_hints=tuple(request_hints),
++        )
++        allowed_tests: list[str] = []
++        for candidate in usage.paths:
++            try:
++                file_size = (Path(root) / candidate).stat().st_size
++            except OSError:
++                file_size = None
++            if path_is_allowed(
++                root,
++                candidate,
++                context.settings,
++                phase="test",
++                size_bytes=file_size,
++            ):
++                allowed_tests.append(candidate)
++
++        result = dict(result)
++        result["test_files"] = allowed_tests
++        quote_argument = (
++            (lambda value: subprocess.list2cmdline([value]))
++            if os.name == "nt"
++            else shlex.quote
++        )
++        quoted_tests = [quote_argument(path) for path in allowed_tests]
++        framework = str(result.get("framework", "unknown"))
++        if not allowed_tests:
++            suggested_command = ""
++        elif framework == "pytest":
++            suggested_command = f"pytest {' '.join(quoted_tests)}"
++        elif framework == "dotnet":
++            filters = " | ".join(
++                f"FullyQualifiedName~{Path(path).stem}" for path in allowed_tests
++            )
++            suggested_command = f"dotnet test --filter {quote_argument(filters)}"
++        elif framework == "npm":
++            suggested_command = f"npm test -- {' '.join(quoted_tests)}"
++        elif framework == "cargo":
++            suggested_command = (
++                f"cargo test {' '.join(quote_argument(Path(path).stem) for path in allowed_tests)}"
++            )
++        elif framework == "go":
++            suggested_command = f"go test {' '.join(quoted_tests)}"
++        else:
++            suggested_command = f"pytest {' '.join(quoted_tests)}"
++        result["suggested_command"] = suggested_command
++        result["project_config_digest"] = context.config_digest
++        if graph_complete:
++            result["dependency_graph_complete"] = True
++            result["dependency_graph_test_count"] = len(graph_tests)
++            result["dependency_graph_missing_candidates"] = graph_missing_candidates
++        if selection_uncertain:
++            result["selection_uncertain"] = True
++            result["selection_fallback"] = (
++                "complete_test_matrix"
++                if complete_matrix_paths
++                else "unavailable_test_matrix"
++            )
++        result["path_hint_usage"] = {
++            "hint_used": usage.hint_used,
++            "fallback_used": usage.fallback_used,
++            "hint_helped": usage.hint_helped,
++        }
++        return result
+ 
+     def repo_topology(self, root: str) -> dict[str, Any]:
+         return self.deterministic_operation("repo-topology", root, {}, lambda: self.deterministic.repo_topology(root))
+@@ -3662,6 +4267,10 @@
+             "query": request.query,
+             "focus": request.focus,
+             "changed_paths": request.changed_paths,
++            "path_hints": request.path_hints,
++            "directory_hints": request.directory_hints,
++            "exclude_paths": request.exclude_paths,
++            "force_include_paths": request.force_include_paths,
+             "preload_profile": request.preload_profile,
+             "token_budget": request.token_budget,
+             "base": request.base,
+@@ -3681,6 +4290,10 @@
+                 request.token_budget,
+                 quality_first=mode == "adaptive",
+                 context_identity=context_cache_identity,
++                path_hints=request.path_hints if mode == "adaptive" else (),
++                directory_hints=request.directory_hints if mode == "adaptive" else (),
++                exclude_paths=request.exclude_paths if mode == "adaptive" else (),
++                force_include_paths=request.force_include_paths if mode == "adaptive" else (),
+             )
+         else:
+             base = self.fast_context(request.root, request.query, request.token_budget)
+@@ -3933,6 +4546,10 @@
+         *,
+         quality_first: bool = False,
+         context_identity: dict[str, Any] | None = None,
++        path_hints: tuple[dict[str, str], ...] = (),
++        directory_hints: tuple[str, ...] = (),
++        exclude_paths: tuple[str, ...] = (),
++        force_include_paths: tuple[str, ...] = (),
+     ) -> dict[str, Any]:
+         resolved_root = Path(root).expanduser().resolve(strict=False)
+         if not resolved_root.is_dir():
+@@ -3988,6 +4605,8 @@
+         compute = lambda: self._hybrid_context_uncached(
+             root, query, tenant, workspace, max_tokens, quality_first=quality_first,
+             rag_revision=str(rag_revision or ""), rag_revision_available=rag_revision_available,
++            path_hints=path_hints, directory_hints=directory_hints,
++            exclude_paths=exclude_paths, force_include_paths=force_include_paths,
+         )
+         if rag_enabled and not rag_revision_available:
+             result = compute()
+@@ -4006,6 +4625,10 @@
+                     "rag_revision": rag_revision,
+                     "quality_first": quality_first,
+                     "context_identity": context_identity or {},
++                    "path_hints": path_hints,
++                    "directory_hints": directory_hints,
++                    "exclude_paths": exclude_paths,
++                    "force_include_paths": force_include_paths,
+                 },
+                 compute,
+             )
+@@ -4150,6 +4773,10 @@
+         quality_first: bool = False,
+         rag_revision: str = "",
+         rag_revision_available: bool = True,
++        path_hints: tuple[dict[str, str], ...] = (),
++        directory_hints: tuple[str, ...] = (),
++        exclude_paths: tuple[str, ...] = (),
++        force_include_paths: tuple[str, ...] = (),
+     ) -> dict[str, Any]:
+         started_at = time.perf_counter()
+         if self.learner is not None:
+@@ -4243,21 +4870,70 @@
+             retrieval_warnings.extend(external_warnings)
+         else:
+             backend_states.update({"serena": "skipped", "rag": "skipped"})
++        hinted_paths = [str(item.get("path", "")) for item in path_hints if isinstance(item, dict) and item.get("path")]
++        if hinted_paths:
++            path_groups["project_hints"] = hinted_paths
++        if directory_hints:
++            path_groups["directory_hints"] = list(directory_hints)
++        if force_include_paths:
++            path_groups["force_include"] = list(force_include_paths)
++
++        def path_matches(path: str, patterns: tuple[str, ...]) -> bool:
++            normalized = path.replace("\\", "/").strip("/").casefold()
++            basename = normalized.rsplit("/", 1)[-1]
++            for pattern in patterns:
++                pattern = pattern.replace("\\", "/").strip("/").casefold()
++                if not pattern:
++                    continue
++                if any(char in pattern for char in "*?["):
++                    if fnmatch.fnmatchcase(normalized, pattern) or fnmatch.fnmatchcase(basename, pattern):
++                        return True
++                elif normalized == pattern or normalized.startswith(pattern + "/"):
++                    return True
++            return False
++
++        def excluded_path(path: str) -> bool:
++            return path_matches(path, exclude_paths)
++
++        if exclude_paths:
++            path_groups = {
++                backend: [path for path in paths if not excluded_path(path)]
++                for backend, paths in path_groups.items()
++            }
+         fused_candidates = fuse_ranked_paths(path_groups, limit=64, max_per_path=2)
+-        candidate_paths = [path for path, _score in fused_candidates]
++        candidate_paths = list(dict.fromkeys((*force_include_paths, *(path for path, _score in fused_candidates))))
++        candidate_paths = [path for path in candidate_paths if not excluded_path(path)]
+         try:
+             if candidate_paths:
+                 candidate_paths = list(dict.fromkeys(candidate_paths))
++                pack_kwargs: dict[str, Any] = {
++                    "max_tokens": lexical_tokens,
++                    "top_k": int(search_cfg.get("context_top_k", 14)),
++                }
++                if path_hints or directory_hints or exclude_paths or force_include_paths:
++                    hinted_directories = tuple(dict.fromkeys((
++                        *directory_hints,
++                        *hinted_paths,
++                    )))
++                    pack_kwargs.update({
++                        "directory_hints": hinted_directories,
++                        "exclude_paths": exclude_paths,
++                        "force_include_paths": force_include_paths,
++                    })
+                 lexical = self.repo_tools.context_pack_paths(
+-                    root, query, candidate_paths, max_tokens=lexical_tokens,
+-                    top_k=int(search_cfg.get("context_top_k", 14)),
++                    root, query, candidate_paths, **pack_kwargs,
+                 )
+                 # If targeted cards return no exact evidence, do one completeness scan.
+-                if isinstance(lexical, dict) and lexical.get("success") and not lexical.get("evidence"):
++                if isinstance(lexical, dict) and lexical.get("success") and not lexical.get("evidence") and not exclude_paths:
+                     lexical = self.repo_tools.context_pack(
+                         root, query, max_tokens=lexical_tokens,
+                         top_k=int(search_cfg.get("context_top_k", 14)),
+                     )
++            elif exclude_paths:
++                lexical = {
++                    "success": True, "root": str(root_path), "context": "", "evidence": [],
++                    "scanned_files": 0, "targeted": True,
++                }
+             else:
+                 lexical = self.repo_tools.context_pack(
+                     root, query, max_tokens=lexical_tokens,
+@@ -4366,6 +5042,9 @@
+                 for item in raw_results:
+                     if not isinstance(item, dict) or not str(item.get("path") or "").strip():
+                         malformed_results = True
++                        continue
++                    rag_path = str(item.get("path", "")).replace("\\", "/").strip("/")
++                    if excluded_path(rag_path):
+                         continue
+                     try:
+                         chunk_no = int(item.get("chunk_no", 0))
+@@ -5271,6 +5950,7 @@
+                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
+                 timeout=int(args.get("timeout", 0) or 0) or None, force=bool(args.get("force", False)),
+                 task_id=str(args.get("task_id", "")), criterion=str(args.get("criterion", "")),
++                record_verification=bool(args.get("record_verification", True)),
+                 auto_fix=bool(args.get("auto_fix", False)),
+                 fix_generator=self._synthesize_repair_patch if bool(args.get("auto_fix", False)) else None,
+                 log_callback=log_callback,
+@@ -5280,9 +5960,26 @@
+             )
+         if action == "run_affected":
+             root = str(args.get("cwd", args.get("root", ".")))
+-            aff = self.affected_tests(root, changed_paths=args.get("paths"))
++            aff = self.affected_tests(
++                root,
++                changed_paths=args.get("paths"),
++                path_hints=args.get("path_hints"),
++            )
+             cmd = aff.get("suggested_command", "")
+             if not cmd:
++                if aff.get("selection_uncertain"):
++                    fallback = aff.get("selection_fallback")
++                    error = (
++                        "affected test selection is uncertain and no complete test matrix is available"
++                        if fallback == "unavailable_test_matrix"
++                        else "affected test selection is uncertain and no allowed test command is available"
++                    )
++                    return {
++                        "success": False,
++                        "error": error,
++                        "selection_uncertain": True,
++                        "changed_files": aff.get("changed_files", []),
++                    }
+                 return {
+                     "success": True,
+                     "message": "No affected tests found for current changes",

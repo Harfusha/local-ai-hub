@@ -1,0 +1,42 @@
+# T09 acceptance receipts — 2026-10-06
+
+## Checkout and ownership
+
+- Task-owned checkout: `C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub`; Git HEAD `2b33602adef0d030fea66cdcc04ca742c60b2e32`; no T09 commit.
+- Targeted dirty status confirms inherited/shared changes in `agent_events.py`, `agent_tasks.py`, `agent_verification.py`, `http_server.py`, `work_orchestrator.py`, `tests/test_agent_tasks.py`, and `tests/test_agent_verification.py`; preserve these blobs and owner boundaries.
+- T09-owned untracked tests: `tests/test_agent_receipt_ordering_t09.py`, `tests/test_t09_http_task_completion_matrix.py`, `tests/test_t09_http_task_completion_persisted_receipts.py`. No T08/T21 source or canonical root edit in this turn.
+
+## Current candidate blob SHA-256
+
+| Path | SHA-256 | Ownership note |
+|---|---|---|
+| `src/local_ai_hub/agent_tasks.py` | `7699B4E83462863E43C563A548BE00CF34FAF53D98AA51877B0B0F4E46DDEFF0` | Shared; no edit this turn. |
+| `src/local_ai_hub/agent_verification.py` | `24A677767D0E205FB8159604256C6EC35195E362244F14815DBE911643073765` | Shared; no edit this turn. |
+| `src/local_ai_hub/http_server.py` | `4D761DE8A916D6FA571C53C48C71DB63D4DFDCA8855B1ACF0788438CB1E41159` | Shared file; T09 guard hunk only. |
+| `tests/test_agent_tasks.py` | `A0473FAE4DBE994E460E237B73B2F520F3610AEDEE153982F6F6F8E6073AFD4A` | Shared; T09 failed-newer-receipt hunk, do not transfer whole file. |
+| `tests/test_agent_verification.py` | `C41BD82D9239F604C3CE7AC3CED2CCACC0A65C890313D07DB86F5F2412471EB3` | Shared; no edit this turn. |
+| `tests/test_t09_http_task_completion_persisted_receipts.py` | `73BB4D91229ADC85F162892241C9F2EF6B9E0F6DC5627412C82B6FBA791108F2` | T09-owned test file. |
+| `tests/test_t09_http_task_completion_matrix.py` | `FEA99D9D399F38829B33B2C6DAEC7C606158900981985502AF0F1DD85B7B295F` | T09-owned test file. |
+| `tests/test_agent_receipt_ordering_t09.py` | `971D9FF9CA9F640E2A96DF59593FEE69D1B4D01D3D92259EE3FDDE72D7E31F59` | T09-owned add-only tests; patch `handoff/t09-ordering-tests-add-v2.patch`, SHA-256 `3A911755F2D5E1EE9F9C60642E45C963EFEA8C7165A883445EBB75A64B344354`. |
+
+## Targeted evidence
+
+- **Receipt evaluator + task completion + retrieval-index backfill, combined attempt:** `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_verification.py::test_valid_receipt_allows_task_completion tests/test_t09_http_task_completion_persisted_receipts.py::test_http_task_complete_uses_persisted_tenant_scoped_receipts tests/test_agent_tasks.py::test_task_keyword_index_backfills_existing_projection_on_startup`. Captured output stopped at `..`; final exit/result is **UNKNOWN**, not counted. The retrieval selector was run separately for a definitive receipt: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_tasks.py::test_task_keyword_index_backfills_existing_projection_on_startup` → exit `0`, `1 passed in 0.20s`. Receipt evaluator and task-completion coverage have separate prior receipts below.
+- **Receipt persistence/recreation:** `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_receipt_ordering_t09.py::test_newer_failed_receipt_stays_authoritative_after_verifier_recreation` → exit `0`, `1 passed in 2.66s`.
+- **Task completion matrix and persisted HTTP path, prior exact candidate receipt:** `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t09_http_task_completion_persisted_receipts.py tests/test_t09_http_task_completion_matrix.py::test_task_completion_http_receipt_and_memory_matrix` → exit `0`, `12 passed in 27.32s`; recorded in `handoff/t09-release-cutline-20261005.md`. Current file hashes above match.
+- **Receipt-gate combined matrix, prior exact candidate receipt:** exit `0`, `29 passed in 43.23s`; exact selectors in `handoff/t09-owner-packet-task-completion-20261005.md`. Existing input blobs match the current table above.
+- **Root working-tree HTTP matrix:** exit `0`, `11 passed in 24.84s` at canonical root HEAD `744727887bb1027b1bc464534a1ab0280ddbc9fe`; pre-test status showed dirty root `http_server.py`. This is not a clean-HEAD-only receipt; details in `handoff/t09-ordering-test-transfer-20261006.md`.
+
+## Revalidated canonical master — 2026-10-06
+
+- Registered T09 owner worktree remains HEAD `2b33602adef0d030fea66cdcc04ca742c60b2e32`; relevant inherited/shared dirty paths are listed above. No T08/T21 source or root path edited here.
+- Canonical root HEAD: `744727887bb1027b1bc464534a1ab0280ddbc9fe`. Root working status for `agent_events.py`, `agent_tasks.py`, `agent_verification.py`, and the target test path was clean. Root module SHA-256: `agent_events.py` `B8C509034C24882FDD49537908F6FCE1C8C0432221A1E87DC663684D0E71431B`; `agent_tasks.py` `87682061C2836826DFB378B5259B92ACC3325ACC21691D3DE33C3A020F788DC6`; `agent_verification.py` `9BF94E78FEEC9C7FED61DE70B7E89FD556545E44B61BD19A57084C8FC4459DF0`.
+- Master preimage for `tests/test_agent_receipt_ordering_t09.py`: `ABSENT`. Add-only postimage SHA-256 `971D9FF9CA9F640E2A96DF59593FEE69D1B4D01D3D92259EE3FDDE72D7E31F59`; patch SHA-256 `3A911755F2D5E1EE9F9C60642E45C963EFEA8C7165A883445EBB75A64B344354`.
+- Root `git apply --check C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub\handoff\t09-ordering-tests-add-v2.patch`: exit `0`; patch not applied.
+- Canonical-root targeted test command (root cwd, tests remain in owner worktree): `python -B -m pytest -q -p no:cacheprovider --tb=short C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub\tests\test_agent_receipt_ordering_t09.py::test_newer_failed_receipt_stays_authoritative_after_verifier_recreation C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub\tests\test_agent_tasks.py::test_task_keyword_index_backfills_existing_projection_on_startup` → exit `0`, `.. [100%]`, `2 passed in 0.50s`.
+- Supporting handoff artifacts, each absent at base HEAD `2b33602`: `handoff/t09-ordering-tests-add-v2.patch` post SHA `3A911755F2D5E1EE9F9C60642E45C963EFEA8C7165A883445EBB75A64B344354`; `handoff/t09-ordering-test-transfer-20261006.md` post SHA `7ED6997D9B61560A15D1755C86B75FC1C5F50FCE7255722E5F8FA4BF7F721D81`.
+
+## Blockers
+
+- A second `AgentStateStore` reopen is rejected by the inherited schema classifier: `unsupported agent_state schema object: index idx_agent_task_search_grams_gram`. No shared schema change attempted; current T09 test recreates only `VerificationStore`.
+- T06 command producer receipt remains unavailable; Agent OS lease receipt remains `UNKNOWN`; shared `http_server.py` and `tests/test_agent_tasks.py` hunks need owner/T08 reconciliation. T09 release remains `OPEN / NO-GO`.

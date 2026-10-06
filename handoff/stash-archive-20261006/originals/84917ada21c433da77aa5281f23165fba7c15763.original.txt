@@ -1,0 +1,41 @@
+from __future__ import annotations
+
+from pathlib import Path
+import subprocess
+
+
+root = Path(r"C:\Users\Adam\.local-ai-hub")
+candidate = Path(__file__).resolve().parents[1]
+patch_path = candidate / "handoff" / "t09-route-acceptance-root-current.patch"
+files = (
+    "tests/test_t09_http_task_completion_matrix.py",
+    "tests/test_t09_http_task_completion_persisted_receipts.py",
+    "tests/test_project_completion_root.py",
+)
+patches: list[str] = []
+for relative in files:
+    target = candidate / relative
+    base = root / relative
+    original = str(base) if base.is_file() else "/dev/null"
+    result = subprocess.run(
+        ["git", "diff", "--no-index", "--", original, str(target)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode not in {0, 1}:
+        raise SystemExit(result.stderr or f"could not diff {relative}")
+    lines = result.stdout.splitlines()
+    if len(lines) < 4:
+        raise SystemExit(f"empty root-current diff for {relative}")
+    lines[0] = f"diff --git a/{relative} b/{relative}"
+    if original == "/dev/null":
+        lines[3] = "--- /dev/null"
+        lines[4] = f"+++ b/{relative}"
+    else:
+        lines[2] = f"--- a/{relative}"
+        lines[3] = f"+++ b/{relative}"
+    patches.append("\n".join(lines))
+
+patch_path.write_text("\n".join(patches) + "\n", encoding="utf-8", newline="")
+print(patch_path)

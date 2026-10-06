@@ -1,0 +1,46 @@
+diff --git a/tools/surface_inventory.py b/tools/surface_inventory.py
+--- a/tools/surface_inventory.py
++++ b/tools/surface_inventory.py
+@@ -446,7 +446,15 @@
+         # generate_mcp_tool_schemas returns an in-memory mapping. Never call
+         # write_all_generated here; that separate generator persists artifacts.
+         config_path = root / "config.toml"
+-        cfg = load_config(str(config_path)) if config_path.is_file() else load_config()
++        if config_path.is_file():
++            cfg = load_config(str(config_path))
++        else:
++            # Inventory generation must not inherit a developer's home config
++            # or LOCAL_AI_CONFIG when this checkout has no project config.
++            defaults_path = root / "defaults.toml"
++            if not defaults_path.is_file():
++                raise FileNotFoundError("project config.toml or defaults.toml is required")
++            cfg = load_config(str(defaults_path))
+         generated = generate_mcp_tool_schemas(cfg)
+         schemas = {name: json.loads(json.dumps(schema)) for name, schema in generated.items()}
+         evidence = {name: "src/local_ai_hub/generator.py:generate_mcp_tool_schemas" for name in schemas}
+diff --git a/tests/test_surface_inventory.py b/tests/test_surface_inventory.py
+--- a/tests/test_surface_inventory.py
++++ b/tests/test_surface_inventory.py
+@@ -505,6 +505,22 @@
+     inventory = MODULE.collect_inventory(tmp_path)
+ 
+     assert any("generated MCP schema local_ai_rogue" in item for item in inventory["drift"])
++
++
++def test_schema_fallback_uses_project_defaults_not_ambient_config(tmp_path, monkeypatch):
++    write(tmp_path, "defaults.toml", (ROOT / "defaults.toml").read_text(encoding="utf-8"))
++    ambient_config = tmp_path / "ambient.toml"
++    ambient_config.write_text(
++        "[features]\nstatus = false\ntasks = false\nwork_orchestrator = false\n",
++        encoding="utf-8",
++    )
++    monkeypatch.setenv("LOCAL_AI_CONFIG", str(ambient_config))
++
++    schemas, evidence, errors = MODULE._generated_mcp_schemas(tmp_path)
++
++    assert errors == []
++    assert "local_ai_status" in schemas
++    assert set(evidence) == set(schemas)
+ 
+ 
+ def test_check_mode_reports_stale_coverage_without_repairing(tmp_path, capsys):

@@ -1,0 +1,37 @@
+# T09 receipt/idempotence candidate receipt — 2026-10-05
+
+## Owned checkout
+
+- Registered worktree: `C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub`
+- HEAD: `2b33602adef0d030fea66cdcc04ca742c60b2e32`
+- No root merge, edit, or test in this receipt.
+
+## Hub command result
+
+- Tool: `local_ai_command(action="run")`
+- CWD: `C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub`
+- Command: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t09_http_task_completion_persisted_receipts.py`
+- Execution ID: `091798e0b5e3486a8573ec40c78fce0d`
+- Request ID: `req_d5dea79b907a`
+- Hub repository revision: `f821e465978b54cfbb429e0666394c6afd442141803ec3af9073c65f46bcea48`
+- Result: `success=true`, `exit_code=0`, stdout `. [100%]` and `1 passed in 4.87s`.
+- Test covers rejected invalid API token with unchanged task state, authenticated MCP-to-HTTP completion from persisted receipt, and repeated completion.
+
+## Immutable packet pins
+
+- Patch: `handoff/t09-mcp-persisted-receipt-root-current-v2.patch`
+- Patch SHA-256: `FD3734B3852D6CCCF1F35007960D08522E1FCA42844CE5EC24E3F61CA99AB960`
+- Manifest: `handoff/t09-mcp-persisted-receipt-root-current-v2.md`
+- Manifest SHA-256: `B33F5FCFE3451742B217253415E5B6EB46871E98F0A353FC76DC11335785D626`
+- Root-current base HEAD pinned from earlier `git apply --check`: `7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf`; no root recheck in this turn.
+- Patch path: `tests/test_t09_http_task_completion_persisted_receipts.py`
+- Root preimage SHA-256: `454C23D473D95102F130C09C5FCD4CBBCEE5F99F45D80DED21FF15C5360182AD`
+- Simulated postimage SHA-256: `7637B4985248AFEA738E4A526D605528C997F851B3167EB289DBA2A96A5BB9C4`
+- Candidate file SHA-256: `BA3E2796BC75A9F0425038ED1FB9733AAFFCC1699015F10CB428AF222EE4B06D`
+
+## Acceptance boundary
+
+- T09 candidate receipt/idempotence test has fresh Hub validation.
+- T06 `CommandBroker.run_project_command` is absent from this candidate, so broker-produced receipt integration remains blocked.
+- Agent OS task ID/lease was not found in registered candidate artifacts; lease status remains `UNKNOWN`.
+- Root integration remains deferred; shared-root fingerprint dispute is unresolved.

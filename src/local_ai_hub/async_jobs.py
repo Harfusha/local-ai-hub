@@ -14,9 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from .cache import stable_hash
-from .debug_traces import DebugTraceObserver
 from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
-from .trace_context import reset_observer, set_observer
 from .process_utils import terminate_tree
 
 
@@ -766,7 +764,10 @@ class AsyncJobManager:
         if self.debug_traces is not None:
             try:
                 trace_id = self.debug_traces.start(kind="async_job", tenant=tenant, action=action, source="async-job")
-                self.debug_traces.update(trace_id, request=clean)
+                self.debug_traces.update(
+                    trace_id,
+                    request={"capture_status": "metadata_only", "field_count": len(clean)},
+                )
                 self.debug_traces.link(trace_id, async_job_id=job_id)
                 with self._lock, closing(self._connect()) as con:
                     con.execute("UPDATE async_jobs SET trace_id=? WHERE job_id=?", (trace_id, job_id)); con.commit()
@@ -878,9 +879,9 @@ class AsyncJobManager:
                         self._stats["cancelled"] += 1
         if not already_terminal and self.debug_traces is not None and trace_id:
             try:
-                self.debug_traces.event(trace_id, "retry" if state == "queued" else state, {"error": detail, "attempts": attempts})
+                self.debug_traces.event(trace_id, "retry" if state == "queued" else state, {"attempts": attempts})
                 if state in {"cancelled", "outcome_unknown"}:
-                    self.debug_traces.finish(trace_id, state=state, error=detail)
+                    self.debug_traces.finish(trace_id, state=state, error="async job did not complete")
             except Exception:
                 pass
         # A running job is only cancellation-requested, not terminal yet. Wake
@@ -927,8 +928,6 @@ class AsyncJobManager:
                 self.debug_traces.event(trace_id, "running", {"action": action})
             except Exception:
                 pass
-        observer = DebugTraceObserver(self.debug_traces, trace_id) if self.debug_traces is not None and trace_id else None
-        observer_token = set_observer(observer)
         try:
             result = self._invoke_executor_if_allowed(job_id, action, payload, tenant)
             if not isinstance(result, dict):
@@ -940,7 +939,6 @@ class AsyncJobManager:
         except Exception as exc:
             result = {"success": False, "error": str(exc), "retryable": True}
         finally:
-            reset_observer(observer_token)
             self._cleanup_processes(job_id)
         deferred_for_resource_release = False
         if result.get("success") and str(result.get("state", "")) in {"queued", "running"}:
@@ -1040,7 +1038,12 @@ class AsyncJobManager:
             con.commit()
         if self.debug_traces is not None and trace_id:
             try:
-                self.debug_traces.finish(trace_id, state=str(final.get("state") or ("done" if final.get("success") else "failed")), response=final if final.get("success") else None, error=str(final.get("error", "")))
+                self.debug_traces.finish(
+                    trace_id,
+                    state=str(final.get("state") or ("done" if final.get("success") else "failed")),
+                    response={"success": bool(final.get("success")), "field_count": len(final)},
+                    error="" if final.get("success") else "async job failed",
+                )
             except Exception:
                 pass
         self._event(job_id).set()

@@ -1,0 +1,112 @@
+diff --git a/src/local_ai_hub/verification_rules.py b/src/local_ai_hub/verification_rules.py
+index 2fd09b0..bbcc462 100644
+--- a/src/local_ai_hub/verification_rules.py
++++ b/src/local_ai_hub/verification_rules.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ from collections.abc import Mapping
++import os
+ from pathlib import Path
+ from typing import Protocol
+ 
+@@ -21,6 +22,8 @@ class CompletionReceiptStore(Protocol):
+         current_mutation_generation: int | None = None,
+         verification_rules: Mapping[str, bool | tuple[str, ...]] | None = None,
+         configured_criteria: tuple[str, ...] | None = None,
++        configured_commands: Mapping[str, object] | None = None,
++        project_config_digest: str = "",
+     ) -> CompletionResult: ...
+ 
+ 
+@@ -30,6 +33,7 @@ def evaluate_project_completion(
+     *,
+     task_id: str,
+     repository_revision: str,
++    project_config_digest: str = "",
+     now: float | None = None,
+ ) -> CompletionResult:
+     """Delegate project-aware completion to T09's persisted receipt gate."""
+@@ -59,9 +63,38 @@ def evaluate_project_completion(
+         current_mutation_generation=generation,
+         verification_rules=settings.verification_rules,
+         configured_criteria=tuple(settings.commands),
++        configured_commands=settings.commands,
++        project_config_digest=project_config_digest,
+     )
+ 
+ 
++def _task_project_root(task: TaskState) -> Path | None:
++    state_data = task.checkpoint.state_data
++    worktree = state_data.get("worktree")
++    if isinstance(worktree, Mapping):
++        worktree_path = worktree.get("worktree_path")
++        if isinstance(worktree_path, (str, Path)) and str(worktree_path).strip():
++            return Path(worktree_path).expanduser().resolve(strict=False)
++        worktree_root = worktree.get("repo_root")
++        if isinstance(worktree_root, (str, Path)) and str(worktree_root).strip():
++            return Path(worktree_root).expanduser().resolve(strict=False)
++
++    stored_root = state_data.get("repo_root")
++    if isinstance(stored_root, (str, Path)) and str(stored_root).strip():
++        return Path(stored_root).expanduser().resolve(strict=False)
++
++    context_root = task.context.repository_id
++    if isinstance(context_root, (str, Path)) and str(context_root).strip():
++        candidate = Path(context_root).expanduser().resolve(strict=False)
++        if candidate.is_dir():
++            return candidate
++    return None
++
++
++def _canonical_project_root(root: str | Path) -> str:
++    return os.path.normcase(str(Path(root).expanduser().resolve(strict=False)))
++
++
+ def complete_task_with_project_rules(
+     task_store: TaskStore,
+     verification_store: CompletionReceiptStore,
+@@ -82,24 +115,37 @@ def complete_task_with_project_rules(
+     revision = str(current_revision or "").strip()
+     if not revision:
+         raise CompletionGateError("trusted repository_revision is unavailable")
+-    try:
+-        project = resolve_project_context(root, state_dir)
+-    except (ProjectConfigError, OSError, RuntimeError, ValueError) as exc:
+-        raise CompletionGateError("project configuration could not be resolved") from exc
+-    if project.resolution.error_codes:
+-        raise CompletionGateError("project configuration is invalid")
+     receipt_task_store = getattr(verification_store, "task_store", None)
+     if receipt_task_store is None or receipt_task_store is not task_store:
+         raise CompletionGateError("verification task store is unavailable or mismatched")
+     before = task_store.get(task_key)
+     if before is None or not str(before.owner or "").strip():
+         raise CompletionGateError("task owner is unavailable")
++    task_root = _task_project_root(before)
++    if task_root is None:
++        raise CompletionGateError("task project root is unavailable")
++    try:
++        project = resolve_project_context(task_root, state_dir)
++        requested_root = str(root or "").strip()
++        if requested_root:
++            requested_project = resolve_project_context(requested_root, state_dir)
++            if _canonical_project_root(requested_project.root) != _canonical_project_root(
++                project.root
++            ):
++                raise CompletionGateError("requested project root does not match task project root")
++    except CompletionGateError:
++        raise
++    except (ProjectConfigError, OSError, RuntimeError, ValueError) as exc:
++        raise CompletionGateError("project configuration could not be resolved") from exc
++    if project.resolution.error_codes:
++        raise CompletionGateError("project configuration is invalid")
+     before_generation = before.checkpoint.state_data.get("mutation_generation", 0)
+     result = evaluate_project_completion(
+         verification_store,
+         project.settings,
+         task_id=task_key,
+         repository_revision=revision,
++        project_config_digest=project.config_digest,
+         now=now,
+     )
+     if not result.complete:

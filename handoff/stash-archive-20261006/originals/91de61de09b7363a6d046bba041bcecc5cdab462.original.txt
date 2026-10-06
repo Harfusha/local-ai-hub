@@ -1,0 +1,26 @@
+# T09 MCP task completion over persisted receipts — root-current packet
+
+- Candidate checkout: `C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub`
+- Candidate HEAD: `2b33602adef0d030fea66cdcc04ca742c60b2e32`
+- Candidate test: `tests/test_t09_http_task_completion_persisted_receipts.py`
+- Candidate SHA-256 after edit: `BA3E2796BC75A9F0425038ED1FB9733AAFFCC1699015F10CB428AF222EE4B06D`
+- Test sends invalid token through `HubClient`/`local_ai_coord(task_complete)`, expects HTTP 401 and unchanged task state; sends valid token, completes through MCP → real local HTTP handler using persisted receipt, repeats completion, verifies completed status. Configured tenant and agent headers are present. Persisted receipt gate, task owner, repo root, revision, and receipt identity assertions remain.
+- Original direct HTTP test command: exit 0, `1 passed in 4.11s`.
+- MCP plus replay command: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t09_http_task_completion_persisted_receipts.py -k persisted_tenant_scoped`; exit 0, `1 passed in 4.76s`.
+- Final invalid-token + MCP + replay command: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t09_http_task_completion_persisted_receipts.py`; exit 0, `1 passed in 5.30s`.
+
+## Root-current patch
+
+- Patch: `handoff/t09-mcp-persisted-receipt-root-current.patch`
+- Patch SHA-256: `FD3734B3852D6CCCF1F35007960D08522E1FCA42844CE5EC24E3F61CA99AB960`
+- Adds no new path; updates only root's existing untracked T09 test file.
+- Root checkout: `C:\Users\Adam\.local-ai-hub`, HEAD `7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf`.
+- Exact root preimage SHA-256: `454C23D473D95102F130C09C5FCD4CBBCEE5F99F45D80DED21FF15C5360182AD`.
+- Simulated patched root postimage SHA-256: `7637B4985248AFEA738E4A526D605528C997F851B3167EB289DBA2A96A5BB9C4`.
+- `git apply --check`: PASS. Root preimage hash remained unchanged after check; no root write or test.
+
+## Limits
+
+- This proves MCP wrapper → authenticated HubClient → local HTTP task-completion route with an already-persisted valid receipt, invalid-token rejection without task mutation, and duplicate completion.
+- It does not exercise broker-produced receipt, foreign-agent rejection, or root runtime. T06 broker selector remains blocked in this candidate because `CommandBroker.run_project_command` is absent.
+- T09 full acceptance stays open; task lease is UNKNOWN due missing lease receipt.

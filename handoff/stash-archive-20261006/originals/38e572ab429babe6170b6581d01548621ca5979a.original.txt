@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+from pathlib import Path
+import subprocess
+
+
+root = Path(r"C:\Users\Adam\.local-ai-hub")
+candidate = Path(__file__).resolve().parents[1]
+source = root / "src" / "local_ai_hub" / "agent_verification.py"
+target = candidate / "handoff" / "root_patch_work" / "agent_verification.py"
+patch_path = candidate / "handoff" / "t09-command-provenance-root-current.patch"
+text = source.read_text(encoding="utf-8")
+
+
+def replace_once(old: str, new: str) -> None:
+    global text
+    if text.count(old) != 1:
+        raise SystemExit(f"expected one root source seam, found {text.count(old)}")
+    text = text.replace(old, new, 1)
+
+
+replace_once("import json\nimport re\n", "import hashlib\nimport json\nimport re\nimport shlex\nfrom pathlib import Path\n")
+replace_once(
+    r'''def classify_verification_command(command: str) -> str:
+    """Return evidence kind command can support, defaulting conservatively."""
+    text = str(command or "").lower()
+    if re.search(r"\b(benchmark|bench|hyperfine|pytest-benchmark)\b", text):
+        return "benchmark"
+    if re.search(
+        r"\b(pytest|py\.test|unittest|dotnet\s+test|npm\s+(?:run\s+)?test|"
+        r"pnpm\s+(?:run\s+)?test|yarn\s+(?:run\s+)?test|cargo\s+test|go\s+test|"
+        r"ctest|tox|nox|jest|vitest|mocha|phpunit|pester)\b",
+        text,
+    ) or re.search(r"\bpython(?:\d+(?:\.\d+)?)?\s+-m\s+(?:pytest|unittest)\b", text):
+        return "test"
+    return "source_review"
+''',
+    r'''def classify_verification_command(command: str) -> str:
+    """Return the evidence kind a command can support, defaulting conservatively."""
+    text = str(command or "").lower()
+    try:
+        tokens = shlex.split(text, posix=False)
+    except ValueError:
+        tokens = text.split()
+    command_tokens = [Path(token.strip("\"'")).stem.lower() for token in tokens]
+    if any(token in {"benchmark", "bench", "hyperfine", "pytest-benchmark"} for token in command_tokens):
+        return "benchmark"
+    test_tools = {
+        "pytest", "py.test", "unittest", "ctest", "tox", "nox", "jest",
+        "vitest", "mocha", "phpunit", "pester",
+    }
+    if any(token in test_tools for token in command_tokens):
+        return "test"
+    for index, token in enumerate(command_tokens[:-1]):
+        if token in {"dotnet", "cargo", "go"} and command_tokens[index + 1] == "test":
+            return "test"
+        if token in {"npm", "pnpm", "yarn"}:
+            following = command_tokens[index + 1 : index + 3]
+            if following[:1] == ["test"] or following == ["run", "test"]:
+                return "test"
+    if any(
+        command_tokens[index : index + 2] == ["-m", module]
+        for index in range(len(command_tokens) - 1)
+        for module in ("pytest", "unittest")
+    ):
+        return "test"
+    return "source_review"
+''',
+)
+replace_once(
+    "    configured_criteria: tuple[str, ...] | list[str] | None = None,\n"
+    "    now: float | None = None,\n",
+    "    configured_criteria: tuple[str, ...] | list[str] | None = None,\n"
+    "    configured_commands: Mapping[str, Any] | None = None,\n"
+    "    project_config_digest: str = \"\",\n"
+    "    now: float | None = None,\n",
+)
+replace_once(
+    "            expected_owner=expected_owner,\n"
+    "            require_repository_revision=require_repository_revision,\n"
+    "        ):\n",
+    "            expected_owner=expected_owner,\n"
+    "            require_repository_revision=require_repository_revision,\n"
+    "            expected_project_command=(configured_commands or {}).get(criterion),\n"
+    "            expected_project_config_digest=project_config_digest,\n"
+    "        ):\n",
+)
+replace_once(
+    "    expected_owner: str,\n    require_repository_revision: bool,\n) -> bool:\n",
+    "    expected_owner: str,\n    require_repository_revision: bool,\n"
+    "    expected_project_command: Any | None = None,\n"
+    "    expected_project_config_digest: str = \"\",\n) -> bool:\n",
+)
+replace_once(
+    "    if expected_kind == \"command_verification\":\n"
+    "        result = proof.get(\"result\")\n",
+    "    if expected_kind == \"command_verification\":\n"
+    "        command_classification = proof.get(\"command_classification\")\n"
+    "        if command_classification is not None and command_classification != receipt.evidence_type:\n"
+    "            return False\n"
+    "        if expected_project_config_digest:\n"
+    "            command_digest = proof.get(\"command_sha256\")\n"
+    "            if (\n"
+    "                command_classification != receipt.evidence_type\n"
+    "                or proof.get(\"project_alias\") != receipt.criterion\n"
+    "                or proof.get(\"project_config_digest\") != expected_project_config_digest\n"
+    "                or not isinstance(command_digest, str)\n"
+    "                or re.fullmatch(r\"[0-9a-f]{64}\", command_digest) is None\n"
+    "            ):\n"
+    "                return False\n"
+    "            if isinstance(expected_project_command, str):\n"
+    "                expected_command_digest = hashlib.sha256(\n"
+    "                    expected_project_command.encode(\"utf-8\")\n"
+    "                ).hexdigest()\n"
+    "                if command_digest != expected_command_digest:\n"
+    "                    return False\n"
+    "        result = proof.get(\"result\")\n",
+)
+replace_once(
+    "        configured_criteria: tuple[str, ...] | list[str] | None = None,\n"
+    "        warnings: Any = (),\n",
+    "        configured_criteria: tuple[str, ...] | list[str] | None = None,\n"
+    "        configured_commands: Mapping[str, Any] | None = None,\n"
+    "        project_config_digest: str = \"\",\n"
+    "        warnings: Any = (),\n",
+)
+replace_once(
+    "            verification_rules=verification_rules,\n"
+    "            configured_criteria=configured_criteria,\n"
+    "            now=current_time,\n",
+    "            verification_rules=verification_rules,\n"
+    "            configured_criteria=configured_criteria,\n"
+    "            configured_commands=configured_commands,\n"
+    "            project_config_digest=project_config_digest,\n"
+    "            now=current_time,\n",
+)
+
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_text(text, encoding="utf-8", newline="")
+result = subprocess.run(
+    ["git", "diff", "--no-index", "--", str(source), str(target)],
+    capture_output=True,
+    check=False,
+    text=True,
+)
+if result.returncode not in {0, 1}:
+    raise SystemExit(result.stderr or "could not build root-current verifier patch")
+lines = result.stdout.splitlines()
+if len(lines) < 4:
+    raise SystemExit("root-current verifier patch is empty")
+lines[0] = (
+    "diff --git a/src/local_ai_hub/agent_verification.py "
+    "b/src/local_ai_hub/agent_verification.py"
+)
+lines[2] = "--- a/src/local_ai_hub/agent_verification.py"
+lines[3] = "+++ b/src/local_ai_hub/agent_verification.py"
+patch_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
+print(patch_path)

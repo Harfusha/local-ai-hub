@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+import importlib.util
+from functools import wraps
+from pathlib import Path
+import sys
+
+
+ROOT_SOURCE = Path(r"C:\Users\Adam\.local-ai-hub\src")
+CANDIDATE_ROOT = Path(__file__).resolve().parents[1]
+CANDIDATE_ADAPTER = (
+    CANDIDATE_ROOT / "src" / "local_ai_hub" / "verification_rules.py"
+)
+T21_REGRESSION = Path(
+    r"C:\Users\Adam\.codex\worktrees\t21-project-config\.local-ai-hub"
+    r"\tests\test_t21_completion_root_binding.py"
+)
+
+if not ROOT_SOURCE.is_dir() or not CANDIDATE_ADAPTER.is_file() or not T21_REGRESSION.is_file():
+    raise SystemExit("root-binding overlay inputs are unavailable")
+
+sys.path.insert(0, str(ROOT_SOURCE))
+import local_ai_hub
+
+module_name = "local_ai_hub.verification_rules"
+spec = importlib.util.spec_from_file_location(module_name, CANDIDATE_ADAPTER)
+if spec is None or spec.loader is None:
+    raise SystemExit("candidate verification adapter could not be loaded")
+candidate_adapter = importlib.util.module_from_spec(spec)
+sys.modules[module_name] = candidate_adapter
+spec.loader.exec_module(candidate_adapter)
+
+from local_ai_hub import agent_tasks, agent_verification, project_config
+from local_ai_hub.agent_verification import VerificationStore
+
+_root_completion = VerificationStore.completion
+
+
+@wraps(_root_completion)
+def _binding_only_completion(self, *args, **kwargs):
+    kwargs.pop("configured_commands", None)
+    kwargs.pop("project_config_digest", None)
+    return _root_completion(self, *args, **kwargs)
+
+
+VerificationStore.completion = _binding_only_completion
+
+print(
+    "root modules:",
+    agent_tasks.__file__,
+    agent_verification.__file__,
+    project_config.__file__,
+    "candidate adapter:",
+    candidate_adapter.__file__,
+)
+
+import pytest
+
+raise SystemExit(pytest.main([str(T21_REGRESSION), "-q", "--tb=short"]))

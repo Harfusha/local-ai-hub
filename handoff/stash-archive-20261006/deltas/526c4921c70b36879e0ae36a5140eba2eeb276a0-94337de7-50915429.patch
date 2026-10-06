@@ -1,0 +1,371 @@
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -3,6 +3,7 @@
+ from .json_utils import dumps as json_dumps
+ 
+ import json
++import inspect
+ import threading
+ import time
+ import uuid
+@@ -15,6 +16,8 @@
+ from .agent_events import AgentEvent, AgentStateStore
+ from .agent_identity import AgentScope, ScopeContext
+ from .sqlite_support import connect_sqlite, retry_busy
++
++MAX_TASK_QUERY_SCAN_ROWS = 10_000
+ 
+ 
+ class CompletionGateError(RuntimeError):
+@@ -209,6 +212,14 @@
+             "stale": stale,
+             "stale_reason": "heartbeat_expired" if stale else "",
+         }
++
++
++class TaskList(list[TaskState]):
++    """List-compatible task page with an explicit bounded-query truncation signal."""
++
++    def __init__(self, tasks: list[TaskState] | tuple[TaskState, ...] = (), *, query_truncated: bool = False) -> None:
++        super().__init__(tasks)
++        self.query_truncated = bool(query_truncated)
+ 
+ 
+ class TaskStore:
+@@ -364,19 +375,48 @@
+             return None
+         return self._row_to_state(row)
+ 
+-    def list_tasks(self, status: TaskStatus | None = None, limit: int = 100, include_stale: bool = False) -> list[TaskState]:
++    def list_tasks(
++        self,
++        status: TaskStatus | None = None,
++        limit: int = 100,
++        include_stale: bool = False,
++        query: str | None = None,
++    ) -> TaskList:
+         if not self._db_path_available():
+-            return []
++            return TaskList()
+         self._init_projection_table()
+         now = time.time()
+-        def _fetch_tasks() -> list[Any]:
++        normalized_query = (query or "").strip().casefold()
++        page_size = max(1, int(limit))
++
++        def matches_query(row: tuple[Any, ...]) -> bool:
++            contract_data = json.loads(row[4] or "{}")
++            checkpoint_data = json.loads(row[6] or "{}")
++            search_values = [str(row[0] or ""), str(row[2] or "")]
++
++            def add_text(value: Any) -> None:
++                if isinstance(value, str):
++                    search_values.append(value)
++                elif isinstance(value, (list, tuple)):
++                    for item in value:
++                        add_text(item)
++                elif value is not None:
++                    search_values.append(str(value))
++
++            for field in ("goal", "acceptance_criteria"):
++                add_text(contract_data.get(field))
++            for field in ("phase", "next_action", "affected_paths", "blockers"):
++                add_text(checkpoint_data.get(field))
++            return any(normalized_query in value.casefold() for value in search_values)
++
++        def _fetch_tasks() -> tuple[list[Any], bool]:
+             with closing(connect_sqlite(self.state_store.db_path)) as con:
+                 where_clauses: list[str] = []
+                 params: list[Any] = []
+                 if status is not None:
+                     where_clauses.append("status = ?")
+                     params.append(status.value)
+-                if not include_stale:
++                if not normalized_query and not include_stale:
+                     where_clauses.append("NOT (heartbeat_expires_at > 0 AND heartbeat_expires_at < ?)")
+                     params.append(now)
+                 where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+@@ -386,17 +426,39 @@
+                     FROM agent_tasks_projection
+                     {where_sql}
+                     ORDER BY updated_at DESC
+-                    LIMIT ?
+                 """
+-                params.append(max(1, int(limit)))
+-                cur = con.execute(sql, tuple(params))
+-                return cur.fetchall()
+-
+-        rows = retry_busy(_fetch_tasks, retries=5, base_delay_seconds=0.02)
++                if not normalized_query:
++                    cur = con.execute(sql + " LIMIT ?", (*params, page_size))
++                    return cur.fetchall(), False
++
++                cur = con.execute(sql + " LIMIT ?", (*params, MAX_TASK_QUERY_SCAN_ROWS + 1))
++                candidates = cur.fetchmany(MAX_TASK_QUERY_SCAN_ROWS + 1)
++                query_truncated = len(candidates) > MAX_TASK_QUERY_SCAN_ROWS
++                matched: list[Any] = []
++                terminal_statuses = {
++                    TaskStatus.COMPLETED.value,
++                    TaskStatus.CANCELLED.value,
++                    TaskStatus.FAILED.value,
++                    TaskStatus.ABANDONED.value,
++                }
++                for row in candidates[:MAX_TASK_QUERY_SCAN_ROWS]:
++                    heartbeat_expires_at = float(row[8] or 0.0)
++                    if (
++                        not include_stale
++                        and heartbeat_expires_at > 0
++                        and heartbeat_expires_at < now
++                        and row[1] not in terminal_statuses
++                    ):
++                        continue
++                    if matches_query(row):
++                        matched.append(row)
++                        if len(matched) >= page_size:
++                            return matched, False
++                return matched, query_truncated
++
++        rows, query_truncated = retry_busy(_fetch_tasks, retries=5, base_delay_seconds=0.02)
+         tasks = [self._row_to_state(row) for row in rows]
+-        if not include_stale:
+-            tasks = [t for t in tasks if not t.is_stale]
+-        return tasks[:max(1, int(limit))]
++        return TaskList(tasks[:page_size], query_truncated=query_truncated)
+ 
+     def count(self, status: TaskStatus | None = None) -> int:
+         if not self._db_path_available():
+@@ -443,6 +505,125 @@
+         )
+         return self._commit_update(current, updated, event)
+ 
++    def _verify_completion(self, task: TaskState) -> None:
++        if not task.contract.acceptance_criteria:
++            return
++
++        state_data = task.checkpoint.state_data
++        worktree = state_data.get("worktree")
++        repo_root = worktree.get("repo_root") if isinstance(worktree, Mapping) else None
++        if not isinstance(repo_root, (str, Path)) or not str(repo_root).strip():
++            repo_root = state_data.get("repo_root")
++        if not isinstance(repo_root, (str, Path)) or not str(repo_root).strip():
++            context_repo_root = task.context.repository_id
++            if isinstance(context_repo_root, (str, Path)) and str(context_repo_root).strip():
++                try:
++                    if Path(context_repo_root).expanduser().is_dir():
++                        repo_root = context_repo_root
++                except (OSError, TypeError, ValueError):
++                    pass
++
++        repository_revision = str(state_data.get("repository_revision", "") or "").strip()
++        mutation_generation = state_data.get("mutation_generation", 0)
++        if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int) or mutation_generation < 0:
++            raise CompletionGateError(
++                "Cannot transition to COMPLETED: task mutation_generation is invalid"
++            )
++
++        verification_rules: Mapping[str, Any] = {}
++        configured_criteria: tuple[str, ...] = ()
++        if isinstance(repo_root, (str, Path)) and str(repo_root).strip():
++            try:
++                from .project_config import resolve_project_context
++
++                project = resolve_project_context(repo_root, Path(self.state_store.db_path).parent)
++                settings = project.settings
++                verification_rules = settings.verification_rules
++                configured_criteria = tuple(settings.commands)
++                if not isinstance(verification_rules, Mapping) or not isinstance(settings.commands, Mapping):
++                    raise ValueError("project verification settings are invalid")
++            except Exception as exc:
++                raise CompletionGateError(
++                    "Cannot transition to COMPLETED: project verification config could not be resolved"
++                ) from exc
++
++        acceptance = set(task.contract.acceptance_criteria)
++        active_rules = any(str(key).strip() in acceptance for key in verification_rules)
++        verifier = getattr(self, "verification_store", None)
++        if verifier is None:
++            try:
++                from .agent_verification import VerificationStore
++
++                verifier = VerificationStore(self.state_store, task_store=self)
++                self.verification_store = verifier
++            except Exception as exc:
++                raise CompletionGateError(
++                    "Cannot transition to COMPLETED: verification evaluator is unavailable"
++                ) from exc
++
++        completion = getattr(verifier, "completion", None)
++        if not callable(completion):
++            raise CompletionGateError(
++                "Cannot transition to COMPLETED: verification evaluator has no completion method"
++            )
++        try:
++            parameters = inspect.signature(completion).parameters
++            supports_kwargs = any(
++                parameter.kind is inspect.Parameter.VAR_KEYWORD
++                for parameter in parameters.values()
++            )
++            supports_project_rules = {
++                "current_revision",
++                "current_mutation_generation",
++                "verification_rules",
++                "configured_criteria",
++            }.issubset(parameters)
++            if supports_project_rules:
++                if active_rules and not repository_revision:
++                    raise CompletionGateError(
++                        "Cannot transition to COMPLETED: trusted repository_revision is unavailable"
++                    )
++                result = completion(
++                    task.task_id,
++                    current_revision=repository_revision,
++                    current_mutation_generation=mutation_generation,
++                    verification_rules=verification_rules,
++                    configured_criteria=configured_criteria,
++                )
++            else:
++                if active_rules:
++                    raise CompletionGateError(
++                        "Cannot transition to COMPLETED: verification evaluator does not support project rules"
++                    )
++                legacy_kwargs = {}
++                if repository_revision and ("current_revision" in parameters or supports_kwargs):
++                    legacy_kwargs["current_revision"] = repository_revision
++                result = completion(task.task_id, **legacy_kwargs)
++        except CompletionGateError:
++            raise
++        except Exception as exc:
++            raise CompletionGateError(
++                f"Cannot transition to COMPLETED: verification evaluator failed ({type(exc).__name__})"
++            ) from exc
++
++        complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
++        if complete is not True:
++            unsatisfied = (
++                result.get("unsatisfied_criteria", ())
++                if isinstance(result, Mapping)
++                else getattr(result, "unsatisfied_criteria", ())
++            )
++            stale = result.get("stale_criteria", ()) if isinstance(result, Mapping) else getattr(result, "stale_criteria", ())
++            details = []
++            if unsatisfied:
++                details.append(f"unsatisfied={tuple(unsatisfied)}")
++            if stale:
++                details.append(f"stale={tuple(stale)}")
++            suffix = f" ({'; '.join(details)})" if details else ""
++            raise CompletionGateError(
++                f"Cannot transition to COMPLETED: verification evaluator rejected completion{suffix}"
++            )
++
+     def transition(
+         self,
+         task_id: str,
+@@ -457,6 +638,35 @@
+             raise KeyError(f"Task {task_id} not found")
+ 
+         if target == current.status:
++            if idempotency_key and self._db_path_available():
++                with closing(connect_sqlite(self.state_store.db_path)) as con:
++                    row = con.execute(
++                        "SELECT actor, kind, payload FROM agent_events WHERE stream_id = ? AND idempotency_key = ?",
++                        (f"task:{task_id}", idempotency_key),
++                    ).fetchone()
++                if row is not None:
++                    try:
++                        payload = json.loads(row[2])
++                        source_status = TaskStatus(payload.get("from_status"))
++                    except (TypeError, ValueError, json.JSONDecodeError):
++                        payload = None
++                        source_status = None
++                    expected_payload = {
++                        "from_status": payload.get("from_status") if isinstance(payload, dict) else None,
++                        "to_status": target.value,
++                        "reason": reason,
++                    }
++                    valid_source_transition = (
++                        source_status is not None
++                        and target in VALID_TRANSITIONS.get(source_status, set())
++                    )
++                    if (
++                        row[0] != actor
++                        or row[1] != "task.transitioned"
++                        or payload != expected_payload
++                        or not valid_source_transition
++                    ):
++                        raise ValueError("idempotency key was already used")
+             return current
+ 
+         allowed = VALID_TRANSITIONS.get(current.status, set())
+@@ -517,6 +727,7 @@
+                     raise CompletionGateError(
+                         f"Cannot transition to COMPLETED: could not validate receipt '{rcpt_id}' for criterion '{criterion}': {exc}"
+                     ) from exc
++            self._verify_completion(current)
+ 
+         now = time.time()
+         heartbeat = (
+@@ -1079,11 +1290,40 @@
+             current.heartbeat_expires_at,
+             current.updated_at,
+         )
++        committed: list[TaskState] = []
+ 
+         def _do_commit() -> None:
+             con = connect_sqlite(self.state_store.db_path, isolation_level=None, timeout_seconds=0.25)
+             try:
+                 con.execute("BEGIN IMMEDIATE")
++                if event.idempotency_key:
++                    existing = con.execute(
++                        "SELECT stream_id, seq, event_id, kind, payload, idempotency_key, "
++                        "correlation_id, actor, created_at FROM agent_events "
++                        "WHERE stream_id = ? AND idempotency_key = ?",
++                        (event.stream_id, event.idempotency_key),
++                    ).fetchone()
++                    if existing:
++                        existing_event = AgentEvent.from_row(existing)
++                        if existing_event.actor != event.actor:
++                            raise ValueError("idempotency key was already used")
++                        if (
++                            existing_event.kind != event.kind
++                            or dict(existing_event.payload) != dict(event.payload)
++                            or existing_event.correlation_id != event.correlation_id
++                        ):
++                            raise ValueError(
++                                "idempotency key was already used for a different event payload"
++                            )
++                        current_row = con.execute(
++                            "SELECT * FROM agent_tasks_projection WHERE task_id = ?",
++                            (current.task_id,),
++                        ).fetchone()
++                        if not current_row:
++                            raise RuntimeError("task event exists without its durable projection")
++                        committed.append(self._row_to_state(current_row))
++                        con.execute("COMMIT")
++                        return
+                 con.execute(
+                     """
+                     UPDATE agent_tasks_projection SET
+@@ -1099,14 +1339,6 @@
+                     raise ConcurrentTaskUpdateError(
+                         f"Task {current.task_id} changed during transition; reload and retry"
+                     )
+-                if event.idempotency_key:
+-                    existing_ev = con.execute(
+-                        "SELECT seq FROM agent_events WHERE stream_id = ? AND idempotency_key = ?",
+-                        (event.stream_id, event.idempotency_key),
+-                    ).fetchone()
+-                    if existing_ev:
+-                        con.execute("COMMIT")
+-                        return
+                 seq_row = con.execute(
+                     "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
+                     (event.stream_id,),
+@@ -1143,7 +1375,7 @@
+             self.state_store._publish(event.with_seq(seq))
+ 
+         retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
+-        return updated
++        return committed[0] if committed else updated
+ 
+     def _row_to_state(self, row: tuple[Any, ...]) -> TaskState:
+         (

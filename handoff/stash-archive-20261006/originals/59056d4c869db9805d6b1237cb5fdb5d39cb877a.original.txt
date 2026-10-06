@@ -1,0 +1,49 @@
+{
+  "artifact_id": "T15-ROOT-CACHE-TTL-ENV-V4",
+  "status": "CANDIDATE_GREEN; ROOT_TEST_PATCH_READY_FOR_T20",
+  "date": "2026-10-01",
+  "immutable_patch": {
+    "path": "handoff/t15-root-cache-ttl-env-v4.patch",
+    "sha256": "5126c9a15bb3cb1a79f4045b91fa6442eeca3d33574da6c9a2f951e0e6f8168f",
+    "scope": "tests/test_command_cache_singleflight_contract.py only",
+    "supersedes": "handoff/t15-root-cache-env-runtime-v3.patch",
+    "reason": "V4 includes runtime environment cache assertion and L1 TTL values 0 and 10 in both result and suppression TTL tests."
+  },
+  "root_preimage": {
+    "head": "98a9a1a7611af574caf20c4aa3eb2e918a",
+    "tests/test_command_cache_singleflight_contract.py": "dee14425379d2fc8d9655f373110df1c33805804ee4433873ec3f8e778fbf85e",
+    "src/local_ai_hub/commands.py_observed_sha256": "3e10f0d793fd0ac4ff0d4a74e964800a4dbbf5f89a8b74ff6fd16cccd30a4acc"
+  },
+  "checks": [
+    {
+      "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_command_cache_singleflight_contract.py",
+      "owner": "T15 candidate only",
+      "result": "13 passed in 1.38s"
+    },
+    {
+      "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check C:\\Users\\Adam\\.codex\\worktrees\\t15-command-config\\.local-ai-hub\\handoff\\t15-root-cache-ttl-env-v4.patch",
+      "owner": "T15 read-only root check",
+      "result": "PASS"
+    }
+  ],
+  "cache_correctness": {
+    "red": "Before candidate TTL fix, 3 tests failed in 0.52s: cached success, cached retryable failure and cached suppression survived L2 TTL through longer/zero L1 TTL.",
+    "green": "After fix, 6 result/suppression TTL cases passed in 1.14s across L1 TTL 0 and 10; full cache-contract file 13 passed in 1.38s.",
+    "environment": "End-to-end command result test: unchanged env reuses warm result; changed configured env returns fresh output; 1 passed in 0.25s.",
+    "identity": "Command key tests vary configured environment, executable/tool identity and repository revision."
+  },
+  "root_ownership": {
+    "root_source_or_tests_changed_by_t15": false,
+    "root_tests_run_by_t15": false,
+    "current_root_integration_observed": "Root commands source contains effective_l1_ttl. Root test file already contains v2 TTL and direct key tests; runtime environment assertion and TTL-zero variants remain in v4. T20 owns integration and execution."
+  },
+  "benchmark": {
+    "run": false,
+    "reason": "T20 exclusive CPU lease required; no p95/p99 claim."
+  },
+  "remaining": [
+    "T20 apply and run v4 root test delta; confirm root TTL v2 acceptance receipt.",
+    "Full paired p95/p99 and no-quality-regression evidence.",
+    "Affected graph, streaming/lifecycle and T06/T07 no-orphan acceptance."
+  ]
+}

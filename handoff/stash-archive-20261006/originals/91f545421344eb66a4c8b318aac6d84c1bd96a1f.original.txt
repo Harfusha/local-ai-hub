@@ -1,0 +1,42 @@
+# T01 client acceptance batch for T20
+
+Prepared batch from the first ten client selectors in the root-current acceptance manifest. No tests executed.
+
+## Scope
+
+- 10 exact selectors from one test module.
+- 18 linked operations: nine HubClient methods and nine API targets.
+- Bounded batch: client routing, payload forwarding, target error handling, and selected Agent OS/repo/command/RAG operations.
+- Inventory selector match: 10/10 selectors map to current operation rows; linked rows remain root_green=false until fresh root execution.
+
+## Exact selectors
+
+1. tests/test_client_operation_acceptance.py::test_client_complexity_targets_repo_complexity
+2. tests/test_client_operation_acceptance.py::test_client_context_compile_targets_agent_state_context
+3. tests/test_client_operation_acceptance.py::test_client_create_task_targets_agent_state_tasks
+4. tests/test_client_operation_acceptance.py::test_client_incident_decision_targets_agent_state_incidents
+5. tests/test_client_operation_acceptance.py::test_client_ingest_diagram_targets_rag_artifact_operation
+6. tests/test_client_operation_acceptance.py::test_client_mock_server_targets_command_mock_server
+7. tests/test_client_operation_acceptance.py::test_client_package_audit_returns_target_error
+8. tests/test_client_operation_acceptance.py::test_client_record_memory_targets_agent_state_memory
+9. tests/test_client_operation_acceptance.py::test_client_verify_receipt_targets_agent_state_verification
+10. tests/test_client_operation_acceptance.py::test_client_worktree_lease_targets_coord_worktree_lease
+
+## Linked operation IDs
+
+HubClient methods: op-0306eebe19d1, op-8d57b4edf360, op-25d7b33175c7, op-31bd7c83f4c5, op-74e8e816778c, op-9af2fb57be23, op-cbbd3f3ce4a6, op-132900407352, op-b7e195085083.
+
+HubClient targets: op-540f5d4c5fe7, op-78996094a2da, op-601c61cd374a, op-f7c0921b879e, op-528ca37ad47e, op-d00635595cd0, op-cbd749119dec, op-ef4f85c7e667, op-69fef0ffcfae.
+
+## Candidate preimage hashes
+
+Hashes below are from T01 worktree C:UsersAdam.codexworktrees	01-coverage-main-verify.local-ai-hub. They are candidate reference pins, not verified root-worktree preimages.
+
+- tests/test_client_operation_acceptance.py: 5aa526d4ae0e1fa0cb390c4f1419ad76ed3c6791ef8262b8d57f8e958c2522d6
+- src/local_ai_hub/client.py: 1b474259991dde272aed79f429cb28a465a07b72428f4e49ac2feb0595b80bb2
+- selector manifest handoff/T01-root-current-acceptance-selectors-20261002.txt: 57610ec4e0b5bfa5bf1b5a36f44a28eb713144a0881c5cbbecb4f64b590bae70
+- operation evidence handoff/T01-current-operation-selector-evidence-20261002.json: bff32cd60d5236779173009498b8259ca8d416f547a70637ca14fcf2adc82238
+
+## Queue note
+
+T02 reports no runnable root preimage pins and status UNKNOWN; no pytest or benchmark ran. Root preimage cannot be certified from this task. T20 may queue these ten selectors as the next bounded client batch only after confirming target checkout hashes and slot policy. Do not treat the T01 hashes as root pins.

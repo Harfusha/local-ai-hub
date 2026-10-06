@@ -1,0 +1,35 @@
+# T01 root-current API coverage candidate delta v2
+
+This is a candidate artifact only. Root was read-only; T20 owns final regeneration and `--check`.
+
+- Candidate HEAD: `689165fbe18101feacf5f489847a4890fc27ed1f`; inventory script SHA-256 `6513D91FAB541B3B32FC10845F007FF495BD8177D56E34371AA029A19A11A1E2`.
+- Root HEAD: `98a9a1a7611af574caf20a88620c4aa3eb2e918a`; current `docs/API_COVERAGE.md` SHA-256 `E3B5A6559C5F0E6ADEC165B6A416E6DE600C7F00B121DA4615B176ABDA397A49`.
+- Root generated MCP schema manifest SHA-256: `AF189139D32645E708586FD78EF9445800561FA4DFA57C8D58E6EAFFD8DE6B10`. Inventory reads the existing `generated/schemas` tree and uses AST source discovery; it does not call schema generation or write to root.
+- Candidate rendering uses task ID `01a0d30b-fffc-7810-a1ca-9cdde7be9264`. Rows: **685**. Owner counts: T03=25, T08=105, T13=14, T14=7.
+- Root inventory drift: `["missing MCP action handler local_ai_status:brief"]`. In particular, generated root schema exposes `local_ai_status.action=brief`, while static source extraction does not find it in `StatusAction`; this is preserved as drift for T03 review, not silently treated as behavior.
+- T03/T08/T13/T14 behavior labels remain bounded to linked assertions in the candidate rendering. Metadata-only rows are not acceptance proof.
+- Rendered candidate document: `T01-API_COVERAGE-root-current-20261001-v2.md`, SHA-256 `792291D5F8E714A2CDBB2CC3E3A28EF3DC8FA1EC09E4D8C2DB78E8460A76186C`, bytes `4740847`.
+- Root delta patch: `T01-API_COVERAGE-root-current-delta-20261001-v2.patch`, SHA-256 `4DACDF4E602C6EBA40120C742B86DC26A20A89180A07145632BC48AB152CD675`, bytes `9880611`. Patch has not been applied to root.
+
+## Pinned root input hashes
+
+- `tools/surface_inventory.py`: `862731FDB1312D2B6A604A1EB7F2559C196EAC11985C032C091633DEA960A85C`
+- `src/local_ai_hub/mcp_server.py`: `8EC5C493964419233A349A78ECCA6487A78078B6125A7A328980877B3AA132FB`
+- `src/local_ai_hub/operation_contracts.py`: `28DD0FF31AE5F4163BC439768F2C76B513ED3D2A1CF41AF432520D54A9AF7C83`
+- `src/local_ai_hub/agent_verification.py`: `FDE1CF9EBC4D76324C33FDAA78190FAADBCCD7E953D8BE9D292A7AFFD96FDC73`
+- `src/local_ai_hub/features.py`: `877EF243D109A62699D7D54CE14097EF9B6859FEC1DA50D7678B69C80FE44C43`
+- `src/local_ai_hub/generator.py`: `2147622D0713579F7BE9EEE9890C646D50F932F26687D26BB951A51E560CDFCB`
+- `docs/API_COVERAGE.md`: `E3B5A6559C5F0E6ADEC165B6A416E6DE600C7F00B121DA4615B176ABDA397A49`
+
+## T03/T14/mode/Agent OS coverage count by behavior disposition
+
+| Owner | Rows | Behavioral test linked | Metadata only |
+|---|---:|---:|---:|
+| T03 | 25 | 11 | 14 |
+| T08 | 105 | 35 | 70 |
+| T13 | 14 | 2 | 12 |
+| T14 | 7 | 3 | 4 |
+
+## Root test/write boundary
+
+- No root tests, root writes, or root `surface_inventory.py --check` were run. T20 must review/apply the patch on its own current root snapshot, resolve the `local_ai_status:brief` contract drift with T03, run the same-environment `--write-doc` then `--check`, and verify the document hash is unchanged by check.
